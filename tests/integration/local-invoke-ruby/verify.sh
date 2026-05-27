@@ -34,7 +34,7 @@ fi
 
 # Test 1 — asset-backed Ruby Lambda echoes event + env var
 echo "==> [1/4] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeRubyFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeRubyFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -46,7 +46,7 @@ echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeRubyFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeRubyFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -60,7 +60,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 # Use a wildcard Parameters block so the test doesn't break if the L1
 # logical ID changes (mirrors the Python integ).
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKL} invoke CdkdLocalInvokeRubyFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_3=$(${CDKL} invoke CdkLocalInvokeRubyFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -Eq '"greeting": *"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
@@ -72,7 +72,7 @@ echo "==> [4/4] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
-RESULT_4=$(${CDKL} invoke CdkdLocalInvokeRubyFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
+RESULT_4=$(${CDKL} invoke CdkLocalInvokeRubyFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -Eq '"hi": *"there"' || {
   echo "FAIL: expected inlineEcho with hi=there, got: ${RESULT_4}"

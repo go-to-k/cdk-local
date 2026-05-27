@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-invoke-container",
+  "name": "cdkl-integ-local-invoke-container",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl invoke against container Lambdas",

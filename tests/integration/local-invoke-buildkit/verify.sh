@@ -58,31 +58,31 @@ done
 
 
 echo "==> [1/3] Building + invoking BuildkitHandler (exercises every BuildKit feature)"
-${CDKL} invoke CdkdLocalInvokeBuildkitFixture/BuildkitHandler --no-pull >/tmp/cdkd-buildkit-1.log 2>&1
-RESULT_1=$(grep -E '"(buildArg|secretSha|fromBuildkitImage)"' /tmp/cdkd-buildkit-1.log | tail -1)
+${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull >/tmp/cdkl-buildkit-1.log 2>&1
+RESULT_1=$(grep -E '"(buildArg|secretSha|fromBuildkitImage)"' /tmp/cdkl-buildkit-1.log | tail -1)
 echo "    response: ${RESULT_1}"
 
 # Every BuildKit feature must show up in the response.
 echo "${RESULT_1}" | grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" || {
   echo "FAIL: --build-arg did not flow through. Expected buildArg=${EXPECTED_BUILD_ARG}"
   echo "      response: ${RESULT_1}"
-  cat /tmp/cdkd-buildkit-1.log
+  cat /tmp/cdkl-buildkit-1.log
   exit 1
 }
 echo "${RESULT_1}" | grep -q "\"secretSha\":\"${EXPECTED_SECRET_SHA}\"" || {
   echo "FAIL: --secret did not flow through. Expected secretSha=${EXPECTED_SECRET_SHA}"
   echo "      response: ${RESULT_1}"
-  cat /tmp/cdkd-buildkit-1.log
+  cat /tmp/cdkl-buildkit-1.log
   exit 1
 }
 echo "${RESULT_1}" | grep -q '"multiStageTarget":"final"' || {
   echo "FAIL: multi-stage --target final did not run (app.js missing from image)"
-  cat /tmp/cdkd-buildkit-1.log
+  cat /tmp/cdkl-buildkit-1.log
   exit 1
 }
 echo "${RESULT_1}" | grep -q '"greeting":"hello-buildkit"' || {
   echo "FAIL: GREETING env var did not flow through"
-  cat /tmp/cdkd-buildkit-1.log
+  cat /tmp/cdkl-buildkit-1.log
   exit 1
 }
 echo "    ✓ build-arg=${EXPECTED_BUILD_ARG}"
@@ -92,7 +92,7 @@ echo "    ✓ multi-stage --target=final"
 # Verify the raw secret content NEVER landed in any image layer. This is
 # the load-bearing security property of `RUN --mount=type=secret`: the
 # secret content is mounted ONLY during the RUN step, never baked into a
-# layer. Grep the local cdkd-built image's history for the secret
+# layer. Grep the local cdkl-built image's history for the secret
 # content — must NOT match.
 echo "==> [2/3] Verifying secret content NEVER baked into image layers (security property of --secret)"
 SECRET_LITERAL=$(cat docker/secret.txt | head -1)
@@ -116,22 +116,22 @@ echo "    ✓ secret content absent from all image layers"
 # Re-invoke under --no-build to confirm tag stability (the deterministic
 # tag computed from the source must match across builds).
 echo "==> [3/3] Re-invoking under --no-build to confirm tag stability"
-${CDKL} invoke CdkdLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build >/tmp/cdkd-buildkit-3.log 2>&1
-RESULT_3=$(grep -E '"buildArg"' /tmp/cdkd-buildkit-3.log | tail -1)
+${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build >/tmp/cdkl-buildkit-3.log 2>&1
+RESULT_3=$(grep -E '"buildArg"' /tmp/cdkl-buildkit-3.log | tail -1)
 echo "${RESULT_3}" | grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" || {
   echo "FAIL: --no-build re-invocation did not pick up the same baked image"
-  cat /tmp/cdkd-buildkit-3.log
+  cat /tmp/cdkl-buildkit-3.log
   exit 1
 }
 echo "    ✓ --no-build reused the cached tag"
 
-rm -f /tmp/cdkd-buildkit-1.log /tmp/cdkd-buildkit-3.log
+rm -f /tmp/cdkl-buildkit-1.log /tmp/cdkl-buildkit-3.log
 
-# Cleanup: remove the cdkd-built image(s) so CI hosts don't accumulate
+# Cleanup: remove the cdkl-built image(s) so CI hosts don't accumulate
 # multi-stage builder layers across iterations. The integ owns the
 # `cdkl-invoke-*` namespace and the run-time docker containers are
 # already removed by `docker run --rm` + cdkd's removeContainer().
-echo "==> Cleanup: removing cdkd-built images"
+echo "==> Cleanup: removing cdkl-built images"
 docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
   docker image rm -f "${tag}" >/dev/null 2>&1 || true
 done

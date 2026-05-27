@@ -4,6 +4,6 @@ import { LocalEcsServiceConnectStack } from '../lib/local-ecs-service-connect-st
 
 const app = new cdk.App();
 
-new LocalEcsServiceConnectStack(app, 'CdkdLocalEcsServiceConnectFixture', {
+new LocalEcsServiceConnectStack(app, 'CdkLocalEcsServiceConnectFixture', {
   description: 'Fixture stack for cdkl ECS Service Connect + Cloud Map integ test (Issue #460)',
 });

@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-invoke-buildkit",
+  "name": "cdkl-integ-local-invoke-buildkit",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkd against a Dockerfile that uses BuildKit-only features (# syntax=docker/dockerfile:1 + heredocs + RUN --mount=type=cache)",

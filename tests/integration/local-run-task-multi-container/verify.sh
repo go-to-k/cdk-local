@@ -42,7 +42,7 @@ trap 'rm -f "${OUT_FILE}"' EXIT
 echo "==> Running multi-container task"
 # Run synchronously so `cdkl run-task` waits for the essential
 # container to exit; logs land on stdout with [container-name] prefix.
-${CDKL} run-task CdkdLocalRunTaskMultiFixture/AppTask --no-pull --container-host 127.0.0.1 \
+${CDKL} run-task CdkLocalRunTaskMultiFixture/AppTask --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1
 
 echo "==> Asserting [app] container logged 'hello from app'"

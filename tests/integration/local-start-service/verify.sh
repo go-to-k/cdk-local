@@ -62,7 +62,7 @@ OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
 echo "==> Booting service (DesiredCount=2)"
-${CDKL} start-service CdkdLocalStartServiceFixture:WebService \
+${CDKL} start-service CdkLocalStartServiceFixture:WebService \
   --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!

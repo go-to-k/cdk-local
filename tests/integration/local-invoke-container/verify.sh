@@ -38,7 +38,7 @@ fi
 # documented as a no-op in CLI help — it still skips the public-base
 # image's `docker pull` from the ZIP path which we did up front).
 echo "==> [1/4] Invoking EchoHandler (container) with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -54,7 +54,7 @@ echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"key":"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -66,7 +66,7 @@ echo "==> [3/4] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKL} invoke CdkdLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_3=$(${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
@@ -83,7 +83,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}"' EXIT
-${CDKL} invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull --no-build >"${COMBINED_4}" 2>&1
+${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --no-pull --no-build >"${COMBINED_4}" 2>&1
 RESULT_4=$(tail -1 "${COMBINED_4}")
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q '"greeting":"hello"' || {

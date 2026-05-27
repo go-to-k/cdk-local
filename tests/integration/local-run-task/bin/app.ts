@@ -4,6 +4,6 @@ import { LocalRunTaskStack } from '../lib/local-run-task-stack.ts';
 
 const app = new cdk.App();
 
-new LocalRunTaskStack(app, 'CdkdLocalRunTaskFixture', {
+new LocalRunTaskStack(app, 'CdkLocalRunTaskFixture', {
   description: 'Fixture stack for cdkl run-task integ test',
 });

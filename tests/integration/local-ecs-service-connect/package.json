@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-ecs-service-connect",
+  "name": "cdkl-integ-local-ecs-service-connect",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl start-service Service Connect + Cloud Map (Issue #460)",

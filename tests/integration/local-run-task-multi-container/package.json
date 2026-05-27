@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-run-task-multi-container",
+  "name": "cdkl-integ-local-run-task-multi-container",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl run-task multi-container sidecar pattern",

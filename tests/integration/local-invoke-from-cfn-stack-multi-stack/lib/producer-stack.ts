@@ -20,7 +20,7 @@ export interface ProducerStackProps extends cdk.StackProps {
  * resolve it via `Fn::ImportValue`.
  *
  * The Parameter's `Ref` (which is the parameter name itself, e.g.
- * `CdkdLocalInvokeMultiStackProducer-SharedParameter-XXXX`) is what
+ * `CdkLocalInvokeMultiStackProducer-SharedParameter-XXXX`) is what
  * gets exported. The consumer's Lambda env var ends up with that exact
  * string when `--from-cfn-stack` substitutes the `Fn::ImportValue`.
  *

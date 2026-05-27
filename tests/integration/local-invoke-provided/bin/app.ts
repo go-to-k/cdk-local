@@ -4,6 +4,6 @@ import { LocalInvokeProvidedStack } from '../lib/local-invoke-provided-stack.ts'
 
 const app = new cdk.App();
 
-new LocalInvokeProvidedStack(app, 'CdkdLocalInvokeProvidedFixture', {
+new LocalInvokeProvidedStack(app, 'CdkLocalInvokeProvidedFixture', {
   description: 'Fixture stack for cdkl invoke provided.* + go1.x integ test',
 });

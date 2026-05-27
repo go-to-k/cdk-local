@@ -4,6 +4,6 @@ import { LocalRunTaskAwsvpcStack } from '../lib/local-run-task-awsvpc-stack.ts';
 
 const app = new cdk.App();
 
-new LocalRunTaskAwsvpcStack(app, 'CdkdLocalRunTaskAwsvpcFixture', {
+new LocalRunTaskAwsvpcStack(app, 'CdkLocalRunTaskAwsvpcFixture', {
   description: 'Fixture stack for cdkl run-task awsvpc-mode integ test',
 });

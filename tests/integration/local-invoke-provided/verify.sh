@@ -68,7 +68,7 @@ fi
 # linux/amd64 emulation. The first invocation pays a one-time emulator
 # warm-up tax (~5s); the function's 30s timeout absorbs it comfortably.
 echo "==> [1/4] Invoking BootstrapHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeProvidedFixture/BootstrapHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"Greeting": *"hello"|"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -80,7 +80,7 @@ echo "==> [2/4] Invoking BootstrapHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeProvidedFixture/BootstrapHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -90,7 +90,7 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
 # Test 3 — inline Code.ZipFile rejection for provided.al2023.
 echo "==> [3/4] Invoking ProvidedAl2023InlineHandler — expecting inline Code.ZipFile rejection"
 RESULT_3=""
-if RESULT_3=$(${CDKL} invoke CdkdLocalInvokeProvidedFixture/ProvidedAl2023InlineHandler --no-pull 2>&1); then
+if RESULT_3=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/ProvidedAl2023InlineHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on inline provided.al2023, got success: ${RESULT_3}"
   exit 1
 fi
@@ -109,7 +109,7 @@ echo "    rejection ✓"
 # Test 4 — go1.x deprecation rejection.
 echo "==> [4/4] Invoking Go1xHandler — expecting go1.x deprecation message"
 RESULT_4=""
-if RESULT_4=$(${CDKL} invoke CdkdLocalInvokeProvidedFixture/Go1xHandler --no-pull 2>&1); then
+if RESULT_4=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/Go1xHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on go1.x, got success: ${RESULT_4}"
   exit 1
 fi

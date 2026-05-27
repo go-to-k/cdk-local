@@ -41,7 +41,7 @@ fi
 
 
 echo "==> [1/2] Starting task via --detach"
-${CDKL} run-task CdkdLocalRunTaskFixture/NginxTask --detach --no-pull --container-host 127.0.0.1
+${CDKL} run-task CdkLocalRunTaskFixture/NginxTask --detach --no-pull --container-host 127.0.0.1
 
 echo "==> [2/2] Curling http://127.0.0.1:18080/"
 # Give nginx ~5s to listen.

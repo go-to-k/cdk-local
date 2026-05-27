@@ -34,7 +34,7 @@ fi
 
 # Test 1 — asset-backed Lambda echoes event + env var
 echo "==> [1/4] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -46,7 +46,7 @@ echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"key":"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -60,7 +60,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 # Logical ID is what the CDK construct synthesizes to. Use a wildcard
 # Parameters block so the test doesn't break if the L1 logical ID changes.
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
-RESULT_3=$(${CDKL} invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_3=$(${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_3}"
 echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
@@ -72,7 +72,7 @@ echo "==> [4/4] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
-RESULT_4=$(${CDKL} invoke CdkdLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
+RESULT_4=$(${CDKL} invoke CdkLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q '"inlineEcho":{"hi":"there"}' || {
   echo "FAIL: expected inlineEcho={hi:there}, got: ${RESULT_4}"

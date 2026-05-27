@@ -40,7 +40,7 @@ echo "==> [1/3] Invoking EchoHandler (default empty event)"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"name":"alice","n":7}' > "${EVENT_FILE}"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 
 # 1a: counters layer — distinct module name, no path overlap.
@@ -75,7 +75,7 @@ echo "==> [2/3] Invoking with a different event payload"
 EVENT2=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${EVENT2}"' EXIT
 echo '{"name":"bob","n":42}' > "${EVENT2}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -q '"greeting":"from-layer-B:hello-bob"' || {
   echo "FAIL: expected greeting=from-layer-B:hello-bob, got: ${RESULT_2}"
@@ -91,7 +91,7 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 # `console.info`; we just want to verify the layer-count line appears
 # somewhere in the cdkd output) so users know the layer wiring fired.
 echo "==> [3/3] Verifying cdkd logs the layer count"
-LOG_OUTPUT=$(${CDKL} invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
+LOG_OUTPUT=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
   echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdkd output, got:"
   echo "${LOG_OUTPUT}"

@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-start-api",
+  "name": "cdkl-integ-local-start-api",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl start-api",
