@@ -1,3 +1,18 @@
+# 1.0.0 (2026-05-27)
+
+
+### Bug Fixes
+
+* **integ:** add missing lambda-non-proxy handler for local-start-api-rest-v1-non-proxy ([#11](https://github.com/go-to-k/cdk-local/issues/11)) ([39ccf5e](https://github.com/go-to-k/cdk-local/commit/39ccf5e6f4de263aff4ab28803efe3aa9755228f))
+* **integ:** use cdkl invoke not cdkl local invoke in cfn-stack fixtures ([#34](https://github.com/go-to-k/cdk-local/issues/34)) ([12183f5](https://github.com/go-to-k/cdk-local/commit/12183f53d5705b40fa3e6d0739bdd603eee0d728))
+* **synthesis:** populate StackInfo.assetManifestPath from the cloud assembly ([#10](https://github.com/go-to-k/cdk-local/issues/10)) ([e4b4f0a](https://github.com/go-to-k/cdk-local/commit/e4b4f0a7350f53e152e5f94cd31e6ccfc9a6d147))
+
+
+### Features
+
+* **phase-2:** extract local-execution into standalone cdk-local + cdkl CLI ([#1](https://github.com/go-to-k/cdk-local/issues/1)) ([c7d3975](https://github.com/go-to-k/cdk-local/commit/c7d397529040d707df52346841715e18faa4e94d))
+* **synthesis:** thread CLI -c context overrides through Synthesizer to AssemblyReader ([#5](https://github.com/go-to-k/cdk-local/issues/5)) ([69668a6](https://github.com/go-to-k/cdk-local/commit/69668a6b283c097d7c70de43bebe6a17bcba0e5d))
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
