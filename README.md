@@ -1,11 +1,11 @@
 # cdk-local
 
-Run AWS CDK stacks locally with Docker. A native, CDK-first alternative to `sam local`.
+Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. A native, CDK-first alternative to `sam local`.
 
 ## Why cdk-local
 
 - **CDK-native** — point it at your CDK app's `cdk.json`. No SAM templates, no extra config files.
-- **Wider resource coverage** — Lambda (ZIP + container image), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
+- **Wider coverage than `sam local`** — Lambda (ZIP + container image), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
 - **Two execution modes** — standalone (no AWS deployment), or bound to a deployed stack to inject real ARNs / Secrets / IAM credentials.
 - **No AWS emulator required** — your Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
 
@@ -40,9 +40,27 @@ This installs the `cdkl` command.
 
 Point cdk-local at your CDK app. It synths your stack and runs Lambda functions, API Gateway routes, and ECS tasks locally with Docker. No AWS credentials needed for the basic flow.
 
+#### Lambda — `invoke`
+
+Invoke a single Lambda function with an event payload.
+
 ```bash
 cdkl invoke MyStack/MyFunction --event ./event.json
+```
+
+#### API Gateway — `start-api`
+
+Serve your API Gateway routes (REST v1 / HTTP v2 / Function URL / WebSocket) on a local HTTP server.
+
+```bash
 cdkl start-api MyStack/MyApi
+```
+
+#### ECS — `run-task` / `start-service`
+
+Run an ECS task definition once, or start a long-running service with Service Connect / Cloud Map registry.
+
+```bash
 cdkl run-task MyStack/MyTask
 cdkl start-service MyStack/MyService
 ```
@@ -51,13 +69,34 @@ Use this for fast iteration on Lambda code, API routing checks, and container ta
 
 ### 2. Bound to a deployed stack
 
-Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), cdk-local can read the deployed resources and inject real ARNs, Secrets values, and IAM credentials into the local execution.
+Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), pass `--from-cfn-stack <StackName>` and cdk-local reads the deployed CloudFormation stack to inject real ARNs, Secrets values, and IAM credentials (resolved from your current AWS profile) into the local execution.
+
+#### API Gateway — `start-api` (the headline use case)
+
+A local API talking to real AWS — point a frontend at it for end-to-end debugging, including real Cognito JWT verification.
+
+```bash
+cdkl start-api MyStack/MyApi --from-cfn-stack MyStack
+```
+
+#### Lambda — `invoke`
+
+Single-function debugging against real upstreams (DynamoDB rows, S3 objects, Secrets values).
 
 ```bash
 cdkl invoke MyStack/MyFunction --event ./event.json --from-cfn-stack MyStack
 ```
 
-Use this for production debugging, integration verification with real AWS resources (DynamoDB rows, S3 objects, Secrets values), and validating real IAM permissions before deploy.
+#### ECS — `run-task` / `start-service`
+
+Container workloads running locally against real ARNs / Secrets / IAM credentials from the deployed stack.
+
+```bash
+cdkl run-task MyStack/MyTask --from-cfn-stack MyStack
+cdkl start-service MyStack/MyService --from-cfn-stack MyStack
+```
+
+Use this for production debugging, integration verification with real AWS resources, and validating real IAM permissions before deploy.
 
 ## Supported resources
 
