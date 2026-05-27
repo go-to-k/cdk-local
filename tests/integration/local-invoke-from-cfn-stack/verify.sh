@@ -3,16 +3,17 @@
 # End-to-end real-AWS validation for `cdkl invoke --from-cfn-stack`
 # (issue #606).
 #
-# Why this exists: the existing `local-invoke-from-state` integ exercises
-# the cdkd-deployed path (cdkd deploy + cdkd state read). Issue #606 adds
-# a parallel path for CDK apps deployed via the upstream CDK CLI (cdk
-# deploy → CloudFormation). The only way to exercise that round-trip is
-# to deploy the fixture via `cdk deploy` (NOT `cdkd deploy`) and then
-# invoke locally with `--from-cfn-stack`, which reads physical IDs via
-# `cloudformation:DescribeStackResources` instead of cdkd's S3 state.
+# Why this exists: the host-deployed path (e.g. cdkd's `--from-state`,
+# which reads the host's S3 state) covers stacks deployed via the host
+# CLI. Issue #606 adds a parallel path for CDK apps deployed via the
+# upstream CDK CLI (cdk deploy → CloudFormation). The only way to
+# exercise that round-trip is to deploy the fixture via `cdk deploy` and
+# then invoke locally with `--from-cfn-stack`, which reads physical IDs
+# via `cloudformation:DescribeStackResources` instead of a host-managed
+# state store.
 #
 # Steps:
-#   1. install + build cdkd (root) + install fixture deps + docker pull
+#   1. install + build cdk-local (root) + install fixture deps + docker pull
 #   2. cdk deploy CdkLocalInvokeFromCfnStackFixture (upstream CDK CLI)
 #   3. baseline: cdkl invoke (no --from-cfn-stack) — assert
 #      TABLE_NAME comes through as "unset" (env var dropped because it's
@@ -20,7 +21,7 @@
 #   4. issue #606: cdkl invoke --from-cfn-stack — assert TABLE_NAME
 #      is the actual deployed DynamoDB table name, and STATIC_VALUE still
 #      passes through unchanged.
-#   5. cdk destroy --force (NOT cdkd destroy — the fixture lives in CFn)
+#   5. cdk destroy --force (the fixture lives in CFn, not in a host state store)
 #
 # Run via `/run-integ local-invoke-from-cfn-stack` (recommended) or directly:
 #
@@ -43,7 +44,7 @@ CLI="node ${REPO_ROOT}/dist/cli.js"
 
 echo "[verify] region=${REGION} stack=${STACK} (CloudFormation-deployed)"
 
-echo "[verify] step 1a: install + build cdkd"
+echo "[verify] step 1a: install + build cdk-local"
 (cd "${REPO_ROOT}" && pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
 
@@ -79,9 +80,9 @@ if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION
   exit 1
 fi
 
-echo "[verify] step 3: cdk deploy (upstream CDK CLI, NOT cdkd)"
+echo "[verify] step 3: cdk deploy (upstream CDK CLI)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
-# stack is owned by CloudFormation, not cdkd. The cdk CLI is supplied by
+# stack is owned by CloudFormation, not by any host state store. The cdk CLI is supplied by
 # vp's globally-managed environment (same pattern as
 # import-nested-stack); no per-fixture install round-trip needed since
 # Node's parent-dir resolution finds aws-cdk-lib from the repo root.
@@ -150,7 +151,7 @@ echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
 }
 
 echo "[verify] step 6: cdkl invoke --from-cfn-stack — expect TABLE_NAME=${DEPLOYED_TABLE}"
-# Bare --from-cfn-stack uses the cdkd stack name verbatim as the CFn
+# Bare --from-cfn-stack uses the host stack name verbatim as the CFn
 # stack name — which matches here because the CDK app exports the same
 # name to both.
 RESULT_FROM_CFN=$(invoke_with_retry "${STACK}/EchoTableHandler" --from-cfn-stack --no-pull)

@@ -1,7 +1,7 @@
 import { getLogger } from './logger.js';
 
 /**
- * Base error class for cdkd
+ * Base error class for cdk-local
  */
 export class CdkdError extends Error {
   public readonly code: string;
@@ -586,7 +586,7 @@ export class MacroExpansionError extends CdkdError {
 }
 
 /**
- * Check if error is a cdkd error
+ * Check if error is a cdk-local error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
   return error instanceof CdkdError;
@@ -638,7 +638,7 @@ export function handleError(error: unknown): never {
   // field (PartialFailureError + ResourceUpdateNotSupportedError +
   // StackHasActiveImportsError + LocalMigrateError + MacroExpansionError
   // etc.). Falling back to 1 covers `CdkdError` subclasses with no
-  // override and every non-cdkd error.
+  // override and every non-cdk-local error.
   const customExitCode =
     error instanceof CdkdError ? (error as CdkdError & { exitCode?: number }).exitCode : undefined;
   const exitCode = typeof customExitCode === 'number' ? customExitCode : 1;

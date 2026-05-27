@@ -417,7 +417,7 @@ function parseHttpV2RequestResponse(
  * **within** a single segment, where segments are delimited by `:`
  * (ARN partition / service / region / account) and `/` (path). `**`
  * matches across segment boundaries for callers that need the looser
- * behavior (cdkd-specific extension; no AWS equivalent, useful for
+ * behavior (cdk-local-specific extension; no AWS equivalent, useful for
  * stage-wide rules like `arn:.../prod/**`).
  *
  * Examples:

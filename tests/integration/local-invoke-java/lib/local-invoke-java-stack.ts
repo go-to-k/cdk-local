@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     compiles it inside a Docker JDK container before invoking
  *     `cdk-local synth` so the host doesn't need a JDK installed.
  *   - `InlineHandler` — `CfnFunction` with `Code: { ZipFile: ... }` and
- *     `runtime: java17`. cdkd's local invoke must reject this with the
+ *     `runtime: java17`. cdk-local's local invoke must reject this with the
  *     "use Code.fromAsset" message — Java's Handler shape names a
  *     compiled class, which can't be expressed as a single source file.
  *     Built via the L1 escape hatch because `lambda.Code.fromInline`

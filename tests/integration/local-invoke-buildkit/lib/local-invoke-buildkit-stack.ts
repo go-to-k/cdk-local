@@ -10,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Fixture stack for the comprehensive BuildKit-Dockerfile regression integ.
  *
  * `BuildkitHandler` is built from a Dockerfile that exercises EVERY
- * BuildKit feature this PR newly forwards through cdkd's docker build
+ * BuildKit feature this PR newly forwards through cdk-local's docker build
  * path: `# syntax=docker/dockerfile:1`, multi-stage with `--target`,
  * `ARG` via `--build-arg`, heredocs (`RUN <<EOF`), `RUN --mount=type=cache`,
  * AND `RUN --mount=type=secret` via `--secret`.
@@ -36,7 +36,7 @@ export class LocalInvokeBuildkitStack extends cdk.Stack {
         buildArgs: {
           GREETING_BUILD_ARG: 'compiled-in-from-cdk',
         },
-        // BuildKit `--secret` via cdkd's new `dockerBuildSecrets` forwarding.
+        // BuildKit `--secret` via cdk-local's new `dockerBuildSecrets` forwarding.
         // The Dockerfile's `RUN --mount=type=secret,id=mysecret` reads the
         // file at /run/secrets/mysecret during build only.
         buildSecrets: {

@@ -249,7 +249,7 @@ curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/pin
 # buffers every `responseStream.write(...)` call into one response that
 # arrives at the HTTP client as a single block. This is a RIE limitation
 # (verified empirically against the v1.0 RIE shipped in the base image
-# on 2026-05-22); cdkd's `invokeRieStreaming` correctly parses the
+# on 2026-05-22); cdk-local's `invokeRieStreaming` correctly parses the
 # streaming protocol and pipes the body bytes with `Transfer-Encoding:
 # chunked`, but real incremental delivery only manifests against the
 # deployed Lambda runtime. The integ asserts the protocol shape, not
@@ -293,7 +293,7 @@ for i in 0 1 2 3 4; do
   fi
 done
 # Protocol-shape audit: the response body must NOT contain the literal
-# bytes of the 8-NULL separator — that would mean cdkd's prelude parser
+# bytes of the 8-NULL separator — that would mean cdk-local's prelude parser
 # leaked separator bytes into the body. We grep `chunk-` instead of a
 # binary NULL match because curl's `-i` output is rendered for
 # terminals and may mask NULs; the indirect signal is that the body
@@ -400,7 +400,7 @@ curl_assert "GET /protected (allow)" \
 
 # REST v1 MOCK CORS preflight: the `defaultCorsPreflightOptions` on
 # MyRestApi synthesizes an OPTIONS Method with a MOCK integration on
-# every resource. cdkd's discovery layer captures the literal
+# every resource. cdk-local's discovery layer captures the literal
 # `method.response.header.Access-Control-Allow-*` values from
 # `IntegrationResponses[0].ResponseParameters`; the HTTP server returns
 # them directly on OPTIONS (no Lambda invocation, no VTL evaluation).
@@ -446,7 +446,7 @@ echo "    [GET /v1/unsupported (501)] OK"
 
 # Issue #431: authorizer Lambda Arn unresolvable. The route's
 # AuthorizerUri was overridden in the fixture to a cross-stack-shape
-# Fn::Sub the resolver cannot pin down. cdkd's authorizer-resolver
+# Fn::Sub the resolver cannot pin down. cdk-local's authorizer-resolver
 # flips the route to deferred-error unsupported at boot; the HTTP
 # server returns 501 + reason at request time. The authorizer Lambda
 # is never invoked.

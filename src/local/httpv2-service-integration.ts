@@ -422,7 +422,7 @@ async function dispatchAppConfigGetConfiguration(
   // GetLatestConfiguration via AppConfigData). The legacy operation
   // lives in `@aws-sdk/client-appconfig`, not appconfigdata. We do
   // NOT carry that client in package.json today (not used elsewhere
-  // in cdkd) — surface a clear "package not present" error rather
+  // in cdk-local) — surface a clear "package not present" error rather
   // than depending on it for a single subtype. Adding the dep is a
   // follow-up if real usage emerges.
   void params;

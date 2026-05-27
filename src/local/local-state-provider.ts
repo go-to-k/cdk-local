@@ -5,7 +5,7 @@
  * Two implementations:
  *
  *   - {@link S3LocalStateProvider} (default for `--from-state`) — reads
- *     cdkd's S3 state for stacks deployed via `cdkd deploy`. Same
+ *     the host's S3 state for stacks deployed via `cdkd deploy`. Same
  *     behavior as the pre-issue-#606 code path; the S3 implementation is
  *     a thin wrapper around the existing `loadStateForStack` +
  *     `buildCrossStackResolver` helpers in
@@ -38,7 +38,7 @@ import type { CrossStackResolver } from './state-resolver.js';
 
 /**
  * Result of loading state for a specific (stack, region) pair. The
- * shape is intentionally a strict subset of cdkd's `StackState` so the
+ * shape is intentionally a strict subset of cdk-local's `StackState` so the
  * substituter doesn't depend on schema fields irrelevant to local
  * execution (lock state, version, lastModified, etc.).
  */
@@ -52,7 +52,7 @@ export interface LocalStateRecord {
    */
   resources: Record<string, ResourceState>;
   /**
-   * Stack outputs map. Sourced from cdkd state for the S3 provider and
+   * Stack outputs map. Sourced from the host's state for the S3 provider and
    * from `DescribeStacks.Outputs[]` for the CFn provider. Consumed by
    * `Fn::GetStackOutput` and by the cross-stack resolver when no
    * persistent exports index is available.
@@ -103,7 +103,7 @@ export interface LocalStateProvider {
   load(stackName: string, synthRegion: string | undefined): Promise<LocalStateRecord | undefined>;
   /**
    * Build a cross-stack resolver for `Fn::ImportValue` /
-   * `Fn::GetStackOutput`. The S3 provider reads cdkd's exports index +
+   * `Fn::GetStackOutput`. The S3 provider reads the host's exports index +
    * per-stack state; the CFn provider uses `ListExports` (paginated)
    * for `Fn::ImportValue` and rejects `Fn::GetStackOutput` (cdkd-specific
    * intrinsic — CFn has no equivalent). `consumerRegion` is the

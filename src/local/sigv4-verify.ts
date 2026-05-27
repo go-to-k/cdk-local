@@ -4,7 +4,7 @@
  *
  * # Scope
  *
- * cdkd's `cdkl start-api` runs API Gateway routes locally. When a
+ * cdk-local's `cdkl start-api` runs API Gateway routes locally. When a
  * route declares `AuthorizationType: 'AWS_IAM'`, AWS-deployed API Gateway
  * validates the request's SigV4 signature against the calling identity's
  * IAM permissions. We can't fully reproduce that locally — IAM policy

@@ -20,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  *   - `GET /mock-200` — MOCK integration with a request template that
  *     selects `{"statusCode": 200}` and a response template that
- *     returns `{"source":"mock"}`. Asserts cdkd's MOCK dispatcher
+ *     returns `{"source":"mock"}`. Asserts cdk-local's MOCK dispatcher
  *     (VTL evaluation against an empty input) round-trips correctly.
  *
  *   - `GET /mock-404` — MOCK integration with a request template that

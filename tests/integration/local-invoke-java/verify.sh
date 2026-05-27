@@ -52,7 +52,7 @@ fi
 
 # Test 1 — asset-backed Java Lambda echoes event + env var.
 # Java cold-start in the local container is slow (~10-15s) — the
-# function's Timeout: 30 + cdkd's `invokeTimeoutMs = max(30s, 2 * fn.timeout)`
+# function's Timeout: 30 + cdk-local's `invokeTimeoutMs = max(30s, 2 * fn.timeout)`
 # = 60s provides ample headroom.
 echo "==> [1/3] Invoking EchoHandler with default empty event"
 RESULT_1=$(${CDKL} invoke CdkLocalInvokeJavaFixture/EchoHandler --no-pull 2>/dev/null | tail -1)

@@ -87,7 +87,7 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 }
 
 # Test 3 — startup banner mentions the 3 layer mounts. Combines
-# stdout + stderr (cdkd's `logger.info` writes to stdout via
+# stdout + stderr (cdk-local's `logger.info` writes to stdout via
 # `console.info`; we just want to verify the layer-count line appears
 # somewhere in the cdk-local output) so users know the layer wiring fired.
 echo "==> [3/3] Verifying cdk-local logs the layer count"

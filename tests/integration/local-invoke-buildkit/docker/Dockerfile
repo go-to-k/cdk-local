@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Comprehensive BuildKit-only Dockerfile used by the local-invoke-buildkit
 # integ test. Exercises every BuildKit feature that this PR newly forwards
-# via cdkd's docker build path:
+# via cdk-local's docker build path:
 #   - `# syntax=docker/dockerfile:1` parser directive
 #   - Multi-stage with named stages + `--target` to pick a non-final stage
 #   - `ARG` populated by `--build-arg` from CDK's `dockerBuildArgs`
@@ -10,7 +10,7 @@
 #   - `RUN --mount=type=secret` populated by `--secret` from CDK's
 #     `dockerBuildSecrets`
 #
-# Pre-PR cdkd would fail this build silently (maxBuffer 50 MB) on the
+# Pre-PR cdk-local would fail this build silently (maxBuffer 50 MB) on the
 # BuildKit progress stream OR reject `dockerBuildSecrets` at the type
 # layer. Both paths now work.
 

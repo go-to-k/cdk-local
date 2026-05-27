@@ -538,7 +538,7 @@ export function extractEphemeralStorageMb(
  *      For IMPORTED repositories (literal acct-id / region + `Ref:
  *      AWS::URLSuffix` + literal repo path) the resolver returns a
  *      complete ECR URI here without state. For SAME-STACK references
- *      the resolver needs cdkd state (`--from-state`) to recover the
+ *      the resolver needs the host's state (`--from-state`) to recover the
  *      repository's account-id / region; without state we surface a
  *      clear error pointing the user at `cdkl invoke --from-state`
  *      / `ContainerImage.fromAsset` / a public-image alternative.

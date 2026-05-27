@@ -40,7 +40,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     returns 501 + `reason` body without invoking any Lambda.
  *   - REST v1:     GET /v1/cross-stack-auth (CUSTOM authorizer whose
  *     AuthorizerUri is overridden via `addPropertyOverride` to a
- *     cross-stack-shape `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdkd
+ *     cross-stack-shape `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdk-local
  *     cannot resolve locally) — exercises the authorizer-Lambda-Arn
  *     deferred-501 path added in issue #431. cdk-local boots successfully
  *     with the authorizer-attach failure deferred to request time;
@@ -164,7 +164,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // to deferred-501; post-#505 HTTP_PROXY is first-class so the route
     // started forwarding to example.com (404). Now we use an integration
     // with `Integration.Type: 'AWS'` and a non-Lambda service URI (S3) —
-    // cdkd's REST v1 dispatcher detects the non-`:lambda:path/` marker
+    // cdk-local's REST v1 dispatcher detects the non-`:lambda:path/` marker
     // and surfaces deferred-501 ("non-Lambda service ... not emulated
     // locally in cdk-local v1"). verify.sh asserts the 501 path.
     const unsupported = v1.addResource('unsupported');
@@ -173,7 +173,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // type out of the box, so we use `addPropertyOverride` on the
     // synthesized Method's Integration sub-resource. This produces a CFn
     // `Integration: { Type: 'AWS', Uri: 'arn:aws:apigateway:...:s3:path/...' }`
-    // shape cdkd's REST v1 classifier rejects with the non-Lambda hint.
+    // shape cdk-local's REST v1 classifier rejects with the non-Lambda hint.
     (unsupportedMethod.node.defaultChild as apigw.CfnMethod).addPropertyOverride('Integration', {
       Type: 'AWS',
       IntegrationHttpMethod: 'GET',
@@ -189,7 +189,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // REQUEST authorizer pointing at a same-stack Lambda, then override
     // its synthesized `AuthorizerUri` to a cross-stack-shape
     // `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdk-local cannot resolve
-    // locally. cdkd's authorizer-resolver hits the unresolvable Arn,
+    // locally. cdk-local's authorizer-resolver hits the unresolvable Arn,
     // flips the route to deferred-error unsupported, boot continues,
     // HTTP 501 + reason at request time. The L1 override pattern lets
     // us fixture this without spinning up a separate stack.
@@ -312,7 +312,7 @@ export class LocalStartApiStack extends cdk.Stack {
           // context is plumbed into the parameter-mapping context (#502).
           // The SDK call will fail (missing queue) but the resolved
           // MessageAttributes value rides in on the request so verify.sh
-          // can grep cdkd's log for the substituted value.
+          // can grep cdk-local's log for the substituted value.
           MessageAttributes: cdk.Fn.sub(
             JSON.stringify({
               caller: {
@@ -342,7 +342,7 @@ export class LocalStartApiStack extends cdk.Stack {
     urlHandler.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
     // Streaming Function URL — exercises the RESPONSE_STREAM invoke mode
-    // path added in #467. cdkd's local server detects InvokeMode and
+    // path added in #467. cdk-local's local server detects InvokeMode and
     // routes the request through invokeRieStreaming(), parses the JSON
     // prelude carrying status + headers, and pipes the body chunks to
     // the HTTP client with `Transfer-Encoding: chunked`. The handler

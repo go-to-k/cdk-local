@@ -18,7 +18,7 @@
 # (read via `cloudformation:ListExports`, paginated + memoized).
 #
 # Steps:
-#   1. install + build cdkd (root) + install fixture deps + docker pull
+#   1. install + build cdk-local (root) + install fixture deps + docker pull
 #   2. pre-flight orphan scan for BOTH stacks
 #   3. cdk deploy (producer + consumer, in that order — cdk handles the
 #      ordering automatically from `addDependency`)
@@ -56,7 +56,7 @@ CLI="node ${REPO_ROOT}/dist/cli.js"
 
 echo "[verify] region=${REGION} producer=${PRODUCER_STACK} consumer=${CONSUMER_STACK} export=${EXPORT_NAME}"
 
-echo "[verify] step 1a: install + build cdkd"
+echo "[verify] step 1a: install + build cdk-local"
 (cd "${REPO_ROOT}" && pnpm install)
 (cd "${REPO_ROOT}" && vp run build)
 
@@ -99,7 +99,7 @@ for stack in "${PRODUCER_STACK}" "${CONSUMER_STACK}"; do
   fi
 done
 
-echo "[verify] step 3: cdk deploy producer + consumer (upstream CDK CLI, NOT cdkd)"
+echo "[verify] step 3: cdk deploy producer + consumer (upstream CDK CLI)"
 # CDK CLI deploys in dependency order: producer first, consumer after,
 # so the export exists before the consumer's Fn::ImportValue resolves.
 #
@@ -170,7 +170,7 @@ echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
 }
 
 echo "[verify] step 6: cdkl invoke --from-cfn-stack — expect SHARED_VALUE=${DEPLOYED_VALUE}"
-# Bare --from-cfn-stack uses the cdkd stack name verbatim as the CFn
+# Bare --from-cfn-stack uses the host stack name verbatim as the CFn
 # stack name. The consumer stack carries the Fn::ImportValue, so we
 # point at the consumer; CfnLocalStateProvider then calls list-exports
 # (across the account, not scoped to a specific stack) to resolve the

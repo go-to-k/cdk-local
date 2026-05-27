@@ -23,7 +23,7 @@ export interface ConsumerStackProps extends cdk.StackProps {
  * the env var back so the integ can assert two things:
  *
  *   1. Baseline (no `--from-cfn-stack`): `SHARED_VALUE` is `"unset"`
- *      because cdkd's local-invoke default behavior drops
+ *      because cdk-local's local-invoke default behavior drops
  *      intrinsic-valued env vars (warn-and-drop).
  *   2. With `--from-cfn-stack`: `SHARED_VALUE` equals the producer's
  *      deployed parameter name, proving `Fn::ImportValue` substitution

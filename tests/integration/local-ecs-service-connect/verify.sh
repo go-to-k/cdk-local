@@ -18,7 +18,7 @@
 #      OMIT `hostPort` (cdk-local would otherwise default it to
 #      `containerPort` 8080 and collide on the 2nd replica). Both
 #      replicas reach `orders` via the docker `--add-host` overlay
-#      populated from cdkd's shared registry.
+#      populated from cdk-local's shared registry.
 #
 # Asserts:
 #   - The boot banner reports both services running.
@@ -284,7 +284,7 @@ if ! grep -q "HELLO_ORDERS" <<<"${RESPONSE}"; then
 fi
 echo "    OK: frontend reached orders via the docker --add-host overlay"
 
-echo "==> Sending SIGTERM to cdkd ($(echo $CDKL_PID))"
+echo "==> Sending SIGTERM to cdk-local ($(echo $CDKL_PID))"
 kill -TERM "${CDKL_PID}"
 
 echo "==> Waiting for cdk-local to exit (up to 60s)"
