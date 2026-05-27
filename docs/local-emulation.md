@@ -129,7 +129,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--event-stdin` | off | Read event JSON from stdin (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block applied to every invoke. `null` clears a key. |
 | `--no-pull` | off | Skip `docker pull`. Semantics differ by code path: **ZIP Lambdas** — skip pulling the public Lambda base image. **Container Lambdas, local-build path** — no-op (docker build's default does not refresh the FROM cache). **Container Lambdas, ECR-pull fallback** — skip `docker pull` AND error if the image is not in the local cache (re-run without `--no-pull` or pre-pull manually). |
-| `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkl-local-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkl invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
+| `--no-build` | off | Skip `docker build` on the **Container Lambdas, local-build path** (`Code.ImageUri`). Requires the deterministic `cdkl-invoke-<hash>` tag to already be in the local docker registry from a prior `cdkl invoke` (or manual `docker build`); errors clearly when missing. **No-op for ZIP Lambdas** (no docker build runs there) AND for the **Container Lambdas, ECR-pull fallback** (use `--no-pull` to control that path). Compatible with `--no-pull`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR on the **Container Lambdas, ECR-pull fallback** path. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull`. Required for cross-account pulls when the caller's identity does not already have direct cross-account access. Same-account / same-region pulls do not need this flag; cross-account without the flag falls back to the caller's credentials (succeeds when an IAM resource policy on the ECR repo grants the caller directly, else AWS surfaces `AccessDenied`). No-op when `--no-pull` is set. |
 | `--debug-port <port>` | off | Set `NODE_OPTIONS=--inspect-brk=0.0.0.0:<port>` and publish the port; attach a Node debugger to step through the handler. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
@@ -138,6 +138,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--output <dir>` | `cdk.out` | Output directory for synthesis. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` / `${AWS::URLSuffix}`) in env vars with the deployed physical IDs / exports. Bare form uses the CDK stack name (typical case); pass an explicit value when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery (`--from-cfn-stack`)](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | auto | Region used to construct the CloudFormation client for `--from-cfn-stack`. Defaults to `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` > the synth-derived stack region. |
+| `--layer-role-arn <arn>` | — | Role ARN to assume before calling `lambda:GetLayerVersion` on literal-ARN layer entries. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for the GetLayerVersion call only — the assumed role is NOT propagated into the Lambda container at runtime (that's what `--assume-role` is for). Use this when the layer lives in a different account than the calling identity and direct cross-account access is not granted via the layer's resource policy. |
 
 ### Environment variables
 
@@ -485,7 +486,7 @@ unsupportedness):
 | Synthetic CORS preflight | REST v1 `HttpMethod: OPTIONS` + `Integration.Type: MOCK` + `IntegrationResponses[].ResponseParameters` carries literal `method.response.header.*` pairs (the shape CDK's `defaultCorsPreflightOptions` synthesizes) | Captured at boot. The HTTP server returns the captured status + headers directly on OPTIONS without invoking any Lambda. |
 | Streaming Function URL | `AWS::Lambda::Url` with `InvokeMode: RESPONSE_STREAM` | Dispatched via the RIE streaming protocol: the request goes out with `Lambda-Runtime-Function-Response-Mode: streaming` and the response body's JSON prelude (`{statusCode, headers, cookies?}` + an 8-NULL-byte separator + raw body) is parsed; the body Readable is piped to the HTTP client with `Transfer-Encoding: chunked`. Note: AWS's local RIE buffers the response (verified empirically against `public.ecr.aws/lambda/nodejs:20`), so curl observes the chunks in one block locally even though cdk-local's pipe / chunked-encoding machinery works correctly — real incremental delivery only manifests against the deployed Lambda runtime. |
 | REST v1 non-AWS_PROXY | `Integration.Type` is one of `MOCK` (non-CORS-preflight), `HTTP_PROXY`, `HTTP`, or `AWS` (Lambda non-proxy). | Dispatched via the per-kind handler in [src/local/rest-v1-integrations.ts](../src/local/rest-v1-integrations.ts). MOCK / HTTP / AWS apply VTL request + response templates via the hand-rolled engine at [src/local/vtl-engine.ts](../src/local/vtl-engine.ts). HTTP_PROXY forwards verbatim with `RequestParameters` mappings. AWS Lambda non-proxy uses the same container pool as AWS_PROXY but transforms event payload + response via VTL and routes errors through `IntegrationResponses[].SelectionPattern`. |
-| Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdk-local does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); WebSocket APIs (`ProtocolType: WEBSOCKET`); Function URLs with an unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`); routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
+| Deferred-error unsupported | REST v1 AWS integration targeting a non-Lambda service (`:s3:path/...` / `:sqs:action/...` etc.); HTTP_PROXY / HTTP with a non-literal `Uri` (cdk-local does not resolve Fn::Sub / Fn::Join in HTTP Uris); HTTP API v2 service integrations (`IntegrationSubtype` set); Function URLs with an unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`); routes whose Lambda Arn intrinsic cannot be resolved against the same template (cross-stack / imported references) | Boot continues. The route appears in the route table tagged `[501 Not Implemented]` and a `[warn]` line per route is printed up front. When the route is hit at request time, the HTTP server returns HTTP 501 with `{"message": "Not Implemented", "reason": "<the discovery reason>"}` in the JSON body, without invoking any Lambda. |
 | Hard error | Template-structural problems the discovery layer cannot generate a meaningful route from: missing `Integration` on a Method, non-Ref `RestApiId` / `ApiId`, malformed Route `Target`, ParentId chain failures, missing `PathPart`, unresolvable `TargetFunctionArn` on a Function URL | Boot aborts via `RouteDiscoveryError` with every offending route listed in a single message. |
 
 The deferred-error class lets you run the supported subset of an API
@@ -558,7 +559,7 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters in Lambda env vars with the deployed physical IDs / exports. Bare form uses the CDK stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack (single-stack apps only — see "Multi-stack guard" under `cdkl invoke --from-cfn-stack`). `Fn::GetAtt` is warn-and-dropped in v1. Re-runs against fresh CFn data on every hot-reload firing (`--watch`). DescribeStackResources failures degrade per-stack to warn-and-fall-back so an unreadable stack never aborts the server. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters in Lambda env vars with the deployed physical IDs / exports. Bare form uses the CDK stack name per routed stack; pass an explicit value when one CFn stack should serve a single routed stack (rejected when more than one stack is routed in one invocation; the bare form is fine for multi-stack). `Fn::GetAtt` is warn-and-dropped in v1. Re-runs against fresh CFn data on every hot-reload firing (`--watch`). DescribeStackResources failures degrade per-stack to warn-and-fall-back so an unreadable stack never aborts the server. |
 | `--stack-region <region>` | auto | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
 | `--mtls-truststore <path>` | unset | PEM-encoded CA bundle for client-certificate verification. When set, the server switches from HTTP to HTTPS and the TLS handshake rejects clients whose certificate doesn't chain to one of these CAs. Must be set together with `--mtls-cert` + `--mtls-key`; partial flag sets are rejected. See the "mTLS (mutual TLS)" section below for the openssl recipe + event-shape details. |
 | `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |
@@ -678,9 +679,9 @@ non-AWS_PROXY integrations" section above.
   cap, requests queue.
 - `release()` returns the container to the pool and starts a 60s idle
   timer. Idle GC fires after 60s of inactivity per pool.
-- Containers are named `cdkl-local-<logicalId>-<pid>-<rand>` so an
+- Containers are named `cdkl-<logicalId>-<pid>-<rand>` so an
   external sweep can mop up orphans (`docker ps --filter
-  name=cdkl-local-`).
+  name=cdkl-`).
 
 ### Lambda Layers in `start-api`
 
@@ -703,7 +704,7 @@ Lambda's image once: **local-build** from the `cdk.out` asset manifest
 when the synthesizer produced a matching `dockerImages` entry (then
 `docker build` runs against the recorded build context), or
 **ECR-pull** fallback when no asset matches. The resulting
-deterministic `cdkl-local-invoke-<hash>` tag goes into the warm
+deterministic `cdkl-invoke-<hash>` tag goes into the warm
 container pool; the pool runs `docker run` against it verbatim — no
 `/var/task` bind-mount, no base-image pull, `ImageConfig.Command` /
 `ImageConfig.EntryPoint` / `ImageConfig.WorkingDirectory` /
@@ -943,7 +944,7 @@ default).
 # 1. Create a local CA
 openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout ca-key.pem -out ca.pem \
-  -subj "/CN=cdkl-local-ca" -days 365
+  -subj "/CN=cdkl-ca" -days 365
 
 # 2. Generate a server cert signed by the local CA
 openssl req -newkey rsa:2048 -nodes \
@@ -998,7 +999,6 @@ curl --cacert ca.pem \
 | AWS_IAM authorizer (REST v1 + Function URL) — IAM policy evaluation (resource/action/condition). Signature verification IS implemented on both surfaces. | Out of scope (the local server has no IAM data plane) |
 | REST v1 AWS integration with non-Lambda service backend (`:s3:path/...` / `:sqs:action/...` / `:dynamodb:action/...` / etc.) | Future PR — requires per-service SDK clients, IAM credential threading, and a per-service compatibility matrix. v1 emulates Lambda non-proxy AWS integrations only. |
 | VTL features outside the supported subset (arithmetic outside literal concat, `#macro` / `#parse` / `#include`, range operator, `$velocityCount`, JSONPath filter expressions) | Surface as `VtlEvaluationError` → HTTP 502 + reason body. Hand-roll the missing feature in [src/local/vtl-engine.ts](../src/local/vtl-engine.ts) if a real workload needs it. |
-| WebSocket APIs | Never (different protocol) |
 | Throttling / quotas / usage plans / API keys | Never |
 | Per-Lambda concurrency above 4 | Future PR if a real workload needs it |
 
@@ -1035,7 +1035,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 
 | Flag | Default | Behavior |
 | --- | --- | --- |
-| `--cluster <name>` | `cdkl-local` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
+| `--cluster <name>` | `cdkl` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
@@ -1054,7 +1054,7 @@ Plus the standard shared options: `-a/--app`, `-c/--context`, `--profile`,
 
 For every task invocation cdk-local:
 
-1. Creates a fresh docker network `cdkl-local-task-<random>` (or
+1. Creates a fresh docker network `cdkl-task-<random>` (or
    `--cluster <name>-task-<random>`) with subnet `169.254.170.0/24`.
 2. Starts the AWS-published
    `amazon/amazon-ecs-local-container-endpoints:latest-amd64` sidecar
@@ -1075,7 +1075,7 @@ container still reach public AWS endpoints via the developer network.
 
 1. **Public images** — `public.ecr.aws/...`, `docker.io/...`, `nginx:latest`, etc. → plain `docker pull` (subject to `--no-pull`).
 2. **Direct ECR URIs** — `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` (flat string, no intrinsics) → `pullEcrImage` (STS check + ECR auth + `docker pull`). Cross-account / cross-region supported: cdk-local builds the ECR client for the URI's region and (when `--ecr-role-arn <arn>` is passed) issues `sts:AssumeRole` to gain credentials in the target account. Without `--ecr-role-arn`, cdk-local falls through to the caller's credentials (succeeds when an IAM resource policy grants the caller direct cross-account access).
-3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared asset helper, tagged `cdkl-local-run-task-<asset-hash>`.
+3. **CDK-asset images** (`ContainerImage.fromAsset` / `DockerImageAsset`) → `cdk.out/<stack>.assets.json` lookup → `docker build` via the shared asset helper, tagged `cdkl-run-task-<asset-hash>`.
 
 For `Fn::Sub` / `Fn::GetAtt` shapes pointing at AWS pseudo parameters
 or a same-stack ECR repository (the typical
@@ -1272,7 +1272,7 @@ error.
 
 | Flag | Default | Behavior |
 | --- | --- | --- |
-| `--cluster <name>` | `cdkl-local` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the docker network prefix. Each replica's network appends `-svc-<service>-r<index>` so per-replica networks are easy to identify in `docker ps`. |
+| `--cluster <name>` | `cdkl` | Cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` and reported in the local task ARN. All replicas attach to one shared `cdkl-svc-<rand>` docker network for the lifetime of the CLI invocation; each replica's metadata sidecar binds its own 169.254.&lt;N&gt;.2 IP so per-replica metadata stays distinguishable in `docker ps`. |
 | `--max-tasks <n>` | `3` | Hard cap on local replica count regardless of template `DesiredCount`. Local dev machines should not run an unbounded number of containers; raise this for production-shape workloads only when warranted. |
 | `--restart-policy <p>` | `on-failure` | Restart-on-exit behavior. `on-failure` restarts only on non-zero exit; `always` restarts on every exit (mirrors ECS Service deployment semantics more closely); `none` shuts the affected replica down and runs the service degraded. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `run-task`. |
