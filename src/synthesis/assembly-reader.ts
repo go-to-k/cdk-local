@@ -1,4 +1,7 @@
-import type { CloudFormationStackArtifact } from '@aws-cdk/cloud-assembly-api';
+import {
+  AssetManifestArtifact,
+  type CloudFormationStackArtifact,
+} from '@aws-cdk/cloud-assembly-api';
 import { Toolkit, CdkAppMultiContext } from '@aws-cdk/toolkit-lib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
@@ -172,6 +175,20 @@ function mapStackArtifact(stack: CloudFormationStackArtifact): StackInfo {
   }
   if (stack.terminationProtection !== undefined) {
     info.terminationProtection = stack.terminationProtection;
+  }
+  // Locate the AssetManifestArtifact among the stack's dependencies and
+  // surface its absolute path. Downstream resolvers (`lambda-resolver.ts`,
+  // `ecs-task-resolver.ts`, etc.) read `dirname(assetManifestPath)` to find
+  // the cdk.out directory where every `asset.<hash>` subdirectory lives —
+  // without this, the fallback `process.cwd()` resolves asset directories
+  // against the user's CWD instead of cdk.out, so `cdkl invoke`'s
+  // asset-directory existence check fires a `LocalInvokeResolutionError`
+  // for every Lambda whose code was synthesized as a separate asset.
+  const assetManifest = stack.dependencies.find(
+    (d): d is AssetManifestArtifact => d instanceof AssetManifestArtifact
+  );
+  if (assetManifest) {
+    info.assetManifestPath = assetManifest.file;
   }
   return info;
 }
