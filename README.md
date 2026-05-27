@@ -93,6 +93,11 @@ A local API talking to real AWS — point a frontend at it for end-to-end debugg
 
 ```bash
 cdkl start-api MyStack/MyApi --from-cfn-stack MyStack
+
+# Typical shape — the bare flag auto-resolves to the routed stack's
+# name (here `MyStack`). Pass an explicit value only when the deployed
+# CFn stack name differs from the CDK stack name.
+cdkl start-api MyStack/MyApi --from-cfn-stack
 ```
 
 #### Lambda — `invoke`

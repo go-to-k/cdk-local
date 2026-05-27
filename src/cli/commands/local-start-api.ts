@@ -365,10 +365,39 @@ async function localStartApiCommand(
     // the regular single-stack auto-pick path.
     const cfnStackFallback =
       typeof options.fromCfnStack === 'string' ? options.fromCfnStack : undefined;
-    const targetStacks = pickTargetStacks(stacks, options.stack, cfnStackFallback);
+    // Improvement B: positional target prefix → synth stack inference.
+    // `cdkl start-api MyStack/MyApi` (no `--stack`, no `--from-cfn-stack`)
+    // extracts `MyStack` from the target's `<StackName>/<construct>`
+    // shape and uses it as a third fallback for stack selection. Targets
+    // without a `/` separator (bare logical id) leave this undefined so
+    // the existing single-stack auto-pick path is untouched.
+    const targetStackPrefix =
+      target?.includes('/') === true ? target.slice(0, target.indexOf('/')) : undefined;
+    const targetStacks = pickTargetStacks(
+      stacks,
+      options.stack,
+      cfnStackFallback,
+      targetStackPrefix
+    );
     if (targetStacks.length === 0) {
       throw new Error(
         'No stacks matched. Pass --stack <name> (or --from-cfn-stack <name>) or run from a single-stack app.'
+      );
+    }
+
+    // Improvement A: when the user passed `--from-cfn-stack <explicit>`
+    // AND that value already equals the routed stack's `stackName`, the
+    // explicit value is redundant — the bare-flag form auto-resolves to
+    // the same value. Surface a single info-level tip so the user knows
+    // they can drop the value next time. Skipped on multi-stack runs
+    // (too many edge cases to keep the message useful).
+    const routedStackNames = targetStacks.map((s) => s.stackName);
+    if (
+      shouldEmitFromCfnRedundancyTip(options.fromCfnStack, routedStackNames) &&
+      routedStackNames[0] !== undefined
+    ) {
+      logger.info(
+        `tip: --from-cfn-stack value matches the routed stack name (${routedStackNames[0]}); you can omit the value: \`cdkl start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
       );
     }
 
@@ -1181,14 +1210,19 @@ async function localStartApiCommand(
 export function pickTargetStacks(
   stacks: StackInfo[],
   pattern: string | undefined,
-  cfnStackFallback?: string
+  cfnStackFallback?: string,
+  targetFallback?: string
 ): StackInfo[] {
-  // Explicit `--stack` wins. Otherwise fall back to `--from-cfn-stack
-  // <name>` when supplied with a literal value — CDK apps typically
-  // deploy each stack under its own stack-name, so the same value
-  // identifies the synth target unambiguously without requiring the
-  // user to repeat themselves with `--stack`.
-  const effective = pattern ?? cfnStackFallback;
+  // Resolution chain (first non-empty wins):
+  //   1. `--stack <pattern>`                            (explicit)
+  //   2. `--from-cfn-stack <explicit-name>`             (PR #44)
+  //   3. positional target's stack-name prefix          (PR #45)
+  //      e.g. `cdkl start-api MyStack/MyApi` infers `MyStack`.
+  //
+  // CDK apps typically deploy each synth stack under its own stack-name,
+  // so any of the three values identifies the synth target unambiguously
+  // without the user having to repeat themselves via `--stack`.
+  const effective = pattern ?? cfnStackFallback ?? targetFallback;
   if (effective) {
     return matchStacks(stacks, [effective]);
   }
@@ -1198,8 +1232,30 @@ export function pickTargetStacks(
   // its routes — but for v1 we require an explicit selection so users
   // don't accidentally serve a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name> (or --from-cfn-stack <name>) to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
   );
+}
+
+/**
+ * Decide whether the `--from-cfn-stack <name>` redundancy tip should
+ * fire for the current invocation. Fires only when:
+ *  - `fromCfnStack` is a non-empty STRING (explicit value, not bare `true`)
+ *  - exactly ONE stack is routed
+ *  - the explicit value equals the routed stack's `stackName`
+ *
+ * Extracted as a pure function so it can be unit-tested without booting
+ * the full server. See improvement A in the start-api UX PR.
+ *
+ * @internal exported for unit tests.
+ */
+export function shouldEmitFromCfnRedundancyTip(
+  fromCfnStack: string | boolean | undefined,
+  routedStackNames: readonly string[]
+): boolean {
+  if (typeof fromCfnStack !== 'string') return false;
+  if (fromCfnStack.length === 0) return false;
+  if (routedStackNames.length !== 1) return false;
+  return fromCfnStack === routedStackNames[0];
 }
 
 /**
