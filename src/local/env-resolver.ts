@@ -94,17 +94,23 @@ export function resolveEnvVars(
     applyOverrideMap(resolved, overrides.Parameters);
     // Iterate non-Parameters keys in JSON insertion order so a
     // logical-ID + display-path collision applies later-wins (SAM-compat).
-    // We dedupe against `logicalId === displayPath` so a fallback caller
-    // that passes the logical ID as the display path does not apply the
-    // same map twice.
-    const matchedKeys: string[] = [logicalId];
-    if (displayPath && displayPath !== logicalId) {
-      matchedKeys.push(displayPath);
-    }
+    //
+    // Display-path matching mirrors the prefix rule the rest of cdk-local
+    // uses for `cdkl invoke <target>` (`src/cli/cdk-path.ts`
+    // `resolveCdkPathToLogicalIds`): an override key matches when the
+    // resource's `aws:cdk:path` is exactly that key OR starts with
+    // `key + "/"`. That lets a user write `MyStack/MyFn` (the L2 form
+    // they read from CDK app code, same form `cdkl invoke` accepts) and
+    // have it match the synthesized L1 resource at `MyStack/MyFn/Resource`
+    // — without forcing them to look up the `/Resource` suffix.
     for (const [key, val] of Object.entries(overrides)) {
       if (key === 'Parameters') continue;
-      if (!matchedKeys.includes(key)) continue;
-      if (val && typeof val === 'object') {
+      if (!val || typeof val !== 'object') continue;
+      if (key === logicalId) {
+        applyOverrideMap(resolved, val);
+        continue;
+      }
+      if (displayPath && (displayPath === key || displayPath.startsWith(`${key}/`))) {
         applyOverrideMap(resolved, val);
       }
     }
