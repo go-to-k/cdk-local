@@ -1,5 +1,5 @@
 /**
- * State-driven env-var resolution for `cdkd local invoke --from-state`.
+ * State-driven env-var resolution for `cdkl invoke --from-state`.
  *
  * The PR 1 env-resolver classifies any non-literal env-var value (a CFn
  * intrinsic like `Ref` / `Fn::GetAtt` / `Fn::Sub`) as "unresolved" and
@@ -100,7 +100,7 @@
  * captured at deploy time, unsupported intrinsic in `Fn::Sub`), the key
  * is reported as unresolved and the caller drops it from the env block
  * with a warn. We never throw out of substitution — a bad reference in
- * one env var must not abort the whole `cdkd local invoke` call.
+ * one env var must not abort the whole `cdkl invoke` call.
  */
 
 import type { ResourceState } from '../types/state.js';
@@ -206,7 +206,7 @@ export interface SubstitutionContext {
  *
  * Backward compatible: callers may pass `resources` directly (the
  * pre-PR shape) and the helper will assume `pseudoParameters` is
- * unset — matching the `cdkd local invoke --from-state` v1 contract.
+ * unset — matching the `cdkl invoke --from-state` v1 contract.
  */
 export function substituteAgainstState(
   value: unknown,
@@ -725,7 +725,7 @@ function resolveAny(
  *
  * Callers that don't need cross-stack support should keep using the sync
  * helper. Code paths that wire `--from-state` env / secret substitution
- * (e.g. `cdkd local invoke --from-state`, `cdkd local run-task --from-state`)
+ * (e.g. `cdkl invoke --from-state`, `cdkl run-task --from-state`)
  * route through this async version so a single env-var referencing a
  * cross-stack output is no longer warn-and-dropped.
  */
@@ -1041,8 +1041,8 @@ export function substituteEnvVarsFromState(
  * sees the same "no template value" shape so the warn-and-drop path
  * fires consistently.
  *
- * Closes issue #454 — `cdkd local invoke --from-state` and
- * `cdkd local run-task --from-state` can now resolve cross-stack output
+ * Closes issue #454 — `cdkl invoke --from-state` and
+ * `cdkl run-task --from-state` can now resolve cross-stack output
  * references in env vars / secrets instead of warn-and-dropping them.
  */
 export async function substituteEnvVarsFromStateAsync(

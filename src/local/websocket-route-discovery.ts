@@ -6,7 +6,7 @@ import { resolveLambdaArnIntrinsic } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 
 /**
- * Discovered WebSocket API for `cdkd local start-api`.
+ * Discovered WebSocket API for `cdkl start-api`.
  *
  * AWS WebSocket APIs use a fundamentally different model from HTTP APIs:
  * routes are keyed by an opaque `RouteKey` string (`$connect`,
@@ -152,7 +152,7 @@ export function discoverWebSocketApisOrThrow(
   const { apis, errors } = discoverWebSocketApis(stacks);
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkd local start-api: ${errors.length} malformed WebSocket API(s) in the synthesized template:\n` +
+      `cdkl start-api: ${errors.length} malformed WebSocket API(s) in the synthesized template:\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }
@@ -192,7 +192,7 @@ function discoverOneApi(
   // Scan for non-NONE AuthorizationType on any Route belonging to
   // this API. If found, tag the whole API as unsupported — the CLI
   // attach loop will skip it (no upgrade accepted) and surface the
-  // affected routes as a startup warn. cdkd v1 does NOT emulate
+  // affected routes as a startup warn. cdkl v1 does NOT emulate
   // WebSocket authorizers; silently admitting an unauthenticated
   // client would be a security gap that diverges from
   // AWS-deployed behavior. Full authorizer support (wire
@@ -202,7 +202,7 @@ function discoverOneApi(
   const unsupported =
     authRoutes.length > 0
       ? {
-          reason: `WebSocket API requires authorizer support, which cdkd v1 does not emulate. Affected route(s): ${authRoutes
+          reason: `WebSocket API requires authorizer support, which cdkl v1 does not emulate. Affected route(s): ${authRoutes
             .map((r) => `${r.routeKey} [AuthorizationType=${r.authorizationType}]`)
             .join(
               ', '
@@ -282,7 +282,7 @@ function collectAuthRoutesForApi(
 function assertSupportedSelectionExpression(expr: string, declaredAt: string): void {
   if (!/^\$request\.body(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(expr)) {
     throw new Error(
-      `${declaredAt}: RouteSelectionExpression '${expr}' is not supported in cdkd local start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
+      `${declaredAt}: RouteSelectionExpression '${expr}' is not supported in cdkl start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
     );
   }
 }
@@ -367,7 +367,7 @@ function collectRoutesForApi(
       throw new Error(
         `${declaredAt}: WebSocket route IntegrationType '${String(
           integrationType
-        )}' is not supported in cdkd local start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
+        )}' is not supported in cdkl start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
       );
     }
 

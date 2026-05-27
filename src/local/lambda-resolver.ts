@@ -8,7 +8,7 @@ import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intri
 import { stringifyValue } from '../utils/stringify.js';
 
 /**
- * Result of resolving a `cdkd local invoke <target>` argument back to a
+ * Result of resolving a `cdkl invoke <target>` argument back to a
  * concrete Lambda function in the synthesized assembly.
  *
  * Discriminated union (PR 5, D5.3): `kind === 'zip'` for traditional
@@ -331,7 +331,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     }
     throw new LocalInvokeResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not a Lambda function. ` +
-        `cdkd local invoke only works on AWS::Lambda::Function resources in v1.`
+        `cdkl invoke only works on AWS::Lambda::Function resources in v1.`
     );
   }
 
@@ -469,7 +469,7 @@ function extractLambdaProperties(
  * `cdk.Size.gibibytes(N)` serializes to `N * 1024`. AWS-side range is
  * 512..10240 MiB (the deployed function rejects anything outside that
  * range at create time); cdkd rejects > 10240 here so a misconfigured
- * template fails fast at `cdkd local invoke` boot rather than hanging
+ * template fails fast at `cdkl invoke` boot rather than hanging
  * on a `docker run` that AWS would have refused anyway. The 512 floor
  * is AWS's minimum (the default when `EphemeralStorage` is omitted is
  * also 512), but we deliberately accept values DOWN to 1 so users can
@@ -540,7 +540,7 @@ export function extractEphemeralStorageMb(
  *      complete ECR URI here without state. For SAME-STACK references
  *      the resolver needs cdkd state (`--from-state`) to recover the
  *      repository's account-id / region; without state we surface a
- *      clear error pointing the user at `cdkd local invoke --from-state`
+ *      clear error pointing the user at `cdkl invoke --from-state`
  *      / `ContainerImage.fromAsset` / a public-image alternative.
  *
  * Throws `LocalInvokeResolutionError` for `Fn::Join` shapes the resolver
@@ -582,7 +582,7 @@ function extractImageUri(
       if (joinResolved.kind === 'needs-state') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-            'cdkd local invoke cannot resolve the repository URI without state — ' +
+            'cdkl invoke cannot resolve the repository URI without state — ' +
             'deploy the stack first (so cdkd records the repository physical id), ' +
             'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
@@ -590,7 +590,7 @@ function extractImageUri(
       if (joinResolved.kind === 'unsupported-join') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
-            'cdkd local invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
+            'cdkl invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
@@ -602,7 +602,7 @@ function extractImageUri(
         ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
         : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkd local invoke cannot resolve${accountIdHint}. ` +
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkl invoke cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
@@ -655,7 +655,7 @@ function extractImageLambdaProperties(args: {
     else {
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          'cdkd local invoke supports x86_64 and arm64.'
+          'cdkl invoke supports x86_64 and arm64.'
       );
     }
   }
@@ -701,7 +701,7 @@ function resolveAssetCodePath(
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
       `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ` +
-        'cdkd local invoke needs this hint to find the local asset directory. ' +
+        'cdkl invoke needs this hint to find the local asset directory. ' +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
   }

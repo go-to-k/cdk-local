@@ -2,7 +2,7 @@ import * as chokidar from 'chokidar';
 import { getLogger } from '../utils/logger.js';
 
 /**
- * Debounced file watcher used by `cdkd local start-api --watch`
+ * Debounced file watcher used by `cdkl start-api --watch`
  * (PR 8c, issue #235).
  *
  * Wraps {@link chokidar.watch} with a 500ms debounce window so a single

@@ -1,5 +1,5 @@
 /**
- * TTL-aware authorizer-result cache for `cdkd local start-api` (PR 8b).
+ * TTL-aware authorizer-result cache for `cdkl start-api` (PR 8b).
  *
  * AWS API Gateway caches authorizer results per `(authorizer, identity)`
  * tuple to avoid invoking the Lambda / re-verifying the JWT on every

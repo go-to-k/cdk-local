@@ -2,9 +2,9 @@ import type { RouteWithAuth } from './authorizer-resolver.js';
 
 /**
  * One group of routes that share a single API surface — and therefore
- * a single local HTTP server in `cdkd local start-api` (issue #260).
+ * a single local HTTP server in `cdkl start-api` (issue #260).
  *
- * Pre-PR `cdkd local start-api` lumped every discovered API into one
+ * Pre-PR `cdkl start-api` lumped every discovered API into one
  * HTTP server on one port. That broke realistic CDK apps with multiple
  * APIs (e.g. an admin API with Cognito auth and a public API with no
  * auth): authorizers, CORS configs, and stage variables are all
@@ -150,7 +150,7 @@ export function groupRoutesByServer(routes: readonly RouteWithAuth[]): ApiServer
 /**
  * Filter the route list to a single API by user-supplied identifier.
  *
- * Accepts four input forms — matches the rest of the `cdkd local *`
+ * Accepts four input forms — matches the rest of the `cdkl *`
  * target-resolution family (`local invoke <target>` /
  * `local run-task <target>`) for consistency:
  *

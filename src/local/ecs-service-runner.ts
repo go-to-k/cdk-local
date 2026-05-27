@@ -94,7 +94,7 @@ export interface ServiceRunnerOptions {
 
 /**
  * Shared Cloud Map state across all services run in one
- * `cdkd local start-service` invocation. The CLI builds this once and
+ * `cdkl start-service` invocation. The CLI builds this once and
  * threads the same object into every `startEcsService` call so peer
  * services discover each other through the shared `registry`.
  */
@@ -225,8 +225,8 @@ export const SUBNET_ALLOCATOR_RANGE = 83;
  * Defensive per-replica subnet octet allocator (Issue #544). Only used
  * when callers bypass the CLI's `sharedNetwork` construction — i.e.
  * test paths that hand-build `ServiceRunnerOptions.discovery` without
- * `sharedNetwork`, or the bare `cdkd local run-task`-shaped path that
- * runs one network per task. Production `cdkd local start-service`
+ * `sharedNetwork`, or the bare `cdkl run-task`-shaped path that
+ * runs one network per task. Production `cdkl start-service`
  * runs always go through the shared network (design § 5 Option A) so
  * this allocator is unreachable in the standard path.
  *

@@ -1,5 +1,5 @@
 /**
- * REST v1 non-AWS_PROXY integration dispatchers for `cdkd local start-api`
+ * REST v1 non-AWS_PROXY integration dispatchers for `cdkl start-api`
  * (#457).
  *
  * Five integration kinds are supported:
@@ -841,7 +841,7 @@ export function classifyInternalHost(host: string): string | undefined {
  * Emit a `logger.warn` line for each HTTP / HTTP_PROXY integration
  * whose `Integration.Uri` parses to a hostname classified as internal
  * by `classifyInternalHost`. Called once at server boot from
- * `cdkd local start-api`'s discovery pass; per-route deduplicated.
+ * `cdkl start-api`'s discovery pass; per-route deduplicated.
  *
  * cdkd does NOT block the URI — this is a developer-loop tool, not a
  * security boundary, and warn-and-proceed matches the precedent set by

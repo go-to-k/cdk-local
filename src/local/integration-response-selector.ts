@@ -1,5 +1,5 @@
 /**
- * `IntegrationResponses[]` selection logic for `cdkd local start-api`'s
+ * `IntegrationResponses[]` selection logic for `cdkl start-api`'s
  * REST v1 non-AWS_PROXY integrations (#457).
  *
  * AWS API Gateway picks one `IntegrationResponses[]` entry per call to
@@ -60,7 +60,7 @@ export interface IntegrationResponseEntry {
    *   - `"integration.response.header.<name>"` (mapped from backend header).
    *   - `"context.<field>"` (mapped from `$context`).
    *
-   * cdkd v1 supports the single-quoted literal form. Mapping expressions
+   * cdkl v1 supports the single-quoted literal form. Mapping expressions
    * surface a warn and are skipped (rather than silently producing an
    * empty header — AWS gives a defined-but-unhelpful header on local
    * mismatches, which we don't want to mimic).
@@ -199,7 +199,7 @@ function parseStatus(raw: unknown, fallback: number): number {
  * AWS format: keys are `method.response.header.<HeaderName>`; values
  * are `'literal'` (with single quotes) or mapping expressions
  * (`integration.response.body.X` / `integration.response.header.X` /
- * `context.X`). cdkd v1 supports the literal form only.
+ * `context.X`). cdkl v1 supports the literal form only.
  *
  * PR #511 review fix-back: header names are lowercased here so the
  * returned map shares the same key namespace as the dispatcher's
@@ -242,7 +242,7 @@ export function evaluateResponseParameters(
     opts.onUnsupported?.(
       key,
       value,
-      `ResponseParameter value '${value}' is a mapping expression (integration.response.* / context.*) which cdkd local start-api does not emulate. Only single-quoted literals are honored.`
+      `ResponseParameter value '${value}' is a mapping expression (integration.response.* / context.*) which cdkl start-api does not emulate. Only single-quoted literals are honored.`
     );
   }
   return out;

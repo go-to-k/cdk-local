@@ -9,8 +9,8 @@ import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
- * ECR pull fallback for `cdkd local invoke` / `cdkd local start-api` /
- * `cdkd local run-task`. When the image URI resolves to an ECR repo but
+ * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
+ * `cdkl run-task`. When the image URI resolves to an ECR repo but
  * doesn't match any cdk.out asset (typical when invoking a stack
  * deployed elsewhere or sharing a centralized registry), cdkd
  * authenticates against the target registry and runs `docker pull`.
@@ -113,7 +113,7 @@ interface TempCredentials {
  * between two `local invoke` calls in the same process must re-issue.
  *
  * NOT cleared on process exit — Node's module scope evaporates with the
- * process, and no inter-process sharing is desired (each `cdkd local invoke`
+ * process, and no inter-process sharing is desired (each `cdkl invoke`
  * is its own isolated runtime).
  */
 const ASSUMED_ROLE_CACHE = new Map<string, TempCredentials>();
@@ -166,7 +166,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   if (!parsed) {
     throw new LocalInvokeBuildError(
       `Image URI '${imageUri}' is not an ECR URI. ` +
-        'cdkd local invoke v1 only authenticates against ECR for the deployed-image fallback path.'
+        'cdkl invoke v1 only authenticates against ECR for the deployed-image fallback path.'
     );
   }
 

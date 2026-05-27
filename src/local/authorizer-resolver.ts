@@ -7,7 +7,7 @@ import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic
 import { pickRefLogicalId } from './intrinsic-utils.js';
 
 /**
- * Authorizer detection for `cdkd local start-api` (PR 8b of #224).
+ * Authorizer detection for `cdkl start-api` (PR 8b of #224).
  *
  * The route-discovery layer now collects an optional {@link AuthorizerInfo}
  * for each route whose `AuthorizationType` references an authorizer
@@ -282,12 +282,12 @@ export function resolveRestV1Authorizer(
   // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` /
   // `AWS::ApiGatewayV2::DomainName` resource via `MutualTlsAuthentication`,
   // also not via Authorizer; cdkd supports it via the `--mtls-truststore`
-  // / `--mtls-cert` / `--mtls-key` CLI flags on `cdkd local start-api`,
+  // / `--mtls-cert` / `--mtls-key` CLI flags on `cdkl start-api`,
   // and the TLS handshake itself enforces the client-cert trust check,
   // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS
   // authorizers.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkd local start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkl start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 
@@ -365,7 +365,7 @@ export function resolveHttpApiAuthorizer(
   }
 
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.AuthorizerType '${String(authType)}' is not supported by cdkd local start-api (only REQUEST / JWT).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.AuthorizerType '${String(authType)}' is not supported by cdkl start-api (only REQUEST / JWT).`
   );
 }
 
@@ -420,7 +420,7 @@ class AuthorizerLambdaUnresolvableError extends RouteDiscoveryError {
  * On an unresolvable intrinsic throws {@link AuthorizerLambdaUnresolvableError}
  * (caught by `attachAuthorizers` and converted into a per-route
  * deferred-501) instead of the generic `RouteDiscoveryError`, so
- * `cdkd local start-api` can boot against an app with a cross-stack
+ * `cdkl start-api` can boot against an app with a cross-stack
  * authorizer Lambda — symmetric with the route-level `IntegrationUri`
  * unresolvable case (issue #431).
  */
@@ -581,7 +581,7 @@ function pickStringFromArn(value: unknown, location: string): string {
         const logicalId = arg[0];
         getLogger().warn(
           `${location}: uses Fn::GetAtt against logical ID '${logicalId}'. ` +
-            `cdkd local start-api cannot resolve the deployed user pool ARN — synthesizing ` +
+            `cdkl start-api cannot resolve the deployed user pool ARN — synthesizing ` +
             `an unreachable placeholder so JWKS pass-through admits every token. ` +
             `For real signature verification, set 'providerArns: [pool.userPoolArn]' explicitly on the CDK construct.`
         );
@@ -590,7 +590,7 @@ function pickStringFromArn(value: unknown, location: string): string {
         // is supposed to 404 so the pass-through path is the only outcome.
         // The pool id is namespaced with the logical id so the warn line is
         // easy to grep back to the offending authorizer if multiple coexist.
-        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdkdplaceholder${logicalId}`;
+        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdklplaceholder${logicalId}`;
       }
     }
   }
@@ -700,7 +700,7 @@ export function attachAuthorizers(
 
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkd local start-api: ${errors.length} authorizer error(s):\n` +
+      `cdkl start-api: ${errors.length} authorizer error(s):\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }

@@ -28,12 +28,12 @@ import {
 const execFileAsync = promisify(execFile);
 
 /**
- * Top-level orchestrator for `cdkd local run-task`. Coordinates image
+ * Top-level orchestrator for `cdkl run-task`. Coordinates image
  * preparation, secret resolution, docker-network bring-up, container
  * boot in `dependsOn` order, log streaming, exit propagation, and
  * teardown. Designed to be called from the CLI with an idempotent
  * `cleanup()` hook hoisted in the caller so SIGINT and the outer finally
- * share teardown semantics with `cdkd local invoke`.
+ * share teardown semantics with `cdkl invoke`.
  */
 
 export class EcsTaskRunnerError extends Error {
@@ -127,7 +127,7 @@ export interface RunEcsTaskOptions {
   /**
    * Pre-existing docker network + sidecar to reuse instead of letting
    * the runner create a fresh per-task one. Set by the
-   * `cdkd local start-service` CLI which creates ONE shared network at
+   * `cdkl start-service` CLI which creates ONE shared network at
    * the start of the run (per design doc § 5 Option A — peer services
    * can reach each other by IP without docker `network connect`
    * choreography). When this option is supplied, `runEcsTask`:
@@ -151,7 +151,7 @@ export interface RunEcsTaskOptions {
    * container that declared the matching `PortMappings[].Name`, not
    * to every container in the task.
    *
-   * Used by `cdkd local start-service` Option A (shared docker
+   * Used by `cdkl start-service` Option A (shared docker
    * network) so peers can reach this service by its Service Connect
    * `<discoveryName>` short-form / ClientAlias / fqdn via docker's
    * built-in DNS server — without depending on a separate Cloud Map
@@ -237,7 +237,7 @@ export async function cleanupEcsRun(
   // networks (the docs spell out that `--keep-running` only spares
   // user containers — the network + sidecar would otherwise leak
   // across runs). Caller-owned (shared) networks survive per-task
-  // cleanup — `cdkd local start-service` tears down ONCE at the end
+  // cleanup — `cdkl start-service` tears down ONCE at the end
   // of the run after every replica has been cleaned up.
   if (state.network && !state.network.ownedByCaller) {
     await destroyTaskNetwork(state.network);
@@ -309,7 +309,7 @@ export async function runEcsTask(
   // for runner-owned networks, but caller-owned (shared) networks survive
   // per-task cleanup.
   if (options.existingNetwork) {
-    // Option A (design § 5) — `cdkd local start-service` creates one
+    // Option A (design § 5) — `cdkl start-service` creates one
     // shared network at the start of the run; every replica reuses it.
     // The runner marks the state's network as caller-owned so
     // `cleanupEcsRun()` skips teardown (only the CLI tears down once).
@@ -816,7 +816,7 @@ interface BuildDockerRunArgs {
   sidecarIp?: string;
   /**
    * Issue #585 — when true, omit EVERY `-p <hostPort>:<containerPort>`
-   * flag. Set by `cdkd local start-service` for multi-replica services
+   * flag. Set by `cdkl start-service` for multi-replica services
    * so the 2nd+ replica does not collide on a shared host port (see the
    * matching field on {@link RunEcsTaskOptions} for the full rationale).
    */
@@ -832,7 +832,7 @@ interface BuildDockerRunArgs {
   /**
    * Issue #460 / design § 5 Option A — extra `--network-alias <alias>`
    * values the runner adds to the `docker run` invocation. Used by
-   * `cdkd local start-service` shared-network mode so peers can reach
+   * `cdkl start-service` shared-network mode so peers can reach
    * this container by its Service Connect discoveryName / ClientAlias
    * / fqdn via docker's built-in DNS server. The container's
    * `--name`-derived alias is ALWAYS added (line 813); these are

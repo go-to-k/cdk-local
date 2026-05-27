@@ -11,7 +11,7 @@ import { EcsTaskResolutionError } from './ecs-task-resolver.js';
  *     `<discoveryName>.<namespace>` DNS lookups) is.
  *   - Which `AWS::ServiceDiscovery::Service` entries the user
  *     templated, what namespace they belong to, and what discovery
- *     name they register under. (`cdkd local start-service` then
+ *     name they register under. (`cdkl start-service` then
  *     registers each replica of the ECS Service that has this as a
  *     `ServiceRegistry` target into the matching namespace + discovery
  *     name.)
@@ -43,7 +43,7 @@ export interface ResolvedCloudMapService {
   /** Service name, e.g. `orders`. */
   name: string;
   /**
-   * DNS record types declared by the user. cdkd v1 emits the same
+   * DNS record types declared by the user. cdkl v1 emits the same
    * `--add-host` mapping regardless of A vs SRV — both round-trip to
    * a single IP per consumer in the docker overlay (SRV record port
    * routing requires the DNS-sidecar option deferred from §6). The
@@ -99,7 +99,7 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
       throw new EcsTaskResolutionError(
         `Stack ${stack.stackName}: AWS::ServiceDiscovery::PublicDnsNamespace '${logicalId}' ` +
           'is not supported by local emulation — public DNS defeats the "local" point. ' +
-          'Use a PrivateDnsNamespace for cdkd local start-service.'
+          'Use a PrivateDnsNamespace for cdkl start-service.'
       );
     }
     if (resource.Type === 'AWS::ServiceDiscovery::HttpNamespace') {

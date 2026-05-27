@@ -2,7 +2,7 @@ import { getLogger } from '../utils/logger.js';
 
 /**
  * Phase 3 of #262 (Issue #460) — in-process Cloud Map / Service Connect
- * service registry consumed by `cdkd local start-service` to surface a
+ * service registry consumed by `cdkl start-service` to surface a
  * single shared discovery table across multiple services and their
  * replicas.
  *

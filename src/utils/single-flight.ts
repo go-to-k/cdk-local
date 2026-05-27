@@ -2,8 +2,8 @@
  * Memoize an async cleanup function so concurrent / repeated callers
  * await the SAME underlying invocation instead of issuing parallel runs.
  *
- * Motivating use case: long-running CLI commands (`cdkd local invoke`,
- * `cdkd local start-api`, `cdkd local run-task`) wire the same cleanup
+ * Motivating use case: long-running CLI commands (`cdkl invoke`,
+ * `cdkl start-api`, `cdkl run-task`) wire the same cleanup
  * helper to BOTH a `process.on('SIGINT', ...)` handler AND an outer
  * `try`/`finally`. A ^C that lands during normal unwind would otherwise
  * race two cleanup runs against shared mutable state (container IDs,

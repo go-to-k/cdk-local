@@ -9,7 +9,7 @@ import type {
 import { buildIdentityHash } from './authorizer-resolver.js';
 
 /**
- * Lambda authorizer (TOKEN + REQUEST) invocation for `cdkd local start-api`.
+ * Lambda authorizer (TOKEN + REQUEST) invocation for `cdkl start-api`.
  *
  * Both flavors invoke the authorizer Lambda via the same warm container
  * pool the route handlers use, then parse the response into a

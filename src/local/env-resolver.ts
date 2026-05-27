@@ -1,6 +1,6 @@
 /**
  * Resolve a Lambda function's `Properties.Environment.Variables` for
- * `cdkd local invoke`.
+ * `cdkl invoke`.
  *
  * Per the issue scope, v1 supports **literal values only**. Intrinsic
  * functions (`Ref` / `Fn::GetAtt` / `Fn::Sub` / etc.) in env vars are

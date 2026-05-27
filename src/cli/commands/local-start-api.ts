@@ -547,7 +547,7 @@ async function localStartApiCommand(
 
   /**
    * Helper: build a {@link ContainerPool} from a spec map and tag it
-   * with the spec map (via the non-enumerable `__cdkdSpecs` property)
+   * with the spec map (via the non-enumerable `__cdklSpecs` property)
    * so the reload orchestrator can compute spec diffs.
    */
   const buildPool = (specs: Map<string, ContainerSpec>): ContainerPool => {
@@ -555,7 +555,7 @@ async function localStartApiCommand(
       perLambdaConcurrency,
       skipPull: options.pull === false,
     });
-    Object.defineProperty(pool, '__cdkdSpecs', {
+    Object.defineProperty(pool, '__cdklSpecs', {
       value: specs,
       enumerable: false,
       configurable: true,
@@ -754,7 +754,7 @@ async function localStartApiCommand(
 
   for (const api of initialWsApis) {
     // Skip APIs flagged unsupported at discovery — typical cause is a
-    // non-NONE `AuthorizationType` on `$connect` (cdkd v1 does not
+    // non-NONE `AuthorizationType` on `$connect` (cdkl v1 does not
     // emulate WebSocket authorizers; admitting unauthenticated clients
     // would diverge from AWS-deployed behavior). The warn fired above
     // names the affected routes; here we just skip the attach loop so
@@ -2413,7 +2413,7 @@ function warnUnsupportedRoutes(
  * these APIs, so no upgrade requests are ever accepted on them —
  * mirrors `warnUnsupportedRoutes`'s shape but for the WebSocket axis.
  * Typical trigger: a Route declaring `AuthorizationType !== 'NONE'` on
- * `$connect` (cdkd v1 does not emulate WebSocket authorizers; closing
+ * `$connect` (cdkl v1 does not emulate WebSocket authorizers; closing
  * this gap structurally rather than silently admitting
  * unauthenticated clients matches the security-by-default precedent
  * PR #514 set for HTTP API v2 service integrations).
