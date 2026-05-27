@@ -9,17 +9,22 @@ Run AWS CDK stacks locally with Docker. A native, CDK-first alternative to `sam 
 - **Two execution modes** — standalone (no AWS deployment), or bound to a deployed stack to inject real ARNs / Secrets / IAM credentials.
 - **No AWS emulator required** — your Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
 
-## How is this different from aws-cdk-local / LocalStack?
+## What runs locally, what doesn't
 
-`cdk-local` and [`aws-cdk-local`](https://github.com/localstack/aws-cdk-local) solve **different problems** — they're complementary, not competing:
+cdk-local runs your **application compute** locally in Docker, using your CDK app as the source of truth. It does NOT emulate AWS managed services.
 
-| Tool | What it is | Lambda code runs where? | Backing AWS APIs |
-|------|------------|-------------------------|------------------|
-| `aws-cdk-local` (`cdklocal`) | CDK CLI wrapper that deploys your CDK stack to a LocalStack server | Inside LocalStack's Lambda emulator | LocalStack's emulated AWS APIs |
-| **`cdk-local` (`cdkl`)** | **CDK-native invoke / start-api / run-task — runs your actual code in Docker** | **Real `public.ecr.aws/lambda/*` container via RIE** | **Real AWS** (via `--assume-role` / `--from-cfn-stack`) or no AWS at all |
-| `sam local` | SAM CLI's local invoke for SAM-template apps | Real Lambda base image via RIE | Real AWS or none |
+**Runs locally (application compute):**
 
-If you want to deploy your CDK stack to LocalStack for end-to-end emulation, use `aws-cdk-local`. If you want to iterate on Lambda code, debug an API Gateway route, or run an ECS task locally — using **real AWS data and real IAM permissions** (or no AWS at all) — use `cdk-local`. Many projects benefit from both.
+- **Lambda functions** — your code in a real `public.ecr.aws/lambda/*` container via the Lambda Runtime Interface Emulator
+- **API Gateway** — REST v1 / HTTP v2 / Function URL / WebSocket served by a local HTTP server
+- **ECS** — tasks and services as real Docker containers (awsvpc / Service Connect / Cloud Map registry)
+- **Authorizers** — Lambda authorizers, Cognito User Pool JWT verification, IAM SigV4 verification
+
+**Calls real AWS (managed services):**
+
+- DynamoDB / S3 / Secrets Manager / SSM / SNS / SQS / Kinesis / EventBridge / Step Functions / etc.
+- Your Lambda code talks to real AWS via your IAM credentials (`--assume-role` or `--from-cfn-stack` to bind to a deployed stack)
+- If you want offline emulation of managed services, pair cdk-local with a service emulator like LocalStack — cdk-local does not bundle one.
 
 ## Install
 
