@@ -2,7 +2,7 @@
 
 Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. Run it with no AWS account, or bind it to your deployed stack to hit real AWS resources and data. A native, CDK-first alternative to `sam local`.
 
-![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
+![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
 
 ## Why cdk-local
 
@@ -64,6 +64,8 @@ Invoke a single Lambda function with an event payload.
 cdkl invoke MyStack/MyFunction --event ./event.json
 ```
 
+![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
+
 #### API Gateway — `start-api`
 
 Serve your API Gateway routes (REST v1 / HTTP v2 / Function URL / WebSocket) on a local HTTP server.
@@ -118,6 +120,21 @@ cdkl start-service MyStack/MyService --from-cfn-stack MyStack
 ```
 
 Use this for production debugging, integration verification with real AWS resources, and validating real IAM permissions before deploy.
+
+## `--watch` (hot reload)
+
+Pass `--watch` to `cdkl start-api` and the server hot-reloads when your CDK app's synth output (or any routed Lambda's asset directory) changes:
+
+```bash
+cdkl start-api MyStack/MyApi --watch
+```
+
+- 500 ms debounced [chokidar](https://github.com/paulmillr/chokidar) file watcher on `cdk.out/` + every routed Lambda's asset dir.
+- Re-synths and re-discovers routes on each firing — adding a new route to your CDK app shows up locally on save.
+- Synth failures keep the previous version serving (warn-and-continue, never crashes the server).
+- Compatible with `--from-cfn-stack`: each reload re-reads the deployed CloudFormation stack so a deploy event picks up new ARNs without restarting the server.
+
+See [docs/local-emulation.md](docs/local-emulation.md#hot-reload---watch) for the full lifecycle, file-list update semantics, and known limitations.
 
 ## Override env vars without a state source
 
