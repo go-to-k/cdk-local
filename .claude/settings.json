@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/branch-gate.sh",
+            "if": "Bash(git commit*) or Bash(git push*) or Bash(git -C * commit*) or Bash(git -C * push*) or Bash(cd * && git commit*) or Bash(cd * && git push*)",
+            "timeout": 10,
+            "statusMessage": "Checking current branch..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking commit message form..."
+          }
+        ]
+      }
+    ]
+  }
+}
