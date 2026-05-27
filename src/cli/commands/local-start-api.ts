@@ -357,9 +357,19 @@ async function localStartApiCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    const targetStacks = pickTargetStacks(stacks, options.stack);
+    // When the user passes an explicit `--from-cfn-stack <name>` AND has
+    // not also passed `--stack`, infer the synth target from the CFn
+    // stack name — typical CDK apps deploy each stack under its own
+    // stack-name, so the same value selects the synth target unambiguously.
+    // `--from-cfn-stack` without a value (bare flag => `true`) is left to
+    // the regular single-stack auto-pick path.
+    const cfnStackFallback =
+      typeof options.fromCfnStack === 'string' ? options.fromCfnStack : undefined;
+    const targetStacks = pickTargetStacks(stacks, options.stack, cfnStackFallback);
     if (targetStacks.length === 0) {
-      throw new Error('No stacks matched. Pass --stack <name> or run from a single-stack app.');
+      throw new Error(
+        'No stacks matched. Pass --stack <name> (or --from-cfn-stack <name>) or run from a single-stack app.'
+      );
     }
 
     const routes = discoverRoutes(targetStacks);
@@ -1167,9 +1177,20 @@ async function localStartApiCommand(
  * of stacks the route-discovery walks. Mirrors the deploy/diff matcher
  * routing rules.
  */
-function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): StackInfo[] {
-  if (pattern) {
-    return matchStacks(stacks, [pattern]);
+/** @internal exported for unit tests. */
+export function pickTargetStacks(
+  stacks: StackInfo[],
+  pattern: string | undefined,
+  cfnStackFallback?: string
+): StackInfo[] {
+  // Explicit `--stack` wins. Otherwise fall back to `--from-cfn-stack
+  // <name>` when supplied with a literal value — CDK apps typically
+  // deploy each stack under its own stack-name, so the same value
+  // identifies the synth target unambiguously without requiring the
+  // user to repeat themselves with `--stack`.
+  const effective = pattern ?? cfnStackFallback;
+  if (effective) {
+    return matchStacks(stacks, [effective]);
   }
   if (stacks.length === 1) return stacks;
   if (stacks.length === 0) return [];
@@ -1177,7 +1198,7 @@ function pickTargetStacks(stacks: StackInfo[], pattern: string | undefined): Sta
   // its routes — but for v1 we require an explicit selection so users
   // don't accidentally serve a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name> to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack <name> (or --from-cfn-stack <name>) to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
   );
 }
 

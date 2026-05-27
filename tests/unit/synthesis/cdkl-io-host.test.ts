@@ -3,12 +3,12 @@ import { CdklIoHost } from '../../../src/synthesis/cdkl-io-host.js';
 
 describe('CdklIoHost', () => {
   it('downgrades CDK_ASSEMBLY_E1002 (CDK app stderr line) from error to info level', async () => {
-    const host = new CdklIoHost();
-    const spy = vi.spyOn(host as unknown as { selectStream: () => NodeJS.WriteStream }, 'selectStream');
-    // Use a controlled writable destination so the formatted output goes
-    // somewhere we can read back. We hijack stderr.write for this test.
+    // Pin `isCI: false` so the IoHost routes non-error messages to
+    // stderr regardless of the runner environment. On GitHub Actions
+    // `CI=true` flips selectStream's info-tier branch to stdout, which
+    // would defeat the stderr-only assertion below.
+    const host = new CdklIoHost({ isCI: false });
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await host.notify({
       time: new Date(),
@@ -19,19 +19,18 @@ describe('CdklIoHost', () => {
       data: undefined,
     });
 
-    // info-level messages go to stderr in non-CI mode, and the styleMap
-    // for info is chalk.reset (no color), not chalk.red. Assert the
-    // written payload does NOT contain the ANSI red sequence.
+    // info-level messages go to stderr (per isCI: false), and the
+    // styleMap for info is chalk.reset (no color), not chalk.red.
+    // Assert the written payload contains the message body and does
+    // NOT contain the ANSI red sequence.
     const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
     expect(written).toContain('Bundling asset MyStack/MyFunction/Code/Stage...');
     expect(written).not.toMatch(/\x1B\[31m/); // ANSI red foreground
-    spy.mockRestore();
     stderrSpy.mockRestore();
-    stdoutSpy.mockRestore();
   });
 
   it('passes through real error-level messages with their level unchanged', async () => {
-    const host = new CdklIoHost();
+    const host = new CdklIoHost({ isCI: false });
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     // The level is 'error' AND the code is NOT E1002 — a genuine error
