@@ -8,7 +8,7 @@
  * cdk-local has already deployed the stack and the AWS-current physical IDs
  * sit in the cdkd state file.
  *
- * `--from-state` closes that gap: it loads cdkd's S3 state for the target
+ * `--from-state` closes that gap: it loads the host's S3 state for the target
  * stack and substitutes `Ref` / `Fn::GetAtt` / `Fn::Sub` placeholders in
  * the function's `Properties.Environment.Variables` with the deployed
  * values. The result feeds back into the existing
@@ -992,7 +992,7 @@ export interface StateEnvSubstitutionAudit {
  * @param templateEnv  The function's `Properties.Environment.Variables`
  *                     map from the synthesized template, or `undefined`
  *                     when the function has no env vars.
- * @param resources    `state.resources` from cdkd's S3 state file for
+ * @param resources    `state.resources` from the host's S3 state file for
  *                     the function's stack.
  */
 export function substituteEnvVarsFromState(

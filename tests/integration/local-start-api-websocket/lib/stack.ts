@@ -64,7 +64,7 @@ export class LocalStartApiWebSocketStack extends cdk.Stack {
 
     // Per-route integrations. CDK's CfnIntegration emits the canonical
     // `Fn::Join: ['', ['arn:...:lambda:path/2015-03-31/functions/', <Fn::GetAtt Arn>, '/invocations']]`
-    // IntegrationUri shape that cdkd's `intrinsic-lambda-arn.ts` parses.
+    // IntegrationUri shape that cdk-local's `intrinsic-lambda-arn.ts` parses.
     const region = cdk.Stack.of(this).region;
     function makeIntegration(scope: Construct, id: string, fn: lambda.Function): apigwv2.CfnIntegration {
       return new apigwv2.CfnIntegration(scope, id, {

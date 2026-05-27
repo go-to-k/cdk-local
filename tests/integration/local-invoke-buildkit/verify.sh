@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — BuildKit-Dockerfile regression integ test.
 #
-# Exercises every BuildKit feature this PR newly forwards via cdkd's
+# Exercises every BuildKit feature this PR newly forwards via cdk-local's
 # docker build path, in ONE build:
 #   1. `# syntax=docker/dockerfile:1`
 #   2. Multi-stage with `--target final` (DockerImageCode.fromImageAsset.target)
@@ -13,7 +13,7 @@
 #
 # Pre-PR cdk-local would either silently kill the build with maxBuffer 50 MB
 # on BuildKit progress, OR reject `buildSecrets` at the type layer
-# because cdkd's `DockerImageAssetSource` didn't surface the field.
+# because cdk-local's `DockerImageAssetSource` didn't surface the field.
 # Both paths now work.
 #
 # Run via `/run-integ local-invoke-buildkit` (recommended) or directly:
@@ -130,7 +130,7 @@ rm -f /tmp/cdkl-buildkit-1.log /tmp/cdkl-buildkit-3.log
 # Cleanup: remove the cdkl-built image(s) so CI hosts don't accumulate
 # multi-stage builder layers across iterations. The integ owns the
 # `cdkl-invoke-*` namespace and the run-time docker containers are
-# already removed by `docker run --rm` + cdkd's removeContainer().
+# already removed by `docker run --rm` + cdk-local's removeContainer().
 echo "==> Cleanup: removing cdkl-built images"
 docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
   docker image rm -f "${tag}" >/dev/null 2>&1 || true

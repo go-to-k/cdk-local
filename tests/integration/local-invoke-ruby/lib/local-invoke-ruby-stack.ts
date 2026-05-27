@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     directly (the L2 `lambda.Code.fromInline` construct refuses Ruby
  *     at synth time even though AWS Lambda itself accepts it; using the
  *     L1 escape hatch bypasses the construct-side guard). Exercises
- *     cdkd's inline-code materializer with the `.rb` extension.
+ *     cdk-local's inline-code materializer with the `.rb` extension.
  *
  * No AWS deploy required — the integ runs against the synthesized
  * cdk.out only, mirroring `tests/integration/local-invoke-python/`.

@@ -16,7 +16,7 @@ import { Construct } from 'constructs';
  * that acceptance + the warn + that the container actually boots and
  * serves on the bridge fallback.
  *
- * A non-privileged port (18080) is used so the host-port publish (cdkd
+ * A non-privileged port (18080) is used so the host-port publish (cdk-local
  * publishes container ports for `run-task`) does not need to bind the
  * privileged port 80. `awsvpc` requires `hostPort == containerPort` (or
  * omitted), so `hostPort` is left implicit and cdk-local defaults it to
@@ -37,7 +37,7 @@ export class LocalRunTaskAwsvpcStack extends cdk.Stack {
       // (`cdkl-cdkl-run-task-awsvpc-web-<rand>`) and
       // verify.sh can filter `docker ps` on it.
       family: 'cdkl-run-task-awsvpc',
-      // The whole point of the fixture: NetworkMode awsvpc, which cdkd
+      // The whole point of the fixture: NetworkMode awsvpc, which cdk-local
       // maps to a docker bridge network locally with a warn (#461).
       networkMode: ecs.NetworkMode.AWS_VPC,
     });

@@ -142,7 +142,7 @@ curl_assert() {
 
 echo "==> Smoke-testing route via curl"
 # fromContainer: true is the marker the app.js emits — verifies the
-# request reached the container Lambda (NOT a 5xx surfaced by cdkd's
+# request reached the container Lambda (NOT a 5xx surfaced by cdk-local's
 # own error handling), AND that the env-var GREETING=hello passed in
 # via the CDK environment block reached the runtime.
 curl_assert "GET / (container Lambda)" "http://127.0.0.1:${PORT_HTTP}/" '"fromContainer":true'

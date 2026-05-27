@@ -202,7 +202,7 @@ interface LocalStartApiOptions {
  * synthesized API routes to Lambda invocations against the AWS Lambda
  * Runtime Interface Emulator (Docker required).
  *
- * Modeled on `sam local start-api` but reusing cdkd's synthesis /
+ * Modeled on `sam local start-api` but reusing cdk-local's synthesis /
  * route-discovery / container plumbing. PR 8a scope:
  *   - REST v1 (AWS::ApiGateway::*) + HTTP API (AWS::ApiGatewayV2::*) +
  *     Function URL (AWS::Lambda::Url).
@@ -494,7 +494,7 @@ async function localStartApiCommand(
     // already resolves `--profile` for cdkd's own CFn / CC API clients).
     // Resolved here so a stack with N Lambdas pays one STS round-trip.
     // SSO temp creds typically last 1h+; long-running `--watch` sessions
-    // outliving the creds need a cdkd restart (auto-refresh deferred,
+    // outliving the creds need a cdk-local restart (auto-refresh deferred,
     // see issue #654).
     const profileCredentials = options.profile
       ? await resolveProfileCredentials(options.profile)
@@ -864,7 +864,7 @@ async function localStartApiCommand(
     // `AWS_ACCESS_KEY_ID` etc. are set, the SDK errors with
     // `CredentialsProviderError: Could not load credentials from
     // any providers`. We populate fake credentials per the
-    // ecs-network.ts metadata-sidecar precedent — cdkd's
+    // ecs-network.ts metadata-sidecar precedent — cdk-local's
     // `@connections` handler doesn't verify SigV4, so the values
     // are opaque.
     //
@@ -2314,7 +2314,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
  * that Lambda — assume-role wins per the existing precedence). SSO
  * temp creds typically last 1h+, so a single resolve is fine for the
  * common dev session; long-running `--watch` sessions that outlive
- * the creds need a cdkd restart (deferred refresh out of scope for
+ * the creds need a cdk-local restart (deferred refresh out of scope for
  * v1, see issue #654).
  */
 export async function resolveProfileCredentials(
@@ -2772,17 +2772,17 @@ async function loadStateForRoutedStacks(
   // Issue #606: route through `createLocalStateProvider` so the same
   // code path drives both `--from-state` (S3) and `--from-cfn-stack`
   // (CFn). One provider PER reachable stack — bare `--from-cfn-stack`
-  // uses the cdkd stack name per routed stack, so the dispatcher needs
+  // uses the host stack name per routed stack, so the dispatcher needs
   // each stack's name at construction time. Each provider is disposed
   // after its `load` call returns so the AWS client tied to that
   // provider doesn't outlive the boot pass.
   //
-  // Reject explicit `--from-cfn-stack <name>` when multiple cdkd stacks
+  // Reject explicit `--from-cfn-stack <name>` when multiple host stacks
   // are routed: the explicit name would apply to every routed stack
   // and silently misresolve `Ref` lookups when logical IDs happen to
   // collide between siblings (see local-state-source.ts for the
   // rationale). Bare `--from-cfn-stack` is safe because each routed
-  // stack uses its own cdkd stack name.
+  // stack uses its own host stack name.
   rejectExplicitCfnStackWithMultipleStacks(options, reachableStackNames.size);
   for (const stackName of reachableStackNames) {
     const stack = stacks.find((s) => s.stackName === stackName);

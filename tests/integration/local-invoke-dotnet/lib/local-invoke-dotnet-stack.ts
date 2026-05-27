@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     .NET SDK container before invoking `cdk-local synth` so the host
  *     doesn't need a .NET SDK installed.
  *   - `InlineHandler` — `CfnFunction` with `Code: { ZipFile: ... }` and
- *     `runtime: dotnet8`. cdkd's local invoke must reject this with the
+ *     `runtime: dotnet8`. cdk-local's local invoke must reject this with the
  *     "use Code.fromAsset" message — .NET's Handler shape names a
  *     compiled assembly (`Assembly::Namespace.Class::Method`), which
  *     can't be expressed as a single source file. Built via the L1

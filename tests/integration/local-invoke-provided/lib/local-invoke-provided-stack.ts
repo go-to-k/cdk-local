@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     Runtime API. Architecture pinned to `x86_64` so the linux/amd64
  *     bootstrap built in CI matches the base image's default platform.
  *   - `ProvidedAl2023InlineHandler` — `CfnFunction` with `Code: { ZipFile }`
- *     and `runtime: provided.al2023`. cdkd's local invoke must reject
+ *     and `runtime: provided.al2023`. cdk-local's local invoke must reject
  *     with the "use Code.fromAsset" message — `provided.*` runtimes ship
  *     arbitrary native binaries that can't be expressed as inline source.
  *   - `ProvidedAl2InlineHandler` — same as above but `runtime: provided.al2`.
@@ -30,7 +30,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     CfnFunction is the L1 escape hatch because `lambda.Runtime.GO_1_X`
  *     still exists in CDK but our CDK lib version may or may not refuse
  *     it at synth time depending on CDK release; we want the rejection
- *     to come from cdkd, not the construct.
+ *     to come from cdk-local, not the construct.
  *
  * No AWS deploy required — the integ runs against the synthesized
  * cdk.out only, mirroring the other local-invoke fixtures.

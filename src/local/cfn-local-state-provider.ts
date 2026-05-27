@@ -66,7 +66,7 @@ export interface CfnLocalStateProviderOptions {
   /**
    * CFn stack name to read physical IDs / outputs from. Required; the
    * CLI layer resolves the bare-vs-explicit form (`--from-cfn-stack`
-   * with no value → uses the cdkd stack name) before calling the
+   * with no value → uses the host stack name) before calling the
    * provider.
    */
   cfnStackName: string;

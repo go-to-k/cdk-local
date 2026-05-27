@@ -110,7 +110,7 @@ export interface ResolvedEcsService {
    * HealthCheckGracePeriodSeconds from the template. AWS defaults to 0
    * when the service has no load balancer, 30s with an ALB attached.
    *
-   * **Currently not consumed by the runner.** cdkd's
+   * **Currently not consumed by the runner.** cdk-local's
    * `ecs-service-runner.ts` is exit-code-driven (`docker wait` →
    * `shouldRestart`); there is no health-check polling in v1 because
    * health-check-driven restarts are only meaningful once the local
@@ -333,7 +333,7 @@ function extractServiceConnect(
   const rawServices = cfg['Services'];
   if (!Array.isArray(rawServices) || rawServices.length === 0) {
     // No `Services[]` is valid in AWS — the task still gets the local
-    // Cloud Map DNS resolver but doesn't expose anything itself. cdkd's
+    // Cloud Map DNS resolver but doesn't expose anything itself. cdk-local's
     // local emulation treats it the same way (registry publishes
     // nothing, consumer-side `--add-host` still works).
     return { namespaceName, services: [] };

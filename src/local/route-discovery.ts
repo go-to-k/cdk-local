@@ -1042,7 +1042,7 @@ function discoverHttpApiRoute(
  * (service integration, no Lambda backing). Recognized subtypes
  * become `serviceIntegration` routes the HTTP server dispatches via
  * the SDK adapter table in `httpv2-service-integration.ts`;
- * unrecognized subtypes (typo / future-AWS-subtype-cdkd-doesn't-bundle
+ * unrecognized subtypes (typo / future-AWS-subtype-cdk-local-doesn't-bundle
  * an SDK for) become deferred-501 unsupported routes.
  *
  * `RequestParameters` is the load-bearing field for dispatch — it

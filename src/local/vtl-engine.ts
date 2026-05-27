@@ -978,7 +978,7 @@ export function buildVtlInput(
     if (jsonBodyParseError && opts?.throwOnParseError) {
       // Issue (#507) item 7: `$input.json(...)` against a non-JSON body
       // surfaces a `VtlEvaluationError` (AWS API Gateway returns
-      // 400 + `{"message": "Invalid JSON request body"}` here; cdkd's
+      // 400 + `{"message": "Invalid JSON request body"}` here; cdk-local's
       // dispatcher catches the error and returns 502 + the template + reason
       // in the body, which is the closest local approximation given that
       // the existing dispatch path treats every VtlEvaluationError as a

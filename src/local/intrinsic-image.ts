@@ -50,7 +50,7 @@ export interface ImageResolutionContext {
     urlSuffix?: string;
   };
   /**
-   * `state.resources` from cdkd's S3 state record for the target stack,
+   * `state.resources` from the host's S3 state record for the target stack,
    * loaded by the CLI command before resolution when `--from-state` is
    * passed. Used to substitute `${<LogicalId>}` against an
    * `AWS::ECR::Repository` and the `Fn::GetAtt` `Arn` / `RepositoryUri`

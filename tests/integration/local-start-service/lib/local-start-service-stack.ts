@@ -7,7 +7,7 @@ import { Construct } from 'constructs';
  *
  * Spins up an `AWS::ECS::Service` with DesiredCount=2 backed by a
  * minimal busybox task definition that loops printing a heartbeat. The
- * service runs indefinitely; the integ harness boots cdkd, asserts the
+ * service runs indefinitely; the integ harness boots cdk-local, asserts the
  * 2 replicas are running via `docker ps`, then sends SIGTERM and
  * asserts every container + network + sidecar is cleaned up.
  *

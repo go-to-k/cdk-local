@@ -62,7 +62,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     // overlay.
     const namespace = new cdk.aws_servicediscovery.CfnPrivateDnsNamespace(this, 'Ns', {
       name: 'cdkl-sc.local',
-      // CfnPrivateDnsNamespace requires `Vpc` in real AWS, but cdkd
+      // CfnPrivateDnsNamespace requires `Vpc` in real AWS, but cdk-local
       // never sends this — local emulation skips the field on every
       // SDK call. CFn property-required validation is bypassed because
       // CDK only emits the field when assigned.

@@ -1,5 +1,5 @@
 /**
- * Schema versions for cdkd state.json.
+ * Schema versions for the state.json the host writes via cdk-local.
  *
  * - 1 — legacy layout: `s3://{bucket}/cdkd/{stackName}/state.json` (pre PR 1).
  * - 2 — region-prefixed layout: `s3://{bucket}/cdkd/{stackName}/{region}/state.json`.
@@ -50,17 +50,17 @@
  *       what it means and would route a CC-managed resource through
  *       the SDK Provider on update / destroy → silent data corruption
  *       (mid-life provider swap). The bump from 6 to 7 forces a v6
- *       reader to fail with a clear "upgrade cdkd" error instead.
+ *       reader to fail with a clear "upgrade the host" error instead.
  *       v7 writers always emit `provisionedBy` explicitly (`'sdk'` or
  *       `'cc-api'`); resources read from v6 state with the field
  *       absent are treated as `'sdk'` (legacy default) and the next
  *       write persists it explicitly. Layout superset of v6; only the
  *       resource-level shape grew.
  *
- * cdkd readers handle every prior version. Writers always emit
- * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
- * earlier version will fail with a clear error when it encounters a higher
- * version, rather than silently mishandling the new format.
+ * The cdk-local parser handles every prior version. Writers always emit
+ * `STATE_SCHEMA_VERSION_CURRENT`. An older host binary embedding cdk-local that
+ * only knows an earlier version will fail with a clear error when it encounters
+ * a higher version, rather than silently mishandling the new format.
  */
 export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
@@ -70,7 +70,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7;
  * Every schema version this binary can read. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`; older versions are accepted for
  * forward-migration, and an unknown / future version triggers an explicit
- * "upgrade cdkd" error in the parser.
+ * "upgrade the host" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6, 7];
 
@@ -89,7 +89,7 @@ export interface StateImportEntry {
   sourceStack: string;
   /**
    * The producer's region. Required so destroy-time strong-ref checks
-   * can scan the producer's exact `state.json` key (cdkd state is keyed
+   * can scan the producer's exact `state.json` key (cdk-local state is keyed
    * by `(stackName, region)` since schema v2).
    */
   sourceRegion: string;
@@ -243,7 +243,7 @@ export interface ResourceState {
    * Which provisioning layer owns this resource (schema v7+, issue
    * [#614](https://github.com/go-to-k/cdkd/issues/614)).
    *
-   * - `'sdk'` — SDK Provider (the cdkd-preferred fast path: direct
+   * - `'sdk'` — SDK Provider (the preferred fast path: direct
    *   synchronous AWS SDK calls per resource type, no polling).
    * - `'cc-api'` — Cloud Control API (the fallback path: async polling
    *   create/update/delete via the unified CloudControlClient). Routed
