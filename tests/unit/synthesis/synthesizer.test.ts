@@ -103,13 +103,31 @@ describe('Synthesizer.synthesize', () => {
     expect(opts).not.toHaveProperty('env');
   });
 
-  it('drops context (Phase 2d-2 follow-up: not currently threaded)', async () => {
+  it('forwards non-empty context to readOpts.context', async () => {
     mockRead.mockResolvedValue([]);
     const s = new Synthesizer();
     await s.synthesize({ app: 'x', context: { k: 'v', k2: 'v2' } });
 
+    expect(mockRead).toHaveBeenCalledWith('x', {
+      context: { k: 'v', k2: 'v2' },
+    });
+  });
+
+  it('omits readOpts.context when context is undefined', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x' });
+
     const opts = mockRead.mock.calls[0][1];
-    expect(opts).not.toHaveProperty('env');
+    expect(opts).not.toHaveProperty('context');
+  });
+
+  it('omits readOpts.context when context is an empty object', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', context: {} });
+
+    const opts = mockRead.mock.calls[0][1];
     expect(opts).not.toHaveProperty('context');
   });
 

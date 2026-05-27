@@ -23,10 +23,10 @@ export interface SynthesisOptions {
   /**
    * Context key-value pairs (CLI `-c`/`--context`).
    *
-   * Accepted for API parity with the cdkd shape, but currently NOT
-   * forwarded to the CDK app subprocess — cdk-local relies on
-   * `cdk.json` / `cdk.context.json` for context. CLI overrides land in
-   * a Phase 2d-2 follow-up.
+   * Threaded through `CdkAppMultiContext(workingDirectory, context)` so
+   * `cdk.json` / `cdk.context.json` / `~/.cdk.json` remain the base
+   * layer and CLI overrides win for keys they touch. Empty / undefined
+   * leaves toolkit-lib's default context store in place.
    */
   context?: Record<string, string>;
 }
@@ -58,6 +58,9 @@ export class Synthesizer {
     }
     if (Object.keys(env).length > 0) {
       readOpts.env = env;
+    }
+    if (opts.context !== undefined && Object.keys(opts.context).length > 0) {
+      readOpts.context = opts.context;
     }
     const stacks = await reader.read(opts.app, readOpts);
     return { stacks };
