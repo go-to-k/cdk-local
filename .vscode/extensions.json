@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "VoidZero.vite-plus-extension-pack",
+    "TypeScriptTeam.native-preview",
+    "DavidAnson.vscode-markdownlint"
+  ]
+}
