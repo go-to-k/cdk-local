@@ -166,6 +166,94 @@ vp run runtime:smoke
   This is what CI runs; failing locally is faster feedback than failing
   in GitHub Actions.
 
+- **Before every commit**: two markgate gates guard `git commit` via
+  `.claude/hooks/check-gate.sh`. Both must be fresh:
+  - `check` — recorded by `/check` (typecheck + lint + format + build +
+    tests). Scope: `src/**`, `tests/**`, lockfiles, build/test configs
+    (see `.markgate.yml`). Only invalidated by changes in that scope.
+  - `docs` — recorded by `/check-docs` (README.md / `.claude/CLAUDE.md`
+    / `docs/` / `.claude/rules/` consistency with src). Scope: `src/**`,
+    `docs/**`, `README.md`, `.claude/CLAUDE.md`, `.claude/rules/**`.
+    Only invalidated by changes in that scope.
+
+  Run the required skills proactively before attempting the commit —
+  look at `git status` / `git diff --cached --name-only` and match it
+  against each gate's scope: a tests-only commit only needs `/check`;
+  a docs-only commit only needs `/check-docs`; a src edit needs both;
+  changes that fall outside both scopes (e.g. `.claude/hooks/**`,
+  `.claude/skills/**`, `.markgate.yml`) need neither. The hook is a
+  safety net, not the primary trigger — if you see "Blocked by
+  check-gate", the message names exactly which skill to re-run, but
+  getting there means you skipped the proactive step. `/verify-pr`
+  refreshes both markers in one shot. Install `vp` and `markgate` via
+  `mise install` at the repo root.
+
+- **Before opening or merging any PR**: a third markgate gate,
+  `verify-pr`, guards `gh pr create` and `gh pr merge` via
+  `.claude/hooks/verify-pr-gate.sh`. Declared as
+  `requires: [check, docs]` in `.markgate.yml`, so the gate is fresh
+  ONLY when both children are fresh AND `/verify-pr` itself has set
+  the parent marker. The skill walks the full checklist — typecheck /
+  lint / build / tests, CI status, working tree, docs consistency,
+  Docker + integ marker check, code review (incl. shared-utility
+  caller verification), live-test of the changed behavior against
+  real or fixture input, session retrospective + proposals for new
+  rules / hooks / skills, residual review-nit sweep + auto-close
+  audit, and PR title + body freshness vs the diff. So opening or
+  merging a PR whose live behavior was never exercised, or whose
+  retrospective produced no rule proposals for surprises in the
+  session, is physically blocked — the hook refuses `gh pr create` /
+  `gh pr merge` until `/verify-pr` is re-run end-to-end.
+
+- **Before merging large / security-sensitive PRs**: a fourth markgate
+  gate, `pr-review`, guards `gh pr merge` via
+  `.claude/hooks/pr-review-gate.sh`. The hook re-applies the
+  `/review-pr` skill's size + bias heuristic to the target PR:
+  `loc < 300 OR fc < 5` → `inline` (pass-through);
+  `300 <= loc < 1000 AND 5 <= fc < 10` → `1-reviewer`;
+  `loc >= 1000 OR fc >= 10` → `3-axis`. Up-bias triggers (security /
+  process-launch surface paths, > 1 fix-back commit) bump the tier UP
+  one step; down-bias triggers (every path under docs/infra, or every
+  path under `tests/`) bump it DOWN one step; when both fire, up wins.
+  For PRs whose final tier is `1-reviewer` or `3-axis`, the marker
+  must be fresh AND bound to the PR's current HEAD sha via the
+  `.markgate-pr-review-sha` sentinel — set ONLY by `/review-pr` after
+  the recommended reviewers complete and every blocker is addressed.
+  A new push to the PR invalidates the marker naturally. `inline`-tier
+  PRs always pass through. Only `gh pr merge` is gated; `gh pr create`
+  is NOT gated (small PRs should be openable freely).
+
+- **PR review pattern**: 3 read-only review sub-agents are codified at
+  `.claude/agents/pr-{spec,code,test}-reviewer.md`. The orchestrator
+  dispatches the recommended count (0 / 1 / 3) in parallel against
+  a PR's diff and synthesizes the findings before merge. The 3 axes
+  (spec compliance / code quality / test adequacy) catch different
+  classes of issues. Each agent has read-only tools (Read / Glob /
+  Grep / Bash) so they can never accidentally edit; their output is a
+  structured report that the orchestrator uses to decide whether to
+  merge or send fixes back to the implementing agent.
+
+- **When running integration tests**: use `/run-integ <test-name>`
+  with the appropriate test name (e.g., `/run-integ local-invoke`).
+  Never bypass the skill by manually invoking the fixture's
+  `verify.sh` from a shell — the skill encodes Docker pre-flight +
+  the verify.sh run + post-run Docker orphan sweep + (for
+  `*-from-cfn-stack` tests) AWS stack orphan check in a single block,
+  and skipping any step risks setting the `integ` marker on
+  incomplete verification. The marker is consulted by the future
+  `integ-gate.sh` hook (TODO — separate follow-up PR) to block
+  `gh pr merge` when `src/**` or `tests/integration/**` is touched.
+
+- **After running integration tests**: verify no leftover Docker
+  containers / networks remain (`docker ps --filter name=cdkl-`,
+  `docker network ls --filter name=cdkl-task-` /
+  `cdkl-svc-`). For `*-from-cfn-stack` tests, also verify no orphan
+  CloudFormation stacks remain. If the run failed or left orphans,
+  clean them up immediately via direct Docker / `cdk destroy` /
+  `aws cloudformation` calls — leaving orphan resources after an
+  integ run is never acceptable, regardless of whether the test
+  passed.
+
 ## Positioning when communicating
 
 - `cdkl` is the **binary** name (the command users type).
