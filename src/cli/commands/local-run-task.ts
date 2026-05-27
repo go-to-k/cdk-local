@@ -14,6 +14,11 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveProfileCredentials } from './local-start-api.js';
+import {
+  writeProfileCredentialsFile,
+  type ProfileCredentialsFile,
+} from './local-profile-credentials-file.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -115,6 +120,11 @@ async function localRunTaskCommand(
   // extra). Hoisted so the outer `finally` can dispose it even if the
   // body throws between provider creation and the normal exit path.
   let stateProvider: LocalStateProvider | undefined;
+  // ECS analogue of cdkd PR #670: synthesized AWS shared credentials
+  // file (one INI section) bind-mounted into every user container so
+  // handlers using `fromIni({ profile })` resolve to the same creds.
+  // Disposed in the cleanup chain below.
+  let profileCredsFile: ProfileCredentialsFile | undefined;
 
   // Single-flight cleanup: the SIGINT handler AND the outer `finally` both
   // call this, so we await the first invocation's promise on every later
@@ -129,6 +139,17 @@ async function localRunTaskCommand(
           await cleanupEcsRun(state, { keepRunning: options.keepRunning });
         } catch (err) {
           getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        if (profileCredsFile) {
+          try {
+            await profileCredsFile.dispose();
+          } catch (err) {
+            getLogger().debug(
+              `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
+          }
         }
       })();
     }
@@ -251,6 +272,37 @@ async function localRunTaskCommand(
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
     }
 
+    // cdkd#658: when `--assume-task-role` is NOT effective but
+    // `--profile <p>` IS set, resolve the profile via the SDK's default
+    // credential provider chain (SSO / IAM Identity Center / fromIni /
+    // role-assumption) and forward the resulting `{AKID, SAK,
+    // sessionToken?}` to the metadata-endpoints sidecar. Without this,
+    // the sidecar starts inside a fresh container with no SSO config and
+    // no `~/.aws/credentials`, so every user container that hits
+    // `169.254.170.2/role/<role>` gets a credential-provider failure.
+    // Same gap class as cdkd#654/#655, which shipped the equivalent
+    // forward for `cdkl start-api`'s Lambda container path.
+    const sidecarCredentials = await resolveSidecarCredentials(options, assumedCredentials);
+
+    // ECS analogue of cdkd PR #670 (Lambda-container fix-back finding #1):
+    // when `--profile <p>` is set AND `--assume-task-role` did NOT
+    // produce credentials for this task, synthesize a host-side AWS
+    // shared credentials file under `[<options.profile>]` and bind-
+    // mount it read-only into every user container. Handler code
+    // calling `fromIni({ profile: '<options.profile>' })` then
+    // resolves to the same creds the metadata sidecar serves —
+    // without this, the SDK looks for `[<options.profile>]` in
+    // `~/.aws/credentials` inside the container and fails.
+    //
+    // Gating `!assumedCredentials` preserves the documented
+    // precedence (assume-task-role > profile-file > sidecar): when
+    // `--assume-task-role` won, the sidecar's `/role/<arn>` endpoint
+    // already serves the assumed creds and the file env vars must
+    // NOT override them.
+    if (options.profile && sidecarCredentials && !assumedCredentials) {
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
+    }
+
     const envOverrides = readEnvOverridesFile(options.envVars);
 
     const runOpts: RunEcsTaskOptions = {
@@ -261,11 +313,18 @@ async function localRunTaskCommand(
       detach: options.detach,
     };
     if (envOverrides) runOpts.envOverrides = envOverrides;
-    if (assumedCredentials) runOpts.taskCredentials = assumedCredentials;
+    if (sidecarCredentials) runOpts.taskCredentials = sidecarCredentials;
     if (resolvedRoleArn) runOpts.taskRoleArn = resolvedRoleArn;
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
+    if (profileCredsFile) {
+      runOpts.profileCredentialsFile = {
+        hostPath: profileCredsFile.hostPath,
+        containerPath: profileCredsFile.containerPath,
+        profileName: profileCredsFile.profileName,
+      };
+    }
 
     const result = await runEcsTask(task, runOpts, state);
 
@@ -483,6 +542,36 @@ function readEnvOverridesFile(
     throw new Error(`--env-vars file '${filePath}' must contain a JSON object at the top level.`);
   }
   return parsed as Record<string, Record<string, string | null> | undefined>;
+}
+
+/**
+ * cdkd#658: pick the credentials forwarded to the AWS-published
+ * `amazon-ecs-local-container-endpoints` sidecar. Precedence:
+ *   1. `--assume-task-role <arn>` (or bare `--assume-task-role` against
+ *      a resolvable `TaskRoleArn`) → STS-assumed temp creds. Highest
+ *      priority — when the user opted in to IAM emulation, those creds
+ *      drive the sidecar regardless of `--profile`.
+ *   2. `--profile <p>` → resolved via {@link resolveProfileCredentials}
+ *      (the SDK's default credential provider chain — SSO / IAM
+ *      Identity Center / fromIni / role-assumption). NEW in this PR.
+ *   3. Neither set → `undefined`; the sidecar runs with its own
+ *      default credential chain (typically empty inside a fresh
+ *      container — user containers will get 4xx from the credentials
+ *      endpoint, mimicking IAM-misconfigured prod).
+ *
+ * Extracted as an exported helper so a unit test can exercise every
+ * branch without having to mock the full Synth + Docker + AWS pipeline
+ * (the strategy cdkd#655 used for the Lambda container path).
+ */
+export async function resolveSidecarCredentials(
+  options: { profile?: string },
+  assumedCredentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
+    | undefined
+): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  if (assumedCredentials) return assumedCredentials;
+  if (options.profile) return resolveProfileCredentials(options.profile);
+  return undefined;
 }
 
 export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions = {}): Command {

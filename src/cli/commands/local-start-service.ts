@@ -15,6 +15,11 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveProfileCredentials } from './local-start-api.js';
+import {
+  writeProfileCredentialsFile,
+  type ProfileCredentialsFile,
+} from './local-profile-credentials-file.js';
 import {
   applyCrossStackResolverToTask,
   derivePartitionAndUrlSuffix,
@@ -142,6 +147,16 @@ async function localStartServiceCommand(
   // Hoisted out of the try block so the single-flight cleanup closure
   // can teardown the shared network after every container is gone.
   let sharedNetwork: TaskNetwork | undefined;
+  // ECS analogue of cdkd PR #670: synthesized AWS shared credentials
+  // file bind-mounted into every service replica's containers so
+  // `fromIni({ profile })` handlers resolve to the same creds the
+  // sidecar serves. One-per-CLI-invocation (mirrors the shared
+  // sidecar's shape — `--profile` is a CLI-level concern, not a
+  // per-service one). Disposed by the single-flight cleanup AFTER
+  // every replica's containers are gone but BEFORE the shared
+  // network is torn down (the file outlives running containers but
+  // can vanish once they're stopped).
+  let profileCredsFile: ProfileCredentialsFile | undefined;
 
   // Single-flight cleanup so the SIGINT handler and the outer `finally`
   // collapse to one underlying invocation. Fans out across every
@@ -170,6 +185,23 @@ async function localStartServiceCommand(
           }
         })
       );
+      // Profile credentials file dispose — must happen AFTER every
+      // replica's containers are gone (the bind-mount keeps the
+      // file alive for as long as a container references it) but
+      // BEFORE / parallel-with the shared network teardown.
+      // Idempotent (`rm` is `force: true`); see
+      // `writeProfileCredentialsFile`'s `dispose` for the contract.
+      if (profileCredsFile) {
+        try {
+          await profileCredsFile.dispose();
+        } catch (err) {
+          getLogger().warn(
+            `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        profileCredsFile = undefined;
+      }
+
       // Shared network teardown.
       if (sharedNetwork) {
         try {
@@ -225,16 +257,40 @@ async function localStartServiceCommand(
     const registry = new CloudMapRegistry();
     // Create ONE shared docker network used by every service-replica
     // boot in this CLI invocation.
+    //
+    // cdkd#658: when `--profile <p>` is set, the resolved credentials
+    // are forwarded to the AWS-published metadata-endpoints sidecar so
+    // its `/role/<role-arn>` endpoint serves them to user containers.
+    // Without this, the sidecar starts inside a fresh container with
+    // no SSO config / no `~/.aws/credentials` and falls back to its
+    // own (empty) default chain, breaking every container that hits
+    // 169.254.171.2. Per-service `--assume-task-role <Service>=<arn>`
+    // overrides are independent — they flow into `buildMetadataEnv`
+    // per container and are unrelated to the SIDECAR's own startup
+    // credentials.
+    const sidecarCredentials = await resolveSharedSidecarCredentials(options);
     try {
       sharedNetwork = await createSharedSvcNetwork({
         prefix: options.cluster,
         skipPull,
         cluster: options.cluster,
+        ...(sidecarCredentials !== undefined && { credentials: sidecarCredentials }),
       });
     } catch (err) {
       throw new LocalStartServiceError(
         `Failed to create shared service network: ${err instanceof Error ? err.message : String(err)}`
       );
+    }
+    // ECS analogue of cdkd PR #670 — when `--profile <p>` is set, write
+    // ONCE the host-side credentials file used by every replica's
+    // containers. Mirrors the shared-sidecar shape (one-per-CLI-
+    // invocation): `--profile` is a CLI-level concern. Per-service
+    // `--assume-task-role <Service>=<arn>` overrides are independent
+    // and re-gated INSIDE `runOneTarget` so an assume-role'd service
+    // does NOT receive the file env vars (preserves the assume >
+    // file > sidecar precedence applied per-service).
+    if (options.profile && sidecarCredentials) {
+      profileCredsFile = await writeProfileCredentialsFile(options.profile, sidecarCredentials);
     }
     const discovery: ServiceDiscoveryContext = {
       registry,
@@ -266,7 +322,8 @@ async function localStartServiceCommand(
         options,
         discovery,
         skipPull,
-        extraStateProviders
+        extraStateProviders,
+        profileCredsFile
       );
     }
 
@@ -300,7 +357,8 @@ async function bootOneTarget(
   options: LocalStartServiceOptions,
   discovery: ServiceDiscoveryContext,
   skipPull: boolean,
-  extraStateProviders: ExtraStateProviders | undefined
+  extraStateProviders: ExtraStateProviders | undefined,
+  profileCredsFile: ProfileCredentialsFile | undefined
 ): Promise<ServiceController> {
   const parsed = parseEcsTarget(target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
@@ -319,7 +377,8 @@ async function bootOneTarget(
       options,
       discovery,
       skipPull,
-      stateProvider
+      stateProvider,
+      profileCredsFile
     );
   } finally {
     if (stateProvider) stateProvider.dispose();
@@ -333,7 +392,8 @@ async function runOneTarget(
   options: LocalStartServiceOptions,
   discovery: ServiceDiscoveryContext,
   skipPull: boolean,
-  stateProvider: LocalStateProvider | undefined
+  stateProvider: LocalStateProvider | undefined,
+  profileCredsFile: ProfileCredentialsFile | undefined
 ): Promise<ServiceController> {
   const logger = getLogger();
 
@@ -416,6 +476,22 @@ async function runOneTarget(
   if (options.platform) taskOpts.platformOverride = options.platform;
   if (options.region) taskOpts.region = options.region;
   if (options.ecrRoleArn) taskOpts.ecrRoleArn = options.ecrRoleArn;
+  // Per-service gating (mirrors cdkd PR #670 fix-back finding #1
+  // applied in `local-run-task.ts`): the shared credentials file is
+  // bound ONLY to services that did NOT win an `--assume-task-role`.
+  // An assume-role'd service serves its own STS creds via the
+  // sidecar's `/role/<arn>` endpoint; injecting
+  // `AWS_SHARED_CREDENTIALS_FILE` / `AWS_PROFILE` on top would
+  // silently bypass the assumed creds for `fromIni({ profile })`
+  // callers and break the documented precedence (assume > file >
+  // sidecar).
+  if (profileCredsFile && !assumedCredentials) {
+    taskOpts.profileCredentialsFile = {
+      hostPath: profileCredsFile.hostPath,
+      containerPath: profileCredsFile.containerPath,
+      profileName: profileCredsFile.profileName,
+    };
+  }
 
   const runnerOpts: ServiceRunnerOptions = {
     maxTasks: options.maxTasks,
@@ -635,6 +711,37 @@ function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
   throw new LocalStartServiceError(
     `--restart-policy must be one of 'on-failure', 'always', or 'none' (got '${raw}').`
   );
+}
+
+/**
+ * cdkd#658: pick the credentials forwarded to the AWS-published
+ * `amazon-ecs-local-container-endpoints` sidecar. `cdkl start-service`'s
+ * sidecar is SHARED across every replica boot in one CLI invocation, so
+ * this resolves ONCE at startup. Precedence:
+ *   1. `--profile <p>` → resolved via {@link resolveProfileCredentials}
+ *      (the SDK's default credential provider chain — SSO / IAM
+ *      Identity Center / fromIni / role-assumption). NEW in this PR.
+ *   2. Not set → `undefined`; the sidecar runs with its own default
+ *      credential chain (typically empty inside a fresh container —
+ *      user containers will get 4xx from the credentials endpoint).
+ *
+ * Note: per-service `--assume-task-role <Service>=<arn>` overrides are
+ * INTENTIONALLY NOT consulted here. The shared sidecar has no concept
+ * of per-service IAM — per-service `TaskRoleArn` flows into each
+ * container's env via `buildMetadataEnv` at boot time, where the
+ * sidecar's `/role/<role-arn>` path resolves per-request. The shared
+ * sidecar's OWN startup credentials govern only the fallback path
+ * (containers that did not bind a `TaskRoleArn`).
+ *
+ * Extracted as an exported helper so a unit test can exercise both
+ * branches without having to mock the full Synth + Docker + AWS
+ * pipeline (the strategy cdkd#655 used for the Lambda container path).
+ */
+export async function resolveSharedSidecarCredentials(options: {
+  profile?: string;
+}): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string } | undefined> {
+  if (options.profile) return resolveProfileCredentials(options.profile);
+  return undefined;
 }
 
 export function createLocalStartServiceCommand(
