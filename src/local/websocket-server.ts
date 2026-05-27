@@ -34,7 +34,7 @@ import * as websocketBody from './websocket-body.js';
  * sibling `upgrade` listener that handles WebSocket handshakes.
  *
  * Architecture (mirrors design doc §2 / §8):
- *   - One {@link WebSocketServer} per cdkd local-start-api server.
+ *   - One {@link WebSocketServer} per cdkl start-api server.
  *   - `noServer: true` mode — cdkd owns the upgrade-event dispatch.
  *   - Per-connection lifecycle: handshake -> $connect Lambda ->
  *     (allow/deny) -> message loop -> close -> $disconnect Lambda.

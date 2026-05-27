@@ -68,7 +68,7 @@ export class AssetError extends CdkdError {
  * or missing build context. Used by `src/local/docker-image-builder.ts`
  * (PR 5) for container Lambdas; the parallel `AssetError` covers the
  * `cdkd publish-assets` / `cdkd deploy` build path. Kept distinct from
- * `AssetError` so `cdkd local invoke` failures don't show up under the
+ * `AssetError` so `cdkl invoke` failures don't show up under the
  * "asset" error class.
  */
 export class LocalInvokeBuildError extends CdkdError {
@@ -439,7 +439,7 @@ export class StackHasActiveImportsError extends CdkdError {
 }
 
 /**
- * Signals that `cdkd local start-api`'s route discovery hit an unsupported
+ * Signals that `cdkl start-api`'s route discovery hit an unsupported
  * shape — non-AWS_PROXY integration, ApiGwV2 service integration
  * (`IntegrationSubtype` set), WebSocket protocol, Lambda::Url with an
  * unrecognized `AuthType` (anything other than `'NONE'` / `'AWS_IAM'`),
@@ -461,7 +461,7 @@ export class RouteDiscoveryError extends CdkdError {
 }
 
 /**
- * Signals an unrecoverable failure inside `cdkd local start-api`'s HTTP
+ * Signals an unrecoverable failure inside `cdkl start-api`'s HTTP
  * server — port-binding failure, RIE returned malformed JSON, container
  * pool acquire timed out, etc. Distinct from {@link RouteDiscoveryError}
  * which fires before the server starts.
@@ -475,7 +475,7 @@ export class StartApiServerError extends CdkdError {
 }
 
 /**
- * Signals a `cdkd local run-task` orchestration failure that did not
+ * Signals a `cdkl run-task` orchestration failure that did not
  * originate from a lower-level module (those throw their own narrower
  * errors — `EcsTaskResolutionError`, `EcsSecretsResolutionError`,
  * `DockerRunnerError`, `LocalInvokeBuildError`). Used by the runner /
@@ -491,7 +491,7 @@ export class LocalRunTaskError extends CdkdError {
 }
 
 /**
- * Signals a `cdkd local start-service` orchestration failure (Phase 2
+ * Signals a `cdkl start-service` orchestration failure (Phase 2
  * of #262 — `AWS::ECS::Service` emulator). Distinct from
  * `LocalRunTaskError` because the service runner has its own lifecycle
  * (long-running replica pool, restart-on-exit), so a failure inside it
@@ -565,7 +565,7 @@ export class LocalMigrateError extends CdkdError {
  *     indicate a CFn-side regression — fail loud rather than silently
  *     proceed with the un-expanded template).
  *   - Multi-stage detection: the expanded template still contains
- *     macros, which cdkd v1 does not support (the design intentionally
+ *     macros, which cdkl v1 does not support (the design intentionally
  *     rejects this so a second round-trip is not silently triggered).
  *
  * The error surfaces at exit code 2 (partial-failure family) — the

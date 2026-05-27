@@ -1,13 +1,13 @@
 /**
  * `CfnLocalStateProvider` — implementation of {@link LocalStateProvider}
- * backed by a deployed CloudFormation stack. Powers `cdkd local *
+ * backed by a deployed CloudFormation stack. Powers `cdkl *
  * --from-cfn-stack` (issue #606).
  *
  * The shape mirrors the SAM CLI's `sam local invoke --stack-name X`
  * behavior: reach into a deployed CFn stack via `DescribeStackResources`
  * to look up physical IDs of every same-stack resource, then make those
  * IDs available to the existing `state-resolver.ts` substitution engine.
- * This lets `cdkd local *` substitute env vars / secrets / images that
+ * This lets `cdkl *` substitute env vars / secrets / images that
  * reference deployed resources in a CDK app deployed via the upstream
  * CDK CLI (`cdk deploy` → CloudFormation) WITHOUT first migrating the
  * stack to cdkd.
@@ -35,7 +35,7 @@
  *     `DescribeStacks.Outputs[]`.
  *
  * Region handling: the provider takes a single region at construction
- * time (the `cdkd local *` commands resolve this from
+ * time (the `cdkl *` commands resolve this from
  * `--stack-region` > `--region` > `AWS_REGION` > the synth-derived
  * region per the existing `--from-state` precedence). Cross-region
  * `Fn::ImportValue` is out of scope for v1 (CFn's `ListExports` is
@@ -83,7 +83,7 @@ export interface CfnLocalStateProviderOptions {
    * shared config / IAM role) picks the credentials.
    *
    * Issue #628: an earlier revision captured this option but did NOT
-   * pass it to the client, so `cdkd local start-api --from-cfn-stack
+   * pass it to the client, so `cdkl start-api --from-cfn-stack
    * <stack> --profile <profile>` silently queried the default account
    * and failed with "Stack does not exist" when the stack lived
    * elsewhere. Matches the threading pattern in

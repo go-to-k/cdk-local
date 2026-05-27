@@ -102,7 +102,7 @@ export function resolveRuntimeImage(runtime: string): string {
  *
  * Additionally throws when the resolved runtime has `fileExtension: null`
  * — this is the canonical entry point for the inline-`Code.ZipFile` branch
- * in both `cdkd local invoke` and `cdkd local start-api`, so rejecting
+ * in both `cdkl invoke` and `cdkl start-api`, so rejecting
  * here surfaces a user-friendly "use Code.fromAsset" message before the
  * callers reach the materializer. Asset-backed Lambdas never call this.
  */
@@ -151,7 +151,7 @@ export function resolveRuntimeSpec(runtime: string): RuntimeSpec {
 
   throw new UnsupportedRuntimeError(
     runtime,
-    `Unknown runtime '${runtime}'. cdkd local invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21 / dotnet6 / dotnet8 / provided.al2 / provided.al2023.`
+    `Unknown runtime '${runtime}'. cdkl invoke supports nodejs18.x / nodejs20.x / nodejs22.x / nodejs24.x / python3.11 / python3.12 / python3.13 / python3.14 / ruby3.2 / ruby3.3 / java8.al2 / java11 / java17 / java21 / dotnet6 / dotnet8 / provided.al2 / provided.al2023.`
   );
 }
 

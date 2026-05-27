@@ -47,7 +47,7 @@ export interface MaterializeLayerOptions {
    * unset the dev's default credentials (whatever the SDK default
    * chain resolves) are used. Threading a per-CLI-invocation flag is
    * the canonical cross-account escape hatch — see `--layer-role-arn`
-   * on `cdkd local invoke` / `cdkd local start-api`.
+   * on `cdkl invoke` / `cdkl start-api`.
    */
   roleArn?: string;
   /**

@@ -5,7 +5,7 @@ import type { CognitoUserPoolAuthorizer, JwtAuthorizer } from './authorizer-reso
 import { buildIdentityHash } from './authorizer-resolver.js';
 
 /**
- * Cognito User Pool / JWT authorizer support for `cdkd local start-api`
+ * Cognito User Pool / JWT authorizer support for `cdkl start-api`
  * (PR 8b).
  *
  * cdkd verifies JWTs locally against the user pool's published JWKS so

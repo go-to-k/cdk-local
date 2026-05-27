@@ -1,6 +1,6 @@
 /**
  * AWS API Gateway VTL (Velocity Template Language) evaluator — hand-rolled
- * minimal subset for `cdkd local start-api`'s REST v1 non-AWS_PROXY
+ * minimal subset for `cdkl start-api`'s REST v1 non-AWS_PROXY
  * integrations (#457).
  *
  * Background
@@ -320,7 +320,7 @@ class VtlEvaluator {
         throw new VtlEvaluationError(`Unexpected #${name} outside of a #if / #foreach block`);
       default:
         throw new VtlEvaluationError(
-          `Unsupported VTL directive #${name} (cdkd local start-api supports #set / #if / #elseif / #else / #foreach / #end / ##)`
+          `Unsupported VTL directive #${name} (cdkl start-api supports #set / #if / #elseif / #else / #foreach / #end / ##)`
         );
     }
   }

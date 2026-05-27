@@ -1,6 +1,6 @@
 /**
  * `LocalStateProvider` — abstraction over the substitution input the
- * `cdkd local *` commands feed to `state-resolver.ts`.
+ * `cdkl *` commands feed to `state-resolver.ts`.
  *
  * Two implementations:
  *

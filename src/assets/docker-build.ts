@@ -6,7 +6,7 @@ import { getLogger } from '../utils/logger.js';
  * Shared `docker build` invocation used by both
  * `src/assets/docker-asset-publisher.ts` (publish to ECR) and
  * `src/local/docker-image-builder.ts` (run a container Lambda locally via
- * `cdkd local invoke`).
+ * `cdkl invoke`).
  *
  * Parity with CDK CLI's `@aws-cdk/cdk-assets-lib`:
  *   - Streaming spawn via `runDockerStreaming` (no `execFile` `maxBuffer`

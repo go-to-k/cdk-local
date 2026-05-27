@@ -13,7 +13,7 @@ import type { WebSocket } from 'ws';
  *
  * Handlers route to this module via the env-var override
  * `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI=http://<host>:<port>` that
- * `cdkd local start-api` injects into every WebSocket-API Lambda's
+ * `cdkl start-api` injects into every WebSocket-API Lambda's
  * container (see `container-pool.ts`). The AWS SDK v3 honors this
  * env var and sends the call to cdkd's HTTP server instead of the
  * synthetic `*.execute-api.*.amazonaws.com` hostname.
@@ -30,7 +30,7 @@ import type { WebSocket } from 'ws';
  * Keyed by `connectionId` so the `POST /@connections/<id>` handler can
  * route the payload back to the live WebSocket without scanning every
  * server's registry. Ephemeral by design (no persistence across server
- * restarts) — matches `cdkd local start-api`'s overall no-state model.
+ * restarts) — matches `cdkl start-api`'s overall no-state model.
  */
 export interface ConnectionRegistryEntry {
   /** UUID v4 generated at `$connect`. Opaque per AWS docs. */

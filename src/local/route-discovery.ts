@@ -31,7 +31,7 @@ export type RestV1IntegrationConfig =
   | AwsLambdaIntegrationConfig;
 
 /**
- * One discovered API → Lambda route for `cdkd local start-api`.
+ * One discovered API → Lambda route for `cdkl start-api`.
  *
  * Walks the synthesized template, extracts every API Gateway REST v1
  * route, ApiGatewayV2 (HTTP) route, and Function URL, and produces a flat
@@ -104,8 +104,8 @@ export interface DiscoveredRoute {
    * Name of the stack the parent API resource (or backing Lambda for
    * Function URLs) lives in. Populated for every route so the
    * `--api` filter can accept the **stack-qualified logical id**
-   * form (`MyStack:MyHttpApi`) — mirrors `cdkd local invoke` /
-   * `cdkd local run-task` target syntax.
+   * form (`MyStack:MyHttpApi`) — mirrors `cdkl invoke` /
+   * `cdkl run-task` target syntax.
    */
   apiStackName?: string;
   /**
@@ -260,7 +260,7 @@ export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] 
 
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkd local start-api: ${errors.length} malformed route(s) in the synthesized template:\n` +
+      `cdkl start-api: ${errors.length} malformed route(s) in the synthesized template:\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }
@@ -479,7 +479,7 @@ function discoverRestV1Method(
         unsupported: {
           reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
             integrationUri
-          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`cdkd local invoke --from-state\` shapes if you need it.`,
+          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`cdkl invoke --from-state\` shapes if you need it.`,
         },
       },
     ];
@@ -579,7 +579,7 @@ type ConfigOrUnsupported<T> =
   | { kind: 'unsupported'; reason: string };
 
 /**
- * Build a MOCK integration config for `cdkd local start-api` dispatch.
+ * Build a MOCK integration config for `cdkl start-api` dispatch.
  *
  * Pulls `Integration.RequestTemplates['application/json']` (drives MOCK
  * status-code selection — AWS reads `{"statusCode": N}` from the rendered
@@ -611,7 +611,7 @@ function buildHttpProxyIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (cdkd local start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
+      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (cdkl start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -642,7 +642,7 @@ function buildHttpIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (cdkd local start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
+      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (cdkl start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -667,7 +667,7 @@ function buildHttpIntegrationConfig(
  * targets a Lambda (`:lambda:path/2015-03-31/functions/<arn>/invocations`)
  * or a non-Lambda AWS service (`:s3:path/...` / `:sqs:action/...` etc.).
  *
- * cdkd v1 supports Lambda non-proxy AWS integrations end-to-end. Non-
+ * cdkl v1 supports Lambda non-proxy AWS integrations end-to-end. Non-
  * Lambda AWS service integrations surface as deferred-501 unsupported
  * routes — they would require an AWS SDK client per service, IAM
  * credential threading, and a sizable per-service unit-test matrix.
@@ -684,7 +684,7 @@ function buildAwsIntegrationConfig(
   if (!isLambda) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkd v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md.`,
+      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkl v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md.`,
     };
   }
   const arnOutcome = resolveLambdaArnOutcome(uri);
@@ -1068,7 +1068,7 @@ function classifyServiceIntegrationRoute(
       unsupported: {
         reason: `${declaredAt}: HTTP API v2 service integration subtype '${stringifyValue(
           subtypeRaw
-        )}' is not supported by cdkd local start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
+        )}' is not supported by cdkl start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
       },
     };
   }
@@ -1266,7 +1266,7 @@ function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): st
  * **Why we don't reuse `src/deployment/intrinsic-function-resolver.ts`**:
  * that resolver is deploy-state-coupled — it pulls in STS / EC2 / Secrets
  * Manager / SSM SDKs and the state backend to resolve runtime values.
- * `cdkd local start-api` runs purely against the synthesized template
+ * `cdkl start-api` runs purely against the synthesized template
  * and doesn't have any of that.
  */
 function resolveLambdaArnOutcome(

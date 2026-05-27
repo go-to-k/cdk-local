@@ -5,7 +5,7 @@ import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
 
 /**
- * Per-Lambda warm container pool for `cdkd local start-api` (D8.3).
+ * Per-Lambda warm container pool for `cdkl start-api` (D8.3).
  *
  * Two design forces:
  *
@@ -107,7 +107,7 @@ interface ContainerSpecBase {
   tmpfs?: { target: string; sizeMb: number };
   /**
    * Extra `--add-host` mappings forwarded to `docker run`. Used by
-   * `cdkd local start-api`'s WebSocket support (#462) to inject
+   * `cdkl start-api`'s WebSocket support (#462) to inject
    * `host.docker.internal:host-gateway` so Lambdas backing
    * WebSocket APIs can reach the host's `@connections` HTTP
    * endpoint when calling `apigatewaymanagementapi:PostToConnection`.

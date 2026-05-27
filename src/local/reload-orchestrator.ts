@@ -6,7 +6,7 @@ import type { DiscoveredRoute } from './route-discovery.js';
 import type { ServerState } from './http-server.js';
 
 /**
- * Hot-reload orchestrator for `cdkd local start-api --watch` (PR 8c,
+ * Hot-reload orchestrator for `cdkl start-api --watch` (PR 8c,
  * issue #235).
  *
  * The watcher fires `'reload'` whenever the user touches a watched
@@ -220,7 +220,7 @@ async function runOneReload(
   // Tag the new pool with the spec map so the next reload can compare.
   // We hang it off the pool with a non-enumerable property for diagnostic
   // access without baking it into the public ContainerPool interface.
-  Object.defineProperty(newPool, '__cdkdSpecs', {
+  Object.defineProperty(newPool, '__cdklSpecs', {
     value: material.specs,
     enumerable: false,
     configurable: true,
@@ -320,7 +320,7 @@ function specSignature(spec: ContainerSpec): string {
 /**
  * Recover the per-Lambda spec map from a {@link ServerState}'s pool.
  * Returns an empty map when the pool wasn't tagged via the
- * `__cdkdSpecs` non-enumerable property (which only happens on the
+ * `__cdklSpecs` non-enumerable property (which only happens on the
  * very first state set up by the CLI — that path goes through
  * `createContainerPool` directly without going through the orchestrator).
  *
@@ -329,7 +329,7 @@ function specSignature(spec: ContainerSpec): string {
  * spec diff against the starting baseline.
  */
 function pickSpecsFromState(state: ServerState): Map<string, ContainerSpec> {
-  const tagged = (state.pool as unknown as { __cdkdSpecs?: Map<string, ContainerSpec> })
-    .__cdkdSpecs;
+  const tagged = (state.pool as unknown as { __cdklSpecs?: Map<string, ContainerSpec> })
+    .__cdklSpecs;
   return tagged ?? new Map<string, ContainerSpec>();
 }

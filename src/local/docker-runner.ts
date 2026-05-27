@@ -7,7 +7,7 @@ import { getLogger } from '../utils/logger.js';
 const execFileAsync = promisify(execFile);
 
 /**
- * Wraps `docker pull` / `docker run` / `docker rm` for `cdkd local invoke`.
+ * Wraps `docker pull` / `docker run` / `docker rm` for `cdkl invoke`.
  *
  * Mirrors the style of `src/assets/docker-asset-publisher.ts` (execFile for
  * one-shot calls, spawn for long-running ones). Kept as a separate file so
@@ -101,11 +101,11 @@ export interface DockerRunOptions {
    */
   name?: string;
   /**
-   * Optional `--network <name>` for the container. `cdkd local run-task`
+   * Optional `--network <name>` for the container. `cdkl run-task`
    * uses this so every container in a task lands on the same per-task
    * docker network and can reach the metadata-endpoints sidecar at
    * `169.254.170.2`. Unset → docker's default bridge network (current
-   * behavior for `cdkd local invoke` / `cdkd local start-api`).
+   * behavior for `cdkl invoke` / `cdkl start-api`).
    */
   network?: string;
   /**
@@ -125,7 +125,7 @@ export interface DockerRunOptions {
   tmpfs?: { target: string; sizeMb: number };
   /**
    * Extra `--add-host <host>:<ip>` mappings written into the
-   * container's `/etc/hosts`. Used by `cdkd local start-api`'s
+   * container's `/etc/hosts`. Used by `cdkl start-api`'s
    * WebSocket support (#462) to add
    * `host.docker.internal:host-gateway` so the Lambda container can
    * reach the host's `@connections` HTTP endpoint regardless of OS
@@ -337,7 +337,7 @@ export async function ensureDockerAvailable(): Promise<void> {
     const err = error as { code?: string; stderr?: string; message?: string };
     if (err.code === 'ENOENT') {
       throw new DockerRunnerError(
-        `${cmd} is not installed or not on PATH. cdkd local invoke needs Docker (or a compatible CLI specified via CDK_DOCKER) — install it and retry.`
+        `${cmd} is not installed or not on PATH. cdkl invoke needs Docker (or a compatible CLI specified via CDK_DOCKER) — install it and retry.`
       );
     }
     throw new DockerRunnerError(
@@ -379,7 +379,7 @@ export function pickFreePort(): Promise<number> {
  * AWS credential keys whose values must NOT be written to the debug log.
  * `forwardAwsEnv` / `assumeLambdaExecutionRole` (in `local-invoke.ts`)
  * push these via `-e <KEY>=<value>` flags into `runDetached`'s args
- * array, and `cdkd local invoke --verbose` would otherwise leak them
+ * array, and `cdkl invoke --verbose` would otherwise leak them
  * into stdout / log files. Only the matching `-e <KEY>=<value>` pair is
  * redacted; non-credential `-e KEY=val` entries pass through unchanged.
  */

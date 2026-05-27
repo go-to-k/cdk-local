@@ -2,7 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
- * CORS preflight (OPTIONS) interception for `cdkd local start-api`
+ * CORS preflight (OPTIONS) interception for `cdkl start-api`
  * (PR 8c, issue #235).
  *
  * Background: PR 8a left CORS preflight unimplemented. AWS's HTTP API
@@ -179,7 +179,7 @@ function pickStringArray(value: unknown): string[] {
  * Production-correct CDK pattern: Function URL fronted by a CloudFront
  * Distribution where CORS is declared on the CloudFront
  * `ResponseHeadersPolicy` (NOT on the Function URL itself). Without this
- * helper, `cdkd local start-api` sees `Cors: null` on the Function URL
+ * helper, `cdkl start-api` sees `Cors: null` on the Function URL
  * and emits no preflight headers — even though the CDK code correctly
  * declares the allowed origins on the CloudFront side.
  *

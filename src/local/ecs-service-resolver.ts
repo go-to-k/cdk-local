@@ -13,7 +13,7 @@ import {
 /**
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
  * cloud assembly. Wraps an already-resolved `ResolvedEcsTask` (Phase 1's
- * descriptor) plus the service-specific knobs `cdkd local start-service`
+ * descriptor) plus the service-specific knobs `cdkl start-service`
  * needs: `DesiredCount`, `HealthCheckGracePeriodSeconds`, the physical
  * task-definition logical ID (so the runner can name its docker networks
  * after the service rather than only after the task definition), AND
@@ -23,7 +23,7 @@ import {
  *
  * `LoadBalancers[]` is intentionally NOT surfaced in v1 — local
  * load-balancer emulation is deferred to a follow-up PR per the issue's
- * own PR-split recommendation (see CLAUDE.md "cdkd local start-service"
+ * own PR-split recommendation (see CLAUDE.md "cdkl start-service"
  * bullet for the deferral list).
  */
 /**
@@ -157,7 +157,7 @@ export interface ResolvedEcsService {
  * to produce a `ResolvedEcsService` carrying both the service knobs and
  * the underlying task descriptor.
  *
- * Target shape mirrors `cdkd local run-task`: `<Stack>/<DisplayPath>` or
+ * Target shape mirrors `cdkl run-task`: `<Stack>/<DisplayPath>` or
  * `<Stack>:<LogicalId>`; single-stack apps may omit the stack prefix.
  *
  * Optional `context` (same as the task resolver) carries the ECR image
@@ -209,7 +209,7 @@ export function resolveEcsServiceTarget(
   if (serviceResource.Type === 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
       `Resource '${serviceLogicalId}' in ${stack.stackName} is an ECS TaskDefinition, not a Service. ` +
-        'Use `cdkd local run-task` for one-shot tasks; `cdkd local start-service` is Service-only.'
+        'Use `cdkl run-task` for one-shot tasks; `cdkl start-service` is Service-only.'
     );
   }
   if (serviceResource.Type !== 'AWS::ECS::Service') {
@@ -503,7 +503,7 @@ function resolveTaskDefinitionReference(
   }
   throw new EcsTaskResolutionError(
     `ECS Service '${serviceLogicalId}' has an unsupported TaskDefinition reference shape: ` +
-      `${JSON.stringify(taskDefRef)}. cdkd local start-service v1 supports only Ref to a ` +
+      `${JSON.stringify(taskDefRef)}. cdkl start-service v1 supports only Ref to a ` +
       'same-stack AWS::ECS::TaskDefinition; cross-stack TaskDefinitions are deferred.'
   );
 }

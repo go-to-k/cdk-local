@@ -32,7 +32,7 @@
  * to the SDK client constructor.
  *
  * Authentication: SDK calls run under the dev's local AWS credential
- * chain (same chain as `cdkd local invoke --assume-role` v1) — no
+ * chain (same chain as `cdkl invoke --assume-role` v1) — no
  * separate `--service-integration-role` flag in this PR. The dev's
  * permissions therefore control what the local route can reach,
  * matching the safe-by-default precedent set by sigv4-verify.ts.

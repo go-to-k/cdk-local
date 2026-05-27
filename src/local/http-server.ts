@@ -49,7 +49,7 @@ import {
 } from './parameter-mapping.js';
 
 /**
- * The user-facing HTTP server for `cdkd local start-api`.
+ * The user-facing HTTP server for `cdkl start-api`.
  *
  * Wires together:
  *   - {@link matchRoute} for routing (3-tier precedence + literal-segment
@@ -139,7 +139,7 @@ export interface StartApiServerOptions {
    * (HTTP v2). When unset, the server uses plain HTTP (the pre-PR
    * behavior).
    *
-   * mTLS is enabled in `cdkd local start-api` only when ALL THREE
+   * mTLS is enabled in `cdkl start-api` only when ALL THREE
    * `--mtls-truststore`, `--mtls-cert`, and `--mtls-key` flags are set;
    * partial flag sets are rejected at the CLI parse layer before this
    * function is called.
@@ -186,7 +186,7 @@ export interface StartApiServerOptions {
    * the pipeline (the hook has written the full response itself),
    * `false` to continue normal HTTP dispatch.
    *
-   * Wired by `cdkd local start-api` on a server hosting a WebSocket
+   * Wired by `cdkl start-api` on a server hosting a WebSocket
    * API to intercept `POST/GET/DELETE /@connections/<id>` calls so the
    * AWS SDK's `apigatewaymanagementapi:PostToConnection` (issued from
    * inside a Lambda container via `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`

@@ -7,10 +7,10 @@ import { getLogger } from '../utils/logger.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 
 /**
- * Local-build path for `cdkd local invoke` against container Lambdas
+ * Local-build path for `cdkl invoke` against container Lambdas
  * (PR 5). Wraps `buildDockerImage` (in `src/assets/docker-build.ts`) with
  * a stable local tag derived from the asset source directory + Dockerfile
- * + build-args fingerprint, so successive `cdkd local invoke` runs hit
+ * + build-args fingerprint, so successive `cdkl invoke` runs hit
  * Docker's layer cache instead of re-building from scratch.
  *
  * Failures are wrapped in `LocalInvokeBuildError` (mirrors the publisher's
@@ -27,7 +27,7 @@ export interface BuildContainerImageOptions {
    * "image not in local registry and --no-build is set" error when the
    * tag is missing so the user knows to drop `--no-build` or run
    * `docker build` manually first. Off by default; opt-in via the CLI's
-   * `cdkd local invoke --no-build` flag (closes #233).
+   * `cdkl invoke --no-build` flag (closes #233).
    *
    * The local tag is deterministic — derived from the asset source
    * directory + Dockerfile + build-target + build-args fingerprint via

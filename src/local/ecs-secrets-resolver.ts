@@ -14,7 +14,7 @@ import { getLogger } from '../utils/logger.js';
  * is meaningless because a "missing" secret would otherwise look like a
  * literal empty string and break the container silently.
  *
- * Failure mode is hard-fail. Mirrors `cdkd local invoke --from-state`'s
+ * Failure mode is hard-fail. Mirrors `cdkl invoke --from-state`'s
  * philosophy: explicit failure beats silently-empty. The user fixes their
  * AWS creds / IAM policy / parameter name and re-runs.
  */

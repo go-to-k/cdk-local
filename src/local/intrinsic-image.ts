@@ -4,7 +4,7 @@ import type { TemplateResource } from '../types/resource.js';
 /**
  * Shared resolver for CFn intrinsic-function shapes that show up in
  * container-image URI fields — both ECS `ContainerDefinition.Image`
- * (`cdkd local run-task`) and Lambda `Code.ImageUri` (`cdkd local
+ * (`cdkl run-task`) and Lambda `Code.ImageUri` (`cdkd local
  * invoke` container Lambdas). CDK 2.x synthesizes the same canonical
  * `Fn::Join` shape for `ContainerImage.fromEcrRepository(repo, tag)` and
  * `lambda.DockerImageCode.fromEcr(repo, { tagOrDigest })` — so both call
@@ -424,7 +424,7 @@ function resolveImageIntrinsicAny(
  * post-substitution `.includes('${')` check and surface a precise error.
  *
  * Pure string-rewrite; no AWS calls. Used by both the flat-`Fn::Sub`
- * Image path (ECS `cdkd local run-task`) and the `Fn::Sub` branch of
+ * Image path (ECS `cdkl run-task`) and the `Fn::Sub` branch of
  * `resolveImageIntrinsicAny` (the nested-intrinsic resolver in this
  * file).
  */

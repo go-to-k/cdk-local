@@ -16,7 +16,7 @@ import {
 } from './state-resolver.js';
 
 /**
- * Result of resolving a `cdkd local run-task <target>` argument back to a
+ * Result of resolving a `cdkl run-task <target>` argument back to a
  * concrete `AWS::ECS::TaskDefinition` in the synthesized assembly. The
  * shape mirrors what the ECS API + the CFn template expose so the runner
  * can directly translate each field into `docker run` flags / `docker
@@ -84,7 +84,7 @@ export interface ResolvedEcsContainer {
   command?: string[];
   entryPoint?: string[];
   workingDirectory?: string;
-  /** Literal-only env vars; intrinsic-valued entries are dropped (matches `cdkd local invoke` v1). */
+  /** Literal-only env vars; intrinsic-valued entries are dropped (matches `cdkl invoke` v1). */
   environment: Record<string, string>;
   /** SecretArn entries. Resolved to real values by `ecs-secrets-resolver.ts`. */
   secrets: { name: string; valueFrom: string }[];
@@ -581,7 +581,7 @@ export function resolveEcsTaskTarget(
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is a Lambda function, not an ECS task definition. ` +
-        'Use `cdkd local invoke` for Lambda; `cdkd local run-task` is ECS only.'
+        'Use `cdkl invoke` for Lambda; `cdkl run-task` is ECS only.'
     );
   }
   if (resource.Type !== 'AWS::ECS::TaskDefinition') {
@@ -653,14 +653,14 @@ function extractTaskDefinitionProperties(
   }
 
   // Issue #544 — `ProxyConfiguration` (custom App Mesh / Envoy bootstrap)
-  // is NOT honored by `cdkd local start-service` / `cdkd local run-task`
+  // is NOT honored by `cdkl start-service` / `cdkl run-task`
   // in v1. Design § 2 hard-rejects custom Envoy bootstrap; locally we
   // run the user's containers without the configured proxy and surface
   // a warn so users aren't surprised by the missing sidecar.
   if (props['ProxyConfiguration']) {
     warnings.push(
       `Task definition '${logicalId}' declares 'ProxyConfiguration' (custom Envoy / App Mesh bootstrap), ` +
-        "which is NOT honored by 'cdkd local start-service' / 'cdkd local run-task' in v1. " +
+        "which is NOT honored by 'cdkl start-service' / 'cdkl run-task' in v1. " +
         'Local execution will run without the configured proxy. See design doc § 2 for the rationale.'
     );
   }
@@ -777,7 +777,7 @@ function parseContainerDefinition(
       // Intrinsic-valued entry. With `--from-state` we try to substitute
       // against state + pseudo parameters (closes #291); without it the
       // value is dropped and a warn is surfaced via the task's
-      // `warnings` array (matches PR 1 `cdkd local invoke` semantics).
+      // `warnings` array (matches PR 1 `cdkl invoke` semantics).
       if (subContext) {
         const sub = substituteAgainstState(value, subContext);
         if (sub.kind === 'literal') {
@@ -974,7 +974,7 @@ function buildSubstitutionContextFromImageContext(
  * Three shapes:
  *   - `<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>` — same-account
  *     same-region ECR. Cross-account/region is hard-errored (matches
- *     `cdkd local invoke`'s ECR-pull semantics).
+ *     `cdkl invoke`'s ECR-pull semantics).
  *   - `Fn::Sub` / `Fn::Join` / `Ref` referencing a `Code.fromAsset`-style
  *     CDK asset image. Surfaces `kind: 'cdk-asset'` with the optional
  *     asset hash so the runner can route through `docker-build.ts`.
@@ -1030,7 +1030,7 @@ function parseContainerImage(
   if (joinResolved.kind === 'needs-state') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-        'cdkd local run-task cannot resolve the repository URI without state — ' +
+        'cdkl run-task cannot resolve the repository URI without state — ' +
         'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
         'build via ContainerImage.fromAsset, or pin a public image.'
     );
@@ -1038,7 +1038,7 @@ function parseContainerImage(
   if (joinResolved.kind === 'unsupported-join') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unsupported Fn::Join Image shape: ${joinResolved.reason}. ` +
-        'cdkd local run-task recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ' +
+        'cdkl run-task recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ' +
         '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
     );
   }
@@ -1047,7 +1047,7 @@ function parseContainerImage(
   if (!flat) {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unparseable Image property. ` +
-        'cdkd local run-task v1 supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.'
+        'cdkl run-task v1 supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.'
     );
   }
 
@@ -1076,7 +1076,7 @@ function parseContainerImage(
     if (unresolvedRepoRef) {
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
-          'cdkd local run-task v1 cannot resolve the repository URI without state — ' +
+          'cdkl run-task v1 cannot resolve the repository URI without state — ' +
           'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
           'build via ContainerImage.fromAsset, or pin a public image.'
       );
@@ -1094,7 +1094,7 @@ function parseContainerImage(
     // a "public" image.
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an Image with unresolved \${...} placeholders (${substituted}). ` +
-        'cdkd local run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.'
+        'cdkl run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.'
     );
   }
 
@@ -1237,13 +1237,13 @@ function parseVolume(
 
   if (v['EFSVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which cdkd local run-task cannot proxy locally. ` +
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which cdkl run-task cannot proxy locally. ` +
         `Workaround: bind-mount a local directory at the same containerPath via Host: { SourcePath: '<local-path>' }, or override at runtime via --env-vars semantics for a Phase 2 follow-up.`
     );
   }
   if (v['FSxWindowsFileServerVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which cdkd local run-task cannot proxy locally.`
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which cdkl run-task cannot proxy locally.`
     );
   }
 
@@ -1279,7 +1279,7 @@ function parseVolume(
   // via real `cdk synth` against `new ecs.Ec2TaskDefinition({ volumes:
   // [{ name, host: { sourcePath: cdk.Fn.sub('...') } }] })`). When state
   // + pseudo parameters are available (`--from-state` flow on
-  // `cdkd local run-task` already populates the context for env / secret
+  // `cdkl run-task` already populates the context for env / secret
   // / image resolution), we substitute the intrinsic in place via the
   // same `substituteAgainstState` helper. Unresolvable intrinsics
   // hard-error — a Host bind mount with a missing path is not safe to

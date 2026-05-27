@@ -4,7 +4,7 @@ import { runDockerStreaming } from '../utils/docker-cmd.js';
  * Lower bound for `--add-host=<name>:host-gateway` support. The
  * `host-gateway` magic alias was introduced in Docker 20.10 (October
  * 2020) and is the load-bearing primitive cdkd uses to let Lambda
- * containers reach the host's `cdkd local start-api` server on Linux
+ * containers reach the host's `cdkl start-api` server on Linux
  * native dockerd. Without it, the AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI
  * override fails with `ENOTFOUND host.docker.internal` at SDK-call time.
  *
@@ -71,7 +71,7 @@ export interface HostGatewayProbeResult {
 /**
  * Probe the Docker server's version to gate the `--add-host=...:host-gateway`
  * mapping that WebSocket Lambda containers need to reach the host
- * server. Issued ONCE per `cdkd local start-api` invocation at WebSocket
+ * server. Issued ONCE per `cdkl start-api` invocation at WebSocket
  * attach time — HTTP-only / REST-only sessions skip the probe entirely.
  *
  * Throws when:
