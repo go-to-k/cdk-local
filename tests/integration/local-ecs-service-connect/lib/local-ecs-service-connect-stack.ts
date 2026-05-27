@@ -26,7 +26,7 @@ import { Construct } from 'constructs';
  *     to `containerPort` 8080 and collide on the 2nd replica) AND the
  *     first-replica-wins alias resolution: both frontend replicas
  *     inherit the same shared Cloud Map registry snapshot, so they must
- *     resolve `orders` / `orders.cdkd-sc.local` to the SAME (first
+ *     resolve `orders` / `orders.cdkl-sc.local` to the SAME (first
  *     registered) orders replica IP.
  *
  * Item (2) of #579 adds an `AWS::ServiceDiscovery::Service` resource
@@ -35,7 +35,7 @@ import { Construct } from 'constructs';
  * This exercises the SECOND Cloud Map mechanism in
  * `publishReplicaToCloudMap` (the ServiceRegistries[] branch — distinct
  * from the Service Connect alias branch) end-to-end: the integ asserts
- * `orders-discovery.cdkd-sc.local` resolves to an orders container IP
+ * `orders-discovery.cdkl-sc.local` resolves to an orders container IP
  * in the frontend container's `/etc/hosts`.
  *
  * L1 `CfnService` + `CfnTaskDefinition` directly (no VPC) so the
@@ -61,7 +61,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     // the namespace string in the `--add-host name.namespace:ip`
     // overlay.
     const namespace = new cdk.aws_servicediscovery.CfnPrivateDnsNamespace(this, 'Ns', {
-      name: 'cdkd-sc.local',
+      name: 'cdkl-sc.local',
       // CfnPrivateDnsNamespace requires `Vpc` in real AWS, but cdkd
       // never sends this — local emulation skips the field on every
       // SDK call. CFn property-required validation is bypassed because
@@ -78,7 +78,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     // a collision would silently shadow per first-wins semantics.
     // `publishReplicaToCloudMap` resolves this via the synth-time
     // `cloudMapIndexByStack` entry and registers `{ip, port}` against
-    // `<discoveryName>.<namespaceName>` = `orders-discovery.cdkd-sc.local`.
+    // `<discoveryName>.<namespaceName>` = `orders-discovery.cdkl-sc.local`.
     const ordersDiscovery = new cdk.aws_servicediscovery.CfnService(this, 'OrdersDiscovery', {
       name: 'orders-discovery',
       // `Fn::GetAtt: [<NsLogicalId>, 'Id']` is the canonical CDK 2.x
@@ -152,7 +152,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
       launchType: 'EC2',
       serviceConnectConfiguration: {
         enabled: true,
-        namespace: 'cdkd-sc.local',
+        namespace: 'cdkl-sc.local',
         services: [
           {
             portName: 'orders-api',
@@ -170,8 +170,8 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
       // is distinct from the Service Connect alias branch above —
       // BOTH get registered against the same replica IP, so the
       // frontend container's `/etc/hosts` will carry both
-      // `orders.cdkd-sc.local` (Service Connect) AND
-      // `orders-discovery.cdkd-sc.local` (Cloud Map) entries.
+      // `orders.cdkl-sc.local` (Service Connect) AND
+      // `orders-discovery.cdkl-sc.local` (Cloud Map) entries.
       serviceRegistries: [
         {
           registryArn: ordersDiscovery.attrArn,
@@ -220,7 +220,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
       launchType: 'EC2',
       serviceConnectConfiguration: {
         enabled: true,
-        namespace: 'cdkd-sc.local',
+        namespace: 'cdkl-sc.local',
         services: [
           {
             portName: 'frontend-api',

@@ -56,7 +56,7 @@ fi
 # Silicon emulating x86_64) — the function's Timeout: 30 + cdkd's
 # `invokeTimeoutMs = max(30s, 2 * fn.timeout)` = 60s provides headroom.
 echo "==> [1/3] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeDotnetFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeDotnetFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -68,7 +68,7 @@ echo "==> [2/3] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeDotnetFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeDotnetFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -80,7 +80,7 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
 # and exit non-zero BEFORE pulling any image / starting any container.
 echo "==> [3/3] Invoking InlineHandler — expecting Inline Code.ZipFile rejection"
 RESULT_3=""
-if RESULT_3=$(${CDKL} invoke CdkdLocalInvokeDotnetFixture/InlineHandler --no-pull 2>&1); then
+if RESULT_3=$(${CDKL} invoke CdkLocalInvokeDotnetFixture/InlineHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on inline .NET, got success: ${RESULT_3}"
   exit 1
 fi

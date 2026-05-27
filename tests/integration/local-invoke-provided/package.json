@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-invoke-provided",
+  "name": "cdkl-integ-local-invoke-provided",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl invoke (provided.* + go1.x deprecation, issue #248)",

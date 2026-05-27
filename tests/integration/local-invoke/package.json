@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-invoke",
+  "name": "cdkl-integ-local-invoke",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl invoke",

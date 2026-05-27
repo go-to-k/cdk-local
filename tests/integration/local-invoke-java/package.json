@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-invoke-java",
+  "name": "cdkl-integ-local-invoke-java",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl invoke (Java runtimes, issue #248)",

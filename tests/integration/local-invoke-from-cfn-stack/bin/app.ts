@@ -4,6 +4,6 @@ import { LocalInvokeFromCfnStackStack } from '../lib/local-invoke-from-cfn-stack
 
 const app = new cdk.App();
 
-new LocalInvokeFromCfnStackStack(app, 'CdkdLocalInvokeFromCfnStackFixture', {
+new LocalInvokeFromCfnStackStack(app, 'CdkLocalInvokeFromCfnStackFixture', {
   description: 'Fixture stack for cdkl invoke --from-cfn-stack integ test',
 });

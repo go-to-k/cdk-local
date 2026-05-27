@@ -4,6 +4,6 @@ import { LocalRunTaskMultiStack } from '../lib/local-run-task-multi-stack.ts';
 
 const app = new cdk.App();
 
-new LocalRunTaskMultiStack(app, 'CdkdLocalRunTaskMultiFixture', {
+new LocalRunTaskMultiStack(app, 'CdkLocalRunTaskMultiFixture', {
   description: 'Fixture stack for cdkl run-task multi-container integ test',
 });

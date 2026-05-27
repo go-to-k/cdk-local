@@ -26,16 +26,16 @@
 #     are visible in `docker ps` (proves the #585 multi-replica
 #     host-port-skip fix — pre-fix the 2nd replica failed to boot with
 #     "port is already allocated"; #579 item (1)).
-#   - EACH frontend container has `orders.cdkd-sc.local` AND the bare
+#   - EACH frontend container has `orders.cdkl-sc.local` AND the bare
 #     `orders` alias mapped in its `/etc/hosts` (proves the Service
 #     Connect branch of `--add-host` flowed through to every consumer
 #     replica).
-#   - EACH frontend container ALSO has `orders-discovery.cdkd-sc.local`
+#   - EACH frontend container ALSO has `orders-discovery.cdkl-sc.local`
 #     mapped to an orders-container IP (proves the ServiceRegistries[]
 #     branch is wired end-to-end; #579 item (2)).
 #   - First-replica-wins alias resolution: BOTH frontend replicas
-#     resolve `orders` / `orders.cdkd-sc.local` /
-#     `orders-discovery.cdkd-sc.local` to the SAME orders replica IP
+#     resolve `orders` / `orders.cdkl-sc.local` /
+#     `orders-discovery.cdkl-sc.local` to the SAME orders replica IP
 #     (the first-registered one), since both consumers inherit the same
 #     shared Cloud Map registry snapshot (#579 item (1)).
 #   - `wget http://orders/` from inside a frontend container returns
@@ -91,8 +91,8 @@ trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
 echo "==> Booting both services (one cdkd invocation, shared Cloud Map registry)"
 ${CDKL} start-service \
-  CdkdLocalEcsServiceConnectFixture:OrdersService \
-  CdkdLocalEcsServiceConnectFixture:FrontendService \
+  CdkLocalEcsServiceConnectFixture:OrdersService \
+  CdkLocalEcsServiceConnectFixture:FrontendService \
   --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
@@ -170,7 +170,7 @@ fi
 echo "    frontend containers: $(tr '\n' ' ' <<<"${FRONTEND_IDS}")"
 
 # Collect the orders container's docker network IP so the
-# `orders-discovery.cdkd-sc.local` resolution can be cross-checked
+# `orders-discovery.cdkl-sc.local` resolution can be cross-checked
 # against it. The loop is N-agnostic (works for 1 or N>=2 containers)
 # so a future producer-side-multi-replica follow-up to #579 won't
 # need to rewrite this block.
@@ -197,8 +197,8 @@ fi
 
 # Per-replica /etc/hosts assertions across BOTH frontend replicas. Each
 # consumer must carry the Service Connect alias (`orders` short-form +
-# `orders.cdkd-sc.local` fqdn) AND the Cloud Map ServiceRegistries[]
-# alias (`orders-discovery.cdkd-sc.local`, #579 item (2)) — proving the
+# `orders.cdkl-sc.local` fqdn) AND the Cloud Map ServiceRegistries[]
+# alias (`orders-discovery.cdkl-sc.local`, #579 item (2)) — proving the
 # `--add-host` overlay flowed to EVERY consumer replica, not just one.
 echo "==> Asserting --add-host overlay in EACH frontend replica + first-replica-wins"
 ORDERS_ALIAS_IPS=""
@@ -208,20 +208,20 @@ for fid in ${FRONTEND_IDS}; do
   echo "----- /etc/hosts (${fid}) -----"
   echo "${HOSTS_OUTPUT}"
   echo "-------------------------------"
-  if ! grep -q "orders.cdkd-sc.local" <<<"${HOSTS_OUTPUT}"; then
-    echo "FAIL: frontend ${fid} /etc/hosts missing orders.cdkd-sc.local (Service Connect fqdn)"
+  if ! grep -q "orders.cdkl-sc.local" <<<"${HOSTS_OUTPUT}"; then
+    echo "FAIL: frontend ${fid} /etc/hosts missing orders.cdkl-sc.local (Service Connect fqdn)"
     exit 1
   fi
   if ! grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders$" <<<"${HOSTS_OUTPUT}"; then
     echo "FAIL: frontend ${fid} /etc/hosts missing bare 'orders' alias (ClientAlias short-form)"
     exit 1
   fi
-  if ! grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders-discovery\.cdkd-sc\.local$" <<<"${HOSTS_OUTPUT}"; then
-    echo "FAIL: frontend ${fid} /etc/hosts missing orders-discovery.cdkd-sc.local (ServiceRegistries[] branch)"
+  if ! grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders-discovery\.cdkl-sc\.local$" <<<"${HOSTS_OUTPUT}"; then
+    echo "FAIL: frontend ${fid} /etc/hosts missing orders-discovery.cdkl-sc.local (ServiceRegistries[] branch)"
     exit 1
   fi
   orders_ip=$(grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders$" <<<"${HOSTS_OUTPUT}" | awk '{print $1}' | head -1)
-  discovery_ip=$(grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders-discovery\.cdkd-sc\.local$" <<<"${HOSTS_OUTPUT}" | awk '{print $1}' | head -1)
+  discovery_ip=$(grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+orders-discovery\.cdkl-sc\.local$" <<<"${HOSTS_OUTPUT}" | awk '{print $1}' | head -1)
   if [[ -z "${orders_ip}" || -z "${discovery_ip}" ]]; then
     echo "FAIL: frontend ${fid} — could not extract orders / orders-discovery IP from /etc/hosts"
     exit 1
@@ -229,11 +229,11 @@ for fid in ${FRONTEND_IDS}; do
   ORDERS_ALIAS_IPS+="${orders_ip} "
   DISCOVERY_ALIAS_IPS+="${discovery_ip} "
 done
-echo "    OK: every frontend replica carries orders / orders.cdkd-sc.local / orders-discovery.cdkd-sc.local"
+echo "    OK: every frontend replica carries orders / orders.cdkl-sc.local / orders-discovery.cdkl-sc.local"
 
 # First-replica-wins: both consumers inherit the same shared Cloud Map
 # registry snapshot, so every frontend replica must resolve `orders`
-# AND `orders-discovery.cdkd-sc.local` to the SAME (first-registered)
+# AND `orders-discovery.cdkl-sc.local` to the SAME (first-registered)
 # orders replica IP. Collapsing the collected IPs with `sort -u` must
 # yield exactly one IP per alias.
 UNIQ_ORDERS_IPS=$(tr ' ' '\n' <<<"${ORDERS_ALIAS_IPS}" | grep -v '^$' | sort -u)
@@ -243,7 +243,7 @@ if [[ "$(wc -l <<<"${UNIQ_ORDERS_IPS}" | tr -d ' ')" -ne 1 ]]; then
   exit 1
 fi
 if [[ "$(wc -l <<<"${UNIQ_DISCOVERY_IPS}" | tr -d ' ')" -ne 1 ]]; then
-  echo "FAIL: frontend replicas disagree on the 'orders-discovery.cdkd-sc.local' alias IP: ${DISCOVERY_ALIAS_IPS}"
+  echo "FAIL: frontend replicas disagree on the 'orders-discovery.cdkl-sc.local' alias IP: ${DISCOVERY_ALIAS_IPS}"
   exit 1
 fi
 # The winning alias IP must be a REAL orders container IP, and both

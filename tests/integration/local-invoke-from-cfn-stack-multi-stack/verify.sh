@@ -11,7 +11,7 @@
 # `Fn::ImportValue` code path in `CfnLocalStateProvider` (~50 LOC) has
 # no integ coverage on its own — only unit tests prove it. This fixture
 # closes that gap with a producer/consumer pair: producer emits a
-# CloudFormation `Output` with `Export.Name: cdkd-multi-stack-shared-
+# CloudFormation `Output` with `Export.Name: cdkl-multi-stack-shared-
 # value`; consumer's Lambda env var is `Fn::ImportValue` against the
 # same name. With `--from-cfn-stack`, the consumer's env var should
 # resolve to the producer's exported value at local-invoke time
@@ -45,9 +45,9 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-PRODUCER_STACK="CdkdLocalInvokeMultiStackProducer"
-CONSUMER_STACK="CdkdLocalInvokeMultiStackConsumer"
-EXPORT_NAME="cdkd-multi-stack-shared-value"
+PRODUCER_STACK="CdkLocalInvokeMultiStackProducer"
+CONSUMER_STACK="CdkLocalInvokeMultiStackConsumer"
+EXPORT_NAME="cdkl-multi-stack-shared-value"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

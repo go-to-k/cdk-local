@@ -4,6 +4,6 @@ import { LocalInvokeContainerStack } from '../lib/local-invoke-container-stack.t
 
 const app = new cdk.App();
 
-new LocalInvokeContainerStack(app, 'CdkdLocalInvokeContainerFixture', {
+new LocalInvokeContainerStack(app, 'CdkLocalInvokeContainerFixture', {
   description: 'Fixture stack for cdkl invoke container Lambda integ test',
 });

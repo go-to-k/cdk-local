@@ -13,7 +13,7 @@
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps + docker pull
-#   2. cdk deploy CdkdLocalInvokeFromCfnStackFixture (upstream CDK CLI)
+#   2. cdk deploy CdkLocalInvokeFromCfnStackFixture (upstream CDK CLI)
 #   3. baseline: cdkl invoke (no --from-cfn-stack) — assert
 #      TABLE_NAME comes through as "unset" (env var dropped because it's
 #      intrinsic-valued and the default behavior warns + drops).
@@ -34,7 +34,7 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkdLocalInvokeFromCfnStackFixture"
+STACK="CdkLocalInvokeFromCfnStackFixture"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

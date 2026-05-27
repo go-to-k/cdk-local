@@ -1,5 +1,5 @@
 {
-  "name": "cdkd-integ-local-start-service",
+  "name": "cdkl-integ-local-start-service",
   "version": "1.0.0",
   "private": true,
   "description": "Integration test fixture for cdkl start-service",

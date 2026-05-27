@@ -9,14 +9,14 @@ const app = new cdk.App();
 // `Export.Name` set to this; consumer's Lambda env var pulls it via
 // `Fn::ImportValue`. The literal is intentionally distinctive so the
 // integ can grep for it.
-const EXPORT_NAME = 'cdkd-multi-stack-shared-value';
+const EXPORT_NAME = 'cdkl-multi-stack-shared-value';
 
-const producer = new ProducerStack(app, 'CdkdLocalInvokeMultiStackProducer', {
+const producer = new ProducerStack(app, 'CdkLocalInvokeMultiStackProducer', {
   description: 'Producer stack: emits an SSM Parameter and exports its name via Fn::ImportValue.',
   exportName: EXPORT_NAME,
 });
 
-new ConsumerStack(app, 'CdkdLocalInvokeMultiStackConsumer', {
+new ConsumerStack(app, 'CdkLocalInvokeMultiStackConsumer', {
   description: 'Consumer stack: Lambda env reads producer export via Fn::ImportValue.',
   exportName: EXPORT_NAME,
 }).addDependency(producer);

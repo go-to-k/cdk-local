@@ -4,7 +4,7 @@ import { LocalStartApiContainerStack } from '../lib/local-start-api-container-st
 
 const app = new cdk.App();
 
-new LocalStartApiContainerStack(app, 'CdkdLocalStartApiContainerFixture', {
+new LocalStartApiContainerStack(app, 'CdkLocalStartApiContainerFixture', {
   description:
     'Fixture stack for cdkl start-api integ test against a container Lambda (closes #453)',
 });

@@ -55,7 +55,7 @@ fi
 # function's Timeout: 30 + cdkd's `invokeTimeoutMs = max(30s, 2 * fn.timeout)`
 # = 60s provides ample headroom.
 echo "==> [1/3] Invoking EchoHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkdLocalInvokeJavaFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(${CDKL} invoke CdkLocalInvokeJavaFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -67,7 +67,7 @@ echo "==> [2/3] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkdLocalInvokeJavaFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(${CDKL} invoke CdkLocalInvokeJavaFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -79,7 +79,7 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
 # and exit non-zero BEFORE pulling any image / starting any container.
 echo "==> [3/3] Invoking InlineHandler — expecting Inline Code.ZipFile rejection"
 RESULT_3=""
-if RESULT_3=$(${CDKL} invoke CdkdLocalInvokeJavaFixture/InlineHandler --no-pull 2>&1); then
+if RESULT_3=$(${CDKL} invoke CdkLocalInvokeJavaFixture/InlineHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on inline Java, got success: ${RESULT_3}"
   exit 1
 fi

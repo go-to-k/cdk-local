@@ -61,7 +61,7 @@ OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
 echo "==> Starting awsvpc task via --detach (output captured)"
-${CDKL} run-task CdkdLocalRunTaskAwsvpcFixture/AwsvpcTask \
+${CDKL} run-task CdkLocalRunTaskAwsvpcFixture/AwsvpcTask \
   --detach --no-pull --container-host 127.0.0.1 \
   > "${OUT_FILE}" 2>&1
 echo "----- run-task output -----"
