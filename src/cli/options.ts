@@ -26,10 +26,7 @@ export function parseContextOptions(contextArgs?: string[]): Record<string, stri
 export const commonOptions = [
   new Option('--verbose', 'Enable verbose logging').default(false),
   new Option('--profile <profile>', 'AWS profile'),
-  new Option(
-    '--role-arn <arn>',
-    'IAM role ARN to assume for AWS API calls (env: CDKL_ROLE_ARN)'
-  ),
+  new Option('--role-arn <arn>', 'IAM role ARN to assume for AWS API calls (env: CDKL_ROLE_ARN)'),
   new Option(
     '-y, --yes',
     'Automatically answer interactive prompts with the recommended response'

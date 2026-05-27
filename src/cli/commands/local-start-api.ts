@@ -462,7 +462,8 @@ async function localStartApiCommand(
     // differ if stacks span partitions. Per-stack failures degrade to
     // warn-and-fall-back (the PR 1 behavior is preserved) so a missing
     // or unreadable state file never aborts the server boot.
-    const stateSourceActive = isCfnFlagPresent(options) || hasExtraStateProviderActive(options, extraStateProviders);
+    const stateSourceActive =
+      isCfnFlagPresent(options) || hasExtraStateProviderActive(options, extraStateProviders);
     const stateByStack = stateSourceActive
       ? await loadStateForRoutedStacks(
           targetStacks,
