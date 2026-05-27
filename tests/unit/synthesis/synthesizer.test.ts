@@ -1,0 +1,152 @@
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+const { mockRead, MockAssemblyReader } = vi.hoisted(() => {
+  const mockRead = vi.fn();
+  const MockAssemblyReader = vi.fn().mockImplementation(() => ({ read: mockRead }));
+  return { mockRead, MockAssemblyReader };
+});
+
+vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
+  AssemblyReader: MockAssemblyReader,
+}));
+
+import { Synthesizer } from '../../../src/synthesis/synthesizer.js';
+
+describe('Synthesizer.synthesize', () => {
+  beforeEach(() => {
+    mockRead.mockReset();
+    MockAssemblyReader.mockClear();
+  });
+
+  it('returns { stacks } pulled from AssemblyReader.read', async () => {
+    const fakeStacks = [
+      { stackName: 'A' },
+      { stackName: 'B' },
+    ];
+    mockRead.mockResolvedValue(fakeStacks);
+
+    const s = new Synthesizer();
+    const result = await s.synthesize({ app: 'node app.ts' });
+
+    expect(result).toEqual({ stacks: fakeStacks });
+  });
+
+  it('passes app as the first arg to AssemblyReader.read', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'node my-app.ts' });
+
+    expect(mockRead).toHaveBeenCalledTimes(1);
+    expect(mockRead.mock.calls[0][0]).toBe('node my-app.ts');
+  });
+
+  it('forwards output to readOpts.outdir', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', output: 'custom-out' });
+
+    expect(mockRead).toHaveBeenCalledWith('x', { outdir: 'custom-out' });
+  });
+
+  it('omits readOpts.outdir when output is undefined', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x' });
+
+    const opts = mockRead.mock.calls[0][1];
+    expect(opts).not.toHaveProperty('outdir');
+  });
+
+  it('threads profile into readOpts.env.AWS_PROFILE', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', profile: 'dev' });
+
+    expect(mockRead).toHaveBeenCalledWith('x', {
+      env: { AWS_PROFILE: 'dev' },
+    });
+  });
+
+  it('threads region into readOpts.env.AWS_REGION AND CDK_DEFAULT_REGION', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', region: 'us-east-1' });
+
+    expect(mockRead).toHaveBeenCalledWith('x', {
+      env: {
+        AWS_REGION: 'us-east-1',
+        CDK_DEFAULT_REGION: 'us-east-1',
+      },
+    });
+  });
+
+  it('threads profile + region together into a single env object', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', profile: 'p', region: 'eu-west-1' });
+
+    expect(mockRead).toHaveBeenCalledWith('x', {
+      env: {
+        AWS_PROFILE: 'p',
+        AWS_REGION: 'eu-west-1',
+        CDK_DEFAULT_REGION: 'eu-west-1',
+      },
+    });
+  });
+
+  it('omits readOpts.env when neither profile nor region is set', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x' });
+
+    const opts = mockRead.mock.calls[0][1];
+    expect(opts).not.toHaveProperty('env');
+  });
+
+  it('drops context (Phase 2d-2 follow-up: not currently threaded)', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x', context: { k: 'v', k2: 'v2' } });
+
+    const opts = mockRead.mock.calls[0][1];
+    expect(opts).not.toHaveProperty('env');
+    expect(opts).not.toHaveProperty('context');
+  });
+
+  it('combines output + profile + region into a single readOpts object', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({
+      app: 'x',
+      output: 'dist-cdk',
+      profile: 'p',
+      region: 'ap-northeast-1',
+    });
+
+    expect(mockRead).toHaveBeenCalledWith('x', {
+      outdir: 'dist-cdk',
+      env: {
+        AWS_PROFILE: 'p',
+        AWS_REGION: 'ap-northeast-1',
+        CDK_DEFAULT_REGION: 'ap-northeast-1',
+      },
+    });
+  });
+
+  it('instantiates a fresh AssemblyReader per call', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x' });
+    await s.synthesize({ app: 'y' });
+
+    expect(MockAssemblyReader).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates the AssemblyReader.read rejection', async () => {
+    const err = new Error('boom');
+    mockRead.mockRejectedValue(err);
+
+    const s = new Synthesizer();
+    await expect(s.synthesize({ app: 'x' })).rejects.toThrow('boom');
+  });
+});
