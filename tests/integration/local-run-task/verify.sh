@@ -22,8 +22,8 @@ NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers"
-  docker ps --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  docker ps --filter "name=cdkl-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 

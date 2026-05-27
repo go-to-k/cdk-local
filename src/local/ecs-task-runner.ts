@@ -702,7 +702,7 @@ async function prepareOneImage(
             'Re-synthesize the CDK app and retry.'
         );
       }
-      const tag = `cdkd-local-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
+      const tag = `cdkl-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
@@ -762,7 +762,7 @@ async function realizeDockerVolumes(
     if (cfg?.labels) {
       for (const [k, val] of Object.entries(cfg.labels)) args.push('--label', `${k}=${val}`);
     }
-    const dockerVolumeName = `cdkd-local-${v.name}-${randHex(4)}`;
+    const dockerVolumeName = `cdkl-${v.name}-${randHex(4)}`;
     args.push(dockerVolumeName);
     try {
       await execFileAsync(getDockerCmd(), args);
@@ -851,7 +851,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   const args: string[] = ['run', '-d'];
 
   // Stable name so siblings can reach this container via DNS.
-  args.push('--name', `cdkd-local-${task.family}-${container.name}-${randHex(3)}`);
+  args.push('--name', `cdkl-${task.family}-${container.name}-${randHex(3)}`);
   args.push('--network', network);
   args.push('--network-alias', container.name);
 

@@ -29,7 +29,7 @@ import { EcsTaskResolutionError } from './ecs-task-resolver.js';
 export interface ResolvedCloudMapNamespace {
   /** AWS::ServiceDiscovery::PrivateDnsNamespace logical id. */
   logicalId: string;
-  /** Namespace name as it would be looked up in DNS, e.g. `cdkd-local.local`. */
+  /** Namespace name as it would be looked up in DNS, e.g. `cdkl.local`. */
   name: string;
 }
 

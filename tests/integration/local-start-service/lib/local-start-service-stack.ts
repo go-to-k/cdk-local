@@ -28,11 +28,11 @@ export class LocalStartServiceStack extends cdk.Stack {
     super(scope, id, props);
 
     const cluster = new ecs.CfnCluster(this, 'Cluster', {
-      clusterName: 'cdkd-local-start-service-fixture',
+      clusterName: 'cdkl-start-service-fixture',
     });
 
     const taskDef = new ecs.CfnTaskDefinition(this, 'WebTask', {
-      family: 'cdkd-local-start-service-web',
+      family: 'cdkl-start-service-web',
       networkMode: 'bridge',
       containerDefinitions: [
         {

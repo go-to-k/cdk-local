@@ -1571,7 +1571,7 @@ function buildServiceIntegrationContextVars(
   req: IncomingMessage,
   route: DiscoveredRoute
 ): Record<string, string> {
-  const requestId = `cdkd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const requestId = `cdkl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const sourceIp = req.socket.remoteAddress ?? '127.0.0.1';
   return {
     requestId,

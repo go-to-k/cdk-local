@@ -290,7 +290,7 @@ async function assumeRoleForEcr(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkd-local-ecr-${Date.now()}`,
+        RoleSessionName: `cdkl-ecr-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );

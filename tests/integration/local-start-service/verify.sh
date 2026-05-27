@@ -27,16 +27,16 @@ cleanup() {
     done
     kill -KILL "${CDKL_PID}" 2>/dev/null || true
   fi
-  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' \
+  docker ps -a --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' \
+  docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-# Pre-test orphan sweep — a failed previous run can leak cdkd-local-*
+# Pre-test orphan sweep — a failed previous run can leak cdkl-*
 # containers / networks, and the new per-replica subnet-isolation assertion
-# below counts every cdkd-local-* network, so a stranded network from the
+# below counts every cdkl-* network, so a stranded network from the
 # previous run would either inflate NET_COUNT or surface a duplicate-subnet
 # false positive. Run cleanup() once at boot to guarantee a clean baseline;
 # the function is idempotent (xargs -r over empty input, kill -0 short-circuit
@@ -98,12 +98,12 @@ fi
 
 echo "==> Asserting 2 replicas (4 containers: 2 web + 2 metadata sidecars)"
 # Each replica gets its own docker network + sidecar, plus 1 web container.
-# We assert at least 2 'web'-image containers running under the cdkd-local
+# We assert at least 2 'web'-image containers running under the cdkl
 # prefix; the sidecar count is incidental.
 WEB_COUNT=$(docker ps --filter "ancestor=${BUSYBOX_IMAGE}" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${WEB_COUNT}" -lt 2 ]]; then
   echo "FAIL: expected at least 2 busybox 'web' containers running, found ${WEB_COUNT}"
-  docker ps -a --filter "name=cdkd-local-" --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}'
+  docker ps -a --filter "name=cdkl-" --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}'
   echo "----- service output -----"
   cat "${OUT_FILE}"
   echo "--------------------------"
@@ -112,10 +112,10 @@ fi
 echo "    OK: ${WEB_COUNT} busybox web containers running"
 
 echo "==> Asserting per-replica docker networks (2 networks expected)"
-NET_COUNT=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+NET_COUNT=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${NET_COUNT}" -lt 2 ]]; then
-  echo "FAIL: expected at least 2 cdkd-local-* docker networks, found ${NET_COUNT}"
-  docker network ls --filter "name=cdkd-local-"
+  echo "FAIL: expected at least 2 cdkl-* docker networks, found ${NET_COUNT}"
+  docker network ls --filter "name=cdkl-"
   exit 1
 fi
 echo "    OK: ${NET_COUNT} per-replica networks present"
@@ -128,7 +128,7 @@ echo "==> Asserting per-replica subnet isolation (each network has a distinct /2
 # IPAM.Config[0].Subnet and assert (a) they are all distinct AND (b)
 # each is in the expected 169.254.<170-253>.0/24 range that
 # `buildReplicaSubnet(index)` allocates.
-NET_IDS=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}')
+NET_IDS=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}')
 declare -a SUBNETS=()
 for net_id in ${NET_IDS}; do
   SUBNET=$(docker network inspect "${net_id}" --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null || echo "")
@@ -189,18 +189,18 @@ wait "${CDKL_PID}" 2>/dev/null || true
 CDKL_PID=""
 
 echo "==> Asserting clean teardown — no leftover containers"
-LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_CONTAINERS} containers still present after SIGTERM"
-  docker ps -a --filter "name=cdkd-local-" --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}'
+  docker ps -a --filter "name=cdkl-" --format 'table {{.ID}}\t{{.Names}}\t{{.Status}}'
   exit 1
 fi
 
 echo "==> Asserting clean teardown — no leftover networks"
-LEFTOVER_NETS=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_NETS=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_NETS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_NETS} docker networks still present after SIGTERM"
-  docker network ls --filter "name=cdkd-local-"
+  docker network ls --filter "name=cdkl-"
   exit 1
 fi
 

@@ -38,13 +38,13 @@ export interface BuildDockerImageOptions {
    * Local image tag (`--tag`) for `directory` mode. The caller chooses a
    * deterministic tag so subsequent runs hit Docker's layer cache (the
    * publisher uses `cdkd-asset-<hash>`; local-invoke uses
-   * `cdkd-local-invoke-<hash>`). Ignored in `executable` mode — there
+   * `cdkl-invoke-<hash>`). Ignored in `executable` mode — there
    * the executable returns its own tag on stdout.
    */
   tag?: string;
   /**
    * Optional `--platform` override. When set, takes precedence over
-   * `asset.source.platform` from the manifest. Used by `cdkd local invoke`
+   * `asset.source.platform` from the manifest. Used by `cdkl invoke`
    * to thread Lambda's `Architectures: [x86_64|arm64]` through to docker
    * build / run.
    */

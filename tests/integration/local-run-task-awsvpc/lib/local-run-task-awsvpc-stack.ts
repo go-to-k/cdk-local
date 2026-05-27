@@ -34,9 +34,9 @@ export class LocalRunTaskAwsvpcStack extends cdk.Stack {
     const taskDef = new ecs.TaskDefinition(this, 'AwsvpcTask', {
       compatibility: ecs.Compatibility.EC2,
       // Explicit family so the local container name is predictable
-      // (`cdkd-local-cdkd-local-run-task-awsvpc-web-<rand>`) and
+      // (`cdkl-cdkl-run-task-awsvpc-web-<rand>`) and
       // verify.sh can filter `docker ps` on it.
-      family: 'cdkd-local-run-task-awsvpc',
+      family: 'cdkl-run-task-awsvpc',
       // The whole point of the fixture: NetworkMode awsvpc, which cdkd
       // maps to a docker bridge network locally with a warn (#461).
       networkMode: ecs.NetworkMode.AWS_VPC,

@@ -58,11 +58,11 @@ cleanup() {
       kill -KILL "${SERVER_PID}" 2>/dev/null || true
     fi
   fi
-  # Defense-in-depth: kill any cdkd-local-* container the server didn't
+  # Defense-in-depth: kill any cdkl-* container the server didn't
   # clean up on its own (the existing local-start-api integ uses the
   # same sweep).
-  echo "==> Sweeping any orphan cdkd-local-* docker containers"
-  docker ps --filter name=cdkd-local- -q | xargs -r docker rm -f >/dev/null 2>&1 || true
+  echo "==> Sweeping any orphan cdkl-* docker containers"
+  docker ps --filter name=cdkl- -q | xargs -r docker rm -f >/dev/null 2>&1 || true
 
   if [[ -f "${LOG_FILE}" ]]; then
     echo "==> Server log (${LOG_FILE}):"

@@ -111,7 +111,7 @@ export interface ServiceDiscoveryContext {
   /**
    * Single docker network shared across every replica boot in this
    * CLI invocation (design doc § 5 Option A). The CLI creates one
-   * `cdkd-local-svc-<rand>` network at startup via
+   * `cdkl-svc-<rand>` network at startup via
    * `createSharedSvcNetwork()` and tears it down at the end of the
    * run. Per-replica `runEcsTask()` calls receive this as
    * `existingNetwork` so every container joins the shared bridge —
@@ -547,14 +547,14 @@ async function bootReplica(
   // snapshot — every peer service that booted BEFORE this replica is
   // resolvable as `<discoveryName>.<namespace>` and via any bare
   // ClientAlias short-form. Exclude self entries so a service that
-  // registers under, say, `frontend.cdkd-local.local` does not
+  // registers under, say, `frontend.cdkl.local` does not
   // resolve to its own previous replica.
   const addHostFlags = options.discovery?.registry
     ? options.discovery.registry.buildAddHostFlags(ownerKeyPrefix)
     : [];
   // Network strategy:
   //   - With a shared discovery network (design § 5 Option A — the
-  //     CLI-built `cdkd-local-svc-<rand>` network), every replica
+  //     CLI-built `cdkl-svc-<rand>` network), every replica
   //     joins the SAME docker bridge; peer services are reachable by
   //     IP / network alias without cross-network bridging. The
   //     per-replica subnet allocator is unused in this mode.

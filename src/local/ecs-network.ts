@@ -94,7 +94,7 @@ export interface TaskNetwork {
 
 export interface CreateTaskNetworkOptions {
   /**
-   * Docker network name prefix. Default `cdkd-local`; the runner injects
+   * Docker network name prefix. Default `cdkl`; the runner injects
    * the CLI's `--cluster <name>`. The full name is `<prefix>-task-<rand>`.
    */
   prefix?: string;
@@ -150,7 +150,7 @@ export const SHARED_SVC_SUBNET_OCTET = 171;
 export async function createSharedSvcNetwork(
   options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
 ): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkd-local';
+  const prefix = options.prefix ?? 'cdkl';
   const suffix = randomBytes(4).toString('hex');
   const networkName = `${prefix}-svc-${suffix}`;
   const { cidr, sidecarIp } = buildEndpointSubnet(SHARED_SVC_SUBNET_OCTET);
@@ -257,7 +257,7 @@ async function createNetworkAndSidecar(args: {
 export async function createTaskNetwork(
   options: CreateTaskNetworkOptions = {}
 ): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkd-local';
+  const prefix = options.prefix ?? 'cdkl';
   const suffix = randomBytes(4).toString('hex');
   const networkName = `${prefix}-task-${suffix}`;
   const { cidr, sidecarIp } =

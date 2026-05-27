@@ -16,7 +16,7 @@
 # Requires Docker. Deploys nothing.
 #
 # Robust cleanup: SIGTERM -> 120s grace -> SIGKILL on the server, plus a
-# defense-in-depth `docker ps --filter name=cdkd-local-` sweep so a
+# defense-in-depth `docker ps --filter name=cdkl-` sweep so a
 # crashed test never leaves orphan containers behind.
 
 set -euo pipefail
@@ -56,10 +56,10 @@ cleanup() {
       kill -KILL "${SERVER_PID}" 2>/dev/null || true
     fi
   fi
-  # Defense-in-depth: kill every cdkd-local-* container regardless of
+  # Defense-in-depth: kill every cdkl-* container regardless of
   # how the server cleaned up. Catches the case where the server
   # crashed before its dispose() ran.
-  ORPHANS=$(docker ps --filter "name=cdkd-local-" --format "{{.ID}}" 2>/dev/null || true)
+  ORPHANS=$(docker ps --filter "name=cdkl-" --format "{{.ID}}" 2>/dev/null || true)
   if [[ -n "${ORPHANS}" ]]; then
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true

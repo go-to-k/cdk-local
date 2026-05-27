@@ -147,7 +147,7 @@ export async function materializeLayerFromArn(
     );
   }
 
-  const dir = await mkdtemp(join(tmpdir(), `cdkd-local-arn-layer-${layer.name}-${layer.version}-`));
+  const dir = await mkdtemp(join(tmpdir(), `cdkl-arn-layer-${layer.name}-${layer.version}-`));
   try {
     await unzipBufferToDirectory(zipBytes, dir);
   } catch (err) {
@@ -255,7 +255,7 @@ async function buildAssumeRoleCommand(roleArn: string): Promise<any> {
   const { AssumeRoleCommand } = await import('@aws-sdk/client-sts');
   return new AssumeRoleCommand({
     RoleArn: roleArn,
-    RoleSessionName: `cdkd-local-layer-${Date.now()}`,
+    RoleSessionName: `cdkl-layer-${Date.now()}`,
     DurationSeconds: 3600,
   });
 }

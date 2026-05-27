@@ -30,7 +30,7 @@ import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-imag
  *   - `dispose()` cancels every idle timer, removes every container, and
  *     **tolerates per-container removal failures** — logged at warn,
  *     loop continues. The verify.sh trap (`docker rm -f` over every
- *     `cdkd-local-*` container) is the safety net.
+ *     `cdkl-*` container) is the safety net.
  */
 
 export interface ContainerHandle {
@@ -254,7 +254,7 @@ export function createContainerPool(
   // no-op instead of corrupting the post-dispose entries map (entry
   // removed → release would push the handle into a freed `warm[]` and
   // re-arm the idle timer on a torn-down entry). The verify.sh
-  // `docker rm -f cdkd-local-*` sweep is the safety net for the
+  // `docker rm -f cdkl-*` sweep is the safety net for the
   // not-yet-torn-down container itself.
   let disposed = false;
 
@@ -305,7 +305,7 @@ export function createContainerPool(
    */
   async function startOne(spec: ContainerSpec): Promise<ContainerHandle> {
     const hostPort = await pickFreePort();
-    const name = `cdkd-local-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
+    const name = `cdkl-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
       Math.random() * 1_000_000
     )}`;
     logger.debug(
@@ -591,7 +591,7 @@ export function createContainerPool(
       // its container killed surfaces as a 502 — exactly the leak the
       // PR review caught. Bounded by `drainTimeoutMs` so a hung
       // request can't block shutdown forever; the verify.sh
-      // `docker rm -f cdkd-local-*` sweep is the safety net for the
+      // `docker rm -f cdkl-*` sweep is the safety net for the
       // timeout case.
       const drainTimeoutMs = 30_000;
       const drainStart = Date.now();
@@ -618,7 +618,7 @@ export function createContainerPool(
           if (r.timedOut) {
             anyTimedOut = true;
             logger.warn(
-              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkd-local-*\` sweep is the safety net.`
+              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkl-*\` sweep is the safety net.`
             );
           }
         }
@@ -640,7 +640,7 @@ export function createContainerPool(
       // dispose time, with a short timeout so a hung docker-run can't
       // block shutdown forever. Each settled start contributes its
       // resulting handle to the teardown set so the container does not
-      // leak (the verify.sh `docker rm -f cdkd-local-*` sweep is a
+      // leak (the verify.sh `docker rm -f cdkl-*` sweep is a
       // safety net for the timeout case).
       const startPromises = [...inFlightStarts];
       if (startPromises.length > 0) {

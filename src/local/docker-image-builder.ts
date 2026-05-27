@@ -72,7 +72,7 @@ export async function buildContainerImage(
   logger.debug(`Local tag: ${tag}`);
 
   // For `executable` source mode the user's script returns its own tag;
-  // re-tag to our deterministic `cdkd-local-invoke-<hash>` so the
+  // re-tag to our deterministic `cdkl-invoke-<hash>` so the
   // `--no-build` cache-lookup branch finds the image on subsequent runs.
   const actualTag = await buildDockerImage(asset, cdkOutDir, {
     tag,
@@ -137,7 +137,7 @@ function computeLocalTag(source: DockerImageAssetSource): string {
   pushField(hash, 'dockerOutputs', (source.dockerOutputs ?? []).join('\x1f'));
   pushField(hash, 'cacheFrom', (source.cacheFrom ?? []).map((o) => JSON.stringify(o)).join('\x1f'));
   pushField(hash, 'cacheTo', source.cacheTo ? JSON.stringify(source.cacheTo) : '');
-  return `cdkd-local-invoke-${hash.digest('hex').slice(0, 16)}`;
+  return `cdkl-invoke-${hash.digest('hex').slice(0, 16)}`;
 }
 
 function pushField(hash: ReturnType<typeof createHash>, name: string, value: string): void {

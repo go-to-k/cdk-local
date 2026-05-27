@@ -39,7 +39,7 @@ import {
  */
 export interface ResolvedServiceConnect {
   /**
-   * Namespace name (e.g. `cdkd-local.local`). CDK 2.x synthesizes
+   * Namespace name (e.g. `cdkl.local`). CDK 2.x synthesizes
    * `ServiceConnectConfiguration.Namespace` as a literal string (not
    * a Ref / ARN) — verified empirically on 2026-05-22. The literal is
    * matched against the resolved `CloudMapIndex.namespacesByName` at
@@ -325,7 +325,7 @@ function extractServiceConnect(
   if (!namespaceName) {
     throw new EcsTaskResolutionError(
       `ServiceConnectConfiguration.Namespace must be a literal string (the Cloud Map ` +
-        `namespace name like 'cdkd-local.local'); got ${JSON.stringify(cfg['Namespace'])}. ` +
+        `namespace name like 'cdkl.local'); got ${JSON.stringify(cfg['Namespace'])}. ` +
         'Intrinsic / cross-stack namespace references are not supported in v1.'
     );
   }

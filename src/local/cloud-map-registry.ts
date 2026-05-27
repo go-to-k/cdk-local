@@ -114,7 +114,7 @@ export class CloudMapRegistry {
   /**
    * Register a replica's endpoint under `{namespace}/{discoveryName}`.
    *
-   * @param namespace Cloud Map namespace name, e.g. `cdkd-local.local`.
+   * @param namespace Cloud Map namespace name, e.g. `cdkl.local`.
    *                  An empty string is rejected — Cloud Map requires a
    *                  named namespace.
    * @param discoveryName Cloud Map service name, e.g. `orders`. Rejected
@@ -158,7 +158,7 @@ export class CloudMapRegistry {
    * targetFqdn)` pair is idempotent and does NOT warn.
    *
    * @param alias The bare discovery name (e.g. `orders` for an alias to
-   *              `orders.cdkd-local.local`).
+   *              `orders.cdkl.local`).
    * @param targetFqdn The full `{discoveryName}.{namespace}` the alias
    *                   resolves to.
    */

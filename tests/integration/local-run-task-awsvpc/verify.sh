@@ -34,9 +34,9 @@ BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
 
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers + networks"
-  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' \
+  docker ps -a --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' \
+  docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -88,13 +88,13 @@ echo "    OK: awsvpc -> bridge warn present"
 echo "==> Asserting the awsvpc container is running"
 TASK_ID=""
 for _ in $(seq 1 30); do
-  TASK_ID=$(docker ps --filter "name=cdkd-local-cdkd-local-run-task-awsvpc-web-" --format '{{.ID}}' | head -1)
+  TASK_ID=$(docker ps --filter "name=cdkl-cdkl-run-task-awsvpc-web-" --format '{{.ID}}' | head -1)
   if [[ -n "${TASK_ID}" ]]; then break; fi
   sleep 1
 done
 if [[ -z "${TASK_ID}" ]]; then
   echo "FAIL: awsvpc container did not appear in docker ps within 30s"
-  docker ps -a --filter "name=cdkd-local-"
+  docker ps -a --filter "name=cdkl-"
   exit 1
 fi
 echo "    container: ${TASK_ID}"
@@ -119,18 +119,18 @@ echo "==> Tearing down (docker rm -f + network rm)"
 cleanup
 
 echo "==> Asserting clean teardown — no leftover containers"
-LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_CONTAINERS} containers still present after cleanup"
-  docker ps -a --filter "name=cdkd-local-"
+  docker ps -a --filter "name=cdkl-"
   exit 1
 fi
 
 echo "==> Asserting clean teardown — no leftover networks"
-LEFTOVER_NETS=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_NETS=$(docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_NETS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_NETS} docker networks still present after cleanup"
-  docker network ls --filter "name=cdkd-local-task-"
+  docker network ls --filter "name=cdkl-task-"
   exit 1
 fi
 

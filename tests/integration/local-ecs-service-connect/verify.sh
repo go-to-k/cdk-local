@@ -63,9 +63,9 @@ cleanup() {
     done
     kill -KILL "${CDKL_PID}" 2>/dev/null || true
   fi
-  docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' \
+  docker ps -a --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker rm -f >/dev/null 2>&1 || true
-  docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' \
+  docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -131,14 +131,14 @@ echo "==> Asserting container count — exactly 2 orders + 2 frontend containers
 ORDERS_COUNT=0
 FRONTEND_COUNT=0
 for _ in $(seq 1 60); do
-  ORDERS_COUNT=$(docker ps --filter "name=cdkd-local-cdkd-local-ecs-sc-orders-orders-" --format '{{.ID}}' | wc -l | tr -d ' ')
-  FRONTEND_COUNT=$(docker ps --filter "name=cdkd-local-cdkd-local-ecs-sc-frontend-frontend-" --format '{{.ID}}' | wc -l | tr -d ' ')
+  ORDERS_COUNT=$(docker ps --filter "name=cdkl-cdkl-ecs-sc-orders-orders-" --format '{{.ID}}' | wc -l | tr -d ' ')
+  FRONTEND_COUNT=$(docker ps --filter "name=cdkl-cdkl-ecs-sc-frontend-frontend-" --format '{{.ID}}' | wc -l | tr -d ' ')
   if [[ "${ORDERS_COUNT}" -eq 2 && "${FRONTEND_COUNT}" -eq 2 ]]; then break; fi
   sleep 1
 done
 if [[ "${ORDERS_COUNT}" -ne 2 || "${FRONTEND_COUNT}" -ne 2 ]]; then
   echo "FAIL: expected 2 orders + 2 frontend containers, got orders=${ORDERS_COUNT} frontend=${FRONTEND_COUNT}"
-  docker ps -a --filter "name=cdkd-local-"
+  docker ps -a --filter "name=cdkl-"
   echo "----- service output -----"
   cat "${OUT_FILE}"
   echo "--------------------------"
@@ -154,14 +154,14 @@ echo "    OK: 2 orders + 2 frontend replicas running (multi-replica host-port sk
 echo "==> Locating the frontend containers"
 FRONTEND_IDS=""
 for i in $(seq 1 30); do
-  FRONTEND_IDS=$(docker ps --filter "name=cdkd-local-cdkd-local-ecs-sc-frontend-frontend-" --format '{{.ID}}')
+  FRONTEND_IDS=$(docker ps --filter "name=cdkl-cdkl-ecs-sc-frontend-frontend-" --format '{{.ID}}')
   if [[ "$(echo "${FRONTEND_IDS}" | wc -l | tr -d ' ')" -eq 2 ]]; then break; fi
   sleep 1
 done
 FRONTEND_ID=$(echo "${FRONTEND_IDS}" | head -1)
 if [[ -z "${FRONTEND_ID}" ]]; then
   echo "FAIL: frontend containers did not appear in docker ps within 30s"
-  docker ps -a --filter "name=cdkd-local-"
+  docker ps -a --filter "name=cdkl-"
   echo "----- service output -----"
   cat "${OUT_FILE}"
   echo "--------------------------"
@@ -175,13 +175,13 @@ echo "    frontend containers: $(tr '\n' ' ' <<<"${FRONTEND_IDS}")"
 # so a future producer-side-multi-replica follow-up to #579 won't
 # need to rewrite this block.
 echo "==> Collecting orders container IPs (shared svc network)"
-SHARED_NET=$(docker network ls --filter "name=cdkd-local-svc-" --format '{{.Name}}' | head -1)
+SHARED_NET=$(docker network ls --filter "name=cdkl-svc-" --format '{{.Name}}' | head -1)
 if [[ -z "${SHARED_NET}" ]]; then
-  echo "FAIL: shared svc network (cdkd-local-svc-*) not found"
+  echo "FAIL: shared svc network (cdkl-svc-*) not found"
   docker network ls
   exit 1
 fi
-ORDERS_IDS=$(docker ps --filter "name=cdkd-local-cdkd-local-ecs-sc-orders-orders-" --format '{{.ID}}')
+ORDERS_IDS=$(docker ps --filter "name=cdkl-cdkl-ecs-sc-orders-orders-" --format '{{.ID}}')
 ORDERS_IPS=""
 for cid in ${ORDERS_IDS}; do
   ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"${SHARED_NET}\").IPAddress}}" "${cid}" 2>/dev/null || true)
@@ -306,18 +306,18 @@ wait "${CDKL_PID}" 2>/dev/null || true
 CDKL_PID=""
 
 echo "==> Asserting clean teardown — no leftover containers"
-LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_CONTAINERS=$(docker ps -a --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_CONTAINERS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_CONTAINERS} containers still present after SIGTERM"
-  docker ps -a --filter "name=cdkd-local-"
+  docker ps -a --filter "name=cdkl-"
   exit 1
 fi
 
 echo "==> Asserting clean teardown — no leftover networks"
-LEFTOVER_NETS=$(docker network ls --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+LEFTOVER_NETS=$(docker network ls --filter "name=cdkl-" --format '{{.ID}}' | wc -l | tr -d ' ')
 if [[ "${LEFTOVER_NETS}" -ne 0 ]]; then
   echo "FAIL: ${LEFTOVER_NETS} docker networks still present after SIGTERM"
-  docker network ls --filter "name=cdkd-local-"
+  docker network ls --filter "name=cdkl-"
   exit 1
 fi
 

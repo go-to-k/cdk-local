@@ -92,10 +92,10 @@ export interface DockerRunOptions {
   /** `--workdir <dir>` for container Lambdas (PR 5, `ImageConfig.WorkingDirectory`). */
   workingDir?: string;
   /**
-   * Optional `--name` for the container. `cdkd local start-api` sets a
-   * stable `cdkd-local-<logicalId>-<pid>-<rand>` name so the verify.sh
-   * trap can sweep orphans (`docker ps --filter name=cdkd-local-`)
-   * regardless of how the server exited. `cdkd local invoke` leaves it
+   * Optional `--name` for the container. `cdkl start-api` sets a
+   * stable `cdkl-<logicalId>-<pid>-<rand>` name so the verify.sh
+   * trap can sweep orphans (`docker ps --filter name=cdkl-`)
+   * regardless of how the server exited. `cdkl invoke` leaves it
    * unset and lets docker auto-assign — short-lived containers don't
    * benefit from a stable name.
    */

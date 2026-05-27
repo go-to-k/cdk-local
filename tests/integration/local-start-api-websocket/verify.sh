@@ -65,9 +65,9 @@ cleanup() {
     fi
     SIGTERM_ELAPSED=$(( $(date +%s) - t0 ))
   fi
-  # Defense-in-depth: kill every cdkd-local-* container that survived
+  # Defense-in-depth: kill every cdkl-* container that survived
   # the graceful shutdown.
-  ORPHANS=$(docker ps --filter "name=cdkd-local-" --format "{{.ID}}" 2>/dev/null || true)
+  ORPHANS=$(docker ps --filter "name=cdkl-" --format "{{.ID}}" 2>/dev/null || true)
   if [[ -n "${ORPHANS}" ]]; then
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true

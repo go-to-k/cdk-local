@@ -54,7 +54,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
     super(scope, id, props);
 
     const cluster = new ecs.CfnCluster(this, 'Cluster', {
-      clusterName: 'cdkd-local-ecs-sc-fixture',
+      clusterName: 'cdkl-ecs-sc-fixture',
     });
 
     // Cloud Map private DNS namespace. cdkd uses the `Name` literal as
@@ -99,7 +99,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
 
     // ---------- service A: orders (producer + Service Connect server) ----------
     const ordersTask = new ecs.CfnTaskDefinition(this, 'OrdersTask', {
-      family: 'cdkd-local-ecs-sc-orders',
+      family: 'cdkl-ecs-sc-orders',
       networkMode: 'bridge',
       containerDefinitions: [
         {
@@ -183,7 +183,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
 
     // ---------- service B: frontend (consumer) ----------
     const frontendTask = new ecs.CfnTaskDefinition(this, 'FrontendTask', {
-      family: 'cdkd-local-ecs-sc-frontend',
+      family: 'cdkl-ecs-sc-frontend',
       networkMode: 'bridge',
       containerDefinitions: [
         {
