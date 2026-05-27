@@ -13,10 +13,31 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/main-tree-branch-gate.sh",
+            "if": "Bash(git switch*) or Bash(git checkout*) or Bash(cd * && git switch*) or Bash(cd * && git checkout*) or Bash(git -C * switch*) or Bash(git -C * checkout*)",
+            "timeout": 10,
+            "statusMessage": "Checking main-tree branch-switch policy..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
             "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
             "timeout": 10,
             "statusMessage": "Checking commit message form..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/gh-pr-edit-deprecation-gate.sh",
+            "if": "Bash(gh pr edit*) or Bash(gh -C * pr edit*)",
+            "timeout": 10,
+            "statusMessage": "Checking gh pr edit deprecation..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/non-english-text-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh pr merge*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for non-English text..."
           }
         ]
       }
