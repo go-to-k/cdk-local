@@ -33,7 +33,7 @@ fi
 
 
 # Test 1 — asset-backed Lambda echoes event + env var
-echo "==> [1/4] Invoking EchoHandler with default empty event"
+echo "==> [1/5] Invoking EchoHandler with default empty event"
 RESULT_1=$(${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -42,7 +42,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/4] Invoking EchoHandler with --event payload"
+echo "==> [2/5] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
