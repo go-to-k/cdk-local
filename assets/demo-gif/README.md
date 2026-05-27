@@ -1,26 +1,32 @@
-# cdkl-invoke demo GIF
+# cdk-local demo GIFs
 
-Source files for `assets/cdkl-invoke.gif` — the `cdkl invoke` demo shown in the project README.
+Source files for the demo GIFs shown in the project README. Two flows are recorded today:
+
+| File | Source tape | Source orchestrator | Linked from |
+|---|---|---|---|
+| `assets/cdkl-start-api.gif` | `cdkl-start-api.tape` | `run-start-api.sh` | top of README |
+| `assets/cdkl-invoke.gif` | `cdkl-invoke.tape` | `run.sh` | inside `#### Lambda — invoke` section |
 
 ## What gets recorded
 
-A single terminal pane running the no-AWS-account headline flow end-to-end:
+### `cdkl-start-api.gif` (top of README)
+
+A tmux split-pane session:
+
+- **Left pane** — `cdkl start-api CdklDemo/MyApi --no-pull --port 8080` boots a local HTTP server in front of the sample app's HTTP API v2 route.
+- **Right pane** — `sleep 6` to let the server come up, then `curl http://localhost:8080/hello` and print the JSON response.
+
+Total recorded time around 16 seconds. The `pnpm install` + `cdk synth` pre-warm steps run BEFORE tmux launches so the GIF only shows the `cdkl` + `curl` lines — `cdkl start-api` does its own internal synth at boot.
+
+### `cdkl-invoke.gif` (inside `#### Lambda — invoke`)
+
+A single terminal pane running:
 
 1. `pnpm install` — install `aws-cdk-lib` / `aws-cdk` for the sample app
 2. `pnpm cdk synth` — synthesize `cdk.out/`
-3. `cdkl invoke CdklDemo/EchoHandler --event event.json` — run the Lambda locally in Docker via the Lambda Runtime Interface Emulator and print the returned JSON
+3. `cdkl invoke CdklDemo/EchoHandler --event event.json` — run the Lambda locally in Docker via RIE and print the returned JSON
 
-The full sequence completes in roughly 3-5 seconds of recorded time. The final JSON visible in the GIF includes `"message": "Hello from cdk-local!"` — the punchline.
-
-## Why this angle
-
-The default chosen here is **standalone `cdkl invoke`** rather than `start-api` + `curl` or `--from-cfn-stack`. Rationale:
-
-- No AWS account / IAM credentials / deployed stack needed to reproduce.
-- Single pane, no `tmux` split, no second process spawning `curl`.
-- Demonstrates the headline value (CDK app -> running locally in Docker -> JSON back) in the fewest seconds.
-
-`start-api` + `--from-cfn-stack` are the obvious follow-ups; ship them as separate GIFs in later PRs once this first one is stable.
+Roughly 3-5 seconds of recorded time. The final JSON includes `"message": "Hello from cdk-local!"` — the punchline.
 
 ## Reproducing
 
@@ -29,31 +35,41 @@ Prerequisites:
 - [`vhs`](https://github.com/charmbracelet/vhs) (`brew install vhs`)
 - `tmux`
 - JetBrainsMono Nerd Font (`brew install --cask font-jetbrains-mono-nerd-font`)
-- Docker (for the actual Lambda Runtime Interface Emulator run inside `cdkl invoke`)
-- The cdk-local repo built locally — `vp run build` from the repo root so `dist/cli.js` exists. The PATH shim in `run.sh` points `cdkl` at that build so the recorded command stays plain `cdkl`.
+- Docker (the Lambda Runtime Interface Emulator runs inside `cdkl invoke` / `cdkl start-api`)
+- The cdk-local repo built locally — `vp run build` from the repo root so `dist/cli.js` exists. The PATH shim in each `run-*.sh` points `cdkl` at that build so the recorded command stays plain `cdkl`.
 
 ```bash
 cd assets/demo-gif
-vhs cdkl-invoke.tape   # generates ../cdkl-invoke.gif
+
+# Record the start-api split-pane demo (top-of-README GIF)
+vhs cdkl-start-api.tape   # generates ../cdkl-start-api.gif
+
+# Record the invoke single-pane demo
+vhs cdkl-invoke.tape      # generates ../cdkl-invoke.gif
 ```
 
-To dry-run the orchestration without `vhs` or `tmux` installed:
+Either orchestrator can be dry-run without `vhs` / `tmux` installed:
 
 ```bash
-bash run.sh --dry-run
+bash run-start-api.sh --dry-run    # plans the split-pane tmux invocation
+bash run.sh --dry-run              # plans the single-pane tmux invocation
 ```
 
-That prints the planned `tmux` invocation so the scaffold can be sanity-checked on a CI runner or a fresh laptop.
+That prints the planned `tmux` invocations so the scaffold can be sanity-checked on a CI runner or a fresh laptop.
 
 ## Files
 
-- `cdkl-invoke.tape` — vhs script (theme, font, layout, timing)
-- `run.sh` — orchestrator. Sets up a PATH shim so `cdkl` resolves to `<repo>/dist/cli.js`, then drives `pnpm install` / `cdk synth` / `cdkl invoke` inside a single tmux pane
-- `tmux-clean.conf` — strips the tmux status bar so the recording looks polished
-- `sample-app/` — minimal CDK app the demo invokes
-  - `bin/app.ts` + `lib/cdkl-demo-stack.ts` — single `AWS::Lambda::Function` (Node.js 20, asset-backed)
-  - `lambda/index.js` — handler that returns `{ message, receivedEvent }`
-  - `event.json` — the payload passed via `--event`
+| File | Role |
+|---|---|
+| `cdkl-start-api.tape` | vhs script for the split-pane start-api demo (1800x720, 18pt JetBrains Mono Nerd Font) |
+| `run-start-api.sh` | tmux split-pane orchestrator: pre-warms `pnpm install` + `cdk synth` outside the recorded session, then runs `cdkl start-api` (left) + `sleep 6 && curl` (right) |
+| `cdkl-invoke.tape` | vhs script for the single-pane invoke demo (1400x720, 22pt JetBrainsMono Nerd Font) |
+| `run.sh` | single-pane orchestrator for the invoke demo |
+| `tmux-clean.conf` | strips the tmux status bar so the recording looks polished (shared) |
+| `sample-app/` | minimal CDK app both demos drive |
+| `sample-app/lib/cdkl-demo-stack.ts` | one `AWS::Lambda::Function` (Node.js 20) + one `AWS::ApiGatewayV2::Api` (HTTP API with GET `/hello`) |
+| `sample-app/lambda/index.js` | dual-mode handler: returns API Gateway response shape when invoked via `start-api`, plain `{ message, receivedEvent }` for `cdkl invoke` |
+| `sample-app/event.json` | payload `cdkl invoke --event` reads |
 
 ## Costs
 
