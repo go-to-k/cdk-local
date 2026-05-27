@@ -73,6 +73,13 @@
             "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
             "timeout": 30,
             "statusMessage": "Verifying pr-review marker (sha-bound)..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-pr-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Verifying verify-pr markgate marker..."
           }
         ]
       }
