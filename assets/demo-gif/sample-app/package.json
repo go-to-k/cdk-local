@@ -1,0 +1,16 @@
+{
+  "name": "cdkl-demo-gif-sample-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal CDK app used by the cdkl-invoke demo GIF",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.169.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  }
+}
