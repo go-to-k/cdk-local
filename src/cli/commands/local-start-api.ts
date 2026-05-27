@@ -1515,7 +1515,11 @@ async function buildContainerSpec(args: {
       );
     }
   }
-  const envResult = resolveEnvVars(logicalId, templateEnv, overrides);
+  const lambdaCdkPath =
+    typeof lambda.resource.Metadata?.['aws:cdk:path'] === 'string'
+      ? lambda.resource.Metadata['aws:cdk:path']
+      : undefined;
+  const envResult = resolveEnvVars(logicalId, lambdaCdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     // The state-resolver already warned for keys it tried + failed on
     // (defensive: substituteEnvVarsFromState drops unresolved keys from
@@ -1523,9 +1527,10 @@ async function buildContainerSpec(args: {
     // `cdkl invoke --from-state`'s safety dedupe in case the
     // state-resolver evolves).
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+    const overrideKeyExample = lambdaCdkPath ?? logicalId;
     getLogger().warn(
       `Lambda ${logicalId}: env var ${key} contains a CloudFormation intrinsic and was dropped. ` +
-        `Override it with --env-vars (e.g. {"${logicalId}":{"${key}":"<literal>"}}) ` +
+        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}) ` +
         `or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
     );
   }
