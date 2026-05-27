@@ -2,6 +2,8 @@
 
 Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. Run it with no AWS account, or bind it to your deployed stack to hit real AWS resources and data. A native, CDK-first alternative to `sam local`.
 
+![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
+
 ## Why cdk-local
 
 Two pains, one tool:
