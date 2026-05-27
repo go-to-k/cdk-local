@@ -121,7 +121,7 @@ invoke_with_retry() {
   local attempts=3
   local i=1
   while [ $i -le $attempts ]; do
-    if out=$(${CLI} local invoke "${args[@]}" 2>/dev/null | tail -1) && \
+    if out=$(${CLI} invoke "${args[@]}" 2>/dev/null | tail -1) && \
        echo "${out}" | grep -q '"tableName":'; then
       printf '%s' "${out}"
       return 0
@@ -133,7 +133,7 @@ invoke_with_retry() {
     i=$((i+1))
   done
   echo "[verify]   all ${attempts} invoke attempts failed; last stderr below:" >&2
-  ${CLI} local invoke "${args[@]}" 2>&1 | tail -10 >&2
+  ${CLI} invoke "${args[@]}" 2>&1 | tail -10 >&2
   return 1
 }
 
