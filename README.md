@@ -1,13 +1,21 @@
 # cdk-local
 
-Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. A native, CDK-first alternative to `sam local`.
+Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. Run it with no AWS account, or bind it to your deployed stack to hit real AWS resources and data. A native, CDK-first alternative to `sam local`.
 
 ## Why cdk-local
 
+Two pains, one tool:
+
+- **Zero-friction local execution.** No AWS account, no IAM access, no deploy — just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's AWS account.
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` injects real ARNs, Secret values, and IAM credentials straight from CloudFormation into the local container — no `.env` file to maintain, no manual ARN copy-paste. Your local Lambda hits the same DynamoDB rows, S3 objects, Cognito users, Secret values, and anything else your IAM credentials reach through public AWS APIs that the deployed app sees. An offline emulator can fake the API surface; it can't replicate the data, secret material, or user identities that realistic testing needs.
+
+cdk-local deliberately does NOT emulate AWS managed services. Standing up an offline DynamoDB / Secrets / IAM that matches production is its own maintenance burden, and rarely matches real behavior. The bet is: keep dependencies real, swap only the compute layer.
+
+It also picks up where `sam local` leaves off:
+
 - **CDK-native** — point it at your CDK app's `cdk.json`. No SAM templates, no extra config files.
-- **Wider coverage than `sam local`** — Lambda (ZIP + container image), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
-- **Two execution modes** — standalone (no AWS deployment), or bound to a deployed stack to inject real ARNs / Secrets / IAM credentials.
-- **No AWS emulator required** — your Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
+- **Wider coverage** — Lambda (ZIP + container image), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
+- **Real container images** — Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
 
 ## What runs locally, what doesn't
 
