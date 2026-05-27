@@ -15,13 +15,13 @@ import type { WebSocket } from 'ws';
  * `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI=http://<host>:<port>` that
  * `cdkl start-api` injects into every WebSocket-API Lambda's
  * container (see `container-pool.ts`). The AWS SDK v3 honors this
- * env var and sends the call to cdkd's HTTP server instead of the
+ * env var and sends the call to cdk-local's HTTP server instead of the
  * synthetic `*.execute-api.*.amazonaws.com` hostname.
  *
- * Security: cdkd does NOT verify SigV4 on the inbound request — the
+ * Security: cdk-local does NOT verify SigV4 on the inbound request — the
  * dev-loop is not a security boundary (matches the precedent set by
  * `ecs-network.ts`'s metadata-endpoints sidecar). The SDK still signs
- * the request because that's what v3 does unconditionally; cdkd
+ * the request because that's what v3 does unconditionally; cdk-local
  * ignores the signature.
  */
 
@@ -103,7 +103,7 @@ export class ConnectionRegistry {
  * The optional `<stage>` segment matches AWS's deployed URL exactly —
  * any non-slash sequence preceding `/@connections/`. The stage value
  * itself is intentionally NOT validated against the per-API configured
- * stage name: cdkd is a local-dev tool, not a security boundary, and
+ * stage name: cdk-local is a local-dev tool, not a security boundary, and
  * an aggressive stage check would just trip on misconfigured handlers
  * without adding any real protection.
  */
@@ -120,7 +120,7 @@ export function parseConnectionsPath(url: string): {
 }
 
 /**
- * Build the per-Lambda env-var URL the cdkd local server injects as
+ * Build the per-Lambda env-var URL the cdk-local server injects as
  * `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`. The URL MUST include the
  * `/<stage>` segment to mirror the AWS-deployed apigatewaymanagementapi
  * endpoint `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`:

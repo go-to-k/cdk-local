@@ -3,7 +3,7 @@
  * bundles the matching runtime + the Lambda Runtime Interface Emulator (RIE),
  * plus the source-file extension for inline-code materialization.
  *
- * Per D1 in the issue, cdkd uses the **full** base image
+ * Per D1 in the issue, cdk-local uses the **full** base image
  * (`public.ecr.aws/lambda/<lang>:<version>`, ~600MB) over SAM's lighter
  * `public.ecr.aws/sam/emulation-<lang>` (~150MB). The size cost is one-time
  * per machine; in exchange the local runtime is the same artifact AWS runs
@@ -17,7 +17,7 @@
  * explicitly rejected with a migration pointer to `provided.al2023`.
  *
  * Truly unknown runtime strings (e.g. typos like `nodejs99.x`, or
- * back-revs AWS retired well before cdkd existed) fall through to a
+ * back-revs AWS retired well before cdk-local existed) fall through to a
  * generic error that lists every supported runtime.
  *
  * Ruby uses the same `<file>.<func>` handler grammar as Node.js and Python,
@@ -164,7 +164,7 @@ export function isSupportedRuntime(runtime: string): boolean {
 }
 
 /**
- * In-container path where cdkd should bind-mount the function's
+ * In-container path where cdk-local should bind-mount the function's
  * deployment package (asset directory or materialized inline tmpdir).
  *
  * - Most runtimes: `/var/task` — the standard Lambda deployment dir.

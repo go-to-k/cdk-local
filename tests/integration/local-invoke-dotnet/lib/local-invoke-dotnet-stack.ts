@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     event plus the value of an env var. The asset directory must
  *     contain the `dotnet publish` output (Function.dll + dependencies)
  *     before synth; `verify.sh` runs `dotnet publish` inside a Docker
- *     .NET SDK container before invoking `cdkd synth` so the host
+ *     .NET SDK container before invoking `cdk-local synth` so the host
  *     doesn't need a .NET SDK installed.
  *   - `InlineHandler` — `CfnFunction` with `Code: { ZipFile: ... }` and
  *     `runtime: dotnet8`. cdkd's local invoke must reject this with the

@@ -1084,7 +1084,7 @@ function parseContainerImage(
     if (substituted.includes('AWS::')) {
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' has an Image that references AWS pseudo parameters (${substituted}). ` +
-          'cdkd could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ' +
+          'cdk-local could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ' +
           'and that --region / AWS_REGION names the target region. ' +
           'Workaround: build the image locally (ContainerImage.fromAsset) or pin a public image.'
       );

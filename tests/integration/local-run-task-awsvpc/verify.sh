@@ -4,7 +4,7 @@
 #
 # Fully local: no AWS resources are deployed. Exercises `cdkl run-task` against a TaskDefinition declaring `NetworkMode: awsvpc`.
 #
-# Before #461 cdkd hard-rejected `awsvpc` at resolver time with
+# Before #461 cdk-local hard-rejected `awsvpc` at resolver time with
 # `EcsTaskResolutionError`; after #461 it ACCEPTS the task and maps
 # `awsvpc` to a docker bridge network with a startup warn (docker cannot
 # emulate ENI-per-task — see docs/design/461-awsvpc-decision.md).

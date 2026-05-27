@@ -76,7 +76,7 @@ export interface AwsCredentials {
 }
 
 /**
- * Minimal slice of `LambdaClient` cdkd needs. Surfaced as an interface
+ * Minimal slice of `LambdaClient` cdk-local needs. Surfaced as an interface
  * so unit tests can mock without pulling the real SDK module.
  */
 export interface LambdaSendClient {

@@ -484,7 +484,7 @@ export async function invokeRieStreaming(
  * handler may omit it), `cookies` is preserved only when an array.
  *
  * Exported for unit tests. Throws on invalid JSON or a non-numeric
- * statusCode (cdkd cannot map that to HTTP).
+ * statusCode (cdk-local cannot map that to HTTP).
  */
 export function parseStreamingPrelude(text: string): StreamingPrelude {
   const trimmed = text.trim();

@@ -15,7 +15,7 @@
 #      service even with an explicit host port — pre-fix the 2nd replica
 #      collided on host port 8081.
 #   2. `frontend` consumer at desiredCount: 2 — frontend's portMappings
-#      OMIT `hostPort` (cdkd would otherwise default it to
+#      OMIT `hostPort` (cdk-local would otherwise default it to
 #      `containerPort` 8080 and collide on the 2nd replica). Both
 #      replicas reach `orders` via the docker `--add-host` overlay
 #      populated from cdkd's shared registry.
@@ -89,7 +89,7 @@ fi
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
-echo "==> Booting both services (one cdkd invocation, shared Cloud Map registry)"
+echo "==> Booting both services (one cdk-local invocation, shared Cloud Map registry)"
 ${CDKL} start-service \
   CdkLocalEcsServiceConnectFixture:OrdersService \
   CdkLocalEcsServiceConnectFixture:FrontendService \
@@ -105,7 +105,7 @@ for i in $(seq 1 120); do
     break
   fi
   if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
-    echo "FAIL: cdkd exited before reaching the boot banner"
+    echo "FAIL: cdk-local exited before reaching the boot banner"
     echo "----- service output -----"
     cat "${OUT_FILE}"
     echo "--------------------------"
@@ -287,7 +287,7 @@ echo "    OK: frontend reached orders via the docker --add-host overlay"
 echo "==> Sending SIGTERM to cdkd ($(echo $CDKL_PID))"
 kill -TERM "${CDKL_PID}"
 
-echo "==> Waiting for cdkd to exit (up to 60s)"
+echo "==> Waiting for cdk-local to exit (up to 60s)"
 EXITED=0
 for i in $(seq 1 60); do
   if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -297,7 +297,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 if [[ "${EXITED}" -ne 1 ]]; then
-  echo "FAIL: cdkd did not exit within 60s after SIGTERM"
+  echo "FAIL: cdk-local did not exit within 60s after SIGTERM"
   cat "${OUT_FILE}"
   kill -KILL "${CDKL_PID}" 2>/dev/null || true
   exit 1

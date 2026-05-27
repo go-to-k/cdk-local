@@ -265,7 +265,7 @@ async function runMultiClient() {
   await new Promise((r) => setTimeout(r, 200));
 }
 
-// M5: $connect deny path — handshake completes but cdkd closes with 1008.
+// M5: $connect deny path — handshake completes but cdk-local closes with 1008.
 async function runDeny() {
   const denyUrl = `${url}?reject=true`;
   const ws = new WebSocket(denyUrl);

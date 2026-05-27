@@ -3,7 +3,7 @@ import { pickRefLogicalId } from './intrinsic-utils.js';
 import type { DiscoveredRoute } from './route-discovery.js';
 
 /**
- * Per-API stage selection and stage-variable lookup for `cdkd local
+ * Per-API stage selection and stage-variable lookup for `cdk-local
  * start-api` (PR 8c, issue #235).
  *
  * Background: PR 8a hardcoded `event.stageVariables = null` for every

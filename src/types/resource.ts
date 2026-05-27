@@ -12,7 +12,7 @@ export interface CloudFormationTemplate {
   /**
    * Top-level `Transform` declaration. CloudFormation macros (`Transform:
    * 'AWS::Serverless-2016-10-31'`, `Transform: ['AWS::LanguageExtensions',
-   * 'CustomMacro']`, etc.). cdkd detects this at synthesis time and runs a
+   * 'CustomMacro']`, etc.). cdk-local detects this at synthesis time and runs a
    * CFn round-trip via `src/synthesis/macro-expander.ts` to obtain the
    * post-expansion template before passing it to the analyzer / provisioner
    * pipeline — see `docs/design/463-cfn-macros.md`. The post-expansion
@@ -353,7 +353,7 @@ export interface ResourceProvider {
    *
    * Used by `cdkd drift <stack>` to detect divergence between cdkd state and
    * AWS reality without going through CloudFormation. Implementations should
-   * return only the keys cdkd actually manages — the `cdkd drift` comparator
+   * return only the keys cdk-local actually manages — the `cdkd drift` comparator
    * already ignores keys not present in state, but returning a tighter set
    * keeps the wire payload smaller.
    *

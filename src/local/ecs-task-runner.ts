@@ -53,12 +53,12 @@ export interface RunEcsTaskOptions {
   containerHost: string;
   /**
    * When true, the runner omits EVERY `-p <hostPort>:<containerPort>`
-   * flag from `docker run` (Issue #585). Set by `cdkd local
+   * flag from `docker run` (Issue #585). Set by `cdk-local
    * start-service` for multi-replica services: N replicas of one
    * service all map the same container port, so publishing a fixed host
    * port makes the 2nd+ replica fail to boot with `Bind for
    * 127.0.0.1:<port> failed: port is already allocated` — true whether
-   * the TaskDefinition declares an explicit `hostPort` or omits it (cdkd
+   * the TaskDefinition declares an explicit `hostPort` or omits it (cdk-local
    * defaults the omitted host port to `containerPort`). Peer comms still
    * works via container IP / network alias on the shared docker network
    * (the production-like path — real ECS Service Connect / awsvpc tasks
@@ -101,8 +101,7 @@ export interface RunEcsTaskOptions {
   imagePlanByContainer?: Map<string, string>;
   /**
    * Optional second-from-last octet of the link-local /24 subnet for this
-   * task's docker network (1..254). Default 170 (AWS-documented). `cdkd
-   * local start-service` walks this per replica so concurrent replicas
+   * task's docker network (1..254). Default 170 (AWS-documented). `cdkl start-service` walks this per replica so concurrent replicas
    * don't collide on the same /24. See `buildEndpointSubnet` in
    * `ecs-network.ts`.
    */
@@ -403,7 +402,7 @@ export async function runEcsTask(
   }
 
   // Wait for the essential container to exit. AWS-side ECS treats the
-  // first `essential: true` container as the task-driving one; cdkd
+  // first `essential: true` container as the task-driving one; cdk-local
   // mirrors that. When no container declares `essential: false`, every
   // container is essential — we use `containers[0]` as the
   // task-driving one.
@@ -809,7 +808,7 @@ interface BuildDockerRunArgs {
   region: string | undefined;
   /**
    * Optional sidecar IP for the metadata-endpoints sidecar on this
-   * task's docker network. Defaults to `169.254.170.2`; `cdkd local
+   * task's docker network. Defaults to `169.254.170.2`; `cdk-local
    * start-service` overrides per replica so each replica's containers
    * point at their own sidecar instance.
    */

@@ -74,7 +74,7 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   exit 1
 }
 
-# Test 3 — inline Code.ZipFile rejection. cdkd MUST refuse to invoke
+# Test 3 — inline Code.ZipFile rejection. cdk-local MUST refuse to invoke
 # this Lambda with the routing message pointing at lambda.Code.fromAsset,
 # and exit non-zero BEFORE pulling any image / starting any container.
 echo "==> [3/3] Invoking InlineHandler — expecting Inline Code.ZipFile rejection"

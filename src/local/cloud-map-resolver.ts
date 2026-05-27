@@ -190,7 +190,7 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
  * the Ref target IS the logical id we want).
  *
  * Cross-stack / intrinsic shapes that we cannot resolve at synth time
- * are hard-rejected — cdkd would otherwise silently route to no
+ * are hard-rejected — cdk-local would otherwise silently route to no
  * namespace and the consumer would get an unhelpful "DNS lookup failed"
  * at runtime.
  */

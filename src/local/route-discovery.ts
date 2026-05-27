@@ -138,7 +138,7 @@ export interface DiscoveredRoute {
    */
   invokeMode?: 'BUFFERED' | 'RESPONSE_STREAM';
   /**
-   * Set on routes that cdkd discovered but cannot dispatch to a Lambda.
+   * Set on routes that cdk-local discovered but cannot dispatch to a Lambda.
    * The HTTP server returns HTTP 501 + `{"message": "Not Implemented",
    * "reason": <reason>}` when these routes are hit. Examples:
    * non-AWS_PROXY REST v1 integrations (`MOCK` not matching the CORS
@@ -156,7 +156,7 @@ export interface DiscoveredRoute {
    * Mutually exclusive with {@link DiscoveredRoute.mockCors}. When set,
    * `lambdaLogicalId` may be the empty string (we never need to dispatch
    * to it); the field is preserved when it COULD be resolved (e.g. an
-   * `AuthType` cdkd doesn't recognize still knows its Lambda).
+   * `AuthType` cdk-local doesn't recognize still knows its Lambda).
    */
   unsupported?: { reason: string };
   /**
@@ -172,7 +172,7 @@ export interface DiscoveredRoute {
    * `lambdaLogicalId` is the empty string on these routes (there is no
    * Lambda to dispatch to). Non-OPTIONS MOCK methods, and OPTIONS MOCK
    * methods without literal `method.response.header.*` parameters, become
-   * `unsupported` instead — cdkd cannot run their VTL mapping templates.
+   * `unsupported` instead — cdk-local cannot run their VTL mapping templates.
    */
   mockCors?: { statusCode: number; headers: Record<string, string> };
   /**
@@ -180,7 +180,7 @@ export interface DiscoveredRoute {
    * (`IntegrationType: AWS_PROXY` + `IntegrationSubtype`) — see AWS
    * docs: https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html
    *
-   * cdkd dispatches the route via `httpv2-service-integration.ts`
+   * cdk-local dispatches the route via `httpv2-service-integration.ts`
    * (per-subtype SDK adapter); `lambdaLogicalId` is the empty string
    * (no Lambda backs the route). The `subtype` value is one of the
    * AWS-documented supported subtypes; unrecognized `IntegrationSubtype`
@@ -423,8 +423,7 @@ function discoverRestV1Method(
   }
   if (integrationType === 'AWS') {
     // AWS integration: Lambda non-proxy (the common case CDK emits) OR
-    // direct AWS service integration (S3 / SQS / SNS / DynamoDB). cdkd
-    // v1 emulates the Lambda non-proxy shape; other services surface as
+    // direct AWS service integration (S3 / SQS / SNS / DynamoDB). cdk-local v1 emulates the Lambda non-proxy shape; other services surface as
     // deferred 501. We detect Lambda by inspecting the Uri shape — any
     // `:lambda:path/2015-03-31/functions/` marker identifies Lambda.
     const config = buildAwsIntegrationConfig(integration, stackName, logicalId);
@@ -741,7 +740,7 @@ function uriContainsLambdaMarker(uri: unknown): boolean {
 
 /**
  * Read `Integration.IntegrationResponses[]` from a Method's Integration
- * sub-object and return the entries cdkd's dispatchers consume.
+ * sub-object and return the entries cdk-local's dispatchers consume.
  *
  * Defensive: rejects non-object entries with a clear inline warning.
  */

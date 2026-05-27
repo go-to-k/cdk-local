@@ -26,7 +26,7 @@
  * Verification can only succeed when the request was signed with the
  * **same** credentials the local server can read. When the request's
  * `Credential=AKID/...` scope names a different access-key-id than the
- * one the dev has locally, cdkd cannot reproduce the signing key — we
+ * one the dev has locally, cdk-local cannot reproduce the signing key — we
  * **warn-and-pass** in that case (allow + log a one-line warn), matching
  * AWS's "verify locally what we can; defer real authorization to deploy
  * time" model. Refusing would force every dev with a SigV4-signed client
@@ -71,11 +71,11 @@ export interface ResolvedCredentials {
 export type CredentialsLoader = () => Promise<ResolvedCredentials>;
 
 /**
- * Default credential loader: instantiates an `STSClient` (a direct cdkd
+ * Default credential loader: instantiates an `STSClient` (a direct cdk-local
  * dependency) and asks its built-in credential provider for the dev's
  * local credentials. STSClient uses the same Node default credential
  * chain (env vars → ~/.aws/config → IMDS → ...) every other AWS SDK call
- * in cdkd uses, so this matches the deploy-time credential resolution
+ * in cdk-local uses, so this matches the deploy-time credential resolution
  * without adding a new dependency.
  */
 export function defaultCredentialsLoader(): CredentialsLoader {

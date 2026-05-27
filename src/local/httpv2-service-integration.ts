@@ -8,7 +8,7 @@
  * DynamoDB-* family, SNS-Publish, AppConfig-StartConfigurationSession,
  * SQS-SendMessageBatch / Kinesis-PutRecords, etc.).
  *
- * Subtypes cdkd currently bundles SDK clients for:
+ * Subtypes cdk-local currently bundles SDK clients for:
  *   - EventBridge-PutEvents
  *   - SQS-SendMessage / SQS-ReceiveMessage / SQS-DeleteMessage / SQS-PurgeQueue
  *   - Kinesis-PutRecord
@@ -16,7 +16,7 @@
  *   - AppConfig-GetConfiguration (recognized but returns 501 — the
  *     `@aws-sdk/client-appconfig` package is not yet bundled)
  *
- * Unrecognized subtypes (including AWS-documented entries cdkd does not
+ * Unrecognized subtypes (including AWS-documented entries cdk-local does not
  * yet implement, and outright typos) fall back to the deferred-501 path
  * in `route-discovery.ts`, surfacing a clean HTTP 501 at request time
  * rather than aborting boot.
@@ -91,7 +91,7 @@ export type SupportedSubtype =
   | 'AppConfig-GetConfiguration';
 
 /**
- * Full list of subtypes cdkd recognizes as supported. Mirrors AWS docs.
+ * Full list of subtypes cdk-local recognizes as supported. Mirrors AWS docs.
  */
 export const SUPPORTED_SUBTYPES: readonly SupportedSubtype[] = [
   'EventBridge-PutEvents',
@@ -182,7 +182,7 @@ export function _resetClientCacheForTest(): void {
  * pre-resolved parameter map, invoke the SDK, translate the response
  * to HTTP shape.
  *
- * `defaultRegion` is the cdkd process's default AWS region (from
+ * `defaultRegion` is the cdk-local process's default AWS region (from
  * `AWS_REGION` / profile / `--region`). When the resolved parameter
  * map includes a non-empty `Region`, that value overrides the default
  * for this single call — matches AWS API Gateway behavior.
@@ -429,7 +429,7 @@ async function dispatchAppConfigGetConfiguration(
   void region;
   return errorResponse(
     501,
-    'AppConfig-GetConfiguration is recognized but cdkd does not yet bundle @aws-sdk/client-appconfig. Use the deployed API for this subtype, or open an issue if you need local emulation.'
+    'AppConfig-GetConfiguration is recognized but cdk-local does not yet bundle @aws-sdk/client-appconfig. Use the deployed API for this subtype, or open an issue if you need local emulation.'
   );
 }
 

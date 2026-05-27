@@ -22,14 +22,14 @@
  * -----
  *
  *   - AWS pre-compiles `SelectionPattern` as a regex with `^pattern$`
- *     anchoring. cdkd matches that — `'.*Not Found.*'` works against
+ *     anchoring. cdk-local matches that — `'.*Not Found.*'` works against
  *     errorMessage values containing "Not Found", but a bare
  *     `'Not Found'` only matches the literal string.
  *   - The `StatusCode` field on the selected entry drives the HTTP
- *     response status. AWS stores it as a string; cdkd parses to int.
+ *     response status. AWS stores it as a string; cdk-local parses to int.
  *   - `IntegrationResponses` is OPTIONAL on AWS — when absent for a non-
  *     AWS_PROXY integration, AWS returns the backend response as-is
- *     (with `application/json` for Lambda success). cdkd mirrors this.
+ *     (with `application/json` for Lambda success). cdk-local mirrors this.
  *   - PR #505 review fix 14: an earlier draft short-circuited the
  *     success branch to the default entry without running the regex
  *     loop, which silently dropped success-side selection (e.g. a
@@ -50,7 +50,7 @@ export interface IntegrationResponseEntry {
    * Regex pattern AWS matches against the integration's error / status.
    * Undefined / empty marks this as the "default" entry. AWS allows ONE
    * default entry per integration; multiple defaults is a template error
-   * but cdkd just picks the first one for resilience.
+   * but cdk-local just picks the first one for resilience.
    */
   SelectionPattern?: string;
   /**
@@ -70,11 +70,11 @@ export interface IntegrationResponseEntry {
    * VTL templates keyed by content-type. The template evaluates against
    * a context where `$input.body` is the backend response body and
    * `$inputRoot` is the parsed JSON (Lambda's native return value).
-   * AWS picks the content-type per Accept header; cdkd picks the
+   * AWS picks the content-type per Accept header; cdk-local picks the
    * `application/json` entry first, then any other entry.
    */
   ResponseTemplates?: Record<string, string>;
-  /** `CONVERT_TO_TEXT` / `CONVERT_TO_BINARY` — cdkd treats both as text. */
+  /** `CONVERT_TO_TEXT` / `CONVERT_TO_BINARY` — cdk-local treats both as text. */
   ContentHandling?: string;
 }
 
@@ -95,7 +95,7 @@ export interface SelectedIntegrationResponse {
  * Per AWS docs, `SelectionPattern` is matched against the backend
  * outcome regardless of whether the backend returned success or error —
  * a `SelectionPattern: '200'` entry IS expected to match an HTTP 200
- * upstream response. cdkd ALWAYS runs the regex loop first and only
+ * upstream response. cdk-local ALWAYS runs the regex loop first and only
  * falls to the default entry when no pattern matches; pre-#505-review
  * the success branch short-circuited to the default entry without
  * running the regex loop, which silently dropped success-side selection.
@@ -140,7 +140,7 @@ export function selectIntegrationResponse(
     } catch {
       // Invalid regex in template — skip the entry but don't abort the
       // whole dispatch. AWS rejects invalid regex at template-validation
-      // time; cdkd is more forgiving here so a typo doesn't make the
+      // time; cdk-local is more forgiving here so a typo doesn't make the
       // whole route un-emulatable.
     }
   }
@@ -224,7 +224,7 @@ export function evaluateResponseParameters(
       opts.onUnsupported?.(
         key,
         value,
-        `Only method.response.header.<name> keys are supported on REST v1 ResponseParameters; cdkd cannot map ${key}.`
+        `Only method.response.header.<name> keys are supported on REST v1 ResponseParameters; cdk-local cannot map ${key}.`
       );
       continue;
     }
@@ -250,7 +250,7 @@ export function evaluateResponseParameters(
 
 /**
  * Pick the response template AWS would render for the given Accept
- * header. AWS uses content negotiation; cdkd picks `application/json`
+ * header. AWS uses content negotiation; cdk-local picks `application/json`
  * first, then any other entry. Returns `undefined` when no template is
  * configured (caller emits the backend body verbatim).
  *

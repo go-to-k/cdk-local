@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     event plus the value of an env var. The asset directory must
  *     contain a compiled `Handler.class` before synth; `verify.sh`
  *     compiles it inside a Docker JDK container before invoking
- *     `cdkd synth` so the host doesn't need a JDK installed.
+ *     `cdk-local synth` so the host doesn't need a JDK installed.
  *   - `InlineHandler` — `CfnFunction` with `Code: { ZipFile: ... }` and
  *     `runtime: java17`. cdkd's local invoke must reject this with the
  *     "use Code.fromAsset" message — Java's Handler shape names a

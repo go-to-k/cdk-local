@@ -318,7 +318,7 @@ export function createContainerPool(
       // function declares any layers). Multi-layer merging happens in
       // `local-start-api.ts`'s `materializeLambdaLayers(...)` once at
       // server boot — Docker rejects two `-v ...:/opt:ro` entries at
-      // the same target, so cdkd can't rely on overlay layering and
+      // the same target, so cdk-local can't rely on overlay layering and
       // must merge on the host instead (see ImagePlan.layersTmpDir
       // docstring in `cli/commands/local-invoke.ts`).
       const optMount = spec.optDir

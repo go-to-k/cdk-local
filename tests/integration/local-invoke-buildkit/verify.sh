@@ -11,7 +11,7 @@
 #   6. `RUN --mount=type=secret` populated by `--secret`
 #      (DockerImageCode.fromImageAsset.buildSecrets — NEW capability)
 #
-# Pre-PR cdkd would either silently kill the build with maxBuffer 50 MB
+# Pre-PR cdk-local would either silently kill the build with maxBuffer 50 MB
 # on BuildKit progress, OR reject `buildSecrets` at the type layer
 # because cdkd's `DockerImageAssetSource` didn't surface the field.
 # Both paths now work.

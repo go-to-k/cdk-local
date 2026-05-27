@@ -16,15 +16,15 @@
  *     `DescribeStacks --Outputs` + `ListExports`. Lets the `local *`
  *     commands substitute deployed physical IDs from a CDK app deployed
  *     via the upstream CDK CLI (`cdk deploy` → CloudFormation), so users
- *     migrating between cdkd and CFn (or running cdkd local against an
+ *     migrating between cdk-local and CFn (or running cdk-local against an
  *     existing CFn-managed CDK app) get the same UX they get with
  *     `--from-state` against cdkd-deployed stacks.
  *
  * The interface intentionally mirrors what `state-resolver.ts` consumes:
  * a `Record<string, ResourceState>` (covers `Ref`), an outputs map
  * (cross-stack `Fn::GetStackOutput` source), and an optional cross-stack
- * resolver (`Fn::ImportValue` / `Fn::GetStackOutput`). The four `cdkd
- * local *` command files build a single context off of whatever provider
+ * resolver (`Fn::ImportValue` / `Fn::GetStackOutput`). The four `cdkl *`
+ * command files build a single context off of whatever provider
  * fired and pass it through the substitution engine unchanged.
  *
  * `--from-cfn-stack` is mutually exclusive with `--from-state` at the

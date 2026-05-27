@@ -34,7 +34,7 @@
  *
  *   - VTL features outside the supported subset (see
  *     `src/local/vtl-engine.ts` for the full list) surface a clear error
- *     via `VtlEvaluationError`; cdkd's dispatcher catches it and emits a
+ *     via `VtlEvaluationError`; cdk-local's dispatcher catches it and emits a
  *     `502 Bad Gateway` with the template + error name in the body. AWS
  *     would surface a similar 5xx for VTL evaluation failures.
  *   - `Integration.RequestParameters` mapping expressions
@@ -47,7 +47,7 @@
  *     This is acceptable for local-dev (the upstream URL is the user's
  *     own).
  *   - **SSRF surface**: `Integration.Uri` is accepted verbatim and
- *     passed to `fetch()`; cdkd does NOT block private / loopback /
+ *     passed to `fetch()`; cdk-local does NOT block private / loopback /
  *     link-local destinations. A `warnSsrfRiskyUri()` helper surfaces a
  *     warn at server boot when an Uri's hostname resolves to a
  *     well-known internal address (IMDS, loopback, link-local, RFC1918)
@@ -443,7 +443,7 @@ export async function dispatchHttpIntegration(
   // `application/xml`, `application/x-www-form-urlencoded`) are decoded
   // as UTF-8 so the VTL ResponseTemplates can run against the body text.
   // Other content types (binary blobs — images, octet-stream, etc.) go
-  // straight through as a Buffer so cdkd does not corrupt them via
+  // straight through as a Buffer so cdk-local does not corrupt them via
   // UTF-8 decode. VTL templates that assume text against a binary
   // upstream are limited by this design — see the dispatcher docstring.
   const upstreamContentType = upstream.headers.get('content-type') ?? 'application/octet-stream';
@@ -473,7 +473,7 @@ export async function dispatchHttpIntegration(
     if (picked) {
       if (upstreamText === undefined) {
         // Upstream is binary but a ResponseTemplate is configured. VTL
-        // requires the body as a string; cdkd cannot apply it without
+        // requires the body as a string; cdk-local cannot apply it without
         // corrupting binary content. Surface a warn and pass the binary
         // through as-is (matches the binary-pass-through fall-through
         // below).
@@ -843,7 +843,7 @@ export function classifyInternalHost(host: string): string | undefined {
  * by `classifyInternalHost`. Called once at server boot from
  * `cdkl start-api`'s discovery pass; per-route deduplicated.
  *
- * cdkd does NOT block the URI — this is a developer-loop tool, not a
+ * cdk-local does NOT block the URI — this is a developer-loop tool, not a
  * security boundary, and warn-and-proceed matches the precedent set by
  * the cognito JWKS pass-through fallback. The right v2 follow-up is an
  * `--allow-internal-uri` flag (and an opposite default block) once the
@@ -869,7 +869,7 @@ export function warnSsrfRiskyUri(
   if (classification !== undefined) {
     warn(
       `Integration URI for ${routeLabel} points at ${host} — ${classification}. ` +
-        `cdkd does NOT block this; ensure the upstream is intentional.`
+        `cdk-local does NOT block this; ensure the upstream is intentional.`
     );
   }
 }
@@ -902,7 +902,7 @@ function safeJsonParse(s: string): unknown {
  * Unsupported mapping expressions are logged at warn and skipped (matches
  * the ResponseParameters handling in `integration-response-selector.ts`).
  *
- * Note: querystring / path-rewrite branches currently warn-and-skip; cdkd
+ * Note: querystring / path-rewrite branches currently warn-and-skip; cdk-local
  * relies on `{paramName}` URI substitution for the canonical case (see
  * {@link substituteUriPlaceholders}). The previous `urlObj` parameter was
  * never used by the unimplemented querystring rewrite branch and has been
@@ -929,17 +929,17 @@ function applyRequestParameters(
     if (headerMatch) {
       out.headers[headerMatch[1]!.toLowerCase()] = resolved;
     } else if (queryMatch) {
-      // Querystring rewrites are recognized but cdkd applies querystring
+      // Querystring rewrites are recognized but cdk-local applies querystring
       // rewrites only via URI placeholder substitution; ignore.
       logger.warn(
-        `RequestParameter '${key}' (querystring rewrite) is recognized but cdkd applies querystring rewrites only via URI placeholder substitution; ignoring.`
+        `RequestParameter '${key}' (querystring rewrite) is recognized but cdk-local applies querystring rewrites only via URI placeholder substitution; ignoring.`
       );
     } else if (pathMatch) {
       // Path rewrites apply at URI substitution time. Log + skip — the
       // pre-substituted URI already used the path parameters via
       // `{paramName}` placeholders, so a separate rewrite is rarely needed.
       logger.warn(
-        `RequestParameter '${key}' (path rewrite) is recognized but cdkd substitutes path placeholders via {param} in the URI; ignoring.`
+        `RequestParameter '${key}' (path rewrite) is recognized but cdk-local substitutes path placeholders via {param} in the URI; ignoring.`
       );
     } else {
       logger.warn(`Unsupported RequestParameter key '${key}'; skipping.`);

@@ -230,7 +230,7 @@ curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/pin
 
 # #467: streaming Function URL (`invokeMode: RESPONSE_STREAM`). The
 # handler emits 5 chunks of "hello-N\n" with 200ms delays between
-# chunks. cdkd MUST:
+# chunks. cdk-local MUST:
 #   1. Return HTTP 200 + `Transfer-Encoding: chunked` headers (not
 #      buffered-then-flushed in one shot).
 #   2. Deliver chunks incrementally — the wall-clock duration of
@@ -376,7 +376,7 @@ fi
 echo "    [REST v1 MOCK CORS preflight] OK"
 
 # Deferred-error class: GET /v1/unsupported has an HTTP_PROXY integration
-# cdkd cannot emulate. The server returns 501 + `reason` in the body, no
+# cdk-local cannot emulate. The server returns 501 + `reason` in the body, no
 # Lambda invocation. Pre-PR boot would have hard-errored on this route
 # and prevented every other route from being reachable.
 echo "==> Asserting GET /v1/unsupported -> 501 Not Implemented"

@@ -35,7 +35,7 @@ import * as websocketBody from './websocket-body.js';
  *
  * Architecture (mirrors design doc §2 / §8):
  *   - One {@link WebSocketServer} per cdkl start-api server.
- *   - `noServer: true` mode — cdkd owns the upgrade-event dispatch.
+ *   - `noServer: true` mode — cdk-local owns the upgrade-event dispatch.
  *   - Per-connection lifecycle: handshake -> $connect Lambda ->
  *     (allow/deny) -> message loop -> close -> $disconnect Lambda.
  *   - Outbound `@connections/<id>` POST from a handler-side AWS SDK
@@ -562,7 +562,7 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
  *
  * The CLI installs this BEFORE the existing http-server pipeline so a
  * Lambda inside a container can call
- * `apigatewaymanagementapi:PostToConnection` and have cdkd deliver the
+ * `apigatewaymanagementapi:PostToConnection` and have cdk-local deliver the
  * message back to the open WebSocket without the request hitting the
  * route table.
  */

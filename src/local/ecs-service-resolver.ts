@@ -28,7 +28,7 @@ import {
  */
 /**
  * Resolved `AWS::ECS::Service.ServiceConnectConfiguration` (Phase 3 of #262).
- * Pre-PR cdkd warned and skipped this block; post-PR each entry's
+ * Pre-PR cdk-local warned and skipped this block; post-PR each entry's
  * `PortName` is matched against the producer TaskDef's
  * `ContainerDefinitions[].PortMappings[].Name` (verified empirically
  * via real `cdk synth` on 2026-05-22 — the CFn field is `PortName`,
@@ -63,7 +63,7 @@ export interface ResolvedServiceConnect {
      */
     containerPort: number;
     /**
-     * The canonical Cloud Map discovery name. cdkd derives this from
+     * The canonical Cloud Map discovery name. cdk-local derives this from
      * `ClientAliases[0].DnsName` when the user supplied one; otherwise
      * defaults to the `PortName` so the registry publishes under a
      * meaningful key.
@@ -124,7 +124,7 @@ export interface ResolvedEcsService {
   healthCheckGracePeriodSeconds: number;
   /**
    * The resolved task descriptor (every container / volume / network mode /
-   * runtime platform / task-role detail). cdkd reuses this verbatim per
+   * runtime platform / task-role detail). cdk-local reuses this verbatim per
    * replica instance.
    */
   task: ResolvedEcsTask;
@@ -306,7 +306,7 @@ export function extractServiceProperties(
  * Note on `clientAliases[]` shape: each ClientAlias can declare a
  * `DnsName` (the bare short-name peers connect to, e.g. `orders`) AND
  * a `Port` (the listening port the alias maps to inside the consumer).
- * cdkd surfaces both verbatim; the registry / `--add-host` overlay
+ * cdk-local surfaces both verbatim; the registry / `--add-host` overlay
  * publishes each `DnsName` as a bare alias pointing at the same IP as
  * the canonical fqdn.
  */
@@ -399,7 +399,7 @@ function extractServiceConnect(
 /**
  * Parse `ServiceRegistries[]`. Each entry's `RegistryArn` is the
  * canonical `Fn::GetAtt: [<CloudMapServiceLogicalId>, 'Arn']` shape;
- * cdkd surfaces the logical id (the AWS-side ARN is irrelevant
+ * cdk-local surfaces the logical id (the AWS-side ARN is irrelevant
  * locally — the registry is in-process).
  *
  * Issue #544 — entries with a literal-string `RegistryArn` (rare
@@ -428,10 +428,10 @@ function extractServiceRegistries(
       // We can't resolve it via the in-process registry; warn + skip.
       warnings.push(
         `ECS Service '${serviceLogicalId}' ServiceRegistries[] entry has a literal-string ` +
-          `RegistryArn ('${registryArn}'); cdkd cannot resolve external Cloud Map services ` +
+          `RegistryArn ('${registryArn}'); cdk-local cannot resolve external Cloud Map services ` +
           'locally. Skipping this registration; peer services will not discover this endpoint ' +
           'through the in-process registry. Use Fn::GetAtt: [<CloudMapServiceLogicalId>, "Arn"] ' +
-          'instead so cdkd can resolve the namespace + service name from the synthesized template.'
+          'instead so cdk-local can resolve the namespace + service name from the synthesized template.'
       );
       continue;
     }

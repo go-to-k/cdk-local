@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
  * Three event types — CONNECT / MESSAGE / DISCONNECT — each carry a
  * shared {@link WebSocketRequestContext} plus per-event fields.
  *
- * Fields cdkd populates locally vs mocks (matches design Q1 in
+ * Fields cdk-local populates locally vs mocks (matches design Q1 in
  * `docs/design/462-websocket-api.md`):
  *
  * | Field                                | Source                                  |
@@ -38,7 +38,7 @@ const MOCK_API_ID = 'local';
 
 /**
  * Request snapshot from the WebSocket upgrade handshake. The handshake is
- * a plain HTTP GET with `Upgrade: websocket`; cdkd extracts headers /
+ * a plain HTTP GET with `Upgrade: websocket`; cdk-local extracts headers /
  * query string / source IP from the underlying `IncomingMessage` once at
  * `$connect` and reuses them for every subsequent event on the same
  * connection so the Lambda's event-context stays consistent.
@@ -152,7 +152,7 @@ function buildRequestContext(
 /**
  * Build the `$connect` event. AWS WebSocket APIs fire `$connect` ONCE
  * per client connection. Handler returns `{statusCode: 200}` to allow
- * the connection, anything else (or throws) to deny — cdkd matches the
+ * the connection, anything else (or throws) to deny — cdk-local matches the
  * deployed behavior by checking the response in the caller.
  */
 export function buildConnectEvent(opts: {

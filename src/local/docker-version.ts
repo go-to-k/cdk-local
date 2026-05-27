@@ -3,7 +3,7 @@ import { runDockerStreaming } from '../utils/docker-cmd.js';
 /**
  * Lower bound for `--add-host=<name>:host-gateway` support. The
  * `host-gateway` magic alias was introduced in Docker 20.10 (October
- * 2020) and is the load-bearing primitive cdkd uses to let Lambda
+ * 2020) and is the load-bearing primitive cdk-local uses to let Lambda
  * containers reach the host's `cdkl start-api` server on Linux
  * native dockerd. Without it, the AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI
  * override fails with `ENOTFOUND host.docker.internal` at SDK-call time.
@@ -104,7 +104,7 @@ export async function probeHostGatewaySupport(): Promise<HostGatewayProbeResult>
     return { rawVersion, parsed: null, supported: false };
   }
   // Treat unparseable-but-non-empty versions as "supported" — podman /
-  // finch / nerdctl emit version strings cdkd can't always compare
+  // finch / nerdctl emit version strings cdk-local can't always compare
   // against Docker's. Defer to the warn path rather than refuse the
   // boot.
   const supported = parsed === null || compareDockerVersions(parsed, HOST_GATEWAY_MIN_VERSION) >= 0;

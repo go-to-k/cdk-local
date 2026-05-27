@@ -2,7 +2,7 @@
 # verify.sh — cdkl start-service Phase 2 integ test (no AWS deploy)
 #
 # Boots a 2-replica ECS Service emulator backed by busybox heartbeat
-# containers. Asserts both replicas reach docker, then SIGTERMs cdkd and
+# containers. Asserts both replicas reach docker, then SIGTERMs cdk-local and
 # asserts clean teardown (no leftover containers / networks / sidecars).
 #
 #     bash tests/integration/local-start-service/verify.sh
@@ -20,7 +20,7 @@ cleanup() {
   echo "==> Cleanup: stopping any leftover containers + networks"
   if [[ -n "${CDKL_PID:-}" ]] && kill -0 "${CDKL_PID}" 2>/dev/null; then
     kill -TERM "${CDKL_PID}" 2>/dev/null || true
-    # Give cdkd up to 30s to clean up gracefully.
+    # Give cdk-local up to 30s to clean up gracefully.
     for _ in $(seq 1 60); do
       if ! kill -0 "${CDKL_PID}" 2>/dev/null; then break; fi
       sleep 0.5
@@ -77,9 +77,9 @@ for i in $(seq 1 60); do
     BOOTED=1
     break
   fi
-  # If cdkd exited early, fail fast.
+  # If cdk-local exited early, fail fast.
   if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
-    echo "FAIL: cdkd exited before reaching the boot banner"
+    echo "FAIL: cdk-local exited before reaching the boot banner"
     echo "----- service output -----"
     cat "${OUT_FILE}"
     echo "--------------------------"
@@ -165,8 +165,8 @@ echo "    OK: ${UNIQUE_SUBNET_COUNT} distinct subnets across ${#SUBNETS[@]} netw
 echo "==> Sending SIGTERM to cdkd ($(echo $CDKL_PID))"
 kill -TERM "${CDKL_PID}"
 
-# Wait for cdkd to exit cleanly.
-echo "==> Waiting for cdkd to exit (up to 60s)"
+# Wait for cdk-local to exit cleanly.
+echo "==> Waiting for cdk-local to exit (up to 60s)"
 EXITED=0
 for i in $(seq 1 60); do
   if ! kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -176,7 +176,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 if [[ "${EXITED}" -ne 1 ]]; then
-  echo "FAIL: cdkd did not exit within 60s after SIGTERM"
+  echo "FAIL: cdk-local did not exit within 60s after SIGTERM"
   echo "----- service output -----"
   cat "${OUT_FILE}"
   echo "--------------------------"

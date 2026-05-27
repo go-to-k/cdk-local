@@ -12,7 +12,7 @@ import { getLogger } from '../utils/logger.js';
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
  * `cdkl run-task`. When the image URI resolves to an ECR repo but
  * doesn't match any cdk.out asset (typical when invoking a stack
- * deployed elsewhere or sharing a centralized registry), cdkd
+ * deployed elsewhere or sharing a centralized registry), cdk-local
  * authenticates against the target registry and runs `docker pull`.
  *
  * **Cross-account / cross-region** (#455):
@@ -23,7 +23,7 @@ import { getLogger } from '../utils/logger.js';
  *     target account. The resulting credentials authenticate the ECR
  *     client (regardless of region — the ECR client is built for the
  *     URI's region, which can differ from the caller's profile region).
- *   - Cross-account, NO `ecrRoleArn`: cdkd falls through to the
+ *   - Cross-account, NO `ecrRoleArn`: cdk-local falls through to the
  *     default credential chain. This works when the caller has been
  *     granted cross-account `ecr:GetAuthorizationToken` +
  *     `ecr:BatchGetImage` permissions on the target repository via an
@@ -365,7 +365,7 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
   } catch {
     throw new LocalInvokeBuildError(
       `Image '${imageUri}' is not in the local docker cache and --no-pull was set. ` +
-        'Either remove --no-pull (cdkd will pull from ECR) or pre-pull the image manually with `docker pull`.'
+        'Either remove --no-pull (cdk-local will pull from ECR) or pre-pull the image manually with `docker pull`.'
     );
   }
 }

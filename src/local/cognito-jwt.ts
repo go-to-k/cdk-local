@@ -8,7 +8,7 @@ import { buildIdentityHash } from './authorizer-resolver.js';
  * Cognito User Pool / JWT authorizer support for `cdkl start-api`
  * (PR 8b).
  *
- * cdkd verifies JWTs locally against the user pool's published JWKS so
+ * cdk-local verifies JWTs locally against the user pool's published JWKS so
  * the developer can exercise authorizer-protected routes with real-ish
  * tokens (e.g. ones minted by `aws cognito-idp admin-initiate-auth`).
  *
@@ -51,7 +51,7 @@ interface JwksCacheEntry {
 }
 
 /**
- * Cache of JWKS responses, keyed by the JWKS URL. cdkd refreshes the
+ * Cache of JWKS responses, keyed by the JWKS URL. cdk-local refreshes the
  * cache lazily on miss; entries live for 1hr by default (Cognito rotates
  * keys infrequently, so this is conservative).
  */
@@ -416,7 +416,7 @@ function shapeAllowResult(
     pickStringClaim(claims, 'username') ??
     'unknown';
   // Cap TTL at min(remaining-exp, 300s). The local server shouldn't
-  // outlive a real JWT; cdkd caches modestly to avoid spamming the
+  // outlive a real JWT; cdk-local caches modestly to avoid spamming the
   // signature verifier on every request.
   const expMs = typeof claims['exp'] === 'number' ? claims['exp'] * 1000 : 0;
   const remainingSeconds = Math.max(0, Math.floor((expMs - now()) / 1000));

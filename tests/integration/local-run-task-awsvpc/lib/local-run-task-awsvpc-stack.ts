@@ -8,7 +8,7 @@ import { Construct } from 'constructs';
  *
  * A single TaskDefinition with `networkMode: awsvpc` and one busybox
  * container running a tiny netcat HTTP echo on port 18080. The point of
- * this fixture is the NETWORK MODE: before #461 cdkd hard-rejected
+ * this fixture is the NETWORK MODE: before #461 cdk-local hard-rejected
  * `awsvpc` at resolver time with `EcsTaskResolutionError`; after #461 it
  * ACCEPTS the task and maps `awsvpc` to a docker bridge network with a
  * startup warn (docker cannot emulate ENI-per-task — see
@@ -19,7 +19,7 @@ import { Construct } from 'constructs';
  * A non-privileged port (18080) is used so the host-port publish (cdkd
  * publishes container ports for `run-task`) does not need to bind the
  * privileged port 80. `awsvpc` requires `hostPort == containerPort` (or
- * omitted), so `hostPort` is left implicit and cdkd defaults it to
+ * omitted), so `hostPort` is left implicit and cdk-local defaults it to
  * `containerPort`.
  *
  * No AWS deploy required — the integ runs against the synthesized
@@ -54,7 +54,7 @@ export class LocalRunTaskAwsvpcStack extends cdk.Stack {
         "while true; do { echo -e 'HTTP/1.1 200 OK\\r\\nContent-Length: 13\\r\\nConnection: close\\r\\n\\r\\nHELLO_AWSVPC\\n'; } | nc -l -p 18080; done",
       ],
       // awsvpc requires hostPort == containerPort (or omitted); leave
-      // hostPort implicit so cdkd defaults it to the containerPort.
+      // hostPort implicit so cdk-local defaults it to the containerPort.
       portMappings: [{ containerPort: 18080, protocol: ecs.Protocol.TCP }],
       memoryReservationMiB: 32,
     });
