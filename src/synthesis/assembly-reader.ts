@@ -84,14 +84,27 @@ export interface StackInfo {
  * consumers (Lambda resolver, route discovery, ECS task resolver, etc.)
  * do not branch on the input mode.
  */
+/**
+ * Read options forwarded to `Toolkit.fromCdkApp` / `Toolkit.fromAssemblyDirectory`.
+ */
+export interface AssemblyReadOptions {
+  /** Output directory for synthesized assembly (default: `cdk.out`). */
+  outdir?: string;
+  /** Additional env vars passed to the CDK app subprocess (e.g. `AWS_PROFILE`, `AWS_REGION`). */
+  env?: Record<string, string | undefined>;
+}
+
 export class AssemblyReader {
   /**
    * Synthesize the CDK app and return `StackInfo` for every stack
    * artifact in the resulting Cloud Assembly.
    */
-  async read(cdkAppCommand: string): Promise<StackInfo[]> {
+  async read(cdkAppCommand: string, options: AssemblyReadOptions = {}): Promise<StackInfo[]> {
     const toolkit = new Toolkit();
-    const source = await toolkit.fromCdkApp(cdkAppCommand);
+    const source = await toolkit.fromCdkApp(cdkAppCommand, {
+      ...(options.outdir !== undefined && { outdir: options.outdir }),
+      ...(options.env !== undefined && { env: options.env }),
+    });
     const cached = await toolkit.synth(source);
     try {
       return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
