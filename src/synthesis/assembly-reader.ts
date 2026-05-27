@@ -1,5 +1,5 @@
 import type { CloudFormationStackArtifact } from '@aws-cdk/cloud-assembly-api';
-import { Toolkit } from '@aws-cdk/toolkit-lib';
+import { Toolkit, CdkAppMultiContext } from '@aws-cdk/toolkit-lib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
@@ -92,6 +92,23 @@ export interface AssemblyReadOptions {
   outdir?: string;
   /** Additional env vars passed to the CDK app subprocess (e.g. `AWS_PROFILE`, `AWS_REGION`). */
   env?: Record<string, string | undefined>;
+  /**
+   * Working directory the CDK app subprocess is executed in. Defaults
+   * to the current process cwd. When `context` is also set, this is
+   * also the directory `CdkAppMultiContext` resolves `cdk.json` /
+   * `cdk.context.json` / `~/.cdk.json` against.
+   */
+  workingDirectory?: string;
+  /**
+   * Commandline context overrides (CDK CLI `-c key=value`).
+   *
+   * Threaded through `CdkAppMultiContext(workingDirectory, context)` so
+   * cdk.json / cdk.context.json / ~/.cdk.json remain the base layer and
+   * CLI overrides win for keys they touch. Empty / undefined leaves
+   * toolkit-lib's default context store (CdkAppMultiContext with no
+   * commandline context) in place.
+   */
+  context?: Record<string, string>;
 }
 
 export class AssemblyReader {
@@ -101,9 +118,20 @@ export class AssemblyReader {
    */
   async read(cdkAppCommand: string, options: AssemblyReadOptions = {}): Promise<StackInfo[]> {
     const toolkit = new Toolkit();
+    const hasContextOverrides =
+      options.context !== undefined && Object.keys(options.context).length > 0;
     const source = await toolkit.fromCdkApp(cdkAppCommand, {
       ...(options.outdir !== undefined && { outdir: options.outdir }),
       ...(options.env !== undefined && { env: options.env }),
+      ...(options.workingDirectory !== undefined && {
+        workingDirectory: options.workingDirectory,
+      }),
+      ...(hasContextOverrides && {
+        contextStore: new CdkAppMultiContext(
+          options.workingDirectory ?? process.cwd(),
+          options.context
+        ),
+      }),
     });
     const cached = await toolkit.synth(source);
     try {
