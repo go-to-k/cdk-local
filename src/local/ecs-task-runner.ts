@@ -158,6 +158,25 @@ export interface RunEcsTaskOptions {
    * (network-aliases default to the container's `--name` only).
    */
   networkAliasesByContainer?: ReadonlyMap<string, ReadonlyArray<string>>;
+  /**
+   * ECS analogue of the Lambda-container fix shipped in cdkd PR #670:
+   * synthesized AWS shared credentials file (one INI section under
+   * `[<profileName>]`) bind-mounted read-only into EVERY user
+   * container, plus `AWS_SHARED_CREDENTIALS_FILE` +
+   * `AWS_PROFILE` env-var injection. Lets handlers that call
+   * `fromIni({ profile: '<name>' })` explicitly resolve to the same
+   * `--profile`-resolved creds the metadata sidecar serves, instead
+   * of failing with `CredentialsProviderError: Profile <name> could
+   * not be found` inside the container.
+   *
+   * Set by the CLI ONLY when `--profile` is effective AND
+   * `--assume-task-role` is NOT (precedence: assume-task-role >
+   * profile-file > sidecar). Caller is responsible for the
+   * `writeProfileCredentialsFile()` allocation + `dispose()` cleanup
+   * in its single-flight chain — the runner just plumbs the mount
+   * and env-vars through `buildDockerRunArgs`.
+   */
+  profileCredentialsFile?: { hostPath: string; containerPath: string; profileName: string };
 }
 
 /**
@@ -361,6 +380,9 @@ export async function runEcsTask(
         ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
           ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
           : {}),
+        ...(options.profileCredentialsFile && {
+          profileCredentialsFile: options.profileCredentialsFile,
+        }),
       })
     );
   }
@@ -838,6 +860,17 @@ interface BuildDockerRunArgs {
    * additional aliases registered alongside it.
    */
   networkAliases?: ReadonlyArray<string>;
+  /**
+   * ECS analogue of the Lambda-container fix in cdkd PR #670 — bind-mounts
+   * a host-side AWS shared credentials file (one `[<profileName>]`
+   * INI section) read-only into the container and sets
+   * `AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE` env vars so handler
+   * code calling `fromIni({ profile })` resolves to the same creds
+   * the metadata sidecar serves. When undefined (the default), no
+   * mount / env vars are emitted — `--profile` is forwarded to the
+   * sidecar only.
+   */
+  profileCredentialsFile?: { hostPath: string; containerPath: string; profileName: string };
 }
 
 /**
@@ -902,6 +935,22 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     }
   }
 
+  // cdkd PR #670 follow-up — bind-mount the host-side profile credentials
+  // file read-only at the fixed in-container path so `fromIni({
+  // profile })` handlers resolve to the same creds the sidecar
+  // serves. The `:ro` flag is load-bearing: a compromised handler
+  // must not be able to tamper with the host-side temp file. Set
+  // BEFORE the user's own `MountPoints` so a (malformed) user mount
+  // that targets `/cdk-local-aws/credentials` doesn't shadow the
+  // creds file — docker honors mount-order by container path
+  // uniqueness; a later mount at the same target would fail or shadow.
+  if (opts.profileCredentialsFile) {
+    args.push(
+      '-v',
+      `${opts.profileCredentialsFile.hostPath}:${opts.profileCredentialsFile.containerPath}:ro`
+    );
+  }
+
   // Mounts: walk the container's `MountPoints` and look up the matching
   // volume to decide bind-mount vs docker volume.
   for (const mp of container.mountPoints) {
@@ -927,7 +976,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   //   2. global `Parameters` `--env-vars` entry
   //   3. resolved secrets
   //   4. template literal env
-  //   5. metadata sidecar env (sidecar URL / role URL)
+  //   5. profile credentials file env (AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE)
+  //   6. metadata sidecar env (sidecar URL / role URL)
   const finalEnv: Record<string, string> = {};
   const metaEnv = buildMetadataEnv({
     containerName: container.name,
@@ -936,6 +986,17 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     ...(opts.sidecarIp !== undefined && { sidecarIp: opts.sidecarIp }),
   });
   Object.assign(finalEnv, metaEnv);
+  // cdkd PR #670 follow-up — point the container's SDK chain at the bind-
+  // mounted credentials file so `fromIni({ profile })` calls inside
+  // the handler resolve to the same creds. `AWS_PROFILE` makes
+  // `fromIni()` (no explicit arg) ALSO use this profile. Sits ABOVE
+  // template / secret / --env-vars overrides so a user template that
+  // sets its own `AWS_PROFILE` (e.g. for a different in-container
+  // chain) still wins.
+  if (opts.profileCredentialsFile) {
+    finalEnv['AWS_SHARED_CREDENTIALS_FILE'] = opts.profileCredentialsFile.containerPath;
+    finalEnv['AWS_PROFILE'] = opts.profileCredentialsFile.profileName;
+  }
   Object.assign(finalEnv, container.environment);
   for (const s of secrets) finalEnv[s.name] = s.value;
 
