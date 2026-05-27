@@ -3,6 +3,7 @@ import {
   type CloudFormationStackArtifact,
 } from '@aws-cdk/cloud-assembly-api';
 import { Toolkit, CdkAppMultiContext } from '@aws-cdk/toolkit-lib';
+import { CdklIoHost } from './cdkl-io-host.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
@@ -120,7 +121,7 @@ export class AssemblyReader {
    * artifact in the resulting Cloud Assembly.
    */
   async read(cdkAppCommand: string, options: AssemblyReadOptions = {}): Promise<StackInfo[]> {
-    const toolkit = new Toolkit();
+    const toolkit = new Toolkit({ ioHost: new CdklIoHost() });
     const hasContextOverrides =
       options.context !== undefined && Object.keys(options.context).length > 0;
     const source = await toolkit.fromCdkApp(cdkAppCommand, {
@@ -148,7 +149,7 @@ export class AssemblyReader {
    * Read a pre-synthesized Cloud Assembly directory (no subprocess).
    */
   async readFromDirectory(assemblyDir: string): Promise<StackInfo[]> {
-    const toolkit = new Toolkit();
+    const toolkit = new Toolkit({ ioHost: new CdklIoHost() });
     const source = await toolkit.fromAssemblyDirectory(assemblyDir);
     const cached = await toolkit.synth(source);
     try {
