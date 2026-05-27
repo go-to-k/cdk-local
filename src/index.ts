@@ -1,11 +1,44 @@
 /**
  * cdk-local — public API surface.
  *
- * Phase 1 scaffold: empty package root. Phase 2 will export:
- *   - LocalStateProvider, LocalStateRecord, CrossStackResolver (types)
- *   - createLocalInvokeCommand / createLocalStartApiCommand /
- *     createLocalRunTaskCommand / createLocalStartServiceCommand
- *     (Commander factories accepting { extraStateProviders? })
- *   - CfnLocalStateProvider, registerLocalStateProvider (helpers)
+ * Hosts embedding `cdk-local` (e.g. cdkd, which injects its own
+ * S3-backed `LocalStateProvider` via `extraStateProviders`) consume the
+ * four Commander factories below + the supporting types and helpers.
  */
-export {};
+
+export {
+  createLocalInvokeCommand,
+  type CreateLocalInvokeCommandOptions,
+} from './cli/commands/local-invoke.js';
+export {
+  createLocalStartApiCommand,
+  type CreateLocalStartApiCommandOptions,
+} from './cli/commands/local-start-api.js';
+export {
+  createLocalRunTaskCommand,
+  type CreateLocalRunTaskCommandOptions,
+} from './cli/commands/local-run-task.js';
+export {
+  createLocalStartServiceCommand,
+  type CreateLocalStartServiceCommandOptions,
+} from './cli/commands/local-start-service.js';
+
+export {
+  createLocalStateProvider,
+  isCfnFlagPresent,
+  rejectExplicitCfnStackWithMultipleStacks,
+  resolveCfnRegion,
+  resolveCfnStackName,
+  LocalStateSourceError,
+  type ExtraStateProviders,
+  type LocalStateProviderFactory,
+  type LocalStateSourceOptions,
+} from './cli/commands/local-state-source.js';
+
+export type { LocalStateProvider, LocalStateRecord } from './local/local-state-provider.js';
+export type { CrossStackResolver, SubstitutionContext } from './local/state-resolver.js';
+
+export {
+  CfnLocalStateProvider,
+  type CfnLocalStateProviderOptions,
+} from './local/cfn-local-state-provider.js';

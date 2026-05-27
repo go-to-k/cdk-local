@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
+import { createLocalInvokeCommand } from './commands/local-invoke.js';
+import { createLocalStartApiCommand } from './commands/local-start-api.js';
+import { createLocalRunTaskCommand } from './commands/local-run-task.js';
+import { createLocalStartServiceCommand } from './commands/local-start-service.js';
 
 declare const __CDK_LOCAL_VERSION__: string;
 
@@ -10,7 +14,9 @@ program
   .description('Run AWS CDK stacks locally with Docker.')
   .version(__CDK_LOCAL_VERSION__);
 
-// Phase 1 scaffold: no subcommands wired yet.
-// Phase 2 will register: invoke / start-api / run-task / start-service.
+program.addCommand(createLocalInvokeCommand());
+program.addCommand(createLocalStartApiCommand());
+program.addCommand(createLocalRunTaskCommand());
+program.addCommand(createLocalStartServiceCommand());
 
-program.parse(process.argv);
+void program.parseAsync(process.argv);
