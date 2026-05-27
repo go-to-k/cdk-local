@@ -274,6 +274,9 @@ vp run runtime:smoke
 ## Reference
 
 - `README.md` — user-facing intro + install + usage.
+- `docs/library-mode.md` — programmatic / library-mode integration
+  surface (factory exports, `LocalStateProvider` API) — linked from
+  README's "Programmatic use" pointer.
 - `vite.config.ts` — vp tasks, lint / fmt / pack / test config.
 - `.github/workflows/ci.yml` — CI (typecheck + lint + test + build +
   Node 20/22/24 matrix smoke).
