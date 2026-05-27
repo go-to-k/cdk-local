@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     lives in BOTH the `GreetingsA` and `GreetingsB` layers under the
  *     same path `/opt/nodejs/node_modules/util-greetings/index.js`. The
  *     function declares `Layers: [GreetingsA, GreetingsB, Counters]`,
- *     so the GreetingsB version wins. cdkd implements this on the
+ *     so the GreetingsB version wins. cdk-local implements this on the
  *     host: every layer is `cpSync({recursive: true, force: true})`'d
  *     into a fresh tmpdir IN ORDER — later layers overwrite earlier
  *     files — and the merged tmpdir is bind-mounted at `/opt:ro`.

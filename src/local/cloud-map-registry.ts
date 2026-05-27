@@ -31,8 +31,8 @@ import { getLogger } from '../utils/logger.js';
  *     out of scope (rejected upstream in the resolver layer or via the
  *     "deferred to follow-up PR" pointers).
  *
- * **Process scoping**: the registry is a singleton per `cdkd local
- * start-service` invocation. Multiple cdkd processes on the same host
+ * **Process scoping**: the registry is a singleton per `cdk-local
+ * start-service` invocation. Multiple cdk-local processes on the same host
  * do NOT share registry state — by design, since they'd be on different
  * docker networks anyway and the design § "Local docker network shape"
  * Option A pins "one docker network per CDK app per CLI invocation".

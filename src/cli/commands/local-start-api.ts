@@ -601,7 +601,7 @@ async function localStartApiCommand(
   // pass-through mode with the warn line documented in cognito-jwt.ts.
   await prewarmJwks(initialMaterial.routes, jwksCache);
 
-  // PR 8b: VPC-config Lambdas warn at startup. cdkd does NOT block
+  // PR 8b: VPC-config Lambdas warn at startup. cdk-local does NOT block
   // these routes, but the developer should know the local container
   // reaches external services via the host's network rather than
   // through the deployed VPC's NAT / private subnets. Re-runs on hot
@@ -644,7 +644,7 @@ async function localStartApiCommand(
   // handshake itself (in `https.createServer({requestCert: true,
   // rejectUnauthorized: true, ca, cert, key})`) enforces the
   // client-cert chain check against the CA bundle — there is no
-  // per-request validation in cdkd's code path.
+  // per-request validation in cdk-local's code path.
   const mtlsConfig: MtlsServerConfig | undefined = resolveMtlsConfig(options);
   if (mtlsConfig) {
     logger.info(
@@ -719,14 +719,14 @@ async function localStartApiCommand(
   // for the `@connections/<id>` data plane. Lambda containers in the
   // pool are injected with `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI`
   // pointing at the same port so `apigatewaymanagementapi:PostToConnection`
-  // from inside the handler lands on cdkd's local endpoint.
+  // from inside the handler lands on cdk-local's local endpoint.
   const wsServers: BootedWebSocketServer[] = [];
   const initialWsApis = initialMaterial.webSocketApis ?? [];
   warnUnsupportedWebSocketApis(initialWsApis, logger);
 
   // Issue #527 M2: probe Docker server version ONCE per session before
   // any WebSocket API attaches. The `--add-host=host.docker.internal:host-gateway`
-  // mapping cdkd injects requires Docker 20.10+; older daemons silently
+  // mapping cdk-local injects requires Docker 20.10+; older daemons silently
   // fail with `ENOTFOUND host.docker.internal` at SDK-call time. Only
   // probe when at least one ATTACHABLE WebSocket API exists — HTTP /
   // REST-only sessions don't use the host-gateway mapping and shouldn't
@@ -878,7 +878,7 @@ async function localStartApiCommand(
       }
       // Mutate the spec to include host.docker.internal mapping so
       // the Lambda's `apigatewaymanagementapi:PostToConnection` URL
-      // resolves to the host's cdkd server on every OS (Linux native
+      // resolves to the host's cdk-local server on every OS (Linux native
       // dockerd does NOT auto-expose `host.docker.internal`; macOS /
       // Windows Docker Desktop does).
       const merged = [...(spec.extraHosts ?? []), ...hostGatewayMapping];
@@ -1649,7 +1649,7 @@ async function resolveLocalBuildPlan(
  *
  * AWS Lambda's actual runtime extracts every layer ZIP into `/opt`
  * in template order — the merge mirrors that. Docker rejects multiple
- * `-v ...:/opt:ro` entries at the same target, so cdkd can't rely on
+ * `-v ...:/opt:ro` entries at the same target, so cdk-local can't rely on
  * overlay layering and must produce a single merged dir on the host.
  */
 export async function materializeLambdaLayers(
@@ -1730,7 +1730,7 @@ interface ResolvedStartApiLambdaBase {
    * the ZIP branch; always `[]` on the IMAGE branch — container
    * Lambdas reject `Layers` at deploy time on the AWS side (layers
    * are baked into the image at build time, not overlaid at
-   * runtime), so cdkd silently ignores any `Layers` property to
+   * runtime), so cdk-local silently ignores any `Layers` property to
    * match AWS's invoke-time behavior. The base-shape `[]` keeps the
    * ResolvedImageLambda → `lambda-resolver.ResolvedImageLambda`
    * cast structurally valid in the container-pool spec.
@@ -1838,7 +1838,7 @@ export function resolveLambdaByLogicalId(
     }
     // PR 6 (#232): same-stack `Properties.Layers` references resolve to
     // local asset directories that bind-mount at `/opt`; start-api
-    // routes through the same lambda-resolver helper as `cdkd local
+    // routes through the same lambda-resolver helper as `cdk-local local
     // invoke` so the warm container pool gets layer support out of
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
@@ -2437,7 +2437,7 @@ function warnUnsupportedWebSocketApis(
  * Surface a one-line warn per HTTP / HTTP_PROXY integration whose
  * `Integration.Uri` points at a well-known internal address space
  * (AWS IMDS, loopback, link-local, RFC1918). PR #505 / issue #457
- * follow-up: cdkd does NOT block these — warn-and-proceed matches the
+ * follow-up: cdk-local does NOT block these — warn-and-proceed matches the
  * cognito JWKS pass-through pattern — but the user should see the
  * destination at boot so a malicious / typo'd template Uri does not
  * silently exfiltrate credentials in CI. Deduplicated per-Uri.

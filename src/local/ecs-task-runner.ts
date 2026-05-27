@@ -53,7 +53,7 @@ export interface RunEcsTaskOptions {
   containerHost: string;
   /**
    * When true, the runner omits EVERY `-p <hostPort>:<containerPort>`
-   * flag from `docker run` (Issue #585). Set by `cdkd local
+   * flag from `docker run` (Issue #585). Set by `cdk-local
    * start-service` for multi-replica services: N replicas of one
    * service all map the same container port, so publishing a fixed host
    * port makes the 2nd+ replica fail to boot with `Bind for
@@ -809,7 +809,7 @@ interface BuildDockerRunArgs {
   region: string | undefined;
   /**
    * Optional sidecar IP for the metadata-endpoints sidecar on this
-   * task's docker network. Defaults to `169.254.170.2`; `cdkd local
+   * task's docker network. Defaults to `169.254.170.2`; `cdk-local
    * start-service` overrides per replica so each replica's containers
    * point at their own sidecar instance.
    */

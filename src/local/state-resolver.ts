@@ -5,7 +5,7 @@
  * intrinsic like `Ref` / `Fn::GetAtt` / `Fn::Sub`) as "unresolved" and
  * drops it. That's correct when there's no source of truth for the
  * deployed value — which is also the SAM behavior — but it's wrong when
- * cdkd has already deployed the stack and the AWS-current physical IDs
+ * cdk-local has already deployed the stack and the AWS-current physical IDs
  * sit in the cdkd state file.
  *
  * `--from-state` closes that gap: it loads cdkd's S3 state for the target
@@ -24,7 +24,7 @@
  *     `state.resources[id].attributes[attr]`. We deliberately do NOT
  *     synthesize attributes the provider would normally compute (e.g.
  *     IAM role ARNs derived from physicalId + accountId) — `--from-state`
- *     surfaces only what cdkd recorded at deploy time, which is what the
+ *     surfaces only what cdk-local recorded at deploy time, which is what the
  *     deployed Lambda's env actually saw.
  *   - `Fn::Sub: '<template>'` (and the two-argument `[template, vars]`
  *     form) — `${LogicalId}` / `${LogicalId.attr}` placeholders are

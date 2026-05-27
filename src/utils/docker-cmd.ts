@@ -2,16 +2,16 @@ import { spawn } from 'node:child_process';
 import { getLogger } from './logger.js';
 
 /**
- * Shared helpers for invoking the docker-compatible CLI binary across cdkd.
+ * Shared helpers for invoking the docker-compatible CLI binary across cdk-local.
  *
  * Two parity decisions with `aws-cdk-cli`'s `cdk-assets-lib`:
  *   1. `CDK_DOCKER` env var swaps the binary so podman / finch users can
- *      run cdkd without code changes (`CDK_DOCKER=podman cdkd deploy`).
+ *      run cdk-local without code changes (`CDK_DOCKER=podman cdkd deploy`).
  *   2. `runDockerStreaming` uses streaming spawn rather than `execFile`'s
  *      buffered `maxBuffer` ceiling. BuildKit's progress output can run to
  *      tens of MB on multi-stage builds with `# syntax=docker/dockerfile:1`
  *      frontend downloads + heredoc / `RUN --mount=...` features; the 50 MB
- *      `execFile` ceiling cdkd used to set silently killed those builds
+ *      `execFile` ceiling cdk-local used to set silently killed those builds
  *      with `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`.
  *
  * Output handling: stdout/stderr are collected in memory unconditionally so
@@ -24,7 +24,7 @@ import { getLogger } from './logger.js';
 /**
  * Return the docker-compatible CLI binary to invoke. Matches CDK CLI:
  * `CDK_DOCKER` env var overrides the default `docker` so users on
- * podman / finch / nerdctl can swap without changing cdkd code.
+ * podman / finch / nerdctl can swap without changing cdk-local code.
  */
 export function getDockerCmd(): string {
   const override = process.env['CDK_DOCKER'];
@@ -72,7 +72,7 @@ export interface RunDockerOptions {
  * losing the upstream output.
  *
  * No `maxBuffer` ceiling: BuildKit progress output frequently exceeds the
- * `child_process.execFile` default of 1 MB (cdkd previously bumped to 50 MB
+ * `child_process.execFile` default of 1 MB (cdk-local previously bumped to 50 MB
  * but BuildKit + frontend pulls can still exceed that on first-time builds).
  */
 export async function runDockerStreaming(
@@ -151,7 +151,7 @@ export async function spawnStreaming(
       // Defensive: when spawn() fails (e.g. ENOENT race), the synchronous
       // write below could emit a stream 'error' event before the close /
       // error handlers above fire. Without a listener, Node escalates that
-      // to "Unhandled 'error' event" on some versions. cdkd's only `input`
+      // to "Unhandled 'error' event" on some versions. cdk-local's only `input`
       // call site is `docker login --password-stdin` with short payloads
       // that complete well within the syscall, so this is unlikely to fire
       // in practice — but the no-op listener is free.
@@ -254,7 +254,7 @@ export async function spawnForeground(
  * Format the stderr from a failed `docker login` so the surfaced cdkd
  * error gives the user an actionable workaround when the underlying
  * failure is a credential-helper persistence bug (which has nothing to
- * do with cdkd, AWS, or IAM perms — the docker CLI itself fails to
+ * do with cdk-local, AWS, or IAM perms — the docker CLI itself fails to
  * save the auth token to the platform's credential store). The most
  * common shape is `osxkeychain` on macOS rejecting an overwrite for
  * an existing entry, but `wincred` (Windows), `pass` (Linux), and
@@ -281,8 +281,8 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
     return (
       `docker's credential helper (osxkeychain on macOS / wincred on Windows / pass / secretservice on Linux) ` +
       `failed to persist the ECR auth token. The "already exists in the keychain" / "Error saving credentials" ` +
-      `output is a known docker-credential-helpers issue — unrelated to cdkd, AWS credentials, or IAM perms. ` +
-      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale entry, then retry the cdkd command. ` +
+      `output is a known docker-credential-helpers issue — unrelated to cdk-local, AWS credentials, or IAM perms. ` +
+      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale entry, then retry the cdk-local command. ` +
       `Permanent fix: edit ~/.docker/config.json and remove (or empty) the platform-specific "credsStore" entry ` +
       `(e.g. "osxkeychain" → "" or "desktop" on macOS Docker Desktop). ` +
       `Original docker stderr: ${trimmed}`

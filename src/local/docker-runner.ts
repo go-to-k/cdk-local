@@ -28,7 +28,7 @@ export interface DockerRunOptions {
   /** Image to run (e.g. `public.ecr.aws/lambda/nodejs:20`). */
   image: string;
   /**
-   * Bind mounts: `[hostPath, containerPath]` pairs. cdkd uses this to
+   * Bind mounts: `[hostPath, containerPath]` pairs. cdk-local uses this to
    * expose the function's local code at `/var/task` (read-only). Empty
    * for container Lambdas (PR 5) — the image already has the code at
    * `/var/task`, no host bind-mount needed.

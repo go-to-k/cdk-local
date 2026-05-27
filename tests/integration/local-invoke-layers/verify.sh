@@ -56,7 +56,7 @@ echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
 # 1b: greetings layer — last-wins. Both GreetingsA and GreetingsB
 # install /opt/nodejs/node_modules/util-greetings/index.js; the
 # template declares Layers in order [A, B, Counters], so B's index.js
-# must overwrite A's. cdkd merges the layer asset dirs into a single
+# must overwrite A's. cdk-local merges the layer asset dirs into a single
 # tmpdir on the host (cpSync recursive+force, in template order) and
 # bind-mounts that at /opt — Docker rejects multiple -v ...:/opt:ro
 # entries, so we cannot rely on overlay layering at the runtime.
@@ -89,11 +89,11 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 # Test 3 — startup banner mentions the 3 layer mounts. Combines
 # stdout + stderr (cdkd's `logger.info` writes to stdout via
 # `console.info`; we just want to verify the layer-count line appears
-# somewhere in the cdkd output) so users know the layer wiring fired.
-echo "==> [3/3] Verifying cdkd logs the layer count"
+# somewhere in the cdk-local output) so users know the layer wiring fired.
+echo "==> [3/3] Verifying cdk-local logs the layer count"
 LOG_OUTPUT=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
-  echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdkd output, got:"
+  echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdk-local output, got:"
   echo "${LOG_OUTPUT}"
   exit 1
 }

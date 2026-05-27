@@ -3,7 +3,7 @@
  *
  * AWS API Gateway caches authorizer results per `(authorizer, identity)`
  * tuple to avoid invoking the Lambda / re-verifying the JWT on every
- * request. cdkd mirrors that behavior locally so the dev experience
+ * request. cdk-local mirrors that behavior locally so the dev experience
  * (latency, log noise) matches deployed behavior.
  *
  * Implementation:

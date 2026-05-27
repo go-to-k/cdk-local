@@ -64,7 +64,7 @@ export interface DiscoveredWebSocketApi {
    */
   routes: WebSocketRouteEntry[];
   /**
-   * Set when the whole API is unsupported by cdkd's local emulation.
+   * Set when the whole API is unsupported by cdk-local's local emulation.
    * The CLI's WebSocket attach loop skips an `unsupported`-tagged API
    * (no server is attached, no upgrade is accepted) and surfaces the
    * `reason` as a startup warn naming the affected API so the user

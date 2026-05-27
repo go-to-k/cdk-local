@@ -7,7 +7,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
  *
  * This interface mirrors the shape cdkd's `src/local/**` files import,
  * so the ported source compiles without rewrites. The backing
- * implementation differs: cdkd parses `cdk.out/manifest.json` by hand
+ * implementation differs: cdk-local parses `cdk.out/manifest.json` by hand
  * (PR #4 self-implemented synth); cdk-local delegates to
  * `@aws-cdk/toolkit-lib` (`Toolkit.fromCdkApp()` + `Toolkit.synth()`)
  * and maps each synthesized `CloudFormationStackArtifact` to a

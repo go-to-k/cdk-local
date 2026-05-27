@@ -10,7 +10,7 @@
  * and integration backend (Lambda non-proxy / HTTP / MOCK / AWS service)
  * request / response shapes. The full VTL spec is large; AWS API Gateway
  * exposes a SUBSET plus three AWS-specific built-in variables (`$input`,
- * `$context`, `$util`). cdkd implements the SUBSET that real CDK apps
+ * `$context`, `$util`). cdk-local implements the SUBSET that real CDK apps
  * use in practice — anything outside it surfaces a clear error rather
  * than silently producing wrong output. See the
  * `VtlEvaluationError.message` field for the exact name when something
@@ -73,7 +73,7 @@
  *   `$util.urlEncode(s)` / `$util.urlDecode(s)` — RFC 3986 encoding.
  *   `$util.parseJson(s)` — `JSON.parse(s)`.
  *
- * Mismatches between cdkd's evaluator and AWS-deployed VTL surface as
+ * Mismatches between cdk-local's evaluator and AWS-deployed VTL surface as
  * `VtlEvaluationError`. Spurious whitespace / formatting differences are
  * acceptable and not in the contract.
  */
@@ -631,7 +631,7 @@ class VtlEvaluator {
   private callValueAsMethod(value: unknown, argsRaw: string, refPath: string): unknown {
     if (typeof value !== 'function') {
       throw new VtlEvaluationError(
-        `Reference '$${refPath}' is not callable (got ${typeof value}). cdkd supports calling $input / $util / $context method-style references only.`
+        `Reference '$${refPath}' is not callable (got ${typeof value}). cdk-local supports calling $input / $util / $context method-style references only.`
       );
     }
     const args = this.parseArgList(argsRaw);
@@ -949,7 +949,7 @@ function isTruthy(v: unknown): boolean {
  *
  * JSONPath support is minimal: supports `$` (root), `$.field`,
  * `$.field.subField`, `$.array[0]`. AWS supports more (filter
- * expressions, recursive descent); cdkd surfaces a clear error on
+ * expressions, recursive descent); cdk-local surfaces a clear error on
  * unsupported expressions rather than silently producing wrong output.
  */
 export function buildVtlInput(
@@ -1066,7 +1066,7 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
       const m = /^[a-zA-Z_][a-zA-Z_0-9]*/.exec(trimmed.slice(i));
       if (!m) {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath syntax at position ${i}: '${trimmed}' (cdkd supports $, $.field, $.field.sub, $.array[index] only).`
+          `Unsupported JSONPath syntax at position ${i}: '${trimmed}' (cdk-local supports $, $.field, $.field.sub, $.array[index] only).`
         );
       }
       cursor = lookupField(cursor, m[0]);
@@ -1093,7 +1093,7 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
         cursor = lookupField(cursor, inside.slice(1, -1));
       } else {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath bracket expression: '${inside}' (cdkd supports integer indices and quoted string keys only).`
+          `Unsupported JSONPath bracket expression: '${inside}' (cdk-local supports integer indices and quoted string keys only).`
         );
       }
       i = close + 1;

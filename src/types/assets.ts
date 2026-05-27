@@ -74,7 +74,7 @@ export interface DockerImageAssetSource {
   /**
    * A command-line executable that returns the name of a local Docker image
    * on stdout after being run. Mutually exclusive with `directory` in
-   * upstream CDK; cdkd treats `executable` as taking precedence when both
+   * upstream CDK; cdk-local treats `executable` as taking precedence when both
    * are set.
    */
   executable?: string[];

@@ -88,7 +88,7 @@ export interface CfnLocalStateProviderOptions {
    * and failed with "Stack does not exist" when the stack lived
    * elsewhere. Matches the threading pattern in
    * `S3LocalStateProvider` / `S3StateBackend` /
-   * `src/utils/aws-region-resolver.ts` — every other cdkd command
+   * `src/utils/aws-region-resolver.ts` — every other cdk-local command
    * already passes `profile` straight to the SDK client.
    */
   profile?: string;
@@ -129,7 +129,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (!this.client) {
       // Profile threading matches `S3LocalStateProvider` /
       // `S3StateBackend` / `src/utils/aws-region-resolver.ts` — every
-      // other cdkd command already passes the CLI's `--profile` through
+      // other cdk-local command already passes the CLI's `--profile` through
       // to the SDK client constructor so the SDK's profile-aware
       // credential resolution picks up the named profile from
       // `~/.aws/credentials` / `~/.aws/config`. Issue #628.

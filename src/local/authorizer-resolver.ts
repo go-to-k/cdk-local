@@ -75,7 +75,7 @@ export interface LambdaRequestAuthorizer {
 
 /**
  * A single Cognito User Pool referenced by a REST v1
- * `AWS::ApiGateway::Authorizer.ProviderARNs[]` entry. cdkd extracts the
+ * `AWS::ApiGateway::Authorizer.ProviderARNs[]` entry. cdk-local extracts the
  * `region` + `userPoolId` segments out of the ARN so the JWKS URL can be
  * built without an AWS API call.
  */
@@ -118,7 +118,7 @@ export interface CognitoUserPoolAuthorizer {
   // for ID tokens, `client_id` for access tokens) is the User Pool *App
   // Client ID*. CDK / CFn's `AWS::ApiGateway::Authorizer` only carries
   // the User Pool ARN(s) via `ProviderARNs`, not the client id, so
-  // there's no template-time data for cdkd to surface here.
+  // there's no template-time data for cdk-local to surface here.
   // `verifyCognitoJwt` therefore passes `expectedAudience: undefined`
   // and falls back to issuer / signature / expiry checks only — matches
   // the deployed REST v1 behavior. HTTP v2 JWT authorizers DO carry an
@@ -281,7 +281,7 @@ export function resolveRestV1Authorizer(
   // does not emit a companion `AWS::ApiGateway::Authorizer` resource
   // for IAM. mTLS lives on the `AWS::ApiGateway::DomainName` /
   // `AWS::ApiGatewayV2::DomainName` resource via `MutualTlsAuthentication`,
-  // also not via Authorizer; cdkd supports it via the `--mtls-truststore`
+  // also not via Authorizer; cdk-local supports it via the `--mtls-truststore`
   // / `--mtls-cert` / `--mtls-key` CLI flags on `cdkl start-api`,
   // and the TLS handshake itself enforces the client-cert trust check,
   // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS

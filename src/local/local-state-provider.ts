@@ -16,7 +16,7 @@
  *     `DescribeStacks --Outputs` + `ListExports`. Lets the `local *`
  *     commands substitute deployed physical IDs from a CDK app deployed
  *     via the upstream CDK CLI (`cdk deploy` → CloudFormation), so users
- *     migrating between cdkd and CFn (or running cdkd local against an
+ *     migrating between cdk-local and CFn (or running cdk-local against an
  *     existing CFn-managed CDK app) get the same UX they get with
  *     `--from-state` against cdkd-deployed stacks.
  *

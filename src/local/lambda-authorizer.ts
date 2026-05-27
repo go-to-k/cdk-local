@@ -147,7 +147,7 @@ export async function invokeRequestAuthorizer(
   const result = await invokeAuthorizerLambda(authorizer.lambdaLogicalId, event, ctx);
   if (authorizer.apiVersion === 'v2') {
     // HTTP v2 supports two response shapes: simple ({isAuthorized: bool})
-    // and IAM (policy document). cdkd accepts both — the simple shape
+    // and IAM (policy document). cdk-local accepts both — the simple shape
     // wins when `isAuthorized` is present, otherwise we fall back to the
     // IAM-style policy parse.
     return parseHttpV2RequestResponse(result, ctx.methodArn, identityHash);
@@ -325,7 +325,7 @@ async function invokeAuthorizerLambda(
  *     "context"?: { ... }     // string-valued map
  *   }
  *
- * cdkd allows the response when ANY Allow statement's Resource matches
+ * cdk-local allows the response when ANY Allow statement's Resource matches
  * the methodArn (literal match OR wildcard at the trailing
  * `/<METHOD>/<path>` segment). A non-Allow / wildcard-mismatch / missing
  * policyDocument all map to deny.
@@ -412,7 +412,7 @@ function parseHttpV2RequestResponse(
 
 /**
  * Match a Resource value against the methodArn. AWS supports `*` and `?`
- * glob characters in IAM policy resources; cdkd implements the segmented
+ * glob characters in IAM policy resources; cdk-local implements the segmented
  * semantics AWS documents — `*` matches any sequence of characters
  * **within** a single segment, where segments are delimited by `:`
  * (ARN partition / service / region / account) and `/` (path). `**`
@@ -469,7 +469,7 @@ export function resourceMatches(pattern: string, methodArn: string): boolean {
  * Re-evaluate a cached Lambda authorizer's policy document against the
  * current request's methodArn. Used by the HTTP server's cache hit path:
  * AWS-deployed API Gateway caches the IAM policy and re-checks `Resource`
- * against each new request's methodArn, so cdkd mirrors that — caching
+ * against each new request's methodArn, so cdk-local mirrors that — caching
  * the verdict directly would let a narrow-Resource Allow leak across
  * routes.
  *

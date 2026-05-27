@@ -45,7 +45,7 @@ interface ResolvedLambdaBase {
    *
    * **Order is load-bearing**: AWS layer semantics are "last layer wins
    * on file collision", so this array preserves the template's input
-   * order. cdkd implements the last-wins rule by `cpSync`-merging every
+   * order. cdk-local implements the last-wins rule by `cpSync`-merging every
    * layer's asset directory into a single host tmpdir IN TEMPLATE ORDER
    * (later layers overwrite earlier files via `recursive: true, force:
    * true`), then bind-mounting the merged tmpdir at `/opt:ro`. Docker
@@ -114,7 +114,7 @@ export interface ResolvedAssetLambdaLayer {
    * Absolute path on disk to the layer's unzipped asset directory. Will
    * be bind-mounted at `/opt` inside the container (read-only). The
    * directory is laid out per AWS's runtime-specific load-path
-   * conventions (`opt/python/...`, `opt/nodejs/...`, etc.) — cdkd does
+   * conventions (`opt/python/...`, `opt/nodejs/...`, etc.) — cdk-local does
    * NOT inspect the contents, just hands the directory to docker.
    */
   assetPath: string;
@@ -175,7 +175,7 @@ export interface ResolvedImageLambda extends ResolvedLambdaBase {
    * for the local-build path AND for the ECR-pull fallback path (when the
    * URI doesn't match any cdk.out asset). Already resolved through
    * cdk-assets bootstrap-placeholder substitution upstream — `${AWS::*}`
-   * pseudo-parameters are still present (cdkd substitutes them at the
+   * pseudo-parameters are still present (cdk-local substitutes them at the
    * lookup site since it knows the calling account/region).
    */
   imageUri: string;
@@ -426,7 +426,7 @@ function extractLambdaProperties(
   if (!runtime) {
     throw new LocalInvokeResolutionError(
       `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
-        'cdkd cannot tell if this is a ZIP or a container Lambda.'
+        'cdk-local cannot tell if this is a ZIP or a container Lambda.'
     );
   }
   if (!handler) {
@@ -468,7 +468,7 @@ function extractLambdaProperties(
  * `{ EphemeralStorage: { Size: <MiB> } }`. CDK's
  * `cdk.Size.gibibytes(N)` serializes to `N * 1024`. AWS-side range is
  * 512..10240 MiB (the deployed function rejects anything outside that
- * range at create time); cdkd rejects > 10240 here so a misconfigured
+ * range at create time); cdk-local rejects > 10240 here so a misconfigured
  * template fails fast at `cdkl invoke` boot rather than hanging
  * on a `docker run` that AWS would have refused anyway. The 512 floor
  * is AWS's minimum (the default when `EphemeralStorage` is omitted is
@@ -583,7 +583,7 @@ function extractImageUri(
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
             'cdkl invoke cannot resolve the repository URI without state — ' +
-            'deploy the stack first (so cdkd records the repository physical id), ' +
+            'deploy the stack first (so cdk-local records the repository physical id), ' +
             'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
       }
@@ -599,8 +599,8 @@ function extractImageUri(
       // plumbing the typical remaining cause is `${AWS::AccountId}`
       // (needs an STS call or `--from-state`) or an unknown region.
       const accountIdHint = pseudoParameters
-        ? ' (likely ${AWS::AccountId}, which cdkd cannot derive without --from-state or STS)'
-        : ` (cdkd could not derive AWS pseudo parameters because stack.region was undefined)`;
+        ? ' (likely ${AWS::AccountId}, which cdk-local cannot derive without --from-state or STS)'
+        : ` (cdk-local could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkl invoke cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
@@ -742,7 +742,7 @@ function resolveAssetCodePath(
  * `local-start-api.ts`'s server-boot pre-merge) `cpSync`-merges every
  * entry into one host tmpdir in template order to honor AWS's
  * "last-layer-wins" file-collision semantics — Docker rejects multiple
- * bind mounts at the same target so cdkd cannot rely on overlay
+ * bind mounts at the same target so cdk-local cannot rely on overlay
  * layering.
  *
  * **Same-stack handling** (`{Ref: <Id>}` / `{Fn::GetAtt: [<Id>, 'Ref']}`):
@@ -790,7 +790,7 @@ export function resolveLambdaLayers(
       const parsed = parseLayerVersionArn(entry);
       if (!parsed) {
         throw new LocalInvokeResolutionError(
-          `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: literal string '${entry}'. ` +
+          `Lambda '${logicalId}' has a Layers entry [${i}] cdk-local cannot resolve locally: literal string '${entry}'. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
             'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
@@ -803,7 +803,7 @@ export function resolveLambdaLayers(
     const layerLogicalId = pickLayerLogicalId(entry);
     if (!layerLogicalId) {
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' has a Layers entry [${i}] cdkd cannot resolve locally: ${describeLayerEntry(entry)}. ` +
+        `Lambda '${logicalId}' has a Layers entry [${i}] cdk-local cannot resolve locally: ${describeLayerEntry(entry)}. ` +
           'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
           'OR a literal layer-version ARN of the form ' +
           'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
@@ -875,10 +875,10 @@ export function parseLayerVersionArn(
  * `{Fn::GetAtt: '<LogicalId>.<attr>'}`. CloudFormation YAML accepts the
  * dot-shorthand and converts it to the array form on the wire, but
  * CloudFormation JSON (the output of `cdk synth`, which is the only
- * thing cdkd ingests) never emits the string form. Treating it as
+ * thing cdk-local ingests) never emits the string form. Treating it as
  * resolvable here would silently accept hand-edited / malformed templates
  * that no real CDK flow can produce; instead we fall through to the
- * standard "cdkd cannot resolve this Layers entry locally" error so the
+ * standard "cdk-local cannot resolve this Layers entry locally" error so the
  * user sees the offending shape called out.
  */
 function pickLayerLogicalId(entry: unknown): string | undefined {

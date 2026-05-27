@@ -8,7 +8,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
  * Background: PR 8a left CORS preflight unimplemented. AWS's HTTP API
  * (`AWS::ApiGatewayV2::Api.CorsConfiguration`) responds to OPTIONS
  * preflight requests automatically — the request never reaches the
- * Lambda integration. cdkd's local server pre-PR forwarded OPTIONS to
+ * Lambda integration. cdk-local's local server pre-PR forwarded OPTIONS to
  * the route's handler, which usually 404s or returns a non-CORS body.
  *
  * Scope (locked in the issue brief):
@@ -200,7 +200,7 @@ function pickStringArray(value: unknown): string[] {
  *   AccessControlExposeHeaders.Items → ExposeHeaders
  *   AccessControlMaxAgeSec           → MaxAge
  *   AccessControlAllowCredentials    → AllowCredentials
- *   (OriginOverride is ignored — cdkd has only one config slot)
+ *   (OriginOverride is ignored — cdk-local has only one config slot)
  *
  * Multiple distributions fronting the same Function URL: last write
  * wins (rare in practice). Per-path CORS via `CacheBehaviors[]` is
@@ -286,7 +286,7 @@ function pickFnUrlLogicalIdFromOriginDomainName(value: unknown): string | undefi
  * Unwrap a `ResponseHeadersPolicyId` value to its referenced logical
  * ID. CDK 2.x synthesizes this as `{ Ref: <id> }`. Returns undefined
  * for the AWS-managed-policy ID form (literal UUID string) since
- * cdkd can't fetch those — and for any non-Ref shape.
+ * cdk-local can't fetch those — and for any non-Ref shape.
  */
 function pickRhpRefLogicalId(value: unknown): string | undefined {
   if (!value || typeof value !== 'object') return undefined;

@@ -14,15 +14,15 @@ import { Construct } from 'constructs';
  *     maps the bare `orders` short-name to that port. `desiredCount: 2`
  *     exercises the producer side of the #585 fix: the OrdersTask
  *     publishes an EXPLICIT `hostPort: 8081`, so this service proves
- *     cdkd skips the `-p` host-port publish for a multi-replica service
+ *     cdk-local skips the `-p` host-port publish for a multi-replica service
  *     even when the TaskDefinition declares an explicit host port (the
  *     2nd replica would otherwise collide on host port 8081).
  *   - `frontend` is the consumer — it has Service Connect enabled too
  *     (so its own `frontend-api` is published), but the integ asserts
  *     BOTH replicas can reach `orders` via the `--add-host` DNS overlay
- *     cdkd injects from the shared Cloud Map registry. `desiredCount: 2`
+ *     cdk-local injects from the shared Cloud Map registry. `desiredCount: 2`
  *     exercises the OMITTED-hostPort side of the #585 fix (frontend's
- *     port mapping has no `hostPort`, which cdkd would otherwise default
+ *     port mapping has no `hostPort`, which cdk-local would otherwise default
  *     to `containerPort` 8080 and collide on the 2nd replica) AND the
  *     first-replica-wins alias resolution: both frontend replicas
  *     inherit the same shared Cloud Map registry snapshot, so they must
@@ -57,7 +57,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
       clusterName: 'cdkl-ecs-sc-fixture',
     });
 
-    // Cloud Map private DNS namespace. cdkd uses the `Name` literal as
+    // Cloud Map private DNS namespace. cdk-local uses the `Name` literal as
     // the namespace string in the `--add-host name.namespace:ip`
     // overlay.
     const namespace = new cdk.aws_servicediscovery.CfnPrivateDnsNamespace(this, 'Ns', {
@@ -110,7 +110,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
           // references it via `Services[].PortName`. `hostPort: 8081`
           // is set explicitly so this multi-replica fixture exercises
           // the EXPLICIT-hostPort branch of the #585 host-port-skip fix:
-          // with `desiredCount: 2`, cdkd skips the `-p` publish entirely
+          // with `desiredCount: 2`, cdk-local skips the `-p` publish entirely
           // for every replica, so neither the explicit 8081 nor a
           // defaulted 80 is bound to the host (the 2nd replica would
           // otherwise collide on host port 8081). Peer discovery between
@@ -208,7 +208,7 @@ export class LocalEcsServiceConnectStack extends cdk.Stack {
       cluster: cluster.ref,
       taskDefinition: frontendTask.ref,
       // FrontendService runs desiredCount: 2 (#579 item (1)).
-      // FrontendTask's portMappings OMITS `hostPort`, which cdkd would
+      // FrontendTask's portMappings OMITS `hostPort`, which cdk-local would
       // otherwise default to `containerPort` (=8080); the #585 fix skips
       // the `-p` publish for this multi-replica service so the 2nd
       // replica does not collide on host port 8080. Two frontend

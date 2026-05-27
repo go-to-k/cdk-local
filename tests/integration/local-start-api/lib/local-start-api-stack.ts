@@ -35,14 +35,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     the REST v1 MOCK CORS preflight subset (verify.sh asserts a 204
  *     response with the canonical CORS headers, no Lambda invoke).
  *   - REST v1:     GET /v1/unsupported (HTTP_PROXY integration to a
- *     public URL) — exercises the deferred-error class. cdkd boots
+ *     public URL) — exercises the deferred-error class. cdk-local boots
  *     successfully with a [warn] line; verify.sh asserts the route
  *     returns 501 + `reason` body without invoking any Lambda.
  *   - REST v1:     GET /v1/cross-stack-auth (CUSTOM authorizer whose
  *     AuthorizerUri is overridden via `addPropertyOverride` to a
  *     cross-stack-shape `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdkd
  *     cannot resolve locally) — exercises the authorizer-Lambda-Arn
- *     deferred-501 path added in issue #431. cdkd boots successfully
+ *     deferred-501 path added in issue #431. cdk-local boots successfully
  *     with the authorizer-attach failure deferred to request time;
  *     verify.sh asserts the route returns 501 + `reason` body.
  *   - Function URL on a separate Lambda: ANY /{proxy+}
@@ -166,7 +166,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // with `Integration.Type: 'AWS'` and a non-Lambda service URI (S3) —
     // cdkd's REST v1 dispatcher detects the non-`:lambda:path/` marker
     // and surfaces deferred-501 ("non-Lambda service ... not emulated
-    // locally in cdkd v1"). verify.sh asserts the 501 path.
+    // locally in cdk-local v1"). verify.sh asserts the 501 path.
     const unsupported = v1.addResource('unsupported');
     const unsupportedMethod = unsupported.addMethod('GET');
     // CDK's L2 `Integration` constructs don't expose `AWS` direct-service
@@ -188,7 +188,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // Authorizer Lambda Arn unresolvable (issue #431): build a CUSTOM
     // REQUEST authorizer pointing at a same-stack Lambda, then override
     // its synthesized `AuthorizerUri` to a cross-stack-shape
-    // `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdkd cannot resolve
+    // `Fn::Sub: '${ImportedAuthFn.Arn}'` that cdk-local cannot resolve
     // locally. cdkd's authorizer-resolver hits the unresolvable Arn,
     // flips the route to deferred-error unsupported, boot continues,
     // HTTP 501 + reason at request time. The L1 override pattern lets
@@ -235,7 +235,7 @@ export class LocalStartApiStack extends cdk.Stack {
       // `CredentialsArn` is required on deployed AWS API Gateway for
       // service integrations; it's a no-op locally (the dispatcher uses
       // the dev's local AWS credential chain) but we set it to a
-      // fixture-stable value so cdkd synth doesn't fail validation.
+      // fixture-stable value so cdk-local synth doesn't fail validation.
       credentialsArn: 'arn:aws:iam::123456789012:role/fixture-sqs-role',
       requestParameters: {
         QueueUrl: '$request.querystring.url',
@@ -270,7 +270,7 @@ export class LocalStartApiStack extends cdk.Stack {
 
     // Unrecognized subtype path — exercises the classifier's fallback to
     // deferred-501 (preserves the safe surface for typo'd subtypes AND
-    // for AWS-documented subtypes cdkd does not yet implement). Use an
+    // for AWS-documented subtypes cdk-local does not yet implement). Use an
     // obviously-bogus subtype name so the test is unambiguous about
     // exercising the unsupported path rather than asserting anything
     // about a real AWS service.
@@ -289,7 +289,7 @@ export class LocalStartApiStack extends cdk.Stack {
     });
 
     // Issue #502: Lambda-authorizer-protected service-integration route.
-    // Pre-PR cdkd dispatched the SDK call BEFORE the authorizer pass,
+    // Pre-PR cdk-local dispatched the SDK call BEFORE the authorizer pass,
     // letting unauthenticated requests reach the SDK. Post-PR the
     // authorizer pass runs FIRST: missing Bearer → 401, valid Bearer →
     // SDK dispatches (returns 4xx from the missing queue, NOT 401).

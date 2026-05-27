@@ -185,7 +185,7 @@ export function createServiceRunState(): ServiceRunState {
 /**
  * Compute the effective replica count for a service: the smaller of
  * `service.desiredCount` and `--max-tasks`, floored at 1. Pure-
- * functional so the CLI can show the user what cdkd is about to do
+ * functional so the CLI can show the user what cdk-local is about to do
  * before any docker calls fire.
  */
 export function computeReplicaCount(desiredCount: number, maxTasks: number): number {
@@ -497,7 +497,7 @@ export function buildNetworkAliasesByContainer(
 
   // PortName → container that declared it. AWS Service Connect uses
   // the first matching PortMappings[].Name to bind a service to a
-  // container; cdkd mirrors that. The resolver already throws
+  // container; cdk-local mirrors that. The resolver already throws
   // `EcsTaskResolutionError` on PortName mismatch BEFORE this runs
   // (`ecs-service-resolver.ts` `extractServiceConnect`), so `owner`
   // is always defined here in production. The defensive `continue`
@@ -703,7 +703,7 @@ async function publishReplicaToCloudMap(
     const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
     if (!index) {
       logger.warn(
-        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but cdkd has ` +
+        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but cdk-local has ` +
           `no Cloud Map index for stack ${service.stack.stackName}. Skipping registration.`
       );
       return;

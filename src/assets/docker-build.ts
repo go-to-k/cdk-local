@@ -12,7 +12,7 @@ import { getLogger } from '../utils/logger.js';
  *   - Streaming spawn via `runDockerStreaming` (no `execFile` `maxBuffer`
  *     ceiling — BuildKit progress on a `# syntax=docker/dockerfile:1`
  *     frontend pull + multi-stage build can run into the tens of MB and
- *     used to silently die at the 50 MB cap cdkd previously set).
+ *     used to silently die at the 50 MB cap cdk-local previously set).
  *   - Sets `BUILDX_NO_DEFAULT_ATTESTATIONS=1` so the resulting image stays
  *     a single-arch image suitable for ECR pull (Docker Buildx otherwise
  *     attaches provenance attestation manifests that confuse the publish
@@ -64,7 +64,7 @@ export interface BuildDockerImageOptions {
  * Two source modes (mirrors CDK CLI):
  *   - `executable`: run the user-supplied command, capture stdout, return
  *     it as the local tag. The script is responsible for building AND
- *     tagging; cdkd just reads the tag from stdout. Used for Bazel /
+ *     tagging; cdk-local just reads the tag from stdout. Used for Bazel /
  *     custom build pipelines that produce images outside `docker build`.
  *   - `directory`: standard `docker build <dir>` with the full BuildKit
  *     flag set described above. Caller must pass `options.tag`.

@@ -32,7 +32,7 @@ export class LocalInvokeBuildkitStack extends cdk.Stack {
         // Multi-stage Dockerfile — picks the `final` stage explicitly.
         target: 'final',
         // ARG threaded via `--build-arg` to confirm `dockerBuildArgs` flows
-        // through cdkd unchanged (was pre-fix-supported, but verifying parity).
+        // through cdk-local unchanged (was pre-fix-supported, but verifying parity).
         buildArgs: {
           GREETING_BUILD_ARG: 'compiled-in-from-cdk',
         },

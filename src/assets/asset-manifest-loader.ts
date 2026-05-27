@@ -105,7 +105,7 @@ export class AssetManifestLoader {
  *
  * The CDK template synthesizes `Code.ImageUri` as a `Fn::Sub` whose body
  * references the bootstrap ECR repo and ends in `:<hash>` — that hash is
- * the same key used in `manifest.dockerImages[<hash>]`. cdkd extracts the
+ * the same key used in `manifest.dockerImages[<hash>]`. cdk-local extracts the
  * hash by walking known image-URI shapes; on miss, when the manifest has
  * exactly one Docker image, we fall back to it (single-asset heuristic) so
  * locally-built non-bootstrapped images still work. This is documented as

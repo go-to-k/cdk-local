@@ -26,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     Smoke-tests that both `provided.*` variants reject identically.
  *   - `Go1xHandler` — `CfnFunction` with `runtime: go1.x`. AWS Lambda
  *     deprecated this runtime on 2024-01-08 and removed its base image,
- *     so cdkd must reject with a migration pointer to provided.al2023.
+ *     so cdk-local must reject with a migration pointer to provided.al2023.
  *     CfnFunction is the L1 escape hatch because `lambda.Runtime.GO_1_X`
  *     still exists in CDK but our CDK lib version may or may not refuse
  *     it at synth time depending on CDK release; we want the rejection
@@ -85,7 +85,7 @@ export class LocalInvokeProvidedStack extends cdk.Stack {
     new lambda.CfnFunction(this, 'Go1xHandler', {
       runtime: 'go1.x',
       // Go 1.x's pre-OAL Handler was the compiled binary name on the
-      // classpath. Doesn't matter for the integ — cdkd rejects with a
+      // classpath. Doesn't matter for the integ — cdk-local rejects with a
       // deprecation message before touching the asset.
       handler: 'main',
       role: inlineRole.roleArn,

@@ -13,8 +13,8 @@ const execFileAsync = promisify(execFile);
  * awslabs) is started at `169.254.170.2` on the per-task docker network so
  * containers can hit `http://169.254.170.2/v4/<container-id>` for task
  * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<role-arn>`
- * for IAM task-role credentials. cdkd does NOT re-implement the sidecar
- * — pulling the AWS-published image keeps cdkd in lock-step with whatever
+ * for IAM task-role credentials. cdk-local does NOT re-implement the sidecar
+ * — pulling the AWS-published image keeps cdk-local in lock-step with whatever
  * ECS-Agent fidelity AWS chooses to provide.
  */
 
@@ -25,7 +25,7 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  * Default well-known IP for the ECS local-container-endpoints sidecar —
  * matches the documented AWS task-metadata endpoint address. Containers
  * inject `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<id>`
- * to reach it. `cdkl run-task` keeps this verbatim; `cdkd local
+ * to reach it. `cdkl run-task` keeps this verbatim; `cdk-local
  * start-service` creates ONE shared network at CLI startup (design
  * § 5 Option A) — the shared sidecar lives at `169.254.171.2` (see
  * `SHARED_SVC_SUBNET_OCTET` below), one octet up so the two CLI
@@ -200,7 +200,7 @@ async function createNetworkAndSidecar(args: {
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
       `docker network create failed: ${e.stderr?.trim() || e.message || String(err)}. ` +
-        `Hint: another cdkd run may already own subnet ${cidr}; wait for it to ` +
+        `Hint: another cdk-local run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
         '`docker network rm`. `cdkl start-service` shares one network ' +
         'across every service in the run; bare `cdkl run-task` uses a ' +

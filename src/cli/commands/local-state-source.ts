@@ -37,7 +37,7 @@ import type { LocalStateProvider } from '../../local/local-state-provider.js';
  * Options each `cdkl` command gathers from its flag set. The built-in
  * `--from-cfn-stack` flag is always present; the host may add fields
  * for its own `extraStateProviders` entries (e.g. `fromState: boolean`
- * for the cdkd shim's `--from-state`).
+ * for the cdk-local shim's `--from-state`).
  */
 export interface LocalStateSourceOptions {
   /**

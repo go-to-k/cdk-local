@@ -578,7 +578,7 @@ async function handleRequest(
   // Function URL routes with InvokeMode: RESPONSE_STREAM dispatch via
   // the RIE streaming protocol (issue #467). The streaming Lambda's
   // response is a JSON prelude carrying status + headers, an 8-NULL-byte
-  // separator, and then raw body chunks the handler streams. cdkd writes
+  // separator, and then raw body chunks the handler streams. cdk-local writes
   // the prelude to `res.writeHead(...)` and pipes the chunks via
   // `Transfer-Encoding: chunked` (Node's default when no Content-Length
   // is set).
@@ -1252,7 +1252,7 @@ function buildOverlay(
     // Function URL (v2 + iam): emit NO overlay. AWS-deployed Function URLs
     // write principal context under `event.requestContext.authorizer.iam.
     // {accessKey, accountId, callerId, userArn, ...}` — NOT `.lambda` —
-    // and cdkd has no local IAM data plane to synthesize that block (no
+    // and cdk-local has no local IAM data plane to synthesize that block (no
     // STS GetCallerIdentity per request, no IAM policy emulation). Emitting
     // the v2 `lambda-http-v2` overlay would write `principalId` under
     // `.lambda.principalId`, which is the wrong namespace and worse than

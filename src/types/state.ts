@@ -57,8 +57,8 @@
  *       write persists it explicitly. Layout superset of v6; only the
  *       resource-level shape grew.
  *
- * cdkd readers handle every prior version. Writers always emit
- * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
+ * cdk-local readers handle every prior version. Writers always emit
+ * `STATE_SCHEMA_VERSION_CURRENT`. An older cdk-local binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
@@ -125,7 +125,7 @@ export interface StackState {
   /**
    * `Fn::ImportValue` references this stack resolved during its last
    * successful deploy. Populated on schema v4+; absent (or undefined)
-   * on state written by an older cdkd binary, in which case the
+   * on state written by an older cdk-local binary, in which case the
    * destroy-time strong-reference check degrades gracefully (no
    * recorded imports = no consumers known = destroy proceeds). The
    * next deploy of an upgraded stack repopulates the field.
@@ -199,7 +199,7 @@ export interface ResourceState {
    * template still surface as drift.
    *
    * Optional for backwards compatibility — resources written by an older
-   * cdkd binary (v2 state, or v3 state on a provider that does not
+   * cdk-local binary (v2 state, or v3 state on a provider that does not
    * implement `readCurrentState`) keep this field undefined; the drift
    * command falls back to comparing against `properties` in that case.
    */
@@ -336,7 +336,7 @@ export interface AttributeChange {
 }
 
 /**
- * Returns true when a recorded `DeletionPolicy` should prevent cdkd from
+ * Returns true when a recorded `DeletionPolicy` should prevent cdk-local from
  * deleting the underlying AWS resource. `Retain` and `RetainExceptOnCreate`
  * both keep the resource around; `Delete` / `Snapshot` / undefined all
  * fall through to the normal delete path. Shared between
