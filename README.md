@@ -7,9 +7,15 @@ Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/ser
 Two pains, one tool:
 
 - **Zero-friction local execution.** No AWS account, no IAM access, no deploy — just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's AWS account.
-- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` injects real ARNs, Secret values, and IAM credentials straight from CloudFormation into the local container — no `.env` file to maintain, no manual ARN copy-paste. Your local Lambda hits the same DynamoDB rows, S3 objects, Cognito users, Secret values, and anything else your IAM credentials reach through public AWS APIs that the deployed app sees. An offline emulator can fake the API surface; it can't replicate the data, secret material, or user identities that realistic testing needs.
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` injects real ARNs, Secret values, and IAM credentials straight from CloudFormation into the local container — no `.env` file to maintain, no manual ARN copy-paste. Your local Lambda hits the same DynamoDB rows, S3 objects, Cognito users, Secret values, and anything else your IAM credentials reach through public AWS APIs that the deployed app sees. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
+  - dumping production data into a local DB
+  - mirroring Secret values into local Secrets Manager
+  - anonymizing fixtures across schema changes
+  - scripting realistic Cognito test users
 
-cdk-local deliberately does NOT emulate AWS managed services. Standing up an offline DynamoDB / Secrets / IAM that matches production is its own maintenance burden, and rarely matches real behavior. The bet is: keep dependencies real, swap only the compute layer.
+  cdk-local skips all of that by keeping you on the real thing.
+
+cdk-local deliberately does NOT emulate AWS managed services. The bet is: keep dependencies real, swap only the compute layer.
 
 It also picks up where `sam local` leaves off:
 
