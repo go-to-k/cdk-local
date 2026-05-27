@@ -119,7 +119,7 @@ When env-var values in your CDK template are CloudFormation intrinsics (`Ref`, `
 ```json
 {
   "Parameters": { "LOG_LEVEL": "debug" },
-  "MyFunctionLogicalId": {
+  "MyStack/MyFunction": {
     "SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:MySecret-abc123",
     "TABLE_NAME": "my-table"
   }
@@ -130,10 +130,10 @@ When env-var values in your CDK template are CloudFormation intrinsics (`Ref`, `
 cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 ```
 
-- `Parameters` applies to every function; function-specific blocks override it.
-- Function-specific keys are CloudFormation logical IDs (named in `cdk.out/<Stack>.template.json` or in the drop-warning message).
-- Available on `invoke`, `start-api`, `run-task`, and `start-service`.
-- The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file works unchanged.
+- `Parameters` applies to every function / container; function-specific blocks override it.
+- For Lambda (`invoke`, `start-api`), function-specific keys can be either a **CDK display path** (`MyStack/MyFunction` — recommended for new files; same form `cdkl invoke` accepts as a target) or a **CloudFormation logical ID** (`MyFunctionLogicalId1234ABCD` — named in `cdk.out/<Stack>.template.json`, the SAM-compatible form). Both coexist; if both are listed for the same function, the later JSON entry wins (matching SAM's apply-in-order semantics).
+- For ECS (`run-task`, `start-service`), function-specific keys are container names from the task definition's `ContainerDefinitions[].Name` field.
+- The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file (logical-ID keys) works unchanged.
 
 ## Supported resources
 
