@@ -24,7 +24,7 @@ ARG GREETING_BUILD_ARG
 
 # Heredoc + cache-mount (BuildKit-only): capture the build arg value.
 RUN --mount=type=cache,target=/var/cache <<EOF
-mkdir -p /tmp/cdkd-build
+mkdir -p /tmp/cdkl-build
 echo "${GREETING_BUILD_ARG}" > /tmp/cdkl-build/build-arg.txt
 EOF
 
