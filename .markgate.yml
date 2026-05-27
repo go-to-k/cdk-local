@@ -1,0 +1,72 @@
+# markgate configuration — https://github.com/go-to-k/markgate
+#
+# Five gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
+# cdk-local does NOT deploy to AWS (no destroy path, no schema migration,
+# no broad real-AWS integ matrix), so the destroy / broad / schema-migration
+# gates from cdkd are not needed.
+#
+# Gates:
+#   check          — typecheck/lint/build/unit tests
+#                    (set by /check and /verify-pr).
+#   docs           — README/CLAUDE.md/docs consistency with src
+#                    (set by /check-docs and /verify-pr).
+#   verify-pr      — full PR-readiness checklist (live-test of changed
+#                    behavior, shared-utility caller verification, PR
+#                    title + body freshness, retrospective). Set ONLY by
+#                    /verify-pr. Declared as `requires: [check, docs]`
+#                    so freshness is the AND of those children plus the
+#                    skill's own work.
+#   pr-review      — `/review-pr` reviewer-dispatch verification on
+#                    size-flagged PRs. Bound to the PR's HEAD sha via the
+#                    `.markgate-pr-review-sha` sentinel file.
+#   integ          — Docker-based local-execution verification with zero
+#                    orphan containers / networks. Set ONLY by /run-integ
+#                    when a `local-*` integ test finishes cleanly AND the
+#                    post-run `docker ps` / `docker network ls` sweep is
+#                    empty. 14d TTL — Docker base images, RIE binary,
+#                    chokidar / network behavior, dockerd semantics drift
+#                    over time, so a marker that's been clean for two
+#                    weeks no longer proves today's local code path works.
+
+gates:
+  check:
+    hash: files
+    include:
+      - "src/**"
+      - "tests/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig*.json"
+      - "vitest.config.ts"
+      - ".eslintrc*"
+      - ".prettierrc*"
+
+  docs:
+    hash: files
+    include:
+      - "src/**"
+      - "docs/**"
+      - "README.md"
+      - "CLAUDE.md"
+      - ".claude/rules/**"
+
+  verify-pr:
+    requires: [check, docs]
+
+  pr-review:
+    hash: files
+    include:
+      - ".markgate-pr-review-sha"
+
+  integ:
+    hash: files
+    # Wall-clock TTL on top of the file-scope check (markgate 0.3+).
+    # Docker base-image behavior (`public.ecr.aws/lambda/*`, RIE binary),
+    # `dockerd` semantics, and chokidar / network plumbing drift even
+    # when the repo doesn't. 14d matches cdkd's integ-local gate —
+    # aggressive enough to catch environment drift, lax enough to avoid
+    # forcing a Docker run on every local-touching PR.
+    ttl: 14d
+    include:
+      - "src/**"
+      - "tests/integration/**"

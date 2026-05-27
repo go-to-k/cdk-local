@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Testing
+coverage/
+.vitest/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Temporary files
+*.tmp
+.cache/
+cdk.context.json
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# markgate pr-review sentinel
+.markgate-pr-review-sha
+
+# Worktree-local scratch files for git commit -F / gh --body-file payloads
+.commit-msg*.txt
+.commit-msg*.md
+.pr-body*.md
+.pr-body*.txt
+.gh-body*.md
+.gh-body*.txt

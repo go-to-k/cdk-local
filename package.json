@@ -1,0 +1,97 @@
+{
+  "name": "cdk-local",
+  "version": "0.0.1",
+  "description": "Run AWS CDK stacks locally with Docker. A native, CDK-first alternative to sam local.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cdkl": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./state-provider": {
+      "types": "./dist/local/local-state-provider.d.ts",
+      "import": "./dist/local/local-state-provider.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/go-to-k/cdk-local.git"
+  },
+  "homepage": "https://github.com/go-to-k/cdk-local",
+  "bugs": {
+    "url": "https://github.com/go-to-k/cdk-local/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.1.0",
+  "keywords": [
+    "aws",
+    "cdk",
+    "local",
+    "lambda",
+    "api-gateway",
+    "ecs",
+    "docker",
+    "sam-local",
+    "developer-tools"
+  ],
+  "author": {
+    "name": "go-to-k",
+    "url": "https://github.com/go-to-k"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@aws-cdk/toolkit-lib": "^1.26.0",
+    "@aws-sdk/client-cloudformation": "^3.1017.0",
+    "@aws-sdk/client-ecr": "^3.1019.0",
+    "@aws-sdk/client-eventbridge": "^3.1017.0",
+    "@aws-sdk/client-kinesis": "^3.1018.0",
+    "@aws-sdk/client-secrets-manager": "^3.1017.0",
+    "@aws-sdk/client-sfn": "^3.1017.0",
+    "@aws-sdk/client-sqs": "^3.0.0",
+    "@aws-sdk/client-ssm": "^3.1017.0",
+    "@aws-sdk/client-sts": "^3.1016.0",
+    "chokidar": "^5.0.0",
+    "commander": "^12.0.0",
+    "graphlib": "^2.1.8",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.0",
+    "@semantic-release/npm": "^13.0.0",
+    "@types/graphlib": "^2.1.12",
+    "@types/node": "^20.19.0",
+    "@types/ws": "^8.18.1",
+    "@typescript/native-preview": "7.0.0-dev.20260511.1",
+    "semantic-release": "^25.0.0",
+    "tsdown": "^0.22.0",
+    "typescript": "^6.0.3",
+    "vite-plus": "^0.1.20"
+  },
+  "peerDependencies": {
+    "aws-cdk-lib": "^2.0.0",
+    "constructs": "^10.0.0"
+  },
+  "peerDependenciesMeta": {
+    "aws-cdk-lib": {
+      "optional": false
+    },
+    "constructs": {
+      "optional": false
+    }
+  }
+}
