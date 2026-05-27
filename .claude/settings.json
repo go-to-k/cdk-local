@@ -66,6 +66,13 @@
             "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
             "timeout": 15,
             "statusMessage": "Verifying check + docs markgate markers..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pr-review-gate.sh",
+            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "timeout": 30,
+            "statusMessage": "Verifying pr-review marker (sha-bound)..."
           }
         ]
       }
