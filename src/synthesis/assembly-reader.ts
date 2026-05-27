@@ -1,14 +1,17 @@
+import type { CloudFormationStackArtifact } from '@aws-cdk/cloud-assembly-api';
+import { Toolkit } from '@aws-cdk/toolkit-lib';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /**
  * Stack information extracted from a CDK Cloud Assembly.
  *
- * This interface mirrors cdkd's `StackInfo` shape so files ported from
- * cdkd `src/local/**` can `import type { StackInfo }` unchanged. The
- * backing implementation differs: cdkd parses `cdk.out/manifest.json`
- * by hand (PR #4 self-implemented synth); cdk-local delegates to
- * `@aws-cdk/toolkit-lib` (Phase 2d implements the adapter that maps
- * toolkit-lib's `CloudAssembly` → `StackInfo[]`).
+ * This interface mirrors the shape cdkd's `src/local/**` files import,
+ * so the ported source compiles without rewrites. The backing
+ * implementation differs: cdkd parses `cdk.out/manifest.json` by hand
+ * (PR #4 self-implemented synth); cdk-local delegates to
+ * `@aws-cdk/toolkit-lib` (`Toolkit.fromCdkApp()` + `Toolkit.synth()`)
+ * and maps each synthesized `CloudFormationStackArtifact` to a
+ * `StackInfo` record.
  */
 export interface StackInfo {
   /** Physical CloudFormation stack name (e.g., "MyStage-MyStack"). */
@@ -17,32 +20,32 @@ export interface StackInfo {
   /**
    * Hierarchical display name from CDK synth (e.g., "MyStage/MyStack"
    * for stacks under a Stage, or "MyStack" at the top level). Falls
-   * back to `stackName` when the assembly does not carry one.
+   * back to `artifactId` when the artifact does not carry one.
    */
   displayName: string;
 
-  /** Artifact ID in manifest. */
+  /** Artifact ID in manifest (typically equals `stackName` for top-level stacks). */
   artifactId: string;
 
-  /** CloudFormation template. */
+  /** Synthesized CloudFormation template (JSON). */
   template: CloudFormationTemplate;
 
-  /** Asset manifest file path (absolute). */
+  /** Asset manifest file path (absolute). Populated when the stack ships assets. */
   assetManifestPath?: string | undefined;
 
-  /** Stack dependency names (other stacks this stack depends on). */
+  /** Stack dependency names (other stack artifact IDs this stack depends on). */
   dependencyNames: string[];
 
-  /** Target region from CDK environment. */
+  /** Target region from CDK environment (`Stack.region`). */
   region?: string | undefined;
 
-  /** Target account from CDK environment. */
+  /** Target account from CDK environment (`Stack.account`). */
   account?: string | undefined;
 
   /**
    * Stack-level termination protection (CDK `Stack.terminationProtection`).
-   * cdk-local does not deploy / destroy, so this field is informational
-   * only — callers may surface it in `cdkl --help` / debug output.
+   * Informational only for cdk-local — local execution does not honor
+   * deploy-time termination protection.
    */
   terminationProtection?: boolean | undefined;
 
@@ -53,6 +56,10 @@ export interface StackInfo {
    * `Metadata['aws:asset:path']` points at the child's
    * `<file>.nested.template.json` sibling in the same `cdk.out`
    * directory.
+   *
+   * TODO(phase-2d-2): populate from the synthesized assembly. Until the
+   * 4 CLI factories actually consume nested templates, leaving this
+   * `undefined` is non-fatal for cdk-local's smoke path.
    */
   nestedTemplates?: Record<string, string> | undefined;
 }
@@ -60,15 +67,70 @@ export interface StackInfo {
 /**
  * Reads and parses a CDK Cloud Assembly via `@aws-cdk/toolkit-lib`.
  *
- * Phase 2b: stub. Phase 2d will implement `read(cdkAppPath)` using
- * `Toolkit.fromCdkApp()` + `Toolkit.synth()` and map each synthesized
- * stack artifact into the `StackInfo` shape above. Until then, calling
- * `read()` throws — only the `StackInfo` type re-export is consumed.
+ * Two accepted inputs:
+ *
+ *   - `read(cdkAppCommand)` — pass a CDK app entrypoint command (the
+ *     same string `cdk.json`'s `app` field carries, e.g.
+ *     `"npx tsx bin/app.ts"`). Internally invokes `Toolkit.fromCdkApp()`,
+ *     which forks the CDK app as a subprocess with the standard
+ *     `CDK_OUTDIR` / `CDK_CONTEXT_JSON` / `CDK_DEFAULT_*` env contract,
+ *     waits for the assembly to materialize, then synths it.
+ *
+ *   - `readFromDirectory(assemblyDir)` — point at an existing `cdk.out`
+ *     directory produced by a prior `cdk synth`. Skips the subprocess
+ *     hop; useful in CI where the synth step has already run.
+ *
+ * Both paths produce the same `StackInfo[]` shape so downstream
+ * consumers (Lambda resolver, route discovery, ECS task resolver, etc.)
+ * do not branch on the input mode.
  */
 export class AssemblyReader {
-  async read(_cdkAppPath: string): Promise<StackInfo[]> {
-    throw new Error(
-      'AssemblyReader.read is not yet implemented (Phase 2d will wire @aws-cdk/toolkit-lib).'
-    );
+  /**
+   * Synthesize the CDK app and return `StackInfo` for every stack
+   * artifact in the resulting Cloud Assembly.
+   */
+  async read(cdkAppCommand: string): Promise<StackInfo[]> {
+    const toolkit = new Toolkit();
+    const source = await toolkit.fromCdkApp(cdkAppCommand);
+    const cached = await toolkit.synth(source);
+    try {
+      return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
+    } finally {
+      await cached.dispose();
+    }
   }
+
+  /**
+   * Read a pre-synthesized Cloud Assembly directory (no subprocess).
+   */
+  async readFromDirectory(assemblyDir: string): Promise<StackInfo[]> {
+    const toolkit = new Toolkit();
+    const source = await toolkit.fromAssemblyDirectory(assemblyDir);
+    const cached = await toolkit.synth(source);
+    try {
+      return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
+    } finally {
+      await cached.dispose();
+    }
+  }
+}
+
+function mapStackArtifact(stack: CloudFormationStackArtifact): StackInfo {
+  const info: StackInfo = {
+    stackName: stack.stackName,
+    displayName: stack.displayName ?? stack.id,
+    artifactId: stack.id,
+    template: stack.template as CloudFormationTemplate,
+    dependencyNames: stack.dependencies.map((d) => d.id),
+  };
+  if (stack.environment.region) {
+    info.region = stack.environment.region;
+  }
+  if (stack.environment.account) {
+    info.account = stack.environment.account;
+  }
+  if (stack.terminationProtection !== undefined) {
+    info.terminationProtection = stack.terminationProtection;
+  }
+  return info;
 }

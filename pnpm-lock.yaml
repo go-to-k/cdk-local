@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@aws-cdk/cloud-assembly-api':
+        specifier: ^2.2.0
+        version: 2.2.4(@aws-cdk/cloud-assembly-schema@53.27.0)
       '@aws-cdk/toolkit-lib':
         specifier: ^1.26.0
         version: 1.26.2(@aws-cdk/cli-plugin-contract@2.182.2)
