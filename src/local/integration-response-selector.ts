@@ -95,7 +95,7 @@ export interface SelectedIntegrationResponse {
  * Per AWS docs, `SelectionPattern` is matched against the backend
  * outcome regardless of whether the backend returned success or error —
  * a `SelectionPattern: '200'` entry IS expected to match an HTTP 200
- * upstream response. cdkd ALWAYS runs the regex loop first and only
+ * upstream response. cdk-local ALWAYS runs the regex loop first and only
  * falls to the default entry when no pattern matches; pre-#505-review
  * the success branch short-circuited to the default entry without
  * running the regex loop, which silently dropped success-side selection.

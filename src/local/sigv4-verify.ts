@@ -71,7 +71,7 @@ export interface ResolvedCredentials {
 export type CredentialsLoader = () => Promise<ResolvedCredentials>;
 
 /**
- * Default credential loader: instantiates an `STSClient` (a direct cdkd
+ * Default credential loader: instantiates an `STSClient` (a direct cdk-local
  * dependency) and asks its built-in credential provider for the dev's
  * local credentials. STSClient uses the same Node default credential
  * chain (env vars → ~/.aws/config → IMDS → ...) every other AWS SDK call

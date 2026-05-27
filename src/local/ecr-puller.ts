@@ -12,7 +12,7 @@ import { getLogger } from '../utils/logger.js';
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
  * `cdkl run-task`. When the image URI resolves to an ECR repo but
  * doesn't match any cdk.out asset (typical when invoking a stack
- * deployed elsewhere or sharing a centralized registry), cdkd
+ * deployed elsewhere or sharing a centralized registry), cdk-local
  * authenticates against the target registry and runs `docker pull`.
  *
  * **Cross-account / cross-region** (#455):

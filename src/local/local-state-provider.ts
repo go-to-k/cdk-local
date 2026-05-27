@@ -23,8 +23,8 @@
  * The interface intentionally mirrors what `state-resolver.ts` consumes:
  * a `Record<string, ResourceState>` (covers `Ref`), an outputs map
  * (cross-stack `Fn::GetStackOutput` source), and an optional cross-stack
- * resolver (`Fn::ImportValue` / `Fn::GetStackOutput`). The four `cdkd
- * local *` command files build a single context off of whatever provider
+ * resolver (`Fn::ImportValue` / `Fn::GetStackOutput`). The four `cdkl *`
+ * command files build a single context off of whatever provider
  * fired and pass it through the substitution engine unchanged.
  *
  * `--from-cfn-stack` is mutually exclusive with `--from-state` at the

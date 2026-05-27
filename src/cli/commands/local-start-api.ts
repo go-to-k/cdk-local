@@ -1220,7 +1220,7 @@ async function prewarmJwks(
 /**
  * Emit a one-line warn for every VPC-config Lambda. The handler still
  * runs locally, but its container does not get attached to the AWS
- * VPC's subnets — calls to private RDS / ElastiCache will fail. cdkd
+ * VPC's subnets — calls to private RDS / ElastiCache will fail. cdk-local
  * surfaces this so the developer can pin the unexpected behavior to
  * the VPC config rather than chasing a "connection refused" rabbit
  * hole.

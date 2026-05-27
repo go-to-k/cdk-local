@@ -1,7 +1,7 @@
 import { getLogger } from './logger.js';
 
 /**
- * Base error class for cdk-local
+ * Base error class for cdkd
  */
 export class CdkdError extends Error {
   public readonly code: string;
@@ -67,7 +67,7 @@ export class AssetError extends CdkdError {
  * re-run the same command directly to debug Dockerfile syntax errors
  * or missing build context. Used by `src/local/docker-image-builder.ts`
  * (PR 5) for container Lambdas; the parallel `AssetError` covers the
- * `cdk-local publish-assets` / `cdkd deploy` build path. Kept distinct from
+ * `cdkd publish-assets` / `cdkd deploy` build path. Kept distinct from
  * `AssetError` so `cdkl invoke` failures don't show up under the
  * "asset" error class.
  */
@@ -320,7 +320,7 @@ export class StackTerminationProtectionError extends CdkdError {
  *
  * Detected by reading the loaded state's v6 `parentStack` field — only
  * state files written by `NestedStackProvider.create` (or by the
- * recursive `cdk-local import --migrate-from-cloudformation` walk) carry
+ * recursive `cdkd import --migrate-from-cloudformation` walk) carry
  * this field; top-level stacks have `parentStack: undefined` and pass
  * the guard unchanged.
  *
@@ -381,7 +381,7 @@ export interface ActiveImportConsumer {
  * outputs. This matches CloudFormation's strong-reference semantics —
  * CFn rejects `DeleteStack` for an exporter while an importer exists.
  *
- * cdk-local has no `--force` escape hatch for this (intentionally, mirroring
+ * cdkd has no `--force` escape hatch for this (intentionally, mirroring
  * CFn). The error message lists every offending consumer and points the
  * user at the two valid resolution paths:
  *
@@ -396,7 +396,7 @@ export interface ActiveImportConsumer {
  *
  * Exit code 2 (same as `PartialFailureError`) so multi-stack `cdkd
  * destroy --all` runs that partially succeed still surface as
- * non-zero without being indistinguishable from a fatal cdk-local error.
+ * non-zero without being indistinguishable from a fatal cdkd error.
  */
 export class StackHasActiveImportsError extends CdkdError {
   readonly exitCode: number = 2;
@@ -550,7 +550,7 @@ export class LocalMigrateError extends CdkdError {
 /**
  * CloudFormation macro / `Fn::Transform` expansion failure (#463).
  *
- * cdk-local hands templates that declare `Transform: [...]` (or carry
+ * cdkd hands templates that declare `Transform: [...]` (or carry
  * `Fn::Transform: {...}` snippets) to CloudFormation server-side via a
  * transient `CreateChangeSet --change-set-type CREATE` against a
  * `cdkd-macro-expand-<id>` stack name. This error wraps every failure
@@ -586,7 +586,7 @@ export class MacroExpansionError extends CdkdError {
 }
 
 /**
- * Check if error is a cdk-local error
+ * Check if error is a cdkd error
  */
 export function isCdkdError(error: unknown): error is CdkdError {
   return error instanceof CdkdError;
@@ -638,7 +638,7 @@ export function handleError(error: unknown): never {
   // field (PartialFailureError + ResourceUpdateNotSupportedError +
   // StackHasActiveImportsError + LocalMigrateError + MacroExpansionError
   // etc.). Falling back to 1 covers `CdkdError` subclasses with no
-  // override and every non-cdk-local error.
+  // override and every non-cdkd error.
   const customExitCode =
     error instanceof CdkdError ? (error as CdkdError & { exitCode?: number }).exitCode : undefined;
   const exitCode = typeof customExitCode === 'number' ? customExitCode : 1;
@@ -723,7 +723,7 @@ export function normalizeAwsError(err: unknown, context: NormalizeAwsErrorContex
       const where = region ? ` (in ${region})` : '';
       return new Error(
         `Bucket '${bucket}'${where} is in a different region than the client. ` +
-          `cdk-local resolves this automatically; if you see this message, please report it.`
+          `cdkd resolves this automatically; if you see this message, please report it.`
       );
     }
     case 403:

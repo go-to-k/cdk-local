@@ -15,13 +15,13 @@ import type { WebSocket } from 'ws';
  * `AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI=http://<host>:<port>` that
  * `cdkl start-api` injects into every WebSocket-API Lambda's
  * container (see `container-pool.ts`). The AWS SDK v3 honors this
- * env var and sends the call to cdkd's HTTP server instead of the
+ * env var and sends the call to cdk-local's HTTP server instead of the
  * synthetic `*.execute-api.*.amazonaws.com` hostname.
  *
  * Security: cdk-local does NOT verify SigV4 on the inbound request — the
  * dev-loop is not a security boundary (matches the precedent set by
  * `ecs-network.ts`'s metadata-endpoints sidecar). The SDK still signs
- * the request because that's what v3 does unconditionally; cdkd
+ * the request because that's what v3 does unconditionally; cdk-local
  * ignores the signature.
  */
 

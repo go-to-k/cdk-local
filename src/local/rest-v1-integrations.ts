@@ -902,7 +902,7 @@ function safeJsonParse(s: string): unknown {
  * Unsupported mapping expressions are logged at warn and skipped (matches
  * the ResponseParameters handling in `integration-response-selector.ts`).
  *
- * Note: querystring / path-rewrite branches currently warn-and-skip; cdkd
+ * Note: querystring / path-rewrite branches currently warn-and-skip; cdk-local
  * relies on `{paramName}` URI substitution for the canonical case (see
  * {@link substituteUriPlaceholders}). The previous `urlObj` parameter was
  * never used by the unimplemented querystring rewrite branch and has been

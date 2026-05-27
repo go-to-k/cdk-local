@@ -251,7 +251,7 @@ export async function spawnForeground(
 }
 
 /**
- * Format the stderr from a failed `docker login` so the surfaced cdkd
+ * Format the stderr from a failed `docker login` so the surfaced cdk-local
  * error gives the user an actionable workaround when the underlying
  * failure is a credential-helper persistence bug (which has nothing to
  * do with cdk-local, AWS, or IAM perms — the docker CLI itself fails to

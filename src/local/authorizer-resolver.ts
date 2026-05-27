@@ -50,7 +50,7 @@ export interface LambdaTokenAuthorizer {
   lambdaLogicalId: string;
   /**
    * The single header whose value is the token. AWS docs name this
-   * `IdentitySource`, e.g. `method.request.header.Authorization`. cdkd
+   * `IdentitySource`, e.g. `method.request.header.Authorization`. cdk-local
    * stores the bare lowercased header name (`authorization`).
    */
   tokenHeader: string;

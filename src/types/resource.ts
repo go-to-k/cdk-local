@@ -416,7 +416,7 @@ export interface ResourceProvider {
    * file can be reconstructed.
    *
    * Used by `cdkd state import` to recover state after disasters (lost state
-   * file, manual deletion, drift between cdk-local and AWS) and to adopt
+   * file, manual deletion, drift between cdkd and AWS) and to adopt
    * AWS-resident resources into cdkd's management.
    *
    * Lookup strategy is provider-specific. Recommended order:

@@ -423,8 +423,7 @@ function discoverRestV1Method(
   }
   if (integrationType === 'AWS') {
     // AWS integration: Lambda non-proxy (the common case CDK emits) OR
-    // direct AWS service integration (S3 / SQS / SNS / DynamoDB). cdkd
-    // v1 emulates the Lambda non-proxy shape; other services surface as
+    // direct AWS service integration (S3 / SQS / SNS / DynamoDB). cdk-local v1 emulates the Lambda non-proxy shape; other services surface as
     // deferred 501. We detect Lambda by inspecting the Uri shape — any
     // `:lambda:path/2015-03-31/functions/` marker identifies Lambda.
     const config = buildAwsIntegrationConfig(integration, stackName, logicalId);

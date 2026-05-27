@@ -76,7 +76,7 @@
  *
  *   Both resolvers return `string | undefined`; an `undefined` value
  *   reports unresolved per the standard warn-and-drop policy. Cross-account
- *   `Fn::GetStackOutput.RoleArn` is rejected at the resolver layer (cdkd
+ *   `Fn::GetStackOutput.RoleArn` is rejected at the resolver layer (cdk-local
  *   uses S3 state, not CloudFormation; cross-account would require
  *   assuming the role and reading the producer account's separate state
  *   bucket — tracked under #449).
