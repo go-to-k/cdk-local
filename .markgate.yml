@@ -47,7 +47,7 @@ gates:
       - "src/**"
       - "docs/**"
       - "README.md"
-      - "CLAUDE.md"
+      - ".claude/CLAUDE.md"
       - ".claude/rules/**"
 
   verify-pr:
