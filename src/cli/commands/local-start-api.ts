@@ -18,6 +18,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
+import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
@@ -1515,10 +1516,7 @@ async function buildContainerSpec(args: {
       );
     }
   }
-  const lambdaCdkPath =
-    typeof lambda.resource.Metadata?.['aws:cdk:path'] === 'string'
-      ? lambda.resource.Metadata['aws:cdk:path']
-      : undefined;
+  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
   const envResult = resolveEnvVars(logicalId, lambdaCdkPath, templateEnv, overrides);
   for (const key of envResult.unresolved) {
     // The state-resolver already warned for keys it tried + failed on
@@ -1527,7 +1525,10 @@ async function buildContainerSpec(args: {
     // `cdkl invoke --from-state`'s safety dedupe in case the
     // state-resolver evolves).
     if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
-    const overrideKeyExample = lambdaCdkPath ?? logicalId;
+    // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
+    // matches the README guidance and `cdkl invoke` target shape; the
+    // resolver's prefix rule accepts either form.
+    const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? logicalId;
     getLogger().warn(
       `Lambda ${logicalId}: env var ${key} contains a CloudFormation intrinsic and was dropped. ` +
         `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}) ` +

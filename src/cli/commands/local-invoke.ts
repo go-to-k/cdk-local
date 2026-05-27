@@ -16,6 +16,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
+import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider, type ExtraStateProviders } from './local-state-source.js';
 import {
   resolveLambdaTarget,
@@ -346,14 +347,14 @@ async function localInvokeCommand(
     // Resolve env vars. Intrinsic-valued template entries are warned about
     // and dropped; the user can override them via --env-vars (SAM-shape).
     const overrides = readEnvOverridesFile(options.envVars);
-    const lambdaCdkPath =
-      typeof lambda.resource.Metadata?.['aws:cdk:path'] === 'string'
-        ? lambda.resource.Metadata['aws:cdk:path']
-        : undefined;
+    const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
     const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
     for (const key of envResult.unresolved) {
       if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
-      const overrideKeyExample = lambdaCdkPath ?? lambda.logicalId;
+      // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
+      // matches the README guidance and `cdkl invoke` target shape; the
+      // resolver's prefix rule accepts either form.
+      const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
       logger.warn(
         `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
           `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
