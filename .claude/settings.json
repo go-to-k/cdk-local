@@ -59,6 +59,13 @@
             "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh issue create*) or Bash(gh issue comment*) or Bash(gh api*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * issue create*) or Bash(gh -C * issue comment*) or Bash(gh -C * api*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh issue create*) or Bash(cd * && gh issue comment*) or Bash(cd * && gh api*)",
             "timeout": 30,
             "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "timeout": 15,
+            "statusMessage": "Verifying check + docs markgate markers..."
           }
         ]
       }
