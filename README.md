@@ -112,6 +112,29 @@ cdkl start-service MyStack/MyService --from-cfn-stack MyStack
 
 Use this for production debugging, integration verification with real AWS resources, and validating real IAM permissions before deploy.
 
+## Override env vars without a state source
+
+When env-var values in your CDK template are CloudFormation intrinsics (`Ref`, `Fn::GetAtt`, `Fn::ImportValue`), cdk-local cannot resolve them without a state source — it drops them with a warning that names the affected key. To inject literal values instead, use `--env-vars <file>` (SAM-compatible JSON shape):
+
+```json
+{
+  "Parameters": { "LOG_LEVEL": "debug" },
+  "MyFunctionLogicalId": {
+    "SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123456789012:secret:MySecret-abc123",
+    "TABLE_NAME": "my-table"
+  }
+}
+```
+
+```bash
+cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
+```
+
+- `Parameters` applies to every function; function-specific blocks override it.
+- Function-specific keys are CloudFormation logical IDs (named in `cdk.out/<Stack>.template.json` or in the drop-warning message).
+- Available on `invoke`, `start-api`, `run-task`, and `start-service`.
+- The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file works unchanged.
+
 ## Supported resources
 
 | Resource | Local execution support |
@@ -125,39 +148,9 @@ Use this for production debugging, integration verification with real AWS resour
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
 
-## Use as a library
+## Programmatic use
 
-`cdk-local` also exports its Commander commands as factories, so you can build a custom CLI that adds your own state-source flags on top of the built-in `--from-cfn-stack`.
-
-```typescript
-import { Command } from 'commander';
-import {
-  createLocalInvokeCommand,
-  createLocalStartApiCommand,
-  type LocalStateProvider,
-  type LocalStateProviderFactory,
-} from 'cdk-local';
-
-// Register a custom state source. The key (e.g. `fromMyStore`) is the
-// camel-case Commander option name your factory keys off.
-const extraStateProviders: Record<string, LocalStateProviderFactory> = {
-  fromMyStore: (opts) => new MyStoreStateProvider(opts),
-};
-
-const program = new Command();
-program.addCommand(createLocalInvokeCommand({ extraStateProviders }));
-program.addCommand(createLocalStartApiCommand({ extraStateProviders }));
-program.parseAsync(process.argv);
-
-class MyStoreStateProvider implements LocalStateProvider {
-  readonly label = '--from-my-store';
-  async load(stackName: string, synthRegion: string | undefined) { /* ... */ return undefined; }
-  async buildCrossStackResolver(consumerRegion: string) { /* ... */ return undefined; }
-  dispose() { /* close clients */ }
-}
-```
-
-The dispatcher enforces mutual exclusion across `--from-cfn-stack` and every registered extra flag, so users get one consistent error message when they pass conflicting flags.
+cdk-local also exports its commands as Commander factories so a host project can embed it into its own CLI and register custom state sources alongside the built-in `--from-cfn-stack`. See [docs/library-mode.md](docs/library-mode.md) for the API and an example.
 
 ## License
 
