@@ -14,8 +14,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * set to `Ref: MyTable` (an intrinsic). Without `--from-cfn-stack` the
  * local invoke would drop it (same warn-and-drop semantics as the
  * `local-invoke-from-state` fixture). With `--from-cfn-stack`, after
- * the CDK app is deployed via the upstream `cdk deploy` (not a host CLI like cdkd),
- * the deployed table name is read from CloudFormation via
+ * the CDK app is deployed via the upstream `cdk deploy` (the CDK CLI, not
+ * a host CLI like cdkd), the deployed table name is read from CloudFormation via
  * `DescribeStackResources` and substituted, so the Lambda echoes the
  * literal physical table name back.
  *

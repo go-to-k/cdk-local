@@ -3,14 +3,13 @@
 # End-to-end real-AWS validation for `cdkl invoke --from-cfn-stack`
 # (issue #606).
 #
-# Why this exists: the host-deployed path (e.g. cdkd's `--from-state`,
-# which reads the host's S3 state) covers stacks deployed via the host
-# CLI. Issue #606 adds a parallel path for CDK apps deployed via the
-# upstream CDK CLI (cdk deploy → CloudFormation). The only way to
-# exercise that round-trip is to deploy the fixture via `cdk deploy` and
-# then invoke locally with `--from-cfn-stack`, which reads physical IDs
-# via `cloudformation:DescribeStackResources` instead of a host-managed
-# state store.
+# Why this exists: the host's S3-state path (e.g. cdkd's `--from-state`)
+# covers stacks deployed via the host CLI. Issue #606 adds a parallel
+# path for CDK apps deployed via the upstream CDK CLI (cdk deploy →
+# CloudFormation). The only way to exercise that round-trip is to deploy
+# the fixture via `cdk deploy` and then invoke locally with
+# `--from-cfn-stack`, which reads physical IDs via
+# `cloudformation:DescribeStackResources` instead of host-managed state.
 #
 # Steps:
 #   1. install + build cdk-local (root) + install fixture deps + docker pull

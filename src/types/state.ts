@@ -50,17 +50,17 @@
  *       what it means and would route a CC-managed resource through
  *       the SDK Provider on update / destroy → silent data corruption
  *       (mid-life provider swap). The bump from 6 to 7 forces a v6
- *       reader to fail with a clear "upgrade cdk-local" error instead.
+ *       reader to fail with a clear "upgrade the host" error instead.
  *       v7 writers always emit `provisionedBy` explicitly (`'sdk'` or
  *       `'cc-api'`); resources read from v6 state with the field
  *       absent are treated as `'sdk'` (legacy default) and the next
  *       write persists it explicitly. Layout superset of v6; only the
  *       resource-level shape grew.
  *
- * cdk-local readers handle every prior version. Writers always emit
- * `STATE_SCHEMA_VERSION_CURRENT`. An older cdk-local binary that only knows an
- * earlier version will fail with a clear error when it encounters a higher
- * version, rather than silently mishandling the new format.
+ * The cdk-local parser handles every prior version. Writers always emit
+ * `STATE_SCHEMA_VERSION_CURRENT`. An older host binary embedding cdk-local that
+ * only knows an earlier version will fail with a clear error when it encounters
+ * a higher version, rather than silently mishandling the new format.
  */
 export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
@@ -70,7 +70,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 7;
  * Every schema version this binary can read. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`; older versions are accepted for
  * forward-migration, and an unknown / future version triggers an explicit
- * "upgrade cdk-local" error in the parser.
+ * "upgrade the host" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1, 2, 3, 4, 5, 6, 7];
 
