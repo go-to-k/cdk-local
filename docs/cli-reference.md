@@ -7,20 +7,23 @@ lifecycle, mTLS, authorizers, networking), see
 [local-emulation.md](./local-emulation.md). When something breaks, see
 [troubleshooting.md](./troubleshooting.md).
 
-cdk-local has four subcommands, all under the `cdkl` binary:
+cdk-local has five subcommands, all under the `cdkl` binary:
 
 | Subcommand | Emulates | Backed by |
 | --- | --- | --- |
+| `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 
-All four commands require Docker on the developer's machine. The first
+The four run commands (`invoke` / `start-api` / `run-task` /
+`start-service`) require Docker on the developer's machine. The first
 run pulls the relevant base image (~600MB for the language-specific
 Lambda images, ~50MB for `provided.*`, plus the ECS metadata sidecar for
 `run-task` / `start-service`). Subsequent runs reuse the cached image;
-pass `--no-pull` to skip the `docker pull` round-trip.
+pass `--no-pull` to skip the `docker pull` round-trip. `cdkl list` only
+synthesizes the app, so it needs no Docker.
 
 ## Common flags
 
@@ -40,6 +43,44 @@ Shared across every `cdkl` subcommand (declared in
 
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
+
+## `cdkl list` (discover runnable targets)
+
+`cdkl list` (alias `cdkl ls`) synthesizes the CDK app and prints every
+target the other subcommands can run, grouped by command. Use it when you
+don't know what to pass as a `<target>` — each row shows both accepted
+forms (the CDK display path and the stack-qualified logical ID
+`<Stack>:<LogicalId>`), so you can copy either into `invoke` /
+`start-api` / `run-task` / `start-service`.
+
+It needs no Docker. It synthesizes the app — which may perform context
+lookups, and (like every command) honors `--role-arn` / `CDKL_ROLE_ARN`
+by assuming that role first — and accepts only the
+[common flags](#common-flags) (`--app` / `--output` / `--context` /
+`--profile` / `--role-arn` / `--verbose`). There is no `<target>`
+argument; the command always lists the whole app.
+
+```text
+$ cdkl list
+Lambda Functions  (cdkl invoke <target>)
+  MyStack/ItemsHandler    MyStack:ItemsHandlerFB09CCF4
+
+APIs  (cdkl start-api [target])
+  MyStack/MyHttpApi       MyStack:MyHttpApi8AEAAC21
+
+ECS Services  (cdkl start-service <target...>)
+  MyStack/WebService      MyStack:WebService
+
+ECS Task Definitions  (cdkl run-task <target>)
+  MyStack/WebTask         MyStack:WebTask
+```
+
+Categories with no matching resources are omitted. The `APIs` group
+covers every surface `start-api` can serve — REST v1, HTTP API v2,
+Function URLs, and WebSocket APIs. A Function URL is shown under its
+backing Lambda's display path and logical ID, because that is how
+`start-api` addresses a Function URL target (so the same row may also
+appear under `Lambda Functions`, where `invoke` runs it directly).
 
 ## `cdkl invoke` (run Lambda functions locally)
 

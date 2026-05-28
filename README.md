@@ -56,6 +56,28 @@ This installs the `cdkl` command.
 
 Point cdk-local at your CDK app. It synths your stack and runs Lambda functions, API Gateway routes, and ECS tasks locally with Docker. No AWS credentials needed for the basic flow.
 
+#### Discover targets — `list` (alias `ls`)
+
+Not sure what to pass as a `<target>`? Run `cdkl list` (or `cdkl ls`) to synth your app and print every runnable target, grouped by the command that runs it. Each row shows both accepted forms — the CDK display path and the stack-qualified logical ID — so you can copy either straight into `invoke` / `start-api` / `run-task` / `start-service`.
+
+```bash
+cdkl list
+```
+
+```text
+Lambda Functions  (cdkl invoke <target>)
+  MyStack/ItemsHandler    MyStack:ItemsHandlerFB09CCF4
+
+APIs  (cdkl start-api [target])
+  MyStack/MyHttpApi       MyStack:MyHttpApi8AEAAC21
+
+ECS Services  (cdkl start-service <target...>)
+  MyStack/WebService      MyStack:WebService
+
+ECS Task Definitions  (cdkl run-task <target>)
+  MyStack/WebTask         MyStack:WebTask
+```
+
 #### Lambda — `invoke`
 
 Invoke a single Lambda function with an event payload.

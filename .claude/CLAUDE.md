@@ -55,7 +55,8 @@ Gateway).
 
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
   `createLocalStartApiCommand`, `createLocalRunTaskCommand`,
-  `createLocalStartServiceCommand`) + shared option helpers.
+  `createLocalStartServiceCommand`, `createLocalListCommand`) + shared
+  option helpers.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -63,8 +64,9 @@ Gateway).
   websocket-server, ecs-task-runner, ecs-service-runner, ecs-network,
   cloud-map-registry, lambda-resolver, ecs-task-resolver,
   route-discovery, authorizer-resolver, lambda-authorizer, cognito-jwt,
-  sigv4-verify, rie-client, intrinsic-image, runtime-image, embed-config
-  (embed-time branding overrides for host CLIs), etc.
+  sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
+  (`cdkl list` target enumeration), embed-config (embed-time branding
+  overrides for host CLIs), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
@@ -230,7 +232,7 @@ vp run runtime:smoke
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / start-api / run-task / start-service`.
+  `cdkl invoke / start-api / run-task / start-service / list`.
 - Do NOT write comparison tables against `aws-cdk-local` / `cdklocal` /
   LocalStack in committed artifacts (README, docs, JSDoc). The
   cdk-local vs LocalStack distinction is the
