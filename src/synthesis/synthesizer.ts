@@ -51,10 +51,16 @@ export class Synthesizer {
     const env: Record<string, string | undefined> = {};
     if (opts.profile !== undefined) {
       env['AWS_PROFILE'] = opts.profile;
+      // Also threaded into the Toolkit's own SDK config (not just the
+      // subprocess env) so synth-time context lookups assume the
+      // lookup-role with this profile rather than the parent process's
+      // default credential chain.
+      readOpts.profile = opts.profile;
     }
     if (opts.region !== undefined) {
       env['AWS_REGION'] = opts.region;
       env['CDK_DEFAULT_REGION'] = opts.region;
+      readOpts.region = opts.region;
     }
     if (Object.keys(env).length > 0) {
       readOpts.env = env;
