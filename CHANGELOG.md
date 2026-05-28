@@ -1,3 +1,10 @@
+# [0.26.0](https://github.com/go-to-k/cdk-local/compare/v0.25.0...v0.26.0) (2026-05-28)
+
+
+### Features
+
+* **list:** readable list output, interactive-first docs, picker key hints ([#102](https://github.com/go-to-k/cdk-local/issues/102)) ([501ea95](https://github.com/go-to-k/cdk-local/commit/501ea95a14b38c5819f48015ee2dc6364840001b))
+
 # [0.25.0](https://github.com/go-to-k/cdk-local/compare/v0.24.0...v0.25.0) (2026-05-28)
 
 
