@@ -16,7 +16,7 @@ describe('formatTargetListing', () => {
     expect(formatTargetListing(empty, 'cdkl')).toMatch(/No runnable targets/);
   });
 
-  it('groups each category under the command that runs it, with both target forms', () => {
+  it('groups each category under a header naming the command that runs it', () => {
     const listing: TargetListing = {
       lambdas: [entry('App/Handler', 'App:Handler')],
       apis: [entry('App/HttpApi', 'App:HttpApi')],
@@ -24,12 +24,36 @@ describe('formatTargetListing', () => {
       ecsTaskDefinitions: [entry('App/TaskDef', 'App:TaskDef')],
     };
     const out = formatTargetListing(listing, 'cdkl');
-    expect(out).toContain('Lambda Functions  (cdkl invoke <target>)');
-    expect(out).toContain('  App/Handler  App:Handler');
-    expect(out).toContain('APIs  (cdkl start-api [target])');
-    expect(out).toContain('ECS Services  (cdkl start-service <target...>)');
-    expect(out).toContain('  App/OrdersService/Service  App:OrdersService');
-    expect(out).toContain('ECS Task Definitions  (cdkl run-task <target>)');
+    expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
+    expect(out).toContain('APIs  ->  cdkl start-api [target]');
+    expect(out).toContain('ECS Services  ->  cdkl start-service <target...>');
+    expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
+  });
+
+  it('lists one target per line by display path, without the logical ID by default', () => {
+    const listing: TargetListing = { ...empty, lambdas: [entry('App/Handler', 'App:Handler')] };
+    const out = formatTargetListing(listing, 'cdkl');
+    expect(out).toContain('  App/Handler');
+    // The stack-qualified logical ID is NOT shown unless --long is set.
+    expect(out).not.toContain('App:Handler');
+  });
+
+  it('prints the logical ID on an indented line beneath the path with { long: true }', () => {
+    const listing: TargetListing = { ...empty, lambdas: [entry('App/Handler', 'App:Handler')] };
+    const out = formatTargetListing(listing, 'cdkl', { long: true });
+    expect(out).toContain('  App/Handler');
+    expect(out).toContain('      App:Handler');
+  });
+
+  it('separates each group with a blank line and leads with one', () => {
+    const listing: TargetListing = {
+      ...empty,
+      lambdas: [entry('App/Handler', 'App:Handler')],
+      ecsServices: [entry('App/Svc', 'App:Svc')],
+    };
+    const out = formatTargetListing(listing, 'cdkl');
+    expect(out.startsWith('\n')).toBe(true);
+    expect(out).toContain('\n\nECS Services  ->  ');
   });
 
   it('omits categories with no targets', () => {
@@ -44,28 +68,23 @@ describe('formatTargetListing', () => {
     expect(out).not.toContain('ECS Task Definitions');
   });
 
-  it('falls back to the qualified ID alone when a target has no display path', () => {
+  it('falls back to the qualified ID as the primary line when a target has no display path', () => {
     const listing: TargetListing = { ...empty, lambdas: [entry(undefined, 'App:Raw')] };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('  App:Raw');
   });
 
-  it('aligns the display-path column within a category', () => {
-    const listing: TargetListing = {
-      ...empty,
-      lambdas: [entry('App/Short', 'App:Short'), entry('App/MuchLongerName', 'App:Long')],
-    };
-    const out = formatTargetListing(listing, 'cdkl');
-    // Both qualified IDs start at the same column (padded to the longest path).
-    const shortLine = out.split('\n').find((l) => l.includes('App:Short'))!;
-    const longLine = out.split('\n').find((l) => l.includes('App:Long'))!;
-    expect(shortLine.indexOf('App:Short')).toBe(longLine.indexOf('App:Long'));
+  it('does not duplicate the qualified ID for a no-display-path target under --long', () => {
+    const listing: TargetListing = { ...empty, lambdas: [entry(undefined, 'App:Raw')] };
+    const out = formatTargetListing(listing, 'cdkl', { long: true });
+    // Only the primary line — no indented repeat of the same ID.
+    expect(out.match(/App:Raw/g)?.length).toBe(1);
   });
 
   it('renders host branding in the command labels', () => {
     const listing: TargetListing = { ...empty, lambdas: [entry('App/Handler', 'App:Handler')] };
     const out = formatTargetListing(listing, 'cdkd local');
-    expect(out).toContain('Lambda Functions  (cdkd local invoke <target>)');
+    expect(out).toContain('Lambda Functions  ->  cdkd local invoke <target>');
   });
 });
 
@@ -79,5 +98,10 @@ describe('createLocalListCommand', () => {
   it('accepts the deprecated --region flag for parity with sibling commands', () => {
     const cmd = createLocalListCommand();
     expect(cmd.options.some((o) => o.long === '--region')).toBe(true);
+  });
+
+  it('registers the -l/--long flag', () => {
+    const cmd = createLocalListCommand();
+    expect(cmd.options.some((o) => o.short === '-l' && o.long === '--long')).toBe(true);
   });
 });

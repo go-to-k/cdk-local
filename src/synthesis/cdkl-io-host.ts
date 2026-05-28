@@ -18,10 +18,24 @@ import { NonInteractiveIoHost, type IoMessage } from '@aws-cdk/toolkit-lib';
  * subprocess exits non-zero and the parent throws straight out of
  * `Synthesizer.synthesize()`. The only change here is the color of the
  * progress lines mid-synth.
+ *
+ * It also re-classifies the synth-success notifications
+ * (`CDK_TOOLKIT_I1901` single-stack / `CDK_TOOLKIT_I1902` multi-stack,
+ * "Successfully synthesized to ...") from `result` level to `info`.
+ * toolkit-lib sends `result`-level messages to stdout, which pollutes
+ * the stdout of commands whose primary output IS stdout — most
+ * importantly `cdkl list` (parseable target list) and `cdkl invoke`
+ * (Lambda response). As `info` they go to stderr in a normal terminal,
+ * leaving stdout to the command's own data. These are status lines no
+ * caller parses from cdk-local's stdout.
  */
 export class CdklIoHost extends NonInteractiveIoHost {
   async notify(msg: IoMessage<unknown>): Promise<void> {
-    if (msg.code === 'CDK_ASSEMBLY_E1002') {
+    if (
+      msg.code === 'CDK_ASSEMBLY_E1002' ||
+      msg.code === 'CDK_TOOLKIT_I1901' ||
+      msg.code === 'CDK_TOOLKIT_I1902'
+    ) {
       return super.notify({ ...msg, level: 'info' });
     }
     return super.notify(msg);

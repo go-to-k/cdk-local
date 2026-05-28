@@ -56,103 +56,67 @@ This installs the `cdkl` command.
 
 Point cdk-local at your CDK app. It synths your stack and runs Lambda functions, API Gateway routes, and ECS tasks locally with Docker. No AWS credentials needed for the basic flow.
 
-#### Discover targets — `list` (alias `ls`)
+#### The quick way — run a command and pick from the list
 
-Not sure what to pass as a `<target>`? Run `cdkl list` (or `cdkl ls`) to synth your app and print every runnable target, grouped by the command that runs it. Each row shows both accepted forms — the CDK display path and the stack-qualified logical ID — so you can copy either straight into `invoke` / `start-api` / `run-task` / `start-service`.
+You almost never need to know or type a CDK path. In a terminal, just run the command with no target and cdk-local opens an arrow-key picker of the matching resources:
+
+```bash
+cdkl invoke            # pick a Lambda, then invoke it
+cdkl run-task          # pick an ECS task definition, then run it
+cdkl start-service     # multi-select one or more ECS services
+cdkl start-api -i      # pick one API to serve
+```
+
+![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
+
+For `invoke` / `run-task` / `start-service`, omitting the target in an interactive terminal opens the picker automatically; `-i` / `--interactive` also forces it. `start-api` keeps its default of serving **every** discovered API when run bare, so pass `-i` there to pick a single one. (In the multi-select, press space to toggle a row and enter to confirm.)
+
+Outside a TTY — CI, pipes, redirected stdin — the picker can't run: `invoke` / `run-task` / `start-service` fall back to a "target required" error, and `-i` errors clearly. Pass the target explicitly there (see [below](#passing-a-target-explicitly)).
+
+#### See what's available — `list` (alias `ls`)
+
+`cdkl list` (or `cdkl ls`) prints every runnable target, grouped by the command that runs it. Browse it, or use it to grab the exact target string for a script. Pass `-l` to also print the stack-qualified logical ID under each path. Only the list goes to stdout (synth status goes to stderr), so `cdkl list | ...` stays clean.
 
 ```bash
 cdkl list
 ```
 
 ```text
-Lambda Functions  (cdkl invoke <target>)
-  MyStack/ItemsHandler    MyStack:ItemsHandlerFB09CCF4
 
-APIs  (cdkl start-api [target])
-  MyStack/MyHttpApi       MyStack:MyHttpApi8AEAAC21
+Lambda Functions  ->  cdkl invoke <target>
+  MyStack/ItemsHandler
 
-ECS Services  (cdkl start-service <target...>)
-  MyStack/WebService      MyStack:WebService
+APIs  ->  cdkl start-api [target]
+  MyStack/MyHttpApi
 
-ECS Task Definitions  (cdkl run-task <target>)
-  MyStack/WebTask         MyStack:WebTask
+ECS Services  ->  cdkl start-service <target...>
+  MyStack/WebService
+
+ECS Task Definitions  ->  cdkl run-task <target>
+  MyStack/WebTask
 ```
 
-#### Pick targets interactively — `-i` / omit the target
+#### Passing a target explicitly
 
-Don't want to copy a path at all? In an interactive terminal, just omit the target and `invoke` / `run-task` / `start-service` drop you into an arrow-key picker (multi-select for `start-service`). Or pass `-i` / `--interactive` explicitly on any of the four commands:
-
-```bash
-cdkl invoke              # pick the Lambda from a list
-cdkl run-task            # pick the task definition
-cdkl start-service       # multi-select one or more services
-cdkl start-api -i        # pick one API to serve (a bare `start-api` still serves them all)
-```
-
-Outside a TTY (CI, pipes) the picker can't run: the required-target commands fall back to their usual "target required" error, and `-i` errors with a clear message — pass the target explicitly there.
-
-#### Lambda — `invoke`
-
-Invoke a single Lambda function with an event payload.
+When you want to name a target instead of picking — in a script, in CI, or to skip the prompt — pass it as the argument. Every target accepts the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:MyFunction1234ABCD`, the SAM-compatible form, handy when copying straight out of `cdk.out/<Stack>.template.json`); single-stack apps may drop the stack prefix.
 
 ```bash
-cdkl invoke MyStack/MyFunction --event ./event.json
-```
+# Lambda — with an event payload
+cdkl invoke MyStack/ItemsHandler --event ./event.json
+cdkl invoke MyStack:ItemsHandler1234ABCD --event ./event.json   # logical ID (any app)
 
-![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
-
-Every target argument (across `invoke`, `run-task`, `start-service`) accepts
-either form — the CDK display path is the recommended default, but a
-CloudFormation logical ID works too, which is handy when copying it straight
-out of `cdk.out/<Stack>.template.json` beats tracing the construct path (and
-matches what a SAM background expects):
-
-```bash
-# CDK display path (recommended)
-cdkl invoke MyStack/MyFunction --event ./event.json
-
-# Stack-qualified logical ID (works in any app)
-cdkl invoke MyStack:MyFunction1234ABCD --event ./event.json
-
-# Bare logical ID (single-stack apps — the stack is auto-detected)
-cdkl invoke MyFunction1234ABCD --event ./event.json
-```
-
-#### HTTP APIs & Function URLs — `start-api`
-
-Serve your app's HTTP surface locally — API Gateway routes (REST v1 / HTTP v2 / WebSocket) and Lambda Function URLs — on a local HTTP server.
-
-```bash
-# Single-stack app: serve every API in the stack (each on its own port)
-cdkl start-api
-
-# Or target one API
-cdkl start-api MyStack/MyApi
-```
-
-In a multi-stack app, a bare `cdkl start-api` errors out rather than serving every stack's API at once (so a side-stack's API is never booted by accident). Either serve them all explicitly, or pick one stack with the first selector you supply:
-
-```bash
-# Serve every stack's API (each on its own port)
-cdkl start-api --all-stacks
-```
-
-- `--stack <name>` — the synth stack name, matched against your CDK app.
-- `--from-cfn-stack <name>` — the deployed CloudFormation stack name; doubles as the stack selector (see [section 2](#2-bound-to-a-deployed-stack)).
-- a stack-qualified target like `MyStack/MyApi` — the `MyStack` prefix selects the stack.
-
-`--all-stacks` is mutually exclusive with those single-target selectors (the bare `--from-cfn-stack` flag stays compatible). See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
-
-#### ECS — `run-task` / `start-service`
-
-Run an ECS task definition once, or start a long-running service with Service Connect / Cloud Map registry.
-
-```bash
+# ECS — run a task once, or start one or more long-running services
 cdkl run-task MyStack/MyTask
-cdkl start-service MyStack/MyService
+cdkl start-service MyStack/OrdersService MyStack/Frontend
+
+# API Gateway / Function URLs — one API, or every API in the stack
+cdkl start-api MyStack/MyApi
+cdkl start-api
 ```
 
-There is no cluster command — locally, Docker is the placement target a cluster abstracts away, so there is nothing to run. Both commands accept an optional `--cluster <name>` to set the cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` (also used as the local Docker network prefix). See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
+`start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once (so a side-stack's API is never booted by accident); serve them all with `--all-stacks`, or select one stack with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target like `MyStack/MyApi`. `--all-stacks` is mutually exclusive with those single-target selectors (the bare `--from-cfn-stack` flag stays compatible). See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
+
+For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>` (surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the local Docker network prefix); `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
 
 Use this for fast iteration on Lambda code, API routing checks, and container task smoke tests.
 

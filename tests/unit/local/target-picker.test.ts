@@ -60,12 +60,12 @@ describe('isInteractive', () => {
 });
 
 describe('pickOneTarget', () => {
-  it('maps entries to options (display path label, qualified ID hint) and returns the choice', async () => {
+  it('maps entries to options (display path label, qualified ID hint), appends a key hint, and returns the choice', async () => {
     vi.mocked(select).mockResolvedValue('S/A');
     const result = await pickOneTarget('Pick one', entries);
     expect(result).toBe('S/A');
     expect(select).toHaveBeenCalledWith({
-      message: 'Pick one',
+      message: 'Pick one (up/down to move, enter to select)',
       options: [
         { value: 'S/A', label: 'S/A', hint: 'S:A' },
         { value: 'S:B', label: 'S:B' },
@@ -88,7 +88,7 @@ describe('pickManyTargets', () => {
     const result = await pickManyTargets('Pick many', entries);
     expect(result).toEqual(['S/A', 'S:B']);
     expect(multiselect).toHaveBeenCalledWith({
-      message: 'Pick many',
+      message: 'Pick many (space to select, enter to confirm)',
       options: [
         { value: 'S/A', label: 'S/A', hint: 'S:A' },
         { value: 'S:B', label: 'S:B' },

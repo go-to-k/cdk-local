@@ -33,7 +33,10 @@ function toOption(entry: TargetEntry): { value: string; label: string; hint?: st
  * {@link TargetSelectionCancelledError} on Ctrl+C / Esc.
  */
 export async function pickOneTarget(message: string, entries: TargetEntry[]): Promise<string> {
-  const chosen = await select({ message, options: entries.map(toOption) });
+  const chosen = await select({
+    message: `${message} (up/down to move, enter to select)`,
+    options: entries.map(toOption),
+  });
   if (isCancel(chosen)) throw new TargetSelectionCancelledError();
   return chosen as string;
 }
@@ -42,9 +45,17 @@ export async function pickOneTarget(message: string, entries: TargetEntry[]): Pr
  * Prompt for one or more targets (at least one required). Caller must
  * have already confirmed a TTY and a non-empty `entries`. Throws
  * {@link TargetSelectionCancelledError} on Ctrl+C / Esc.
+ *
+ * The key hint is baked into the message because multi-select's
+ * space-to-toggle is not discoverable — users expect enter to pick the
+ * highlighted row and miss that nothing is selected yet.
  */
 export async function pickManyTargets(message: string, entries: TargetEntry[]): Promise<string[]> {
-  const chosen = await multiselect({ message, options: entries.map(toOption), required: true });
+  const chosen = await multiselect({
+    message: `${message} (space to select, enter to confirm)`,
+    options: entries.map(toOption),
+    required: true,
+  });
   if (isCancel(chosen)) throw new TargetSelectionCancelledError();
   return chosen as string[];
 }

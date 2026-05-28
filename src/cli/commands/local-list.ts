@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import {
   appOptions,
   commonOptions,
@@ -32,6 +32,8 @@ interface LocalListOptions {
   roleArn?: string;
   context?: string[];
   region?: string;
+  /** `-l/--long`: also print each target's stack-qualified logical ID. */
+  long: boolean;
 }
 
 /**
@@ -57,7 +59,10 @@ async function localListCommand(options: LocalListOptions): Promise<void> {
     );
   }
 
-  logger.info('Synthesizing CDK app...');
+  // Status goes to stderr so `cdkl list` stdout is ONLY the target list
+  // (clean for `cdkl list | ...`). Synthesis progress from toolkit-lib is
+  // routed to stderr too (see CdklIoHost).
+  process.stderr.write('Synthesizing CDK app...\n');
   const synthesizer = new Synthesizer();
   const context = parseContextOptions(options.context);
   const synthOpts: SynthesisOptions = {
@@ -69,47 +74,85 @@ async function localListCommand(options: LocalListOptions): Promise<void> {
   const { stacks } = await synthesizer.synthesize(synthOpts);
 
   const listing = listTargets(stacks);
-  process.stdout.write(`${formatTargetListing(listing, getEmbedConfig().cliName)}\n`);
+  process.stdout.write(
+    `${formatTargetListing(listing, getEmbedConfig().cliName, { long: options.long })}\n`
+  );
+}
+
+/** Options for {@link formatTargetListing}. */
+export interface FormatTargetListingOptions {
+  /**
+   * Also print each target's stack-qualified logical ID (`-l/--long`).
+   * Off by default: the CDK display path alone is the recommended,
+   * readable target form, and the wide two-column layout wrapped badly
+   * for the long auto-generated names CDK emits.
+   */
+  long?: boolean;
 }
 
 /**
- * Render a {@link TargetListing} as the grouped, two-column text table
- * `cdkl list` prints. Each non-empty category names the command that
- * consumes it and lists every target's CDK display path alongside its
- * stack-qualified logical ID. Exported so a unit test can assert the
- * output shape without running synthesis.
+ * Render a {@link TargetListing} as the grouped text list `cdkl list`
+ * prints. Each non-empty category is preceded by a blank line and a
+ * header naming the command that runs it, then one target per line by
+ * CDK display path. With {@link FormatTargetListingOptions.long}, each
+ * target's stack-qualified logical ID is printed on an indented line
+ * beneath it. Exported so a unit test can assert the output shape
+ * without running synthesis.
  */
-export function formatTargetListing(listing: TargetListing, cliName: string): string {
+export function formatTargetListing(
+  listing: TargetListing,
+  cliName: string,
+  options: FormatTargetListingOptions = {}
+): string {
   if (countTargets(listing) === 0) {
     return `No runnable targets (Lambda functions, APIs, ECS services / tasks) found in this CDK app.`;
   }
 
+  const long = options.long ?? false;
   const sections: string[][] = [
-    formatSection('Lambda Functions', `${cliName} invoke <target>`, listing.lambdas),
-    formatSection('APIs', `${cliName} start-api [target]`, listing.apis),
-    formatSection('ECS Services', `${cliName} start-service <target...>`, listing.ecsServices),
+    formatSection('Lambda Functions', `${cliName} invoke <target>`, listing.lambdas, long),
+    formatSection('APIs', `${cliName} start-api [target]`, listing.apis, long),
+    formatSection(
+      'ECS Services',
+      `${cliName} start-service <target...>`,
+      listing.ecsServices,
+      long
+    ),
     formatSection(
       'ECS Task Definitions',
       `${cliName} run-task <target>`,
-      listing.ecsTaskDefinitions
+      listing.ecsTaskDefinitions,
+      long
     ),
   ];
 
-  return sections
-    .filter((lines) => lines.length > 0)
-    .map((lines) => lines.join('\n'))
-    .join('\n\n');
+  // Leading blank line + a blank line between groups so each header is a
+  // clear landmark (and the first group is separated from the synth
+  // status that precedes it on stderr).
+  return (
+    '\n' +
+    sections
+      .filter((lines) => lines.length > 0)
+      .map((lines) => lines.join('\n'))
+      .join('\n\n')
+  );
 }
 
-function formatSection(title: string, command: string, entries: TargetEntry[]): string[] {
+function formatSection(
+  title: string,
+  command: string,
+  entries: TargetEntry[],
+  long: boolean
+): string[] {
   if (entries.length === 0) return [];
-  const lines = [`${title}  (${command})`];
-  const width = Math.max(0, ...entries.map((e) => (e.displayPath ?? '').length));
+  const lines = [`${title}  ->  ${command}`];
   for (const entry of entries) {
-    if (entry.displayPath) {
-      lines.push(`  ${entry.displayPath.padEnd(width)}  ${entry.qualifiedId}`);
-    } else {
-      lines.push(`  ${entry.qualifiedId}`);
+    const primary = entry.displayPath ?? entry.qualifiedId;
+    lines.push(`  ${primary}`);
+    // The qualified ID is only extra info when a display path was shown;
+    // when it IS the primary, don't repeat it.
+    if (long && entry.displayPath) {
+      lines.push(`      ${entry.qualifiedId}`);
     }
   }
   return lines;
@@ -123,8 +166,15 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
       'List the runnable targets in the synthesized CDK app, grouped by the command that runs them: ' +
         'Lambda functions (invoke), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket surfaces ' +
         '(start-api), ECS services (start-service), and ECS task definitions (run-task). Each target is ' +
-        'shown with its CDK display path and stack-qualified logical ID — copy either form as the ' +
-        '<target> argument for the matching command.'
+        'shown by its CDK display path; pass -l to also print the stack-qualified logical ID. Tip: you ' +
+        'usually do not need to copy these — just run the command (e.g. `invoke`) and pick from the list, ' +
+        'or pass -i.'
+    )
+    .addOption(
+      new Option(
+        '-l, --long',
+        "Also print each target's stack-qualified logical ID (<Stack>:<LogicalId>) beneath it"
+      ).default(false)
     )
     .action(
       withErrorHandling(async (options: LocalListOptions) => {
