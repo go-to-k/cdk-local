@@ -5,12 +5,15 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
+  interactiveOption,
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
+import { listTargets } from '../../local/target-lister.js';
+import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
@@ -59,6 +62,8 @@ interface LocalRunTaskOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  /** `-i/--interactive`: pick the task definition from a list instead of passing <target>. */
+  interactive: boolean;
   cluster: string;
   envVars?: string;
   containerHost: string;
@@ -118,7 +123,7 @@ export interface CreateLocalRunTaskCommandOptions {
  * container's exit code drives the CLI's exit.
  */
 async function localRunTaskCommand(
-  target: string,
+  target: string | undefined,
   options: LocalRunTaskOptions,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
@@ -193,11 +198,24 @@ async function localRunTaskCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
+    const resolvedTarget = await resolveSingleTarget(target, {
+      interactive: options.interactive,
+      entries: listTargets(stacks).ecsTaskDefinitions,
+      message: 'Select an ECS task definition to run',
+      noun: 'ECS task definitions',
+      onMissing: () =>
+        new CdkLocalError(
+          `${getEmbedConfig().cliName} run-task requires a <target> (an ECS task definition display path or logical ID). ` +
+            `Run \`${getEmbedConfig().cliName} list\` to see them, or pass -i to pick interactively.`,
+          'LOCAL_RUN_TASK_TARGET_REQUIRED'
+        ),
+    });
+
     // Pick a LocalStateProvider for whichever flag the user passed
     // (--from-cfn-stack OR a host-injected extra). Constructed BEFORE the
     // candidate-stack picker so the same provider drives both the
     // image-context state-load AND the post-pass cross-stack resolver.
-    const parsed = parseEcsTarget(target);
+    const parsed = parseEcsTarget(resolvedTarget);
     const candidate = pickCandidateStack(parsed.stackPattern, stacks);
     stateProvider = createLocalStateProvider(
       options,
@@ -213,7 +231,7 @@ async function localRunTaskCommand(
     // them when at least one stack's template references the
     // placeholders.
     const imageContext = await buildEcsImageResolutionContext(candidate, stateProvider, options);
-    const task = resolveEcsTaskTarget(target, stacks, imageContext);
+    const task = resolveEcsTaskTarget(resolvedTarget, stacks, imageContext);
     logger.info(
       `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
     );
@@ -610,11 +628,12 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
       'Run an AWS::ECS::TaskDefinition locally — pulls/builds images, sets up a per-task docker network ' +
         'with the AWS-published metadata-endpoints sidecar, and starts every container in dependsOn order. ' +
         'Target accepts a CDK display path (MyStack/MyService/TaskDef) or stack-qualified logical ID ' +
-        '(MyStack:MyServiceTaskDefXYZ1234). Single-stack apps may omit the stack prefix.'
+        '(MyStack:MyServiceTaskDefXYZ1234). Single-stack apps may omit the stack prefix. ' +
+        'Omit <target> in an interactive terminal (or pass -i) to pick the task definition from a list.'
     )
     .argument(
-      '<target>',
-      'CDK display path or stack-qualified logical ID of the AWS::ECS::TaskDefinition to run'
+      '[target]',
+      'CDK display path or stack-qualified logical ID of the AWS::ECS::TaskDefinition to run (omit to pick interactively in a TTY)'
     )
     .addOption(
       new Option(
@@ -701,12 +720,13 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
       )
     )
     .action(
-      withErrorHandling(async (target: string, options: LocalRunTaskOptions) => {
+      withErrorHandling(async (target: string | undefined, options: LocalRunTaskOptions) => {
         await localRunTaskCommand(target, options, opts.extraStateProviders);
       })
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(interactiveOption);
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

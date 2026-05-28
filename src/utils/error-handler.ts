@@ -70,6 +70,33 @@ export class LocalStartServiceError extends CdkLocalError {
 }
 
 /**
+ * The user aborted an interactive target picker (Ctrl+C / Esc). Exits
+ * 130 (the conventional SIGINT code) and suppresses the error line —
+ * cancelling a prompt is a normal user action, not a failure.
+ */
+export class TargetSelectionCancelledError extends CdkLocalError {
+  public readonly silent = true;
+  public readonly exitCode = 130;
+  constructor() {
+    super('Target selection cancelled.', 'TARGET_SELECTION_CANCELLED');
+    this.name = 'TargetSelectionCancelledError';
+    Object.setPrototypeOf(this, TargetSelectionCancelledError.prototype);
+  }
+}
+
+/**
+ * `-i/--interactive` was passed (or a required target was omitted) but
+ * the session has no TTY, so no prompt can be shown.
+ */
+export class InteractiveTtyRequiredError extends CdkLocalError {
+  constructor(message: string) {
+    super(message, 'INTERACTIVE_TTY_REQUIRED');
+    this.name = 'InteractiveTtyRequiredError';
+    Object.setPrototypeOf(this, InteractiveTtyRequiredError.prototype);
+  }
+}
+
+/**
  * Check if error is a cdk-local error
  */
 export function isCdkLocalError(error: unknown): error is CdkLocalError {

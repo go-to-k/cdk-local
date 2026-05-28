@@ -44,6 +44,35 @@ Shared across every `cdkl` subcommand (declared in
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
 
+## Interactive target selection (`-i` / `--interactive`)
+
+The four run commands — `invoke`, `run-task`, `start-service`,
+`start-api` — accept `-i` / `--interactive` to choose their target from
+an arrow-key list (powered by `@clack/prompts`) instead of typing a CDK
+path / logical ID. `start-service` uses a multi-select (pick one or more
+services); the others select one. The list is the same set `cdkl list`
+prints, so a Function URL appears under its backing Lambda.
+
+For the three required-target commands (`invoke` / `run-task` /
+`start-service`), omitting the positional target in an interactive
+terminal launches the picker automatically — `-i` is only needed to force
+it when you would otherwise pass a target. `start-api` is different: a
+bare `start-api` already has a useful default (serve every discovered
+API), so it shows the picker only with an explicit `-i`, and `-i` there
+is mutually exclusive with a positional target, `--api`, and
+`--all-stacks`.
+
+The picker requires a TTY. In a non-interactive context (CI, pipes,
+redirected stdin/stdout):
+
+- omitting a required target falls back to the command's usual
+  "target required" error;
+- passing `-i` errors with `InteractiveTtyRequiredError` — pass the
+  target explicitly instead.
+
+Ctrl+C / Esc at the prompt aborts with exit code 130 and no error noise.
+`list` has no `-i` (it always lists everything).
+
 ## `cdkl list` (discover runnable targets)
 
 `cdkl list` (alias `cdkl ls`) synthesizes the CDK app and prints every

@@ -8,12 +8,15 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
+  interactiveOption,
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
+import { listTargets } from '../../local/target-lister.js';
+import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
@@ -78,6 +81,8 @@ interface LocalInvokeOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  /** `-i/--interactive`: pick the Lambda from a list instead of passing <target>. */
+  interactive: boolean;
   event?: string;
   eventStdin?: boolean;
   envVars?: string;
@@ -150,7 +155,7 @@ export interface CreateLocalInvokeCommandOptions {
  * synthesis / asset / construct-path plumbing.
  */
 async function localInvokeCommand(
-  target: string,
+  target: string | undefined,
   options: LocalInvokeOptions,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
@@ -292,7 +297,20 @@ async function localInvokeCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    const lambda = resolveLambdaTarget(target, stacks);
+    const resolvedTarget = await resolveSingleTarget(target, {
+      interactive: options.interactive,
+      entries: listTargets(stacks).lambdas,
+      message: 'Select a Lambda function to invoke',
+      noun: 'Lambda functions',
+      onMissing: () =>
+        new CdkLocalError(
+          `${getEmbedConfig().cliName} invoke requires a <target> (a Lambda display path or logical ID). ` +
+            `Run \`${getEmbedConfig().cliName} list\` to see them, or pass -i to pick interactively.`,
+          'LOCAL_INVOKE_TARGET_REQUIRED'
+        ),
+    });
+
+    const lambda = resolveLambdaTarget(resolvedTarget, stacks);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
 
@@ -1043,9 +1061,13 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
     .description(
       'Run a Lambda function locally in a Docker container (RIE-backed). ' +
         'Target accepts a CDK display path (MyStack/MyApi/Handler) or stack-qualified logical ID ' +
-        '(MyStack:MyApiHandler1234ABCD). Single-stack apps may omit the stack prefix.'
+        '(MyStack:MyApiHandler1234ABCD). Single-stack apps may omit the stack prefix. ' +
+        'Omit <target> in an interactive terminal (or pass -i) to pick the Lambda from a list.'
     )
-    .argument('<target>', 'CDK display path or stack-qualified logical ID of the Lambda to invoke')
+    .argument(
+      '[target]',
+      'CDK display path or stack-qualified logical ID of the Lambda to invoke (omit to pick interactively in a TTY)'
+    )
     .addOption(new Option('-e, --event <file>', 'JSON event payload file (default: {})'))
     .addOption(new Option('--event-stdin', 'Read event JSON from stdin').default(false))
     .addOption(
@@ -1123,7 +1145,7 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
       )
     )
     .action(
-      withErrorHandling(async (target: string, options: LocalInvokeOptions) => {
+      withErrorHandling(async (target: string | undefined, options: LocalInvokeOptions) => {
         await localInvokeCommand(target, options, opts.extraStateProviders);
       })
     );
@@ -1131,6 +1153,7 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((option) =>
     invoke.addOption(option)
   );
+  invoke.addOption(interactiveOption);
   invoke.addOption(deprecatedRegionOption);
 
   return invoke;

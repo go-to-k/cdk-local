@@ -98,6 +98,21 @@ export const contextOptions = [
 ];
 
 /**
+ * `-i, --interactive` — present an arrow-key picker to choose the
+ * target(s) for this command instead of typing a CDK path / logical ID.
+ * Added to the four run commands (NOT `list`, which lists everything).
+ * Requires a TTY; in a non-interactive shell the command errors with a
+ * clear message. The required-target commands (`invoke` / `run-task` /
+ * `start-service`) also auto-launch the picker when the target is
+ * omitted in a TTY; `start-api` shows it only with the explicit flag
+ * (a bare `start-api` keeps serving every discovered API).
+ */
+export const interactiveOption = new Option(
+  '-i, --interactive',
+  'Pick the target(s) from an interactive list instead of passing them as arguments (requires a TTY)'
+).default(false);
+
+/**
  * Per-Lambda + global `--assume-role` parser used by `cdkl start-api`.
  * Each invocation is either a bare ARN (sets / overwrites the global
  * default) or `<LogicalId>=<arn>` (per-Lambda override). Per-Lambda
