@@ -1,5 +1,12 @@
 import { Command } from 'commander';
-import { appOptions, commonOptions, contextOptions, parseContextOptions } from '../options.js';
+import {
+  appOptions,
+  commonOptions,
+  contextOptions,
+  deprecatedRegionOption,
+  parseContextOptions,
+  warnIfDeprecatedRegion,
+} from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -24,6 +31,7 @@ interface LocalListOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  region?: string;
 }
 
 /**
@@ -37,6 +45,8 @@ export interface CreateLocalListCommandOptions {
 async function localListCommand(options: LocalListOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
+
+  warnIfDeprecatedRegion(options);
 
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: undefined });
 
@@ -123,5 +133,6 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

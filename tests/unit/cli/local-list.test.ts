@@ -75,4 +75,9 @@ describe('createLocalListCommand', () => {
     expect(cmd.name()).toBe('list');
     expect(cmd.aliases()).toContain('ls');
   });
+
+  it('accepts the deprecated --region flag for parity with sibling commands', () => {
+    const cmd = createLocalListCommand();
+    expect(cmd.options.some((o) => o.long === '--region')).toBe(true);
+  });
 });

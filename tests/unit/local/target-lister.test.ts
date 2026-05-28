@@ -124,7 +124,7 @@ describe('listTargets — APIs', () => {
     ]);
   });
 
-  it('lists a Function URL keyed by its own logical ID but pathed to the backing Lambda', () => {
+  it('lists a Function URL keyed and pathed by its backing Lambda (start-api target form)', () => {
     const stack = buildStack('App', {
       Handler: withPath(
         { Type: 'AWS::Lambda::Function', Properties: {} },
