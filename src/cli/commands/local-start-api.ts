@@ -17,7 +17,7 @@ import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { resolveApp, resolveWatchConfig } from '../config-loader.js';
+import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import {
@@ -1014,36 +1014,15 @@ async function localStartApiCommand(
     // and hot-reloads. We honor `cdk.json`'s `watch.include` /
     // `watch.exclude` (mirroring `cdk watch`).
     const watchRoot = process.cwd();
-    const watchConfig = resolveWatchConfig();
-    const toRel = (abs: string): string => path.relative(watchRoot, abs).split(path.sep).join('/');
-    // The synth output directory MUST be excluded: each reload re-synths
-    // INTO it, so watching it would make our own writes re-trigger the
-    // reload forever. `node_modules` / `.git` are pruned for the same
-    // loop-safety reasons plus traversal cost.
-    const outputRel = toRel(path.resolve(watchRoot, options.output));
-    const mandatoryExcludes =
-      outputRel && outputRel !== '.' && !outputRel.startsWith('..') ? [outputRel] : [];
-    const excludeMatcher = createGlobMatcher([
-      ...mandatoryExcludes,
-      'node_modules',
-      '.git',
-      ...watchConfig.exclude,
-    ]);
-    const includeMatcher = createGlobMatcher(watchConfig.include);
+    const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+      watchRoot,
+      output: options.output,
+      watchConfig: resolveWatchConfig(),
+    });
     watcher = createFileWatcher({
       paths: [watchRoot],
-      ignored: (p: string): boolean => {
-        const rel = toRel(p);
-        if (rel === '') return false; // the watch root itself
-        if (rel.startsWith('..')) return true; // outside the root
-        return excludeMatcher(rel);
-      },
-      shouldTrigger: (p: string): boolean => {
-        const rel = toRel(p);
-        if (rel === '' || rel.startsWith('..')) return false;
-        if (excludeMatcher(rel)) return false;
-        return includeMatcher(rel);
-      },
+      ignored,
+      shouldTrigger,
       onChange: () => {
         logger.info('Detected source change; reloading...');
         const next = reloadChain.then(() =>
@@ -1058,7 +1037,7 @@ async function localStartApiCommand(
       },
     });
     logger.info(
-      `Watching ${watchRoot} for source changes (excluding ${options.output}, node_modules, .git).`
+      `Watching ${watchRoot} for source changes (excluding ${excludePatterns.join(', ')}).`
     );
   }
 
@@ -1233,6 +1212,62 @@ async function localStartApiCommand(
 
   // Block forever — the signal handlers exit the process.
   await new Promise<never>(() => undefined);
+}
+
+/** The `--watch` file-watcher predicates + the resolved exclude list. */
+export interface WatchPredicates {
+  /** chokidar `ignored` predicate (exclude-only; prunes dirs + files). */
+  ignored: (absPath: string) => boolean;
+  /** Per-event include gate — exclude wins, then include. */
+  shouldTrigger: (absPath: string) => boolean;
+  /** Resolved exclude glob list (mandatory + cdk.json), for logging. */
+  excludePatterns: string[];
+}
+
+/**
+ * Build the `--watch` file-watcher predicates for a source tree rooted
+ * at `watchRoot` (the synth working directory).
+ *
+ * The synth output directory is always excluded so the reload's own
+ * re-synth writes never re-trigger the watcher (no loop); `node_modules`
+ * / `.git` are excluded for traversal cost. `cdk.json` `watch.exclude`
+ * globs layer on top, and `watch.include` gates which changes fire a
+ * reload. The output dir is only added as a glob when it lives UNDER the
+ * watch root — when it equals the root (`''`) or sits outside it
+ * (`..`-prefixed), a watcher rooted at `watchRoot` never traverses it,
+ * so no exclude entry is needed (and a `''` / `..` glob is meaningless).
+ *
+ * `@internal` exported for unit tests (the exclude/include composition +
+ * the output-dir relativization edge cases).
+ */
+export function createWatchPredicates(args: {
+  watchRoot: string;
+  output: string;
+  watchConfig: CdkWatchConfig;
+}): WatchPredicates {
+  const { watchRoot, output, watchConfig } = args;
+  const toRel = (abs: string): string => path.relative(watchRoot, abs).split(path.sep).join('/');
+  // `path.relative` yields `''` when the output dir IS the watch root and a
+  // `..`-prefixed path when it is outside — in both cases a watcher rooted
+  // at `watchRoot` never traverses it, so it needs no exclude glob.
+  const outputRel = toRel(path.resolve(watchRoot, output));
+  const mandatoryExcludes = outputRel !== '' && !outputRel.startsWith('..') ? [outputRel] : [];
+  const excludePatterns = [...mandatoryExcludes, 'node_modules', '.git', ...watchConfig.exclude];
+  const excludeMatcher = createGlobMatcher(excludePatterns);
+  const includeMatcher = createGlobMatcher(watchConfig.include);
+  const ignored = (absPath: string): boolean => {
+    const rel = toRel(absPath);
+    if (rel === '') return false; // the watch root itself
+    if (rel.startsWith('..')) return true; // outside the root
+    return excludeMatcher(rel);
+  };
+  const shouldTrigger = (absPath: string): boolean => {
+    const rel = toRel(absPath);
+    if (rel === '' || rel.startsWith('..')) return false;
+    if (excludeMatcher(rel)) return false;
+    return includeMatcher(rel);
+  };
+  return { ignored, shouldTrigger, excludePatterns };
 }
 
 /**

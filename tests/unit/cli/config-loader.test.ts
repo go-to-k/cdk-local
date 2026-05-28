@@ -107,6 +107,16 @@ describe('resolveWatchConfig', () => {
     expect(resolveWatchConfig()).toEqual({ include: ['a', 'b'], exclude: ['x'] });
   });
 
+  it('falls back to include `**` when include is empty or all-invalid', () => {
+    writeFileSync('cdk.json', JSON.stringify({ watch: { include: [], exclude: ['x'] } }));
+    expect(resolveWatchConfig()).toEqual({ include: ['**'], exclude: ['x'] });
+  });
+
+  it('falls back to include `**` when include is an empty string', () => {
+    writeFileSync('cdk.json', JSON.stringify({ watch: { include: '' } }));
+    expect(resolveWatchConfig()).toEqual({ include: ['**'], exclude: [] });
+  });
+
   it('falls back to defaults on invalid JSON (does not throw)', () => {
     writeFileSync('cdk.json', '{invalid');
     expect(resolveWatchConfig()).toEqual({ include: ['**'], exclude: [] });

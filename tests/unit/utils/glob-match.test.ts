@@ -52,8 +52,9 @@ describe('createGlobMatcher', () => {
     expect(m('a.ts')).toBe(false);
   });
 
-  it('honors `/**` (everything under a directory)', () => {
+  it('honors `/**` (everything under a directory, including the dir itself)', () => {
     const m = createGlobMatcher(['src/**']);
+    expect(m('src')).toBe(true);
     expect(m('src/a')).toBe(true);
     expect(m('src/a/b/c')).toBe(true);
     expect(m('srcfoo/a')).toBe(false);
@@ -78,5 +79,23 @@ describe('createGlobMatcher', () => {
     expect(m('cdk.json')).toBe(true);
     expect(m('cdk.context.json')).toBe(true);
     expect(m('index.ts')).toBe(false);
+  });
+
+  it('handles multiple `**` tokens', () => {
+    const m = createGlobMatcher(['a/**/b/**/c.ts']);
+    expect(m('a/b/c.ts')).toBe(true);
+    expect(m('a/x/y/b/z/c.ts')).toBe(true);
+    expect(m('a/b/c.js')).toBe(false);
+  });
+
+  it('does not catastrophically backtrack on a star-heavy pattern (ReDoS guard)', () => {
+    // Many single `*` separated by literals is the textbook
+    // catastrophic-backtracking shape for a naive RegExp translation
+    // (each `*` -> `[^/]*`). The two-pointer matcher must stay linear.
+    const m = createGlobMatcher(['*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*.bak']);
+    const evil = `${'-'.repeat(80)}.txt`; // never matches (no .bak)
+    const start = Date.now();
+    expect(m(evil)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(1000);
   });
 });

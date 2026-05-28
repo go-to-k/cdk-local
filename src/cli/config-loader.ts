@@ -25,11 +25,9 @@ function loadCdkJson(): CdkJson | null {
   }
 }
 
-function normalizeGlobList(value: string | string[] | undefined): string[] | undefined {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value))
-    return value.filter((entry): entry is string => typeof entry === 'string');
-  return undefined;
+function normalizeGlobList(value: string | string[] | undefined): string[] {
+  const arr = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  return arr.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
 /**
@@ -74,8 +72,11 @@ export interface CdkWatchConfig {
  */
 export function resolveWatchConfig(): CdkWatchConfig {
   const watch = loadCdkJson()?.watch;
+  const include = normalizeGlobList(watch?.include);
   return {
-    include: normalizeGlobList(watch?.include) ?? ['**'],
-    exclude: normalizeGlobList(watch?.exclude) ?? [],
+    // An empty / all-invalid `include` (e.g. `[]` or `""`) would make the
+    // watcher match nothing and silently never reload — fall back to `**`.
+    include: include.length > 0 ? include : ['**'],
+    exclude: normalizeGlobList(watch?.exclude),
   };
 }
