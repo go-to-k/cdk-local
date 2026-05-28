@@ -78,7 +78,7 @@ interface LocalRunTaskOptions {
   detach: boolean;
   /**
    * Issue #606: alternative state source. Reads physical IDs from a
-   * deployed CloudFormation stack via `DescribeStackResources`.
+   * deployed CloudFormation stack via `ListStackResources`.
    */
   fromCfnStack?: string | boolean;
   /**
@@ -660,11 +660,11 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
           `Bare form uses the ${getEmbedConfig().binaryName} stack name; pass an explicit value when the CFn stack name differs. ` +
-          'Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(

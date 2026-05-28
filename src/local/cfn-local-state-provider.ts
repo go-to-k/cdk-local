@@ -4,7 +4,7 @@
  * --from-cfn-stack` (issue #606).
  *
  * The shape mirrors the SAM CLI's `sam local invoke --stack-name X`
- * behavior: reach into a deployed CFn stack via `DescribeStackResources`
+ * behavior: reach into a deployed CFn stack via `ListStackResources`
  * to look up physical IDs of every same-stack resource, then make those
  * IDs available to the existing `state-resolver.ts` substitution engine.
  * This lets `cdkl *` substitute env vars / secrets / images that
@@ -15,11 +15,11 @@
  * Wire-format mapping:
  *
  *   - `Ref: <LogicalId>` → resolved via the synthetic `ResourceState`
- *     map built from `DescribeStackResources.StackResources[]` (one
+ *     map built from `ListStackResources.StackResourceSummaries[]` (one
  *     entry per `(LogicalResourceId, PhysicalResourceId, ResourceType)`
  *     tuple).
  *   - `Fn::GetAtt: [<LogicalId>, <Attr>]` → **warn-and-drop**. CFn's
- *     `DescribeStackResources` does NOT return per-attribute values
+ *     `ListStackResources` does NOT return per-attribute values
  *     and the v1 policy (issue #606 recommendation (a)) is to surface
  *     a per-key warn instead of pulling in the full provisioning layer
  *     to call provider-specific describe APIs (e.g. `GetQueueAttributes`
@@ -44,8 +44,14 @@
  *
  * AWS API contract notes:
  *
- *   - `DescribeStackResources` is unpaginated up to 500 resources (CFn's
- *     hard stack cap). One call suffices for the entire stack.
+ *   - `ListStackResources` is paginated and returns EVERY resource in
+ *     the stack across pages. We deliberately do NOT use
+ *     `DescribeStackResources` here: that API returns only the first
+ *     100 resources (AWS-documented hard cap) with no `NextToken`, so a
+ *     stack with > 100 resources silently loses its tail — every `Ref`
+ *     to a dropped resource then warn-and-drops its env var. The
+ *     provider walks `ListStackResources`'s `NextToken` until the page
+ *     set is exhausted so all resources are mapped regardless of count.
  *   - `DescribeStacks` is unpaginated when called with `StackName`.
  *   - `ListExports` is paginated; the provider walks `NextToken` until
  *     the page set is exhausted.
@@ -53,9 +59,9 @@
 
 import {
   CloudFormationClient,
-  DescribeStackResourcesCommand,
   DescribeStacksCommand,
   ListExportsCommand,
+  ListStackResourcesCommand,
 } from '@aws-sdk/client-cloudformation';
 import { getLogger } from '../utils/logger.js';
 import type { ResourceState } from '../types/state.js';
@@ -165,13 +171,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
 
     let resourceMap: Record<string, ResourceState>;
     try {
-      const resp = await client.send(
-        new DescribeStackResourcesCommand({ StackName: this.cfnStackName })
-      );
-      resourceMap = buildResourceStateMap(resp.StackResources ?? []);
+      const summaries = await fetchAllStackResources(client, this.cfnStackName);
+      resourceMap = buildResourceStateMap(summaries);
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: ListStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
           `Was the stack deployed in region '${this.region}'? Falling back.`
       );
       return undefined;
@@ -296,7 +300,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
 
 /**
  * Build the synthetic per-logical-id resource map from
- * `DescribeStackResources` output. Each `ResourceState` carries the
+ * `ListStackResources` output. Each `ResourceState` carries the
  * physical id (covers `Ref`) and the resource type; `attributes` is
  * left empty per issue #606's (a) recommendation — the warn-and-drop
  * policy on unresolvable `Fn::GetAtt` is the v1 contract. The other
@@ -347,6 +351,64 @@ export function buildOutputsMap(
     if (o.OutputKey === undefined || o.OutputValue === undefined) continue;
     out[o.OutputKey] = o.OutputValue;
   }
+  return out;
+}
+
+/**
+ * Walk `ListStackResources` until every page is consumed and return the
+ * full `StackResourceSummary[]`. `ListStackResources` is paginated and
+ * returns up to 100 resources per page; the provider must walk every
+ * page so stacks with more than 100 resources are mapped completely.
+ *
+ * This is the reason the provider does not use `DescribeStackResources`:
+ * that API caps its response at the first 100 resources with no
+ * `NextToken`, so a > 100-resource stack silently loses its tail and the
+ * dropped resources' `Ref`s become unresolvable. Exported for unit
+ * testing.
+ */
+export async function fetchAllStackResources(
+  client: CloudFormationClient,
+  stackName: string
+): Promise<
+  Array<{
+    LogicalResourceId?: string | undefined;
+    PhysicalResourceId?: string | undefined;
+    ResourceType?: string | undefined;
+  }>
+> {
+  const out: Array<{
+    LogicalResourceId?: string | undefined;
+    PhysicalResourceId?: string | undefined;
+    ResourceType?: string | undefined;
+  }> = [];
+  let nextToken: string | undefined;
+  // Safety bound — a CFn stack holds at most 500 resources by default
+  // (raisable, but far below this ceiling) and ListStackResources returns
+  // up to 100 per page, so a real stack needs only a handful of pages.
+  // 100 pages defends against a hypothetical NextToken loop without ever
+  // tripping on a legitimate stack.
+  let pages = 0;
+  do {
+    const resp = await client.send(
+      new ListStackResourcesCommand({
+        StackName: stackName,
+        ...(nextToken !== undefined && { NextToken: nextToken }),
+      })
+    );
+    for (const summary of resp.StackResourceSummaries ?? []) {
+      out.push(summary);
+    }
+    nextToken = resp.NextToken;
+    pages += 1;
+    if (pages > 100) {
+      throw new Error(
+        'ListStackResources pagination exceeded 100 pages — likely a malformed NextToken loop.'
+      );
+    }
+    // Treat an empty-string NextToken as terminal (mirrors fetchAllExports):
+    // the SDK types it as `string | undefined`; AWS should not return `''`
+    // but if it does, looping on it would waste round-trips.
+  } while (nextToken !== undefined && nextToken !== '');
   return out;
 }
 

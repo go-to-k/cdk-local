@@ -169,7 +169,7 @@ interface LocalStartApiOptions {
   api?: string;
   /**
    * Issue #606: alternative state source. Reads physical IDs from a
-   * deployed CloudFormation stack via `DescribeStackResources`.
+   * deployed CloudFormation stack via `ListStackResources`.
    * Commander maps:
    *   - flag absent → `undefined`
    *   - `--from-cfn-stack` (bare) → `true` (use the resolved stack name per routed stack)
@@ -3173,11 +3173,11 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in Lambda env vars with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
           'Bare form uses the resolved stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. ' +
-          'Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(

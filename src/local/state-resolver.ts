@@ -304,7 +304,7 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
   if (!resource) {
     return {
       kind: 'unresolved',
-      reason: `Ref '${arg}': no record in cdkd state (was the resource deployed?)`,
+      reason: `Ref '${arg}': no record in the state source (was the resource deployed?)`,
     };
   }
   return { kind: 'literal', value: resource.physicalId };
@@ -317,7 +317,7 @@ function resolvePseudoParameter(
   if (!pseudo) {
     return {
       kind: 'unresolved',
-      reason: `Ref '${name}': pseudo parameter not supplied (need --from-state context)`,
+      reason: `Ref '${name}': pseudo parameter not supplied (need an active state source, e.g. --from-cfn-stack)`,
     };
   }
   switch (name) {
@@ -377,14 +377,14 @@ function resolveGetAtt(arg: unknown, context: SubstitutionContext): StateSubstit
   if (!resource) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetAtt '${logicalId}.${attr}': no record in cdkd state`,
+      reason: `Fn::GetAtt '${logicalId}.${attr}': no record in the state source`,
     };
   }
   const cached = resource.attributes?.[attr];
   if (cached === undefined) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetAtt '${logicalId}.${attr}': attribute not captured in cdkd state at deploy time`,
+      reason: `Fn::GetAtt '${logicalId}.${attr}': attribute not captured in the state source at deploy time`,
     };
   }
   if (typeof cached === 'string' || typeof cached === 'number' || typeof cached === 'boolean') {
@@ -828,7 +828,7 @@ async function resolveImportValueAsync(
   if (!context.crossStackResolver) {
     return {
       kind: 'unresolved',
-      reason: `Fn::ImportValue '${exportName}': no cross-stack resolver supplied (pass --from-state and ensure the producer stack was deployed via cdkd deploy)`,
+      reason: `Fn::ImportValue '${exportName}': no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
     };
   }
 
@@ -844,7 +844,7 @@ async function resolveImportValueAsync(
   if (resolved === undefined) {
     return {
       kind: 'unresolved',
-      reason: `Fn::ImportValue '${exportName}': export not found in any cdkd-managed stack in this region`,
+      reason: `Fn::ImportValue '${exportName}': export not found in any deployed stack in this region`,
     };
   }
   return { kind: 'literal', value: resolved };
@@ -929,14 +929,14 @@ async function resolveGetStackOutputAsync(
   if (args['RoleArn'] !== undefined && args['RoleArn'] !== null) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}': RoleArn (cross-account) is not yet supported by --from-state — tracked under issue #449`,
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}': RoleArn (cross-account) is not yet supported by the state source — tracked under issue #449`,
     };
   }
 
   if (!context.crossStackResolver) {
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no cross-stack resolver supplied (pass --from-state and ensure the producer stack was deployed via cdkd deploy)`,
+      reason: `Fn::GetStackOutput '${stackName}.${outputName}': no cross-stack resolver supplied (pass a state-source flag, e.g. --from-cfn-stack, and ensure the producer stack was deployed)`,
     };
   }
 

@@ -113,7 +113,7 @@ interface LocalInvokeOptions {
   /**
    * Issue #606: alternative state source for CDK apps deployed via the
    * upstream CDK CLI (`cdk deploy` → CloudFormation). Reads the named
-   * CFn stack via `DescribeStackResources` to populate physical IDs.
+   * CFn stack via `ListStackResources` to populate physical IDs.
    * Commander maps:
    *   - flag absent → `undefined`
    *   - `--from-cfn-stack` (bare) → `true` (use the resolved stack name)
@@ -1083,10 +1083,10 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
+        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
           'in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream ' +
           'CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when CFn stack name differs. ' +
-          'Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
+          'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
       )
     )
     .addOption(
