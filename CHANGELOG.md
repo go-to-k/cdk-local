@@ -1,3 +1,10 @@
+## [0.28.2](https://github.com/go-to-k/cdk-local/compare/v0.28.1...v0.28.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* **hooks:** use subshell cd instead of unsupported gh -C in non-english-text-gate ([#105](https://github.com/go-to-k/cdk-local/issues/105)) ([6b9e05a](https://github.com/go-to-k/cdk-local/commit/6b9e05aa1045286114916a29e06caad650989adc))
+
 ## [0.28.1](https://github.com/go-to-k/cdk-local/compare/v0.28.0...v0.28.1) (2026-05-28)
 
 
