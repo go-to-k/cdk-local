@@ -1,3 +1,10 @@
+# [0.22.0](https://github.com/go-to-k/cdk-local/compare/v0.21.0...v0.22.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose cors-handler + intrinsic-image primitives ([#92](https://github.com/go-to-k/cdk-local/issues/92)) ([857e82e](https://github.com/go-to-k/cdk-local/commit/857e82e4be65d9716f8aa531a46e2fafc5893d86))
+
 # [0.21.0](https://github.com/go-to-k/cdk-local/compare/v0.20.0...v0.21.0) (2026-05-28)
 
 
