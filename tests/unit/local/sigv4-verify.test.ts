@@ -99,6 +99,23 @@ describe('verifySigV4 — oacFronted relaxation', () => {
     warn.restore();
   });
 
+  it('SECURITY: a matching access-key-id with a BAD signature is still denied even when oacFronted', async () => {
+    // The relaxation only covers the foreign-identity / no-creds branches.
+    // A request whose Credential access-key-id MATCHES the local one takes
+    // the same-identity path: the signature is recomputed and compared, and
+    // a mismatch must deny regardless of oacFronted / allowUnverified. This
+    // is the invariant that keeps the OAC relaxation from becoming a blanket
+    // bypass.
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest(LOCAL_CREDS.accessKeyId), loadLocal, {
+      allowUnverified: true,
+      oacFronted: true,
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    warn.restore();
+  });
+
   it('still fail-closes a foreign access-key-id by default (no oacFronted, no flag)', async () => {
     const warn = spyWarn();
     const result = await verifySigV4(makeRequest(''), loadLocal, {

@@ -78,13 +78,14 @@ ${CDKL} start-api \
   >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 
-# Wait for ALL three "Server listening" lines — PR #341 / issue #260
-# launches one HTTP server per API (HTTP API v2 + REST API v1 +
-# Function URL), each on its own port (--port N → N, N+1, N+2). The
-# pre-#341 single-server marker check would race past readiness if
-# the first server bound before the others.
-echo "==> Waiting for all servers (3 expected) to come up"
-EXPECTED_SERVERS=3
+# Wait for ALL "Server listening" lines — PR #341 / issue #260 launches
+# one HTTP server per API, each on its own port (--port N → N, N+1, ...).
+# Surfaces: HTTP API v2 (1) + REST API v1 (1) + Function URLs (4: plain,
+# stream, stream-set-content-type, OAC AWS_IAM) = 6. Waiting for the full
+# count ensures every port (incl. the OAC server) is bound before the
+# port-extraction step below — a partial wait would race past readiness.
+echo "==> Waiting for all servers (6 expected) to come up"
+EXPECTED_SERVERS=6
 READY=0
 for i in $(seq 1 60); do
   # `grep -c` outputs "0" AND exits non-zero on zero matches, so a
@@ -131,7 +132,10 @@ PORT_FNURL_STREAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(Stream
 # `StreamUrlSetContentTypeHandler[A-F0-9]{8}` is distinct from
 # `StreamUrlHandler[A-F0-9]{8}` (the `Set` infix breaks the latter regex).
 PORT_FNURL_STREAM_SCT=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(StreamUrlSetContentTypeHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" || -z "${PORT_FNURL_STREAM_SCT}" ]]; then
+# OAC-fronted AWS_IAM Function URL (OacUrlHandler). The `(` anchor keeps
+# `OacUrlHandler` distinct from the plain `UrlHandler` server above.
+PORT_FNURL_OAC=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(OacUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" || -z "${PORT_FNURL_STREAM_SCT}" || -z "${PORT_FNURL_OAC}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
   exit 1
@@ -141,6 +145,7 @@ echo "    REST API v1:                  ${PORT_REST}"
 echo "    Function URL:                 ${PORT_FNURL}"
 echo "    Function URL (stream):        ${PORT_FNURL_STREAM}"
 echo "    Function URL (stream/SCT):    ${PORT_FNURL_STREAM_SCT}"
+echo "    Function URL (OAC AWS_IAM):   ${PORT_FNURL_OAC}"
 
 # Verify the route table contains every route. Method-column width
 # varies per server (REST v1 with OPTIONS preflight rows has a wider
@@ -196,6 +201,13 @@ if ! grep -i "HTTP 501 Not Implemented when hit" "${LOG_FILE}" >/dev/null; then
   cat "${LOG_FILE}"
   exit 1
 fi
+# OAC-fronted AWS_IAM Function URL: the startup notice must call out the
+# auto-relaxed route separately (warn-and-pass without the flag).
+if ! grep -i "fronted by a CloudFront" "${LOG_FILE}" >/dev/null; then
+  echo "FAIL: missing OAC-fronted Function URL startup notice."
+  cat "${LOG_FILE}"
+  exit 1
+fi
 
 # Smoke-test the routes via curl. The Items handler returns a small JSON
 # body; greedy proxy returns a constant; FunctionURL returns a constant.
@@ -233,6 +245,32 @@ curl_assert "ANY /v1/anything (stage variables)" \
 # Function URL is a separate server on its own port. The Function URL
 # greedy proxy answers any path on its server.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/ping" '"functionUrl":true'
+
+# OAC-fronted AWS_IAM Function URL auto-relax. The route declares
+# AuthType: AWS_IAM but is fronted by a CloudFront OAC, so cdkl start-api
+# relaxes SigV4 verification to warn-and-pass WITHOUT --allow-unverified-sigv4
+# (the server was started without that flag above).
+echo "==> Asserting OAC-fronted AWS_IAM Function URL"
+# 1. No Authorization header -> still 403 (the relax is signature-presence
+#    gated; missing-identity is denied before the relax logic runs).
+OAC_NOAUTH_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT_FNURL_OAC}/ping")
+if [[ "${OAC_NOAUTH_STATUS}" != "403" ]]; then
+  echo "FAIL: OAC Function URL without Authorization expected 403, got ${OAC_NOAUTH_STATUS}"
+  cat "${LOG_FILE}"
+  exit 1
+fi
+echo "    [OAC Function URL no-auth -> 403] OK"
+# 2. A SigV4 header signed with a FOREIGN (empty) access-key-id -> passes
+#    through to the handler (echo body) instead of 403, because the route
+#    is OAC-fronted. Mirrors the CloudFront-OAC + empty-cred-signer pattern.
+OAC_AMZDATE="$(date -u +%Y%m%dT%H%M%SZ)"
+OAC_DATESTAMP="$(date -u +%Y%m%d)"
+OAC_AUTH="AWS4-HMAC-SHA256 Credential=/${OAC_DATESTAMP}/us-east-1/lambda/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+curl_assert "OAC Function URL foreign-sig pass-through" \
+  "http://127.0.0.1:${PORT_FNURL_OAC}/ping" \
+  '"functionUrl":true' \
+  -H "x-amz-date: ${OAC_AMZDATE}" \
+  -H "Authorization: ${OAC_AUTH}"
 
 # #467: streaming Function URL (`invokeMode: RESPONSE_STREAM`). The
 # handler emits 5 chunks of "hello-N\n" with 200ms delays between
