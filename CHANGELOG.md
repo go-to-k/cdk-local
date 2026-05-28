@@ -1,3 +1,10 @@
+## [0.13.2](https://github.com/go-to-k/cdk-local/compare/v0.13.1...v0.13.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* **invoke,start-api:** authenticate container-Lambda ECR pull with --profile ([#75](https://github.com/go-to-k/cdk-local/issues/75)) ([6469e88](https://github.com/go-to-k/cdk-local/commit/6469e88c178e2cd3be0fc2f4ad72aab7106b6234))
+
 ## [0.13.1](https://github.com/go-to-k/cdk-local/compare/v0.13.0...v0.13.1) (2026-05-28)
 
 
