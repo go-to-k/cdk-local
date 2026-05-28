@@ -41,6 +41,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/docs-inline-json-flag-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh pr merge*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for inline-JSON file-path flag misuse..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/post-merge-orphan-push-gate.sh",
             "if": "Bash(git push*) or Bash(git -C * push*) or Bash(cd * && git push*)",
             "timeout": 10,
