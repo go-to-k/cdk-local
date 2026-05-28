@@ -1,3 +1,10 @@
+# [0.23.0](https://github.com/go-to-k/cdk-local/compare/v0.22.0...v0.23.0) (2026-05-28)
+
+
+### Features
+
+* **list:** add `cdkl list` / `ls` to enumerate runnable targets ([#95](https://github.com/go-to-k/cdk-local/issues/95)) ([e47ab33](https://github.com/go-to-k/cdk-local/commit/e47ab336addfb8436588ef38c9e9ee57a19c29f2))
+
 # [0.22.0](https://github.com/go-to-k/cdk-local/compare/v0.21.0...v0.22.0) (2026-05-28)
 
 
