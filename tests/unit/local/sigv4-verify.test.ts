@@ -48,17 +48,67 @@ function spyWarn(): { calls: () => string[]; restore: () => void } {
   };
 }
 
-describe('verifySigV4 — oacFronted relaxation', () => {
+describe('verifySigV4 — warn-and-pass default + --strict-sigv4 opt-in', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('passes through a foreign (empty) access-key-id when oacFronted, without the flag wording', async () => {
+  it('DEFAULT: warn-and-passes a foreign access-key-id (no strict, no oac)', async () => {
     const warn = spyWarn();
-    // Mirrors how the http-server calls it for OAC routes: allowUnverified
-    // forced on AND oacFronted set.
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadLocal, {
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('unverified-foreign-identity');
+    const warns = warn.calls().join('\n');
+    // The default pass-through must explain it's unverifiable + point at the
+    // opt-in to deny, and must NOT use the OAC wording.
+    expect(warns).toContain('--strict-sigv4');
+    expect(warns).not.toContain('CloudFront OAC');
+    warn.restore();
+  });
+
+  it('DEFAULT: warn-and-passes when local credentials cannot be resolved (no strict, no oac)', async () => {
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('unverified-no-creds');
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('--strict-sigv4');
+    expect(warns).not.toContain('CloudFront OAC');
+    warn.restore();
+  });
+
+  it('STRICT: denies a foreign access-key-id when --strict-sigv4 is set', async () => {
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadLocal, {
+      strict: true,
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('--strict-sigv4');
+    warn.restore();
+  });
+
+  it('STRICT: denies when local credentials cannot be resolved and --strict-sigv4 is set', async () => {
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
+      strict: true,
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('--strict-sigv4');
+    warn.restore();
+  });
+
+  it('oacFronted always warn-and-passes a foreign access-key-id, even under --strict-sigv4', async () => {
+    const warn = spyWarn();
     const result = await verifySigV4(makeRequest(''), loadLocal, {
-      allowUnverified: true,
+      strict: true,
       oacFronted: true,
       now: () => NOW,
     });
@@ -66,14 +116,13 @@ describe('verifySigV4 — oacFronted relaxation', () => {
     expect(result.principalId).toBe('unverified-foreign-identity');
     const warns = warn.calls().join('\n');
     expect(warns).toContain('CloudFront OAC');
-    expect(warns).not.toContain('--allow-unverified-sigv4');
     warn.restore();
   });
 
-  it('passes through when local credentials cannot be resolved and oacFronted is set', async () => {
+  it('oacFronted always warn-and-passes when credentials cannot be resolved, even under --strict-sigv4', async () => {
     const warn = spyWarn();
     const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
-      allowUnverified: true,
+      strict: true,
       oacFronted: true,
       now: () => NOW,
     });
@@ -81,71 +130,30 @@ describe('verifySigV4 — oacFronted relaxation', () => {
     expect(result.principalId).toBe('unverified-no-creds');
     const warns = warn.calls().join('\n');
     expect(warns).toContain('CloudFront OAC');
-    expect(warns).not.toContain('--allow-unverified-sigv4');
     warn.restore();
   });
 
-  it('uses the --allow-unverified-sigv4 wording when allowUnverified is set WITHOUT oacFronted', async () => {
+  it('SECURITY: a matching access-key-id with a BAD signature is still denied (default mode)', async () => {
+    // The warn-and-pass default only covers the foreign-identity / no-creds
+    // branches. A request whose Credential access-key-id MATCHES the local
+    // one takes the same-identity path: the signature is recomputed and
+    // compared, and a mismatch denies regardless of mode — the flip to
+    // warn-and-pass must NOT weaken verification of the dev's own identity.
     const warn = spyWarn();
-    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadLocal, {
-      allowUnverified: true,
+    const result = await verifySigV4(makeRequest(LOCAL_CREDS.accessKeyId), loadLocal, {
       now: () => NOW,
     });
-    expect(result.allow).toBe(true);
-    expect(result.principalId).toBe('unverified-foreign-identity');
-    const warns = warn.calls().join('\n');
-    expect(warns).toContain('--allow-unverified-sigv4 is set');
-    expect(warns).not.toContain('CloudFront OAC');
+    expect(result.allow).toBe(false);
     warn.restore();
   });
 
   it('SECURITY: a matching access-key-id with a BAD signature is still denied even when oacFronted', async () => {
-    // The relaxation only covers the foreign-identity / no-creds branches.
-    // A request whose Credential access-key-id MATCHES the local one takes
-    // the same-identity path: the signature is recomputed and compared, and
-    // a mismatch must deny regardless of oacFronted / allowUnverified. This
-    // is the invariant that keeps the OAC relaxation from becoming a blanket
-    // bypass.
     const warn = spyWarn();
     const result = await verifySigV4(makeRequest(LOCAL_CREDS.accessKeyId), loadLocal, {
-      allowUnverified: true,
       oacFronted: true,
       now: () => NOW,
     });
     expect(result.allow).toBe(false);
-    warn.restore();
-  });
-
-  it('still fail-closes a foreign access-key-id by default (no oacFronted, no flag)', async () => {
-    const warn = spyWarn();
-    const result = await verifySigV4(makeRequest(''), loadLocal, {
-      now: () => NOW,
-    });
-    expect(result.allow).toBe(false);
-    const warns = warn.calls().join('\n');
-    expect(warns).toContain('Denying');
-    // The deny message must explain WHY (an HMAC shared-secret signature is
-    // unverifiable locally) and that this is a local-only limitation, not a
-    // rejection of an invalid request — so a dev whose credentials succeed
-    // against the deployed API does not read it as a bug. It must also point
-    // at the opt-in flag.
-    expect(warns).toContain('HMAC');
-    expect(warns).toContain('local-only limitation');
-    expect(warns).toContain('--allow-unverified-sigv4');
-    warn.restore();
-  });
-
-  it('fail-closes (and explains why) when local credentials cannot be resolved, no flag', async () => {
-    const warn = spyWarn();
-    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
-      now: () => NOW,
-    });
-    expect(result.allow).toBe(false);
-    const warns = warn.calls().join('\n');
-    expect(warns).toContain('Denying');
-    expect(warns).toContain('HMAC');
-    expect(warns).toContain('local-only limitation');
-    expect(warns).toContain('--allow-unverified-sigv4');
     warn.restore();
   });
 });
