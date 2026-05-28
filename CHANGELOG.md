@@ -1,3 +1,10 @@
+# [0.25.0](https://github.com/go-to-k/cdk-local/compare/v0.24.0...v0.25.0) (2026-05-28)
+
+
+### Features
+
+* **interactive:** add `-i`/`--interactive` target picker to the run commands ([#98](https://github.com/go-to-k/cdk-local/issues/98)) ([7de4ab0](https://github.com/go-to-k/cdk-local/commit/7de4ab020d7a9766da200520023fab6f46f27d03))
+
 # [0.24.0](https://github.com/go-to-k/cdk-local/compare/v0.23.0...v0.24.0) (2026-05-28)
 
 
