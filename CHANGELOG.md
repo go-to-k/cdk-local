@@ -1,3 +1,15 @@
+# [0.13.0](https://github.com/go-to-k/cdk-local/compare/v0.12.0...v0.13.0) (2026-05-28)
+
+
+### Bug Fixes
+
+* **from-cfn-stack:** resolve ECR image Fn::Join via synthesized repo Arn ([#73](https://github.com/go-to-k/cdk-local/issues/73)) ([e421d7b](https://github.com/go-to-k/cdk-local/commit/e421d7b3f2d0cc69d4a5f5c3a2b90d94c33afd68))
+
+
+### Features
+
+* **start-api:** --watch watches the CDK app source tree ([#72](https://github.com/go-to-k/cdk-local/issues/72)) ([598fb59](https://github.com/go-to-k/cdk-local/commit/598fb591af4c20b631026352406cbee4c516b407))
+
 # [0.12.0](https://github.com/go-to-k/cdk-local/compare/v0.11.3...v0.12.0) (2026-05-28)
 
 
