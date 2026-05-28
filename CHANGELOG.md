@@ -1,3 +1,10 @@
+# [0.30.0](https://github.com/go-to-k/cdk-local/compare/v0.29.1...v0.30.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose cloud-map + integration-response resolvers and error classes for shim consumers ([#109](https://github.com/go-to-k/cdk-local/issues/109)) ([8865eda](https://github.com/go-to-k/cdk-local/commit/8865edaed3da5db80ef07c917493122f27c5ae3c))
+
 ## [0.29.1](https://github.com/go-to-k/cdk-local/compare/v0.29.0...v0.29.1) (2026-05-28)
 
 
