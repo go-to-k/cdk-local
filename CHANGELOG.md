@@ -1,3 +1,10 @@
+## [0.11.3](https://github.com/go-to-k/cdk-local/compare/v0.11.2...v0.11.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* **start-service:** clearer not-found error for logical-ID-in-path ([#71](https://github.com/go-to-k/cdk-local/issues/71)) ([2e7bfae](https://github.com/go-to-k/cdk-local/commit/2e7bfae64a7bc0368b6dba5a928a0333fe831658))
+
 ## [0.11.2](https://github.com/go-to-k/cdk-local/compare/v0.11.1...v0.11.2) (2026-05-28)
 
 
