@@ -26,8 +26,8 @@ export interface CdkLocalEmbedConfig {
   /**
    * Bare executable / process name for standalone references, e.g.
    * `${binaryName} is exiting` / `${binaryName} could not determine ...`,
-   * and the hyphen-free Cognito user-pool placeholder id. Default
-   * `'cdkl'`; cdkd passes `'cdkd'`.
+   * the local request id, and the hyphen-free Cognito user-pool
+   * placeholder id. Default `'cdkl'`; cdkd passes `'cdkd'`.
    */
   binaryName?: string;
   /**
@@ -38,9 +38,9 @@ export interface CdkLocalEmbedConfig {
   productName?: string;
   /**
    * Prefix for generated Docker / AWS resource identifiers — container,
-   * volume, network, image-tag, tmpdir names, STS `RoleSessionName`s, the
-   * local request id, and the example Cloud Map namespace. Default
-   * `'cdkl'`; cdkd passes `'cdkd-local'`.
+   * volume, network, image-tag, tmpdir names, STS `RoleSessionName`s, and
+   * the example Cloud Map namespace. Default `'cdkl'`; cdkd passes
+   * `'cdkd-local'`.
    */
   resourceNamePrefix?: string;
   /**

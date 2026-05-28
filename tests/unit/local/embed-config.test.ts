@@ -10,6 +10,9 @@ import {
   writeProfileCredentialsFile,
 } from '../../../src/cli/commands/local-profile-credentials-file.js';
 import { resolveApp } from '../../../src/cli/config-loader.js';
+import { resolveRestV1Authorizer } from '../../../src/local/authorizer-resolver.js';
+import { computeLocalTag } from '../../../src/local/docker-image-builder.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
 // The embed config is a module-level singleton; reset after every test so
 // one test's override never leaks into the next.
@@ -106,6 +109,42 @@ describe('embed-config threading into branded sites', () => {
     } finally {
       await file.dispose();
     }
+  });
+
+  it('resourceNamePrefix flows into generated Docker image tags', () => {
+    const source = { directory: '/some/asset/dir' };
+    const def = computeLocalTag(source);
+    expect(def).toMatch(/^cdkl-invoke-[0-9a-f]{16}$/);
+
+    setEmbedConfig({ resourceNamePrefix: 'cdkd-local' });
+    const cdkd = computeLocalTag(source);
+    expect(cdkd).toMatch(/^cdkd-local-invoke-[0-9a-f]{16}$/);
+    // Same source ⇒ same hash suffix; only the prefix changes.
+    expect(cdkd.slice('cdkd-local-invoke-'.length)).toBe(def.slice('cdkl-invoke-'.length));
+  });
+
+  it('binaryName flows into the synthesized Cognito user-pool placeholder ARN', () => {
+    const template = {
+      Resources: {
+        MyAuth: {
+          Type: 'AWS::ApiGateway::Authorizer',
+          Properties: {
+            Type: 'COGNITO_USER_POOLS',
+            // Fn::GetAtt is unresolvable at synth time, so the resolver
+            // synthesizes an unreachable placeholder user-pool ARN.
+            ProviderARNs: [{ 'Fn::GetAtt': ['MyPool', 'Arn'] }],
+          },
+        },
+      },
+    } as unknown as CloudFormationTemplate;
+
+    const def = resolveRestV1Authorizer('MyAuth', template, 'MyStack', 'MyStack/api');
+    expect(def.userPoolArn).toContain('us-east-1_cdklplaceholder');
+
+    setEmbedConfig({ binaryName: 'cdkd' });
+    const cdkd = resolveRestV1Authorizer('MyAuth', template, 'MyStack', 'MyStack/api');
+    expect(cdkd.userPoolArn).toContain('us-east-1_cdkdplaceholder');
+    expect(cdkd.userPoolArn).not.toContain('cdklplaceholder');
   });
 
   it('envPrefix flows into the --app env-var fallback that resolveApp reads', () => {

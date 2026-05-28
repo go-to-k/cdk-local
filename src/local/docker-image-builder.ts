@@ -120,7 +120,7 @@ export function architectureToPlatform(architecture: 'x86_64' | 'arm64'): string
  * `DockerImageSource` schema so `dockerBuildSecrets` / `dockerBuildContexts`
  * / `cacheFrom` / etc. changes also bust the local cache as expected.
  */
-function computeLocalTag(source: DockerImageAssetSource): string {
+export function computeLocalTag(source: DockerImageAssetSource): string {
   const hash = createHash('sha256');
   // Field-tagged fingerprint: prepend each field's name so adding new fields
   // later doesn't shift the digest for old shapes.
