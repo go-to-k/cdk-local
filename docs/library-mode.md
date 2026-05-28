@@ -131,6 +131,16 @@ The `invoke` / `start-api` env-var and stage layers, plus the
   service registry so peers reach each other by IP / network alias on the
   shared service network; `RegistrationHandle` is the handle returned by
   `register()` for symmetric unregister.
+- `resolveRuntimeImage` / `resolveRuntimeFileExtension` /
+  `resolveRuntimeCodeMountPath` — Lambda `Runtime` → ECR base-image,
+  source-file extension, and in-container code-mount path.
+- `buildConnectEvent` / `buildDisconnectEvent` / `buildMessageEvent`
+  (+ `WebSocketHandshakeSnapshot` / `WebSocketLambdaEvent`) — WebSocket API
+  `$connect` / `$disconnect` / message Lambda event-shape builders.
+- `ConnectionRegistry` / `handleConnectionsRequest` / `parseConnectionsPath` /
+  `buildMgmtEndpointEnvUrl` (+ `ConnectionRegistryEntry`) — WebSocket
+  `@connections` management API: in-process connection registry + the local
+  management-endpoint HTTP handler.
 
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
