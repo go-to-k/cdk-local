@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { countTargets, listTargets } from '../../../src/local/target-lister.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function buildStack(stackName: string, resources: Record<string, TemplateResource>): StackInfo {
   const template: CloudFormationTemplate = { Resources: resources };
@@ -131,13 +136,14 @@ describe('listTargets — APIs', () => {
       },
     });
     const { apis } = listTargets([stack]);
-    // start-api matches a Function URL by the backing Lambda's cdk path,
-    // so displayPath is the Lambda's path while the logical ID is the URL.
+    // start-api addresses a Function URL by its BACKING LAMBDA (logical ID
+    // + cdk path), not the URL resource — so both forms point at Handler,
+    // matching `routeMatchesIdentifier` in api-server-grouping.ts.
     expect(apis).toEqual([
       {
-        logicalId: 'HandlerUrl',
+        logicalId: 'Handler',
         stackName: 'App',
-        qualifiedId: 'App:HandlerUrl',
+        qualifiedId: 'App:Handler',
         displayPath: 'App/Handler',
       },
     ]);
@@ -179,6 +185,40 @@ describe('listTargets — APIs', () => {
         displayPath: 'App/WsApi',
       },
     ]);
+  });
+
+  it('downgrades a route-discovery hard error to a warning and still lists other targets', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const stack = buildStack('App', {
+      Handler: { Type: 'AWS::Lambda::Function', Properties: {} },
+      // Malformed HTTP API route: ApiId is not a { Ref } — discoverRoutes throws.
+      BadRoute: {
+        Type: 'AWS::ApiGatewayV2::Route',
+        Properties: { ApiId: 'not-a-ref', RouteKey: 'GET /x', Target: 'integrations/whatever' },
+      },
+    });
+    const { apis, lambdas } = listTargets([stack]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(apis).toEqual([]);
+    // The Lambda category is unaffected by the API-discovery failure.
+    expect(lambdas.map((l) => l.qualifiedId)).toEqual(['App:Handler']);
+  });
+
+  it('surfaces a WebSocket discovery error as a warning without throwing', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const stack = buildStack('App', {
+      Handler: { Type: 'AWS::Lambda::Function', Properties: {} },
+      // WebSocket API with no routes — discoverWebSocketApis returns an error
+      // (it does not throw), which listTargets warns about per entry.
+      WsApi: {
+        Type: 'AWS::ApiGatewayV2::Api',
+        Properties: { ProtocolType: 'WEBSOCKET' },
+      },
+    });
+    const { apis, lambdas } = listTargets([stack]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(apis).toEqual([]);
+    expect(lambdas.map((l) => l.qualifiedId)).toEqual(['App:Handler']);
   });
 });
 

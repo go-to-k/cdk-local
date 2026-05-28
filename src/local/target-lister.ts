@@ -1,4 +1,4 @@
-import { readCdkPath } from '../cli/cdk-path.js';
+import { readCdkPathOrUndefined } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import { getLogger } from '../utils/logger.js';
 import { discoverRoutes } from './route-discovery.js';
@@ -70,7 +70,7 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
     const resources = stack.template.Resources ?? {};
     for (const [logicalId, resource] of Object.entries(resources)) {
       if (resource.Type !== type) continue;
-      entries.push(makeEntry(stack.stackName, logicalId, readCdkPath(resource) || undefined));
+      entries.push(makeEntry(stack.stackName, logicalId, readCdkPathOrUndefined(resource)));
     }
   }
   return entries;
@@ -81,9 +81,11 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
  *
  * Reuses the same discovery `start-api` runs (REST v1 / HTTP API v2 /
  * Function URL routes + WebSocket APIs) so the listed identifiers are
- * exactly the ones the `[target]` filter accepts — for a Function URL
- * that means the backing Lambda's `aws:cdk:path`, not the URL resource's
- * own path. Routes are collapsed to one entry per API surface.
+ * exactly the ones the `[target]` filter accepts. For a Function URL that
+ * means the backing Lambda's logical ID and `aws:cdk:path` — start-api
+ * addresses a Function URL by its backing Lambda, not by the URL
+ * resource (see `routeMatchesIdentifier` in api-server-grouping.ts).
+ * Routes are collapsed to one entry per API surface.
  *
  * Discovery is best-effort: a malformed template that would hard-error
  * `start-api` is downgraded to a warning here so `list` still surfaces
@@ -91,13 +93,22 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
  */
 function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
   const byKey = new Map<string, TargetEntry>();
+  const add = (stackName: string, logicalId: string, cdkPath: string | undefined): void => {
+    const key = `${stackName}:${logicalId}`;
+    if (!byKey.has(key)) byKey.set(key, makeEntry(stackName, logicalId, cdkPath));
+  };
 
   try {
     for (const route of discoverRoutes(stacks)) {
-      if (!route.apiLogicalId || !route.apiStackName) continue;
-      const key = `${route.apiStackName}:${route.apiLogicalId}`;
-      if (byKey.has(key)) continue;
-      byKey.set(key, makeEntry(route.apiStackName, route.apiLogicalId, route.apiCdkPath));
+      if (!route.apiStackName) continue;
+      // Mirror start-api's own identifier rule: a Function URL is keyed by
+      // its BACKING LAMBDA's logical ID, every other surface by the API
+      // resource's. Using the URL resource's own logical ID would print a
+      // `Stack:LogicalId` that `start-api [target]` rejects.
+      const logicalId =
+        route.source === 'function-url' ? route.lambdaLogicalId : route.apiLogicalId;
+      if (!logicalId) continue;
+      add(route.apiStackName, logicalId, route.apiCdkPath);
     }
   } catch (err) {
     getLogger().warn(
@@ -107,9 +118,7 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
 
   const { apis, errors } = discoverWebSocketApis(stacks);
   for (const api of apis) {
-    const key = `${api.apiStackName}:${api.apiLogicalId}`;
-    if (byKey.has(key)) continue;
-    byKey.set(key, makeEntry(api.apiStackName, api.apiLogicalId, api.apiCdkPath));
+    add(api.apiStackName, api.apiLogicalId, api.apiCdkPath);
   }
   for (const e of errors) {
     getLogger().warn(`Could not enumerate a WebSocket API target: ${e}`);

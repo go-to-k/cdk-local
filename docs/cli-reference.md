@@ -53,11 +53,12 @@ forms (the CDK display path and the stack-qualified logical ID
 `<Stack>:<LogicalId>`), so you can copy either into `invoke` /
 `start-api` / `run-task` / `start-service`.
 
-It runs synthesis only — no Docker, no AWS calls (beyond any synth-time
-context lookups your app performs) — and accepts only the
+It needs no Docker. It synthesizes the app — which may perform context
+lookups, and (like every command) honors `--role-arn` / `CDKL_ROLE_ARN`
+by assuming that role first — and accepts only the
 [common flags](#common-flags) (`--app` / `--output` / `--context` /
-`--profile` / `--verbose`). There is no `<target>` argument; the command
-always lists the whole app.
+`--profile` / `--role-arn` / `--verbose`). There is no `<target>`
+argument; the command always lists the whole app.
 
 ```text
 $ cdkl list
@@ -76,9 +77,10 @@ ECS Task Definitions  (cdkl run-task <target>)
 
 Categories with no matching resources are omitted. The `APIs` group
 covers every surface `start-api` can serve — REST v1, HTTP API v2,
-Function URLs, and WebSocket APIs; a Function URL is shown under the
-backing Lambda's display path (the form `start-api` matches against)
-with the URL resource's own logical ID.
+Function URLs, and WebSocket APIs. A Function URL is shown under its
+backing Lambda's display path and logical ID, because that is how
+`start-api` addresses a Function URL target (so the same row may also
+appear under `Lambda Functions`, where `invoke` runs it directly).
 
 ## `cdkl invoke` (run Lambda functions locally)
 
