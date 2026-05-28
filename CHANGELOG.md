@@ -1,3 +1,10 @@
+# [0.17.0](https://github.com/go-to-k/cdk-local/compare/v0.16.0...v0.17.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose runtime-image + websocket-event/mgmt-api primitives ([#81](https://github.com/go-to-k/cdk-local/issues/81)) ([7e31983](https://github.com/go-to-k/cdk-local/commit/7e31983ef5fa7e692f0b1cfe87c75899222b9b86))
+
 # [0.16.0](https://github.com/go-to-k/cdk-local/compare/v0.15.0...v0.16.0) (2026-05-28)
 
 
