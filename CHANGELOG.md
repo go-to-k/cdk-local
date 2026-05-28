@@ -1,3 +1,10 @@
+# [0.19.0](https://github.com/go-to-k/cdk-local/compare/v0.18.0...v0.19.0) (2026-05-28)
+
+
+### Features
+
+* **start-service:** surface container log tail when a replica exits ([#83](https://github.com/go-to-k/cdk-local/issues/83)) ([22f95cf](https://github.com/go-to-k/cdk-local/commit/22f95cf5a7539035d6c27e901e345488182c8808))
+
 # [0.18.0](https://github.com/go-to-k/cdk-local/compare/v0.17.0...v0.18.0) (2026-05-28)
 
 
