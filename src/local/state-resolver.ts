@@ -176,6 +176,19 @@ export interface CrossStackResolver {
 export interface SubstitutionContext {
   /** State-recorded resources for `Ref` / `Fn::GetAtt` / `${LogicalId}` lookups. */
   resources: Record<string, ResourceState>;
+  /**
+   * Resolved CloudFormation template `Parameters`, keyed by parameter
+   * logical ID. Consulted by `Ref` (and `${LogicalId}` inside `Fn::Sub`)
+   * when the logical ID is not a resource — covers
+   * `AWS::SSM::Parameter::Value<String>` parameters (what CDK synthesizes
+   * for `ssm.StringParameter.valueForStringParameter(...)`), which are
+   * CloudFormation PARAMETERS, not resources, so they never appear in
+   * `resources` (built from `ListStackResources`). The CLI layer resolves
+   * these values out-of-band via SSM Parameter Store (see
+   * `ssm-parameter-resolver.ts`) and threads the map in here. Optional;
+   * absent when no SSM-backed parameter was resolved.
+   */
+  parameters?: Record<string, string>;
   /** Optional pseudo-parameter bag for AWS::* placeholders. */
   pseudoParameters?: PseudoParameters;
   /**
@@ -301,13 +314,26 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
     return resolvePseudoParameter(arg, context.pseudoParameters);
   }
   const resource = context.resources[arg];
-  if (!resource) {
-    return {
-      kind: 'unresolved',
-      reason: `Ref '${arg}': no record in the state source (was the resource deployed?)`,
-    };
+  if (resource) {
+    return { kind: 'literal', value: resource.physicalId };
   }
-  return { kind: 'literal', value: resource.physicalId };
+  // Not a resource — try the resolved CloudFormation parameters map. This
+  // covers `AWS::SSM::Parameter::Value<String>` parameters (CDK's
+  // `ssm.StringParameter.valueForStringParameter(...)` shape), which are
+  // CloudFormation PARAMETERS, not resources, and so never appear in
+  // `resources` (built from `ListStackResources`). The CLI resolves their
+  // values via SSM and feeds them in on `context.parameters`.
+  const parameterValue = context.parameters?.[arg];
+  if (parameterValue !== undefined) {
+    return { kind: 'literal', value: parameterValue };
+  }
+  return {
+    kind: 'unresolved',
+    reason:
+      `Ref '${arg}': no record in the state source ` +
+      `(was the resource deployed, or is it a CloudFormation parameter that could not be resolved — ` +
+      `e.g. an SSM-backed AWS::SSM::Parameter::Value parameter whose SSM value was not readable?)`,
+  };
 }
 
 function resolvePseudoParameter(

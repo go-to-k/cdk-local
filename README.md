@@ -126,6 +126,8 @@ Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), pass
 
 For Lambda (`invoke`, `start-api`), this also recovers env-var values that CloudFormation resolved at deploy time but `ListStackResources` does not expose — e.g. `SIBLING_ARN: Fn::GetAtt <OtherFunction>.Arn`. cdk-local reads the deployed function's own resolved `Environment.Variables` (via `lambda:GetFunctionConfiguration`) and fills those keys, so a Lambda that calls a sibling Lambda by ARN runs locally without a manual `--env-vars` entry. (These values enter the local container env in plaintext; Lambda env vars are a non-secret property, so this exposes nothing the deployed function doesn't already surface to any caller with `lambda:GetFunctionConfiguration`.)
 
+`--from-cfn-stack` also resolves env vars that reference an SSM-backed CloudFormation parameter — the `AWS::SSM::Parameter::Value<String>` (and `List<String>`) type CDK synthesizes for `ssm.StringParameter.valueForStringParameter(...)`. cdk-local reads the parameter's current value from SSM Parameter Store (via `ssm:GetParameters`, using the same credentials/region as the stack lookup) and injects it, so a Lambda or ECS container whose env `Ref`s such a parameter runs locally without a manual `--env-vars` entry. If the SSM read fails (no permission, parameter not created), the key falls back to the usual warn-and-drop.
+
 #### HTTP APIs & Function URLs — `start-api` (the headline use case)
 
 A local API talking to real AWS — point a frontend at it for end-to-end debugging, including real Cognito JWT verification.

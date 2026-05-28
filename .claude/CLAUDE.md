@@ -67,7 +67,9 @@ Gateway).
   sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
   (`cdkl list` target enumeration), target-picker (`-i/--interactive`
   arrow-key target selection via `@clack/prompts`), embed-config
-  (embed-time branding overrides for host CLIs), etc.
+  (embed-time branding overrides for host CLIs), ssm-parameter-resolver
+  (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
+  `--from-cfn-stack`), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

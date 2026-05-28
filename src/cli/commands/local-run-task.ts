@@ -257,6 +257,9 @@ async function localRunTaskCommand(
           ...(imageContext?.pseudoParameters && {
             pseudoParameters: imageContext.pseudoParameters,
           }),
+          ...(imageContext?.stateParameters && {
+            parameters: imageContext.stateParameters,
+          }),
           consumerRegion,
           crossStackResolver: resolver,
         };
@@ -453,7 +456,7 @@ async function assumeTaskRole(
  * Returns `undefined` when no container's `Image` field needs
  * substitution — the resolver behaves as before in that case.
  */
-async function buildEcsImageResolutionContext(
+export async function buildEcsImageResolutionContext(
   candidate: StackInfo | undefined,
   stateProvider: LocalStateProvider | undefined,
   options: LocalRunTaskOptions
@@ -510,6 +513,16 @@ async function buildEcsImageResolutionContext(
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
+    }
+    // Resolve SSM-backed template parameters
+    // (`AWS::SSM::Parameter::Value<String>`) so a `Ref` to such a
+    // parameter in a container Environment / Secrets entry resolves to
+    // its SSM value instead of being warn-and-dropped (issue #94). Only
+    // the CFn provider implements this; gated on env/secret substitution
+    // being needed so image-only resolutions skip the SSM round-trip.
+    if (needs.needsEnvOrSecretSubstitution && stateProvider.resolveTemplateSsmParameters) {
+      const ssmParameters = await stateProvider.resolveTemplateSsmParameters(candidate.template);
+      if (Object.keys(ssmParameters).length > 0) ctx.stateParameters = ssmParameters;
     }
   } else if (!stateProvider && needs.needsStateResources) {
     logger.warn(

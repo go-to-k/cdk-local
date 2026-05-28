@@ -966,6 +966,9 @@ function buildSubstitutionContextFromImageContext(
   if (context.pseudoParameters) {
     subContext.pseudoParameters = { ...context.pseudoParameters };
   }
+  if (context.stateParameters) {
+    subContext.parameters = { ...context.stateParameters };
+  }
   return subContext;
 }
 

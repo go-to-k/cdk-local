@@ -351,6 +351,18 @@ async function localInvokeCommand(
             const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
             if (pseudo) subContext.pseudoParameters = pseudo;
           }
+          // Resolve SSM-backed template parameters
+          // (`AWS::SSM::Parameter::Value<String>`) so a `Ref` to such a
+          // parameter in an env var resolves to its SSM value instead of
+          // being warn-and-dropped (issue #94). Only the CFn provider
+          // implements this; the resolved map feeds the substitution
+          // context's `parameters` field consulted by `resolveRef`.
+          if (envHasIntrinsicValue(templateEnv) && stateProvider.resolveTemplateSsmParameters) {
+            const ssmParams = await stateProvider.resolveTemplateSsmParameters(
+              lambda.stack.template
+            );
+            if (Object.keys(ssmParams).length > 0) subContext.parameters = ssmParams;
+          }
           if (envHasCrossStackIntrinsic(templateEnv)) {
             const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
             if (resolver) {
