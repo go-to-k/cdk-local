@@ -650,6 +650,13 @@ each other via a `docker --add-host` DNS overlay.
 > container IP / network alias on the shared docker network; to hit a
 > specific replica from the host, `docker exec` into it or read its IP
 > from `docker inspect`.
+>
+> **macOS privileged ports.** On macOS, a container port below 1024 is
+> published on a non-privileged host port (`hostPort + 8000`, e.g.
+> `80 → 8080`, `443 → 8443`) so the run never triggers Docker Desktop's
+> privileged-port admin-password prompt (`com.docker.vmnetd`). The
+> container port is unchanged; a log line names the actual host port to
+> `curl`. On Linux the host port is left as-is.
 
 ### Target resolution
 
