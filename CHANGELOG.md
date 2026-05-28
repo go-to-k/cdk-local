@@ -1,3 +1,10 @@
+# [0.28.0](https://github.com/go-to-k/cdk-local/compare/v0.27.0...v0.28.0) (2026-05-28)
+
+
+### Features
+
+* **from-cfn-stack:** resolve AWS::SSM::Parameter::Value parameters from SSM ([#101](https://github.com/go-to-k/cdk-local/issues/101)) ([221bf4f](https://github.com/go-to-k/cdk-local/commit/221bf4fe882f5ffd09427ab4bf46c227e4c1248e))
+
 # [0.27.0](https://github.com/go-to-k/cdk-local/compare/v0.26.0...v0.27.0) (2026-05-28)
 
 
