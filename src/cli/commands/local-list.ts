@@ -167,8 +167,8 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
         'Lambda functions (invoke), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket surfaces ' +
         '(start-api), ECS services (start-service), and ECS task definitions (run-task). Each target is ' +
         'shown by its CDK display path; pass -l to also print the stack-qualified logical ID. Tip: you ' +
-        'usually do not need to copy these — just run the command (e.g. `invoke`) and pick from the list, ' +
-        'or pass -i.'
+        'usually do not need to copy these — just run the command (e.g. `invoke`) with no target in a ' +
+        'terminal and pick from the list.'
     )
     .addOption(
       new Option(

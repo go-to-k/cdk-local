@@ -49,6 +49,12 @@ SERVER_PID=""
 # both.
 STRICT_LOG_FILE="$(mktemp)"
 STRICT_SERVER_PID=""
+# A third server is started last to exercise the variadic subset form
+# (`cdkl start-api <id1> <id2> <bogus-typo>` — serve exactly those APIs,
+# each on its own port, ignore the typo with a one-shot warn). Tracked
+# separately so cleanup tears down all three.
+SUBSET_LOG_FILE="$(mktemp)"
+SUBSET_SERVER_PID=""
 
 term_server() {
   # $1 = pid, $2 = human label
@@ -70,6 +76,7 @@ term_server() {
 cleanup() {
   term_server "${SERVER_PID:-}" "server"
   term_server "${STRICT_SERVER_PID:-}" "strict server"
+  term_server "${SUBSET_SERVER_PID:-}" "subset server"
   # Defense-in-depth: kill every cdkl-* container regardless of
   # how the server cleaned up. This catches the case where the server
   # crashed before its dispose() ran.
@@ -78,7 +85,7 @@ cleanup() {
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
-  rm -f "${LOG_FILE}" "${STRICT_LOG_FILE}"
+  rm -f "${LOG_FILE}" "${STRICT_LOG_FILE}" "${SUBSET_LOG_FILE}"
 }
 trap cleanup EXIT INT TERM
 
@@ -716,6 +723,83 @@ if [[ "${STRICT_OAC_BODY}" != *'"functionUrl":true'* ]]; then
   exit 1
 fi
 echo "    [--strict-sigv4 OAC AWS_IAM foreign-sig -> pass-through] OK"
+
+# Variadic subset form (issue #55): `cdkl start-api <id1> <id2> <bogus>`
+# serves EXACTLY the named APIs (each on its own port) instead of all 7,
+# and a single typo'd identifier is IGNORED with a one-shot warn rather
+# than aborting the run. We tear down the two prior servers first so their
+# ports + containers are released before the subset server boots on a
+# fresh port base (PORT+200). The two real identifiers are derived from
+# the fixture's construct ids (single-stack app `CdkLocalStartApiFixture`,
+# so the `<StackName>/<construct>` Construct-path form matches `cdkl list`
+# output exactly): the HTTP API v2 (`MyHttpApi`) and the REST API v1
+# (`MyRestApi`). The third is an obviously-bogus identifier that matches
+# nothing.
+echo "==> Tearing down the default + strict servers before the subset run"
+term_server "${SERVER_PID:-}" "server"
+SERVER_PID=""
+term_server "${STRICT_SERVER_PID:-}" "strict server"
+STRICT_SERVER_PID=""
+
+SUBSET_PORT=$((PORT + 200))
+SUBSET_HTTP_ID="CdkLocalStartApiFixture/MyHttpApi"
+SUBSET_REST_ID="CdkLocalStartApiFixture/MyRestApi"
+SUBSET_BOGUS_ID="CdkLocalStartApiFixture/NoSuchApi"
+echo "==> Starting cdkl start-api SUBSET (${SUBSET_HTTP_ID}, ${SUBSET_REST_ID}, ${SUBSET_BOGUS_ID}) on port ${SUBSET_PORT}"
+${CDKL} start-api \
+  "${SUBSET_HTTP_ID}" \
+  "${SUBSET_REST_ID}" \
+  "${SUBSET_BOGUS_ID}" \
+  --port "${SUBSET_PORT}" \
+  --container-host "${CONTAINER_HOST}" \
+  --no-pull \
+  >"${SUBSET_LOG_FILE}" 2>&1 &
+SUBSET_SERVER_PID=$!
+
+# Exactly 2 servers should bind (the HTTP API + the REST API). We wait
+# for >= 2, then assert the count is EXACTLY 2 (the bogus id contributes
+# none). A short settle pass after the 2nd line catches a regression where
+# the union accidentally served a third surface.
+echo "==> Waiting for the subset servers (2 expected) to come up"
+SUBSET_READY=0
+for i in $(seq 1 60); do
+  subcount=$(grep -c "Server listening" "${SUBSET_LOG_FILE}" 2>/dev/null) || subcount=0
+  if [[ "${subcount}" -ge 2 ]]; then SUBSET_READY=1; break; fi
+  sleep 0.5
+done
+if [[ "${SUBSET_READY}" -eq 0 ]]; then
+  echo "FAIL: subset server: only ${subcount}/2 servers came up. Log:"
+  cat "${SUBSET_LOG_FILE}"
+  exit 1
+fi
+# Settle: give any erroneous extra server a moment to also bind, then
+# assert the count is EXACTLY 2 (subset served, typo ignored, no extras).
+sleep 1
+SUBSET_COUNT=$(grep -c "Server listening" "${SUBSET_LOG_FILE}" 2>/dev/null) || SUBSET_COUNT=0
+if [[ "${SUBSET_COUNT}" -ne 2 ]]; then
+  echo "FAIL: subset run expected EXACTLY 2 servers, got ${SUBSET_COUNT}. Log:"
+  cat "${SUBSET_LOG_FILE}"
+  exit 1
+fi
+echo "    [subset: exactly 2 servers bound] OK"
+
+# The bogus identifier must surface the one-shot "did not match ... ignored"
+# warn (the run continues serving the two real siblings).
+echo "==> Asserting the bogus identifier is ignored with a warn"
+if ! grep -F "did not match any discovered API; it is ignored" "${SUBSET_LOG_FILE}" >/dev/null; then
+  echo "FAIL: subset run missing the 'did not match ... ignored' warn for the bogus id. Log:"
+  cat "${SUBSET_LOG_FILE}"
+  exit 1
+fi
+if ! grep -F "${SUBSET_BOGUS_ID}" "${SUBSET_LOG_FILE}" >/dev/null; then
+  echo "FAIL: subset run warn did not name the bogus id '${SUBSET_BOGUS_ID}'. Log:"
+  cat "${SUBSET_LOG_FILE}"
+  exit 1
+fi
+echo "    [subset: bogus id ignored with warn] OK"
+
+term_server "${SUBSET_SERVER_PID:-}" "subset server"
+SUBSET_SERVER_PID=""
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

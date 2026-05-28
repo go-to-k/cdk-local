@@ -389,6 +389,14 @@ async function localStartApiCommand(
   // the gate and skip the emission. Per-`localStartApiCommand`-invocation
   // (new server boot starts with a fresh `false`).
   const fromCfnTipEmitted: { value: boolean } = { value: false };
+  // One-shot guard for the per-identifier "did not match; ignored" warning
+  // from the target-subset resolver. `synthesizeAndBuild` re-runs on every
+  // `--watch` hot reload firing, so without this set a typo'd identifier
+  // would re-warn on every file change. Each unmatched id is warned at most
+  // ONCE per `start-api` run; subsequent reloads see the id already in the
+  // set and skip it. Per-`localStartApiCommand`-invocation (new server boot
+  // starts with a fresh empty set).
+  const unmatchedTargetWarned = new Set<string>();
 
   /**
    * One synth + discover + build pass. Returns the next-state
@@ -546,39 +554,29 @@ async function localStartApiCommand(
     // few servers (e.g. to free other ports, or to focus testing on a
     // couple of APIs / Function URLs).
     //
-    // Strict multi-stack rejection for the bare-logical-id form (no `:`,
-    // no `/`): mirrors `cdkl invoke` / `cdkl run-task`'s
-    // resolver behavior. A bare id in a multi-stack app is ambiguous,
-    // because two stacks can legitimately have the same logical id —
-    // pre-PR the filter would silently match both and collide in
-    // `groupRoutesByServer`'s serverKey (now disambiguated via PR 8d).
-    // We reject upfront with the same disambiguation hint invoke uses.
+    // The pure resolver enforces strict multi-stack bare-id rejection +
+    // empty-union rejection (both THROW) and returns the surviving union
+    // plus the identifiers that matched nothing. Available identifiers are
+    // computed once inside it (not per-id) for the O(N·M) bound.
     if (apiFilters.length > 0) {
-      for (const id of apiFilters) {
-        const isBareId = !id.includes(':') && !id.includes('/');
-        if (isBareId && targetStacks.length > 1) {
-          throw new Error(
-            `Multiple stacks in app, target '${id}' is missing a stack prefix. ` +
-              `Use 'StackName:${id}' or 'StackName/${id}' (Construct path form). ` +
-              `Available stacks: ${targetStacks.map((s) => s.stackName).join(', ')}.`
-          );
-        }
-      }
-      const filtered = filterRoutesByApiIdentifiers(routesWithAuth, apiFilters);
-      if (filtered.length === 0) {
-        const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
-        throw new Error(
-          `Target(s) [${apiFilters.join(', ')}] did not match any discovered API. Available identifiers: ${available}.`
-        );
-      }
+      const { filtered, unmatched } = resolveApiTargetSubset(
+        routesWithAuth,
+        apiFilters,
+        targetStacks.map((s) => s.stackName)
+      );
       // Surface any individual identifier that matched nothing (the union
       // still has routes from its siblings, so the run continues) — a
       // single typo in a multi-target list otherwise silently serves a
-      // smaller set than the user asked for.
-      for (const id of apiFilters) {
-        if (filterRoutesByApiIdentifiers(routesWithAuth, [id]).length === 0) {
+      // smaller set than the user asked for. Gated one-shot per identifier
+      // (`unmatchedTargetWarned`) so a `--watch` hot reload doesn't re-warn
+      // the same typo on every file change.
+      if (unmatched.length > 0) {
+        const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
+        for (const id of unmatched) {
+          if (unmatchedTargetWarned.has(id)) continue;
+          unmatchedTargetWarned.add(id);
           logger.warn(
-            `Target '${id}' did not match any discovered API; it is ignored. Available identifiers: ${availableApiIdentifiers(routesWithAuth).join(', ') || '(none)'}.`
+            `Target '${id}' did not match any discovered API; it is ignored. Available identifiers: ${available}.`
           );
         }
       }
@@ -1414,6 +1412,86 @@ export function allStacksConflicts(
     conflicts.push(`--from-cfn-stack '${options.fromCfnStack}'`);
   }
   return conflicts;
+}
+
+/**
+ * Result of {@link resolveApiTargetSubset}: the filtered route union plus
+ * the list of identifiers that matched nothing (so the caller can warn
+ * once per typo without re-running the per-id filter).
+ */
+export interface ApiTargetSubset {
+  /** The UNION of routes matching any supplied identifier. Non-empty. */
+  readonly filtered: RouteWithAuth[];
+  /** Identifiers that matched zero routes — order preserved from input. */
+  readonly unmatched: string[];
+}
+
+/**
+ * Resolve the variadic `cdkl start-api <target...>` subset against the
+ * discovered route surface — the pure core of the subset-serving path.
+ *
+ * Behavior:
+ *  - Rejects a BARE logical id (no `:`, no `/`) when the app has more than
+ *    one stack: a bare id is ambiguous because two stacks can carry the
+ *    same logical id (mirrors `cdkl invoke` / `cdkl run-task`'s resolver).
+ *    THROWS with the disambiguation hint.
+ *  - Filters routes to the UNION of the identifiers via
+ *    {@link filterRoutesByApiIdentifiers}. THROWS when the union is empty
+ *    (no identifier matched anything), listing the available identifiers.
+ *  - Returns the surviving union in `filtered` and the identifiers that
+ *    matched nothing in `unmatched`. A single typo among valid ids keeps
+ *    the siblings in `filtered` and surfaces the typo via `unmatched`;
+ *    the caller is responsible for warning (so the warning can be gated
+ *    one-shot across `--watch` reloads — see the call site).
+ *
+ * `availableApiIdentifiers(routes)` is computed ONCE here (not per-id) so
+ * the resolution is O(N·M) rather than O(N²·M).
+ *
+ * @internal exported for unit tests + library consumers (re-exported from
+ * the package entry).
+ */
+export function resolveApiTargetSubset(
+  routes: readonly RouteWithAuth[],
+  identifiers: readonly string[],
+  stackNames: readonly string[]
+): ApiTargetSubset {
+  // Strict multi-stack rejection for the bare-logical-id form (no `:`,
+  // no `/`). A bare id in a multi-stack app is ambiguous, because two
+  // stacks can legitimately have the same logical id — pre-PR the filter
+  // would silently match both and collide in `groupRoutesByServer`'s
+  // serverKey. We reject upfront with the same disambiguation hint
+  // `cdkl invoke` uses.
+  if (stackNames.length > 1) {
+    for (const id of identifiers) {
+      const isBareId = !id.includes(':') && !id.includes('/');
+      if (isBareId) {
+        throw new Error(
+          `Multiple stacks in app, target '${id}' is missing a stack prefix. ` +
+            `Use 'StackName:${id}' or 'StackName/${id}' (Construct path form). ` +
+            `Available stacks: ${stackNames.join(', ')}.`
+        );
+      }
+    }
+  }
+
+  const filtered = filterRoutesByApiIdentifiers(routes, identifiers);
+  if (filtered.length === 0) {
+    const available = availableApiIdentifiers(routes).join(', ') || '(none)';
+    throw new Error(
+      `Target(s) [${identifiers.join(', ')}] did not match any discovered API. Available identifiers: ${available}.`
+    );
+  }
+
+  // Surface any individual identifier that matched nothing (the union
+  // still has routes from its siblings, so the run continues) — a single
+  // typo in a multi-target list otherwise silently serves a smaller set
+  // than the user asked for. `availableApiIdentifiers(routes)` is hoisted
+  // out of this loop (computed once below) for the caller's warning.
+  const unmatched = identifiers.filter(
+    (id) => filterRoutesByApiIdentifiers(routes, [id]).length === 0
+  );
+
+  return { filtered, unmatched };
 }
 
 /**
