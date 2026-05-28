@@ -30,6 +30,31 @@ describe('formatTargetListing', () => {
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
   });
 
+  it('appends the API surface kind to each API line', () => {
+    const listing: TargetListing = {
+      ...empty,
+      apis: [
+        {
+          logicalId: 'HttpApi',
+          stackName: 'App',
+          qualifiedId: 'App:HttpApi',
+          displayPath: 'App/HttpApi',
+          kind: 'HTTP API v2',
+        },
+        {
+          logicalId: 'UrlFn',
+          stackName: 'App',
+          qualifiedId: 'App:UrlFn',
+          displayPath: 'App/UrlFn',
+          kind: 'Function URL',
+        },
+      ],
+    };
+    const out = formatTargetListing(listing, 'cdkl');
+    expect(out).toContain('  App/HttpApi  (HTTP API v2)');
+    expect(out).toContain('  App/UrlFn  (Function URL)');
+  });
+
   it('lists one target per line by display path, without the logical ID by default', () => {
     const listing: TargetListing = { ...empty, lambdas: [entry('App/Handler', 'App:Handler')] };
     const out = formatTargetListing(listing, 'cdkl');

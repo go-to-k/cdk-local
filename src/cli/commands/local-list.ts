@@ -148,7 +148,10 @@ function formatSection(
   const lines = [`${title}  ->  ${command}`];
   for (const entry of entries) {
     const primary = entry.displayPath ?? entry.qualifiedId;
-    lines.push(`  ${primary}`);
+    // Append the API surface kind (REST API v1 / HTTP API v2 / Function URL
+    // / WebSocket) so the API group's otherwise-similar paths are
+    // distinguishable; only `apis` entries carry a kind.
+    lines.push(entry.kind ? `  ${primary}  (${entry.kind})` : `  ${primary}`);
     // The qualified ID is only extra info when a display path was shown;
     // when it IS the primary, don't repeat it.
     if (long && entry.displayPath) {

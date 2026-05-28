@@ -86,8 +86,8 @@ cdkl list
 Lambda Functions  ->  cdkl invoke <target>
   MyStack/ItemsHandler
 
-APIs  ->  cdkl start-api [target]
-  MyStack/MyHttpApi
+APIs  ->  cdkl start-api [target...]
+  MyStack/MyHttpApi  (HTTP API v2)
 
 ECS Services  ->  cdkl start-service <target...>
   MyStack/WebService

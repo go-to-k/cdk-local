@@ -22,8 +22,8 @@ import {
 import type { TargetEntry } from '../../../src/local/target-lister.js';
 
 const entries: TargetEntry[] = [
-  { logicalId: 'A', stackName: 'S', qualifiedId: 'S:A', displayPath: 'S/A' },
-  { logicalId: 'B', stackName: 'S', qualifiedId: 'S:B' }, // no display path
+  { logicalId: 'A', stackName: 'S', qualifiedId: 'S:A', displayPath: 'S/A', kind: 'HTTP API v2' },
+  { logicalId: 'B', stackName: 'S', qualifiedId: 'S:B' }, // no display path, no kind
 ];
 
 let origStdin: boolean | undefined;
@@ -60,14 +60,14 @@ describe('isInteractive', () => {
 });
 
 describe('pickOneTarget', () => {
-  it('maps entries to options (display path label, qualified ID hint), appends a key hint, and returns the choice', async () => {
+  it('maps entries to options (display path label, surface-kind hint), appends a key hint, and returns the choice', async () => {
     vi.mocked(select).mockResolvedValue('S/A');
     const result = await pickOneTarget('Pick one', entries);
     expect(result).toBe('S/A');
     expect(select).toHaveBeenCalledWith({
       message: 'Pick one (up/down to move, enter to select)',
       options: [
-        { value: 'S/A', label: 'S/A', hint: 'S:A' },
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
         { value: 'S:B', label: 'S:B' },
       ],
     });
@@ -90,7 +90,7 @@ describe('pickManyTargets', () => {
     expect(multiselect).toHaveBeenCalledWith({
       message: 'Pick many (space to select, enter to confirm)',
       options: [
-        { value: 'S/A', label: 'S/A', hint: 'S:A' },
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
         { value: 'S:B', label: 'S:B' },
       ],
       required: true,
@@ -104,7 +104,7 @@ describe('pickManyTargets', () => {
     expect(multiselect).toHaveBeenCalledWith({
       message: 'Pick many (space to select, enter to confirm)',
       options: [
-        { value: 'S/A', label: 'S/A', hint: 'S:A' },
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
         { value: 'S:B', label: 'S:B' },
       ],
       required: true,

@@ -58,6 +58,10 @@ flag — bare-in-a-TTY is the trigger.)
 `start-api`'s multi-select starts with **every** discovered API
 pre-selected, so a bare Enter serves them all (its long-standing default)
 and deselecting rows serves a subset — each selected API on its own port.
+Each API row is tagged with its surface kind — `REST API v1` /
+`HTTP API v2` / `Function URL` / `WebSocket` — so otherwise-similar
+surfaces are easy to tell apart. (The picker shows the CDK display path,
+not the stack-qualified logical ID — `cdkl list -l` still prints it.)
 
 The picker requires a TTY. In a non-interactive context (CI, pipes,
 redirected stdin/stdout):
@@ -82,10 +86,13 @@ above). Reach for `list` to browse what exists, or to grab the exact
 target string for a script.
 
 Each target is printed by its CDK display path (the recommended,
-readable target form). Pass `-l` / `--long` to additionally print the
-stack-qualified logical ID (`<Stack>:<LogicalId>`) on an indented line
-beneath each path — useful for the SAM-style logical-ID form or for any
-resource without an `aws:cdk:path`.
+readable target form). API targets additionally show their surface kind
+(`HTTP API v2`, `REST API v1`, `Function URL`, `WebSocket`) in
+parentheses, so the API group's otherwise-similar paths are easy to tell
+apart. Pass `-l` / `--long` to additionally print the stack-qualified
+logical ID (`<Stack>:<LogicalId>`) on an indented line beneath each path —
+useful for the SAM-style logical-ID form or for any resource without an
+`aws:cdk:path`.
 
 It needs no Docker. It synthesizes the app — which may perform context
 lookups, and (like every command) honors `--role-arn` / `CDKL_ROLE_ARN`
@@ -103,7 +110,7 @@ Lambda Functions  ->  cdkl invoke <target>
   MyStack/ItemsHandler
 
 APIs  ->  cdkl start-api [target...]
-  MyStack/MyHttpApi
+  MyStack/MyHttpApi  (HTTP API v2)
 
 ECS Services  ->  cdkl start-service <target...>
   MyStack/WebService

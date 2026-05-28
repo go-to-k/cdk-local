@@ -22,7 +22,12 @@ function toOption(entry: TargetEntry): { value: string; label: string; hint?: st
   // stack-qualified logical ID when the resource has no `aws:cdk:path`.
   const value = entry.displayPath ?? entry.qualifiedId;
   const option: { value: string; label: string; hint?: string } = { value, label: value };
-  if (entry.displayPath) option.hint = entry.qualifiedId;
+  // Surface the API surface kind (REST API v1 / HTTP API v2 / Function URL /
+  // WebSocket) as the hint so otherwise-similar start-api targets are
+  // distinguishable. The stack-qualified logical ID is intentionally NOT
+  // shown — this is a CDK tool, so the display path is the natural
+  // identifier; `cdkl list -l` still prints the logical ID when needed.
+  if (entry.kind) option.hint = entry.kind;
   return option;
 }
 
