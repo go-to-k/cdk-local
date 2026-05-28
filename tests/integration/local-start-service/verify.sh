@@ -61,6 +61,19 @@ fi
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
+# Issue #93 regression — simulate a shared network leaked by a previously
+# interrupted `start-service` run. start-service pins the single fixed subnet
+# 169.254.171.0/24, so WITHOUT the startup orphan sweep this leaked network
+# makes the boot below fail with "Pool overlaps". The network carries only its
+# own metadata sidecar (no replica), so the sweep classifies it as orphaned and
+# reclaims it; reaching the boot banner proves sweepOrphanedSvcNetworks() ran.
+echo "==> Injecting a leaked orphan shared network on 169.254.171.0/24"
+ORPHAN_NET="cdkl-svc-orphanleak"
+docker network create --driver bridge --subnet 169.254.171.0/24 "${ORPHAN_NET}" >/dev/null
+docker run -d --rm --name "${ORPHAN_NET}-metadata" --network "${ORPHAN_NET}" \
+  --ip 169.254.171.2 "${SIDECAR_IMAGE}" >/dev/null
+echo "    orphan ${ORPHAN_NET} owns 169.254.171.0/24 (only its metadata sidecar attached)"
+
 echo "==> Booting service (DesiredCount=2)"
 ${CDKL} start-service CdkLocalStartServiceFixture:WebService \
   --no-pull --container-host 127.0.0.1 \
@@ -96,6 +109,16 @@ if [[ "${BOOTED}" -ne 1 ]]; then
   echo "--------------------------"
   exit 1
 fi
+
+echo "==> Asserting issue #93 sweep reclaimed the orphan network"
+# The service reached the boot banner above despite the pre-existing
+# 169.254.171.0/24 network, which already proves the sweep ran. Assert the
+# orphan is actually gone (not merely bypassed) for a precise failure message.
+if docker network inspect "${ORPHAN_NET}" >/dev/null 2>&1; then
+  echo "FAIL: orphan network ${ORPHAN_NET} survived — startup sweep did not reclaim it"
+  exit 1
+fi
+echo "    OK: orphan reclaimed; service booted on the shared subnet"
 
 echo "==> Asserting 2 replicas (4 containers: 2 web + 2 metadata sidecars)"
 # Each replica gets its own docker network + sidecar, plus 1 web container.
