@@ -7,6 +7,7 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
+  interactiveOption,
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
@@ -15,7 +16,9 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { withErrorHandling } from '../../utils/error-handler.js';
+import { InteractiveTtyRequiredError, withErrorHandling } from '../../utils/error-handler.js';
+import { listTargets } from '../../local/target-lister.js';
+import { isInteractive, pickOneTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
@@ -132,6 +135,8 @@ interface LocalStartApiOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  /** `-i/--interactive`: pick one API to serve from a list (opt-in; bare start-api still serves all). */
+  interactive: boolean;
   /** Bind port (default 0 = auto-allocate). */
   port: string;
   /** Bind host (default 127.0.0.1). */
@@ -286,6 +291,33 @@ async function localStartApiCommand(
     apiFilter = options.api;
   }
 
+  // `-i/--interactive` lets the user pick ONE API to serve from a list.
+  // Unlike the required-target commands, a bare `start-api` already has a
+  // useful default (serve every discovered API), so the picker is opt-in
+  // via the flag only — never auto-launched on an omitted target. It is
+  // therefore mutually exclusive with any explicit single-target selector
+  // and with `--all-stacks`. The actual prompt runs once inside
+  // `synthesizeAndBuild` (it needs the synthesized API list); `--watch`
+  // reloads reuse the first pick via `interactivePicked`.
+  if (options.interactive) {
+    if (apiFilter !== undefined || options.allStacks) {
+      throw new Error(
+        '`-i/--interactive` cannot be combined with a positional target, --api, or --all-stacks; ' +
+          'it interactively picks one API to serve. Drop the selector, or drop -i.'
+      );
+    }
+    if (!isInteractive()) {
+      throw new InteractiveTtyRequiredError(
+        '`-i/--interactive` requires an interactive terminal, but stdin/stdout is not a TTY.'
+      );
+    }
+  }
+  // Effective single-target selector — set by the interactive picker on
+  // first synth, otherwise the positional `target`. Drives the synth
+  // stack-prefix inference below.
+  let effectiveTarget = target;
+  const interactivePicked = { value: false };
+
   // Issue #55: `--all-stacks` serves every stack's API as a union, so it
   // cannot be combined with a selector that names ONE target.
   const allStacksConflictList = allStacksConflicts(options, target, apiFilter);
@@ -386,6 +418,23 @@ async function localStartApiCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
+    // Interactive API pick — runs ONCE (the first synth), guarded so
+    // `--watch` reloads reuse the first selection rather than re-prompting.
+    // Sets both `apiFilter` (route filter) and `effectiveTarget` (stack
+    // inference) so the picked API drives the rest of the pass.
+    if (options.interactive && !interactivePicked.value) {
+      const apis = listTargets(stacks).apis;
+      if (apis.length === 0) {
+        throw new Error(
+          `No APIs found in this CDK app to choose from. Run \`${getEmbedConfig().cliName} list\` to see what is available.`
+        );
+      }
+      const picked = await pickOneTarget('Select an API to serve', apis);
+      apiFilter = picked;
+      effectiveTarget = picked;
+      interactivePicked.value = true;
+    }
+
     // When the user passes an explicit `--from-cfn-stack <name>` AND has
     // not also passed `--stack`, infer the synth target from the CFn
     // stack name — typical CDK apps deploy each stack under its own
@@ -401,7 +450,9 @@ async function localStartApiCommand(
     // without a `/` separator (bare logical id) leave this undefined so
     // the existing single-stack auto-pick path is untouched.
     const targetStackPrefix =
-      target?.includes('/') === true ? target.slice(0, target.indexOf('/')) : undefined;
+      effectiveTarget?.includes('/') === true
+        ? effectiveTarget.slice(0, effectiveTarget.indexOf('/'))
+        : undefined;
     const targetStacks = pickTargetStacks(
       stacks,
       options.stack,
@@ -3330,7 +3381,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     )
     .argument(
       '[target]',
-      `Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server. Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
+      `Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server (pass -i to pick one interactively instead). Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
     )
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
@@ -3472,6 +3523,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
     startApi.addOption(opt)
   );
+  startApi.addOption(interactiveOption);
   startApi.addOption(deprecatedRegionOption);
 
   return startApi;

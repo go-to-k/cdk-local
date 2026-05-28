@@ -5,12 +5,15 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
+  interactiveOption,
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling, LocalStartServiceError } from '../../utils/error-handler.js';
+import { listTargets } from '../../local/target-lister.js';
+import { resolveMultiTarget } from '../../local/target-picker.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
@@ -73,6 +76,8 @@ interface LocalStartServiceOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
+  /** `-i/--interactive`: multi-select the services from a list instead of passing <targets...>. */
+  interactive: boolean;
   cluster: string;
   envVars?: string;
   containerHost: string;
@@ -128,33 +133,18 @@ async function localStartServiceCommand(
   // boot, and any future call site share one source of truth.
   const skipPull = options.pull === false;
 
-  if (!targets || targets.length === 0) {
-    throw new LocalStartServiceError(
-      `${getEmbedConfig().cliName} start-service requires at least one <target>. ` +
-        "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend'."
-    );
-  }
-
-  // Issue #606: reject explicit `--from-cfn-stack <name>` when multiple
-  // service targets are booted in one invocation. The explicit name
-  // would apply to every target and silently mismap logical IDs across
-  // siblings that happen to share a `Ref` key. Bare `--from-cfn-stack`
-  // is fine (each target uses its own cdkl stack name as the CFn name).
-  rejectExplicitCfnStackWithMultipleStacks(options, targets.length);
-
-  // Per-target run-state + controller, plus a shared Cloud Map
-  // registry across every service. Building everything upfront and
-  // hoisting cleanup keeps SIGINT correctness in lock-step with the
-  // pre-PR single-service shape.
+  // Per-target run-state + controller, plus a shared Cloud Map registry
+  // across every service. `perTarget` is populated AFTER synth (the
+  // interactive picker needs the synthesized service list), but the type
+  // and the `let` binding live here so the hoisted single-flight cleanup
+  // closure below captures them. It starts empty: if we fail before it is
+  // populated (e.g. a synth error), there is nothing to tear down.
   type PerTarget = {
     target: string;
     runState: ServiceRunState;
     controller?: ServiceController;
   };
-  const perTarget: PerTarget[] = targets.map((t) => ({
-    target: t,
-    runState: createServiceRunState(),
-  }));
+  let perTarget: PerTarget[] = [];
 
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
@@ -256,6 +246,30 @@ async function localStartServiceCommand(
       ...(Object.keys(context).length > 0 && { context }),
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
+
+    const resolvedTargets = await resolveMultiTarget(targets, {
+      interactive: options.interactive,
+      entries: listTargets(stacks).ecsServices,
+      message: 'Select one or more ECS services to run',
+      noun: 'ECS services',
+      onMissing: () =>
+        new LocalStartServiceError(
+          `${getEmbedConfig().cliName} start-service requires at least one <target>. ` +
+            "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend', " +
+            'or run it in a TTY (or with -i) to pick interactively.'
+        ),
+    });
+
+    // Issue #606: reject explicit `--from-cfn-stack <name>` when multiple
+    // service targets are booted in one invocation. The explicit name
+    // would apply to every target and silently mismap logical IDs across
+    // siblings that happen to share a `Ref` key. Bare `--from-cfn-stack`
+    // is fine (each target uses its own cdkl stack name as the CFn name).
+    rejectExplicitCfnStackWithMultipleStacks(options, resolvedTargets.length);
+    perTarget = resolvedTargets.map((t) => ({
+      target: t,
+      runState: createServiceRunState(),
+    }));
 
     // Build the shared Cloud Map index once across every stack the
     // synth produced. Per-stack lookups in the runner then pick the
@@ -784,11 +798,12 @@ export function createLocalStartServiceCommand(
         'or stack-qualified logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the ' +
         'stack prefix. When two or more <target>s are supplied, every service is booted into a ' +
         'shared Cloud Map / Service Connect registry so peer services discover each other via ' +
-        'docker --add-host overlay.'
+        'docker --add-host overlay. Omit <targets> in an interactive terminal (or pass -i) to ' +
+        'multi-select the services from a list.'
     )
     .argument(
-      '<targets...>',
-      'One or more CDK display paths or stack-qualified logical IDs of the AWS::ECS::Service resources to run'
+      '[targets...]',
+      'One or more CDK display paths or stack-qualified logical IDs of the AWS::ECS::Service resources to run (omit to multi-select interactively in a TTY)'
     )
     .addOption(
       new Option(
@@ -884,6 +899,7 @@ export function createLocalStartServiceCommand(
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(interactiveOption);
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

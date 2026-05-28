@@ -65,8 +65,9 @@ Gateway).
   cloud-map-registry, lambda-resolver, ecs-task-resolver,
   route-discovery, authorizer-resolver, lambda-authorizer, cognito-jwt,
   sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
-  (`cdkl list` target enumeration), embed-config (embed-time branding
-  overrides for host CLIs), etc.
+  (`cdkl list` target enumeration), target-picker (`-i/--interactive`
+  arrow-key target selection via `@clack/prompts`), embed-config
+  (embed-time branding overrides for host CLIs), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

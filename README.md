@@ -78,6 +78,19 @@ ECS Task Definitions  (cdkl run-task <target>)
   MyStack/WebTask         MyStack:WebTask
 ```
 
+#### Pick targets interactively — `-i` / omit the target
+
+Don't want to copy a path at all? In an interactive terminal, just omit the target and `invoke` / `run-task` / `start-service` drop you into an arrow-key picker (multi-select for `start-service`). Or pass `-i` / `--interactive` explicitly on any of the four commands:
+
+```bash
+cdkl invoke              # pick the Lambda from a list
+cdkl run-task            # pick the task definition
+cdkl start-service       # multi-select one or more services
+cdkl start-api -i        # pick one API to serve (a bare `start-api` still serves them all)
+```
+
+Outside a TTY (CI, pipes) the picker can't run: the required-target commands fall back to their usual "target required" error, and `-i` errors with a clear message — pass the target explicitly there.
+
 #### Lambda — `invoke`
 
 Invoke a single Lambda function with an event payload.
