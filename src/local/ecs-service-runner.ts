@@ -797,7 +797,16 @@ async function watchReplica(
       `Replica ${instance.index} essential container exited with code ${exitCode} ` +
         `(restartCount=${instance.restartCount}).`
     );
-    if (!shouldRestart(exitCode, options.restartPolicy)) {
+    // Surface the container's log tail so the user sees WHY it exited
+    // (run-task streams logs in the foreground, but detached service
+    // replicas otherwise leave the exit unexplained). Dump on the first
+    // failure and on the terminal degraded exit, but NOT on every
+    // restart cycle of a crash loop.
+    const willRestart = shouldRestart(exitCode, options.restartPolicy);
+    if (!willRestart || instance.restartCount === 0) {
+      await printExitedContainerLogs(instance.index, essentialId, logger);
+    }
+    if (!willRestart) {
       logger.warn(
         `Replica ${instance.index} not restarting (policy=${options.restartPolicy}, ` +
           `exit=${exitCode}). Service running in degraded mode.`
@@ -932,6 +941,60 @@ export function __setWaitForExitImpl(
     return;
   }
   waitForExitImpl = impl;
+}
+
+/** How many trailing lines of a crashed container's logs to surface. */
+const EXIT_LOG_TAIL_LINES = 50;
+
+/**
+ * Production `docker logs --tail <N> <id>` reader. Captures BOTH streams
+ * (apps log to stdout and stderr) so the surfaced tail shows whatever the
+ * container printed before exiting.
+ */
+const defaultReadContainerLogsImpl = async (containerId: string): Promise<string> => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { getDockerCmd } = await import('../utils/docker-cmd.js');
+  const execFileAsync = promisify(execFile);
+  const { stdout, stderr } = await execFileAsync(
+    getDockerCmd(),
+    ['logs', '--tail', String(EXIT_LOG_TAIL_LINES), containerId],
+    { maxBuffer: 4 * 1024 * 1024 }
+  );
+  return [stdout, stderr].filter((s) => s.length > 0).join('\n');
+};
+
+/**
+ * Surface the tail of a just-exited essential container's logs so the
+ * user sees WHY it stopped (e.g. an app's startup DB-connection error)
+ * without manually running `docker logs`. Best-effort: a read failure or
+ * empty output is swallowed (debug-logged) rather than masking the
+ * primary exit message.
+ *
+ * `read` is injectable so the unit test can assert the formatting without
+ * a real container; production callers use the default `docker logs`
+ * reader.
+ */
+export async function printExitedContainerLogs(
+  replicaIndex: number,
+  containerId: string,
+  logger: { warn: (m: string) => void; debug: (m: string) => void },
+  read: (id: string) => Promise<string> = defaultReadContainerLogsImpl
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await read(containerId);
+  } catch (err) {
+    logger.debug(
+      `Replica ${replicaIndex}: could not read container logs: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const tail = raw.trimEnd();
+  if (tail.length === 0) return;
+  logger.warn(
+    `Replica ${replicaIndex} essential container logs (last ${EXIT_LOG_TAIL_LINES} lines):\n${tail}`
+  );
 }
 
 const defaultSleepImpl = (ms: number): Promise<void> =>
