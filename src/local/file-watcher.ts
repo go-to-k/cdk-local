@@ -5,27 +5,24 @@ import { getLogger } from '../utils/logger.js';
  * Debounced file watcher used by `cdkl start-api --watch`
  * (PR 8c, issue #235).
  *
- * Wraps {@link chokidar.watch} with a 500ms debounce window so a single
- * `cdk synth` (which rewrites every file under `cdk.out/` over the
- * course of a few hundred ms) collapses to one `'reload'` event.
+ * Wraps {@link chokidar.watch} with a 500ms debounce window so a burst
+ * of file writes (e.g. an editor save plus its sidecar files, or a
+ * `tsc` emit) collapses to one `'reload'` event.
  *
- * The watch list is dynamic — at server boot we pass in `cdk.out/`
- * plus every routed Lambda's asset directory; on hot reload we
- * `update(...)` to add/remove paths in place rather than tearing the
- * watcher down + rebuilding (which would lose chokidar's internal
- * inode-stat cache and re-fire `'add'` events for every existing
- * file).
+ * `--watch` watches the CDK app's source tree (the directory holding
+ * `cdk.json`), so editing handler / construct source re-synths and
+ * hot-reloads. The synth output directory (`cdk.out/`) is excluded via
+ * {@link FileWatcherOptions.ignored} so the reload's own re-synth writes
+ * never re-trigger the watcher (no self-fire loop).
  *
  * Emits a single `'reload'` callback per debounce window. Does NOT
  * pass the changed file path — the orchestrator re-runs the full
- * synth → discover → diff sequence regardless of which file changed,
+ * synth -> discover -> diff sequence regardless of which file changed,
  * because `cdk synth` rewrites template + asset paths atomically and
  * the orchestrator can't reason about partial updates.
  */
 
 export interface FileWatcher {
-  /** Replace the watched-paths list. Accepts both add + remove. */
-  update(paths: readonly string[]): void;
   /** Stop watching everything. */
   close(): Promise<void>;
 }
@@ -40,10 +37,30 @@ export interface FileWatcherOptions {
   /**
    * Pass `true` to suppress the initial `'add'` event chokidar
    * normally fires for every existing file when the watcher starts up
-   * — without this, the first `cdk synth` watcher boot would fire
-   * `'reload'` immediately. Default `true`.
+   * — without this, watching the app source tree would fire `'reload'`
+   * immediately for every existing source file. Default `true`.
    */
   ignoreInitial?: boolean;
+  /**
+   * Predicate forwarded to chokidar's `ignored` option. Returning
+   * `true` prunes the path (and, for a directory, its whole subtree)
+   * from the watch. Used to exclude the synth output directory,
+   * `node_modules`, `.git`, and `cdk.json` `watch.exclude` globs when
+   * watching the app source tree. Decides on the path alone so it is
+   * safe on chokidar's pre-stat probe call (which omits `stats`).
+   */
+  ignored?: (path: string) => boolean;
+  /**
+   * Per-path gate checked on each raw chokidar event BEFORE the
+   * debounce timer is (re)armed. Returning `false` drops the event so
+   * it does not trigger a reload — used to honor `cdk.json`
+   * `watch.include` (only matching source files trigger a reload).
+   * Unlike {@link FileWatcherOptions.ignored} this never affects
+   * chokidar's directory traversal, so include filtering can't prune a
+   * directory the watcher must descend into. Default: every event
+   * fires.
+   */
+  shouldTrigger?: (path: string) => boolean;
 }
 
 const DEFAULT_DEBOUNCE_MS = 500;
@@ -71,6 +88,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
     followSymlinks: false,
     // Don't crash on permission errors.
     ignorePermissionErrors: true,
+    ...(options.ignored && { ignored: options.ignored }),
   });
 
   let timer: NodeJS.Timeout | null = null;
@@ -98,15 +116,23 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
     timer.unref?.();
   };
 
+  // Apply the optional include gate before arming the debounce. A
+  // dropped event leaves any already-armed timer in place — a prior
+  // qualifying event still reloads.
+  const onEvent = (path: string): void => {
+    if (options.shouldTrigger && !options.shouldTrigger(path)) return;
+    fire();
+  };
+
   // Subscribe to every file-changing event chokidar emits. We
   // intentionally don't subscribe to `'addDir'` / `'unlinkDir'` because
   // those fire for every nested directory chokidar discovers at
   // start-up; the surrounding `'add'` / `'unlink'` events are enough
   // for our purposes (a directory rename that doesn't change any file
   // contents shouldn't trigger a hot reload).
-  watcher.on('add', fire);
-  watcher.on('change', fire);
-  watcher.on('unlink', fire);
+  watcher.on('add', onEvent);
+  watcher.on('change', onEvent);
+  watcher.on('unlink', onEvent);
 
   watcher.on('error', (err) => {
     logger.debug(
@@ -114,20 +140,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
     );
   });
 
-  let currentPaths = new Set(options.paths);
-
   return {
-    update: (paths: readonly string[]): void => {
-      if (closed) return;
-      const next = new Set(paths);
-      const toAdd: string[] = [];
-      const toRemove: string[] = [];
-      for (const p of next) if (!currentPaths.has(p)) toAdd.push(p);
-      for (const p of currentPaths) if (!next.has(p)) toRemove.push(p);
-      if (toAdd.length > 0) watcher.add(toAdd);
-      if (toRemove.length > 0) watcher.unwatch(toRemove);
-      currentPaths = next;
-    },
     close: async (): Promise<void> => {
       closed = true;
       if (timer) {

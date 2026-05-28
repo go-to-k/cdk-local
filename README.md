@@ -144,18 +144,19 @@ Use this for production debugging, integration verification with real AWS resour
 
 ## `--watch` (hot reload)
 
-Pass `--watch` to `cdkl start-api` and the server hot-reloads when your CDK app's synth output (or any routed Lambda's asset directory) changes:
+Pass `--watch` to `cdkl start-api` and the server re-synths and hot-reloads when your CDK app's **source** changes — edit a handler or construct, save, and the change is live:
 
 ```bash
 cdkl start-api MyStack/MyApi --watch
 ```
 
-- 500 ms debounced [chokidar](https://github.com/paulmillr/chokidar) file watcher on `cdk.out/` + every routed Lambda's asset dir.
-- Re-synths and re-discovers routes on each firing — adding a new route to your CDK app shows up locally on save.
+- 500 ms debounced [chokidar](https://github.com/paulmillr/chokidar) file watcher on your CDK app's source tree (the directory holding `cdk.json`). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, exactly like `cdk watch`.
+- `cdk.out/`, `node_modules`, and `.git` are always excluded — the reload's own re-synth writes to `cdk.out/` never re-trigger the watcher, so there is no reload loop.
+- Re-synths and re-discovers routes on each firing — adding a new route to your CDK app shows up locally on save. No separate `cdk watch` / `cdk synth` process is needed.
 - Synth failures keep the previous version serving (warn-and-continue, never crashes the server).
-- Compatible with `--from-cfn-stack`: each reload re-reads the deployed CloudFormation stack so a deploy event picks up new ARNs without restarting the server.
+- Compatible with `--from-cfn-stack`: each reload re-reads the deployed CloudFormation stack so newly-deployed ARNs are picked up on your next source save without restarting the server.
 
-See [docs/local-emulation.md](docs/local-emulation.md#hot-reload---watch) for the full lifecycle, file-list update semantics, and known limitations.
+See [docs/local-emulation.md](docs/local-emulation.md#hot-reload---watch) for the full lifecycle, `watch.include` / `watch.exclude` semantics, and known limitations.
 
 ## Override env vars without a state source
 

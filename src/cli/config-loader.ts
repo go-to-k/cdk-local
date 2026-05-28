@@ -3,7 +3,12 @@ import { resolve } from 'node:path';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 
-function loadCdkJson(): { app?: string } | null {
+interface CdkJson {
+  app?: string;
+  watch?: { include?: string | string[]; exclude?: string | string[] };
+}
+
+function loadCdkJson(): CdkJson | null {
   const filePath = resolve(process.cwd(), 'cdk.json');
   if (!existsSync(filePath)) {
     return null;
@@ -11,13 +16,20 @@ function loadCdkJson(): { app?: string } | null {
 
   try {
     const content = readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as { app?: string };
+    return JSON.parse(content) as CdkJson;
   } catch (error) {
     getLogger().warn(
       `Failed to parse ${filePath}: ${error instanceof Error ? error.message : String(error)}`
     );
     return null;
   }
+}
+
+function normalizeGlobList(value: string | string[] | undefined): string[] | undefined {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value))
+    return value.filter((entry): entry is string => typeof entry === 'string');
+  return undefined;
 }
 
 /**
@@ -38,4 +50,32 @@ export function resolveApp(cliApp?: string): string | undefined {
   if (envApp) return envApp;
 
   return loadCdkJson()?.app ?? undefined;
+}
+
+/** Resolved `cdk.json` `watch` block (include / exclude glob lists). */
+export interface CdkWatchConfig {
+  /** Globs of source paths whose changes trigger a `--watch` reload. */
+  include: string[];
+  /** Globs of source paths that never trigger a reload. */
+  exclude: string[];
+}
+
+/**
+ * Resolve the `cdk.json` `watch` block, mirroring `cdk watch`'s
+ * include / exclude semantics for `cdkl start-api --watch` source-tree
+ * watching.
+ *
+ * Defaults when the keys are absent: `include` -> `['**']` (watch the
+ * whole app directory), `exclude` -> `[]`. Unlike `cdk watch`, a missing
+ * `watch` block is NOT an error — `--watch` still works against the
+ * defaults. The caller layers in mandatory excludes (the synth output
+ * directory, `node_modules`, `.git`) so re-synth writes never re-trigger
+ * a reload and large noise directories are pruned.
+ */
+export function resolveWatchConfig(): CdkWatchConfig {
+  const watch = loadCdkJson()?.watch;
+  return {
+    include: normalizeGlobList(watch?.include) ?? ['**'],
+    exclude: normalizeGlobList(watch?.exclude) ?? [],
+  };
 }
