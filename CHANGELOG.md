@@ -1,3 +1,10 @@
+## [0.28.1](https://github.com/go-to-k/cdk-local/compare/v0.28.0...v0.28.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **synthesis:** read --app cloud assembly directory instead of exec'ing it ([#104](https://github.com/go-to-k/cdk-local/issues/104)) ([e4ea5a4](https://github.com/go-to-k/cdk-local/commit/e4ea5a46410a7155990c52cd0b555d3efd6e3eb5))
+
 # [0.28.0](https://github.com/go-to-k/cdk-local/compare/v0.27.0...v0.28.0) (2026-05-28)
 
 
