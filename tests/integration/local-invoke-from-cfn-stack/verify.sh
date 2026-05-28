@@ -112,6 +112,31 @@ if [ -z "${DEPLOYED_TABLE}" ] || [ "${DEPLOYED_TABLE}" = "None" ]; then
   exit 1
 fi
 
+echo "[verify] step 4b: read the deployed sibling Lambda ARN (for the GetAtt fallback assertion)"
+# SIBLING_ARN is a Fn::GetAtt .Arn env var that ListStackResources cannot
+# resolve; the deployed-env fallback recovers it from the echo function's
+# own deployed Environment.Variables. The sibling's physical id is its
+# function NAME, so resolve the full ARN via lambda:GetFunction.
+SIBLING_NAME=$(aws cloudformation describe-stack-resources \
+  --stack-name "${STACK}" \
+  --region "${REGION}" \
+  --query "StackResources[?ResourceType=='AWS::Lambda::Function' && contains(LogicalResourceId, 'SiblingHandler')].PhysicalResourceId | [0]" \
+  --output text)
+if [ -z "${SIBLING_NAME}" ] || [ "${SIBLING_NAME}" = "None" ]; then
+  echo "[verify] FAIL: could not read deployed sibling function name from CloudFormation"
+  exit 1
+fi
+DEPLOYED_SIBLING_ARN=$(aws lambda get-function \
+  --function-name "${SIBLING_NAME}" \
+  --region "${REGION}" \
+  --query 'Configuration.FunctionArn' \
+  --output text)
+echo "[verify]   deployed sibling ARN: ${DEPLOYED_SIBLING_ARN}"
+if [ -z "${DEPLOYED_SIBLING_ARN}" ] || [ "${DEPLOYED_SIBLING_ARN}" = "None" ]; then
+  echo "[verify] FAIL: could not read deployed sibling ARN from Lambda"
+  exit 1
+fi
+
 # Local invoke is flaky on cold dockers: the rie-client's TCP probe can
 # succeed before RIE has fully wired up its HTTP listener, producing a
 # `TypeError: fetch failed`. Retry up to 3 times so a hot-cache run (the
@@ -144,6 +169,10 @@ echo "${RESULT_BASELINE}" | grep -q '"tableName":"unset"' || {
   echo "[verify] FAIL: expected TABLE_NAME to be dropped (default warn-and-drop), got: ${RESULT_BASELINE}"
   exit 1
 }
+echo "${RESULT_BASELINE}" | grep -q '"siblingArn":"unset"' || {
+  echo "[verify] FAIL: expected SIBLING_ARN to be dropped (GetAtt warn-and-drop), got: ${RESULT_BASELINE}"
+  exit 1
+}
 echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
@@ -159,6 +188,10 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"tableName\":\"${DEPLOYED_TABLE}\"" || {
   echo "[verify] FAIL: expected TABLE_NAME=${DEPLOYED_TABLE}, got: ${RESULT_FROM_CFN}"
   exit 1
 }
+echo "${RESULT_FROM_CFN}" | grep -q "\"siblingArn\":\"${DEPLOYED_SIBLING_ARN}\"" || {
+  echo "[verify] FAIL: expected SIBLING_ARN=${DEPLOYED_SIBLING_ARN} (deployed-env GetAtt fallback), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
 echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
   exit 1
@@ -169,4 +202,6 @@ cdk destroy "${STACK}" --force --region "${REGION}" \
   --no-version-reporting --no-asset-metadata --no-path-metadata
 
 echo ""
-echo "[verify] All checks passed: --from-cfn-stack substituted TABLE_NAME with the deployed table name."
+echo "[verify] All checks passed:"
+echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATIC_VALUE (literal) passed through, baseline drops both intrinsics."
+echo "[verify]   - new behavior: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env."

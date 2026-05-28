@@ -18,13 +18,18 @@
  *     map built from `ListStackResources.StackResourceSummaries[]` (one
  *     entry per `(LogicalResourceId, PhysicalResourceId, ResourceType)`
  *     tuple).
- *   - `Fn::GetAtt: [<LogicalId>, <Attr>]` → **warn-and-drop**. CFn's
- *     `ListStackResources` does NOT return per-attribute values
- *     and the v1 policy (issue #606 recommendation (a)) is to surface
- *     a per-key warn instead of pulling in the full provisioning layer
- *     to call provider-specific describe APIs (e.g. `GetQueueAttributes`
- *     for SQS, `GetFunction` for Lambda). Users override the affected
- *     env var via `--env-vars` if the value is critical.
+ *   - `Fn::GetAtt: [<LogicalId>, <Attr>]` → not resolvable from
+ *     `ListStackResources` (which returns physical IDs only, no
+ *     per-attribute values). For a Lambda function's OWN env vars this
+ *     gap is closed by {@link CfnLocalStateProvider.resolveDeployedFunctionEnv}:
+ *     because `--from-cfn-stack` means the consumer function is itself
+ *     deployed, CloudFormation already resolved every intrinsic (incl.
+ *     `Fn::GetAtt <Sibling>.Arn`) into the function's
+ *     `Environment.Variables` at deploy time, so the env-substitution
+ *     layer reads the concrete value back via
+ *     `lambda:GetFunctionConfiguration`. Intrinsic values that are NOT a
+ *     consumer-Lambda env var (e.g. an ECS container env entry) still
+ *     warn-and-drop and can be overridden via `--env-vars`.
  *   - `Fn::ImportValue: <exportName>` → resolved via `ListExports`
  *     (paginated). Same-region only — CFn exports are region-scoped.
  *   - `Fn::GetStackOutput` → rejected with a clear pointer that the
@@ -63,6 +68,7 @@ import {
   ListExportsCommand,
   ListStackResourcesCommand,
 } from '@aws-sdk/client-cloudformation';
+import { LambdaClient, GetFunctionConfigurationCommand } from '@aws-sdk/client-lambda';
 import { getLogger } from '../utils/logger.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
@@ -111,6 +117,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // exercises the provider (e.g. when the synth template has no
   // intrinsic-valued env vars) doesn't open a needless client.
   private client: CloudFormationClient | undefined;
+  // The Lambda client is constructed lazily on the first
+  // `resolveDeployedFunctionEnv` call so invocations that never need the
+  // deployed-env fallback (no unresolvable intrinsic in any consumer
+  // Lambda's env) don't open a needless client.
+  private lambdaClient: LambdaClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
   // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
   // path would otherwise resurrect the client on a post-dispose
@@ -145,6 +156,56 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       });
     }
     return this.client;
+  }
+
+  private getLambdaClient(): LambdaClient {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    if (!this.lambdaClient) {
+      this.lambdaClient = new LambdaClient({
+        region: this.region,
+        ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
+      });
+    }
+    return this.lambdaClient;
+  }
+
+  /**
+   * Read a deployed Lambda function's already-resolved
+   * `Environment.Variables` via `lambda:GetFunctionConfiguration`. See
+   * {@link LocalStateProvider.resolveDeployedFunctionEnv} for why this
+   * closes the `Fn::GetAtt`/`Fn::Sub`/cross-stack gap for a consumer
+   * function's own env vars.
+   *
+   * Best-effort: on any expected miss (function not found, access
+   * denied, throttling) logs a warn and returns `undefined` so the
+   * caller falls back to warn-and-drop on the affected keys. Never
+   * throws out of the substitution pass.
+   */
+  public async resolveDeployedFunctionEnv(
+    functionPhysicalId: string
+  ): Promise<Record<string, string> | undefined> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    const logger = getLogger();
+    const client = this.getLambdaClient();
+    try {
+      const resp = await client.send(
+        new GetFunctionConfigurationCommand({ FunctionName: functionPhysicalId })
+      );
+      // `Environment.Variables` is the deploy-time-resolved map. Absent
+      // when the function declares no env vars — treat as empty so the
+      // caller's fallback simply fills nothing.
+      return resp.Environment?.Variables ?? {};
+    } catch (err) {
+      logger.warn(
+        `${this.label}: GetFunctionConfiguration(${functionPhysicalId}) failed: ${formatAwsErrorForWarn(err)}. ` +
+          `Intrinsic-valued env vars that need the deployed value will warn-and-drop (grant lambda:GetFunctionConfiguration or override via --env-vars).`
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -294,6 +355,10 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (this.client) {
       this.client.destroy();
       this.client = undefined;
+    }
+    if (this.lambdaClient) {
+      this.lambdaClient.destroy();
+      this.lambdaClient = undefined;
     }
   }
 }

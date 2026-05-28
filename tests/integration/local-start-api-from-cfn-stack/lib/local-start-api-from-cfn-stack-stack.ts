@@ -8,30 +8,26 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Fixture stack for `cdkl invoke --from-cfn-stack` (issue #606).
+ * Fixture stack for `cdkl start-api --from-cfn-stack`.
  *
- * One echo Lambda + one DynamoDB table + one sibling Lambda. The echo
- * Lambda's env exercises two distinct intrinsic shapes:
+ * The originally-reported bug was on `start-api`: an env var set to
+ * `Fn::GetAtt <SiblingFn>.Arn` warn-and-dropped under `--from-cfn-stack`
+ * because `ListStackResources` returns physical IDs only (no attributes).
+ * The deployed-env fallback closes that gap by reading the consumer
+ * function's deploy-time-resolved `Environment.Variables`.
  *
- *   - `TABLE_NAME: Ref MyTable` — resolved from `ListStackResources`
- *     physical IDs (the original #606 path).
- *   - `SIBLING_ARN: Fn::GetAtt SiblingHandler.Arn` — NOT returned by
- *     `ListStackResources` (which carries physical IDs only, no
- *     attributes). Without `--from-cfn-stack` it warns-and-drops; with
- *     `--from-cfn-stack` the deployed-env fallback reads the echo
- *     function's already-resolved `Environment.Variables` via
- *     `lambda:GetFunctionConfiguration` (CloudFormation resolved the
- *     GetAtt to the sibling's real ARN at deploy time).
+ * The echo Lambda is fronted by a Function URL so `cdkl start-api` can
+ * route to it. Its env exercises two intrinsic shapes:
  *
- * Without `--from-cfn-stack` both intrinsics drop (same warn-and-drop
- * semantics as the `local-invoke-from-state` fixture). With it, after
- * the CDK app is deployed via the upstream `cdk deploy` (the CDK CLI, not
- * a host CLI like cdkd), both flow through to the container.
+ *   - `TABLE_NAME: Ref MyTable` — resolved from ListStackResources
+ *     physical IDs (the existing #606 behavior — regression guard).
+ *   - `SIBLING_ARN: Fn::GetAtt SiblingHandler.Arn` — recovered via the
+ *     deployed-env fallback (the new behavior).
  *
- * Table carries `removalPolicy: DESTROY` so the integ teardown is
- * fully self-contained on `cdk destroy`.
+ * Table carries `removalPolicy: DESTROY` so `cdk destroy` fully tears
+ * the fixture down.
  */
-export class LocalInvokeFromCfnStackStack extends cdk.Stack {
+export class LocalStartApiFromCfnStackStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -51,7 +47,7 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    new lambda.Function(this, 'EchoTableHandler', {
+    const echo = new lambda.Function(this, 'EchoHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
@@ -70,5 +66,7 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
       },
       timeout: cdk.Duration.seconds(10),
     });
+
+    echo.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
   }
 }

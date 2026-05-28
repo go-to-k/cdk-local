@@ -1075,3 +1075,51 @@ export async function substituteEnvVarsFromStateAsync(
 
   return { env, audit };
 }
+
+/**
+ * Last-resort fill for env keys that static substitution could not
+ * resolve, using the consumer resource's already-deployed environment.
+ *
+ * When a Lambda / container is bound to a deployed CloudFormation stack
+ * (`--from-cfn-stack`), the consumer itself is deployed, so CloudFormation
+ * already resolved every intrinsic (`Fn::GetAtt`, `Fn::Sub`,
+ * `Fn::ImportValue`, cross-stack `Ref`) into its concrete deployed env
+ * value. `ListStackResources` does not return per-attribute values, so
+ * the static substituter drops those keys — but the deployed env carries
+ * the answer. The provider fetches the deployed env (e.g.
+ * `lambda:GetFunctionConfiguration`) and this helper splices it in for
+ * the keys that remained unresolved.
+ *
+ * Precedence: only keys in `unresolved` are touched — statically resolved
+ * keys and literal keys are left exactly as the substituter produced
+ * them, and a `--env-vars` override still wins downstream. Keys absent
+ * from `deployedEnv` stay unresolved so the caller's warn-and-drop fires.
+ *
+ * Pure: returns new arrays / a new env map, never mutates the inputs.
+ */
+export function applyDeployedEnvFallback(
+  resolvedEnv: Record<string, unknown>,
+  unresolved: ReadonlyArray<{ key: string; reason: string }>,
+  deployedEnv: Record<string, string> | undefined
+): {
+  env: Record<string, unknown>;
+  filled: string[];
+  stillUnresolved: Array<{ key: string; reason: string }>;
+} {
+  if (!deployedEnv) {
+    return { env: resolvedEnv, filled: [], stillUnresolved: [...unresolved] };
+  }
+  const env = { ...resolvedEnv };
+  const filled: string[] = [];
+  const stillUnresolved: Array<{ key: string; reason: string }> = [];
+  for (const item of unresolved) {
+    const deployedValue = deployedEnv[item.key];
+    if (deployedValue !== undefined) {
+      env[item.key] = deployedValue;
+      filled.push(item.key);
+    } else {
+      stillUnresolved.push({ key: item.key, reason: item.reason });
+    }
+  }
+  return { env, filled, stillUnresolved };
+}

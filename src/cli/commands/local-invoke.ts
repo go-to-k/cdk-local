@@ -33,6 +33,7 @@ import {
 import { materializeLayerFromArn } from '../../local/layer-arn-materializer.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
+  applyDeployedEnvFallback,
   substituteEnvVarsFromStateAsync,
   type StateEnvSubstitutionAudit,
   type SubstitutionContext,
@@ -336,12 +337,33 @@ async function localInvokeCommand(
           }
           const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
           templateEnv = env;
-          stateAudit = audit;
           const label = stateProvider.label;
           for (const key of audit.resolvedKeys) {
             logger.debug(`${label}: substituted env var ${key}`);
           }
-          for (const { key, reason } of audit.unresolved) {
+          // Deployed-env fallback: keys whose intrinsic value the static
+          // substituter could not resolve (e.g. `Fn::GetAtt <Sibling>.Arn`)
+          // are filled from the consumer function's deploy-time-resolved
+          // `Environment.Variables`. Only the CFn provider implements
+          // `resolveDeployedFunctionEnv`; the S3 provider's state already
+          // carries deploy-time attributes so its GetAtt resolves above.
+          let unresolved = audit.unresolved;
+          const resolvedKeys = [...audit.resolvedKeys];
+          if (unresolved.length > 0 && stateProvider.resolveDeployedFunctionEnv) {
+            const physicalId = loaded.resources[lambda.logicalId]?.physicalId;
+            if (physicalId) {
+              const deployedEnv = await stateProvider.resolveDeployedFunctionEnv(physicalId);
+              const fb = applyDeployedEnvFallback(templateEnv, unresolved, deployedEnv);
+              templateEnv = fb.env;
+              unresolved = fb.stillUnresolved;
+              for (const key of fb.filled) {
+                resolvedKeys.push(key);
+                logger.debug(`${label}: filled env var ${key} from deployed function config`);
+              }
+            }
+          }
+          stateAudit = { resolvedKeys, unresolved };
+          for (const { key, reason } of unresolved) {
             logger.warn(
               `${label}: could not substitute env var ${key} (${reason}). ` +
                 `Override it via --env-vars or it will be dropped.`
