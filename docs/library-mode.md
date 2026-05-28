@@ -92,6 +92,21 @@ pure, dependency-free helpers those modules expose:
 - `getContainerNetworkIp` — read a container's per-network IP via
   `docker inspect`.
 
+The `start-api` route-resolution layer is exposed on the same basis —
+pure functions over a synthesized Cloud Assembly that the local HTTP
+server runs on:
+
+- `discoverRoutes` (+ `DiscoveredRoute` / `RestV1IntegrationConfig`) —
+  synth template → discovered REST v1 / HTTP API / Function URL routes.
+- `matchRoute` (+ `RouteMatchResult`) — match an incoming request path
+  to a discovered route (full → greedy → `$default` precedence).
+- `buildHttpApiV2Event` / `buildRestV1Event` / `applyAuthorizerOverlay`
+  (+ `HttpRequestSnapshot` / `MatchedRouteContext` /
+  `AuthorizerEventOverlay`) — build the API Gateway v1 / v2 event shapes.
+- `discoverWebSocketApis` / `discoverWebSocketApisOrThrow` /
+  `parseSelectionExpressionPath` (+ `DiscoveredWebSocketApi` /
+  `WebSocketRouteEntry`) — WebSocket API discovery.
+
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
 the factories for that).
