@@ -390,10 +390,10 @@ export class LocalStartApiStack extends cdk.Stack {
     // OAC-fronted Function URL with AuthType: AWS_IAM. In production
     // CloudFront re-signs origin requests via the Origin Access Control,
     // so the end client never signs as the IAM principal. cdkl start-api
-    // detects the OAC chain in the synthesized template and auto-relaxes
-    // SigV4 verification to warn-and-pass WITHOUT --allow-unverified-sigv4.
-    // verify.sh sends a foreign-credential SigV4 header and asserts the
-    // request reaches the handler instead of being denied with 403.
+    // detects the OAC chain in the synthesized template and warn-and-passes
+    // SigV4 for it — OAC routes always warn-and-pass, even under
+    // --strict-sigv4. verify.sh sends a foreign-credential SigV4 header and
+    // asserts the request reaches the handler instead of being denied.
     const oacUrlHandler = new lambda.Function(this, 'OacUrlHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
@@ -408,5 +408,20 @@ export class LocalStartApiStack extends cdk.Stack {
         origin: origins.FunctionUrlOrigin.withOriginAccessControl(oacFnUrl),
       },
     });
+
+    // Plain (non-OAC) AWS_IAM Function URL. Unlike the OAC route above,
+    // there is no CloudFront in front, so a real client signs the request
+    // with its own IAM identity. cdk-local cannot verify a foreign signer's
+    // SigV4 locally, so by default it warn-and-passes (the request reaches
+    // the handler with a placeholder principalId); `--strict-sigv4` flips it
+    // to deny. verify.sh asserts the default warn-and-pass with a
+    // foreign-credential SigV4 header.
+    const iamUrlHandler = new lambda.Function(this, 'IamUrlHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-url')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    iamUrlHandler.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
   }
 }

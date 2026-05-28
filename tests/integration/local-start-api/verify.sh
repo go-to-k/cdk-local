@@ -44,20 +44,32 @@ CONTAINER_HOST="127.0.0.1"
 
 LOG_FILE="$(mktemp)"
 SERVER_PID=""
+# A second server is started later with --strict-sigv4 to exercise the
+# fail-closed opt-in end-to-end; tracked separately so cleanup tears down
+# both.
+STRICT_LOG_FILE="$(mktemp)"
+STRICT_SERVER_PID=""
 
-cleanup() {
-  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
-    echo "==> Sending SIGTERM to server (pid ${SERVER_PID})"
-    kill -TERM "${SERVER_PID}" 2>/dev/null || true
+term_server() {
+  # $1 = pid, $2 = human label
+  local pid="$1" label="$2"
+  if [[ -n "${pid:-}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    echo "==> Sending SIGTERM to ${label} (pid ${pid})"
+    kill -TERM "${pid}" 2>/dev/null || true
     for i in $(seq 1 120); do
-      kill -0 "${SERVER_PID}" 2>/dev/null || break
+      kill -0 "${pid}" 2>/dev/null || break
       sleep 1
     done
-    if kill -0 "${SERVER_PID}" 2>/dev/null; then
-      echo "==> Server did not exit within 120s; SIGKILL"
-      kill -KILL "${SERVER_PID}" 2>/dev/null || true
+    if kill -0 "${pid}" 2>/dev/null; then
+      echo "==> ${label} did not exit within 120s; SIGKILL"
+      kill -KILL "${pid}" 2>/dev/null || true
     fi
   fi
+}
+
+cleanup() {
+  term_server "${SERVER_PID:-}" "server"
+  term_server "${STRICT_SERVER_PID:-}" "strict server"
   # Defense-in-depth: kill every cdkl-* container regardless of
   # how the server cleaned up. This catches the case where the server
   # crashed before its dispose() ran.
@@ -66,7 +78,7 @@ cleanup() {
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
-  rm -f "${LOG_FILE}"
+  rm -f "${LOG_FILE}" "${STRICT_LOG_FILE}"
 }
 trap cleanup EXIT INT TERM
 
@@ -80,12 +92,12 @@ SERVER_PID=$!
 
 # Wait for ALL "Server listening" lines — PR #341 / issue #260 launches
 # one HTTP server per API, each on its own port (--port N → N, N+1, ...).
-# Surfaces: HTTP API v2 (1) + REST API v1 (1) + Function URLs (4: plain,
-# stream, stream-set-content-type, OAC AWS_IAM) = 6. Waiting for the full
-# count ensures every port (incl. the OAC server) is bound before the
-# port-extraction step below — a partial wait would race past readiness.
-echo "==> Waiting for all servers (6 expected) to come up"
-EXPECTED_SERVERS=6
+# Surfaces: HTTP API v2 (1) + REST API v1 (1) + Function URLs (5: plain,
+# stream, stream-set-content-type, OAC AWS_IAM, plain AWS_IAM) = 7. Waiting
+# for the full count ensures every port is bound before the port-extraction
+# step below — a partial wait would race past readiness.
+echo "==> Waiting for all servers (7 expected) to come up"
+EXPECTED_SERVERS=7
 READY=0
 for i in $(seq 1 60); do
   # `grep -c` outputs "0" AND exits non-zero on zero matches, so a
@@ -135,7 +147,11 @@ PORT_FNURL_STREAM_SCT=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(St
 # OAC-fronted AWS_IAM Function URL (OacUrlHandler). The `(` anchor keeps
 # `OacUrlHandler` distinct from the plain `UrlHandler` server above.
 PORT_FNURL_OAC=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(OacUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
-if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" || -z "${PORT_FNURL_STREAM_SCT}" || -z "${PORT_FNURL_OAC}" ]]; then
+# Plain (non-OAC) AWS_IAM Function URL (IamUrlHandler). The `(` anchor keeps
+# `IamUrlHandler` distinct from the plain `UrlHandler` and `OacUrlHandler`
+# servers (their handler names have no `Iam` prefix).
+PORT_FNURL_IAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(IamUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${PORT_HTTP}" || -z "${PORT_REST}" || -z "${PORT_FNURL}" || -z "${PORT_FNURL_STREAM}" || -z "${PORT_FNURL_STREAM_SCT}" || -z "${PORT_FNURL_OAC}" || -z "${PORT_FNURL_IAM}" ]]; then
   echo "FAIL: could not extract per-API port mappings. Log:"
   cat "${LOG_FILE}"
   exit 1
@@ -146,6 +162,7 @@ echo "    Function URL:                 ${PORT_FNURL}"
 echo "    Function URL (stream):        ${PORT_FNURL_STREAM}"
 echo "    Function URL (stream/SCT):    ${PORT_FNURL_STREAM_SCT}"
 echo "    Function URL (OAC AWS_IAM):   ${PORT_FNURL_OAC}"
+echo "    Function URL (AWS_IAM):       ${PORT_FNURL_IAM}"
 
 # Verify the route table contains every route. Method-column width
 # varies per server (REST v1 with OPTIONS preflight rows has a wider
@@ -246,10 +263,10 @@ curl_assert "ANY /v1/anything (stage variables)" \
 # greedy proxy answers any path on its server.
 curl_assert "Function URL fallback" "http://127.0.0.1:${PORT_FNURL}/url-only/ping" '"functionUrl":true'
 
-# OAC-fronted AWS_IAM Function URL auto-relax. The route declares
-# AuthType: AWS_IAM but is fronted by a CloudFront OAC, so cdkl start-api
-# relaxes SigV4 verification to warn-and-pass WITHOUT --allow-unverified-sigv4
-# (the server was started without that flag above).
+# OAC-fronted AWS_IAM Function URL. The route declares AuthType: AWS_IAM
+# but is fronted by a CloudFront OAC, so cdkl start-api warn-and-passes
+# SigV4 for it. OAC routes always warn-and-pass, even under --strict-sigv4
+# (the server was started without --strict-sigv4 here anyway).
 echo "==> Asserting OAC-fronted AWS_IAM Function URL"
 # 1. No Authorization header -> still 403 (the relax is signature-presence
 #    gated; missing-identity is denied before the relax logic runs).
@@ -271,6 +288,22 @@ curl_assert "OAC Function URL foreign-sig pass-through" \
   '"functionUrl":true' \
   -H "x-amz-date: ${OAC_AMZDATE}" \
   -H "Authorization: ${OAC_AUTH}"
+
+# Plain (non-OAC) AWS_IAM Function URL: with the warn-and-pass default (no
+# --strict-sigv4), a SigV4 header signed with a FOREIGN access-key-id that
+# cdk-local cannot verify locally passes through to the handler instead of
+# being denied. This is the headline of the default flip — a non-OAC AWS_IAM
+# route is exercisable locally without any flag. (No Authorization header
+# still 403s; that missing-identity path is covered by the OAC case above.)
+echo "==> Asserting plain AWS_IAM Function URL warn-and-passes by default"
+IAM_AMZDATE="$(date -u +%Y%m%dT%H%M%SZ)"
+IAM_DATESTAMP="$(date -u +%Y%m%d)"
+IAM_AUTH="AWS4-HMAC-SHA256 Credential=AKIAFOREIGNEXAMPLE/${IAM_DATESTAMP}/us-east-1/lambda/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+curl_assert "AWS_IAM Function URL foreign-sig warn-and-pass (default)" \
+  "http://127.0.0.1:${PORT_FNURL_IAM}/ping" \
+  '"functionUrl":true' \
+  -H "x-amz-date: ${IAM_AMZDATE}" \
+  -H "Authorization: ${IAM_AUTH}"
 
 # #467: streaming Function URL (`invokeMode: RESPONSE_STREAM`). The
 # handler emits 5 chunks of "hello-N\n" with 200ms delays between
@@ -625,6 +658,64 @@ if [[ "${PROTECTED_SQS_AUTH_STATUS}" == "501" ]]; then
   exit 1
 fi
 echo "    [POST /protected-sqs (allow + SDK)] OK (status=${PROTECTED_SQS_AUTH_STATUS})"
+
+# --strict-sigv4 opt-in (the fail-closed path) exercised end-to-end via a
+# SECOND server started WITH the flag, so the CLI-flag -> sigV4Strict ->
+# verifySigV4 wiring is covered by automated integ (not just unit tests).
+# Under --strict-sigv4 a non-OAC AWS_IAM route DENIES an unverifiable
+# foreign-signed request (403), while the OAC-fronted route still
+# warn-and-passes (it ignores --strict-sigv4). Runs on a separate port base
+# (PORT+100) so it does not collide with the default server still running.
+STRICT_PORT=$((PORT + 100))
+echo "==> Starting a second cdkl start-api with --strict-sigv4 on port ${STRICT_PORT}"
+${CDKL} start-api \
+  --port "${STRICT_PORT}" \
+  --container-host "${CONTAINER_HOST}" \
+  --no-pull \
+  --strict-sigv4 \
+  >"${STRICT_LOG_FILE}" 2>&1 &
+STRICT_SERVER_PID=$!
+STRICT_READY=0
+for i in $(seq 1 60); do
+  scount=$(grep -c "Server listening" "${STRICT_LOG_FILE}" 2>/dev/null) || scount=0
+  if [[ "${scount}" -ge "${EXPECTED_SERVERS}" ]]; then STRICT_READY=1; break; fi
+  sleep 0.5
+done
+if [[ "${STRICT_READY}" -eq 0 ]]; then
+  echo "FAIL: --strict-sigv4 server: only ${scount}/${EXPECTED_SERVERS} servers came up. Log:"
+  cat "${STRICT_LOG_FILE}"
+  exit 1
+fi
+STRICT_PORT_IAM=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(IamUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${STRICT_LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+STRICT_PORT_OAC=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(OacUrlHandler[A-F0-9]{8}\s+\(Function URL\)\)' "${STRICT_LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${STRICT_PORT_IAM}" || -z "${STRICT_PORT_OAC}" ]]; then
+  echo "FAIL: --strict-sigv4 server: could not extract Function URL ports. Log:"
+  cat "${STRICT_LOG_FILE}"
+  exit 1
+fi
+STRICT_AMZDATE="$(date -u +%Y%m%dT%H%M%SZ)"
+STRICT_DATESTAMP="$(date -u +%Y%m%d)"
+STRICT_AUTH="AWS4-HMAC-SHA256 Credential=AKIAFOREIGNEXAMPLE/${STRICT_DATESTAMP}/us-east-1/lambda/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000000000000000000000000000000000000000000000000000000000000000"
+echo "==> Asserting --strict-sigv4 denies a non-OAC AWS_IAM foreign-sig (403)"
+STRICT_IAM_STATUS=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+  -H "x-amz-date: ${STRICT_AMZDATE}" -H "Authorization: ${STRICT_AUTH}" \
+  "http://127.0.0.1:${STRICT_PORT_IAM}/ping")
+if [[ "${STRICT_IAM_STATUS}" != "403" ]]; then
+  echo "FAIL: --strict-sigv4 non-OAC AWS_IAM foreign-sig expected 403, got ${STRICT_IAM_STATUS}"
+  cat "${STRICT_LOG_FILE}"
+  exit 1
+fi
+echo "    [--strict-sigv4 non-OAC AWS_IAM foreign-sig -> 403] OK"
+echo "==> Asserting OAC AWS_IAM still warn-and-passes under --strict-sigv4"
+STRICT_OAC_BODY=$(curl -s --max-time 30 \
+  -H "x-amz-date: ${STRICT_AMZDATE}" -H "Authorization: ${STRICT_AUTH}" \
+  "http://127.0.0.1:${STRICT_PORT_OAC}/ping")
+if [[ "${STRICT_OAC_BODY}" != *'"functionUrl":true'* ]]; then
+  echo "FAIL: --strict-sigv4 OAC foreign-sig should still pass through; body: ${STRICT_OAC_BODY}"
+  cat "${STRICT_LOG_FILE}"
+  exit 1
+fi
+echo "    [--strict-sigv4 OAC AWS_IAM foreign-sig -> pass-through] OK"
 
 echo ""
 echo "==> All local-start-api smoke tests passed"

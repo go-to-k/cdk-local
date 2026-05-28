@@ -866,12 +866,17 @@ Outcomes:
     `Message`).
 - **Different `Credential` access-key-id than the dev has** (or no local
   AWS credentials configured) → the local server cannot reproduce a
-  signing key it doesn't have, so verification is impossible. **Denied by
-  default** (fail-closed) so handler code that trusts the request identity
-  is never silently exposed to an unverified caller in local dev. Pass
-  `--allow-unverified-sigv4` to opt into warn-and-pass instead (the
-  request reaches the handler with a placeholder principalId such as
-  `unverified-foreign-identity`). The warn fires at most once per foreign
+  signing key it doesn't have, so verification is impossible. **Warn-and-pass
+  by default**: the request reaches the handler with a placeholder
+  principalId (`unverified-foreign-identity` / `unverified-no-creds`) plus a
+  one-line warn. Local execution targets app logic and ergonomics, not an
+  authorization boundary cdk-local cannot fully emulate, and the most common
+  legitimate case (federated / Cognito Identity Pool / cross-account signers)
+  is foreign by construction — so blocking it would be the wrong default. The
+  placeholder principalId keeps identity-based handler authz from trusting a
+  forged caller, and the deployed API Gateway still does the real
+  verification + IAM evaluation. Pass `--strict-sigv4` to **deny** unverifiable
+  requests instead (fail-closed). The warn fires at most once per foreign
   access-key-id per server lifecycle.
 
 #### OAC-fronted Function URLs (auto-relaxed)
@@ -888,11 +893,11 @@ in the path, so no client signature can reproduce CloudFront's.
 cdk-local detects this from the synthesized template (a CloudFront origin
 whose `DomainName` resolves to the Function URL and that carries an
 `OriginAccessControlId` whose `SigningBehavior` is not `never`) and
-**auto-relaxes SigV4 verification to warn-and-pass for those routes —
-WITHOUT requiring `--allow-unverified-sigv4`**. This only applies to
-OAC-fronted Function URLs; REST v1 `AuthorizationType: 'AWS_IAM'` (where
-clients genuinely sign with their own credentials) always stays
-fail-closed. The startup notice (below) lists OAC-fronted routes
+**always warn-and-passes those routes — even under `--strict-sigv4`**,
+because no local client signature can ever reproduce CloudFront's. (Other
+AWS_IAM routes also warn-and-pass by default, but `--strict-sigv4` flips
+them to fail-closed; OAC-fronted routes ignore it.) The startup notice
+(below) lists OAC-fronted routes
 separately so the relaxation is explicit.
 
 **What is NOT verified locally** (deliberately out of scope):
@@ -926,7 +931,7 @@ separate line so their warn-and-pass behavior is explicit:
 [warn] 1 Function URL route(s) with AuthType: AWS_IAM are fronted by a CloudFront
        Origin Access Control. In production CloudFront re-signs the origin request,
        so no local client signature can be verified — cdkl start-api passes these
-       through (warn-and-pass) WITHOUT requiring --allow-unverified-sigv4. Do NOT
+       through (warn-and-pass) and they ignore --strict-sigv4. Do NOT
        trust the request identity in handler code.
 [warn]   - MyStack/StreamingFnUrl
 ```

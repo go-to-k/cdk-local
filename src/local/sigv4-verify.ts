@@ -34,17 +34,29 @@
  * invalid.
  *
  * When the request's `Credential=AKID/...` scope names a different
- * access-key-id than the one the dev has locally, we therefore **deny by
- * default** (fail-closed). A fail-open default would let anyone forge an
- * `Authorization: AWS4-HMAC-SHA256 Credential=AKID-X/...` header and be
- * admitted as principal `AKID-X` against handler code that trusts
- * `event.requestContext.identity.accessKey`. The `--allow-unverified-sigv4`
- * flag (or an OAC-fronted Function URL, where CloudFront re-signs the
- * origin request in production) is the explicit opt-in to **warn-and-pass**
- * instead: allow + a one-line warn + an obviously-fake principalId.
+ * access-key-id than the one the dev has locally (or no local credentials
+ * resolve at all), we therefore **warn-and-pass by default**: allow + a
+ * one-line warn + an obviously-fake principalId
+ * (`unverified-foreign-identity` / `unverified-no-creds`). Local execution
+ * is overwhelmingly used to exercise app logic and ergonomics, not to
+ * reproduce an authorization boundary cdk-local cannot fully emulate
+ * anyway — so blocking the most common legitimate case (federated /
+ * Cognito Identity Pool / cross-account signers, which are foreign by
+ * construction) is the wrong default. The fake principalId keeps
+ * identity-based handler authz from silently trusting a forged caller, and
+ * the deployed API Gateway still does the real verification + IAM
+ * evaluation.
  *
- * Genuinely missing / malformed signatures **are** rejected too — those
- * would never reach the deployed API either.
+ * The opt-in **`--strict-sigv4`** flag flips this to **fail-closed**: deny
+ * unverifiable requests. Use it when you want local enforcement to mirror a
+ * verified-identity assumption. OAC-fronted Function URLs always
+ * warn-and-pass regardless of `--strict-sigv4` (CloudFront re-signs the
+ * origin request in production, so no local client signature exists to
+ * verify) and their warn lines reference CloudFront OAC.
+ *
+ * Genuinely missing / malformed signatures (no Authorization header,
+ * unparseable header, wrong algorithm, stale date) **are** rejected in both
+ * modes — those would never reach the deployed API either.
  *
  * # NOT IN SCOPE
  *
@@ -165,17 +177,17 @@ export interface SigV4VerifyResult extends CachedAuthorizerResult {
  *     http-server maps this to 401 (REST v1 `missing-identity`).
  *   - **Signature mismatch** under the dev's own credentials → `{allow: false}`.
  *     The http-server maps this to 403 (REST v1 `policy-deny`).
- *   - **Different `Credential` access-key-id than the dev has** →
- *     `{allow: false}` by default (we can't reproduce a signing key we
- *     don't have). With `allowUnverified` (the `--allow-unverified-sigv4`
- *     flag, or `oacFronted` routes) → `{allow: true}` plus a one-line warn
- *     (warn-and-pass).
+ *   - **Different `Credential` access-key-id than the dev has** (or no
+ *     local creds resolve) → unverifiable. `{allow: true}` plus a one-line
+ *     warn + fake principalId by default (warn-and-pass). With `strict`
+ *     (the `--strict-sigv4` flag) → `{allow: false}` (fail-closed).
  *   - **Valid signature with the dev's credentials** → `{allow: true}`.
  *     The principal id surfaced to the handler is the parsed
  *     `Credential` access-key-id.
- *   - **`oacFronted` route** → the caller forces `allowUnverified` on, so
- *     foreign / no-creds requests pass through (CloudFront re-signs origin
- *     requests in production) and the warn lines reference CloudFront OAC.
+ *   - **`oacFronted` route** → foreign / no-creds requests always pass
+ *     through regardless of `strict` (CloudFront re-signs origin requests
+ *     in production, so no local client signature can be verified) and the
+ *     warn lines reference CloudFront OAC.
  */
 export async function verifySigV4(
   req: SigV4VerifyRequest,
@@ -184,24 +196,25 @@ export async function verifySigV4(
     warnedForeignIds?: Set<string>;
     now?: () => Date;
     /**
-     * Opt-in: when true, allow unverifiable SigV4 requests (foreign
-     * access-key-id, or local-credentials-load failure) to pass through
-     * with a warn instead of being denied. DEFAULT: false (fail-closed)
-     * so a dev with no AWS credentials configured does not get
-     * silently-unauthenticated IAM-protected routes. Reviewers asked us
-     * to make this explicit because the previous fail-open default
-     * exposed `event.requestContext.identity.accessKey`-trusting handler
-     * code to spoofing in local dev.
+     * Opt-in: when true, DENY unverifiable SigV4 requests (foreign
+     * access-key-id, or local-credentials-load failure) instead of the
+     * default warn-and-pass. DEFAULT: false (warn-and-pass) — local
+     * execution is used to exercise app logic/ergonomics, not to reproduce
+     * an auth boundary cdk-local cannot fully emulate, so blocking the
+     * common federated / Cognito Identity Pool / cross-account case (foreign
+     * by construction) is the wrong default. The fake principalId surfaced
+     * on pass-through keeps identity-based handler authz from trusting a
+     * forged caller. Flipped on by the `--strict-sigv4` CLI flag. Does NOT
+     * apply to {@link oacFronted} routes (those always warn-and-pass).
      */
-    allowUnverified?: boolean;
+    strict?: boolean;
     /**
      * Set by the http-server for Function URL routes fronted by a CloudFront
      * Origin Access Control (see `isFunctionUrlOacFronted`). When true the
-     * caller has already forced {@link allowUnverified} on (CloudFront
+     * route always warn-and-passes regardless of {@link strict} (CloudFront
      * re-signs origin requests in production, so no local client signature
      * can be verified), and the warn-and-pass log lines reference CloudFront
-     * OAC instead of the `--allow-unverified-sigv4` flag — which the dev
-     * need NOT have set for OAC-fronted routes.
+     * OAC instead of `--strict-sigv4`.
      */
     oacFronted?: boolean;
   } = {}
@@ -263,29 +276,26 @@ export async function verifySigV4(
   try {
     local = await loadCredentials();
   } catch (err) {
-    // Security: fail-closed by default. A dev with no AWS credentials
-    // configured used to get unauthenticated-bypass on every IAM-protected
-    // route — handler code that trusts `event.requestContext.identity.*`
-    // was trivially spoofable in local dev. Opt-in
-    // `--allow-unverified-sigv4` is the explicit escape hatch for dev
-    // loops where signature verification is impractical.
+    // Unverifiable: no local credentials resolved, so we cannot reproduce
+    // the signing key. DEFAULT: warn-and-pass — local execution is for
+    // exercising app logic / ergonomics, not reproducing an auth boundary
+    // cdk-local cannot fully emulate. `--strict-sigv4` flips this to
+    // fail-closed. OAC-fronted routes always pass (no client signature
+    // exists to verify in production).
     const reason = err instanceof Error ? err.message : String(err);
-    if (!opts.allowUnverified) {
+    if (opts.strict && !opts.oacFronted) {
       logger.warn(
         `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the ` +
-          `request's SigV4 signature cannot be verified — SigV4 is an HMAC (shared-secret) ` +
-          `signature, and reproducing it requires credentials cdk-local can read. This is a ` +
-          `local-only limitation (the deployed API Gateway verifies the same request against ` +
-          `AWS's copy of the secret), not a rejection of an invalid request. Denying by ` +
-          `default; configure AWS credentials, or pass --allow-unverified-sigv4 to ` +
-          `warn-and-pass in dev.`
+          `request's SigV4 signature cannot be verified. --strict-sigv4 is set, so cdk-local ` +
+          `denies unverifiable IAM requests; remove --strict-sigv4 to warn-and-pass (the ` +
+          `default), or configure AWS credentials cdk-local can read.`
       );
       return { allow: false, identityHash: undefined };
     }
     logger.warn(
       opts.oacFronted
         ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC (CloudFront re-signs origin requests in production), and local AWS credentials could not be resolved (${reason}). Passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
-        : `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). --allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
+        : `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the request's SigV4 signature cannot be verified locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies it against AWS's copy of the secret). Passing through with unverified principalId 'unverified-no-creds' — cdk-local's default for unverifiable IAM requests; pass --strict-sigv4 to deny instead. Do NOT trust event.requestContext.identity.accessKey in handler code.`
     );
     return {
       allow: true,
@@ -297,16 +307,15 @@ export async function verifySigV4(
   }
 
   // Foreign-identity request: the signer used an access key id we don't
-  // have. We can't reproduce the signing key, so signature verification
-  // is impossible. SECURITY: fail-closed by default — a fail-open here
-  // lets anyone forge an `Authorization: AWS4-HMAC-SHA256 Credential=AKID-X/...`
-  // header and be admitted as principal `AKID-X` against ANY handler
-  // that trusts `event.requestContext.identity.accessKey`. The
-  // `--allow-unverified-sigv4` flag is the explicit opt-in for dev
-  // loops where calls from foreign identities are expected (e.g.
-  // testing federated assume-role flows locally). Use case-insensitive
-  // compare on the access key id — AWS docs are silent and a
-  // lowercased AKID is a trivial bypass vector otherwise.
+  // have, so we can't reproduce the signing key — verification is
+  // impossible. DEFAULT: warn-and-pass with a fake principalId (the common
+  // legitimate case is a federated / Cognito Identity Pool / cross-account
+  // signer, foreign by construction). `--strict-sigv4` flips this to
+  // fail-closed: deny, since a forged `Authorization: AWS4-HMAC-SHA256
+  // Credential=AKID-X/...` header could otherwise be admitted as principal
+  // `AKID-X` to handler code that trusts the request identity. Use
+  // case-insensitive compare on the access key id — AWS docs are silent and
+  // a lowercased AKID is a trivial bypass vector otherwise.
   if (local.accessKeyId.toLowerCase() !== parsed.credentialAccessKeyId.toLowerCase()) {
     const warned = opts.warnedForeignIds;
     // The dedup key MUST be normalized to match the case-insensitive
@@ -315,17 +324,15 @@ export async function verifySigV4(
     // warn line per case. Case-insensitive compare → case-insensitive
     // dedup. (PR #484 review MINOR.)
     const dedupKey = parsed.credentialAccessKeyId.toLowerCase();
-    if (!opts.allowUnverified) {
+    if (opts.strict && !opts.oacFronted) {
       if (!warned || !warned.has(dedupKey)) {
         logger.warn(
           `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
-            `which differs from the AWS credentials cdk-local resolved locally. SigV4 is an HMAC ` +
-            `(shared-secret) signature, so cdk-local can only verify signatures made with its own ` +
-            `credentials — never a federated / Cognito Identity Pool / cross-account signer's (the ` +
-            `deployed API Gateway verifies the same request because AWS holds that secret). This is ` +
-            `a local-only limitation, not a rejection of an invalid request. Denying by default; ` +
-            `pass --allow-unverified-sigv4 to warn-and-pass in dev, or sign the request with the ` +
-            `same credentials cdk-local resolves locally.`
+            `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
+            `shared-secret) can only be verified with the signer's own credentials, never a ` +
+            `federated / Cognito Identity Pool / cross-account signer's. --strict-sigv4 is set, so ` +
+            `cdk-local denies it; remove --strict-sigv4 to warn-and-pass (the default), or sign the ` +
+            `request with the same credentials cdk-local resolves locally.`
         );
         warned?.add(dedupKey);
       }
@@ -337,9 +344,13 @@ export async function verifySigV4(
           ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC — in production CloudFront re-signs the origin request, so the local client's signature (access-key-id '${parsed.credentialAccessKeyId}') cannot be verified. ` +
               `Passing through with unverified principalId 'unverified-foreign-identity'. ` +
               `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
-          : `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
-              `--allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-foreign-identity'. ` +
-              `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
+          : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+              `a federated / Cognito Identity Pool / cross-account signer cdk-local cannot verify ` +
+              `locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies ` +
+              `it because AWS holds the secret). Passing through with unverified principalId ` +
+              `'unverified-foreign-identity' — cdk-local's default for unverifiable IAM requests; ` +
+              `pass --strict-sigv4 to deny instead. Do NOT trust ` +
+              `event.requestContext.authorizer.principalId in handler code.`
       );
       warned?.add(dedupKey);
     }

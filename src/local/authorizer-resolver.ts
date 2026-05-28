@@ -169,11 +169,11 @@ export interface IamAuthorizer {
    * Origin Access Control that signs origin requests. In production
    * CloudFront re-signs the origin request with its own identity, so the
    * END client never signs as the IAM principal and no local client
-   * signature can be verified. The HTTP server relaxes SigV4 verification
-   * to warn-and-pass for these routes WITHOUT requiring
-   * `--allow-unverified-sigv4`. Never set for REST v1 AWS_IAM (clients
-   * there genuinely sign with their own credentials → stays fail-closed).
-   * See {@link isFunctionUrlOacFronted}.
+   * signature can be verified. The HTTP server keeps SigV4 verification in
+   * warn-and-pass mode for these routes even under `--strict-sigv4`. Never
+   * set for REST v1 AWS_IAM (clients there genuinely sign with their own
+   * credentials, so `--strict-sigv4` applies to them). See
+   * {@link isFunctionUrlOacFronted}.
    */
   oacFronted?: boolean;
 }

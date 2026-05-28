@@ -263,9 +263,8 @@ export function buildCorsConfigFromCloudFrontChain(
  * its own SigV4 credentials (service `lambda`) via the OAC, and the Function
  * URL's auto-generated resource policy trusts `cloudfront.amazonaws.com`.
  * Locally there is no CloudFront in the path, so no client signature can
- * reproduce CloudFront's. Callers use this to relax SigV4 verification
- * (warn-and-pass) for these Function URLs without forcing
- * `--allow-unverified-sigv4`.
+ * reproduce CloudFront's. Callers use this to keep these Function URLs in
+ * warn-and-pass mode even when `--strict-sigv4` is set.
  *
  * Detection: a CloudFront origin whose `DomainName` matches the canonical
  * `Fn::GetAtt[<fnUrlLogicalId>, 'FunctionUrl']` chain (see

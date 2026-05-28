@@ -162,13 +162,14 @@ export interface StartApiServerOptions {
    */
   sigV4WarnedForeignIds?: Set<string>;
   /**
-   * Opt-in: allow SigV4 requests that cannot be verified (foreign
-   * access-key-id OR local-credentials-load failure) to pass through
-   * with a placeholder `principalId`. DEFAULT off — fail-closed by
-   * default per the security review on #484; the `--allow-unverified-sigv4`
-   * CLI flag flips this on for dev loops that need it.
+   * Opt-in: DENY SigV4 requests that cannot be verified (foreign
+   * access-key-id OR local-credentials-load failure) instead of the default
+   * warn-and-pass. DEFAULT off (warn-and-pass) — local execution targets app
+   * logic / ergonomics, not an auth boundary cdk-local cannot fully emulate;
+   * the `--strict-sigv4` CLI flag flips this on. OAC-fronted Function URLs
+   * always warn-and-pass regardless of this setting.
    */
-  sigV4AllowUnverified?: boolean;
+  sigV4Strict?: boolean;
   /**
    * Default AWS region for HTTP API v2 service integrations (#458).
    * Resolved by the CLI from `--region` / `AWS_REGION` / profile at
@@ -1089,12 +1090,12 @@ async function runAuthorizerPass(
       );
       return { result: { allow: false }, denyKind: 'policy-deny' };
     }
-    // OAC-fronted Function URLs pass through even without
-    // `--allow-unverified-sigv4`: in production CloudFront re-signs the
-    // origin request with its own identity, so the local server never sees
-    // a client signature it could verify. `oacFronted` is set only for
-    // `AWS::Lambda::Url` routes (never REST v1 AWS_IAM, which stays
-    // fail-closed). See `authorizer-resolver.ts` / `isFunctionUrlOacFronted`.
+    // OAC-fronted Function URLs always warn-and-pass and ignore
+    // `--strict-sigv4`: in production CloudFront re-signs the origin request
+    // with its own identity, so the local server never sees a client
+    // signature it could verify. `oacFronted` is set only for
+    // `AWS::Lambda::Url` routes. See `authorizer-resolver.ts` /
+    // `isFunctionUrlOacFronted`.
     const oacFronted = authorizer.oacFronted === true;
     const sigResult = await verifySigV4(
       {
@@ -1106,7 +1107,7 @@ async function runAuthorizerPass(
       opts.sigV4CredentialsLoader,
       {
         ...(opts.sigV4WarnedForeignIds && { warnedForeignIds: opts.sigV4WarnedForeignIds }),
-        allowUnverified: oacFronted || opts.sigV4AllowUnverified === true,
+        strict: opts.sigV4Strict === true,
         ...(oacFronted && { oacFronted: true }),
       }
     );

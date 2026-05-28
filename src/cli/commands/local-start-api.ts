@@ -186,12 +186,12 @@ interface LocalStartApiOptions {
    */
   fromCfnStack?: string | boolean;
   /**
-   * Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically
-   * verified (foreign access-key-id, or no local AWS credentials) to
-   * pass through with a placeholder principalId. Default `false` (fail-
-   * closed). Mirrors the `--allow-unverified-sigv4` CLI flag.
+   * Opt-in: DENY AWS_IAM SigV4 requests that cannot be cryptographically
+   * verified (foreign access-key-id, or no local AWS credentials) instead
+   * of the default warn-and-pass. Default `false` (warn-and-pass). Mirrors
+   * the `--strict-sigv4` CLI flag.
    */
-  allowUnverifiedSigv4?: boolean;
+  strictSigv4?: boolean;
   /**
    * Region of the state record to read. Used with --from-cfn-stack
    * as the CFn client region.
@@ -827,7 +827,7 @@ async function localStartApiCommand(
       jwksWarnedUrls,
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
-      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      sigV4Strict: options.strictSigv4 === true,
       // #458: surfaces as the per-route fallback region for HTTP API
       // v2 service integrations. Per-request `RequestParameters.Region`
       // overrides this — matches AWS API Gateway behavior.
@@ -921,7 +921,7 @@ async function localStartApiCommand(
       jwksCache,
       jwksWarnedUrls,
       sigV4WarnedForeignIds,
-      sigV4AllowUnverified: options.allowUnverifiedSigv4 === true,
+      sigV4Strict: options.strictSigv4 === true,
       preDispatch: async (req, res) => {
         if (!registryRef) return false;
         return handleManagementRequest(req, res, registryRef.registry);
@@ -1545,9 +1545,11 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
   if (iamRoutes.length > 0) {
     logger.warn(
       `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — ${getEmbedConfig().cliName} start-api ` +
-        `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
-        `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
-        `the handler under their own identity; downstream authorization is the dev's responsibility.`
+        `verifies the SigV4 signatures it CAN (requests signed with your local AWS credentials), but ` +
+        `cannot verify a federated / Cognito Identity Pool / cross-account signer and does NOT emulate ` +
+        `IAM policy evaluation (resource / action / condition rules). By default such unverifiable ` +
+        `requests warn-and-pass with a placeholder principalId — pass --strict-sigv4 to deny them ` +
+        `instead. Downstream authorization is the dev's responsibility.`
     );
     for (const declaredAt of iamRoutes) {
       logger.warn(`  - ${declaredAt}`);
@@ -1558,7 +1560,7 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
       `${oacRoutes.length} Function URL route(s) with AuthType: AWS_IAM are fronted by a CloudFront ` +
         `Origin Access Control. In production CloudFront re-signs the origin request, so no local ` +
         `client signature can be verified — ${getEmbedConfig().cliName} start-api passes these through (warn-and-pass) ` +
-        `WITHOUT requiring --allow-unverified-sigv4. Do NOT trust the request identity in handler code.`
+        `and they ignore --strict-sigv4. Do NOT trust the request identity in handler code.`
     );
     for (const declaredAt of oacRoutes) {
       logger.warn(`  - ${declaredAt}`);
@@ -3386,12 +3388,13 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     )
     .addOption(
       new Option(
-        '--allow-unverified-sigv4',
-        'Opt-in: allow AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
-          '(foreign access-key-id, OR no local AWS credentials configured) to pass through ' +
-          'with a placeholder principalId. DEFAULT off — fail-closed so unauthenticated bypass ' +
-          'is impossible against `event.requestContext.identity.accessKey`-trusting handler code. ' +
-          'Use only in dev loops where you understand the risk.'
+        '--strict-sigv4',
+        'Opt-in: DENY AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
+          '(foreign access-key-id — e.g. a federated / Cognito Identity Pool / cross-account ' +
+          'signer — OR no local AWS credentials configured) instead of the default warn-and-pass. ' +
+          'DEFAULT off: cdk-local warn-and-passes unverifiable IAM requests with a placeholder ' +
+          'principalId so local dev exercises app logic without reproducing an auth boundary it ' +
+          'cannot fully emulate. OAC-fronted Function URLs always warn-and-pass regardless.'
       ).default(false)
     )
     .action(
