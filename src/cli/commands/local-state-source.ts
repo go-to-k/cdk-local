@@ -5,7 +5,7 @@
  * Built-in flag (always wired):
  *
  *   - `--from-cfn-stack [<cfn-stack-name>]` — CFn-backed; reads a
- *     deployed CloudFormation stack via `DescribeStackResources`.
+ *     deployed CloudFormation stack via `ListStackResources`.
  *
  * Host-extensible state sources (via the `extraStateProviders` option):
  *
@@ -228,7 +228,7 @@ export function createLocalStateProvider(
 
   // Reject empty `--from-cfn-stack ""`. Letting it through would
   // construct a `CfnLocalStateProvider` with `cfnStackName: ''` and the
-  // SDK's `DescribeStackResources({ StackName: '' })` rejects with a
+  // SDK's `ListStackResources({ StackName: '' })` rejects with a
   // generic ValidationError far from the call site. Reject at the
   // dispatcher with a clear remediation message instead.
   if (cfnStackOpt === '') {

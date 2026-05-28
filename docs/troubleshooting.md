@@ -101,7 +101,7 @@ The stack-qualified logical ID form (`MyStack:MyFunctionLogicalId`) is also acce
 The flag reads CloudFormation Outputs and resolves resource ARNs into env vars on the local container. If env injection seems missing:
 
 - Confirm the stack name matches a deployed stack (`aws cloudformation describe-stacks --stack-name <name>`).
-- Confirm your IAM credentials have `cloudformation:DescribeStacks`.
+- Confirm your IAM credentials have `cloudformation:ListStackResources`, `cloudformation:DescribeStacks`, and `cloudformation:ListExports`.
 - Confirm the stack has the Outputs / resources your CDK code expects (the local synth's expectations must match the deployed state).
 
 ### `--env-vars <file>` not applying overrides

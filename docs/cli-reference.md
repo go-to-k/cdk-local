@@ -111,7 +111,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the dev credentials cannot read the layer — typically cross-account layers. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `DescribeStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `ListStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region when `--from-cfn-stack` is set. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
@@ -142,7 +142,7 @@ handler's `context.*` fields look real.
 For CDK apps deployed via the upstream CDK CLI (`cdk deploy` →
 CloudFormation), use `--from-cfn-stack` to pull deployed physical IDs
 and exports into the Lambda's env block: cdk-local calls
-`cloudformation:DescribeStackResources` against the named CFn stack to
+`cloudformation:ListStackResources` against the named CFn stack to
 populate the per-logical-id physical-id map, then runs the substitution
 engine against it.
 
@@ -166,7 +166,8 @@ cdkl invoke MyStack/MyApi/Handler --from-cfn-stack \
 ```
 
 **What's resolved**: `Ref: <LogicalId>` against
-`DescribeStackResources` (one CFn API call per stack) and
+`ListStackResources` (paginated — every page is walked so stacks with
+more than 100 resources are fully mapped) and
 `Fn::ImportValue: <ExportName>` against
 `cloudformation:ListExports` (paginated, memoized for one substitution
 pass).
@@ -181,7 +182,7 @@ pass).
 4. Template literal value.
 
 **`Fn::GetAtt` is warn-and-dropped** in v1. CFn's
-`DescribeStackResources` does NOT return per-attribute values — it only
+`ListStackResources` does NOT return per-attribute values — it only
 exposes `(LogicalResourceId, PhysicalResourceId, ResourceType)`
 triplets. Recovering per-attribute values would require per-service
 describe calls (e.g. `GetQueueAttributes` for SQS, `GetFunction` for
@@ -192,14 +193,14 @@ via `--env-vars` if the value is critical.
 time using the precedence `--stack-region` > `AWS_REGION` >
 `AWS_DEFAULT_REGION` > the synth-derived stack region. When NONE of
 these signals is set, the CLI throws with a remediation message — CFn
-`DescribeStackResources` queries a specific region and silently
+`ListStackResources` queries a specific region and silently
 picking `us-east-1` would query the wrong stack environment.
 
-**Failure modes**: `DescribeStackResources` failures (stack not found,
+**Failure modes**: `ListStackResources` failures (stack not found,
 access denied, throttling) degrade to a per-key warn + drop.
 `ListExports` failures only affect `Fn::ImportValue` resolution;
 same-stack `Ref` substitutions still succeed because they only need
-the `DescribeStackResources` result.
+the `ListStackResources` result.
 
 **Auto-assume execution role**: when `--from-cfn-stack` is paired with
 bare `--assume-role` (no ARN argument), cdk-local resolves the
@@ -361,7 +362,7 @@ an error — they're mutually exclusive.
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). For HTTP API v2 routes, `requestContext.stage` is always `$default` regardless of this flag (AWS-side limitation); only `event.stageVariables` is affected. For REST v1 the selected StageName is also threaded into `requestContext.stage`. |
 | `--api <id>` | unset | **Deprecated** — use the positional `<target>` argument instead. Same accepted forms. Emits a deprecation warn on use. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Same semantics as `cdkl invoke --layer-role-arn`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` is warn-and-dropped in v1. Same warn-and-drop semantics as `cdkl invoke --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` is warn-and-dropped in v1. Same warn-and-drop semantics as `cdkl invoke --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--mtls-truststore <path>` | unset | PEM-encoded CA bundle for client-certificate verification. When set, the server switches from HTTP to HTTPS and the TLS handshake rejects clients whose certificate doesn't chain to one of these CAs. Must be set together with `--mtls-cert` + `--mtls-key`; partial flag sets are rejected. See [local-emulation.md](./local-emulation.md) for the openssl recipe + event-shape details. |
 | `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |
@@ -417,7 +418,7 @@ Path matching is prefix-based: an L2 path like
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--assume-task-role [<arn>]` | unset | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the default credential chain and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an `<acct>.dkr.ecr.<region>.amazonaws.com/...` URI. Required when the caller does not have direct cross-account access. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
@@ -500,12 +501,12 @@ entry against the deployed CFn stack plus AWS pseudo parameters:
 
 | Intrinsic | Source |
 | --- | --- |
-| `Ref: <LogicalId>` | `DescribeStackResources` physical resource id |
+| `Ref: <LogicalId>` | `ListStackResources` physical resource id |
 | `Fn::ImportValue: <ExportName>` | `ListExports` (paginated, memoized) |
 | `Fn::Sub: '...${X}...${AWS::Region}...'` | recursive substitution against CFn lookups + pseudo parameters |
 | `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
 | `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
-| `Fn::GetAtt: [<LogicalId>, <Attr>]` | **warn-and-dropped** in v1 (CFn `DescribeStackResources` does not return per-attribute values) |
+| `Fn::GetAtt: [<LogicalId>, <Attr>]` | **warn-and-dropped** in v1 (CFn `ListStackResources` does not return per-attribute values) |
 
 Per-key best-effort: when a substitution can't be produced (state
 missing for a referenced logical ID, attribute not captured, unsupported
@@ -646,7 +647,7 @@ error.
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `cdkl run-task`. |
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `DescribeStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
