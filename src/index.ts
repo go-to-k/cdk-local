@@ -298,3 +298,46 @@ export {
   tryResolveImageFnJoin,
   type ImageResolutionContext,
 } from './local/intrinsic-image.js';
+
+/**
+ * `start-service` Cloud Map service-discovery index — parses the
+ * `AWS::ServiceDiscovery::PrivateDnsNamespace` / `::Service` resources in a
+ * synthesized stack into the namespace / service lookup maps the local ECS
+ * service runner resolves peers against. Exposed only as the consuming host's
+ * `import` statements require them.
+ */
+export { buildCloudMapIndex, type CloudMapIndex } from './local/cloud-map-resolver.js';
+
+/**
+ * `run-task` / `start-service` ECS target-resolution error. Exposed so a
+ * consuming host that shims `cloud-map-resolver` (which throws it) can re-export
+ * the SAME class identity from its still-local ECS engine modules — otherwise a
+ * host-side `instanceof` / `toThrow(EcsTaskResolutionError)` against the shimmed
+ * resolver's throw would compare two distinct class objects and fail.
+ */
+export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
+
+/**
+ * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the
+ * matching integration response by `SelectionPattern` regex, evaluates
+ * `ResponseParameters` header mappings, and selects the response template by
+ * `Accept`. Exposed only as the consuming host's `import` statements require
+ * them.
+ */
+export {
+  evaluateResponseParameters,
+  pickResponseTemplate,
+  selectIntegrationResponse,
+  tryParseStatus,
+  type IntegrationResponseEntry,
+} from './local/integration-response-selector.js';
+
+/**
+ * `start-api` VTL evaluation error. Exposed so a consuming host that shims
+ * `integration-response-selector` (which throws it) can re-export the SAME
+ * class identity from its still-local `vtl-engine` — otherwise a host-side
+ * `instanceof VtlEvaluationError` (e.g. the REST v1 dispatcher's catch) against
+ * the shimmed selector's throw would compare two distinct class objects and
+ * fail.
+ */
+export { VtlEvaluationError } from './local/vtl-engine.js';
