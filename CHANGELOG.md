@@ -1,3 +1,10 @@
+## [0.19.1](https://github.com/go-to-k/cdk-local/compare/v0.19.0...v0.19.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **start-service:** stop logging service warnings twice ([#84](https://github.com/go-to-k/cdk-local/issues/84)) ([696914c](https://github.com/go-to-k/cdk-local/commit/696914c95ffa3e64bb10f6a99353903990cb7d00))
+
 # [0.19.0](https://github.com/go-to-k/cdk-local/compare/v0.18.0...v0.19.0) (2026-05-28)
 
 
