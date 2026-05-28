@@ -66,6 +66,23 @@ cdkl invoke MyStack/MyFunction --event ./event.json
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
 
+Every target argument (across `invoke`, `run-task`, `start-service`) accepts
+either form — the CDK display path is the recommended default, but a
+CloudFormation logical ID works too, which is handy when copying it straight
+out of `cdk.out/<Stack>.template.json` beats tracing the construct path (and
+matches what a SAM background expects):
+
+```bash
+# CDK display path (recommended)
+cdkl invoke MyStack/MyFunction --event ./event.json
+
+# Stack-qualified logical ID (works in any app)
+cdkl invoke MyStack:MyFunction1234ABCD --event ./event.json
+
+# Bare logical ID (single-stack apps — the stack is auto-detected)
+cdkl invoke MyFunction1234ABCD --event ./event.json
+```
+
 #### HTTP APIs & Function URLs — `start-api`
 
 Serve your app's HTTP surface locally — API Gateway routes (REST v1 / HTTP v2 / WebSocket) and Lambda Function URLs — on a local HTTP server.
