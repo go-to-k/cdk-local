@@ -229,3 +229,31 @@ export {
  * layers. Exposed only as the consuming host's `import` statement requires it.
  */
 export { materializeLayerFromArn } from './local/layer-arn-materializer.js';
+
+/**
+ * `start-api` CORS handling — parses CFn `CorsConfiguration` (and the CloudFront
+ * distribution chain) into a per-API CORS config and answers OPTIONS preflight
+ * for HTTP API v2. Exposed only as the consuming host's `import` statements
+ * require them.
+ */
+export {
+  applyCorsResponseHeaders,
+  buildCorsConfigByApiId,
+  buildCorsConfigFromCloudFrontChain,
+  matchPreflight,
+  type CorsConfig,
+} from './local/cors-handler.js';
+
+/**
+ * `invoke` / `start-api` / `run-task` container-image intrinsic resolver —
+ * resolves the canonical CDK 2.x `Fn::Join` shape for ECR image URIs
+ * (`lambda.DockerImageCode.fromEcr` / ECS `ContainerImage.fromEcrRepository`)
+ * and the same-stack ECR `Fn::GetAtt` Arn / RepositoryUri synthesis. Exposed
+ * only as the consuming host's `import` statements require them.
+ */
+export {
+  derivePseudoParametersFromRegion,
+  substituteImagePlaceholders,
+  tryResolveImageFnJoin,
+  type ImageResolutionContext,
+} from './local/intrinsic-image.js';
