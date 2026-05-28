@@ -22,6 +22,23 @@ export {
   createLocalStartServiceCommand,
   type CreateLocalStartServiceCommandOptions,
 } from './cli/commands/local-start-service.js';
+export {
+  createLocalListCommand,
+  formatTargetListing,
+  type CreateLocalListCommandOptions,
+} from './cli/commands/local-list.js';
+
+/**
+ * Target enumeration — turns a synthesized Cloud Assembly into the
+ * runnable targets each `cdkl` command accepts, grouped by command.
+ * Backs `cdkl list` and is reusable for interactive target pickers.
+ */
+export {
+  listTargets,
+  countTargets,
+  type TargetEntry,
+  type TargetListing,
+} from './local/target-lister.js';
 
 export {
   createLocalStateProvider,
