@@ -1498,6 +1498,7 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
     for (const declaredAt of oacRoutes) {
       logger.warn(`  - ${declaredAt}`);
     }
+  }
   return true;
 }
 
