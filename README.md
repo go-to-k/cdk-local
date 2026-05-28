@@ -83,6 +83,8 @@ cdkl run-task MyStack/MyTask
 cdkl start-service MyStack/MyService
 ```
 
+There is no cluster command — locally, Docker is the placement target a cluster abstracts away, so there is nothing to run. Both commands accept an optional `--cluster <name>` to set the cluster name surfaced to `ECS_CONTAINER_METADATA_URI_V4` (also used as the local Docker network prefix). See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
+
 Use this for fast iteration on Lambda code, API routing checks, and container task smoke tests.
 
 ### 2. Bound to a deployed stack
