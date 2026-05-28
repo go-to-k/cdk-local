@@ -705,6 +705,7 @@ export async function resolveContainerImagePlan(
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
+      ...(options.profile !== undefined && { profile: options.profile }),
     });
   }
 

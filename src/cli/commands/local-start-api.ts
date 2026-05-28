@@ -622,6 +622,7 @@ async function localStartApiCommand(
         layerTmpDirs,
         stateByStack,
         skipPull: options.pull === false,
+        ...(options.profile !== undefined && { profile: options.profile }),
         ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
         ...(profileCredentials && { profileCredentials }),
         ...(profileCredsFile && { profileCredsFile }),
@@ -1639,6 +1640,13 @@ async function buildContainerSpec(args: {
    */
   skipPull: boolean;
   /**
+   * The CLI's `--profile`, forwarded to the IMAGE branch's ECR-pull
+   * fallback so `ecr:GetAuthorizationToken` authenticates as the
+   * profile's account (matching the ECS path). Undefined when
+   * `--profile` is unset.
+   */
+  profile?: string;
+  /**
    * Issue #448: optional `--layer-role-arn` value. Forwarded into
    * {@link materializeLambdaLayers}, which `sts:AssumeRole`s into this
    * role before calling `lambda:GetLayerVersion` for every literal-ARN
@@ -1744,7 +1752,7 @@ async function buildContainerSpec(args: {
     // manifest, OR pull from ECR when no matching asset is found.
     // Same-account/region only on the ECR-pull path — cross-account /
     // cross-region is deferred to a sibling PR (W2-1).
-    const built = await resolveContainerImageForStartApi(lambda, skipPull);
+    const built = await resolveContainerImageForStartApi(lambda, skipPull, args.profile);
     imageRef = built.imageRef;
     platform = architectureToPlatform(lambda.architecture);
   }
@@ -1980,7 +1988,8 @@ async function buildContainerSpec(args: {
  */
 export async function resolveContainerImageForStartApi(
   lambda: ResolvedStartApiImageLambda,
-  skipPull: boolean
+  skipPull: boolean,
+  profile?: string
 ): Promise<{ imageRef: string }> {
   const logger = getLogger();
   const localBuild = await resolveLocalBuildPlan(lambda);
@@ -2000,7 +2009,10 @@ export async function resolveContainerImageForStartApi(
   logger.info(
     `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
   );
-  const imageRef = await pullEcrImage(lambda.imageUri, { skipPull });
+  const imageRef = await pullEcrImage(lambda.imageUri, {
+    skipPull,
+    ...(profile !== undefined && { profile }),
+  });
   return { imageRef };
 }
 
