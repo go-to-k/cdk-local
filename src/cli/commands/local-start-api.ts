@@ -1454,20 +1454,41 @@ function warnVpcConfigLambdas(
 function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
   const logger = getLogger();
   const iamRoutes: string[] = [];
+  const oacRoutes: string[] = [];
   for (const entry of routesWithAuth) {
-    if (entry.authorizer?.kind === 'iam') {
+    if (entry.authorizer?.kind !== 'iam') continue;
+    // OAC-fronted Function URLs are reported separately: their SigV4 check
+    // is auto-relaxed (CloudFront signs origin requests in production), so
+    // the generic "verifies signatures against your local credentials" line
+    // would mislead.
+    if (entry.authorizer.oacFronted === true) {
+      oacRoutes.push(entry.route.declaredAt);
+    } else {
       iamRoutes.push(entry.route.declaredAt);
     }
   }
-  if (iamRoutes.length === 0) return false;
-  logger.warn(
-    `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — cdkl start-api ` +
-      `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
-      `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
-      `the handler under their own identity; downstream authorization is the dev's responsibility.`
-  );
-  for (const declaredAt of iamRoutes) {
-    logger.warn(`  - ${declaredAt}`);
+  if (iamRoutes.length === 0 && oacRoutes.length === 0) return false;
+  if (iamRoutes.length > 0) {
+    logger.warn(
+      `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — cdkl start-api ` +
+        `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
+        `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
+        `the handler under their own identity; downstream authorization is the dev's responsibility.`
+    );
+    for (const declaredAt of iamRoutes) {
+      logger.warn(`  - ${declaredAt}`);
+    }
+  }
+  if (oacRoutes.length > 0) {
+    logger.warn(
+      `${oacRoutes.length} Function URL route(s) with AuthType: AWS_IAM are fronted by a CloudFront ` +
+        `Origin Access Control. In production CloudFront re-signs the origin request, so no local ` +
+        `client signature can be verified — cdkl start-api passes these through (warn-and-pass) ` +
+        `WITHOUT requiring --allow-unverified-sigv4. Do NOT trust the request identity in handler code.`
+    );
+    for (const declaredAt of oacRoutes) {
+      logger.warn(`  - ${declaredAt}`);
+    }
   }
   return true;
 }

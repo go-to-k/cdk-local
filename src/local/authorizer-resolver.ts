@@ -3,6 +3,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { isFunctionUrlOacFronted } from './cors-handler.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
 
@@ -162,6 +163,18 @@ export interface IamAuthorizer {
   /** Synthetic logical id — there is no real `AWS::ApiGateway::Authorizer` resource. */
   logicalId: 'AWS_IAM';
   declaredAt: string;
+  /**
+   * Set only for Function URLs (`AWS::Lambda::Url`) fronted by a CloudFront
+   * Origin Access Control that signs origin requests. In production
+   * CloudFront re-signs the origin request with its own identity, so the
+   * END client never signs as the IAM principal and no local client
+   * signature can be verified. The HTTP server relaxes SigV4 verification
+   * to warn-and-pass for these routes WITHOUT requiring
+   * `--allow-unverified-sigv4`. Never set for REST v1 AWS_IAM (clients
+   * there genuinely sign with their own credentials → stays fail-closed).
+   * See {@link isFunctionUrlOacFronted}.
+   */
+  oacFronted?: boolean;
 }
 
 export type AuthorizerInfo =
@@ -760,6 +773,10 @@ function detectFunctionUrlAuthorizer(
     kind: 'iam',
     logicalId: 'AWS_IAM',
     declaredAt: `${stack.stackName}/${urlLogicalId}`,
+    // OAC-fronted Function URLs are signed by CloudFront in production; the
+    // local server never sees that signature, so relax verification rather
+    // than denying every request. See `isFunctionUrlOacFronted`.
+    ...(isFunctionUrlOacFronted(stack.template, urlLogicalId) && { oacFronted: true }),
   };
 }
 

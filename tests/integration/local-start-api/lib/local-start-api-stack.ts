@@ -7,6 +7,8 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2_integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as apigwv2_authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -383,6 +385,28 @@ export class LocalStartApiStack extends cdk.Stack {
     streamUrlSetContentTypeHandler.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+    });
+
+    // OAC-fronted Function URL with AuthType: AWS_IAM. In production
+    // CloudFront re-signs origin requests via the Origin Access Control,
+    // so the end client never signs as the IAM principal. cdkl start-api
+    // detects the OAC chain in the synthesized template and auto-relaxes
+    // SigV4 verification to warn-and-pass WITHOUT --allow-unverified-sigv4.
+    // verify.sh sends a foreign-credential SigV4 header and asserts the
+    // request reaches the handler instead of being denied with 403.
+    const oacUrlHandler = new lambda.Function(this, 'OacUrlHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-url')),
+      timeout: cdk.Duration.seconds(10),
+    });
+    const oacFnUrl = oacUrlHandler.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
+    });
+    new cloudfront.Distribution(this, 'OacDistribution', {
+      defaultBehavior: {
+        origin: origins.FunctionUrlOrigin.withOriginAccessControl(oacFnUrl),
+      },
     });
   }
 }
