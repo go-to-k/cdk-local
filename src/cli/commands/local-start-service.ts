@@ -363,7 +363,8 @@ async function localStartServiceCommand(
           `${pt.controller!.service.serviceName} (${pt.controller!.activeReplicaCount()} replica(s))`
       )
       .join(', ');
-    logger.info(`Service(s) running: ${summary}. Press ^C to shut down.`);
+    logger.info(`Service(s) running: ${summary}.`);
+    logger.info('Press ^C to shut down.');
 
     // Block until ALL services shut down.
     await Promise.all(perTarget.map((pt) => pt.controller!.waitForShutdown()));
