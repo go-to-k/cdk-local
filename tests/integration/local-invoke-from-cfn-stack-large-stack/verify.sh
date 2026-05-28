@@ -97,11 +97,15 @@ echo "[verify] step 3 ok: cdk deploy completed"
 # Sanity-check the deployed stack really exceeds the 100-resource cap so
 # this test is exercising the pagination path and not silently passing on
 # a small stack (e.g. if PARAM_COUNT is ever lowered below the cap).
+# Count logical IDs across ALL pages. `--query 'length(...)'` is wrong here:
+# the AWS CLI auto-paginates and applies the query per page, emitting one
+# length per page (e.g. "100\n7") instead of the total. Projecting the IDs
+# to text and counting words sums correctly across pages.
 RESOURCE_COUNT=$(aws cloudformation list-stack-resources \
   --stack-name "${STACK}" \
   --region "${REGION}" \
-  --query 'length(StackResourceSummaries)' \
-  --output text)
+  --query 'StackResourceSummaries[].LogicalResourceId' \
+  --output text | wc -w | tr -d ' ')
 echo "[verify] step 3b: deployed resource count = ${RESOURCE_COUNT}"
 if [ "${RESOURCE_COUNT}" -le 100 ]; then
   echo "[verify] FAIL: stack has ${RESOURCE_COUNT} resources (<=100); this fixture must exceed the DescribeStackResources cap to be meaningful"
