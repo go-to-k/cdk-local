@@ -128,3 +128,24 @@ export {
   invokeRequestAuthorizer,
   invokeTokenAuthorizer,
 } from './local/lambda-authorizer.js';
+
+/**
+ * `invoke` / `start-api` Lambda env-var resolution — merges template-literal
+ * env vars with SAM-shape `--env-vars` overrides (intrinsic-valued entries
+ * warn-and-drop unless `--from-*` substituted them upstream). Exposed only as
+ * the consuming host's `import` statements require them.
+ */
+export { resolveEnvVars, type EnvOverrideFile } from './local/env-resolver.js';
+
+/**
+ * `start-api` per-API Stage selection — builds the stage map and attaches
+ * stage context (populating `event.stageVariables`) to discovered routes.
+ */
+export { attachStageContext, buildStageMap, type ResolvedStage } from './local/stage-resolver.js';
+
+/**
+ * `start-service` in-process Cloud Map service registry — peers reach each
+ * other by IP / network alias on the shared service network without docker
+ * `network connect` choreography.
+ */
+export { CloudMapRegistry } from './local/cloud-map-registry.js';

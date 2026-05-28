@@ -80,6 +80,22 @@ describe('resolveEnvVars', () => {
       const result = resolveEnvVars(LOGICAL, L1_PATH, { LITERAL: 'template' }, overrides);
       expect(result.resolved).toEqual({ LITERAL: 'template' });
     });
+
+    it('substitutes the template intrinsic with an override when provided', () => {
+      // Common workflow: template has an intrinsic-valued env, user supplies a
+      // literal via --env-vars to make it concrete for local invoke.
+      const result = resolveEnvVars(
+        LOGICAL,
+        L1_PATH,
+        { TABLE_NAME: { Ref: 'MyTable' } },
+        { [LOGICAL]: { TABLE_NAME: 'literal-table' } }
+      );
+      expect(result.resolved).toEqual({ TABLE_NAME: 'literal-table' });
+      // Still reported as unresolved at the template level so the caller can
+      // decide whether to warn; the override's success is observable via
+      // `resolved`.
+      expect(result.unresolved).toEqual(['TABLE_NAME']);
+    });
   });
 
   describe('--env-vars: function-specific entry — display-path key (issue #27)', () => {
