@@ -118,6 +118,18 @@ The `start-api` authorizer primitives are exposed on the same basis:
   `computeRequestIdentityHash` / `evaluateCachedLambdaPolicy` — Lambda
   (TOKEN / REQUEST) authorizer invocation and IAM-policy evaluation.
 
+The `invoke` / `start-api` env-var and stage layers, plus the
+`start-service` Cloud Map registry, are exposed on the same basis:
+
+- `resolveEnvVars` (+ `EnvOverrideFile`) — merge template-literal env
+  vars with SAM-shape `--env-vars` overrides (intrinsic-valued entries
+  warn-and-drop unless substituted upstream).
+- `buildStageMap` / `attachStageContext` (+ `ResolvedStage`) — per-API
+  Stage selection; attaches stage context (`event.stageVariables`) to
+  discovered routes.
+- `CloudMapRegistry` — in-process Cloud Map service registry so peers
+  reach each other by IP / network alias on the shared service network.
+
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
 the factories for that).
