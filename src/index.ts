@@ -199,3 +199,33 @@ export {
   handleConnectionsRequest,
   parseConnectionsPath,
 } from './local/websocket-mgmt-api.js';
+
+/**
+ * `start-api` Docker host-gateway version probe — gates the
+ * `--add-host=...:host-gateway` mapping WebSocket Lambda containers need to
+ * reach the host server on Linux native dockerd. Exposed only as the
+ * consuming host's `import` statements require them.
+ */
+export { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from './local/docker-version.js';
+
+/**
+ * `start-api` API-server grouping — splits a flat discovered-route list into
+ * one group per local HTTP server (one per RestApi / HTTP API / Function URL)
+ * and filters the route list to a single API by a user-supplied `--api`
+ * identifier. Exposed only as the consuming host's `import` statements
+ * require them.
+ */
+export {
+  availableApiIdentifiers,
+  filterRoutesByApiIdentifier,
+  groupRoutesByServer,
+  type ApiServerGroup,
+} from './local/api-server-grouping.js';
+
+/**
+ * `invoke` / `start-api` literal-ARN Lambda Layer materializer — downloads a
+ * layer version's ZIP (optionally via an assumed role), unzips it to a host
+ * tmpdir, and returns the path for `/opt` bind-mounting alongside same-stack
+ * layers. Exposed only as the consuming host's `import` statement requires it.
+ */
+export { materializeLayerFromArn } from './local/layer-arn-materializer.js';
