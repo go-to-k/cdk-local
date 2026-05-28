@@ -72,6 +72,34 @@ default, so omitting `embedConfig` (or any single field) leaves native
 `cdkl` behavior unchanged. Pass the same `embedConfig` to each factory
 the host mounts so the branding is consistent across commands.
 
+### Shim hosts that don't use the factories
+
+A host that re-exports cdk-local's leaf modules as shims
+(`export { resolveRuntimeImage } from 'cdk-local'` etc.) but keeps its
+OWN command implementations does not go through the factories, so the
+factory-internal `setEmbedConfig` never fires — those bundled modules
+would render cdk-local's `cdkl` defaults. Such a host calls
+`setEmbedConfig` directly, once, at startup (before any shimmed module
+runs — e.g. when building its local command tree):
+
+```typescript
+import { setEmbedConfig } from 'cdk-local';
+
+setEmbedConfig({
+  cliName: 'mytool local',
+  binaryName: 'mytool',
+  productName: 'mytool',
+  resourceNamePrefix: 'mytool-local',
+  awsBindMountPath: '/mytool-aws',
+  envPrefix: 'MYTOOL',
+});
+```
+
+`setEmbedConfig` is idempotent and installs process-wide state read by
+every `getEmbedConfig()` call in cdk-local's bundle, so a single call
+covers all re-exported shims. `getEmbedConfig()` reads the resolved
+config and `resetEmbedConfig()` restores the defaults (test isolation).
+
 ## Low-level building blocks (shim hosts)
 
 Most hosts only need the command factories above. A host that instead

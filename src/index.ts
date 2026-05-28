@@ -37,6 +37,16 @@ export {
 } from './cli/commands/local-state-source.js';
 
 export type { CdkLocalEmbedConfig } from './local/embed-config.js';
+/**
+ * Embed-config setter / getter / reset. A host that does NOT use cdk-local's
+ * Commander factories (which install the config themselves) but DOES re-export
+ * cdk-local's leaf modules as shims must call `setEmbedConfig(...)` once at
+ * startup so those bundled modules render the host's branding (`cliName` /
+ * `resourceNamePrefix` / etc.) instead of cdk-local's `cdkl` defaults.
+ * `getEmbedConfig` reads the resolved config; `resetEmbedConfig` restores the
+ * defaults (test isolation).
+ */
+export { getEmbedConfig, resetEmbedConfig, setEmbedConfig } from './local/embed-config.js';
 
 export type { LocalStateProvider, LocalStateRecord } from './local/local-state-provider.js';
 export type { CrossStackResolver, SubstitutionContext } from './local/state-resolver.js';
