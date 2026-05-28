@@ -420,7 +420,6 @@ async function runOneTarget(
       `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
       `task=${service.task.taskDefinitionLogicalId})`
   );
-  for (const w of service.warnings) logger.warn(w);
   if (service.serviceConnect) {
     logger.info(
       `Service Connect: namespace='${service.serviceConnect.namespaceName}', ` +
