@@ -156,11 +156,16 @@ export interface SigV4VerifyResult extends CachedAuthorizerResult {
  *   - **Signature mismatch** under the dev's own credentials → `{allow: false}`.
  *     The http-server maps this to 403 (REST v1 `policy-deny`).
  *   - **Different `Credential` access-key-id than the dev has** →
- *     `{allow: true}` plus a one-line warn (warn-and-pass; we can't
- *     reproduce a signing key we don't have).
+ *     `{allow: false}` by default (we can't reproduce a signing key we
+ *     don't have). With `allowUnverified` (the `--allow-unverified-sigv4`
+ *     flag, or `oacFronted` routes) → `{allow: true}` plus a one-line warn
+ *     (warn-and-pass).
  *   - **Valid signature with the dev's credentials** → `{allow: true}`.
  *     The principal id surfaced to the handler is the parsed
  *     `Credential` access-key-id.
+ *   - **`oacFronted` route** → the caller forces `allowUnverified` on, so
+ *     foreign / no-creds requests pass through (CloudFront re-signs origin
+ *     requests in production) and the warn lines reference CloudFront OAC.
  */
 export async function verifySigV4(
   req: SigV4VerifyRequest,
@@ -179,6 +184,16 @@ export async function verifySigV4(
      * code to spoofing in local dev.
      */
     allowUnverified?: boolean;
+    /**
+     * Set by the http-server for Function URL routes fronted by a CloudFront
+     * Origin Access Control (see `isFunctionUrlOacFronted`). When true the
+     * caller has already forced {@link allowUnverified} on (CloudFront
+     * re-signs origin requests in production, so no local client signature
+     * can be verified), and the warn-and-pass log lines reference CloudFront
+     * OAC instead of the `--allow-unverified-sigv4` flag — which the dev
+     * need NOT have set for OAC-fronted routes.
+     */
+    oacFronted?: boolean;
   } = {}
 ): Promise<SigV4VerifyResult> {
   const logger = getLogger();
@@ -252,7 +267,9 @@ export async function verifySigV4(
       return { allow: false, identityHash: undefined };
     }
     logger.warn(
-      `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). --allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
+      opts.oacFronted
+        ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC (CloudFront re-signs origin requests in production), and local AWS credentials could not be resolved (${reason}). Passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
+        : `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). --allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
     );
     return {
       allow: true,
@@ -295,9 +312,13 @@ export async function verifySigV4(
     }
     if (!warned || !warned.has(dedupKey)) {
       logger.warn(
-        `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
-          `--allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-foreign-identity'. ` +
-          `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
+        opts.oacFronted
+          ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC — in production CloudFront re-signs the origin request, so the local client's signature (access-key-id '${parsed.credentialAccessKeyId}') cannot be verified. ` +
+              `Passing through with unverified principalId 'unverified-foreign-identity'. ` +
+              `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
+          : `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
+              `--allow-unverified-sigv4 is set; passing through with unverified principalId 'unverified-foreign-identity'. ` +
+              `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
       );
       warned?.add(dedupKey);
     }

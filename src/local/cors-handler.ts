@@ -253,6 +253,87 @@ export function buildCorsConfigFromCloudFrontChain(
 }
 
 /**
+ * Determine whether a Function URL (`AWS::Lambda::Url`, identified by its
+ * logical id) is fronted by a CloudFront Distribution origin that uses
+ * Origin Access Control (OAC) to SIGN origin requests.
+ *
+ * Production-correct CDK pattern (`FunctionUrlOrigin.withOriginAccessControl`):
+ * the Function URL declares `AuthType: AWS_IAM`, but the END client never
+ * signs as the IAM principal — CloudFront re-signs the origin request with
+ * its own SigV4 credentials (service `lambda`) via the OAC, and the Function
+ * URL's auto-generated resource policy trusts `cloudfront.amazonaws.com`.
+ * Locally there is no CloudFront in the path, so no client signature can
+ * reproduce CloudFront's. Callers use this to relax SigV4 verification
+ * (warn-and-pass) for these Function URLs without forcing
+ * `--allow-unverified-sigv4`.
+ *
+ * Detection: a CloudFront origin whose `DomainName` matches the canonical
+ * `Fn::GetAtt[<fnUrlLogicalId>, 'FunctionUrl']` chain (see
+ * {@link pickFnUrlLogicalIdFromOriginDomainName}) AND carries an
+ * `OriginAccessControlId`. When that id resolves to an
+ * `AWS::CloudFront::OriginAccessControl` whose `SigningBehavior` is
+ * explicitly `never`, CloudFront does NOT sign — so we do NOT relax (the
+ * AWS_IAM + never-sign combination is non-functional in production too).
+ * Any other signing behavior (`always` — the CDK default — or `no-override`)
+ * counts as OAC-fronted. An `OriginAccessControlId` that can't be resolved
+ * to a local resource (imported literal id) also counts — its presence on a
+ * Function URL origin is the signal.
+ */
+export function isFunctionUrlOacFronted(
+  template: CloudFormationTemplate,
+  fnUrlLogicalId: string
+): boolean {
+  const resources = template.Resources ?? {};
+  for (const [, resource] of Object.entries(resources)) {
+    if (resource.Type !== 'AWS::CloudFront::Distribution') continue;
+    const distConfig = (resource.Properties ?? {})['DistributionConfig'];
+    if (!distConfig || typeof distConfig !== 'object') continue;
+    const origins = Array.isArray((distConfig as Record<string, unknown>)['Origins'])
+      ? ((distConfig as Record<string, unknown>)['Origins'] as unknown[])
+      : [];
+    for (const origin of origins) {
+      if (!origin || typeof origin !== 'object') continue;
+      const o = origin as Record<string, unknown>;
+      if (pickFnUrlLogicalIdFromOriginDomainName(o['DomainName']) !== fnUrlLogicalId) continue;
+      const oacRef = o['OriginAccessControlId'];
+      if (oacRef === undefined || oacRef === '') continue;
+      const oacLogicalId = pickOacRefLogicalId(oacRef);
+      // Unresolvable reference (imported literal id) still counts.
+      if (!oacLogicalId) return true;
+      const oac = resources[oacLogicalId];
+      if (!oac || oac.Type !== 'AWS::CloudFront::OriginAccessControl') return true;
+      const oacConfig = (oac.Properties ?? {})['OriginAccessControlConfig'];
+      const signingBehavior =
+        oacConfig && typeof oacConfig === 'object'
+          ? (oacConfig as Record<string, unknown>)['SigningBehavior']
+          : undefined;
+      if (signingBehavior === 'never') continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Unwrap an origin's `OriginAccessControlId` to the referenced
+ * `AWS::CloudFront::OriginAccessControl` logical id. CDK synthesizes this
+ * as `{ "Fn::GetAtt": [<id>, "Id"] }`; `{ Ref: <id> }` is also accepted.
+ * Returns undefined for a literal id string (imported OAC) or any other
+ * shape.
+ */
+function pickOacRefLogicalId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const ref = obj['Ref'];
+  if (typeof ref === 'string' && ref.length > 0) return ref;
+  const getAtt = obj['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && getAtt.length === 2 && typeof getAtt[0] === 'string') {
+    return getAtt[0];
+  }
+  return undefined;
+}
+
+/**
  * Detect the canonical CDK 2.x `DomainName` shape that points a
  * CloudFront Origin at a Function URL:
  *   {Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<id>, 'FunctionUrl']}]}]}

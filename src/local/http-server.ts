@@ -1088,6 +1088,13 @@ async function runAuthorizerPass(
       );
       return { result: { allow: false }, denyKind: 'policy-deny' };
     }
+    // OAC-fronted Function URLs pass through even without
+    // `--allow-unverified-sigv4`: in production CloudFront re-signs the
+    // origin request with its own identity, so the local server never sees
+    // a client signature it could verify. `oacFronted` is set only for
+    // `AWS::Lambda::Url` routes (never REST v1 AWS_IAM, which stays
+    // fail-closed). See `authorizer-resolver.ts` / `isFunctionUrlOacFronted`.
+    const oacFronted = authorizer.oacFronted === true;
     const sigResult = await verifySigV4(
       {
         method: snapshot.method,
@@ -1098,9 +1105,8 @@ async function runAuthorizerPass(
       opts.sigV4CredentialsLoader,
       {
         ...(opts.sigV4WarnedForeignIds && { warnedForeignIds: opts.sigV4WarnedForeignIds }),
-        ...(opts.sigV4AllowUnverified !== undefined && {
-          allowUnverified: opts.sigV4AllowUnverified,
-        }),
+        allowUnverified: oacFronted || opts.sigV4AllowUnverified === true,
+        ...(oacFronted && { oacFronted: true }),
       }
     );
     if (!sigResult.allow) {
