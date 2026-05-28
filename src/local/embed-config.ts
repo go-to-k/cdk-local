@@ -49,6 +49,12 @@ export interface CdkLocalEmbedConfig {
    * `'/cdkd-aws'`.
    */
   awsBindMountPath?: string;
+  /**
+   * Prefix for the environment variables this CLI reads — `${envPrefix}_APP`
+   * (the `--app` fallback) and `${envPrefix}_ROLE_ARN` (the `--role-arn`
+   * fallback). Default `'CDKL'`; cdkd passes `'CDKD'`.
+   */
+  envPrefix?: string;
 }
 
 export interface ResolvedEmbedConfig {
@@ -57,6 +63,7 @@ export interface ResolvedEmbedConfig {
   productName: string;
   resourceNamePrefix: string;
   awsBindMountPath: string;
+  envPrefix: string;
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -65,6 +72,7 @@ const DEFAULTS: ResolvedEmbedConfig = {
   productName: 'cdk-local',
   resourceNamePrefix: 'cdkl',
   awsBindMountPath: '/cdk-local-aws',
+  envPrefix: 'CDKL',
 };
 
 let current: ResolvedEmbedConfig = DEFAULTS;
@@ -82,6 +90,7 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     productName: config?.productName ?? DEFAULTS.productName,
     resourceNamePrefix: config?.resourceNamePrefix ?? DEFAULTS.resourceNamePrefix,
     awsBindMountPath: config?.awsBindMountPath ?? DEFAULTS.awsBindMountPath,
+    envPrefix: config?.envPrefix ?? DEFAULTS.envPrefix,
   };
 }
 

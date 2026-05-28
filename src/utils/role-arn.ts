@@ -22,7 +22,7 @@ export async function applyRoleArnIfSet(opts: {
   roleArn: string | undefined;
   region: string | undefined;
 }): Promise<void> {
-  const roleArn = opts.roleArn || process.env['CDKL_ROLE_ARN'];
+  const roleArn = opts.roleArn || process.env[`${getEmbedConfig().envPrefix}_ROLE_ARN`];
   if (!roleArn) return;
 
   const logger = getLogger().child('role-arn');

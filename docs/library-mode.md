@@ -61,6 +61,7 @@ const embedConfig: CdkLocalEmbedConfig = {
   productName: 'mytool',        // prose refs: `mytool supports ...`
   resourceNamePrefix: 'mytool-local', // docker/AWS names: `mytool-local-<id>`
   awsBindMountPath: '/mytool-aws',    // container creds bind-mount target
+  envPrefix: 'MYTOOL',          // env fallbacks: MYTOOL_APP / MYTOOL_ROLE_ARN
 };
 
 program.addCommand(createLocalInvokeCommand({ extraStateProviders, embedConfig }));

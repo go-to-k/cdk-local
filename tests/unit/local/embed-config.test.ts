@@ -9,6 +9,7 @@ import {
   getContainerAwsCredentialsPath,
   writeProfileCredentialsFile,
 } from '../../../src/cli/commands/local-profile-credentials-file.js';
+import { resolveApp } from '../../../src/cli/config-loader.js';
 
 // The embed config is a module-level singleton; reset after every test so
 // one test's override never leaks into the next.
@@ -24,6 +25,7 @@ describe('embed-config', () => {
       productName: 'cdk-local',
       resourceNamePrefix: 'cdkl',
       awsBindMountPath: '/cdk-local-aws',
+      envPrefix: 'CDKL',
     });
   });
 
@@ -34,6 +36,7 @@ describe('embed-config', () => {
       productName: 'cdkd',
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdkd-aws',
+      envPrefix: 'CDKD',
     });
     expect(getEmbedConfig()).toEqual({
       cliName: 'cdkd local',
@@ -41,6 +44,7 @@ describe('embed-config', () => {
       productName: 'cdkd',
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdkd-aws',
+      envPrefix: 'CDKD',
     });
   });
 
@@ -52,6 +56,7 @@ describe('embed-config', () => {
       productName: 'cdk-local',
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdk-local-aws',
+      envPrefix: 'CDKL',
     });
   });
 
@@ -100,6 +105,24 @@ describe('embed-config threading into branded sites', () => {
       expect(file.hostPath).not.toContain('cdk-local-profile-creds-');
     } finally {
       await file.dispose();
+    }
+  });
+
+  it('envPrefix flows into the --app env-var fallback that resolveApp reads', () => {
+    const saved = { app: process.env['CDKL_APP'], cdkd: process.env['CDKD_APP'] };
+    try {
+      delete process.env['CDKL_APP'];
+      process.env['CDKD_APP'] = 'node cdkd-app.ts';
+      // Default prefix reads CDKL_APP (unset) — falls through to cdk.json.
+      expect(resolveApp(undefined)).not.toBe('node cdkd-app.ts');
+      // CDKD prefix reads CDKD_APP.
+      setEmbedConfig({ envPrefix: 'CDKD' });
+      expect(resolveApp(undefined)).toBe('node cdkd-app.ts');
+    } finally {
+      if (saved.app === undefined) delete process.env['CDKL_APP'];
+      else process.env['CDKL_APP'] = saved.app;
+      if (saved.cdkd === undefined) delete process.env['CDKD_APP'];
+      else process.env['CDKD_APP'] = saved.cdkd;
     }
   });
 });

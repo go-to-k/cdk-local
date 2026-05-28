@@ -169,7 +169,9 @@ async function localRunTaskCommand(
 
     const appCmd = resolveApp(options.app);
     if (!appCmd) {
-      throw new Error('No CDK app specified. Pass --app, set CDKL_APP, or add "app" to cdk.json.');
+      throw new Error(
+        `No CDK app specified. Pass --app, set ${getEmbedConfig().envPrefix}_APP, or add "app" to cdk.json.`
+      );
     }
 
     logger.info('Synthesizing CDK app...');
@@ -677,7 +679,7 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
       })
     );
 
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

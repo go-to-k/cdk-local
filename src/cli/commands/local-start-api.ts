@@ -281,7 +281,9 @@ async function localStartApiCommand(
 
   const appCmd = resolveApp(options.app);
   if (!appCmd) {
-    throw new Error('No CDK app specified. Pass --app, set CDKL_APP, or add "app" to cdk.json.');
+    throw new Error(
+      `No CDK app specified. Pass --app, set ${getEmbedConfig().envPrefix}_APP, or add "app" to cdk.json.`
+    );
   }
 
   const overrides = readEnvOverridesFile(options.envVars);
@@ -3231,7 +3233,9 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
       })
     );
 
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => startApi.addOption(opt));
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
+    startApi.addOption(opt)
+  );
   startApi.addOption(deprecatedRegionOption);
 
   return startApi;
