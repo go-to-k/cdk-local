@@ -1,3 +1,10 @@
+# [0.29.0](https://github.com/go-to-k/cdk-local/compare/v0.28.2...v0.29.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose bufferToBody from websocket-body for shim consumers ([#106](https://github.com/go-to-k/cdk-local/issues/106)) ([e772e2c](https://github.com/go-to-k/cdk-local/commit/e772e2cf3cdf70df17244d2d18b3bea5f1b9f657))
+
 ## [0.28.2](https://github.com/go-to-k/cdk-local/compare/v0.28.1...v0.28.2) (2026-05-28)
 
 
