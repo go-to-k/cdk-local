@@ -57,17 +57,18 @@ describe('Synthesizer.synthesize', () => {
     expect(opts).not.toHaveProperty('outdir');
   });
 
-  it('threads profile into readOpts.env.AWS_PROFILE', async () => {
+  it('threads profile into readOpts.env.AWS_PROFILE AND readOpts.profile', async () => {
     mockRead.mockResolvedValue([]);
     const s = new Synthesizer();
     await s.synthesize({ app: 'x', profile: 'dev' });
 
     expect(mockRead).toHaveBeenCalledWith('x', {
       env: { AWS_PROFILE: 'dev' },
+      profile: 'dev',
     });
   });
 
-  it('threads region into readOpts.env.AWS_REGION AND CDK_DEFAULT_REGION', async () => {
+  it('threads region into env (AWS_REGION + CDK_DEFAULT_REGION) AND readOpts.region', async () => {
     mockRead.mockResolvedValue([]);
     const s = new Synthesizer();
     await s.synthesize({ app: 'x', region: 'us-east-1' });
@@ -77,10 +78,11 @@ describe('Synthesizer.synthesize', () => {
         AWS_REGION: 'us-east-1',
         CDK_DEFAULT_REGION: 'us-east-1',
       },
+      region: 'us-east-1',
     });
   });
 
-  it('threads profile + region together into a single env object', async () => {
+  it('threads profile + region into both env and the top-level readOpts fields', async () => {
     mockRead.mockResolvedValue([]);
     const s = new Synthesizer();
     await s.synthesize({ app: 'x', profile: 'p', region: 'eu-west-1' });
@@ -91,7 +93,19 @@ describe('Synthesizer.synthesize', () => {
         AWS_REGION: 'eu-west-1',
         CDK_DEFAULT_REGION: 'eu-west-1',
       },
+      profile: 'p',
+      region: 'eu-west-1',
     });
+  });
+
+  it('omits readOpts.profile / readOpts.region when neither is set', async () => {
+    mockRead.mockResolvedValue([]);
+    const s = new Synthesizer();
+    await s.synthesize({ app: 'x' });
+
+    const opts = mockRead.mock.calls[0][1];
+    expect(opts).not.toHaveProperty('profile');
+    expect(opts).not.toHaveProperty('region');
   });
 
   it('omits readOpts.env when neither profile nor region is set', async () => {
@@ -148,6 +162,8 @@ describe('Synthesizer.synthesize', () => {
         AWS_REGION: 'ap-northeast-1',
         CDK_DEFAULT_REGION: 'ap-northeast-1',
       },
+      profile: 'p',
+      region: 'ap-northeast-1',
     });
   });
 

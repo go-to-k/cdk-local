@@ -2,7 +2,7 @@ import {
   AssetManifestArtifact,
   type CloudFormationStackArtifact,
 } from '@aws-cdk/cloud-assembly-api';
-import { Toolkit, CdkAppMultiContext } from '@aws-cdk/toolkit-lib';
+import { Toolkit, CdkAppMultiContext, BaseCredentials } from '@aws-cdk/toolkit-lib';
 import { CdklIoHost } from './cdkl-io-host.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
@@ -97,6 +97,20 @@ export interface AssemblyReadOptions {
   /** Additional env vars passed to the CDK app subprocess (e.g. `AWS_PROFILE`, `AWS_REGION`). */
   env?: Record<string, string | undefined>;
   /**
+   * AWS profile used for toolkit-lib's OWN AWS calls — most importantly
+   * the synth-time context lookups (assume `cdk-hnb659fds-lookup-role-*`
+   * + the SSM / VPC / etc. provider call). Without this, those lookups
+   * fall back to the parent process's default credential chain even
+   * when `--profile` was supplied, so a cross-account lookup-role
+   * assume resolves with the wrong account and synthesis aborts with
+   * `AssemblyError: Found errors`. Setting `env.AWS_PROFILE` alone is
+   * not enough: that only reaches the forked CDK app subprocess, not
+   * the lookup machinery that runs in this process.
+   */
+  profile?: string;
+  /** Default region for toolkit-lib's own AWS calls (context lookups). */
+  region?: string;
+  /**
    * Working directory the CDK app subprocess is executed in. Defaults
    * to the current process cwd. When `context` is also set, this is
    * also the directory `CdkAppMultiContext` resolves `cdk.json` /
@@ -121,7 +135,15 @@ export class AssemblyReader {
    * artifact in the resulting Cloud Assembly.
    */
   async read(cdkAppCommand: string, options: AssemblyReadOptions = {}): Promise<StackInfo[]> {
-    const toolkit = new Toolkit({ ioHost: new CdklIoHost() });
+    const toolkit = new Toolkit({
+      ioHost: new CdklIoHost(),
+      sdkConfig: {
+        baseCredentials: BaseCredentials.awsCliCompatible({
+          ...(options.profile !== undefined && { profile: options.profile }),
+          ...(options.region !== undefined && { defaultRegion: options.region }),
+        }),
+      },
+    });
     const hasContextOverrides =
       options.context !== undefined && Object.keys(options.context).length > 0;
     const source = await toolkit.fromCdkApp(cdkAppCommand, {
