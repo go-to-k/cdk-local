@@ -336,6 +336,7 @@ export async function runEcsTask(
   }
   const resolvedSecrets = await resolveEcsSecrets(allSecrets, {
     ...(options.region !== undefined && { region: options.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
   });
   const secretsByContainer = groupSecretsByContainer(resolvedSecrets);
 
