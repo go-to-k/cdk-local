@@ -7,6 +7,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
@@ -166,7 +167,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   if (!parsed) {
     throw new LocalInvokeBuildError(
       `Image URI '${imageUri}' is not an ECR URI. ` +
-        'cdkl invoke v1 only authenticates against ECR for the deployed-image fallback path.'
+        `${getEmbedConfig().cliName} invoke v1 only authenticates against ECR for the deployed-image fallback path.`
     );
   }
 
@@ -290,7 +291,7 @@ async function assumeRoleForEcr(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-ecr-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-ecr-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -365,7 +366,7 @@ async function verifyImageInLocalCache(imageUri: string): Promise<void> {
   } catch {
     throw new LocalInvokeBuildError(
       `Image '${imageUri}' is not in the local docker cache and --no-pull was set. ` +
-        'Either remove --no-pull (cdk-local will pull from ECR) or pre-pull the image manually with `docker pull`.'
+        `Either remove --no-pull (${getEmbedConfig().productName} will pull from ECR) or pre-pull the image manually with \`docker pull\`.`
     );
   }
 }

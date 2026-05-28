@@ -24,6 +24,7 @@ import {
   type ResolvedEcsTask,
   type ResolvedEcsVolume,
 } from './ecs-task-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -723,7 +724,7 @@ async function prepareOneImage(
             'Re-synthesize the CDK app and retry.'
         );
       }
-      const tag = `cdkl-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
+      const tag = `${getEmbedConfig().resourceNamePrefix}-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
@@ -783,7 +784,7 @@ async function realizeDockerVolumes(
     if (cfg?.labels) {
       for (const [k, val] of Object.entries(cfg.labels)) args.push('--label', `${k}=${val}`);
     }
-    const dockerVolumeName = `cdkl-${v.name}-${randHex(4)}`;
+    const dockerVolumeName = `${getEmbedConfig().resourceNamePrefix}-${v.name}-${randHex(4)}`;
     args.push(dockerVolumeName);
     try {
       await execFileAsync(getDockerCmd(), args);
@@ -883,7 +884,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   const args: string[] = ['run', '-d'];
 
   // Stable name so siblings can reach this container via DNS.
-  args.push('--name', `cdkl-${task.family}-${container.name}-${randHex(3)}`);
+  args.push(
+    '--name',
+    `${getEmbedConfig().resourceNamePrefix}-${task.family}-${container.name}-${randHex(3)}`
+  );
   args.push('--network', network);
   args.push('--network-alias', container.name);
 

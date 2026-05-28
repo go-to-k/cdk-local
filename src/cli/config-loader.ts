@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from '../local/embed-config.js';
 
 function loadCdkJson(): { app?: string } | null {
   const filePath = resolve(process.cwd(), 'cdk.json');
@@ -33,7 +34,7 @@ function loadCdkJson(): { app?: string } | null {
 export function resolveApp(cliApp?: string): string | undefined {
   if (cliApp) return cliApp;
 
-  const envApp = process.env['CDKL_APP'];
+  const envApp = process.env[`${getEmbedConfig().envPrefix}_APP`];
   if (envApp) return envApp;
 
   return loadCdkJson()?.app ?? undefined;

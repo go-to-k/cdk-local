@@ -1,5 +1,6 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import { EcsTaskResolutionError } from './ecs-task-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Phase 3 of #262 (Issue #460) — `AWS::ServiceDiscovery::*` template
@@ -99,7 +100,7 @@ export function buildCloudMapIndex(stack: StackInfo): CloudMapIndex {
       throw new EcsTaskResolutionError(
         `Stack ${stack.stackName}: AWS::ServiceDiscovery::PublicDnsNamespace '${logicalId}' ` +
           'is not supported by local emulation — public DNS defeats the "local" point. ' +
-          'Use a PrivateDnsNamespace for cdkl start-service.'
+          `Use a PrivateDnsNamespace for ${getEmbedConfig().cliName} start-service.`
       );
     }
     if (resource.Type === 'AWS::ServiceDiscovery::HttpNamespace') {

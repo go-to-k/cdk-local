@@ -6,6 +6,7 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.j
 import { matchStacks } from '../cli/stack-matcher.js';
 import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Result of resolving a `cdkl invoke <target>` argument back to a
@@ -331,7 +332,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     }
     throw new LocalInvokeResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not a Lambda function. ` +
-        `cdkl invoke only works on AWS::Lambda::Function resources in v1.`
+        `${getEmbedConfig().cliName} invoke only works on AWS::Lambda::Function resources in v1.`
     );
   }
 
@@ -426,7 +427,7 @@ function extractLambdaProperties(
   if (!runtime) {
     throw new LocalInvokeResolutionError(
       `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
-        'cdk-local cannot tell if this is a ZIP or a container Lambda.'
+        `${getEmbedConfig().productName} cannot tell if this is a ZIP or a container Lambda.`
     );
   }
   if (!handler) {
@@ -582,15 +583,15 @@ function extractImageUri(
       if (joinResolved.kind === 'needs-state') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-            'cdkl invoke cannot resolve the repository URI without state — ' +
-            'deploy the stack first (so cdk-local records the repository physical id), ' +
+            `${getEmbedConfig().cliName} invoke cannot resolve the repository URI without state — ` +
+            `deploy the stack first (so ${getEmbedConfig().productName} records the repository physical id), ` +
             'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
       }
       if (joinResolved.kind === 'unsupported-join') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
-            'cdkl invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
+            `${getEmbedConfig().cliName} invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
@@ -599,10 +600,10 @@ function extractImageUri(
       // plumbing the typical remaining cause is `${AWS::AccountId}`
       // (needs an STS call or `--from-state`) or an unknown region.
       const accountIdHint = pseudoParameters
-        ? ' (likely ${AWS::AccountId}, which cdk-local cannot derive without --from-state or STS)'
-        : ` (cdk-local could not derive AWS pseudo parameters because stack.region was undefined)`;
+        ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().productName} cannot derive without --from-state or STS)`
+        : ` (${getEmbedConfig().productName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkl invoke cannot resolve${accountIdHint}. ` +
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} invoke cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
@@ -655,7 +656,7 @@ function extractImageLambdaProperties(args: {
     else {
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          'cdkl invoke supports x86_64 and arm64.'
+          `${getEmbedConfig().cliName} invoke supports x86_64 and arm64.`
       );
     }
   }
@@ -701,7 +702,7 @@ function resolveAssetCodePath(
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
       `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ` +
-        'cdkl invoke needs this hint to find the local asset directory. ' +
+        `${getEmbedConfig().cliName} invoke needs this hint to find the local asset directory. ` +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
   }
@@ -790,7 +791,7 @@ export function resolveLambdaLayers(
       const parsed = parseLayerVersionArn(entry);
       if (!parsed) {
         throw new LocalInvokeResolutionError(
-          `Lambda '${logicalId}' has a Layers entry [${i}] cdk-local cannot resolve locally: literal string '${entry}'. ` +
+          `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: literal string '${entry}'. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
             'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
@@ -803,7 +804,7 @@ export function resolveLambdaLayers(
     const layerLogicalId = pickLayerLogicalId(entry);
     if (!layerLogicalId) {
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' has a Layers entry [${i}] cdk-local cannot resolve locally: ${describeLayerEntry(entry)}. ` +
+        `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: ${describeLayerEntry(entry)}. ` +
           'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
           'OR a literal layer-version ARN of the form ' +
           'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'

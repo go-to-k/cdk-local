@@ -45,6 +45,11 @@ import {
   rejectExplicitCfnStackWithMultipleStacks,
   type ExtraStateProviders,
 } from './local-state-source.js';
+import {
+  getEmbedConfig,
+  setEmbedConfig,
+  type CdkLocalEmbedConfig,
+} from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
 import { CloudMapRegistry } from '../../local/cloud-map-registry.js';
@@ -90,6 +95,8 @@ interface LocalStartServiceOptions {
  */
 export interface CreateLocalStartServiceCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Embed-time branding overrides for a host wrapping this factory. */
+  embedConfig?: CdkLocalEmbedConfig;
 }
 
 /**
@@ -116,7 +123,7 @@ async function localStartServiceCommand(
 
   if (!targets || targets.length === 0) {
     throw new LocalStartServiceError(
-      'cdkl start-service requires at least one <target>. ' +
+      `${getEmbedConfig().cliName} start-service requires at least one <target>. ` +
         "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend'."
     );
   }
@@ -226,7 +233,9 @@ async function localStartServiceCommand(
 
     const appCmd = resolveApp(options.app);
     if (!appCmd) {
-      throw new Error('No CDK app specified. Pass --app, set CDKL_APP, or add "app" to cdk.json.');
+      throw new Error(
+        `No CDK app specified. Pass --app, set ${getEmbedConfig().envPrefix}_APP, or add "app" to cdk.json.`
+      );
     }
 
     logger.info('Synthesizing CDK app...');
@@ -531,7 +540,7 @@ async function assumeTaskRole(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-start-service-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-start-service-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -583,7 +592,7 @@ async function buildEcsImageResolutionContext(
       candidate.region;
     if (!region) {
       logger.warn(
-        'Resolver references ${AWS::Region} but cdkl could not determine the target region. ' +
+        `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +
           'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
       );
     }
@@ -747,11 +756,12 @@ export async function resolveSharedSidecarCredentials(options: {
 export function createLocalStartServiceCommand(
   opts: CreateLocalStartServiceCommandOptions = {}
 ): Command {
+  setEmbedConfig(opts.embedConfig);
   const cmd = new Command('start-service')
     .description(
       'Run one or more AWS::ECS::Service resources locally as a long-running emulator. Spins up ' +
         'DesiredCount task replicas per service (clamped by --max-tasks) using the same per-task ' +
-        'docker network + metadata sidecar pattern as `cdkl run-task`, then keeps each ' +
+        `docker network + metadata sidecar pattern as \`${getEmbedConfig().cliName} run-task\`, then keeps each ` +
         'replica running and restarts it on exit per --restart-policy. ^C tears every replica + ' +
         'sidecar + network down. Each <target> accepts a CDK display path (MyStack/MyService) ' +
         'or stack-qualified logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the ' +
@@ -767,7 +777,7 @@ export function createLocalStartServiceCommand(
       new Option(
         '--cluster <name>',
         'Cluster name surfaced to ECS_CONTAINER_METADATA_URI_V4 and used as the docker network prefix'
-      ).default('cdkl')
+      ).default(getEmbedConfig().resourceNamePrefix)
     )
     .addOption(
       new Option(
@@ -830,7 +840,7 @@ export function createLocalStartServiceCommand(
         'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
           'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
-          'Bare form uses the cdkl stack name; pass an explicit value when the CFn stack name differs. ' +
+          `Bare form uses the ${getEmbedConfig().binaryName} stack name; pass an explicit value when the CFn stack name differs. ` +
           'Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
       )
     )
@@ -846,7 +856,7 @@ export function createLocalStartServiceCommand(
       })
     );
 
-  [...commonOptions, ...appOptions, ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

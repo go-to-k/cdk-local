@@ -6,6 +6,7 @@ import { stringifyValue } from '../utils/stringify.js';
 import { isFunctionUrlOacFronted } from './cors-handler.js';
 import { resolveLambdaArnIntrinsic as resolveLambdaArnShared } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Authorizer detection for `cdkl start-api` (PR 8b of #224).
@@ -300,7 +301,7 @@ export function resolveRestV1Authorizer(
   // orthogonal to (and composable with) TOKEN / REQUEST / COGNITO_USER_POOLS
   // authorizers.
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by cdkl start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGateway::Authorizer.Type '${String(type)}' is not supported by ${getEmbedConfig().cliName} start-api (only TOKEN / REQUEST / COGNITO_USER_POOLS are accepted at the Authorizer resource).`
   );
 }
 
@@ -378,7 +379,7 @@ export function resolveHttpApiAuthorizer(
   }
 
   throw new RouteDiscoveryError(
-    `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.AuthorizerType '${String(authType)}' is not supported by cdkl start-api (only REQUEST / JWT).`
+    `${stackName}/${authorizerLogicalId}: AWS::ApiGatewayV2::Authorizer.AuthorizerType '${String(authType)}' is not supported by ${getEmbedConfig().cliName} start-api (only REQUEST / JWT).`
   );
 }
 
@@ -594,7 +595,7 @@ function pickStringFromArn(value: unknown, location: string): string {
         const logicalId = arg[0];
         getLogger().warn(
           `${location}: uses Fn::GetAtt against logical ID '${logicalId}'. ` +
-            `cdkl start-api cannot resolve the deployed user pool ARN — synthesizing ` +
+            `${getEmbedConfig().cliName} start-api cannot resolve the deployed user pool ARN — synthesizing ` +
             `an unreachable placeholder so JWKS pass-through admits every token. ` +
             `For real signature verification, set 'providerArns: [pool.userPoolArn]' explicitly on the CDK construct.`
         );
@@ -603,7 +604,7 @@ function pickStringFromArn(value: unknown, location: string): string {
         // is supposed to 404 so the pass-through path is the only outcome.
         // The pool id is namespaced with the logical id so the warn line is
         // easy to grep back to the offending authorizer if multiple coexist.
-        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_cdklplaceholder${logicalId}`;
+        return `arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_${getEmbedConfig().binaryName}placeholder${logicalId}`;
       }
     }
   }
@@ -713,7 +714,7 @@ export function attachAuthorizers(
 
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkl start-api: ${errors.length} authorizer error(s):\n` +
+      `${getEmbedConfig().cliName} start-api: ${errors.length} authorizer error(s):\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }

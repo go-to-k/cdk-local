@@ -1,4 +1,5 @@
 import { Option } from 'commander';
+import { getEmbedConfig } from '../local/embed-config.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record.
@@ -17,21 +18,29 @@ export function parseContextOptions(contextArgs?: string[]): Record<string, stri
 }
 
 /**
- * Options shared across every cdk-local command.
+ * Options shared across every cdk-local command. Built per-call (not a
+ * module-level const) so the `--role-arn` env-var hint reflects the active
+ * embed config, which the command factory installs before calling this.
  *
  * `--region` is intentionally NOT in `commonOptions` — local commands
  * pick the region from `AWS_REGION` / profile / synthesized stack env.
  * The deprecated flag below remains for muscle-memory compatibility.
  */
-export const commonOptions = [
-  new Option('--verbose', 'Enable verbose logging').default(false),
-  new Option('--profile <profile>', 'AWS profile'),
-  new Option('--role-arn <arn>', 'IAM role ARN to assume for AWS API calls (env: CDKL_ROLE_ARN)'),
-  new Option(
-    '-y, --yes',
-    'Automatically answer interactive prompts with the recommended response'
-  ).default(false),
-];
+export function commonOptions(): Option[] {
+  const { envPrefix } = getEmbedConfig();
+  return [
+    new Option('--verbose', 'Enable verbose logging').default(false),
+    new Option('--profile <profile>', 'AWS profile'),
+    new Option(
+      '--role-arn <arn>',
+      `IAM role ARN to assume for AWS API calls (env: ${envPrefix}_ROLE_ARN)`
+    ),
+    new Option(
+      '-y, --yes',
+      'Automatically answer interactive prompts with the recommended response'
+    ).default(false),
+  ];
+}
 
 /**
  * Deprecated `--region` option attached to every command.
@@ -59,19 +68,24 @@ export function warnIfDeprecatedRegion(options: { region?: string }): void {
 }
 
 /**
- * App options.
+ * App options. Built per-call (not a module-level const) so the `--app`
+ * env-var hint reflects the active embed config.
  *
- * `--app` is optional: falls back to `CDKL_APP` env var, then `cdk.json`
- * `app` field. Accepts either a shell command (e.g. `"node app.ts"`) or
- * a path to a pre-synthesized cloud assembly directory (e.g. `"cdk.out"`).
+ * `--app` is optional: falls back to `${envPrefix}_APP` env var, then
+ * `cdk.json` `app` field. Accepts either a shell command (e.g.
+ * `"node app.ts"`) or a path to a pre-synthesized cloud assembly directory
+ * (e.g. `"cdk.out"`).
  */
-export const appOptions = [
-  new Option(
-    '-a, --app <command>',
-    'CDK app command (e.g., "node app.ts") or path to a pre-synthesized cloud assembly directory. Falls back to cdk.json or CDKL_APP env'
-  ),
-  new Option('--output <path>', 'Output directory for synthesis').default('cdk.out'),
-];
+export function appOptions(): Option[] {
+  const { envPrefix } = getEmbedConfig();
+  return [
+    new Option(
+      '-a, --app <command>',
+      `CDK app command (e.g., "node app.ts") or path to a pre-synthesized cloud assembly directory. Falls back to cdk.json or ${envPrefix}_APP env`
+    ),
+    new Option('--output <path>', 'Output directory for synthesis').default('cdk.out'),
+  ];
+}
 
 /**
  * Context options.

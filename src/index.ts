@@ -35,6 +35,8 @@ export {
   type LocalStateSourceOptions,
 } from './cli/commands/local-state-source.js';
 
+export type { CdkLocalEmbedConfig } from './local/embed-config.js';
+
 export type { LocalStateProvider, LocalStateRecord } from './local/local-state-provider.js';
 export type { CrossStackResolver, SubstitutionContext } from './local/state-resolver.js';
 

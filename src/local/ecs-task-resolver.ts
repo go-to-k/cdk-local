@@ -14,6 +14,7 @@ import {
   substituteAgainstStateAsync,
   type SubstitutionContext,
 } from './state-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Result of resolving a `cdkl run-task <target>` argument back to a
@@ -581,7 +582,7 @@ export function resolveEcsTaskTarget(
   if (resource.Type === 'AWS::Lambda::Function') {
     throw new EcsTaskResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is a Lambda function, not an ECS task definition. ` +
-        'Use `cdkl invoke` for Lambda; `cdkl run-task` is ECS only.'
+        `Use \`${getEmbedConfig().cliName} invoke\` for Lambda; \`${getEmbedConfig().cliName} run-task\` is ECS only.`
     );
   }
   if (resource.Type !== 'AWS::ECS::TaskDefinition') {
@@ -660,7 +661,7 @@ function extractTaskDefinitionProperties(
   if (props['ProxyConfiguration']) {
     warnings.push(
       `Task definition '${logicalId}' declares 'ProxyConfiguration' (custom Envoy / App Mesh bootstrap), ` +
-        "which is NOT honored by 'cdkl start-service' / 'cdkl run-task' in v1. " +
+        `which is NOT honored by '${getEmbedConfig().cliName} start-service' / '${getEmbedConfig().cliName} run-task' in v1. ` +
         'Local execution will run without the configured proxy. See design doc § 2 for the rationale.'
     );
   }
@@ -1030,7 +1031,7 @@ function parseContainerImage(
   if (joinResolved.kind === 'needs-state') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-        'cdkl run-task cannot resolve the repository URI without state — ' +
+        `${getEmbedConfig().cliName} run-task cannot resolve the repository URI without state — ` +
         'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
         'build via ContainerImage.fromAsset, or pin a public image.'
     );
@@ -1038,7 +1039,7 @@ function parseContainerImage(
   if (joinResolved.kind === 'unsupported-join') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unsupported Fn::Join Image shape: ${joinResolved.reason}. ` +
-        'cdkl run-task recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ' +
+        `${getEmbedConfig().cliName} run-task recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ` +
         '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
     );
   }
@@ -1047,7 +1048,7 @@ function parseContainerImage(
   if (!flat) {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unparseable Image property. ` +
-        'cdkl run-task v1 supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.'
+        `${getEmbedConfig().cliName} run-task v1 supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.`
     );
   }
 
@@ -1076,7 +1077,7 @@ function parseContainerImage(
     if (unresolvedRepoRef) {
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
-          'cdkl run-task v1 cannot resolve the repository URI without state — ' +
+          `${getEmbedConfig().cliName} run-task v1 cannot resolve the repository URI without state — ` +
           'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
           'build via ContainerImage.fromAsset, or pin a public image.'
       );
@@ -1084,7 +1085,7 @@ function parseContainerImage(
     if (substituted.includes('AWS::')) {
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' has an Image that references AWS pseudo parameters (${substituted}). ` +
-          'cdk-local could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ' +
+          `${getEmbedConfig().productName} could not resolve them: confirm AWS credentials are configured so STS GetCallerIdentity succeeds, ` +
           'and that --region / AWS_REGION names the target region. ' +
           'Workaround: build the image locally (ContainerImage.fromAsset) or pin a public image.'
       );
@@ -1094,7 +1095,7 @@ function parseContainerImage(
     // a "public" image.
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an Image with unresolved \${...} placeholders (${substituted}). ` +
-        'cdkl run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.'
+        `${getEmbedConfig().cliName} run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.`
     );
   }
 
@@ -1237,13 +1238,13 @@ function parseVolume(
 
   if (v['EFSVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which cdkl run-task cannot proxy locally. ` +
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which ${getEmbedConfig().cliName} run-task cannot proxy locally. ` +
         `Workaround: bind-mount a local directory at the same containerPath via Host: { SourcePath: '<local-path>' }, or override at runtime via --env-vars semantics for a Phase 2 follow-up.`
     );
   }
   if (v['FSxWindowsFileServerVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which cdkl run-task cannot proxy locally.`
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which ${getEmbedConfig().cliName} run-task cannot proxy locally.`
     );
   }
 

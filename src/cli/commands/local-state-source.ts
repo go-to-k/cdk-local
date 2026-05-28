@@ -31,6 +31,7 @@
  */
 
 import { CfnLocalStateProvider } from '../../local/cfn-local-state-provider.js';
+import { getEmbedConfig } from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 
 /**
@@ -166,7 +167,7 @@ export function rejectExplicitCfnStackWithMultipleStacks(
   throw new LocalStateSourceError(
     `--from-cfn-stack <name> cannot be used with multiple routed stacks (got ${routedStackCount}). ` +
       'An explicit CFn stack name applies to one stack only and would silently mismap logical IDs across siblings. ' +
-      'Use bare --from-cfn-stack (each stack uses its own name as the CFn stack name) or run one cdkl invocation per stack.'
+      `Use bare --from-cfn-stack (each stack uses its own name as the CFn stack name) or run one ${getEmbedConfig().binaryName} invocation per stack.`
   );
 }
 

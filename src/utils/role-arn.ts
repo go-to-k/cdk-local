@@ -1,5 +1,6 @@
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
+import { getEmbedConfig } from '../local/embed-config.js';
 
 /**
  * Resolve the role-arn argument (CLI flag or `CDKL_ROLE_ARN` env var) and,
@@ -21,7 +22,7 @@ export async function applyRoleArnIfSet(opts: {
   roleArn: string | undefined;
   region: string | undefined;
 }): Promise<void> {
-  const roleArn = opts.roleArn || process.env['CDKL_ROLE_ARN'];
+  const roleArn = opts.roleArn || process.env[`${getEmbedConfig().envPrefix}_ROLE_ARN`];
   if (!roleArn) return;
 
   const logger = getLogger().child('role-arn');
@@ -32,7 +33,7 @@ export async function applyRoleArnIfSet(opts: {
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().binaryName}-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );

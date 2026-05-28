@@ -176,7 +176,7 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 
 ## Programmatic use
 
-cdk-local also exports its commands as Commander factories so a host project can embed it into its own CLI and register custom state sources alongside the built-in `--from-cfn-stack`. See [docs/library-mode.md](docs/library-mode.md) for the API and an example.
+cdk-local also exports its commands as Commander factories so a host project can embed it into its own CLI, register custom state sources alongside the built-in `--from-cfn-stack`, and rebrand the embedded commands under its own name. See [docs/library-mode.md](docs/library-mode.md) for the API and an example.
 
 ## License
 

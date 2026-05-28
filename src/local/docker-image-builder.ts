@@ -5,6 +5,7 @@ import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { isImageInLocalCache } from './ecr-puller.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Local-build path for `cdkl invoke` against container Lambdas
@@ -119,7 +120,7 @@ export function architectureToPlatform(architecture: 'x86_64' | 'arm64'): string
  * `DockerImageSource` schema so `dockerBuildSecrets` / `dockerBuildContexts`
  * / `cacheFrom` / etc. changes also bust the local cache as expected.
  */
-function computeLocalTag(source: DockerImageAssetSource): string {
+export function computeLocalTag(source: DockerImageAssetSource): string {
   const hash = createHash('sha256');
   // Field-tagged fingerprint: prepend each field's name so adding new fields
   // later doesn't shift the digest for old shapes.
@@ -137,7 +138,7 @@ function computeLocalTag(source: DockerImageAssetSource): string {
   pushField(hash, 'dockerOutputs', (source.dockerOutputs ?? []).join('\x1f'));
   pushField(hash, 'cacheFrom', (source.cacheFrom ?? []).map((o) => JSON.stringify(o)).join('\x1f'));
   pushField(hash, 'cacheTo', source.cacheTo ? JSON.stringify(source.cacheTo) : '');
-  return `cdkl-invoke-${hash.digest('hex').slice(0, 16)}`;
+  return `${getEmbedConfig().resourceNamePrefix}-invoke-${hash.digest('hex').slice(0, 16)}`;
 }
 
 function pushField(hash: ReturnType<typeof createHash>, name: string, value: string): void {

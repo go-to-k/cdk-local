@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   buildProfileCredentialsDockerArgs,
-  CONTAINER_AWS_CREDENTIALS_PATH,
+  getContainerAwsCredentialsPath,
   writeProfileCredentialsFile,
 } from '../../../src/cli/commands/local-profile-credentials-file.js';
 
@@ -21,7 +21,7 @@ describe('writeProfileCredentialsFile', () => {
           'aws_secret_access_key = SECRET-EXAMPLE\n' +
           'aws_session_token = SESSION-EXAMPLE\n'
       );
-      expect(file.containerPath).toBe(CONTAINER_AWS_CREDENTIALS_PATH);
+      expect(file.containerPath).toBe(getContainerAwsCredentialsPath());
       expect(file.profileName).toBe('dev-sso');
     } finally {
       await file.dispose();

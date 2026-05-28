@@ -9,6 +9,7 @@ import {
   type EcsImageResolutionContext,
   type ResolvedEcsTask,
 } from './ecs-task-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Phase 2 of #262 — synthesized `AWS::ECS::Service` resolved against the
@@ -209,7 +210,7 @@ export function resolveEcsServiceTarget(
   if (serviceResource.Type === 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
       `Resource '${serviceLogicalId}' in ${stack.stackName} is an ECS TaskDefinition, not a Service. ` +
-        'Use `cdkl run-task` for one-shot tasks; `cdkl start-service` is Service-only.'
+        `Use \`${getEmbedConfig().cliName} run-task\` for one-shot tasks; \`${getEmbedConfig().cliName} start-service\` is Service-only.`
     );
   }
   if (serviceResource.Type !== 'AWS::ECS::Service') {
@@ -325,7 +326,7 @@ function extractServiceConnect(
   if (!namespaceName) {
     throw new EcsTaskResolutionError(
       `ServiceConnectConfiguration.Namespace must be a literal string (the Cloud Map ` +
-        `namespace name like 'cdkl.local'); got ${JSON.stringify(cfg['Namespace'])}. ` +
+        `namespace name like '${getEmbedConfig().resourceNamePrefix}.local'); got ${JSON.stringify(cfg['Namespace'])}. ` +
         'Intrinsic / cross-stack namespace references are not supported in v1.'
     );
   }
@@ -428,10 +429,10 @@ function extractServiceRegistries(
       // We can't resolve it via the in-process registry; warn + skip.
       warnings.push(
         `ECS Service '${serviceLogicalId}' ServiceRegistries[] entry has a literal-string ` +
-          `RegistryArn ('${registryArn}'); cdk-local cannot resolve external Cloud Map services ` +
+          `RegistryArn ('${registryArn}'); ${getEmbedConfig().productName} cannot resolve external Cloud Map services ` +
           'locally. Skipping this registration; peer services will not discover this endpoint ' +
           'through the in-process registry. Use Fn::GetAtt: [<CloudMapServiceLogicalId>, "Arn"] ' +
-          'instead so cdk-local can resolve the namespace + service name from the synthesized template.'
+          `instead so ${getEmbedConfig().productName} can resolve the namespace + service name from the synthesized template.`
       );
       continue;
     }
@@ -503,7 +504,7 @@ function resolveTaskDefinitionReference(
   }
   throw new EcsTaskResolutionError(
     `ECS Service '${serviceLogicalId}' has an unsupported TaskDefinition reference shape: ` +
-      `${JSON.stringify(taskDefRef)}. cdkl start-service v1 supports only Ref to a ` +
+      `${JSON.stringify(taskDefRef)}. ${getEmbedConfig().cliName} start-service v1 supports only Ref to a ` +
       'same-stack AWS::ECS::TaskDefinition; cross-stack TaskDefinitions are deferred.'
   );
 }
