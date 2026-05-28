@@ -101,3 +101,30 @@ export {
   type DiscoveredWebSocketApi,
   type WebSocketRouteEntry,
 } from './local/websocket-route-discovery.js';
+
+/**
+ * `start-api` authorizer primitives — the TTL-aware authorizer-result
+ * cache, Cognito User Pool / JWT verification, and Lambda (TOKEN / REQUEST)
+ * authorizer invocation. Exposed only as the consuming host's `import`
+ * statements require them.
+ */
+export {
+  createAuthorizerCache,
+  type AuthorizerCache,
+  type CachedAuthorizerResult,
+} from './local/authorizer-cache.js';
+export {
+  createJwksCache,
+  buildCognitoJwksUrl,
+  buildJwksUrlFromIssuer,
+  verifyCognitoJwt,
+  verifyJwtAuthorizer,
+  type JwksCache,
+} from './local/cognito-jwt.js';
+export {
+  buildMethodArn,
+  computeRequestIdentityHash,
+  evaluateCachedLambdaPolicy,
+  invokeRequestAuthorizer,
+  invokeTokenAuthorizer,
+} from './local/lambda-authorizer.js';

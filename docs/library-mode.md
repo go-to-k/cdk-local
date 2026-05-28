@@ -107,6 +107,17 @@ server runs on:
   `parseSelectionExpressionPath` (+ `DiscoveredWebSocketApi` /
   `WebSocketRouteEntry`) — WebSocket API discovery.
 
+The `start-api` authorizer primitives are exposed on the same basis:
+
+- `createAuthorizerCache` (+ `AuthorizerCache` / `CachedAuthorizerResult`)
+  — TTL-aware cache mirroring API Gateway's authorizer-result caching.
+- `createJwksCache` / `buildCognitoJwksUrl` / `buildJwksUrlFromIssuer` /
+  `verifyCognitoJwt` / `verifyJwtAuthorizer` (+ `JwksCache`) — Cognito
+  User Pool / JWT authorizer verification against published JWKS.
+- `buildMethodArn` / `invokeTokenAuthorizer` / `invokeRequestAuthorizer` /
+  `computeRequestIdentityHash` / `evaluateCachedLambdaPolicy` — Lambda
+  (TOKEN / REQUEST) authorizer invocation and IAM-policy evaluation.
+
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
 the factories for that).
