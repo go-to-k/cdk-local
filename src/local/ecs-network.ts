@@ -46,18 +46,18 @@ const DEFAULT_METADATA_ENDPOINT_SUBNET = '169.254.170.0/24';
 
 /**
  * Pure-functional subnet allocator. `cdkl run-task` uses the
- * default subnet; `cdkl start-service` walks `subnetOctet=170,
- * 171, 172, ...` (one per replica) to keep parallel docker networks
- * from clashing. The link-local 169.254.0.0/16 space is reserved AWS-
- * wide for cloud metadata so collisions with user workloads are
- * unlikely, but each replica still gets its own /24 to ensure
- * docker's `--subnet` allocator does not reject "Pool overlaps".
+ * default subnet (octet 170); `cdkl start-service` uses a SINGLE
+ * shared network at the fixed octet `SHARED_SVC_SUBNET_OCTET = 171`
+ * (one octet up from run-task so the two CLI variants can coexist on
+ * the same host). The link-local 169.254.0.0/16 space is reserved
+ * AWS-wide for cloud metadata so collisions with user workloads are
+ * unlikely, but the fixed /24 still keeps docker's `--subnet`
+ * allocator from rejecting "Pool overlaps".
  *
  * `subnetOctet` is the second-from-last byte of the network: 170 →
  * 169.254.170.0/24 (default), 171 → 169.254.171.0/24, etc. Valid
- * range is 1..254; the runner clamps to `(170 + replicaIndex) % 84`
- * + 170 in practice (rolling window) — exported here so the runner
- * keeps the allocation logic in one place.
+ * range is 1..254 — exported here so callers keep the CIDR /
+ * sidecar-IP derivation in one place.
  */
 export function buildEndpointSubnet(subnetOctet: number): {
   cidr: string;
@@ -159,6 +159,13 @@ export async function createSharedSvcNetwork(
   options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
 ): Promise<TaskNetwork> {
   const prefix = options.prefix ?? getEmbedConfig().resourceNamePrefix;
+  // Reclaim any `<prefix>-svc-*` network left behind by a previous
+  // `start-service` run that was interrupted (Ctrl-C / crash) before its
+  // teardown. Because start-service pins a SINGLE fixed subnet
+  // (SHARED_SVC_SUBNET_OCTET), a leaked network blocks every later run with
+  // a "Pool overlaps" error that never self-heals — so sweep BEFORE the
+  // fixed-subnet create rather than only surfacing the error afterwards.
+  await sweepOrphanedSvcNetworks(prefix);
   const suffix = randomBytes(4).toString('hex');
   const networkName = `${prefix}-svc-${suffix}`;
   const { cidr, sidecarIp } = buildEndpointSubnet(SHARED_SVC_SUBNET_OCTET);
@@ -171,6 +178,93 @@ export async function createSharedSvcNetwork(
     ...(options.cluster !== undefined ? { cluster: options.cluster } : {}),
   });
   return { networkName, sidecarContainerId, sidecarIp, ownedByCaller: true };
+}
+
+/**
+ * Startup orphan sweep for the shared `cdkl start-service` network
+ * (Issue #93, design Option 1). When a `start-service` run is interrupted
+ * before its end-of-run teardown, the shared `<prefix>-svc-<rand>` network
+ * and its `<prefix>-svc-<rand>-metadata` sidecar LEAK. Because
+ * `start-service` pins a single fixed subnet (`SHARED_SVC_SUBNET_OCTET`),
+ * the next run's `docker network create` always fails with
+ * "Pool overlaps with other one on this address space" — a state that,
+ * unlike a port conflict, never self-heals. This sweep detects and removes
+ * leaked `<prefix>-svc-*` networks that have NO live owner before the next
+ * run re-creates the network.
+ *
+ * Classification heuristic: a `<prefix>-svc-*` network is ORPHANED when its
+ * only attached container is its own `<name>-metadata` sidecar (or it has
+ * zero attached containers). A network that still has a non-metadata
+ * (user replica) container attached is a live concurrent run and is LEFT
+ * untouched. Caveat: "only the metadata sidecar attached ⇒ orphan" can
+ * misclassify a network in the sub-second window between sidecar start and
+ * the first replica attach; this is acceptable because start-service's
+ * fixed subnet already precludes two concurrent runs, so there is never a
+ * legitimately-concurrent network to misjudge.
+ *
+ * Resilient by design: a `docker network ls` / `inspect` failure must not
+ * abort the run — it logs at debug and skips, matching the idempotent
+ * teardown style in this file. Returns the list of swept network names.
+ */
+export async function sweepOrphanedSvcNetworks(prefix: string): Promise<string[]> {
+  const logger = getLogger().child('ecs-network');
+  const filter = `${prefix}-svc-`;
+  let names: string[];
+  try {
+    const { stdout } = await execFileAsync(getDockerCmd(), [
+      'network',
+      'ls',
+      '--filter',
+      `name=${filter}`,
+      '--format',
+      '{{.Name}}',
+    ]);
+    names = stdout
+      .split('\n')
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    logger.debug(`docker network ls (sweep) failed: ${e.stderr || e.message || String(err)}`);
+    return [];
+  }
+
+  const swept: string[] = [];
+  for (const name of names) {
+    let attached: string[];
+    try {
+      const { stdout } = await execFileAsync(getDockerCmd(), [
+        'network',
+        'inspect',
+        name,
+        '--format',
+        '{{range .Containers}}{{.Name}} {{end}}',
+      ]);
+      attached = stdout
+        .split(/\s+/)
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0);
+    } catch (err) {
+      const e = err as { stderr?: string; message?: string };
+      logger.debug(
+        `docker network inspect ${name} (sweep) failed: ${e.stderr || e.message || String(err)}`
+      );
+      continue;
+    }
+
+    const sidecarName = `${name}-metadata`;
+    const hasLiveOwner = attached.some((c) => c !== sidecarName);
+    if (hasLiveOwner) {
+      // A user replica is still attached — this is a live concurrent run.
+      continue;
+    }
+
+    logger.info(`Reclaiming orphaned shared network ${name} (no live owner)...`);
+    await removeContainer(sidecarName);
+    await destroyNetworkOnly(name);
+    swept.push(name);
+  }
+  return swept;
 }
 
 /**

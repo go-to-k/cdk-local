@@ -37,7 +37,7 @@ docker network ls --filter name=cdkl-svc- -q  | wc -l   # should be 0
 
 Any non-zero count = a previous `cdkl` run was interrupted and left state behind. Either:
 
-- Re-run the same command — cdk-local will reap the orphan name collision and continue.
+- Re-run the same command — cdk-local will reap the orphan name collision and continue. For `cdkl start-service` specifically, the next run automatically reclaims any leaked `cdkl-svc-*` shared network that has no live owner before it re-creates its own, so the fixed-subnet "Pool overlaps" failure no longer requires a manual `docker network rm`.
 - Or sweep manually:
   ```bash
   docker ps --filter name=cdkl- -q | xargs -r docker rm -f
