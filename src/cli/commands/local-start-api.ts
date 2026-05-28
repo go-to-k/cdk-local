@@ -7,7 +7,6 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
-  interactiveOption,
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
@@ -16,9 +15,9 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
-import { InteractiveTtyRequiredError, withErrorHandling } from '../../utils/error-handler.js';
+import { withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
-import { isInteractive, pickOneTarget } from '../../local/target-picker.js';
+import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveWatchConfig, type CdkWatchConfig } from '../config-loader.js';
 import { createGlobMatcher } from '../../utils/glob-match.js';
@@ -85,7 +84,7 @@ import {
 } from '../../local/http-server.js';
 import {
   availableApiIdentifiers,
-  filterRoutesByApiIdentifier,
+  filterRoutesByApiIdentifiers,
   groupRoutesByServer,
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
@@ -135,8 +134,6 @@ interface LocalStartApiOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
-  /** `-i/--interactive`: pick one API to serve from a list (opt-in; bare start-api still serves all). */
-  interactive: boolean;
   /** Bind port (default 0 = auto-allocate). */
   port: string;
   /** Bind host (default 127.0.0.1). */
@@ -179,9 +176,11 @@ interface LocalStartApiOptions {
   /** PR 8c: select a Stage by `StageName`; default is the first attached. */
   stage?: string;
   /**
-   * Issue #260: filter the discovered API surface to a single API by its
-   * logical id (or, for Function URLs, the backing Lambda's logical id).
-   * When unset, every discovered API gets its own server / port.
+   * Deprecated single-API alias for the positional `<targets...>` form.
+   * Filters the discovered API surface to a single API by its logical id
+   * (or, for Function URLs, the backing Lambda's logical id). Accepts
+   * exactly ONE identifier; for a subset use the variadic positional
+   * `cdkl start-api <id1> <id2>` form. Emits a deprecation warn on use.
    */
   api?: string;
   /**
@@ -264,7 +263,7 @@ export interface CreateLocalStartApiCommandOptions {
 }
 
 async function localStartApiCommand(
-  target: string | undefined,
+  targets: string[],
   options: LocalStartApiOptions,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
@@ -273,46 +272,55 @@ async function localStartApiCommand(
     logger.setLevel('debug');
   }
 
-  // Resolve the API filter: positional `<target>` wins over `--api`.
-  // `--api` is kept as a backward-compat alias for one release cycle —
-  // every invocation that goes through it emits a deprecation warn so
-  // users see the migration path before the next major bump removes it.
-  let apiFilter: string | undefined = target;
+  // Resolve the API filter set: the variadic positional `<targets...>`
+  // names the SUBSET of APIs to serve (each on its own port), with the
+  // union of every supplied identifier served. The deprecated `--api`
+  // flag is a SINGLE-identifier alias kept for one release cycle — every
+  // invocation that goes through it emits a deprecation warn so users see
+  // the migration path before the next major bump removes it. `--api`
+  // conflicts with any positional target (they would name overlapping or
+  // contradictory subsets).
+  let apiFilters: string[] = [...targets];
   if (options.api !== undefined) {
-    if (target !== undefined) {
+    if (targets.length > 0) {
       throw new Error(
-        `Cannot specify both positional target ('${target}') and --api flag ('${options.api}'). ` +
+        `Cannot specify both positional target(s) ([${targets.join(', ')}]) and --api flag ('${options.api}'). ` +
           `Use one or the other. The positional form is preferred — '--api' is a deprecated alias.`
       );
     }
     logger.warn(
       `[deprecated] --api <id> will be removed in a future major release. Use the positional argument instead: '${getEmbedConfig().cliName} start-api <id>'.`
     );
-    apiFilter = options.api;
+    apiFilters = [options.api];
   }
 
-  // `-i/--interactive` lets the user pick ONE API to serve from a list.
-  // Unlike the required-target commands, a bare `start-api` already has a
-  // useful default (serve every discovered API), so the picker is opt-in
-  // via the flag only — never auto-launched on an omitted target. The
-  // guard below rejects the contradictory combinations; the actual prompt
-  // runs once inside `synthesizeAndBuild` (it needs the synthesized API
-  // list), with `--watch` reloads reusing the first pick via
-  // `interactivePicked`.
-  assertStartApiInteractiveAllowed(options.interactive, apiFilter, options.allStacks);
-  // Effective single-target selector — set by the interactive picker on
-  // first synth, otherwise the positional `target`. Drives the synth
-  // stack-prefix inference below.
-  let effectiveTarget = target;
+  // Bare `start-api` (no positional targets, no `--api`, no `--all-stacks`)
+  // keeps its long-standing "serve every discovered API" default. In a TTY
+  // we open a MULTI-SELECT picker (every API pre-selected) so the user can
+  // press Enter to serve all or deselect to pick a subset; in a non-TTY
+  // (CI, pipe) we serve all without prompting — start-api's one intentional
+  // asymmetry vs invoke / run-task, which legitimately have no "serve all"
+  // default. The actual prompt runs once inside `synthesizeAndBuild` (it
+  // needs the synthesized API list), with `--watch` reloads reusing the
+  // first selection via `interactivePicked`.
+  const shouldPromptBare = shouldPromptBareMultiSelect(
+    apiFilters,
+    options.allStacks,
+    isInteractive()
+  );
+  // Effective selectors driving synth stack-prefix inference: the
+  // positional targets, or (after the bare multi-select fires) the picked
+  // identifiers. Set inside `synthesizeAndBuild` when the picker runs.
+  let effectiveTargets = [...apiFilters];
   const interactivePicked = { value: false };
 
   // Issue #55: `--all-stacks` serves every stack's API as a union, so it
-  // cannot be combined with a selector that names ONE target.
-  const allStacksConflictList = allStacksConflicts(options, target, apiFilter);
+  // cannot be combined with a selector that names a target subset.
+  const allStacksConflictList = allStacksConflicts(options, targets, apiFilters);
   if (allStacksConflictList.length > 0) {
     throw new Error(
-      `--all-stacks serves every stack's API and cannot be combined with a single-target selector (${allStacksConflictList.join(', ')}). ` +
-        `Drop --all-stacks to target one stack, or drop the selector to serve them all. ` +
+      `--all-stacks serves every stack's API and cannot be combined with a target subset selector (${allStacksConflictList.join(', ')}). ` +
+        `Drop --all-stacks to target specific APIs, or drop the selector to serve them all. ` +
         `The bare --from-cfn-stack flag (no value) IS compatible with --all-stacks.`
     );
   }
@@ -406,20 +414,22 @@ async function localStartApiCommand(
     };
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
-    // Interactive API pick — runs ONCE (the first synth), guarded so
+    // Bare multi-select — runs ONCE (the first synth), guarded so
     // `--watch` reloads reuse the first selection rather than re-prompting.
-    // Sets both `apiFilter` (route filter) and `effectiveTarget` (stack
-    // inference) so the picked API drives the rest of the pass.
-    if (options.interactive && !interactivePicked.value) {
+    // Every API is pre-selected (Enter = serve all); the user deselects to
+    // pick a subset. Sets both `apiFilters` (route filter set) and
+    // `effectiveTargets` (stack inference) so the picked subset drives the
+    // rest of the pass.
+    if (shouldPromptBare && !interactivePicked.value) {
       const apis = listTargets(stacks).apis;
       if (apis.length === 0) {
         throw new Error(
           `No APIs found in this CDK app to choose from. Run \`${getEmbedConfig().cliName} list\` to see what is available.`
         );
       }
-      const picked = await pickOneTarget('Select an API to serve', apis);
-      apiFilter = picked;
-      effectiveTarget = picked;
+      const picked = await pickManyTargets('Select APIs to serve', apis, { preselectAll: true });
+      apiFilters = picked;
+      effectiveTargets = picked;
       interactivePicked.value = true;
     }
 
@@ -431,22 +441,24 @@ async function localStartApiCommand(
     // the regular single-stack auto-pick path.
     const cfnStackFallback =
       typeof options.fromCfnStack === 'string' ? options.fromCfnStack : undefined;
-    // Improvement B: positional target prefix → synth stack inference.
+    // Improvement B (extended to subsets): synth stack-prefix inference.
     // `cdkl start-api MyStack/MyApi` (no `--stack`, no `--from-cfn-stack`)
-    // extracts `MyStack` from the target's `<StackName>/<construct>`
-    // shape and uses it as a third fallback for stack selection. Targets
-    // without a `/` separator (bare logical id) leave this undefined so
-    // the existing single-stack auto-pick path is untouched.
-    const targetStackPrefix =
-      effectiveTarget?.includes('/') === true
-        ? effectiveTarget.slice(0, effectiveTarget.indexOf('/'))
-        : undefined;
+    // extracts `MyStack` from the target's `<StackName>/<construct>` shape
+    // and uses it as a third fallback for stack selection. With MULTIPLE
+    // targets we only keep the optimization when they all share ONE stack
+    // prefix; targets spanning different stacks (or any bare-logical-id
+    // target without a `/` separator) leave this undefined so the synth
+    // scope falls back to ALL stacks (item 5) and the union is filtered
+    // down afterwards by `apiFilters`.
+    const targetStackPrefix = deriveSynthStackPrefix(effectiveTargets);
     const targetStacks = pickTargetStacks(
       stacks,
       options.stack,
       cfnStackFallback,
       targetStackPrefix,
-      options.allStacks
+      // Fall back to synthesizing ALL stacks when an explicit subset spans
+      // (or might span) multiple stacks and no other selector pins one.
+      options.allStacks || shouldSynthAllStacks(effectiveTargets, options.stack, cfnStackFallback)
     );
     if (targetStacks.length === 0) {
       throw new Error(
@@ -529,9 +541,10 @@ async function localStartApiCommand(
     // Routes referencing an unsupported authorizer kind hard-fail here.
     let routesWithAuth = attachAuthorizers(targetStacks, routes);
 
-    // Issue #260: target filter — restrict the discovered surface to a
-    // single API. Useful when the user wants exactly one server (e.g. to
-    // free other ports, or to focus testing on one API).
+    // Target subset filter — restrict the discovered surface to the UNION
+    // of the supplied identifiers. Useful when the user wants exactly a
+    // few servers (e.g. to free other ports, or to focus testing on a
+    // couple of APIs / Function URLs).
     //
     // Strict multi-stack rejection for the bare-logical-id form (no `:`,
     // no `/`): mirrors `cdkl invoke` / `cdkl run-task`'s
@@ -540,21 +553,34 @@ async function localStartApiCommand(
     // pre-PR the filter would silently match both and collide in
     // `groupRoutesByServer`'s serverKey (now disambiguated via PR 8d).
     // We reject upfront with the same disambiguation hint invoke uses.
-    if (apiFilter !== undefined) {
-      const isBareId = !apiFilter.includes(':') && !apiFilter.includes('/');
-      if (isBareId && targetStacks.length > 1) {
-        throw new Error(
-          `Multiple stacks in app, target '${apiFilter}' is missing a stack prefix. ` +
-            `Use 'StackName:${apiFilter}' or 'StackName/${apiFilter}' (Construct path form). ` +
-            `Available stacks: ${targetStacks.map((s) => s.stackName).join(', ')}.`
-        );
+    if (apiFilters.length > 0) {
+      for (const id of apiFilters) {
+        const isBareId = !id.includes(':') && !id.includes('/');
+        if (isBareId && targetStacks.length > 1) {
+          throw new Error(
+            `Multiple stacks in app, target '${id}' is missing a stack prefix. ` +
+              `Use 'StackName:${id}' or 'StackName/${id}' (Construct path form). ` +
+              `Available stacks: ${targetStacks.map((s) => s.stackName).join(', ')}.`
+          );
+        }
       }
-      const filtered = filterRoutesByApiIdentifier(routesWithAuth, apiFilter);
+      const filtered = filterRoutesByApiIdentifiers(routesWithAuth, apiFilters);
       if (filtered.length === 0) {
         const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
         throw new Error(
-          `Target '${apiFilter}' did not match any discovered API. Available identifiers: ${available}.`
+          `Target(s) [${apiFilters.join(', ')}] did not match any discovered API. Available identifiers: ${available}.`
         );
+      }
+      // Surface any individual identifier that matched nothing (the union
+      // still has routes from its siblings, so the run continues) — a
+      // single typo in a multi-target list otherwise silently serves a
+      // smaller set than the user asked for.
+      for (const id of apiFilters) {
+        if (filterRoutesByApiIdentifiers(routesWithAuth, [id]).length === 0) {
+          logger.warn(
+            `Target '${id}' did not match any discovered API; it is ignored. Available identifiers: ${availableApiIdentifiers(routesWithAuth).join(', ') || '(none)'}.`
+          );
+        }
       }
       routesWithAuth = filtered;
     }
@@ -1357,7 +1383,7 @@ export function pickTargetStacks(
 
 /**
  * Issue #55: `--all-stacks` serves every stack's API as a union, so it
- * cannot be combined with a selector that names exactly ONE target.
+ * cannot be combined with a selector that names a target subset.
  * Returns the human-readable list of conflicting selectors (empty when
  * `--all-stacks` is off or there is no conflict).
  *
@@ -1373,13 +1399,15 @@ export function pickTargetStacks(
  */
 export function allStacksConflicts(
   options: Pick<LocalStartApiOptions, 'allStacks' | 'stack' | 'api' | 'fromCfnStack'>,
-  target: string | undefined,
-  apiFilter: string | undefined
+  targets: readonly string[],
+  apiFilters: readonly string[]
 ): string[] {
   if (!options.allStacks) return [];
   const conflicts: string[] = [];
-  if (apiFilter !== undefined) {
-    conflicts.push(target !== undefined ? `target '${target}'` : `--api '${options.api}'`);
+  if (apiFilters.length > 0) {
+    conflicts.push(
+      targets.length > 0 ? `target(s) [${targets.join(', ')}]` : `--api '${options.api}'`
+    );
   }
   if (options.stack !== undefined) conflicts.push(`--stack '${options.stack}'`);
   if (typeof options.fromCfnStack === 'string') {
@@ -1389,35 +1417,84 @@ export function allStacksConflicts(
 }
 
 /**
- * Validate `-i/--interactive` for `start-api`. The picker is opt-in here
- * (a bare `start-api` serves every API), so `-i` is mutually exclusive
- * with any single-target selector (`apiFilter` = positional target OR
- * `--api`) and with `--all-stacks`, and it requires a TTY. Throws when
- * the combination is invalid; otherwise returns and the prompt runs
- * later inside `synthesizeAndBuild`.
+ * Derive the single synth stack prefix shared by every supplied target,
+ * for the synth-scope optimization (item 5 of the start-api subset UX).
  *
- * Extracted as a pure-ish function (TTY is read via {@link isInteractive})
- * so the error contract is unit-testable without booting the server.
+ * Each target's stack prefix is the segment before its first `/` (the
+ * `<StackName>/<construct>` Construct-path form). Returns:
+ *  - `undefined` when `targets` is empty (serve-all path — no prefix).
+ *  - `undefined` when ANY target lacks a `/` (bare logical id — the synth
+ *    target can't be inferred from it, so fall back to the existing
+ *    single-stack auto-pick / multi-stack rejection path).
+ *  - `undefined` when targets span MORE THAN ONE distinct prefix (the
+ *    subset crosses stacks, so synth must cover all of them — see
+ *    {@link shouldSynthAllStacks}).
+ *  - the shared prefix when every target carries the SAME `<StackName>/`
+ *    prefix — keeping the single-stack synth optimization.
  *
  * @internal exported for unit tests.
  */
-export function assertStartApiInteractiveAllowed(
-  interactive: boolean,
-  apiFilter: string | undefined,
-  allStacks: boolean | undefined
-): void {
-  if (!interactive) return;
-  if (apiFilter !== undefined || allStacks) {
-    throw new Error(
-      '`-i/--interactive` cannot be combined with a positional target, --api, or --all-stacks; ' +
-        'it interactively picks one API to serve. Drop the selector, or drop -i.'
-    );
+export function deriveSynthStackPrefix(targets: readonly string[]): string | undefined {
+  if (targets.length === 0) return undefined;
+  const prefixes = new Set<string>();
+  for (const t of targets) {
+    const slash = t.indexOf('/');
+    if (slash === -1) return undefined; // bare logical id — can't infer a stack
+    prefixes.add(t.slice(0, slash));
   }
-  if (!isInteractive()) {
-    throw new InteractiveTtyRequiredError(
-      '`-i/--interactive` requires an interactive terminal, but stdin/stdout is not a TTY.'
-    );
-  }
+  return prefixes.size === 1 ? [...prefixes][0] : undefined;
+}
+
+/**
+ * Decide whether synth should cover ALL stacks for the given target
+ * subset (item 5). Synth is scoped to one stack only when a single stack
+ * can be pinned; otherwise we synth every stack and the union is filtered
+ * down by `apiFilters` afterwards.
+ *
+ * Returns `true` (synth all) when there ARE explicit targets but no
+ * single stack can be pinned from them — i.e. `--stack` is unset, an
+ * explicit `--from-cfn-stack <name>` is unset, AND
+ * {@link deriveSynthStackPrefix} can't resolve one shared prefix (targets
+ * span stacks, or any target is a bare logical id). Returns `false` when
+ * there are no targets (serve-all already synths everything via the
+ * regular path) or a stack is otherwise pinned.
+ *
+ * @internal exported for unit tests.
+ */
+export function shouldSynthAllStacks(
+  targets: readonly string[],
+  stackPattern: string | undefined,
+  cfnStackFallback: string | undefined
+): boolean {
+  if (targets.length === 0) return false;
+  if (stackPattern !== undefined || cfnStackFallback !== undefined) return false;
+  return deriveSynthStackPrefix(targets) === undefined;
+}
+
+/**
+ * Decide whether bare `start-api` should open the pre-selected-all
+ * multi-select picker. The picker runs ONLY when:
+ *  - no explicit API subset was named (`apiFilters` empty — neither
+ *    positional `<targets...>` nor the deprecated `--api`),
+ *  - `--all-stacks` was not passed (that path already serves every API),
+ *  - AND stdin/stdout is a TTY.
+ *
+ * In a non-TTY (CI / pipe) this returns `false`, and the caller serves
+ * EVERY discovered API without prompting — start-api's one intentional
+ * asymmetry vs invoke / run-task (which error when bare in a non-TTY),
+ * because start-api legitimately has a "serve all" default.
+ *
+ * Extracted as a pure function (TTY is passed in) so the decision is
+ * unit-testable without booting the server or juggling global TTY state.
+ *
+ * @internal exported for unit tests.
+ */
+export function shouldPromptBareMultiSelect(
+  apiFilters: readonly string[],
+  allStacks: boolean | undefined,
+  isTty: boolean
+): boolean {
+  return apiFilters.length === 0 && !allStacks && isTty;
 }
 
 /**
@@ -3424,8 +3501,8 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
       'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and AWS_IAM auth (REST v1 `AuthorizationType: AWS_IAM` and Function URL `AuthType: AWS_IAM` — SigV4 signature verification only; IAM policy evaluation is NOT emulated). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
-      '[target]',
-      `Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server (pass -i to pick one interactively instead). Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
+      '[targets...]',
+      `Optional API subset filter. Pass one or more identifiers to serve exactly that subset (the union; each on its own port). Each accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted in a TTY, a multi-select picker opens with every API pre-selected (Enter serves all, deselect to pick a subset); when omitted in a non-TTY (CI / pipe) every discovered API is served. Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
     )
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
@@ -3435,7 +3512,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     .addOption(
       new Option(
         '--all-stacks',
-        "Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out. Mutually exclusive with a positional target, --stack, and an explicit --from-cfn-stack <name>; the bare --from-cfn-stack flag stays compatible (binds each routed stack to its own CFn stack)."
+        "Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out. Mutually exclusive with a positional target subset, --stack, and an explicit --from-cfn-stack <name>; the bare --from-cfn-stack flag stays compatible (binds each routed stack to its own CFn stack)."
       ).default(false)
     )
     .addOption(
@@ -3487,7 +3564,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     .addOption(
       new Option(
         '--api <id>',
-        'DEPRECATED — use the positional <target> argument instead. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
+        'DEPRECATED — use the positional <targets...> argument instead. Accepts a SINGLE identifier; for a subset pass multiple positional targets. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
       )
     )
     .addOption(
@@ -3559,15 +3636,14 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
       ).default(false)
     )
     .action(
-      withErrorHandling(async (target: string | undefined, options: LocalStartApiOptions) => {
-        await localStartApiCommand(target, options, opts.extraStateProviders);
+      withErrorHandling(async (targets: string[], options: LocalStartApiOptions) => {
+        await localStartApiCommand(targets, options, opts.extraStateProviders);
       })
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
     startApi.addOption(opt)
   );
-  startApi.addOption(interactiveOption);
   startApi.addOption(deprecatedRegionOption);
 
   return startApi;

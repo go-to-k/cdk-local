@@ -25,7 +25,7 @@ describe('formatTargetListing', () => {
     };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
-    expect(out).toContain('APIs  ->  cdkl start-api [target]');
+    expect(out).toContain('APIs  ->  cdkl start-api [target...]');
     expect(out).toContain('ECS Services  ->  cdkl start-service <target...>');
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
   });

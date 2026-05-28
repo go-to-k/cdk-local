@@ -4,6 +4,7 @@ import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 import {
   availableApiIdentifiers,
   filterRoutesByApiIdentifier,
+  filterRoutesByApiIdentifiers,
   groupRoutesByServer,
 } from '../../../src/local/api-server-grouping.js';
 
@@ -235,6 +236,71 @@ describe('filterRoutesByApiIdentifier', () => {
     expect(filterRoutesByApiIdentifier(sparse, 'BareApi')).toHaveLength(1);
     expect(filterRoutesByApiIdentifier(sparse, 'Stack:BareApi')).toEqual([]);
     expect(filterRoutesByApiIdentifier(sparse, 'Stack/BareApi')).toEqual([]);
+  });
+});
+
+describe('filterRoutesByApiIdentifiers (variadic subset — union)', () => {
+  const routes = [
+    makeRoute({
+      source: 'http-api',
+      apiLogicalId: 'PublicApi',
+      apiStackName: 'WebStack',
+      apiCdkPath: 'WebStack/PublicApi/Resource',
+      pathPattern: '/p',
+    }),
+    makeRoute({
+      source: 'http-api',
+      apiLogicalId: 'AdminApi',
+      apiStackName: 'AdminStack',
+      apiCdkPath: 'AdminStack/AdminApi/Resource',
+      pathPattern: '/a',
+    }),
+    makeRoute({
+      source: 'function-url',
+      lambdaLogicalId: 'GoHandler',
+      apiLogicalId: undefined,
+      apiStackName: 'BackendStack',
+      apiCdkPath: 'BackendStack/GoHandler',
+    }),
+  ];
+
+  it('returns the UNION of two identifiers (each on its own row, input order preserved)', () => {
+    const result = filterRoutesByApiIdentifiers(routes, ['PublicApi', 'GoHandler']);
+    expect(result).toHaveLength(2);
+    expect(result.map((r) => r.route.source)).toEqual(['http-api', 'function-url']);
+  });
+
+  it('keeps a route once even if it matches more than one supplied identifier', () => {
+    // 'PublicApi' (bare) and 'WebStack/PublicApi' (prefix) both match the
+    // same route — the filter must not duplicate it.
+    const result = filterRoutesByApiIdentifiers(routes, ['PublicApi', 'WebStack/PublicApi']);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
+  });
+
+  it('mixes identifier forms across the subset (bare + stack-qualified + prefix)', () => {
+    const result = filterRoutesByApiIdentifiers(routes, [
+      'PublicApi',
+      'AdminStack:AdminApi',
+      'BackendStack/GoHandler',
+    ]);
+    expect(result).toHaveLength(3);
+  });
+
+  it('returns an empty array when no identifier matches (caller surfaces error)', () => {
+    expect(filterRoutesByApiIdentifiers(routes, ['Nope', 'AlsoNope'])).toEqual([]);
+  });
+
+  it('drops only the non-matching identifiers and keeps the matching siblings', () => {
+    // A single typo in a multi-target list still serves the rest (the
+    // command body warns about the unmatched id separately).
+    const result = filterRoutesByApiIdentifiers(routes, ['PublicApi', 'Typo']);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.route.apiLogicalId).toBe('PublicApi');
+  });
+
+  it('returns every route unchanged for an empty identifier list (no-op total fn)', () => {
+    expect(filterRoutesByApiIdentifiers(routes, [])).toHaveLength(routes.length);
   });
 });
 

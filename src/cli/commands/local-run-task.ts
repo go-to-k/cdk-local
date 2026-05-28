@@ -5,7 +5,6 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
-  interactiveOption,
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
@@ -62,8 +61,6 @@ interface LocalRunTaskOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
-  /** `-i/--interactive`: pick the task definition from a list instead of passing <target>. */
-  interactive: boolean;
   cluster: string;
   envVars?: string;
   containerHost: string;
@@ -199,14 +196,13 @@ async function localRunTaskCommand(
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
     const resolvedTarget = await resolveSingleTarget(target, {
-      interactive: options.interactive,
       entries: listTargets(stacks).ecsTaskDefinitions,
       message: 'Select an ECS task definition to run',
       noun: 'ECS task definitions',
       onMissing: () =>
         new CdkLocalError(
           `${getEmbedConfig().cliName} run-task requires a <target> (an ECS task definition display path or logical ID). ` +
-            `Run \`${getEmbedConfig().cliName} list\` to see them, or pass -i to pick interactively.`,
+            `Run \`${getEmbedConfig().cliName} list\` to see them, or run it in a TTY to pick interactively.`,
           'LOCAL_RUN_TASK_TARGET_REQUIRED'
         ),
     });
@@ -642,7 +638,7 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
         'with the AWS-published metadata-endpoints sidecar, and starts every container in dependsOn order. ' +
         'Target accepts a CDK display path (MyStack/MyService/TaskDef) or stack-qualified logical ID ' +
         '(MyStack:MyServiceTaskDefXYZ1234). Single-stack apps may omit the stack prefix. ' +
-        'Omit <target> in an interactive terminal (or pass -i) to pick the task definition from a list.'
+        'Omit <target> in an interactive terminal to pick the task definition from a list.'
     )
     .argument(
       '[target]',
@@ -739,7 +735,6 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(interactiveOption);
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

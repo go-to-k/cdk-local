@@ -64,14 +64,14 @@ You almost never need to know or type a CDK path. In a terminal, just run the co
 cdkl invoke            # pick a Lambda, then invoke it
 cdkl run-task          # pick an ECS task definition, then run it
 cdkl start-service     # multi-select one or more ECS services
-cdkl start-api -i      # pick one API to serve
+cdkl start-api         # multi-select APIs to serve (Enter = all)
 ```
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
 
-For `invoke` / `run-task` / `start-service`, omitting the target in an interactive terminal opens the picker automatically; `-i` / `--interactive` also forces it. `start-api` keeps its default of serving **every** discovered API when run bare, so pass `-i` there to pick a single one. (In the multi-select, press space to toggle a row and enter to confirm.)
+Omitting the target in an interactive terminal opens the picker automatically. `invoke` / `run-task` pick one; `start-service` / `start-api` open a multi-select. `start-api`'s multi-select starts with **every** discovered API pre-selected — press Enter to serve them all (its long-standing default) or deselect rows to serve a subset, each on its own port. (In any multi-select, press space to toggle a row and enter to confirm.)
 
-Outside a TTY — CI, pipes, redirected stdin — the picker can't run: `invoke` / `run-task` / `start-service` fall back to a "target required" error, and `-i` errors clearly. Pass the target explicitly there (see [below](#passing-a-target-explicitly)).
+Outside a TTY — CI, pipes, redirected stdin — the picker can't run. `invoke` / `run-task` / `start-service` fall back to a "target required" error; pass the target explicitly there (see [below](#passing-a-target-explicitly)). `start-api` is the exception: bare in a non-TTY it serves **every** API (its serve-all default needs no prompt), so scripts keep working unchanged.
 
 #### See what's available — `list` (alias `ls`)
 

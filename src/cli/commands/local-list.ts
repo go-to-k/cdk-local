@@ -111,7 +111,7 @@ export function formatTargetListing(
   const long = options.long ?? false;
   const sections: string[][] = [
     formatSection('Lambda Functions', `${cliName} invoke <target>`, listing.lambdas, long),
-    formatSection('APIs', `${cliName} start-api [target]`, listing.apis, long),
+    formatSection('APIs', `${cliName} start-api [target...]`, listing.apis, long),
     formatSection(
       'ECS Services',
       `${cliName} start-service <target...>`,

@@ -5,7 +5,6 @@ import {
   commonOptions,
   contextOptions,
   deprecatedRegionOption,
-  interactiveOption,
   parseContextOptions,
   warnIfDeprecatedRegion,
 } from '../options.js';
@@ -76,8 +75,6 @@ interface LocalStartServiceOptions {
   profile?: string;
   roleArn?: string;
   context?: string[];
-  /** `-i/--interactive`: multi-select the services from a list instead of passing <targets...>. */
-  interactive: boolean;
   cluster: string;
   envVars?: string;
   containerHost: string;
@@ -248,7 +245,6 @@ async function localStartServiceCommand(
     const { stacks } = await synthesizer.synthesize(synthOpts);
 
     const resolvedTargets = await resolveMultiTarget(targets, {
-      interactive: options.interactive,
       entries: listTargets(stacks).ecsServices,
       message: 'Select one or more ECS services to run',
       noun: 'ECS services',
@@ -256,7 +252,7 @@ async function localStartServiceCommand(
         new LocalStartServiceError(
           `${getEmbedConfig().cliName} start-service requires at least one <target>. ` +
             "Pass one or more service paths like 'Stack/Orders' 'Stack/Frontend', " +
-            'or run it in a TTY (or with -i) to pick interactively.'
+            'or run it in a TTY to pick interactively.'
         ),
     });
 
@@ -816,7 +812,7 @@ export function createLocalStartServiceCommand(
         'or stack-qualified logical ID (MyStack:MyServiceXYZ); single-stack apps may omit the ' +
         'stack prefix. When two or more <target>s are supplied, every service is booted into a ' +
         'shared Cloud Map / Service Connect registry so peer services discover each other via ' +
-        'docker --add-host overlay. Omit <targets> in an interactive terminal (or pass -i) to ' +
+        'docker --add-host overlay. Omit <targets> in an interactive terminal to ' +
         'multi-select the services from a list.'
     )
     .argument(
@@ -917,7 +913,6 @@ export function createLocalStartServiceCommand(
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(interactiveOption);
   cmd.addOption(deprecatedRegionOption);
   return cmd;
 }

@@ -106,55 +106,55 @@ describe('pickTargetStacks', () => {
 
 describe('allStacksConflicts', () => {
   it('returns no conflicts when --all-stacks is off', () => {
-    expect(allStacksConflicts({ allStacks: false, stack: 'A' }, 'A/Api', 'A/Api')).toEqual([]);
+    expect(allStacksConflicts({ allStacks: false, stack: 'A' }, ['A/Api'], ['A/Api'])).toEqual([]);
   });
 
   it('returns no conflicts when --all-stacks is undefined', () => {
-    expect(allStacksConflicts({}, undefined, undefined)).toEqual([]);
+    expect(allStacksConflicts({}, [], [])).toEqual([]);
   });
 
   it('returns no conflicts when --all-stacks is the only selector', () => {
-    expect(allStacksConflicts({ allStacks: true }, undefined, undefined)).toEqual([]);
+    expect(allStacksConflicts({ allStacks: true }, [], [])).toEqual([]);
   });
 
-  it('flags a positional target conflict', () => {
-    expect(allStacksConflicts({ allStacks: true }, 'MyStack/MyApi', 'MyStack/MyApi')).toEqual([
-      "target 'MyStack/MyApi'",
+  it('flags a positional target-subset conflict', () => {
+    expect(allStacksConflicts({ allStacks: true }, ['MyStack/MyApi'], ['MyStack/MyApi'])).toEqual([
+      'target(s) [MyStack/MyApi]',
     ]);
   });
 
+  it('flags a multi-target subset conflict (lists every target)', () => {
+    expect(
+      allStacksConflicts({ allStacks: true }, ['S/A', 'S/B'], ['S/A', 'S/B'])
+    ).toEqual(['target(s) [S/A, S/B]']);
+  });
+
   it('flags the deprecated --api alias conflict (no positional target)', () => {
-    expect(allStacksConflicts({ allStacks: true, api: 'MyApi' }, undefined, 'MyApi')).toEqual([
+    expect(allStacksConflicts({ allStacks: true, api: 'MyApi' }, [], ['MyApi'])).toEqual([
       "--api 'MyApi'",
     ]);
   });
 
   it('flags a --stack conflict', () => {
-    expect(allStacksConflicts({ allStacks: true, stack: 'MyStack' }, undefined, undefined)).toEqual(
-      ["--stack 'MyStack'"]
-    );
+    expect(allStacksConflicts({ allStacks: true, stack: 'MyStack' }, [], [])).toEqual([
+      "--stack 'MyStack'",
+    ]);
   });
 
   it('flags an explicit --from-cfn-stack <name> conflict', () => {
-    expect(
-      allStacksConflicts({ allStacks: true, fromCfnStack: 'MyStack' }, undefined, undefined)
-    ).toEqual(["--from-cfn-stack 'MyStack'"]);
+    expect(allStacksConflicts({ allStacks: true, fromCfnStack: 'MyStack' }, [], [])).toEqual([
+      "--from-cfn-stack 'MyStack'",
+    ]);
   });
 
   it('does NOT flag the bare --from-cfn-stack flag (boolean true) — it is union-compatible', () => {
-    expect(
-      allStacksConflicts({ allStacks: true, fromCfnStack: true }, undefined, undefined)
-    ).toEqual([]);
+    expect(allStacksConflicts({ allStacks: true, fromCfnStack: true }, [], [])).toEqual([]);
   });
 
   it('aggregates multiple conflicting selectors in one message', () => {
     expect(
-      allStacksConflicts(
-        { allStacks: true, stack: 'S', fromCfnStack: 'C' },
-        'S/Api',
-        'S/Api'
-      )
-    ).toEqual(["target 'S/Api'", "--stack 'S'", "--from-cfn-stack 'C'"]);
+      allStacksConflicts({ allStacks: true, stack: 'S', fromCfnStack: 'C' }, ['S/Api'], ['S/Api'])
+    ).toEqual(['target(s) [S/Api]', "--stack 'S'", "--from-cfn-stack 'C'"]);
   });
 });
 
