@@ -331,6 +331,7 @@ async function localRunTaskCommand(
     if (options.platform) runOpts.platformOverride = options.platform;
     if (options.region) runOpts.region = options.region;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
+    if (options.profile) runOpts.profile = options.profile;
     if (profileCredsFile) {
       runOpts.profileCredentialsFile = {
         hostPath: profileCredsFile.hostPath,
@@ -463,7 +464,7 @@ async function buildEcsImageResolutionContext(
     }
     let accountId: string | undefined;
     try {
-      accountId = await resolveCallerAccountId(region);
+      accountId = await resolveCallerAccountId(region, options.profile);
     } catch (err) {
       logger.warn(
         `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
@@ -517,9 +518,17 @@ function pickCandidateStack(
   return undefined;
 }
 
-async function resolveCallerAccountId(region: string | undefined): Promise<string | undefined> {
+async function resolveCallerAccountId(
+  region: string | undefined,
+  profile: string | undefined
+): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so the resolved account is the profile's account
+  // (e.g. the deployed account behind `--from-cfn-stack`), not whatever
+  // the default credential chain points at. Without this, the
+  // `${AWS::AccountId}` substitution that builds same-stack ECR image
+  // URIs picks the wrong account and the subsequent `docker pull` 404s.
+  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
