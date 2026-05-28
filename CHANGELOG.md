@@ -1,3 +1,10 @@
+# [0.12.0](https://github.com/go-to-k/cdk-local/compare/v0.11.3...v0.12.0) (2026-05-28)
+
+
+### Features
+
+* **index:** re-export start-api authorizer primitives for host shims ([#70](https://github.com/go-to-k/cdk-local/issues/70)) ([d44821e](https://github.com/go-to-k/cdk-local/commit/d44821e7ccaf25a17776cf604cb2b9b3fb78a976))
+
 ## [0.11.3](https://github.com/go-to-k/cdk-local/compare/v0.11.2...v0.11.3) (2026-05-28)
 
 
