@@ -10,7 +10,7 @@
  * This lets `cdkl *` substitute env vars / secrets / images that
  * reference deployed resources in a CDK app deployed via the upstream
  * CDK CLI (`cdk deploy` → CloudFormation) WITHOUT first migrating the
- * stack to cdkd.
+ * stack into a separate state store.
  *
  * Wire-format mapping:
  *
@@ -33,8 +33,8 @@
  *   - `Fn::ImportValue: <exportName>` → resolved via `ListExports`
  *     (paginated). Same-region only — CFn exports are region-scoped.
  *   - `Fn::GetStackOutput` → rejected with a clear pointer that the
- *     intrinsic is cdkd-specific (CFn has no equivalent — exports +
- *     outputs are the only cross-stack vocabulary CFn understands).
+ *     intrinsic has no CFn equivalent (exports + outputs are the only
+ *     cross-stack vocabulary CFn understands).
  *   - Stack outputs (consumed by both `Fn::GetStackOutput` and the
  *     cross-stack-resolver's index-miss fallback) → sourced from
  *     `DescribeStacks.Outputs[]`.
@@ -272,9 +272,8 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   /**
    * Build a `CrossStackResolver` that resolves `Fn::ImportValue` via
    * `cloudformation:ListExports`. `Fn::GetStackOutput` is rejected here
-   * — it's a cdkd-specific intrinsic with no CFn-side equivalent, and
-   * the user-visible error message names the right intrinsic
-   * (`Fn::ImportValue`) for that use case.
+   * — it has no CFn-side equivalent, and the user-visible error message
+   * names the right intrinsic (`Fn::ImportValue`) for that use case.
    *
    * `consumerRegion` is accepted for interface parity with the S3
    * provider but the `CfnLocalStateProvider` only resolves exports in
@@ -330,20 +329,17 @@ export class CfnLocalStateProvider implements LocalStateProvider {
         producerRegion: string,
         outputName: string
       ): Promise<string | undefined> {
-        // `Fn::GetStackOutput` is a cdkd-specific intrinsic that reads
-        // the producer stack's state.json directly from S3. There is
-        // no CFn-side equivalent (CFn templates use `Fn::ImportValue`
-        // + an explicit `Outputs.<name>.Export`); rather than silently
-        // returning undefined we surface a logger.warn naming the
-        // intrinsic and the producer so the user sees why the env var
-        // dropped. The `state-resolver.ts` async path turns the
-        // `undefined` into its own per-key warn with the standard
-        // "output not found in producer stack state" message, so
-        // skipping the warn here would mask the cdkd-vs-CFn nature
-        // of the gap.
+        // `Fn::GetStackOutput` has no CFn-side equivalent (CFn templates
+        // use `Fn::ImportValue` + an explicit `Outputs.<name>.Export`);
+        // rather than silently returning undefined we surface a
+        // logger.warn naming the intrinsic and the producer so the user
+        // sees why the env var dropped. The `state-resolver.ts` async
+        // path turns the `undefined` into its own per-key warn with the
+        // standard "output not found in producer stack state" message,
+        // so skipping the warn here would mask the nature of the gap.
         logger.warn(
-          `${label}: Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}) is a cdkd-specific intrinsic with no CloudFormation equivalent. ` +
-            `Use Fn::ImportValue against an exported output instead, or deploy the producer stack via cdkd deploy and use --from-state.`
+          `${label}: Fn::GetStackOutput '${producerStack}.${outputName}' (${producerRegion}) has no CloudFormation equivalent and cannot be resolved when reading state from a CloudFormation stack. ` +
+            `Use Fn::ImportValue against an exported output instead.`
         );
         return undefined;
       },
