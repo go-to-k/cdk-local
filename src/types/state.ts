@@ -9,12 +9,12 @@
  *       grew. v2 readers see v3 as `version: 3` and fail clearly.
  * - 4 — adds `StackState.imports` (the set of `Fn::ImportValue` references
  *       this stack resolved during its last deploy). Consumed by
- *       `cdkd destroy` to refuse deleting a producer while a consumer still
+ *       `cdkl destroy` to refuse deleting a producer while a consumer still
  *       references its outputs (strong reference, matches CloudFormation).
  *       Layout is the same as v3; only the stack-level shape grew. v3
  *       readers see v4 as `version: 4` and fail clearly.
  * - 5 — adds `ResourceState.deletionPolicy` and `updateReplacePolicy`, the
- *       CloudFormation template attributes recorded at deploy time. cdkd
+ *       CloudFormation template attributes recorded at deploy time. cdk-local
  *       compares these against the next deploy's template to detect
  *       attribute-only changes (e.g. `RemovalPolicy.DESTROY` removed →
  *       `DeletionPolicy: Retain` now in template), which previously fell
@@ -25,8 +25,8 @@
  *       to support `AWS::CloudFormation::Stack` nested-stack adoption (issue
  *       [#459](https://github.com/go-to-k/cdkd/issues/459)). Child stacks
  *       record their parent's name + the child's logical id in the parent's
- *       template, so `cdkd state list` / `state show` can surface the
- *       parent → child tree and `cdkd destroy <child-only>` can reject
+ *       template, so `cdkl state list` / `state show` can surface the
+ *       parent → child tree and `cdkl destroy <child-only>` can reject
  *       with a clear pointer at the parent. The child's S3 key uses
  *       `cdkd/<parent>~<NestedStackLogicalId>/<region>/state.json` (the `~`
  *       separator avoids ambiguity with CDK Stage's `/`). Layout
@@ -76,12 +76,12 @@ export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [1,
 
 /**
  * One `Fn::ImportValue` reference recorded during a consumer stack's
- * deploy. Persisted in `StackState.imports` so `cdkd destroy` can refuse
+ * deploy. Persisted in `StackState.imports` so `cdkl destroy` can refuse
  * to delete the producer while the consumer still references its outputs
  * (strong reference, matches CloudFormation behavior).
  *
  * Only `Fn::ImportValue` populates this — `Fn::GetStackOutput` is a weak
- * reference by design (cdkd-specific) and intentionally does NOT record
+ * reference by design (cdk-local-specific) and intentionally does NOT record
  * an entry here so the producer stays deletable independently of consumers.
  */
 export interface StateImportEntry {
@@ -125,7 +125,7 @@ export interface StackState {
   /**
    * `Fn::ImportValue` references this stack resolved during its last
    * successful deploy. Populated on schema v4+; absent (or undefined)
-   * on state written by an older cdkd binary, in which case the
+   * on state written by an older cdk-local binary, in which case the
    * destroy-time strong-reference check degrades gracefully (no
    * recorded imports = no consumers known = destroy proceeds). The
    * next deploy of an upgraded stack repopulates the field.
@@ -138,8 +138,8 @@ export interface StackState {
    * Undefined on top-level stacks. The pre-v6 reader sees the field as
    * undefined and degrades to "I am a top-level stack" — which is correct
    * for every state file written before nested-stack support shipped.
-   * v6+ writers populate this on child state records so `cdkd state list`
-   * can surface the parent → child tree and `cdkd destroy <child-only>`
+   * v6+ writers populate this on child state records so `cdkl state list`
+   * can surface the parent → child tree and `cdkl destroy <child-only>`
    * can reject with a pointer at the parent (matches CFn's "cannot
    * directly destroy a nested stack" semantic).
    *
@@ -152,7 +152,7 @@ export interface StackState {
    * The `AWS::CloudFormation::Stack` logical ID inside the parent's
    * template that produced this child. Combined with `parentStack`, the
    * pair uniquely identifies the child's position in the parent's DAG.
-   * Used by `cdkd destroy` to reject `destroy <child-only>` with a
+   * Used by `cdkl destroy` to reject `destroy <child-only>` with a
    * clear "destroy the parent instead" error message that names the
    * specific parent + child-logical-id pair, mirroring CFn's behavior.
    *
@@ -199,7 +199,7 @@ export interface ResourceState {
    * template still surface as drift.
    *
    * Optional for backwards compatibility — resources written by an older
-   * cdkd binary (v2 state, or v3 state on a provider that does not
+   * cdk-local binary (v2 state, or v3 state on a provider that does not
    * implement `readCurrentState`) keep this field undefined; the drift
    * command falls back to comparing against `properties` in that case.
    */
@@ -312,8 +312,8 @@ export interface ResourceChange {
   /**
    * `DeletionPolicy` / `UpdateReplacePolicy` attribute changes (schema v5+).
    * Populated when the template attribute differs from the value recorded in
-   * cdkd state. AWS has no API to mutate these attributes per-resource, so
-   * the deploy engine handles the change by updating cdkd state only — no
+   * cdk-local state. AWS has no API to mutate these attributes per-resource, so
+   * the deploy engine handles the change by updating cdk-local state only — no
    * provider call. UPDATE classification still fires when only these change
    * (DiffCalculator does not stay at `NO_CHANGE`), so users see the diff
    * instead of `No changes detected`.
@@ -326,7 +326,7 @@ export interface ResourceChange {
  *
  * `DeletionPolicy` / `UpdateReplacePolicy` are CloudFormation template
  * metadata — they have no AWS API per-resource and are mutated through the
- * cdkd state record alone.
+ * cdk-local state record alone.
  */
 export interface AttributeChange {
   /** Attribute name: `DeletionPolicy` or `UpdateReplacePolicy`. */
@@ -336,7 +336,7 @@ export interface AttributeChange {
 }
 
 /**
- * Returns true when a recorded `DeletionPolicy` should prevent cdkd from
+ * Returns true when a recorded `DeletionPolicy` should prevent cdk-local from
  * deleting the underlying AWS resource. `Retain` and `RetainExceptOnCreate`
  * both keep the resource around; `Delete` / `Snapshot` / undefined all
  * fall through to the normal delete path. Shared between

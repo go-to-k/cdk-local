@@ -5,7 +5,7 @@
  * Two implementations:
  *
  *   - {@link S3LocalStateProvider} (default for `--from-state`) — reads
- *     the host's S3 state for stacks deployed via `cdkd deploy`. Same
+ *     the host's S3 state for stacks deployed via `cdkl deploy`. Same
  *     behavior as the pre-issue-#606 code path; the S3 implementation is
  *     a thin wrapper around the existing `loadStateForStack` +
  *     `buildCrossStackResolver` helpers in
@@ -18,7 +18,7 @@
  *     via the upstream CDK CLI (`cdk deploy` → CloudFormation), so users
  *     migrating between cdk-local and CFn (or running cdk-local against an
  *     existing CFn-managed CDK app) get the same UX they get with
- *     `--from-state` against cdkd-deployed stacks.
+ *     `--from-state` against cdk-local-deployed stacks.
  *
  * The interface intentionally mirrors what `state-resolver.ts` consumes:
  * a `Record<string, ResourceState>` (covers `Ref`), an outputs map
@@ -108,7 +108,7 @@ export interface LocalStateProvider {
    * Build a cross-stack resolver for `Fn::ImportValue` /
    * `Fn::GetStackOutput`. The S3 provider reads the host's exports index +
    * per-stack state; the CFn provider uses `ListExports` (paginated)
-   * for `Fn::ImportValue` and rejects `Fn::GetStackOutput` (cdkd-specific
+   * for `Fn::ImportValue` and rejects `Fn::GetStackOutput` (cdk-local-specific
    * intrinsic — CFn has no equivalent). `consumerRegion` is the
    * region the consumer Lambda / ECS task lives in.
    *

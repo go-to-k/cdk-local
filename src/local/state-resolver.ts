@@ -6,7 +6,7 @@
  * drops it. That's correct when there's no source of truth for the
  * deployed value — which is also the SAM behavior — but it's wrong when
  * cdk-local has already deployed the stack and the AWS-current physical IDs
- * sit in the cdkd state file.
+ * sit in the cdk-local state file.
  *
  * `--from-state` closes that gap: it loads the host's S3 state for the target
  * stack and substitutes `Ref` / `Fn::GetAtt` / `Fn::Sub` placeholders in
@@ -66,7 +66,7 @@
  *     looked up via `crossStackResolver.resolveImport(exportName)`. The
  *     resolver typically reads the persistent exports index at
  *     `s3://{bucket}/cdkd/_index/{region}/exports.json` populated by
- *     `cdkd deploy`, falling back to a per-stack state.json scan on
+ *     `cdkl deploy`, falling back to a per-stack state.json scan on
  *     index miss (closes issue #454).
  *   - `Fn::GetStackOutput: { StackName, OutputName, Region? }` — looked
  *     up via `crossStackResolver.resolveGetStackOutput(stackName, region,
