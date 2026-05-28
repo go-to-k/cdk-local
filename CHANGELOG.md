@@ -1,3 +1,10 @@
+# [0.15.0](https://github.com/go-to-k/cdk-local/compare/v0.14.0...v0.15.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose RegistrationHandle type from cloud-map-registry ([#79](https://github.com/go-to-k/cdk-local/issues/79)) ([4d8adee](https://github.com/go-to-k/cdk-local/commit/4d8adee45a0ef5e5be15550b3084de50b00bb59b))
+
 # [0.14.0](https://github.com/go-to-k/cdk-local/compare/v0.13.3...v0.14.0) (2026-05-28)
 
 
