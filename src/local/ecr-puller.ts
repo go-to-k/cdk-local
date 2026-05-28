@@ -85,6 +85,16 @@ export interface EcrPullOptions {
    * / `ecr:BatchGetImage` on the target repository.
    */
   ecrRoleArn?: string;
+  /**
+   * Optional AWS profile (the CLI's `--profile`). Threaded into the STS
+   * caller-identity lookup and the ECR auth client so the pull
+   * authenticates as the profile's account — for `--from-cfn-stack` the
+   * image lives in the deployed (profile) account, and without this the
+   * default credential chain authenticates as the wrong account and the
+   * pull is denied / the auth token is rejected. Ignored on the
+   * `ecrRoleArn` path, where the assumed-role credentials take over.
+   */
+  profile?: string;
 }
 
 /** STS-issued temporary credentials shape used to authenticate the ECR client. */
@@ -189,10 +199,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // as the STS-AssumeRole source region. Failures here are fatal — without
   // an identity we cannot even tell whether this is a cross-account pull,
   // let alone authenticate.
-  const callerIdentityKey = callerRegion ?? '_unset';
+  const callerIdentityKey = `${options.profile ?? '_noprofile'}|${callerRegion ?? '_unset'}`;
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
-    const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+    const sts = new STSClient({
+      ...(callerRegion && { region: callerRegion }),
+      ...(options.profile && { profile: options.profile }),
+    });
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       if (!identity.Account) {
@@ -223,13 +236,13 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // image-pull loop).
   let assumed: TempCredentials | undefined;
   if (options.ecrRoleArn) {
-    const cacheKey = `${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
+    const cacheKey = `${options.profile ?? '_noprofile'}|${options.ecrRoleArn}|${callerRegion ?? '_unset'}`;
     const cached = ASSUMED_ROLE_CACHE.get(cacheKey);
     if (cached && isCredentialFresh(cached)) {
       assumed = cached;
       logger.debug(`Reusing cached AssumeRole credentials for ${options.ecrRoleArn}`);
     } else {
-      assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, logger);
+      assumed = await assumeRoleForEcr(options.ecrRoleArn, callerRegion, options.profile, logger);
       ASSUMED_ROLE_CACHE.set(cacheKey, assumed);
       logger.info(
         `Assumed role ${options.ecrRoleArn} for ECR pull (account=${parsed.accountId}, region=${parsed.region})`
@@ -254,7 +267,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // credentials; otherwise the default credential chain.
   const ecr = new ECRClient({
     region: parsed.region,
-    ...(assumed && { credentials: assumed }),
+    // Assumed-role creds (the `ecrRoleArn` path) take precedence; otherwise
+    // authenticate as the supplied `--profile` rather than the default chain.
+    ...(assumed ? { credentials: assumed } : options.profile ? { profile: options.profile } : {}),
   });
   try {
     await ecrLogin(ecr, parsed.accountId, parsed.region);
@@ -283,10 +298,16 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
 async function assumeRoleForEcr(
   roleArn: string,
   callerRegion: string | undefined,
+  profile: string | undefined,
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
-  const sts = new STSClient({ ...(callerRegion && { region: callerRegion }) });
+  // Thread `--profile` so the AssumeRole source identity is the profile's,
+  // matching the rest of the pull path.
+  const sts = new STSClient({
+    ...(callerRegion && { region: callerRegion }),
+    ...(profile && { profile }),
+  });
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

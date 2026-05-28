@@ -95,6 +95,15 @@ export interface RunEcsTaskOptions {
    * pulls do not need this.
    */
   ecrRoleArn?: string;
+  /**
+   * The CLI's `--profile`, forwarded to `pullEcrImage` so the ECR auth
+   * authenticates as the profile's account. For `--from-cfn-stack` the
+   * image lives in the deployed (profile) account; without this the
+   * default credential chain authenticates as the wrong account and the
+   * pull is denied. Distinct from `ecrRoleArn` (cross-account via
+   * AssumeRole) — both can be set, in which case the assumed role wins.
+   */
+  profile?: string;
   /** Don't `docker rm -f` containers on task exit; useful for `docker exec` post-mortems. */
   keepRunning: boolean;
   /** Start the containers and return without streaming logs. */
@@ -701,6 +710,7 @@ async function prepareOneImage(
         skipPull: options.skipPull,
         ...(options.region !== undefined && { region: options.region }),
         ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
+        ...(options.profile !== undefined && { profile: options.profile }),
       });
     }
     case 'cdk-asset': {
