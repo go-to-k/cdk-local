@@ -70,3 +70,33 @@ export {
   type TranslatedHttpResponse,
 } from './local/api-gateway-response.js';
 export { getContainerNetworkIp } from './local/docker-inspect.js';
+
+/**
+ * `start-api` route-resolution layer, re-exported for hosts that shim
+ * cdk-local's `src/local/**` modules verbatim (e.g. cdkd). These turn a
+ * synthesized Cloud Assembly into discovered API routes, match an
+ * incoming request to a route, and build the API Gateway event shapes —
+ * the building blocks the local HTTP server runs on. Exposed only as the
+ * consuming host's `import` statements require them.
+ */
+export {
+  discoverRoutes,
+  type DiscoveredRoute,
+  type RestV1IntegrationConfig,
+} from './local/route-discovery.js';
+export { matchRoute, type RouteMatchResult } from './local/route-matcher.js';
+export {
+  buildHttpApiV2Event,
+  buildRestV1Event,
+  applyAuthorizerOverlay,
+  type HttpRequestSnapshot,
+  type MatchedRouteContext,
+  type AuthorizerEventOverlay,
+} from './local/api-gateway-event.js';
+export {
+  discoverWebSocketApis,
+  discoverWebSocketApisOrThrow,
+  parseSelectionExpressionPath,
+  type DiscoveredWebSocketApi,
+  type WebSocketRouteEntry,
+} from './local/websocket-route-discovery.js';
