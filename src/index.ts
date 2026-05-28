@@ -82,6 +82,12 @@ export {
   type CfnLocalStateProviderOptions,
 } from './local/cfn-local-state-provider.js';
 
+export {
+  collectSsmParameterRefs,
+  resolveSsmParameters,
+  type SsmParameterRef,
+} from './local/ssm-parameter-resolver.js';
+
 /**
  * Low-level local-execution building blocks re-exported for hosts that
  * shim cdk-local's `src/local/**` modules verbatim (e.g. cdkd). These

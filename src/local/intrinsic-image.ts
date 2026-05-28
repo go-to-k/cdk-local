@@ -57,6 +57,17 @@ export interface ImageResolutionContext {
    * shapes. Undefined when `--from-state` is not in effect.
    */
   stateResources?: Record<string, ResourceState>;
+  /**
+   * Resolved SSM-backed template `Parameters`
+   * (`AWS::SSM::Parameter::Value<String>`), keyed by parameter logical ID.
+   * Fed into `state-resolver.ts`'s `SubstitutionContext.parameters` so a
+   * `Ref` to such a parameter in a container `Environment` / `Secrets`
+   * entry resolves to its SSM value instead of being warn-and-dropped
+   * (issue #94). The CLI resolves these out-of-band via SSM Parameter
+   * Store under `--from-cfn-stack`. Undefined when the stack declares no
+   * SSM-backed parameters / no state source is in effect.
+   */
+  stateParameters?: Record<string, string>;
 }
 
 /**

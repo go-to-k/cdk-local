@@ -69,7 +69,10 @@ import {
   ListStackResourcesCommand,
 } from '@aws-sdk/client-cloudformation';
 import { LambdaClient, GetFunctionConfigurationCommand } from '@aws-sdk/client-lambda';
+import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
+import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
 import type { LocalStateProvider, LocalStateRecord } from './local-state-provider.js';
@@ -122,6 +125,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // deployed-env fallback (no unresolvable intrinsic in any consumer
   // Lambda's env) don't open a needless client.
   private lambdaClient: LambdaClient | undefined;
+  // The SSM client is constructed lazily on the first
+  // `resolveTemplateSsmParameters` call so invocations whose templates
+  // declare no `AWS::SSM::Parameter::Value` parameters don't open a
+  // needless client.
+  private ssmClient: SSMClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
   // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
   // path would otherwise resurrect the client on a post-dispose
@@ -169,6 +177,47 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       });
     }
     return this.lambdaClient;
+  }
+
+  private getSsmClient(): SSMClient {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    if (!this.ssmClient) {
+      // Reuse the SAME region + profile threading as the CFn / Lambda
+      // clients so the SSM read targets the same account / region the
+      // `--from-cfn-stack` state load used (issue #628 / #94). A second
+      // credential resolution path would risk reading SSM from the
+      // default account while CFn read from the named profile's account.
+      this.ssmClient = new SSMClient({
+        region: this.region,
+        ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
+      });
+    }
+    return this.ssmClient;
+  }
+
+  /**
+   * Resolve the synthesized template's SSM-backed `Parameters`
+   * (`AWS::SSM::Parameter::Value<String>` /
+   * `AWS::SSM::Parameter::Value<List<String>>`) into a
+   * `parameterLogicalId -> value` map via SSM Parameter Store. See
+   * {@link LocalStateProvider.resolveTemplateSsmParameters}.
+   *
+   * Returns an empty map (and opens no SSM client) when the template
+   * declares no SSM-backed parameters. Best-effort: SSM failures are
+   * absorbed inside {@link resolveSsmParameters} with a per-chunk warn.
+   */
+  public async resolveTemplateSsmParameters(
+    template: CloudFormationTemplate
+  ): Promise<Record<string, string>> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    const refs = collectSsmParameterRefs(template);
+    if (refs.length === 0) return {};
+    const client = this.getSsmClient();
+    return resolveSsmParameters(client, refs, this.label);
   }
 
   /**
@@ -355,6 +404,10 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (this.lambdaClient) {
       this.lambdaClient.destroy();
       this.lambdaClient = undefined;
+    }
+    if (this.ssmClient) {
+      this.ssmClient.destroy();
+      this.ssmClient = undefined;
     }
   }
 }

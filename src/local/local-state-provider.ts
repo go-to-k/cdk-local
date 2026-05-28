@@ -33,6 +33,7 @@
  * could in principle drive both flags in the future.
  */
 
+import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
 
@@ -147,6 +148,32 @@ export interface LocalStateProvider {
   resolveDeployedFunctionEnv?(
     functionPhysicalId: string
   ): Promise<Record<string, string> | undefined>;
+  /**
+   * Optional: resolve a synthesized stack template's SSM-backed
+   * `Parameters` (`AWS::SSM::Parameter::Value<String>` /
+   * `AWS::SSM::Parameter::Value<List<String>>`, what CDK synthesizes for
+   * `ssm.StringParameter.valueForStringParameter(...)`) into a
+   * `parameterLogicalId -> value` map by reading each parameter's SSM
+   * name (from the template entry's `Default`) out of SSM Parameter
+   * Store. `List<String>` values are surfaced comma-joined.
+   *
+   * The returned map is fed into the substitution context's `parameters`
+   * field so a `Ref` to such a parameter resolves to the value instead of
+   * being dropped — these parameters are CloudFormation PARAMETERS, not
+   * resources, so they never appear in the `load()` resource map (built
+   * from `ListStackResources`).
+   *
+   * Implemented only by the CFn provider (`--from-cfn-stack`) — it owns
+   * the region / credential context the SSM read needs, the same one its
+   * `CloudFormationClient` uses. Returns an empty map when the template
+   * declares no SSM-backed parameters, and is best-effort: an SSM failure
+   * logs a warn and returns whatever it could resolve (possibly nothing)
+   * so the caller falls back to warn-and-drop. Never throws.
+   *
+   * Note: SSM parameter VALUES land in the local container env (env-var
+   * substitution). Callers must never log the values.
+   */
+  resolveTemplateSsmParameters?(template: CloudFormationTemplate): Promise<Record<string, string>>;
   /**
    * Release any AWS clients the provider owns. Always called by the
    * CLI layer in the outer `finally`. Idempotent.

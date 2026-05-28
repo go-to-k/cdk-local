@@ -1845,6 +1845,9 @@ async function buildContainerSpec(args: {
     if (stateBundle.pseudoParameters) {
       context.pseudoParameters = stateBundle.pseudoParameters;
     }
+    if (stateBundle.ssmParameters) {
+      context.parameters = stateBundle.ssmParameters;
+    }
     const { env, audit } = substituteEnvVarsFromState(templateEnv, context);
     templateEnv = env;
     for (const key of audit.resolvedKeys) {
@@ -3117,6 +3120,16 @@ interface StackStateBundle {
    * provider implements the deployed-env fallback (e.g. `--from-state`).
    */
   deployedEnvByLambda?: Map<string, Record<string, string>>;
+  /**
+   * Resolved SSM-backed template `Parameters`
+   * (`AWS::SSM::Parameter::Value<String>`), keyed by the parameter's
+   * logical ID. Fed into the substitution context's `parameters` field so
+   * a `Ref` to such a parameter resolves to its SSM value instead of
+   * being warn-and-dropped (issue #94). `undefined`/absent when the stack
+   * declares no SSM-backed parameters or no provider implements the SSM
+   * resolution (e.g. `--from-state`).
+   */
+  ssmParameters?: Record<string, string>;
 }
 
 /**
@@ -3278,6 +3291,17 @@ export async function loadStateForRoutedStacks(
           if (deployedEnv) deployedEnvByLambda.set(logicalId, deployedEnv);
         }
         if (deployedEnvByLambda.size > 0) bundle.deployedEnvByLambda = deployedEnvByLambda;
+      }
+      // Resolve SSM-backed template parameters
+      // (`AWS::SSM::Parameter::Value<String>`) once per stack so a `Ref`
+      // to such a parameter in a reachable Lambda's env resolves to its
+      // SSM value (issue #94). Gated on the stack actually having an
+      // intrinsic-valued env entry (same gate as the pseudo-parameter
+      // hop) so literal-only stacks skip the SSM round-trip. Only the
+      // CFn provider implements `resolveTemplateSsmParameters`.
+      if (stackHasIntrinsicEnv(stackName) && provider.resolveTemplateSsmParameters) {
+        const ssmParameters = await provider.resolveTemplateSsmParameters(stack.template);
+        if (Object.keys(ssmParameters).length > 0) bundle.ssmParameters = ssmParameters;
       }
       out.set(stackName, bundle);
       logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);
