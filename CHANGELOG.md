@@ -1,3 +1,10 @@
+# [0.14.0](https://github.com/go-to-k/cdk-local/compare/v0.13.3...v0.14.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose env-resolver / stage-resolver / cloud-map-registry primitives ([#78](https://github.com/go-to-k/cdk-local/issues/78)) ([4818af0](https://github.com/go-to-k/cdk-local/commit/4818af00ca2e54a745cfc504bed0f62e77f94e5d))
+
 ## [0.13.3](https://github.com/go-to-k/cdk-local/compare/v0.13.2...v0.13.3) (2026-05-28)
 
 
