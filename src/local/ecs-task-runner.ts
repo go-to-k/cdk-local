@@ -76,6 +76,16 @@ export interface RunEcsTaskOptions {
    * still works.
    */
   skipHostPortPublish?: boolean;
+  /**
+   * `--host-port <containerPort>=<hostPort>` overrides (`containerPort ->
+   * hostPort`). When a published container port has an entry here, it is
+   * bound on that host port instead of the declared one. Lets the user
+   * map a privileged container port (e.g. 80) to a non-privileged host
+   * port (e.g. 8080) so the run avoids macOS Docker Desktop's privileged
+   * helper. Empty / unset = bind the declared host port (`host ==
+   * container`).
+   */
+  hostPortOverrides?: Record<number, number>;
   /** Optional STS-issued temp credentials to expose via the metadata sidecar (`--assume-task-role`). */
   taskCredentials?: {
     accessKeyId: string;
@@ -392,6 +402,7 @@ export async function runEcsTask(
         region: options.region,
         sidecarIp: state.network.sidecarIp,
         ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
+        ...(options.hostPortOverrides ? { hostPortOverrides: options.hostPortOverrides } : {}),
         ...(options.addHostFlags && options.addHostFlags.length > 0
           ? { addHostFlags: options.addHostFlags }
           : {}),
@@ -865,6 +876,11 @@ interface BuildDockerRunArgs {
    */
   skipHostPortPublish?: boolean;
   /**
+   * `--host-port` overrides (`containerPort -> hostPort`); see the
+   * matching field on {@link RunEcsTaskOptions}.
+   */
+  hostPortOverrides?: Record<number, number>;
+  /**
    * Issue #460 — extra `--add-host name:ip` flag pairs forwarded
    * verbatim to `docker run`. Used by the Cloud Map overlay so
    * `<discoveryName>.<namespace>` (and bare ClientAlias short forms)
@@ -896,26 +912,42 @@ interface BuildDockerRunArgs {
 }
 
 /**
- * Resolve the HOST port to publish a container port on.
+ * Parse `--host-port <containerPort>=<hostPort>` overrides into a
+ * `containerPort -> hostPort` map.
  *
- * On macOS, Docker Desktop binds host ports below 1024 through a
- * privileged helper (`com.docker.vmnetd`) that prompts for an admin
- * password — and fails outright when that helper isn't running. A
- * container that declares e.g. port 80 would otherwise force that prompt
- * on every `run-task` / `start-service`. To keep the local run
- * password-free, remap a privileged host port to a non-privileged one by
- * adding 8000 (80 -> 8080, 443 -> 8443). The container port is unchanged
- * — only the host side moves — and the caller logs where to reach it.
+ * By default cdk-local publishes a container port on the SAME host port
+ * (`host == container`), which is predictable but fails on macOS for
+ * privileged ports (< 1024): Docker Desktop binds those through the
+ * `com.docker.vmnetd` privileged helper, which prompts for an admin
+ * password and fails when cancelled. Rather than silently changing the
+ * host port, the user opts in explicitly — e.g. `--host-port 80=8080`
+ * publishes the container's port 80 on host port 8080.
  *
- * Only macOS is affected: on Linux the Docker daemon runs as root and
- * binds privileged ports directly, so the host port is left as-is to
- * preserve the `host == container` mapping users expect.
- *
- * Exported for unit testing with an explicit `platform`.
+ * Repeatable; each value is `<containerPort>=<hostPort>` with both in
+ * 1-65535. Throws on a malformed value so the CLI surfaces a clear error.
  */
-export function resolvePublishHostPort(hostPort: number, platform: NodeJS.Platform): number {
-  if (platform === 'darwin' && hostPort < 1024) return hostPort + 8000;
-  return hostPort;
+export function parseHostPortOverrides(values: string[] | undefined): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const raw of values ?? []) {
+    const m = /^(\d+)=(\d+)$/.exec(raw.trim());
+    if (!m) {
+      throw new Error(
+        `Invalid --host-port '${raw}'. Expected <containerPort>=<hostPort> (e.g. 80=8080).`
+      );
+    }
+    const containerPort = Number(m[1]);
+    const hostPort = Number(m[2]);
+    for (const [label, p] of [
+      ['container', containerPort],
+      ['host', hostPort],
+    ] as const) {
+      if (p < 1 || p > 65535) {
+        throw new Error(`Invalid --host-port '${raw}': ${label} port must be 1-65535.`);
+      }
+    }
+    out[containerPort] = hostPort;
+  }
+  return out;
 }
 
 /**
@@ -981,19 +1013,17 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // Connect tasks have per-task ENIs and never share a host port).
   if (!opts.skipHostPortPublish) {
     for (const pm of container.portMappings) {
-      const hostPort = pm.hostPort ?? pm.containerPort;
-      const publishHostPort = resolvePublishHostPort(hostPort, process.platform);
-      if (publishHostPort !== hostPort) {
+      const declaredHostPort = pm.hostPort ?? pm.containerPort;
+      const hostPort = opts.hostPortOverrides?.[pm.containerPort] ?? declaredHostPort;
+      if (hostPort !== declaredHostPort) {
         getLogger()
           .child('ecs')
           .info(
             `Container '${container.name}' container port ${pm.containerPort} published on ` +
-              `${containerHost}:${publishHostPort} (remapped from privileged host port ${hostPort}; ` +
-              'macOS Docker Desktop needs an admin helper to bind ports < 1024). ' +
-              `Reach it at ${containerHost}:${publishHostPort}.`
+              `${containerHost}:${hostPort} (--host-port override). Reach it at ${containerHost}:${hostPort}.`
           );
       }
-      args.push('-p', `${containerHost}:${publishHostPort}:${pm.containerPort}/${pm.protocol}`);
+      args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
     }
   }
 

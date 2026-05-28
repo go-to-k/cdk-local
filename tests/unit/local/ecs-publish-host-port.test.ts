@@ -1,27 +1,77 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { resolvePublishHostPort } from '../../../src/local/ecs-task-runner.js';
+import { buildDockerRunArgs, parseHostPortOverrides } from '../../../src/local/ecs-task-runner.js';
+import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
-describe('resolvePublishHostPort', () => {
-  it('remaps privileged host ports (<1024) by +8000 on macOS', () => {
-    expect(resolvePublishHostPort(80, 'darwin')).toBe(8080);
-    expect(resolvePublishHostPort(443, 'darwin')).toBe(8443);
-    expect(resolvePublishHostPort(22, 'darwin')).toBe(8022);
-    expect(resolvePublishHostPort(1023, 'darwin')).toBe(9023);
+describe('parseHostPortOverrides', () => {
+  it('parses <containerPort>=<hostPort> pairs into a map', () => {
+    expect(parseHostPortOverrides(['80=8080'])).toEqual({ 80: 8080 });
+    expect(parseHostPortOverrides(['80=8080', '443=8443'])).toEqual({ 80: 8080, 443: 8443 });
   });
 
-  it('leaves non-privileged host ports unchanged on macOS', () => {
-    expect(resolvePublishHostPort(1024, 'darwin')).toBe(1024);
-    expect(resolvePublishHostPort(3000, 'darwin')).toBe(3000);
-    expect(resolvePublishHostPort(8080, 'darwin')).toBe(8080);
+  it('returns an empty map for undefined / empty input', () => {
+    expect(parseHostPortOverrides(undefined)).toEqual({});
+    expect(parseHostPortOverrides([])).toEqual({});
   });
 
-  it('never remaps on Linux (daemon runs as root, binds <1024 directly)', () => {
-    expect(resolvePublishHostPort(80, 'linux')).toBe(80);
-    expect(resolvePublishHostPort(443, 'linux')).toBe(443);
-    expect(resolvePublishHostPort(3000, 'linux')).toBe(3000);
+  it('throws on a malformed value', () => {
+    expect(() => parseHostPortOverrides(['8080'])).toThrow(/Expected <containerPort>=<hostPort>/);
+    expect(() => parseHostPortOverrides(['80:8080'])).toThrow(/Expected <containerPort>=<hostPort>/);
+    expect(() => parseHostPortOverrides(['abc=8080'])).toThrow(/Expected <containerPort>=<hostPort>/);
   });
 
-  it('does not remap on win32 (scoped to the confirmed macOS vmnetd case)', () => {
-    expect(resolvePublishHostPort(80, 'win32')).toBe(80);
+  it('throws on an out-of-range port', () => {
+    expect(() => parseHostPortOverrides(['80=0'])).toThrow(/host port must be 1-65535/);
+    expect(() => parseHostPortOverrides(['70000=8080'])).toThrow(/container port must be 1-65535/);
+  });
+});
+
+function containerWithPort(): ResolvedEcsContainer {
+  return {
+    name: 'app',
+    image: { kind: 'public', uri: 'public.ecr.aws/docker/library/busybox:latest' },
+    environment: {},
+    secrets: [],
+    portMappings: [{ containerPort: 80, protocol: 'tcp' }],
+    mountPoints: [],
+    dependsOn: [],
+    links: [],
+    essential: true,
+    ulimits: [],
+    warnings: [],
+  } as unknown as ResolvedEcsContainer;
+}
+
+const task = { family: 'fam' } as unknown as ResolvedEcsTask;
+
+function publishArg(hostPortOverrides?: Record<number, number>): string | undefined {
+  const { args } = buildDockerRunArgs({
+    task,
+    container: containerWithPort(),
+    image: 'public.ecr.aws/docker/library/busybox:latest',
+    network: 'net',
+    volumeByName: new Map(),
+    secrets: [],
+    envOverrides: undefined,
+    containerHost: '127.0.0.1',
+    roleArn: undefined,
+    platformOverride: undefined,
+    region: undefined,
+    ...(hostPortOverrides && { hostPortOverrides }),
+  });
+  const i = args.indexOf('-p');
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+describe('buildDockerRunArgs host-port publishing', () => {
+  it('publishes container port on the SAME host port by default (no silent remap)', () => {
+    expect(publishArg()).toBe('127.0.0.1:80:80/tcp');
+  });
+
+  it('honors a --host-port override for the matching container port', () => {
+    expect(publishArg({ 80: 8080 })).toBe('127.0.0.1:8080:80/tcp');
+  });
+
+  it('ignores an override for a different container port', () => {
+    expect(publishArg({ 443: 8443 })).toBe('127.0.0.1:80:80/tcp');
   });
 });

@@ -32,6 +32,7 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   cleanupEcsRun,
   createEcsRunState,
+  parseHostPortOverrides,
   runEcsTask,
   type EcsRunState,
   type RunEcsTaskOptions,
@@ -77,6 +78,8 @@ interface LocalRunTaskOptions {
    * authenticate against the target ECR repository.
    */
   ecrRoleArn?: string;
+  /** `--host-port <containerPort=hostPort>` overrides (repeatable; variadic array). */
+  hostPort?: string[];
   platform?: string;
   keepRunning: boolean;
   detach: boolean;
@@ -332,6 +335,8 @@ async function localRunTaskCommand(
     if (options.region) runOpts.region = options.region;
     if (options.ecrRoleArn) runOpts.ecrRoleArn = options.ecrRoleArn;
     if (options.profile) runOpts.profile = options.profile;
+    const hostPortOverrides = parseHostPortOverrides(options.hostPort);
+    if (Object.keys(hostPortOverrides).length > 0) runOpts.hostPortOverrides = hostPortOverrides;
     if (profileCredsFile) {
       runOpts.profileCredentialsFile = {
         hostPath: profileCredsFile.hostPath,
@@ -628,6 +633,15 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
         '--container-host <ip>',
         'Host IP to bind published container ports to. Must be a numeric IP (Docker rejects hostnames here)'
       ).default('127.0.0.1')
+    )
+    .addOption(
+      new Option(
+        '--host-port <containerPort=hostPort...>',
+        'Publish a container port on a specific host port (e.g. 80=8080); repeatable. ' +
+          'Default: host port == container port. Use this on macOS to map a privileged ' +
+          'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
+          'Desktop admin-password prompt.'
+      )
     )
     .addOption(
       new Option(

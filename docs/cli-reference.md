@@ -450,6 +450,7 @@ Path matching is prefix-based: an L2 path like
 | `--cluster <name>` | `cdkl` | Surfaced as `ECS_CONTAINER_METADATA_URI_V4`'s `Cluster` field and used as the docker network prefix (`<name>-task-<rand>`). |
 | `--env-vars <file>` | unset | SAM-shape JSON overlay. Top-level keys are container names; `Parameters` is a global overlay. Same shape as `cdkl invoke --env-vars`. |
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
+| `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
 | `--assume-task-role [<arn>]` | unset | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1. See [Env / Secrets substitution](#env--secrets-substitution---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
@@ -651,12 +652,13 @@ each other via a `docker --add-host` DNS overlay.
 > specific replica from the host, `docker exec` into it or read its IP
 > from `docker inspect`.
 >
-> **macOS privileged ports.** On macOS, a container port below 1024 is
-> published on a non-privileged host port (`hostPort + 8000`, e.g.
-> `80 → 8080`, `443 → 8443`) so the run never triggers Docker Desktop's
-> privileged-port admin-password prompt (`com.docker.vmnetd`). The
-> container port is unchanged; a log line names the actual host port to
-> `curl`. On Linux the host port is left as-is.
+> **macOS privileged ports.** The host port equals the container port by
+> default. On macOS, Docker Desktop binds host ports below 1024 through a
+> privileged helper (`com.docker.vmnetd`) that prompts for an admin
+> password. To avoid the prompt, map the privileged container port to a
+> non-privileged host port explicitly with `--host-port` (repeatable),
+> e.g. `--host-port 80=8080` — then reach the container at
+> `127.0.0.1:8080`. cdk-local never changes the host port silently.
 
 ### Target resolution
 
@@ -683,6 +685,7 @@ error.
 | `--restart-policy <policy>` | `on-failure` | Restart-on-exit behavior. `on-failure` restarts only on non-zero exit; `always` restarts on every exit; `none` shuts the affected replica down and runs the service degraded. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `cdkl run-task`. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container ports to. Must be a numeric IP. |
+| `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. Single-replica services only. |
 | `--assume-task-role [arn]` | unset | Assume the task definition's `TaskRoleArn` (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `cdkl run-task`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `cdkl run-task`. |
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
