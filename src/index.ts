@@ -44,3 +44,30 @@ export {
   CfnLocalStateProvider,
   type CfnLocalStateProviderOptions,
 } from './local/cfn-local-state-provider.js';
+
+/**
+ * Low-level local-execution building blocks re-exported for hosts that
+ * shim cdk-local's `src/local/**` modules verbatim (e.g. cdkd). These
+ * are pure, dependency-free helpers — intrinsic resolution, parameter
+ * mapping, response translation, websocket body coercion, and container
+ * network inspection — that a host re-exports 1:1 instead of carrying
+ * its own byte-identical copy. Exposed only as the consuming host's
+ * `import` statements require them.
+ */
+export { pickRefLogicalId } from './local/intrinsic-utils.js';
+export {
+  resolveLambdaArnIntrinsic,
+  type LambdaArnResolveOutcome,
+} from './local/intrinsic-lambda-arn.js';
+export {
+  resolveServiceIntegrationParameters,
+  resolveSelectionExpression,
+  type RequestParameterContext,
+  type ResolveParametersOutcome,
+} from './local/parameter-mapping.js';
+export {
+  translateLambdaResponse,
+  type TranslatedHttpResponse,
+} from './local/api-gateway-response.js';
+export { bufferToBody } from './local/websocket-body.js';
+export { getContainerNetworkIp } from './local/docker-inspect.js';
