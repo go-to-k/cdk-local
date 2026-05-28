@@ -88,6 +88,7 @@ Run each check and report pass/fail:
      - Lambda runtime change → run `cdkl invoke` against `tests/integration/local-invoke/` (or the matching language fixture) and check the output.
      - HTTP server change → run `cdkl start-api` against `tests/integration/local-start-api/` and curl one route.
      - Library-only change → run a minimal repro that imports the new code path.
+     - PreToolUse hook change (`.claude/hooks/*.sh`) → exercise it end-to-end: build a throwaway git repo (simulate the base ref via `git update-ref refs/remotes/origin/main <sha>` + `git symbolic-ref refs/remotes/origin/HEAD`), commit an offending case AND a clean case, then pipe a synthesized payload (`jq -nc '{tool_input:{command:"<gated cmd>"},cwd:"<repo>"}'`) into the hook and assert it blocks the offender (exit 2) and passes the clean case + a non-matching command (exit 0). Shell hooks have no unit-test harness, so this end-to-end run is the ONLY correctness check — a hook that silently fail-opens (e.g. an unsupported `gh` flag) looks installed but never fires.
    - "Tests passed" is not "feature works." Always run the actual command before declaring done. If you cannot live-test (no Docker daemon, no fixture available), say so explicitly rather than skip silently — the gate exits non-zero so a reviewer can decide whether to accept the trade-off.
 
 10. **Retrospective + rules update**
