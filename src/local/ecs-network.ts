@@ -198,9 +198,13 @@ export async function createSharedSvcNetwork(
  * (user replica) container attached is a live concurrent run and is LEFT
  * untouched. Caveat: "only the metadata sidecar attached ⇒ orphan" can
  * misclassify a network in the sub-second window between sidecar start and
- * the first replica attach; this is acceptable because start-service's
- * fixed subnet already precludes two concurrent runs, so there is never a
- * legitimately-concurrent network to misjudge.
+ * the first replica attach — so a second `start-service` launched in that
+ * window could reclaim a concurrently-starting run's network out from under
+ * it. This is an accepted limitation, not a benign one: start-service pins a
+ * single fixed subnet, so two concurrent same-prefix runs were never
+ * supported (the second run's `docker network create` already fails with
+ * "Pool overlaps"). The sweep therefore cannot regress a
+ * previously-working scenario.
  *
  * Resilient by design: a `docker network ls` / `inspect` failure must not
  * abort the run — it logs at debug and skips, matching the idempotent

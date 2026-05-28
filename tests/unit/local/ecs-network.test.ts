@@ -78,6 +78,9 @@ describe('sweepOrphanedSvcNetworks', () => {
 
     expect(swept).toEqual(['cdkl-svc-empty']);
     const kinds = execFileMock.mock.calls.map((c) => kindOf(c[1] as string[]));
+    // The sidecar is force-removed unconditionally (by name) even when nothing
+    // is attached — `docker rm -f` tolerates a not-found container.
+    expect(kinds).toContain('container-rm:cdkl-svc-empty-metadata');
     expect(kinds).toContain('network-rm:cdkl-svc-empty');
   });
 
@@ -113,6 +116,25 @@ describe('sweepOrphanedSvcNetworks', () => {
     const kinds = execFileMock.mock.calls.map((c) => kindOf(c[1] as string[]));
     expect(kinds).toContain('network-rm:cdkl-svc-orphan');
     expect(kinds).not.toContain('network-rm:cdkl-svc-live');
+  });
+
+  it('sweeps every orphan when several leaked networks are present', async () => {
+    execFileMock.mockImplementation((_cmd: string, args: string[]) => {
+      const kind = kindOf(args);
+      if (kind === 'network-ls') return 'cdkl-svc-a\ncdkl-svc-b\ncdkl-svc-c\n';
+      if (kind === 'network-inspect:cdkl-svc-a') return 'cdkl-svc-a-metadata \n';
+      if (kind === 'network-inspect:cdkl-svc-b') return '\n';
+      if (kind === 'network-inspect:cdkl-svc-c') return 'cdkl-svc-c-metadata \n';
+      return '';
+    });
+
+    const swept = await sweepOrphanedSvcNetworks('cdkl');
+
+    expect(swept).toEqual(['cdkl-svc-a', 'cdkl-svc-b', 'cdkl-svc-c']);
+    const kinds = execFileMock.mock.calls.map((c) => kindOf(c[1] as string[]));
+    expect(kinds).toContain('network-rm:cdkl-svc-a');
+    expect(kinds).toContain('network-rm:cdkl-svc-b');
+    expect(kinds).toContain('network-rm:cdkl-svc-c');
   });
 
   it('tolerates zero matching networks (no removal calls, returns empty)', async () => {
