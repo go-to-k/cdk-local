@@ -38,7 +38,11 @@ import {
   type ServiceRunState,
 } from '../../local/ecs-service-runner.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
-import { cleanupEcsRun, type RunEcsTaskOptions } from '../../local/ecs-task-runner.js';
+import {
+  cleanupEcsRun,
+  parseHostPortOverrides,
+  type RunEcsTaskOptions,
+} from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
@@ -76,6 +80,8 @@ interface LocalStartServiceOptions {
   assumeTaskRole?: string | boolean;
   pull: boolean;
   ecrRoleArn?: string;
+  /** `--host-port <containerPort=hostPort>` overrides (repeatable; variadic array). */
+  hostPort?: string[];
   platform?: string;
   /** Cap on local replica count regardless of template `DesiredCount`. */
   maxTasks: number;
@@ -487,6 +493,8 @@ async function runOneTarget(
   if (options.region) taskOpts.region = options.region;
   if (options.ecrRoleArn) taskOpts.ecrRoleArn = options.ecrRoleArn;
   if (options.profile) taskOpts.profile = options.profile;
+  const hostPortOverrides = parseHostPortOverrides(options.hostPort);
+  if (Object.keys(hostPortOverrides).length > 0) taskOpts.hostPortOverrides = hostPortOverrides;
   // Per-service gating (mirrors cdkd PR #670 fix-back finding #1
   // applied in `local-run-task.ts`): the shared credentials file is
   // bound ONLY to services that did NOT win an `--assume-task-role`.
@@ -800,6 +808,16 @@ export function createLocalStartServiceCommand(
         '--container-host <ip>',
         'Host IP to bind published container ports to. Must be a numeric IP (Docker rejects hostnames here)'
       ).default('127.0.0.1')
+    )
+    .addOption(
+      new Option(
+        '--host-port <containerPort=hostPort...>',
+        'Publish a container port on a specific host port (e.g. 80=8080); repeatable. ' +
+          'Default: host port == container port. Use this on macOS to map a privileged ' +
+          'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
+          'Desktop admin-password prompt. (Single-replica services only — multi-replica ' +
+          'services do not publish host ports.)'
+      )
     )
     .addOption(
       new Option(
