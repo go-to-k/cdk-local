@@ -49,6 +49,15 @@ export interface ResolveEcsSecretsOptions {
   /** Region for the AWS SDK clients. Falls back to env defaults when unset. */
   region?: string;
   /**
+   * The CLI's `--profile`. Threaded into the Secrets Manager / SSM
+   * clients so `secretsmanager:GetSecretValue` / `ssm:GetParameter`
+   * authenticate as the profile's account — for `--from-cfn-stack` the
+   * secret lives in the deployed (profile) account, and without this the
+   * default credential chain authenticates as the wrong account and AWS
+   * rejects with AccessDenied. Undefined when `--profile` is unset.
+   */
+  profile?: string;
+  /**
    * Hook for tests: supply pre-built SDK clients. Production callers
    * leave both unset and let the resolver construct + destroy its own
    * clients.
@@ -71,9 +80,16 @@ export async function resolveEcsSecrets(
 
   const secretsClient =
     options.secretsManagerClient ??
-    new SecretsManagerClient({ ...(options.region && { region: options.region }) });
+    new SecretsManagerClient({
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+    });
   const ssmClient =
-    options.ssmClient ?? new SSMClient({ ...(options.region && { region: options.region }) });
+    options.ssmClient ??
+    new SSMClient({
+      ...(options.region && { region: options.region }),
+      ...(options.profile && { profile: options.profile }),
+    });
   const ownsSecretsClient = options.secretsManagerClient === undefined;
   const ownsSsmClient = options.ssmClient === undefined;
 
