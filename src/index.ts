@@ -66,7 +66,16 @@ export type { CdkLocalEmbedConfig } from './local/embed-config.js';
 export { getEmbedConfig, resetEmbedConfig, setEmbedConfig } from './local/embed-config.js';
 
 export type { LocalStateProvider, LocalStateRecord } from './local/local-state-provider.js';
-export type { CrossStackResolver, SubstitutionContext } from './local/state-resolver.js';
+export {
+  substituteAgainstState,
+  substituteAgainstStateAsync,
+  substituteEnvVarsFromState,
+  substituteEnvVarsFromStateAsync,
+  type CrossStackResolver,
+  type SubstitutionContext,
+  type StateEnvSubstitutionAudit,
+  type PseudoParameters,
+} from './local/state-resolver.js';
 
 export {
   CfnLocalStateProvider,
