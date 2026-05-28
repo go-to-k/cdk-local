@@ -1,3 +1,10 @@
+## [0.13.3](https://github.com/go-to-k/cdk-local/compare/v0.13.2...v0.13.3) (2026-05-28)
+
+
+### Bug Fixes
+
+* **from-cfn-stack:** authenticate ECS container secrets with --profile ([#76](https://github.com/go-to-k/cdk-local/issues/76)) ([44aa584](https://github.com/go-to-k/cdk-local/commit/44aa584a918f0c08f9f1a4d873a44466e6dfec8e))
+
 ## [0.13.2](https://github.com/go-to-k/cdk-local/compare/v0.13.1...v0.13.2) (2026-05-28)
 
 
