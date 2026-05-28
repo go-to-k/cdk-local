@@ -22,7 +22,7 @@ cdk-local deliberately does NOT emulate AWS managed services. The bet is: keep d
 It also picks up where `sam local` leaves off:
 
 - **CDK-native** — point it at your CDK app's `cdk.json`. No SAM templates, no extra config files.
-- **Wider coverage** — Lambda (ZIP + container image), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
+- **Wider coverage** — Lambda (ZIP + container image, plus Function URL), API Gateway REST v1 / HTTP v2 / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
 - **Real container images** — Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
 
 ## What runs locally, what doesn't
@@ -32,7 +32,7 @@ cdk-local runs your **application compute** locally in Docker, using your CDK ap
 **Runs locally (application compute):**
 
 - **Lambda functions** — your code in a real `public.ecr.aws/lambda/*` container via the Lambda Runtime Interface Emulator
-- **API Gateway** — REST v1 / HTTP v2 / Function URL / WebSocket served by a local HTTP server
+- **HTTP APIs & Function URLs** — API Gateway REST v1 / HTTP v2 / WebSocket and Lambda Function URLs served by a local HTTP server
 - **ECS** — tasks and services as real Docker containers (awsvpc / Service Connect / Cloud Map registry)
 - **Authorizers** — Lambda authorizers, Cognito User Pool JWT verification, IAM SigV4 verification
 
@@ -66,13 +66,25 @@ cdkl invoke MyStack/MyFunction --event ./event.json
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
 
-#### API Gateway — `start-api`
+#### HTTP APIs & Function URLs — `start-api`
 
-Serve your API Gateway routes (REST v1 / HTTP v2 / Function URL / WebSocket) on a local HTTP server.
+Serve your app's HTTP surface locally — API Gateway routes (REST v1 / HTTP v2 / WebSocket) and Lambda Function URLs — on a local HTTP server.
 
 ```bash
+# Single-stack app: serve every API in the stack (each on its own port)
+cdkl start-api
+
+# Or target one API
 cdkl start-api MyStack/MyApi
 ```
+
+In a multi-stack app, a bare `cdkl start-api` errors out rather than serving every stack's API at once (so a side-stack's API is never booted by accident). Pick the synth stack with the first of these you supply:
+
+- `--stack <name>` — the synth stack name, matched against your CDK app.
+- `--from-cfn-stack <name>` — the deployed CloudFormation stack name; doubles as the stack selector (see [section 2](#2-bound-to-a-deployed-stack)).
+- a stack-qualified target like `MyStack/MyApi` — the `MyStack` prefix selects the stack.
+
+See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
 #### ECS — `run-task` / `start-service`
 
@@ -91,7 +103,7 @@ Use this for fast iteration on Lambda code, API routing checks, and container ta
 
 Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), pass `--from-cfn-stack <StackName>` and cdk-local reads the deployed CloudFormation stack to inject real ARNs, Secrets values, and IAM credentials (resolved from your current AWS profile) into the local execution.
 
-#### API Gateway — `start-api` (the headline use case)
+#### HTTP APIs & Function URLs — `start-api` (the headline use case)
 
 A local API talking to real AWS — point a frontend at it for end-to-end debugging, including real Cognito JWT verification.
 

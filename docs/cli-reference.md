@@ -12,7 +12,7 @@ cdk-local has four subcommands, all under the `cdkl` binary:
 | Subcommand | Emulates | Backed by |
 | --- | --- | --- |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
-| `cdkl start-api` | Long-running API Gateway (REST v1 / HTTP API / Function URL) | RIE container pool + `node:http` listener (one server per discovered API) |
+| `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 
@@ -290,10 +290,11 @@ same sized `/tmp`.
 ## `cdkl start-api` (long-running local API server)
 
 `cdkl start-api` stands up a long-running HTTP server that maps
-synthesized API Gateway routes (REST v1, HTTP API, Function URL) to
-local Lambda invocations against the AWS Lambda Runtime Interface
-Emulator. Modeled on `sam local start-api` but reusing cdk-local's
-synthesis, asset, and route-discovery plumbing.
+synthesized API Gateway routes (REST v1, HTTP API, WebSocket) and
+Lambda Function URLs to local Lambda invocations against the AWS
+Lambda Runtime Interface Emulator. Modeled on `sam local start-api`
+but reusing cdk-local's synthesis, asset, and route-discovery
+plumbing.
 
 ```bash
 cdkl start-api                              # auto-allocate one port PER discovered API

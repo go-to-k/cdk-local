@@ -90,7 +90,7 @@ The event payload lands in `event` inside your handler.
 
 ## Next steps
 
-- **Serve API Gateway routes locally**: `cdkl start-api HelloCdklStack/HelloApi` — REST v1 / HTTP v2 / Function URL / WebSocket all served by a local HTTP server. See [docs/local-emulation.md](./local-emulation.md) when it ships.
+- **Serve your HTTP surface locally**: `cdkl start-api HelloCdklStack/HelloApi` — API Gateway REST v1 / HTTP v2 / WebSocket and Lambda Function URLs all served by a local HTTP server. See [docs/local-emulation.md](./local-emulation.md) when it ships.
 - **Run an ECS task or service**: `cdkl run-task <Stack>/<Task>` or `cdkl start-service <Stack>/<Service>`.
 - **Bind to a deployed CloudFormation stack**: `--from-cfn-stack <StackName>` injects real ARNs, Secret values, and IAM credentials from the live stack into the local container. This is the "iterate against your real deployed stack, including its data" flow described in the [README](../README.md).
 - **Override env vars without redeploying**: `--env-vars <file>` — supports per-function overrides keyed by CDK logical ID (display-path keys [tracked in #27](https://github.com/go-to-k/cdk-local/issues/27)).
