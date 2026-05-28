@@ -76,40 +76,58 @@ Ctrl+C / Esc at the prompt aborts with exit code 130 and no error noise.
 ## `cdkl list` (discover runnable targets)
 
 `cdkl list` (alias `cdkl ls`) synthesizes the CDK app and prints every
-target the other subcommands can run, grouped by command. Use it when you
-don't know what to pass as a `<target>` — each row shows both accepted
-forms (the CDK display path and the stack-qualified logical ID
-`<Stack>:<LogicalId>`), so you can copy either into `invoke` /
-`start-api` / `run-task` / `start-service`.
+target the other subcommands can run, grouped by command. Most of the
+time you do not need it — running a command with no target (or `-i`)
+opens an interactive picker (see the "Interactive target selection"
+section above). Reach for `list` to browse what exists, or to grab the
+exact target string for a script.
+
+Each target is printed by its CDK display path (the recommended,
+readable target form). Pass `-l` / `--long` to additionally print the
+stack-qualified logical ID (`<Stack>:<LogicalId>`) on an indented line
+beneath each path — useful for the SAM-style logical-ID form or for any
+resource without an `aws:cdk:path`.
 
 It needs no Docker. It synthesizes the app — which may perform context
 lookups, and (like every command) honors `--role-arn` / `CDKL_ROLE_ARN`
-by assuming that role first — and accepts only the
+by assuming that role first — and otherwise accepts only the
 [common flags](#common-flags) (`--app` / `--output` / `--context` /
 `--profile` / `--role-arn` / `--verbose`). There is no `<target>`
-argument; the command always lists the whole app.
+argument; the command always lists the whole app. Only the list is
+written to stdout; the `Synthesizing...` status and toolkit synth
+messages go to stderr, so `cdkl list | ...` stays clean.
 
 ```text
 $ cdkl list
-Lambda Functions  (cdkl invoke <target>)
-  MyStack/ItemsHandler    MyStack:ItemsHandlerFB09CCF4
 
-APIs  (cdkl start-api [target])
-  MyStack/MyHttpApi       MyStack:MyHttpApi8AEAAC21
+Lambda Functions  ->  cdkl invoke <target>
+  MyStack/ItemsHandler
 
-ECS Services  (cdkl start-service <target...>)
-  MyStack/WebService      MyStack:WebService
+APIs  ->  cdkl start-api [target]
+  MyStack/MyHttpApi
 
-ECS Task Definitions  (cdkl run-task <target>)
-  MyStack/WebTask         MyStack:WebTask
+ECS Services  ->  cdkl start-service <target...>
+  MyStack/WebService
+
+ECS Task Definitions  ->  cdkl run-task <target>
+  MyStack/WebTask
+```
+
+```text
+$ cdkl list -l
+...
+Lambda Functions  ->  cdkl invoke <target>
+  MyStack/ItemsHandler
+      MyStack:ItemsHandlerFB09CCF4
+...
 ```
 
 Categories with no matching resources are omitted. The `APIs` group
 covers every surface `start-api` can serve — REST v1, HTTP API v2,
 Function URLs, and WebSocket APIs. A Function URL is shown under its
-backing Lambda's display path and logical ID, because that is how
-`start-api` addresses a Function URL target (so the same row may also
-appear under `Lambda Functions`, where `invoke` runs it directly).
+backing Lambda's display path (and logical ID, with `-l`), because that
+is how `start-api` addresses a Function URL target (so the same row may
+also appear under `Lambda Functions`, where `invoke` runs it directly).
 
 ## `cdkl invoke` (run Lambda functions locally)
 
