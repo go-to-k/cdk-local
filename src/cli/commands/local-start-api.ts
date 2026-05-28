@@ -34,6 +34,7 @@ import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import type { StackState } from '../../types/state.js';
 import {
+  applyDeployedEnvFallback,
   substituteEnvVarsFromState,
   type PseudoParameters,
   type SubstitutionContext,
@@ -1744,11 +1745,29 @@ async function buildContainerSpec(args: {
     }
     const { env, audit } = substituteEnvVarsFromState(templateEnv, context);
     templateEnv = env;
-    stateAudit = audit;
     for (const key of audit.resolvedKeys) {
       getLogger().debug(`Lambda ${logicalId}: state source substituted env var ${key}`);
     }
-    for (const { key, reason } of audit.unresolved) {
+    // Deployed-env fallback: fill keys static substitution dropped (e.g.
+    // `Fn::GetAtt <Sibling>.Arn`) from the consumer function's
+    // deploy-time-resolved env, fetched during the state-load pass (see
+    // `loadStateForRoutedStacks`). Only populated under `--from-cfn-stack`.
+    let unresolved = audit.unresolved;
+    const resolvedKeys = [...audit.resolvedKeys];
+    const deployedEnv = stateBundle.deployedEnvByLambda?.get(logicalId);
+    if (unresolved.length > 0 && deployedEnv) {
+      const fb = applyDeployedEnvFallback(templateEnv, unresolved, deployedEnv);
+      templateEnv = fb.env;
+      unresolved = fb.stillUnresolved;
+      for (const key of fb.filled) {
+        resolvedKeys.push(key);
+        getLogger().debug(
+          `Lambda ${logicalId}: filled env var ${key} from deployed function config`
+        );
+      }
+    }
+    stateAudit = { resolvedKeys, unresolved };
+    for (const { key, reason } of unresolved) {
       getLogger().warn(
         `Lambda ${logicalId}: state source could not substitute env var ${key} (${reason}). ` +
           `Override it via --env-vars or it will be dropped.`
@@ -3001,6 +3020,15 @@ interface StackStateBundle {
    * refs).
    */
   pseudoParameters?: PseudoParameters;
+  /**
+   * Deploy-time-resolved `Environment.Variables` per reachable Lambda
+   * logical ID, fetched while the `--from-cfn-stack` provider was alive.
+   * Consumed by `buildContainerSpec` to fill env keys whose intrinsic
+   * value the static substituter could not resolve (e.g.
+   * `Fn::GetAtt <Sibling>.Arn`). `undefined`/absent for stacks where no
+   * provider implements the deployed-env fallback (e.g. `--from-state`).
+   */
+  deployedEnvByLambda?: Map<string, Record<string, string>>;
 }
 
 /**
@@ -3052,7 +3080,7 @@ function hasExtraStateProviderActive(
   return false;
 }
 
-async function loadStateForRoutedStacks(
+export async function loadStateForRoutedStacks(
   stacks: readonly StackInfo[],
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
@@ -3141,6 +3169,27 @@ async function loadStateForRoutedStacks(
       if (stackHasIntrinsicEnv(stackName)) {
         const pseudo = await resolvePseudoParametersForStartApi(loaded.region, options);
         if (pseudo) bundle.pseudoParameters = pseudo;
+      }
+      // Deployed-env fallback source: for each reachable Lambda in this
+      // stack whose template env carries an intrinsic, fetch the deployed
+      // function's already-resolved `Environment.Variables` while the
+      // provider (and its AWS client) is still alive. `buildContainerSpec`
+      // later splices these in for keys static substitution dropped (e.g.
+      // `Fn::GetAtt <Sibling>.Arn`). Only the CFn provider implements
+      // `resolveDeployedFunctionEnv`; `--from-state` carries deploy-time
+      // attributes in its state so its GetAtt resolves statically.
+      if (provider.resolveDeployedFunctionEnv) {
+        const deployedEnvByLambda = new Map<string, Record<string, string>>();
+        for (const logicalId of lambdaIds) {
+          const resource = stack.template.Resources?.[logicalId];
+          if (!resource || resource.Type !== 'AWS::Lambda::Function') continue;
+          if (!envHasIntrinsicValue(getTemplateEnv(resource))) continue;
+          const physicalId = loaded.resources[logicalId]?.physicalId;
+          if (!physicalId) continue;
+          const deployedEnv = await provider.resolveDeployedFunctionEnv(physicalId);
+          if (deployedEnv) deployedEnvByLambda.set(logicalId, deployedEnv);
+        }
+        if (deployedEnvByLambda.size > 0) bundle.deployedEnvByLambda = deployedEnvByLambda;
       }
       out.set(stackName, bundle);
       logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);

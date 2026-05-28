@@ -111,7 +111,7 @@ in the resolved stack so the user can copy/paste a valid one.
 | `--container-host <host>` | `127.0.0.1` | Host to bind the RIE port to. |
 | `--assume-role [arn]` | off | STS-assume the deployed function's execution role and forward the resulting temp credentials to the container, so the handler runs under the deployed role's narrow permissions instead of the developer's typically-admin shell credentials. Three forms: (1) `--assume-role <arn>` assumes the explicit ARN (precedence wins); (2) `--assume-role` (bare) auto-resolves the function's `Properties.Role` from the active state source (requires `--from-cfn-stack` or a host-provided extension); (3) `--no-assume-role` explicitly opts out. Off by default — when omitted, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` are passed through unchanged (SAM-compatible default). STS failures degrade to a warn + dev-creds fallback. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Use only when the dev credentials cannot read the layer — typically cross-account layers. AWS-published public layers (e.g. Lambda Powertools) are readable from every account and need no role. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `ListStackResources` does not return per-attribute values). See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` placeholders in env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in the Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. See [CloudFormation-driven env recovery](#cloudformation-driven-env-recovery---from-cfn-stack) below. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region when `--from-cfn-stack` is set. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
@@ -179,15 +179,26 @@ pass).
 3. `--from-cfn-stack` substituted intrinsic (when the flag is set AND
    the template entry was a supported intrinsic AND substitution
    succeeded).
-4. Template literal value.
+4. `--from-cfn-stack` deployed-env fallback (the consumer function's own
+   deploy-time-resolved value, for intrinsic keys step 3 could not
+   resolve — see below).
+5. Template literal value.
 
-**`Fn::GetAtt` is warn-and-dropped** in v1. CFn's
-`ListStackResources` does NOT return per-attribute values — it only
-exposes `(LogicalResourceId, PhysicalResourceId, ResourceType)`
-triplets. Recovering per-attribute values would require per-service
-describe calls (e.g. `GetQueueAttributes` for SQS, `GetFunction` for
-Lambda), which is out of scope for v1. Override the affected env var
-via `--env-vars` if the value is critical.
+**`Fn::GetAtt` recovery**: CFn's `ListStackResources` does NOT return
+per-attribute values — it only exposes `(LogicalResourceId,
+PhysicalResourceId, ResourceType)` triplets — so `Fn::GetAtt` does not
+resolve against the resource map. cdk-local closes this for a Lambda's
+OWN env vars by reading the deployed function's already-resolved
+`Environment.Variables` via `lambda:GetFunctionConfiguration`
+(CloudFormation resolved every intrinsic at deploy time), so e.g.
+`SIBLING_ARN: Fn::GetAtt <OtherFunction>.Arn` is recovered without a
+manual override. The same fallback also covers `Fn::Sub` /
+`Fn::ImportValue` / cross-stack `Ref` in the env block. Keys not present
+in the deployed function's env (e.g. a var you added locally since the
+last deploy) still warn-and-drop — override via `--env-vars`. Recovered
+values enter the local container env in plaintext; Lambda env vars are a
+non-secret property, so this exposes nothing the deployed function
+doesn't already surface to a caller with `lambda:GetFunctionConfiguration`.
 
 **Region handling**: the CFn client is region-bound at construction
 time using the precedence `--stack-region` > `AWS_REGION` >
@@ -365,7 +376,7 @@ an error — they're mutually exclusive.
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). For HTTP API v2 routes, `requestContext.stage` is always `$default` regardless of this flag (AWS-side limitation); only `event.stageVariables` is affected. For REST v1 the selected StageName is also threaded into `requestContext.stage`. |
 | `--api <id>` | unset | **Deprecated** — use the positional `<target>` argument instead. Same accepted forms. Emits a deprecation warn on use. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Same semantics as `cdkl invoke --layer-role-arn`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` is warn-and-dropped in v1. Same warn-and-drop semantics as `cdkl invoke --from-cfn-stack`. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in a routed Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--mtls-truststore <path>` | unset | PEM-encoded CA bundle for client-certificate verification. When set, the server switches from HTTP to HTTPS and the TLS handshake rejects clients whose certificate doesn't chain to one of these CAs. Must be set together with `--mtls-cert` + `--mtls-key`; partial flag sets are rejected. See [local-emulation.md](./local-emulation.md) for the openssl recipe + event-shape details. |
 | `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |

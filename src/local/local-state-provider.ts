@@ -45,10 +45,13 @@ import type { CrossStackResolver } from './state-resolver.js';
 export interface LocalStateRecord {
   /**
    * Per-logical-id resource records. Covers `Ref: <logicalId>` lookups
-   * via `physicalId`. The CFn provider also leaves `attributes` empty —
-   * `ListStackResources` does not return per-attribute values, and
-   * the v1 policy is warn-and-drop for unresolvable `Fn::GetAtt` (per
-   * issue #606's recommendation (a)).
+   * via `physicalId`. The CFn provider leaves `attributes` empty —
+   * `ListStackResources` does not return per-attribute values, so
+   * `Fn::GetAtt` does not resolve statically against this map. For a
+   * consumer Lambda's own env vars that gap is closed at runtime by
+   * {@link LocalStateProvider.resolveDeployedFunctionEnv} (reads the
+   * deployed function's already-resolved env); other `Fn::GetAtt` sites
+   * still warn-and-drop.
    */
   resources: Record<string, ResourceState>;
   /**
@@ -114,6 +117,36 @@ export interface LocalStateProvider {
    * case.
    */
   buildCrossStackResolver(consumerRegion: string): Promise<CrossStackResolver | undefined>;
+  /**
+   * Optional: read a deployed Lambda function's already-resolved
+   * environment variables, keyed by env-var name. Used as a last-resort
+   * fill for env keys whose template value is a CloudFormation intrinsic
+   * the static substituter could not resolve (e.g. `Fn::GetAtt
+   * <SiblingFn>.Arn`, which `ListStackResources` does not return an
+   * attribute for). CloudFormation resolved every intrinsic at deploy
+   * time, so the deployed function's `Environment.Variables` already
+   * carries the concrete value — reading it covers `Fn::GetAtt` /
+   * `Fn::Sub` / `Fn::ImportValue` / cross-stack `Ref` uniformly without
+   * per-resource-type reconstruction.
+   *
+   * `functionPhysicalId` is the deployed function name / ARN (the `Ref`
+   * value `ListStackResources` returns for `AWS::Lambda::Function`).
+   * Returns `undefined` on any expected miss (no such function, access
+   * denied, throttling) so the caller falls back to warn-and-drop.
+   *
+   * Implemented only by the CFn provider (`--from-cfn-stack`) — the S3
+   * provider's state already carries deploy-time attributes, so its
+   * `Fn::GetAtt` resolves statically and no fallback is needed. Optional
+   * so existing / host-extension providers need not implement it.
+   *
+   * Note: `Environment.Variables` is a plaintext, non-secret-intended
+   * property (AWS surfaces it to any caller with
+   * `lambda:GetFunctionConfiguration`); recovered values land in the
+   * local container env. Callers must never log the values.
+   */
+  resolveDeployedFunctionEnv?(
+    functionPhysicalId: string
+  ): Promise<Record<string, string> | undefined>;
   /**
    * Release any AWS clients the provider owns. Always called by the
    * CLI layer in the outer `finally`. Idempotent.
