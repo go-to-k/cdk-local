@@ -232,6 +232,7 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 - For Lambda (`invoke`, `start-api`), function-specific keys can be either a **CDK display path** (`MyStack/MyFunction` — recommended for new files; same form `cdkl invoke` accepts as a target) or a **CloudFormation logical ID** (`MyFunctionLogicalId1234ABCD` — named in `cdk.out/<Stack>.template.json`, the SAM-compatible form). Both coexist; if both are listed for the same function, the later JSON entry wins (matching SAM's apply-in-order semantics).
 - For ECS (`run-task`, `start-service`), function-specific keys are container names from the task definition's `ContainerDefinitions[].Name` field.
 - The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file (logical-ID keys) works unchanged.
+- Composes with `--from-cfn-stack`: the state source resolves env vars first, then `--env-vars` overrides only the keys you list (unnamed keys keep their state-resolved value). Full precedence in [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Supported resources
 
