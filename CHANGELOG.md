@@ -1,3 +1,10 @@
+# [0.21.0](https://github.com/go-to-k/cdk-local/compare/v0.20.0...v0.21.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose docker-version / api-server-grouping / layer-arn-materializer primitives ([#91](https://github.com/go-to-k/cdk-local/issues/91)) ([e49f664](https://github.com/go-to-k/cdk-local/commit/e49f6640297c373b18a9188d68041c615d04bb90))
+
 # [0.20.0](https://github.com/go-to-k/cdk-local/compare/v0.19.1...v0.20.0) (2026-05-28)
 
 
