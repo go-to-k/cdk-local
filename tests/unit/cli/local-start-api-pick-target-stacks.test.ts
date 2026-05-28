@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   pickTargetStacks,
+  allStacksConflicts,
   shouldEmitFromCfnRedundancyTip,
   tryEmitFromCfnRedundancyTipOnce,
 } from '../../../src/cli/commands/local-start-api.js';
@@ -75,12 +76,85 @@ describe('pickTargetStacks', () => {
     });
   });
 
+  describe('--all-stacks (issue #55)', () => {
+    it('returns every stack in a multi-stack app (union serve)', () => {
+      expect(pickTargetStacks([A, B], undefined, undefined, undefined, true)).toEqual([A, B]);
+    });
+
+    it('returns the only stack in a single-stack app (no-op)', () => {
+      expect(pickTargetStacks([A], undefined, undefined, undefined, true)).toEqual([A]);
+    });
+
+    it('returns empty for an empty app without throwing', () => {
+      expect(pickTargetStacks([], undefined, undefined, undefined, true)).toEqual([]);
+    });
+
+    it('wins over the selector chain (no throw even though selectors are unset)', () => {
+      // allStacks short-circuits before the multi-stack rejection.
+      expect(() => pickTargetStacks([A, B], undefined, undefined, undefined, true)).not.toThrow();
+    });
+  });
+
   describe('error message', () => {
-    it('lists every available stack name and mentions all three selection routes', () => {
+    it('lists every available stack name and mentions all selection routes incl. --all-stacks', () => {
       expect(() => pickTargetStacks([A, B], undefined)).toThrowError(
-        /Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>\/<construct>" to pick a target\. Available stacks: A, B\./
+        /Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>\/<construct>", or --all-stacks to serve every stack\. Available stacks: A, B\./
       );
     });
+  });
+});
+
+describe('allStacksConflicts', () => {
+  it('returns no conflicts when --all-stacks is off', () => {
+    expect(allStacksConflicts({ allStacks: false, stack: 'A' }, 'A/Api', 'A/Api')).toEqual([]);
+  });
+
+  it('returns no conflicts when --all-stacks is undefined', () => {
+    expect(allStacksConflicts({}, undefined, undefined)).toEqual([]);
+  });
+
+  it('returns no conflicts when --all-stacks is the only selector', () => {
+    expect(allStacksConflicts({ allStacks: true }, undefined, undefined)).toEqual([]);
+  });
+
+  it('flags a positional target conflict', () => {
+    expect(allStacksConflicts({ allStacks: true }, 'MyStack/MyApi', 'MyStack/MyApi')).toEqual([
+      "target 'MyStack/MyApi'",
+    ]);
+  });
+
+  it('flags the deprecated --api alias conflict (no positional target)', () => {
+    expect(allStacksConflicts({ allStacks: true, api: 'MyApi' }, undefined, 'MyApi')).toEqual([
+      "--api 'MyApi'",
+    ]);
+  });
+
+  it('flags a --stack conflict', () => {
+    expect(allStacksConflicts({ allStacks: true, stack: 'MyStack' }, undefined, undefined)).toEqual(
+      ["--stack 'MyStack'"]
+    );
+  });
+
+  it('flags an explicit --from-cfn-stack <name> conflict', () => {
+    expect(
+      allStacksConflicts({ allStacks: true, fromCfnStack: 'MyStack' }, undefined, undefined)
+    ).toEqual(["--from-cfn-stack 'MyStack'"]);
+  });
+
+  it('does NOT flag the bare --from-cfn-stack flag (boolean true) — it is union-compatible', () => {
+    expect(
+      allStacksConflicts({ allStacks: true, fromCfnStack: true }, undefined, undefined)
+    ).toEqual([]);
+  });
+
+  it('aggregates multiple conflicting selectors in one message', () => {
+    expect(
+      allStacksConflicts(
+        { allStacks: true, stack: 'S', fromCfnStack: 'C' },
+        'S/Api',
+        'S/Api'
+      )
+    ).toEqual(["target 'S/Api'", "--stack 'S'", "--from-cfn-stack 'C'"]);
   });
 });
 

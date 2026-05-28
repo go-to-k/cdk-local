@@ -135,6 +135,15 @@ interface LocalStartApiOptions {
   host: string;
   /** Stack pattern (single-stack apps auto-detect). */
   stack?: string;
+  /**
+   * Issue #55: serve the union of every stack's APIs (each on its own
+   * port) instead of erroring out in a multi-stack app. Mutually
+   * exclusive with a single-target selector (positional target /
+   * `--stack` / explicit `--from-cfn-stack <name>`); the bare
+   * `--from-cfn-stack` flag stays compatible (binds each routed stack
+   * to its own CFn stack).
+   */
+  allStacks?: boolean;
   /** Pre-warm one container per Lambda at server boot. */
   warm: boolean;
   /** Pool size cap per Lambda (default 2, max 4). */
@@ -274,6 +283,17 @@ async function localStartApiCommand(
     apiFilter = options.api;
   }
 
+  // Issue #55: `--all-stacks` serves every stack's API as a union, so it
+  // cannot be combined with a selector that names ONE target.
+  const allStacksConflictList = allStacksConflicts(options, target, apiFilter);
+  if (allStacksConflictList.length > 0) {
+    throw new Error(
+      `--all-stacks serves every stack's API and cannot be combined with a single-target selector (${allStacksConflictList.join(', ')}). ` +
+        `Drop --all-stacks to target one stack, or drop the selector to serve them all. ` +
+        `The bare --from-cfn-stack flag (no value) IS compatible with --all-stacks.`
+    );
+  }
+
   warnIfDeprecatedRegion(options);
   await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
 
@@ -394,7 +414,8 @@ async function localStartApiCommand(
       stacks,
       options.stack,
       cfnStackFallback,
-      targetStackPrefix
+      targetStackPrefix,
+      options.allStacks
     );
     if (targetStacks.length === 0) {
       throw new Error(
@@ -1234,8 +1255,16 @@ export function pickTargetStacks(
   stacks: StackInfo[],
   pattern: string | undefined,
   cfnStackFallback?: string,
-  targetFallback?: string
+  targetFallback?: string,
+  allStacks?: boolean
 ): StackInfo[] {
+  // Issue #55: `--all-stacks` serves the union of every stack's APIs.
+  // It is mutually exclusive with the selectors below (validated by the
+  // caller), so when set we skip the resolution chain entirely and
+  // return every stack. The downstream server grouping disambiguates
+  // same-logical-id collisions across stacks, so a union boots fine.
+  if (allStacks) return stacks;
+
   // Resolution chain (first non-empty wins):
   //   1. `--stack <pattern>`                            (explicit)
   //   2. `--from-cfn-stack <explicit-name>`             (PR #44)
@@ -1251,12 +1280,46 @@ export function pickTargetStacks(
   }
   if (stacks.length === 1) return stacks;
   if (stacks.length === 0) return [];
-  // Multi-stack apps can be served as a union — every stack contributes
-  // its routes — but for v1 we require an explicit selection so users
-  // don't accidentally serve a side-stack's API.
+  // Multi-stack apps are served as a union only on explicit opt-in
+  // (`--all-stacks`); otherwise we require an explicit single-target
+  // selection so users don't accidentally serve (and boot Docker
+  // containers for) a side-stack's API.
   throw new Error(
-    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, or a stack-qualified target like "<StackName>/<construct>" to pick a target. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
+    `Multi-stack app: pass --stack <name>, --from-cfn-stack <name>, a stack-qualified target like "<StackName>/<construct>", or --all-stacks to serve every stack. Available stacks: ${stacks.map((s) => s.stackName).join(', ')}.`
   );
+}
+
+/**
+ * Issue #55: `--all-stacks` serves every stack's API as a union, so it
+ * cannot be combined with a selector that names exactly ONE target.
+ * Returns the human-readable list of conflicting selectors (empty when
+ * `--all-stacks` is off or there is no conflict).
+ *
+ * The bare `--from-cfn-stack` flag (Commander maps it to boolean `true`)
+ * is NOT a conflict — it binds each routed stack to its own CFn stack,
+ * which is exactly the multi-stack union case. Only an explicit
+ * `--from-cfn-stack <name>` (a string) names a single stack and conflicts.
+ *
+ * Extracted as a pure function so it can be unit-tested without booting
+ * the full server.
+ *
+ * @internal exported for unit tests.
+ */
+export function allStacksConflicts(
+  options: Pick<LocalStartApiOptions, 'allStacks' | 'stack' | 'api' | 'fromCfnStack'>,
+  target: string | undefined,
+  apiFilter: string | undefined
+): string[] {
+  if (!options.allStacks) return [];
+  const conflicts: string[] = [];
+  if (apiFilter !== undefined) {
+    conflicts.push(target !== undefined ? `target '${target}'` : `--api '${options.api}'`);
+  }
+  if (options.stack !== undefined) conflicts.push(`--stack '${options.stack}'`);
+  if (typeof options.fromCfnStack === 'string') {
+    conflicts.push(`--from-cfn-stack '${options.fromCfnStack}'`);
+  }
+  return conflicts;
 }
 
 /**
@@ -3109,6 +3172,12 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
     )
     .addOption(new Option('--host <host>', 'Bind address').default('127.0.0.1'))
     .addOption(new Option('--stack <name>', 'Stack to start (single-stack apps auto-detect)'))
+    .addOption(
+      new Option(
+        '--all-stacks',
+        "Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out. Mutually exclusive with a positional target, --stack, and an explicit --from-cfn-stack <name>; the bare --from-cfn-stack flag stays compatible (binds each routed stack to its own CFn stack)."
+      ).default(false)
+    )
     .addOption(
       new Option('--warm', 'Pre-start one container per Lambda at server boot').default(false)
     )

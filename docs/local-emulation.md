@@ -242,13 +242,16 @@ region and silently picking `us-east-1` would query the wrong stack
 environment.
 
 **Multi-stack guard**: `start-api` / `start-service` route multiple
-stacks in one invocation. Bare `--from-cfn-stack` works there because
-each routed stack uses its own CDK stack name as the CFn stack name.
-**Explicit `--from-cfn-stack <name>` is rejected** when more than one
-stack is routed (the explicit name would apply to every routed stack
-and silently mismap `Ref` lookups whose logical IDs happen to collide
-between siblings). Use bare `--from-cfn-stack` for multi-stack apps, or
-run one cdk-local invocation per stack.
+stacks in one invocation (for `start-api`, multi-stack routing is opt-in
+via `--all-stacks`). Bare `--from-cfn-stack` works there because each
+routed stack uses its own CDK stack name as the CFn stack name — so
+`--all-stacks --from-cfn-stack` (bare) binds every routed stack to its
+own deployed stack. **Explicit `--from-cfn-stack <name>` is rejected**
+when more than one stack is routed (the explicit name would apply to
+every routed stack and silently mismap `Ref` lookups whose logical IDs
+happen to collide between siblings) — and `--all-stacks` rejects it
+upfront for the same reason. Use bare `--from-cfn-stack` for multi-stack
+apps, or run one cdk-local invocation per stack.
 
 **Failure modes**: `ListStackResources` failures (stack not found,
 access denied, throttling) degrade to a per-key warn + drop — the
@@ -550,7 +553,8 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | --- | --- | --- |
 | `--port <port>` | auto-allocate | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`). |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`), (4) `--all-stacks` (serve every stack). |
+| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target, `--stack`, and an explicit `--from-cfn-stack <name>`; the bare `--from-cfn-stack` flag stays compatible (binds each routed stack to its own CFn stack). No-op in a single-stack app. |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull`. |
