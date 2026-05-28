@@ -240,9 +240,11 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     }
   }
 
-  for (const [k, v] of Object.entries(opts.env)) {
-    args.push('-e', `${k}=${v}`);
-  }
+  // AWS credentials route through docker's value-from-process-env form
+  // (`-e KEY`, value supplied via the spawned process's env below) so they
+  // never appear in `docker run`'s argv. Non-credential env keeps the
+  // inline `-e KEY=VALUE` form.
+  const passthroughEnv = appendEnvFlags(args, opts.env, SENSITIVE_ENV_KEYS);
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
   // <target>:rw,size=<N>m` so the container's `/tmp` is capped at the
@@ -277,6 +279,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), args, {
       maxBuffer: 10 * 1024 * 1024,
+      ...execEnvForSecrets(passthroughEnv),
     });
     return stdout.trim();
   } catch (error) {
@@ -377,24 +380,76 @@ export function pickFreePort(): Promise<number> {
 }
 
 /**
- * AWS credential keys whose values must NOT be written to the debug log.
- * `forwardAwsEnv` / `assumeLambdaExecutionRole` (in `local-invoke.ts`)
- * push these via `-e <KEY>=<value>` flags into `runDetached`'s args
- * array, and `cdkl invoke --verbose` would otherwise leak them
- * into stdout / log files. Only the matching `-e <KEY>=<value>` pair is
- * redacted; non-credential `-e KEY=val` entries pass through unchanged.
+ * Env keys whose VALUES are sensitive (AWS credentials). These are
+ * routed through docker's value-from-process-env form by
+ * {@link appendEnvFlags} so the value never appears in `docker run`'s
+ * argv (`ps` / `/proc/<pid>/cmdline`), and they are also redacted by
+ * {@link redactAwsCredentialsInArgs} as a defense for any path that
+ * still emits the inline `-e <KEY>=<value>` form into the debug log.
  */
-const REDACTED_ENV_KEYS = new Set([
+export const SENSITIVE_ENV_KEYS: ReadonlySet<string> = new Set([
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
 ]);
 
 /**
+ * Append `-e` flags for `env` to `args`, routing keys in `sensitiveKeys`
+ * through docker's value-from-process-env form (`-e KEY`, with NO
+ * `=value`). Docker reads the value from its OWN environment at run time,
+ * so the secret never lands in `docker run`'s argv — invisible to
+ * `ps aux` / `/proc/<pid>/cmdline` (other users on a shared host) and to
+ * shell history. Non-sensitive keys keep the inline `-e KEY=VALUE` form
+ * (fine for non-secret config, and keeps `--debug` output readable).
+ *
+ * Returns the `{ KEY: value }` map of routed-through keys; the caller MUST
+ * merge it into the spawned docker process's `env` (see
+ * {@link execEnvForSecrets}) so docker can resolve each passed-through
+ * key. Values still appear in `docker inspect` Config.Env — that is
+ * inherent to container env and matches production behavior.
+ *
+ * Unlike `--env-file`, this handles multi-line values (e.g. PEM secrets)
+ * and needs no temp file on disk.
+ */
+export function appendEnvFlags(
+  args: string[],
+  env: Record<string, string>,
+  sensitiveKeys: ReadonlySet<string>
+): Record<string, string> {
+  const passthrough: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (sensitiveKeys.has(k)) {
+      args.push('-e', k);
+      passthrough[k] = v;
+    } else {
+      args.push('-e', `${k}=${v}`);
+    }
+  }
+  return passthrough;
+}
+
+/**
+ * Build the `env` option for an `execFile` / `spawn` call that runs a
+ * `docker run` whose args include passed-through sensitive keys (from
+ * {@link appendEnvFlags}). Returns `{ env: {...process.env, ...passthrough} }`
+ * so docker inherits the normal environment PLUS the sensitive values it
+ * must resolve, or `{}` when there is nothing to pass through (preserving
+ * the default inherited-environment behavior).
+ */
+export function execEnvForSecrets(passthrough: Record<string, string>): {
+  env?: NodeJS.ProcessEnv;
+} {
+  if (Object.keys(passthrough).length === 0) return {};
+  return { env: { ...process.env, ...passthrough } };
+}
+
+/**
  * Returns a copy of `args` with any `-e <KEY>=<value>` pair whose KEY is
- * in {@link REDACTED_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
+ * in {@link SENSITIVE_ENV_KEYS} replaced with `-e <KEY>=***`. The actual
  * `args` passed to `spawn` are never mutated — this is for log output
- * only.
+ * only. With {@link appendEnvFlags} routing credentials through the
+ * value-less `-e KEY` form this rarely fires, but it stays as defense for
+ * any inline-form credential that slips into a logged command.
  */
 export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
   const out: string[] = [];
@@ -405,7 +460,7 @@ export function redactAwsCredentialsInArgs(args: readonly string[]): string[] {
       const eqIdx = next.indexOf('=');
       if (eqIdx > 0) {
         const key = next.substring(0, eqIdx);
-        if (REDACTED_ENV_KEYS.has(key)) {
+        if (SENSITIVE_ENV_KEYS.has(key)) {
           out.push('-e', `${key}=***`);
           i++;
           continue;

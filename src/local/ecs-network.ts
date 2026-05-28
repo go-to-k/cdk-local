@@ -3,7 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { getDockerCmd } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
-import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import {
+  DockerRunnerError,
+  pullImage,
+  removeContainer,
+  appendEnvFlags,
+  execEnvForSecrets,
+  SENSITIVE_ENV_KEYS,
+} from './docker-runner.js';
 import { getEmbedConfig } from './embed-config.js';
 
 const execFileAsync = promisify(execFile);
@@ -229,15 +236,17 @@ async function createNetworkAndSidecar(args: {
     }
   }
   if (cluster) sidecarEnv['CLUSTER'] = cluster;
-  for (const [k, v] of Object.entries(sidecarEnv)) {
-    sidecarArgs.push('-e', `${k}=${v}`);
-  }
+  // AWS credentials served by the metadata sidecar route through docker's
+  // value-from-process-env form (`-e KEY`) so they never appear in argv;
+  // CLUSTER (non-secret) keeps the inline `-e KEY=VALUE` form.
+  const sidecarPassthroughEnv = appendEnvFlags(sidecarArgs, sidecarEnv, SENSITIVE_ENV_KEYS);
   sidecarArgs.push(METADATA_ENDPOINT_IMAGE);
 
   logger.info(`Starting ECS local-container-endpoints sidecar at ${sidecarIp}...`);
   try {
     const { stdout } = await execFileAsync(getDockerCmd(), sidecarArgs, {
       maxBuffer: 10 * 1024 * 1024,
+      ...execEnvForSecrets(sidecarPassthroughEnv),
     });
     return stdout.trim();
   } catch (err) {
