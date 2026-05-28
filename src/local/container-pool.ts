@@ -3,6 +3,7 @@ import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker
 import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Per-Lambda warm container pool for `cdkl start-api` (D8.3).
@@ -322,7 +323,7 @@ export function createContainerPool(
    */
   async function startOne(spec: ContainerSpec): Promise<ContainerHandle> {
     const hostPort = await pickFreePort();
-    const name = `cdkl-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
+    const name = `${getEmbedConfig().resourceNamePrefix}-${spec.lambda.logicalId}-${process.pid}-${Math.floor(
       Math.random() * 1_000_000
     )}`;
     logger.debug(
@@ -660,7 +661,7 @@ export function createContainerPool(
           if (r.timedOut) {
             anyTimedOut = true;
             logger.warn(
-              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f cdkl-*\` sweep is the safety net.`
+              `Container pool dispose timed out waiting for ${r.entry.inUse.size} in-flight handle(s) on ${r.entry.logicalId} after ${drainTimeoutMs}ms; tearing down anyway. The verify.sh \`docker rm -f ${getEmbedConfig().resourceNamePrefix}-*\` sweep is the safety net.`
             );
           }
         }

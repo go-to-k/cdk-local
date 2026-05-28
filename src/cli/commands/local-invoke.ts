@@ -19,6 +19,11 @@ import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider, type ExtraStateProviders } from './local-state-source.js';
 import {
+  getEmbedConfig,
+  setEmbedConfig,
+  type CdkLocalEmbedConfig,
+} from '../../local/embed-config.js';
+import {
   resolveLambdaTarget,
   type ResolvedImageLambda,
   type ResolvedLambda,
@@ -129,6 +134,8 @@ interface LocalInvokeOptions {
  */
 export interface CreateLocalInvokeCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Embed-time branding overrides for a host wrapping this factory. */
+  embedConfig?: CdkLocalEmbedConfig;
 }
 
 /**
@@ -629,7 +636,9 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
       mount: { hostPath: layers[0]!.assetPath, containerPath: '/opt', readOnly: true },
     };
   }
-  const tmpDir = mkdtempSync(path.join(tmpdir(), 'cdkl-invoke-layers-'));
+  const tmpDir = mkdtempSync(
+    path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-layers-`)
+  );
   for (const layer of layers) {
     cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
   }
@@ -657,7 +666,7 @@ export async function resolveContainerImagePlan(
     if (!parseEcrUri(lambda.imageUri)) {
       throw new Error(
         `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
-          `'${lambda.imageUri}' is not an ECR URI cdkl can authenticate against. ` +
+          `'${lambda.imageUri}' is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
           'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
       );
     }
@@ -742,7 +751,7 @@ async function resolvePseudoParametersForInvoke(
     options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? stackRegion;
   if (!region) {
     logger.warn(
-      'Resolver references ${AWS::Region} but cdkl could not determine the target region. ' +
+      `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +
         'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
     );
   }
@@ -863,7 +872,7 @@ async function assumeLambdaExecutionRole(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-invoke-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -947,7 +956,7 @@ function materializeInlineCode(handler: string, source: string, fileExtension: s
     throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
   }
   const modulePath = handler.substring(0, lastDot);
-  const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-invoke-'));
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-`));
   const filePath = path.join(dir, `${modulePath}${fileExtension}`);
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, source, 'utf-8');
@@ -1000,6 +1009,7 @@ function pickReferencedLogicalId(intrinsic: Record<string, unknown>): string | u
 }
 
 export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions = {}): Command {
+  setEmbedConfig(opts.embedConfig);
   const invoke = new Command('invoke')
     .description(
       'Run a Lambda function locally in a Docker container (RIE-backed). ' +

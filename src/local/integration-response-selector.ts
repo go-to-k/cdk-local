@@ -38,6 +38,7 @@
  */
 
 import { VtlEvaluationError } from './vtl-engine.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Shape of one entry in `Integration.IntegrationResponses`. CFn property
@@ -224,7 +225,7 @@ export function evaluateResponseParameters(
       opts.onUnsupported?.(
         key,
         value,
-        `Only method.response.header.<name> keys are supported on REST v1 ResponseParameters; cdk-local cannot map ${key}.`
+        `Only method.response.header.<name> keys are supported on REST v1 ResponseParameters; ${getEmbedConfig().productName} cannot map ${key}.`
       );
       continue;
     }
@@ -242,7 +243,7 @@ export function evaluateResponseParameters(
     opts.onUnsupported?.(
       key,
       value,
-      `ResponseParameter value '${value}' is a mapping expression (integration.response.* / context.*) which cdkl start-api does not emulate. Only single-quoted literals are honored.`
+      `ResponseParameter value '${value}' is a mapping expression (integration.response.* / context.*) which ${getEmbedConfig().cliName} start-api does not emulate. Only single-quoted literals are honored.`
     );
   }
   return out;

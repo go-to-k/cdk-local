@@ -38,6 +38,11 @@ import {
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
 import { createLocalStateProvider, type ExtraStateProviders } from './local-state-source.js';
+import {
+  getEmbedConfig,
+  setEmbedConfig,
+  type CdkLocalEmbedConfig,
+} from '../../local/embed-config.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import type { SubstitutionContext } from '../../local/state-resolver.js';
 
@@ -93,6 +98,8 @@ interface LocalRunTaskOptions {
  */
 export interface CreateLocalRunTaskCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Embed-time branding overrides for a host wrapping this factory. */
+  embedConfig?: CdkLocalEmbedConfig;
 }
 
 /**
@@ -261,7 +268,7 @@ async function localRunTaskCommand(
       if (!task.taskRoleArn) {
         throw new Error(
           `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
-            `Either the task definition does not set TaskRoleArn, or it points at a resource cdkl cannot resolve to an IAM Role at synth time. ` +
+            `Either the task definition does not set TaskRoleArn, or it points at a resource ${getEmbedConfig().binaryName} cannot resolve to an IAM Role at synth time. ` +
             `Pass the ARN explicitly: --assume-task-role <arn>`
         );
       }
@@ -329,7 +336,9 @@ async function localRunTaskCommand(
     const result = await runEcsTask(task, runOpts, state);
 
     if (options.detach) {
-      logger.info('Task containers started in detached mode; cdkl is exiting.');
+      logger.info(
+        `Task containers started in detached mode; ${getEmbedConfig().binaryName} is exiting.`
+      );
       logger.info(
         `Use 'docker ps --filter network=${result.state.network?.networkName ?? '<network>'}' to inspect; ` +
           `tear down with 'docker rm -f' and 'docker network rm'.`
@@ -391,7 +400,7 @@ async function assumeTaskRole(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-run-task-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-run-task-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -442,7 +451,7 @@ async function buildEcsImageResolutionContext(
       candidate.region;
     if (!region) {
       logger.warn(
-        'Resolver references ${AWS::Region} but cdkl could not determine the target region. ' +
+        `Resolver references \${AWS::Region} but ${getEmbedConfig().binaryName} could not determine the target region. ` +
           'Pass --region, set AWS_REGION, or declare env.region on the CDK stack.'
       );
     }
@@ -575,6 +584,7 @@ export async function resolveSidecarCredentials(
 }
 
 export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions = {}): Command {
+  setEmbedConfig(opts.embedConfig);
   const cmd = new Command('run-task')
     .description(
       'Run an AWS::ECS::TaskDefinition locally — pulls/builds images, sets up a per-task docker network ' +
@@ -590,7 +600,7 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
       new Option(
         '--cluster <name>',
         'Cluster name surfaced to ECS_CONTAINER_METADATA_URI_V4 and used as the docker network prefix'
-      ).default('cdkl')
+      ).default(getEmbedConfig().resourceNamePrefix)
     )
     .addOption(
       new Option(
@@ -651,7 +661,7 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
         'Read a deployed CloudFormation stack via DescribeStackResources and substitute Ref / Fn::ImportValue ' +
           'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
-          'Bare form uses the cdkl stack name; pass an explicit value when the CFn stack name differs. ' +
+          `Bare form uses the ${getEmbedConfig().binaryName} stack name; pass an explicit value when the CFn stack name differs. ` +
           'Fn::GetAtt is warn-and-dropped in v1 (CFn DescribeStackResources does not return per-attribute values).'
       )
     )

@@ -47,6 +47,7 @@ import {
   resolveServiceIntegrationParameters,
   type RequestParameterContext,
 } from './parameter-mapping.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * The user-facing HTTP server for `cdkl start-api`.
@@ -1577,7 +1578,7 @@ function buildServiceIntegrationContextVars(
   req: IncomingMessage,
   route: DiscoveredRoute
 ): Record<string, string> {
-  const requestId = `cdkl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const requestId = `${getEmbedConfig().binaryName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const sourceIp = req.socket.remoteAddress ?? '127.0.0.1';
   return {
     requestId,

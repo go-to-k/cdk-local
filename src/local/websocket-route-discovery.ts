@@ -4,6 +4,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { RouteDiscoveryError } from '../utils/error-handler.js';
 import { resolveLambdaArnIntrinsic } from './intrinsic-lambda-arn.js';
 import { pickRefLogicalId } from './intrinsic-utils.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Discovered WebSocket API for `cdkl start-api`.
@@ -152,7 +153,7 @@ export function discoverWebSocketApisOrThrow(
   const { apis, errors } = discoverWebSocketApis(stacks);
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkl start-api: ${errors.length} malformed WebSocket API(s) in the synthesized template:\n` +
+      `${getEmbedConfig().cliName} start-api: ${errors.length} malformed WebSocket API(s) in the synthesized template:\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }
@@ -202,7 +203,7 @@ function discoverOneApi(
   const unsupported =
     authRoutes.length > 0
       ? {
-          reason: `WebSocket API requires authorizer support, which cdkl v1 does not emulate. Affected route(s): ${authRoutes
+          reason: `WebSocket API requires authorizer support, which ${getEmbedConfig().binaryName} v1 does not emulate. Affected route(s): ${authRoutes
             .map((r) => `${r.routeKey} [AuthorizationType=${r.authorizationType}]`)
             .join(
               ', '
@@ -282,7 +283,7 @@ function collectAuthRoutesForApi(
 function assertSupportedSelectionExpression(expr: string, declaredAt: string): void {
   if (!/^\$request\.body(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(expr)) {
     throw new Error(
-      `${declaredAt}: RouteSelectionExpression '${expr}' is not supported in cdkl start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
+      `${declaredAt}: RouteSelectionExpression '${expr}' is not supported in ${getEmbedConfig().cliName} start-api v1 — only '$request.body.<key>' shapes (optionally nested via dots) are recognized. File a follow-up issue if you need '$request.header.X' / '$context.X' / array-index access.`
     );
   }
 }
@@ -367,7 +368,7 @@ function collectRoutesForApi(
       throw new Error(
         `${declaredAt}: WebSocket route IntegrationType '${String(
           integrationType
-        )}' is not supported in cdkl start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
+        )}' is not supported in ${getEmbedConfig().cliName} start-api v1 — only AWS_PROXY (Lambda) integrations are emulated.`
       );
     }
 

@@ -13,6 +13,7 @@ import type {
   MockIntegrationConfig,
 } from './rest-v1-integrations.js';
 import type { IntegrationResponseEntry } from './integration-response-selector.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Union of REST v1 non-AWS_PROXY integration configurations captured at
@@ -260,7 +261,7 @@ export function discoverRoutes(stacks: readonly StackInfo[]): DiscoveredRoute[] 
 
   if (errors.length > 0) {
     throw new RouteDiscoveryError(
-      `cdkl start-api: ${errors.length} malformed route(s) in the synthesized template:\n` +
+      `${getEmbedConfig().cliName} start-api: ${errors.length} malformed route(s) in the synthesized template:\n` +
         errors.map((e) => `  - ${e}`).join('\n')
     );
   }
@@ -478,7 +479,7 @@ function discoverRestV1Method(
         unsupported: {
           reason: `${stackName}/${logicalId}.Integration.Uri: ${arnOutcome.detail} (got ${shortJson(
             integrationUri
-          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`cdkl invoke --from-state\` shapes if you need it.`,
+          )}). Lambda Arn intrinsics on cross-stack / imported references are not resolvable locally; deploy the producer stack and use \`${getEmbedConfig().cliName} invoke --from-state\` shapes if you need it.`,
         },
       },
     ];
@@ -610,7 +611,7 @@ function buildHttpProxyIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (cdkl start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
+      reason: `${stackName}/${logicalId}: HTTP_PROXY Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP_PROXY Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -641,7 +642,7 @@ function buildHttpIntegrationConfig(
   if (typeof uri !== 'string' || uri.length === 0) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (cdkl start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
+      reason: `${stackName}/${logicalId}: HTTP Integration.Uri must be a literal string in v1 (${getEmbedConfig().cliName} start-api does not resolve Fn::Sub / Fn::Join in HTTP Uris); got ${shortJson(uri)}.`,
     };
   }
   const integrationHttpMethod = pickStringField(integration, 'IntegrationHttpMethod');
@@ -683,7 +684,7 @@ function buildAwsIntegrationConfig(
   if (!isLambda) {
     return {
       kind: 'unsupported',
-      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in cdkl v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md.`,
+      reason: `${stackName}/${logicalId}: REST v1 AWS integration targeting a non-Lambda service (Uri ${shortJson(uri)}) is not emulated locally in ${getEmbedConfig().binaryName} v1. Lambda non-proxy AWS integrations are supported; direct AWS service integrations (S3 / SQS / SNS / DynamoDB) require deploying to AWS. See https://github.com/go-to-k/cdkd/blob/main/docs/local-emulation.md.`,
     };
   }
   const arnOutcome = resolveLambdaArnOutcome(uri);
@@ -1067,7 +1068,7 @@ function classifyServiceIntegrationRoute(
       unsupported: {
         reason: `${declaredAt}: HTTP API v2 service integration subtype '${stringifyValue(
           subtypeRaw
-        )}' is not supported by cdkl start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
+        )}' is not supported by ${getEmbedConfig().cliName} start-api (see https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-aws-services-reference.html for the supported list).`,
       },
     };
   }

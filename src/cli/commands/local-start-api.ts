@@ -25,6 +25,11 @@ import {
   rejectExplicitCfnStackWithMultipleStacks,
   type ExtraStateProviders,
 } from './local-state-source.js';
+import {
+  getEmbedConfig,
+  setEmbedConfig,
+  type CdkLocalEmbedConfig,
+} from '../../local/embed-config.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../types/resource.js';
 import type { StackState } from '../../types/state.js';
@@ -237,6 +242,8 @@ interface LocalStartApiOptions {
  */
 export interface CreateLocalStartApiCommandOptions {
   extraStateProviders?: ExtraStateProviders;
+  /** Embed-time branding overrides for a host wrapping this factory. */
+  embedConfig?: CdkLocalEmbedConfig;
 }
 
 async function localStartApiCommand(
@@ -262,7 +269,7 @@ async function localStartApiCommand(
       );
     }
     logger.warn(
-      "[deprecated] --api <id> will be removed in a future major release. Use the positional argument instead: 'cdkl start-api <id>'."
+      `[deprecated] --api <id> will be removed in a future major release. Use the positional argument instead: '${getEmbedConfig().cliName} start-api <id>'.`
     );
     apiFilter = options.api;
   }
@@ -410,7 +417,7 @@ async function localStartApiCommand(
       fromCfnTipEmitted,
       (routedStackName) => {
         logger.info(
-          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`cdkl start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
+          `tip: --from-cfn-stack value matches the routed stack name (${routedStackName}); you can omit the value: \`${getEmbedConfig().cliName} start-api ... --from-cfn-stack\` (bare flag) resolves to the same value.`
         );
       }
     );
@@ -431,7 +438,7 @@ async function localStartApiCommand(
     const webSocketApis = wsDiscovery.apis;
     if (routes.length === 0 && webSocketApis.length === 0) {
       throw new Error(
-        'No supported API routes were discovered. cdkl start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP + WebSocket), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.'
+        `No supported API routes were discovered. ${getEmbedConfig().cliName} start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP + WebSocket), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.`
       );
     }
 
@@ -829,7 +836,7 @@ async function localStartApiCommand(
     const probe = await probeHostGatewaySupport();
     if (!probe.supported) {
       throw new Error(
-        `cdkl start-api requires Docker ${HOST_GATEWAY_MIN_VERSION.major}.${HOST_GATEWAY_MIN_VERSION.minor}+ ` +
+        `${getEmbedConfig().cliName} start-api requires Docker ${HOST_GATEWAY_MIN_VERSION.major}.${HOST_GATEWAY_MIN_VERSION.minor}+ ` +
           `for WebSocket API support (--add-host=host.docker.internal:host-gateway needs the 20.10 host-gateway alias). ` +
           `Detected server version: ${probe.rawVersion || '<empty — daemon unreachable or output stripped>'}. ` +
           `Upgrade Docker, or remove the WebSocket API from this app to fall back to HTTP-only start-api.`
@@ -1179,7 +1186,7 @@ async function localStartApiCommand(
       if (!forceExitArmed) {
         forceExitArmed = true;
         logger.warn(
-          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=cdkl-' and 'docker rm -f' to clean up.`
+          `Received second ${signal}; force-exiting. Orphan containers may remain — run 'docker ps --filter name=${getEmbedConfig().resourceNamePrefix}-' and 'docker rm -f' to clean up.`
         );
         process.exit(130);
       }
@@ -1470,7 +1477,7 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
   if (iamRoutes.length === 0 && oacRoutes.length === 0) return false;
   if (iamRoutes.length > 0) {
     logger.warn(
-      `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — cdkl start-api ` +
+      `${iamRoutes.length} route(s) declare AuthorizationType: AWS_IAM — ${getEmbedConfig().cliName} start-api ` +
         `verifies SigV4 signatures against your local AWS credentials, but does NOT emulate IAM ` +
         `policy evaluation (resource / action / condition rules). Signature-verified callers reach ` +
         `the handler under their own identity; downstream authorization is the dev's responsibility.`
@@ -1483,13 +1490,12 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
     logger.warn(
       `${oacRoutes.length} Function URL route(s) with AuthType: AWS_IAM are fronted by a CloudFront ` +
         `Origin Access Control. In production CloudFront re-signs the origin request, so no local ` +
-        `client signature can be verified — cdkl start-api passes these through (warn-and-pass) ` +
+        `client signature can be verified — ${getEmbedConfig().cliName} start-api passes these through (warn-and-pass) ` +
         `WITHOUT requiring --allow-unverified-sigv4. Do NOT trust the request identity in handler code.`
     );
     for (const declaredAt of oacRoutes) {
       logger.warn(`  - ${declaredAt}`);
     }
-  }
   return true;
 }
 
@@ -1839,7 +1845,7 @@ export async function resolveContainerImageForStartApi(
   if (!parseEcrUri(lambda.imageUri)) {
     throw new Error(
       `Container Lambda '${lambda.logicalId}' has no matching asset in cdk.out, and Code.ImageUri ` +
-        `'${lambda.imageUri}' is not an ECR URI cdkl can authenticate against. ` +
+        `'${lambda.imageUri}' is not an ECR URI ${getEmbedConfig().binaryName} can authenticate against. ` +
         'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
     );
   }
@@ -1925,7 +1931,9 @@ export async function materializeLambdaLayers(
   }
 
   if (flat.length === 1) return flat[0]!.assetPath;
-  const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-start-api-layers-'));
+  const dir = mkdtempSync(
+    path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-start-api-layers-`)
+  );
   for (const layer of flat) {
     // `recursive: true` enables the directory copy. `force: true`
     // implements AWS's "last layer wins" file-collision semantic: a
@@ -2073,7 +2081,7 @@ export function resolveLambdaByLogicalId(
     if (!runtime) {
       throw new Error(
         `Lambda '${logicalId}' has no Runtime property and no Code.ImageUri. ` +
-          'cdkl start-api cannot tell if this is a ZIP or a container Lambda.'
+          `${getEmbedConfig().cliName} start-api cannot tell if this is a ZIP or a container Lambda.`
       );
     }
     if (!handler) {
@@ -2169,14 +2177,14 @@ function extractImageUri(
       if (joinResolved.kind === 'needs-state') {
         throw new Error(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-            'cdkl start-api cannot resolve the repository URI without state — ' +
+            `${getEmbedConfig().cliName} start-api cannot resolve the repository URI without state — ` +
             'deploy the stack first, rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
       }
       if (joinResolved.kind === 'unsupported-join') {
         throw new Error(
           `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
-            'cdkl start-api recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ' +
+            `${getEmbedConfig().cliName} start-api recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
@@ -2188,10 +2196,10 @@ function extractImageUri(
       // couldn't derive `urlSuffix`). Either way, surface a clear
       // error instead of falling through to ZIP-branch validation.
       const accountIdHint = pseudoParameters
-        ? ' (likely ${AWS::AccountId}, which cdkl cannot derive without a state source or STS)'
-        : ` (cdkl could not derive AWS pseudo parameters because stack.region was undefined)`;
+        ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().binaryName} cannot derive without a state source or STS)`
+        : ` (${getEmbedConfig().binaryName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new Error(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that cdkl start-api cannot resolve${accountIdHint}. ` +
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} start-api cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with a state-source flag (e.g. --from-cfn-stack or a host-provided extension), or pin a fully-literal public image URI.'
       );
     }
@@ -2242,7 +2250,7 @@ function resolveImageLambda(args: {
     else {
       throw new Error(
         `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          'cdkl start-api supports x86_64 and arm64.'
+          `${getEmbedConfig().cliName} start-api supports x86_64 and arm64.`
       );
     }
   }
@@ -2281,7 +2289,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. cdkl start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
   const cdkOutDir = stack.assetManifestPath ? path.dirname(stack.assetManifestPath) : process.cwd();
@@ -2372,7 +2380,7 @@ function materializeInlineCode(
     throw new Error(`Handler '${handler}' is malformed: expected '<modulePath>.<exportName>'.`);
   }
   const modulePath = handler.substring(0, lastDot);
-  const dir = mkdtempSync(path.join(tmpdir(), 'cdkl-start-api-'));
+  const dir = mkdtempSync(path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-start-api-`));
   tmpDirsOut.add(dir);
   const filePath = path.join(dir, `${modulePath}${fileExtension}`);
   mkdirSync(path.dirname(filePath), { recursive: true });
@@ -2509,7 +2517,7 @@ async function assumeLambdaExecutionRole(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `cdkl-start-api-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-start-api-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -2758,7 +2766,7 @@ async function reloadAllServers(args: {
   const removed = [...oldKeys].filter((k) => !newKeys.has(k));
   if (added.length > 0) {
     logger.warn(
-      `Reload detected new API surface(s): ${added.join(', ')}. Restart 'cdkl start-api' to serve them.`
+      `Reload detected new API surface(s): ${added.join(', ')}. Restart '${getEmbedConfig().cliName} start-api' to serve them.`
     );
   }
   if (removed.length > 0) {
@@ -3084,13 +3092,14 @@ export function resolveMtlsConfig(
  * Builder for the `start-api` subcommand.
  */
 export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptions = {}): Command {
+  setEmbedConfig(opts.embedConfig);
   const startApi = new Command('start-api')
     .description(
       'Run a long-running local HTTP server that maps API Gateway routes (REST v1, HTTP API, Function URL) to Lambda invocations against the AWS Lambda Runtime Interface Emulator (Docker required). Supports Lambda TOKEN/REQUEST authorizers, Cognito User Pool / HTTP v2 JWT authorizers, and AWS_IAM auth (REST v1 `AuthorizationType: AWS_IAM` and Function URL `AuthType: AWS_IAM` — SigV4 signature verification only; IAM policy evaluation is NOT emulated). When JWKS is unreachable, JWT authorizers fall back to pass-through (every token accepted) with a warn line — local dev fallback. VPC-config Lambdas run locally and surface a warn line at startup; their containers do NOT get attached to the deployed VPC subnets, so calls to private RDS / ElastiCache will fail.'
     )
     .argument(
       '[target]',
-      "Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server. Mirrors `cdkl invoke` / `cdkl run-task` target syntax."
+      `Optional API filter. Accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted, every discovered API gets its own server. Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
     )
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
@@ -3184,7 +3193,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
           'requestContext.authentication.clientCert (HTTP API v2). Must be set together with ' +
           '--mtls-cert + --mtls-key; partial flag sets are rejected. ' +
           'Generate a CA + server + client cert for local dev: ' +
-          'openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -subj "/CN=cdkl-ca" -days 365; ' +
+          `openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -subj "/CN=${getEmbedConfig().resourceNamePrefix}-ca" -days 365; ` +
           'openssl req -newkey rsa:2048 -nodes -keyout server-key.pem -out server-csr.pem -subj "/CN=localhost"; ' +
           'openssl x509 -req -in server-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out server-cert.pem -days 365; ' +
           'openssl req -newkey rsa:2048 -nodes -keyout client-key.pem -out client-csr.pem -subj "/CN=client"; ' +

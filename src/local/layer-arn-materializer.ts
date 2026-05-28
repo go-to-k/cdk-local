@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Materialize a literal-ARN Lambda Layer to a host tmpdir so it can be
@@ -147,7 +148,12 @@ export async function materializeLayerFromArn(
     );
   }
 
-  const dir = await mkdtemp(join(tmpdir(), `cdkl-arn-layer-${layer.name}-${layer.version}-`));
+  const dir = await mkdtemp(
+    join(
+      tmpdir(),
+      `${getEmbedConfig().resourceNamePrefix}-arn-layer-${layer.name}-${layer.version}-`
+    )
+  );
   try {
     await unzipBufferToDirectory(zipBytes, dir);
   } catch (err) {
@@ -255,7 +261,7 @@ async function buildAssumeRoleCommand(roleArn: string): Promise<any> {
   const { AssumeRoleCommand } = await import('@aws-sdk/client-sts');
   return new AssumeRoleCommand({
     RoleArn: roleArn,
-    RoleSessionName: `cdkl-layer-${Date.now()}`,
+    RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-layer-${Date.now()}`,
     DurationSeconds: 3600,
   });
 }

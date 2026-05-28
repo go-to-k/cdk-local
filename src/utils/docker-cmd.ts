@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { getLogger } from './logger.js';
+import { getEmbedConfig } from '../local/embed-config.js';
 
 /**
  * Shared helpers for invoking the docker-compatible CLI binary across cdk-local.
@@ -281,8 +282,8 @@ export function formatDockerLoginError(stderr: string, endpoint: string): string
     return (
       `docker's credential helper (osxkeychain on macOS / wincred on Windows / pass / secretservice on Linux) ` +
       `failed to persist the ECR auth token. The "already exists in the keychain" / "Error saving credentials" ` +
-      `output is a known docker-credential-helpers issue — unrelated to cdk-local, AWS credentials, or IAM perms. ` +
-      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale entry, then retry the cdk-local command. ` +
+      `output is a known docker-credential-helpers issue — unrelated to ${getEmbedConfig().productName}, AWS credentials, or IAM perms. ` +
+      `Quick fix: run \`docker logout ${endpoint}\` to clear the stale entry, then retry the ${getEmbedConfig().productName} command. ` +
       `Permanent fix: edit ~/.docker/config.json and remove (or empty) the platform-specific "credsStore" entry ` +
       `(e.g. "osxkeychain" → "" or "desktop" on macOS Docker Desktop). ` +
       `Original docker stderr: ${trimmed}`

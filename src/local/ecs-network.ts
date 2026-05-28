@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { getDockerCmd } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
 import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import { getEmbedConfig } from './embed-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -150,7 +151,7 @@ export const SHARED_SVC_SUBNET_OCTET = 171;
 export async function createSharedSvcNetwork(
   options: Omit<CreateTaskNetworkOptions, 'subnetOctet'> = {}
 ): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkl';
+  const prefix = options.prefix ?? getEmbedConfig().resourceNamePrefix;
   const suffix = randomBytes(4).toString('hex');
   const networkName = `${prefix}-svc-${suffix}`;
   const { cidr, sidecarIp } = buildEndpointSubnet(SHARED_SVC_SUBNET_OCTET);
@@ -200,10 +201,10 @@ async function createNetworkAndSidecar(args: {
     const e = err as { stderr?: string; message?: string };
     throw new DockerRunnerError(
       `docker network create failed: ${e.stderr?.trim() || e.message || String(err)}. ` +
-        `Hint: another cdk-local run may already own subnet ${cidr}; wait for it to ` +
+        `Hint: another ${getEmbedConfig().productName} run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
-        '`docker network rm`. `cdkl start-service` shares one network ' +
-        'across every service in the run; bare `cdkl run-task` uses a ' +
+        `\`docker network rm\`. \`${getEmbedConfig().cliName} start-service\` shares one network ` +
+        `across every service in the run; bare \`${getEmbedConfig().cliName} run-task\` uses a ` +
         'per-task network so only one run can be active at a time.'
     );
   }
@@ -257,7 +258,7 @@ async function createNetworkAndSidecar(args: {
 export async function createTaskNetwork(
   options: CreateTaskNetworkOptions = {}
 ): Promise<TaskNetwork> {
-  const prefix = options.prefix ?? 'cdkl';
+  const prefix = options.prefix ?? getEmbedConfig().resourceNamePrefix;
   const suffix = randomBytes(4).toString('hex');
   const networkName = `${prefix}-task-${suffix}`;
   const { cidr, sidecarIp } =

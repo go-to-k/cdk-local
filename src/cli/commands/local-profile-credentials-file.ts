@@ -30,15 +30,19 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { getEmbedConfig } from '../../local/embed-config.js';
 
 /**
  * Path inside the container where the credentials file is mounted. Fixed
- * (not user-configurable) so the env-var injection is stable.
- * `/cdk-local-aws/` is outside `/var/task` (the Lambda code mount) and
- * outside `/root/` (which the user's handler may bind-mount or modify),
- * so there is no collision risk with the user's payload.
+ * per run (not user-configurable) so the env-var injection is stable. The
+ * default `/cdk-local-aws/` is outside `/var/task` (the Lambda code mount)
+ * and outside `/root/` (which the user's handler may bind-mount or
+ * modify), so there is no collision risk with the user's payload. The
+ * `${awsBindMountPath}` segment honors the active embed config.
  */
-export const CONTAINER_AWS_CREDENTIALS_PATH = '/cdk-local-aws/credentials';
+export function getContainerAwsCredentialsPath(): string {
+  return `${getEmbedConfig().awsBindMountPath}/credentials`;
+}
 
 /**
  * Resolved profile credentials file ready to mount into a Lambda container.
@@ -58,7 +62,7 @@ export interface ProfileCredentialsFile {
 /**
  * Write a temporary AWS shared-credentials file containing the resolved
  * `--profile <name>` credentials, ready to bind-mount into a Lambda
- * container at {@link CONTAINER_AWS_CREDENTIALS_PATH}.
+ * container at {@link getContainerAwsCredentialsPath}.
  *
  * The file content is the standard `[profile-name]` INI shape:
  *
@@ -97,7 +101,7 @@ export async function writeProfileCredentialsFile(
         `(any of CR, LF, '[', ']' would corrupt the INI file or the docker -e env var).`
     );
   }
-  const dir = await mkdtemp(path.join(tmpdir(), 'cdk-local-profile-creds-'));
+  const dir = await mkdtemp(path.join(tmpdir(), `${getEmbedConfig().productName}-profile-creds-`));
   const hostPath = path.join(dir, 'credentials');
   const lines: string[] = [
     `[${profileName}]`,
@@ -113,7 +117,7 @@ export async function writeProfileCredentialsFile(
   await writeFile(hostPath, lines.join('\n') + '\n', { mode: 0o600 });
   return {
     hostPath,
-    containerPath: CONTAINER_AWS_CREDENTIALS_PATH,
+    containerPath: getContainerAwsCredentialsPath(),
     profileName,
     dispose: async () => {
       // `recursive: true` removes the credentials file + its parent

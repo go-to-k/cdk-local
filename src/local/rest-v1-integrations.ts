@@ -77,6 +77,7 @@ import {
   type VtlContext,
 } from './vtl-engine.js';
 import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Per-request snapshot the dispatchers consume. Mirrors the shape
@@ -869,7 +870,7 @@ export function warnSsrfRiskyUri(
   if (classification !== undefined) {
     warn(
       `Integration URI for ${routeLabel} points at ${host} — ${classification}. ` +
-        `cdk-local does NOT block this; ensure the upstream is intentional.`
+        `${getEmbedConfig().productName} does NOT block this; ensure the upstream is intentional.`
     );
   }
 }
@@ -932,14 +933,14 @@ function applyRequestParameters(
       // Querystring rewrites are recognized but cdk-local applies querystring
       // rewrites only via URI placeholder substitution; ignore.
       logger.warn(
-        `RequestParameter '${key}' (querystring rewrite) is recognized but cdk-local applies querystring rewrites only via URI placeholder substitution; ignoring.`
+        `RequestParameter '${key}' (querystring rewrite) is recognized but ${getEmbedConfig().productName} applies querystring rewrites only via URI placeholder substitution; ignoring.`
       );
     } else if (pathMatch) {
       // Path rewrites apply at URI substitution time. Log + skip — the
       // pre-substituted URI already used the path parameters via
       // `{paramName}` placeholders, so a separate rewrite is rarely needed.
       logger.warn(
-        `RequestParameter '${key}' (path rewrite) is recognized but cdk-local substitutes path placeholders via {param} in the URI; ignoring.`
+        `RequestParameter '${key}' (path rewrite) is recognized but ${getEmbedConfig().productName} substitutes path placeholders via {param} in the URI; ignoring.`
       );
     } else {
       logger.warn(`Unsupported RequestParameter key '${key}'; skipping.`);

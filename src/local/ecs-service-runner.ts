@@ -12,6 +12,7 @@ import type { CloudMapRegistry, RegistrationHandle } from './cloud-map-registry.
 import type { CloudMapIndex } from './cloud-map-resolver.js';
 import { getContainerNetworkIp } from './docker-inspect.js';
 import { SHARED_SVC_SUBNET_OCTET, type TaskNetwork } from './ecs-network.js';
+import { getEmbedConfig } from './embed-config.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -703,7 +704,7 @@ async function publishReplicaToCloudMap(
     const index = discovery.cloudMapIndexByStack.get(service.stack.stackName);
     if (!index) {
       logger.warn(
-        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but cdk-local has ` +
+        `ECS Service '${service.serviceLogicalId}' declares ServiceRegistries[] but ${getEmbedConfig().productName} has ` +
           `no Cloud Map index for stack ${service.stack.stackName}. Skipping registration.`
       );
       return;

@@ -78,6 +78,8 @@
  * acceptable and not in the contract.
  */
 
+import { getEmbedConfig } from './embed-config.js';
+
 /**
  * Bindings available to a VTL template evaluation. Built up by
  * `buildVtlContext` from an `HttpRequestSnapshot` + `MatchedRouteContext`.
@@ -320,7 +322,7 @@ class VtlEvaluator {
         throw new VtlEvaluationError(`Unexpected #${name} outside of a #if / #foreach block`);
       default:
         throw new VtlEvaluationError(
-          `Unsupported VTL directive #${name} (cdkl start-api supports #set / #if / #elseif / #else / #foreach / #end / ##)`
+          `Unsupported VTL directive #${name} (${getEmbedConfig().cliName} start-api supports #set / #if / #elseif / #else / #foreach / #end / ##)`
         );
     }
   }
@@ -631,7 +633,7 @@ class VtlEvaluator {
   private callValueAsMethod(value: unknown, argsRaw: string, refPath: string): unknown {
     if (typeof value !== 'function') {
       throw new VtlEvaluationError(
-        `Reference '$${refPath}' is not callable (got ${typeof value}). cdk-local supports calling $input / $util / $context method-style references only.`
+        `Reference '$${refPath}' is not callable (got ${typeof value}). ${getEmbedConfig().productName} supports calling $input / $util / $context method-style references only.`
       );
     }
     const args = this.parseArgList(argsRaw);
@@ -1066,7 +1068,7 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
       const m = /^[a-zA-Z_][a-zA-Z_0-9]*/.exec(trimmed.slice(i));
       if (!m) {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath syntax at position ${i}: '${trimmed}' (cdk-local supports $, $.field, $.field.sub, $.array[index] only).`
+          `Unsupported JSONPath syntax at position ${i}: '${trimmed}' (${getEmbedConfig().productName} supports $, $.field, $.field.sub, $.array[index] only).`
         );
       }
       cursor = lookupField(cursor, m[0]);
@@ -1093,7 +1095,7 @@ export function applyJsonPath(root: unknown, expr: string): unknown {
         cursor = lookupField(cursor, inside.slice(1, -1));
       } else {
         throw new VtlEvaluationError(
-          `Unsupported JSONPath bracket expression: '${inside}' (cdk-local supports integer indices and quoted string keys only).`
+          `Unsupported JSONPath bracket expression: '${inside}' (${getEmbedConfig().productName} supports integer indices and quoted string keys only).`
         );
       }
       i = close + 1;

@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { getDockerCmd, runDockerForeground, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -337,7 +338,7 @@ export async function ensureDockerAvailable(): Promise<void> {
     const err = error as { code?: string; stderr?: string; message?: string };
     if (err.code === 'ENOENT') {
       throw new DockerRunnerError(
-        `${cmd} is not installed or not on PATH. cdkl invoke needs Docker (or a compatible CLI specified via CDK_DOCKER) — install it and retry.`
+        `${cmd} is not installed or not on PATH. ${getEmbedConfig().cliName} invoke needs Docker (or a compatible CLI specified via CDK_DOCKER) — install it and retry.`
       );
     }
     throw new DockerRunnerError(

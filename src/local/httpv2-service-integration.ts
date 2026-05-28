@@ -53,6 +53,7 @@ import type * as SfnNs from '@aws-sdk/client-sfn';
 import type * as SqsNs from '@aws-sdk/client-sqs';
 import { stringifyValue } from '../utils/stringify.js';
 import { getLogger } from '../utils/logger.js';
+import { getEmbedConfig } from './embed-config.js';
 
 const logger = getLogger();
 
@@ -429,7 +430,7 @@ async function dispatchAppConfigGetConfiguration(
   void region;
   return errorResponse(
     501,
-    'AppConfig-GetConfiguration is recognized but cdk-local does not yet bundle @aws-sdk/client-appconfig. Use the deployed API for this subtype, or open an issue if you need local emulation.'
+    `AppConfig-GetConfiguration is recognized but ${getEmbedConfig().productName} does not yet bundle @aws-sdk/client-appconfig. Use the deployed API for this subtype, or open an issue if you need local emulation.`
   );
 }
 
