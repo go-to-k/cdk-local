@@ -1,3 +1,10 @@
+## [0.29.1](https://github.com/go-to-k/cdk-local/compare/v0.29.0...v0.29.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **start-service:** print the shutdown prompt on its own line ([#108](https://github.com/go-to-k/cdk-local/issues/108)) ([e770cc1](https://github.com/go-to-k/cdk-local/commit/e770cc1436805b386976ce0a935f37124eb80983))
+
 # [0.29.0](https://github.com/go-to-k/cdk-local/compare/v0.28.2...v0.29.0) (2026-05-28)
 
 
