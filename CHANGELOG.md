@@ -1,3 +1,10 @@
+# [0.27.0](https://github.com/go-to-k/cdk-local/compare/v0.26.0...v0.27.0) (2026-05-28)
+
+
+### Features
+
+* **start-service:** reclaim leaked shared networks left by interrupted runs ([#96](https://github.com/go-to-k/cdk-local/issues/96)) ([15e027c](https://github.com/go-to-k/cdk-local/commit/15e027c41bf388b7e72fb26307352938e526723f))
+
 # [0.26.0](https://github.com/go-to-k/cdk-local/compare/v0.25.0...v0.26.0) (2026-05-28)
 
 
