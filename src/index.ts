@@ -146,6 +146,8 @@ export { attachStageContext, buildStageMap, type ResolvedStage } from './local/s
 /**
  * `start-service` in-process Cloud Map service registry — peers reach each
  * other by IP / network alias on the shared service network without docker
- * `network connect` choreography.
+ * `network connect` choreography. `RegistrationHandle` is the handle returned
+ * by `register()` for symmetric unregister; a still-local host sibling (e.g.
+ * the service runner) imports it as a type alongside the class.
  */
-export { CloudMapRegistry } from './local/cloud-map-registry.js';
+export { CloudMapRegistry, type RegistrationHandle } from './local/cloud-map-registry.js';

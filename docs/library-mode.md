@@ -127,8 +127,10 @@ The `invoke` / `start-api` env-var and stage layers, plus the
 - `buildStageMap` / `attachStageContext` (+ `ResolvedStage`) — per-API
   Stage selection; attaches stage context (`event.stageVariables`) to
   discovered routes.
-- `CloudMapRegistry` — in-process Cloud Map service registry so peers
-  reach each other by IP / network alias on the shared service network.
+- `CloudMapRegistry` (+ `RegistrationHandle`) — in-process Cloud Map
+  service registry so peers reach each other by IP / network alias on the
+  shared service network; `RegistrationHandle` is the handle returned by
+  `register()` for symmetric unregister.
 
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
