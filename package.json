@@ -1,6 +1,6 @@
 {
   "name": "cdk-local",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Run AWS CDK stacks locally with Docker. A native, CDK-first alternative to sam local.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
