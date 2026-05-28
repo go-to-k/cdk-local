@@ -122,7 +122,30 @@ describe('verifySigV4 — oacFronted relaxation', () => {
       now: () => NOW,
     });
     expect(result.allow).toBe(false);
-    expect(warn.calls().join('\n')).toContain('Denying');
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('Denying');
+    // The deny message must explain WHY (an HMAC shared-secret signature is
+    // unverifiable locally) and that this is a local-only limitation, not a
+    // rejection of an invalid request — so a dev whose credentials succeed
+    // against the deployed API does not read it as a bug. It must also point
+    // at the opt-in flag.
+    expect(warns).toContain('HMAC');
+    expect(warns).toContain('local-only limitation');
+    expect(warns).toContain('--allow-unverified-sigv4');
+    warn.restore();
+  });
+
+  it('fail-closes (and explains why) when local credentials cannot be resolved, no flag', async () => {
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('Denying');
+    expect(warns).toContain('HMAC');
+    expect(warns).toContain('local-only limitation');
+    expect(warns).toContain('--allow-unverified-sigv4');
     warn.restore();
   });
 });
