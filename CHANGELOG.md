@@ -1,3 +1,10 @@
+## [0.13.1](https://github.com/go-to-k/cdk-local/compare/v0.13.0...v0.13.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **from-cfn-stack:** authenticate ECR image pull with --profile ([#74](https://github.com/go-to-k/cdk-local/issues/74)) ([f04faf7](https://github.com/go-to-k/cdk-local/commit/f04faf755a0fda74eaee015747b8d7c0ff21ccc8))
+
 # [0.13.0](https://github.com/go-to-k/cdk-local/compare/v0.12.0...v0.13.0) (2026-05-28)
 
 
