@@ -1,3 +1,10 @@
+# [0.24.0](https://github.com/go-to-k/cdk-local/compare/v0.23.0...v0.24.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose state-resolver substitution primitives ([#97](https://github.com/go-to-k/cdk-local/issues/97)) ([717b5bd](https://github.com/go-to-k/cdk-local/commit/717b5bd5ee71faf3f0c837005967aab1d97d5329))
+
 # [0.23.0](https://github.com/go-to-k/cdk-local/compare/v0.22.0...v0.23.0) (2026-05-28)
 
 
