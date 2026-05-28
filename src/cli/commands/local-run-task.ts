@@ -37,7 +37,11 @@ import {
   type RunEcsTaskOptions,
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
-import { createLocalStateProvider, type ExtraStateProviders } from './local-state-source.js';
+import {
+  createLocalStateProvider,
+  resolveCfnFallbackRegion,
+  type ExtraStateProviders,
+} from './local-state-source.js';
 import {
   getEmbedConfig,
   setEmbedConfig,
@@ -195,7 +199,7 @@ async function localRunTaskCommand(
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
-      candidate?.region,
+      await resolveCfnFallbackRegion(options, candidate?.region),
       extraStateProviders
     );
 

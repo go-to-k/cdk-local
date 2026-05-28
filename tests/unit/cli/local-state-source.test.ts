@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vite-plus/test';
 
+const { resolveProfileRegionMock } = vi.hoisted(() => ({
+  resolveProfileRegionMock: vi.fn(),
+}));
+
+vi.mock('../../../src/utils/profile-region.js', () => ({
+  resolveProfileRegion: resolveProfileRegionMock,
+}));
+
 import {
   createLocalStateProvider,
   isCfnFlagPresent,
   resolveCfnStackName,
   resolveCfnRegion,
+  resolveCfnFallbackRegion,
   rejectExplicitCfnStackWithMultipleStacks,
   LocalStateSourceError,
   type LocalStateSourceOptions,
@@ -90,6 +99,39 @@ describe('resolveCfnRegion', () => {
     expect(() => resolveCfnRegion({}, undefined)).toThrow(
       /--from-cfn-stack requires a region/
     );
+  });
+});
+
+describe('resolveCfnFallbackRegion', () => {
+  beforeEach(() => {
+    resolveProfileRegionMock.mockReset();
+  });
+
+  it('returns the synth-derived region as-is, without reading the profile', async () => {
+    expect(await resolveCfnFallbackRegion({ fromCfnStack: true, profile: 'dev' }, 'us-east-1')).toBe(
+      'us-east-1'
+    );
+    expect(resolveProfileRegionMock).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when no --from-cfn-stack flag is present (profile not read)', async () => {
+    expect(await resolveCfnFallbackRegion({ profile: 'dev' }, undefined)).toBeUndefined();
+    expect(resolveProfileRegionMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the profile region when cfn flag is present and no synth region', async () => {
+    resolveProfileRegionMock.mockResolvedValue('ap-northeast-1');
+    expect(await resolveCfnFallbackRegion({ fromCfnStack: true, profile: 'dev' }, undefined)).toBe(
+      'ap-northeast-1'
+    );
+    expect(resolveProfileRegionMock).toHaveBeenCalledWith('dev');
+  });
+
+  it('returns undefined when cfn flag is present but the profile has no region', async () => {
+    resolveProfileRegionMock.mockResolvedValue(undefined);
+    expect(
+      await resolveCfnFallbackRegion({ fromCfnStack: true, profile: 'dev' }, undefined)
+    ).toBeUndefined();
   });
 });
 

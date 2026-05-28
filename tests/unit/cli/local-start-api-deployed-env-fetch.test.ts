@@ -11,16 +11,18 @@ import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
 // dispose()), the result is stashed per-logical-id, and a provider that
 // does NOT implement the optional method is skipped cleanly.
 
-const { createProviderMock, rejectMock, stsSendMock } = vi.hoisted(() => ({
+const { createProviderMock, rejectMock, stsSendMock, fallbackRegionMock } = vi.hoisted(() => ({
   createProviderMock: vi.fn(),
   rejectMock: vi.fn(),
   stsSendMock: vi.fn(),
+  fallbackRegionMock: vi.fn(),
 }));
 
 vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
   createLocalStateProvider: createProviderMock,
   rejectExplicitCfnStackWithMultipleStacks: rejectMock,
   isCfnFlagPresent: vi.fn(() => false),
+  resolveCfnFallbackRegion: fallbackRegionMock,
 }));
 
 // `loadStateForRoutedStacks` issues one `sts:GetCallerIdentity` for the
@@ -75,6 +77,12 @@ describe('loadStateForRoutedStacks deployed-env fetch (site binding)', () => {
     rejectMock.mockReset();
     stsSendMock.mockReset();
     stsSendMock.mockResolvedValue({ Account: '111111111111' });
+    // Default: pass the synth-derived region straight through, matching
+    // the real helper when a stack carries an env.region.
+    fallbackRegionMock.mockReset();
+    fallbackRegionMock.mockImplementation(
+      async (_options: unknown, synthRegion: string | undefined) => synthRegion
+    );
   });
 
   it('fetches the deployed env by PHYSICAL id, before dispose(), and stashes it per logical id', async () => {
@@ -125,6 +133,31 @@ describe('loadStateForRoutedStacks deployed-env fetch (site binding)', () => {
       SIBLING_ARN: 'arn:aws:lambda:us-east-1:111111111111:function:Sib',
     });
     expect(provider.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves the CFn region via resolveCfnFallbackRegion and feeds it to createLocalStateProvider', async () => {
+    const provider = {
+      label: '--from-cfn-stack',
+      load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'ap-northeast-1' }),
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+    };
+    createProviderMock.mockReturnValue(provider);
+    // Simulate an env-agnostic stack (no synthRegion) whose region is
+    // rescued from the profile by the helper.
+    fallbackRegionMock.mockResolvedValue('ap-northeast-1');
+
+    const stack = lambdaStack();
+    (stack as { region?: string }).region = undefined;
+
+    await loadStateForRoutedStacks([stack], [routeTo('EchoFn')], [], {} as never, undefined);
+
+    // The helper is consulted with the synth-derived region (here
+    // undefined), and its result — not the raw stack region — is what
+    // createLocalStateProvider receives as its region argument.
+    expect(fallbackRegionMock).toHaveBeenCalledWith(expect.anything(), undefined);
+    expect(createProviderMock).toHaveBeenCalledTimes(1);
+    expect(createProviderMock.mock.calls[0][2]).toBe('ap-northeast-1');
   });
 
   it('skips the fetch cleanly for a provider without resolveDeployedFunctionEnv (e.g. --from-state)', async () => {

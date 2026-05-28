@@ -23,6 +23,7 @@ import {
   createLocalStateProvider,
   isCfnFlagPresent,
   rejectExplicitCfnStackWithMultipleStacks,
+  resolveCfnFallbackRegion,
   type ExtraStateProviders,
 } from './local-state-source.js';
 import {
@@ -3142,7 +3143,7 @@ export async function loadStateForRoutedStacks(
     const provider = createLocalStateProvider(
       options,
       stack.stackName,
-      stack.region,
+      await resolveCfnFallbackRegion(options, stack.region),
       extraStateProviders
     );
     if (!provider) continue;

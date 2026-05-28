@@ -24,7 +24,8 @@
  *     the stack name from synthesis; an explicit value overrides.
  *   - Region resolution for the CFn client: precedence
  *     `--stack-region` > `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION`
- *     > the synth-derived stack region.
+ *     > the synth-derived stack region > the `--profile`'s configured
+ *     region (see {@link resolveCfnFallbackRegion}).
  *
  * Returns `undefined` when no state-source flag is set — the caller
  * skips the substitution pass entirely.
@@ -32,6 +33,7 @@
 
 import { CfnLocalStateProvider } from '../../local/cfn-local-state-provider.js';
 import { getEmbedConfig } from '../../local/embed-config.js';
+import { resolveProfileRegion } from '../../utils/profile-region.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 
 /**
@@ -133,6 +135,35 @@ export function resolveCfnRegion(
     );
   }
   return region;
+}
+
+/**
+ * Compute the lowest-precedence region fallback for the CFn state
+ * provider and pass the result as the `synthRegion` argument to
+ * {@link createLocalStateProvider}. The synth-derived stack region wins
+ * when present; otherwise — and only when `--from-cfn-stack` is active —
+ * the `--profile`'s configured region is used so an env-agnostic stack
+ * (no `env.region`) is still queryable via `--profile <p>` alone, the
+ * same way `aws cloudformation ... --profile <p>` resolves region from
+ * the profile.
+ *
+ * {@link resolveCfnRegion}'s precedence (`--stack-region` > `--region` >
+ * `AWS_REGION` > `AWS_DEFAULT_REGION` > this fallback) is preserved: the
+ * profile region only matters when every higher-priority signal is
+ * absent.
+ *
+ * Async because reading the profile region touches the shared config
+ * files; the public sync `resolveCfnRegion` / `createLocalStateProvider`
+ * signatures are intentionally left unchanged so embedding hosts are not
+ * forced to adopt an async region resolver.
+ */
+export async function resolveCfnFallbackRegion(
+  options: Pick<LocalStateSourceOptions, 'fromCfnStack' | 'profile'>,
+  synthRegion: string | undefined
+): Promise<string | undefined> {
+  if (synthRegion !== undefined) return synthRegion;
+  if (!isCfnFlagPresent(options)) return undefined;
+  return resolveProfileRegion(options.profile);
 }
 
 /**
