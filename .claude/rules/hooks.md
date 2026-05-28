@@ -63,6 +63,24 @@ The hooks split into three classes:
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
   line-numbered offender output.
 
+- **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
+  `gh pr edit` / `gh pr merge` (and their `gh -C <path>` / `cd <path>
+  && ...` forms) when a Markdown file in the resolved PR diff (or
+  local `origin/main..HEAD` when no PR exists yet) hands an INLINE
+  JSON literal to a cdk-local CLI flag that takes a FILE PATH —
+  `--env-vars` or `--event`. Both are read with `readFileSync`
+  (`src/cli/commands/local-invoke.ts`), so a documented
+  `--env-vars '{...}'` is treated as a filename and fails at runtime
+  with ENOENT; the correct form is `--env-vars ./env.json`. This bug
+  shipped in two committed docs before it was caught by hand.
+  Detection is a single `grep -nE` per touched `*.md` file for the
+  flag followed by an opening `{` and a JSON-key quote (the
+  brace-then-quote shape), so prose that describes the anti-pattern
+  with a `{...}` placeholder passes through. Scans Markdown only, so
+  the hook's own `.sh` source is never scanned. Fails open when `gh`
+  is missing or unauthenticated. No bypass marker — the fix is to move
+  the JSON into a file and pass its path.
+
 - **`post-merge-orphan-push-gate.sh`** blocks
   `git push <remote> <branch>` (incl. `-u` / `--set-upstream` /
   `git -C <path> push`) when `<remote>` is `origin` AND
