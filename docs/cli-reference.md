@@ -375,6 +375,21 @@ an error — they're mutually exclusive.
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `-c/--context`, `--profile`, `--role-arn`, `--verbose`, `-y/--yes`.
 
+**Container `AWS_REGION` fallback**: when neither `--assume-role`'s STS
+region nor an `AWS_REGION` / `AWS_DEFAULT_REGION` env var already set a
+region for a Lambda container, cdk-local seeds `AWS_REGION` from the first
+available of `--stack-region` > the synth-derived stack region
+(`env.region` on the CDK stack, read from the cloud assembly manifest) >
+the `--profile`'s configured region (`~/.aws/config`'s `region =`).
+`--profile` injects the credential triple but the synthesized credentials
+file carries no `region =`, and the synth-derived stack region was
+previously used only host-side for the `--from-cfn-stack` CFn client — so
+without this a handler's ambient-region SDK call (`new XxxClient({})`)
+booted with credentials but failed locally with "Region is missing" while
+succeeding when deployed. A region-agnostic stack run with no profile
+region and no `AWS_REGION` env still surfaces that SDK error — set
+`AWS_REGION` or `--stack-region`.
+
 ### `cdkl start-api` exit codes
 
 - `0` — server started cleanly and shut down on SIGTERM.

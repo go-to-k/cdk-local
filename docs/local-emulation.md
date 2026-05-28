@@ -570,6 +570,21 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | `--mtls-cert <path>` | unset | PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. Must be set together with `--mtls-truststore` + `--mtls-key`. |
 | `--mtls-key <path>` | unset | PEM-encoded server private key matching `--mtls-cert`. Must be set together with `--mtls-truststore` + `--mtls-cert`. |
 
+**Container `AWS_REGION` fallback**: when neither `--assume-role`'s STS
+region nor an `AWS_REGION` / `AWS_DEFAULT_REGION` env var already set a
+region for a Lambda container, cdk-local seeds `AWS_REGION` from the first
+available of `--stack-region` > the synth-derived stack region
+(`env.region` on the CDK stack, read from the cloud assembly manifest) >
+the `--profile`'s configured region (`~/.aws/config`'s `region =`).
+`--profile` injects the credential triple but the synthesized credentials
+file carries no `region =`, and the synth-derived stack region was
+previously used only host-side for the `--from-cfn-stack` CFn client — so
+without this a handler's ambient-region SDK call (`new XxxClient({})`)
+booted with credentials but failed locally with "Region is missing" while
+succeeding when deployed. A region-agnostic stack run with no profile
+region and no `AWS_REGION` env still surfaces that SDK error — set
+`AWS_REGION` or `--stack-region`.
+
 ### Hot reload (`--watch`)
 
 When `--watch` is set, cdk-local installs a
