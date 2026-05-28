@@ -26,6 +26,7 @@ export {
   createLocalListCommand,
   formatTargetListing,
   type CreateLocalListCommandOptions,
+  type FormatTargetListingOptions,
 } from './cli/commands/local-list.js';
 
 /**

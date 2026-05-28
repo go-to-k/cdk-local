@@ -22,11 +22,12 @@ import { NonInteractiveIoHost, type IoMessage } from '@aws-cdk/toolkit-lib';
  * It also re-classifies the synth-success notifications
  * (`CDK_TOOLKIT_I1901` single-stack / `CDK_TOOLKIT_I1902` multi-stack,
  * "Successfully synthesized to ...") from `result` level to `info`.
- * toolkit-lib sends `result`-level messages to stdout, which pollutes
- * the stdout of commands whose primary output IS stdout — most
- * importantly `cdkl list` (parseable target list) and `cdkl invoke`
- * (Lambda response). As `info` they go to stderr in a normal terminal,
- * leaving stdout to the command's own data. These are status lines no
+ * toolkit-lib sends `result`-level messages to stdout unconditionally,
+ * which pollutes the stdout of every synthesizing command. Re-leveling
+ * to `info` routes them to stderr in a normal terminal. This matters
+ * most for `cdkl list`, whose stdout is a parseable target list — that
+ * command additionally writes its own `Synthesizing...` status to
+ * stderr so its stdout is exactly the list. These are status lines no
  * caller parses from cdk-local's stdout.
  */
 export class CdklIoHost extends NonInteractiveIoHost {
