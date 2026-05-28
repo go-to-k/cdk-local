@@ -896,6 +896,29 @@ interface BuildDockerRunArgs {
 }
 
 /**
+ * Resolve the HOST port to publish a container port on.
+ *
+ * On macOS, Docker Desktop binds host ports below 1024 through a
+ * privileged helper (`com.docker.vmnetd`) that prompts for an admin
+ * password — and fails outright when that helper isn't running. A
+ * container that declares e.g. port 80 would otherwise force that prompt
+ * on every `run-task` / `start-service`. To keep the local run
+ * password-free, remap a privileged host port to a non-privileged one by
+ * adding 8000 (80 -> 8080, 443 -> 8443). The container port is unchanged
+ * — only the host side moves — and the caller logs where to reach it.
+ *
+ * Only macOS is affected: on Linux the Docker daemon runs as root and
+ * binds privileged ports directly, so the host port is left as-is to
+ * preserve the `host == container` mapping users expect.
+ *
+ * Exported for unit testing with an explicit `platform`.
+ */
+export function resolvePublishHostPort(hostPort: number, platform: NodeJS.Platform): number {
+  if (platform === 'darwin' && hostPort < 1024) return hostPort + 8000;
+  return hostPort;
+}
+
+/**
  * Build the full `docker run -d` argument list for one container.
  * Exported (no-leading-underscore) so the unit tests can assert against
  * the shape directly without spawning a process.
@@ -959,7 +982,18 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   if (!opts.skipHostPortPublish) {
     for (const pm of container.portMappings) {
       const hostPort = pm.hostPort ?? pm.containerPort;
-      args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+      const publishHostPort = resolvePublishHostPort(hostPort, process.platform);
+      if (publishHostPort !== hostPort) {
+        getLogger()
+          .child('ecs')
+          .info(
+            `Container '${container.name}' container port ${pm.containerPort} published on ` +
+              `${containerHost}:${publishHostPort} (remapped from privileged host port ${hostPort}; ` +
+              'macOS Docker Desktop needs an admin helper to bind ports < 1024). ' +
+              `Reach it at ${containerHost}:${publishHostPort}.`
+          );
+      }
+      args.push('-p', `${containerHost}:${publishHostPort}:${pm.containerPort}/${pm.protocol}`);
     }
   }
 
