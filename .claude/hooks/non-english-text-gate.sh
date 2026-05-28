@@ -111,7 +111,11 @@ if ! command -v "${GH_BIN:-gh}" >/dev/null 2>&1; then
   exit 0
 fi
 GH="${GH_BIN:-gh}"
-if ! "$GH" -C "$target_dir" auth status >/dev/null 2>&1; then
+# `gh` has no `-C` flag (unlike git): `gh -C <dir>` errors with "unknown
+# shorthand flag: 'C'". So every gh call that needs repo context below
+# runs from a subshell `cd "$target_dir"` instead. `auth status` is
+# global and needs no repo context.
+if ! "$GH" auth status >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -125,7 +129,7 @@ if [[ "$cmd" =~ gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:spa
 fi
 
 if [[ -z "$pr_number" ]]; then
-  pr_number=$("$GH" -C "$target_dir" pr view --json number -q .number 2>/dev/null || true)
+  pr_number=$( (cd "$target_dir" && "$GH" pr view --json number -q .number) 2>/dev/null || true)
 fi
 
 # No PR yet (typical `gh pr create` on a fresh branch) — fall back to
@@ -146,7 +150,7 @@ if [[ "$use_local_diff" -eq 1 ]]; then
   fi
   changed_files=$(git -C "$target_dir" diff "$merge_base..HEAD" --name-only --diff-filter=AM 2>/dev/null || true)
 else
-  changed_files=$("$GH" -C "$target_dir" pr diff "$pr_number" --name-only 2>/dev/null || true)
+  changed_files=$( (cd "$target_dir" && "$GH" pr diff "$pr_number" --name-only) 2>/dev/null || true)
 fi
 
 if [[ -z "$changed_files" ]]; then
@@ -180,7 +184,7 @@ MAX_REPORT=20
 # sha once.
 pr_head_sha=""
 if [[ "$use_local_diff" -eq 0 ]]; then
-  pr_head_sha=$("$GH" -C "$target_dir" pr view "$pr_number" --json headRefOid -q .headRefOid 2>/dev/null || true)
+  pr_head_sha=$( (cd "$target_dir" && "$GH" pr view "$pr_number" --json headRefOid -q .headRefOid) 2>/dev/null || true)
 fi
 
 read_file_content() {
@@ -194,7 +198,7 @@ read_file_content() {
       git -C "$target_dir" show "$pr_head_sha:$f" 2>/dev/null && return 0
     fi
     # Fall back to fetching from the API.
-    "$GH" -C "$target_dir" api "repos/{owner}/{repo}/contents/$f?ref=${pr_head_sha:-HEAD}" -q .content 2>/dev/null | base64 -d 2>/dev/null
+    ( cd "$target_dir" && "$GH" api "repos/{owner}/{repo}/contents/$f?ref=${pr_head_sha:-HEAD}" -q .content ) 2>/dev/null | base64 -d 2>/dev/null
   fi
 }
 
