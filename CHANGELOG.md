@@ -1,3 +1,10 @@
+# [0.18.0](https://github.com/go-to-k/cdk-local/compare/v0.17.0...v0.18.0) (2026-05-28)
+
+
+### Features
+
+* **run-task,start-service:** explicit --host-port override; drop macOS auto-remap ([#82](https://github.com/go-to-k/cdk-local/issues/82)) ([c5e623e](https://github.com/go-to-k/cdk-local/commit/c5e623e62676061c5559a8346169e62935ee5e46))
+
 # [0.17.0](https://github.com/go-to-k/cdk-local/compare/v0.16.0...v0.17.0) (2026-05-28)
 
 
