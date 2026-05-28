@@ -44,49 +44,55 @@ Shared across every `cdkl` subcommand (declared in
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
 
-## Interactive target selection (`-i` / `--interactive`)
+## Interactive target selection
 
 The four run commands — `invoke`, `run-task`, `start-service`,
-`start-api` — accept `-i` / `--interactive` to choose their target from
-an arrow-key list (powered by `@clack/prompts`) instead of typing a CDK
-path / logical ID. `start-service` uses a multi-select (pick one or more
-services); the others select one. The list is the same set `cdkl list`
-prints, so a Function URL appears under its backing Lambda.
+`start-api` — open an arrow-key picker (powered by `@clack/prompts`)
+when you OMIT the positional target in an interactive terminal, instead
+of making you type a CDK path / logical ID. `invoke` / `run-task` pick a
+single target; `start-service` / `start-api` open a multi-select (pick
+one or more). The list is the same set `cdkl list` prints, so a Function
+URL appears under its backing Lambda. (There is no `-i` / `--interactive`
+flag — bare-in-a-TTY is the trigger.)
 
-For the three required-target commands (`invoke` / `run-task` /
-`start-service`), omitting the positional target in an interactive
-terminal launches the picker automatically — `-i` is only needed to force
-it when you would otherwise pass a target. `start-api` is different: a
-bare `start-api` already has a useful default (serve every discovered
-API), so it shows the picker only with an explicit `-i`, and `-i` there
-is mutually exclusive with a positional target, `--api`, and
-`--all-stacks`.
+`start-api`'s multi-select starts with **every** discovered API
+pre-selected, so a bare Enter serves them all (its long-standing default)
+and deselecting rows serves a subset — each selected API on its own port.
+Each API row is tagged with its surface kind — `REST API v1` /
+`HTTP API v2` / `Function URL` / `WebSocket` — so otherwise-similar
+surfaces are easy to tell apart. (The picker shows the CDK display path,
+not the stack-qualified logical ID — `cdkl list -l` still prints it.)
 
 The picker requires a TTY. In a non-interactive context (CI, pipes,
 redirected stdin/stdout):
 
-- omitting a required target falls back to the command's usual
-  "target required" error;
-- passing `-i` errors with `InteractiveTtyRequiredError` — pass the
-  target explicitly instead.
+- `invoke` / `run-task` / `start-service` fall back to the command's
+  usual "target required" error — pass the target explicitly instead;
+- `start-api` is the exception: bare in a non-TTY it serves **every**
+  discovered API (its serve-all default needs no prompt), so scripts
+  keep working unchanged. Pass one or more positional targets to serve a
+  specific subset.
 
 Ctrl+C / Esc at the prompt aborts with exit code 130 and no error noise.
-`list` has no `-i` (it always lists everything).
+`list` has no picker (it always lists everything).
 
 ## `cdkl list` (discover runnable targets)
 
 `cdkl list` (alias `cdkl ls`) synthesizes the CDK app and prints every
 target the other subcommands can run, grouped by command. Most of the
-time you do not need it — running a command with no target (or `-i`)
-opens an interactive picker (see the "Interactive target selection"
-section above). Reach for `list` to browse what exists, or to grab the
-exact target string for a script.
+time you do not need it — running a command with no target opens an
+interactive picker (see the "Interactive target selection" section
+above). Reach for `list` to browse what exists, or to grab the exact
+target string for a script.
 
 Each target is printed by its CDK display path (the recommended,
-readable target form). Pass `-l` / `--long` to additionally print the
-stack-qualified logical ID (`<Stack>:<LogicalId>`) on an indented line
-beneath each path — useful for the SAM-style logical-ID form or for any
-resource without an `aws:cdk:path`.
+readable target form). API targets additionally show their surface kind
+(`HTTP API v2`, `REST API v1`, `Function URL`, `WebSocket`) in
+parentheses, so the API group's otherwise-similar paths are easy to tell
+apart. Pass `-l` / `--long` to additionally print the stack-qualified
+logical ID (`<Stack>:<LogicalId>`) on an indented line beneath each path —
+useful for the SAM-style logical-ID form or for any resource without an
+`aws:cdk:path`.
 
 It needs no Docker. It synthesizes the app — which may perform context
 lookups, and (like every command) honors `--role-arn` / `CDKL_ROLE_ARN`
@@ -103,8 +109,8 @@ $ cdkl list
 Lambda Functions  ->  cdkl invoke <target>
   MyStack/ItemsHandler
 
-APIs  ->  cdkl start-api [target]
-  MyStack/MyHttpApi
+APIs  ->  cdkl start-api [target...]
+  MyStack/MyHttpApi  (HTTP API v2)
 
 ECS Services  ->  cdkl start-service <target...>
   MyStack/WebService
@@ -402,9 +408,10 @@ but reusing cdk-local's synthesis, asset, and route-discovery
 plumbing.
 
 ```bash
-cdkl start-api                              # auto-allocate one port PER discovered API
+cdkl start-api                              # TTY: multi-select APIs (Enter = all); non-TTY: serve all
 cdkl start-api --port 3000                  # first API → 3000, second API → 3001, ...
-cdkl start-api MyAdminApi                   # logical id (single-stack apps)
+cdkl start-api MyAdminApi                   # serve one API (logical id; single-stack apps)
+cdkl start-api MyAdminApi MyPublicApi       # serve a SUBSET (each on its own port)
 cdkl start-api MyStack/MyAdminApi           # OR: CDK Construct path (prefix-matched)
 cdkl start-api --all-stacks                 # multi-stack: serve EVERY stack's API
 cdkl start-api --warm                       # pre-start one container per Lambda
@@ -432,9 +439,11 @@ Port assignment:
 | `0` (default) | Every server auto-allocates its own port. |
 | `3000` | First API → `3000`, second API → `3001`, third → `3002`, ... |
 
-Pass an optional positional `<target>` to launch exactly one server for
-the named API. The same target syntax `cdkl invoke` / `cdkl run-task`
-use applies here:
+Pass one or more positional `<targets...>` to serve exactly that
+**subset** — the union of the named APIs, each on its own port. Omit them
+to serve every API (bare in a non-TTY) or to open the pre-selected-all
+multi-select (bare in a TTY). The same target syntax `cdkl invoke` /
+`cdkl run-task` use applies to each identifier:
 
 1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only**.
 2. **Stack-qualified logical id** — `MyStack:MyHttpApi`.
@@ -444,12 +453,19 @@ use applies here:
 For Function URLs, the path forms reference the **backing Lambda's**
 `aws:cdk:path`, not the auto-generated URL resource.
 
+When several targets are passed and they span **different stacks**, the
+single-stack synth optimization is skipped and every stack is
+synthesized, then filtered down to the union. A typo'd identifier that
+matches no API is warned about and ignored (the matching siblings still
+serve), but if NONE of the identifiers match the run errors.
+
 **Deprecated `--api <id>` alias.** Earlier versions used a `--api`
 flag for the same purpose. The flag is still accepted (emitting a
-deprecation warn on use) and accepts the same four forms; it will be
-removed in a future major release. Migrate scripts / CI to the
-positional form. Passing both positional and `--api` at once produces
-an error — they're mutually exclusive.
+deprecation warn on use), accepts the same four forms, and takes a
+**single** identifier — for a subset use multiple positional targets. It
+will be removed in a future major release; migrate scripts / CI to the
+positional form. Passing both positional targets and `--api` at once
+produces an error — they're mutually exclusive.
 
 ### Options
 
@@ -457,8 +473,8 @@ an error — they're mutually exclusive.
 | --- | --- | --- |
 | `--port <port>` | `0` (auto-allocate) | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`), (4) `--all-stacks` (serve every stack). |
-| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional targets' shared stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`; skipped when the targets span different stacks, in which case every stack is synthesized and filtered to the union), (4) `--all-stacks` (serve every stack). |
+| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target subset, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull` (use cached image). |
@@ -468,7 +484,7 @@ an error — they're mutually exclusive.
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
 | `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). For HTTP API v2 routes, `requestContext.stage` is always `$default` regardless of this flag (AWS-side limitation); only `event.stageVariables` is affected. For REST v1 the selected StageName is also threaded into `requestContext.stage`. |
-| `--api <id>` | unset | **Deprecated** — use the positional `<target>` argument instead. Same accepted forms. Emits a deprecation warn on use. |
+| `--api <id>` | unset | **Deprecated** — use the positional `<targets...>` argument instead. Accepts a SINGLE identifier; for a subset pass multiple positional targets. Same accepted forms. Emits a deprecation warn on use. |
 | `--layer-role-arn <arn>` | — | Role to `sts:AssumeRole` before calling `lambda:GetLayerVersion` on every literal-ARN entry in `Properties.Layers`. Same semantics as `cdkl invoke --layer-role-arn`. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in Lambda env vars with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the routed stack's CDK name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in a routed Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |

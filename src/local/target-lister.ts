@@ -29,6 +29,13 @@ export interface TargetEntry {
    * `aws:cdk:path` metadata (hand-rolled `CfnResource`s).
    */
   displayPath?: string;
+  /**
+   * Human-readable surface kind, only set for `apis` entries
+   * (`REST API v1` / `HTTP API v2` / `Function URL` / `WebSocket`). Lets
+   * the interactive picker and `cdkl list` tell otherwise-similar API
+   * targets apart. Omitted for Lambda / ECS targets.
+   */
+  kind?: string;
 }
 
 /**
@@ -50,7 +57,12 @@ export interface TargetListing {
   ecsTaskDefinitions: TargetEntry[];
 }
 
-function makeEntry(stackName: string, logicalId: string, cdkPath: string | undefined): TargetEntry {
+function makeEntry(
+  stackName: string,
+  logicalId: string,
+  cdkPath: string | undefined,
+  kind?: string
+): TargetEntry {
   const entry: TargetEntry = {
     logicalId,
     stackName,
@@ -61,7 +73,20 @@ function makeEntry(stackName: string, logicalId: string, cdkPath: string | undef
   // syntax does not need (the prefix rule matches the L2 ancestor).
   const display = cdkPath ? cdkPath.replace(/\/Resource$/, '') : undefined;
   if (display) entry.displayPath = display;
+  if (kind) entry.kind = kind;
   return entry;
+}
+
+/** Map a discovered route's `source` to the human-readable surface kind. */
+function apiKindLabel(source: 'http-api' | 'rest-v1' | 'function-url'): string {
+  switch (source) {
+    case 'http-api':
+      return 'HTTP API v2';
+    case 'rest-v1':
+      return 'REST API v1';
+    case 'function-url':
+      return 'Function URL';
+  }
 }
 
 function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
@@ -93,9 +118,14 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
  */
 function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
   const byKey = new Map<string, TargetEntry>();
-  const add = (stackName: string, logicalId: string, cdkPath: string | undefined): void => {
+  const add = (
+    stackName: string,
+    logicalId: string,
+    cdkPath: string | undefined,
+    kind: string
+  ): void => {
     const key = `${stackName}:${logicalId}`;
-    if (!byKey.has(key)) byKey.set(key, makeEntry(stackName, logicalId, cdkPath));
+    if (!byKey.has(key)) byKey.set(key, makeEntry(stackName, logicalId, cdkPath, kind));
   };
 
   try {
@@ -108,7 +138,7 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
       const logicalId =
         route.source === 'function-url' ? route.lambdaLogicalId : route.apiLogicalId;
       if (!logicalId) continue;
-      add(route.apiStackName, logicalId, route.apiCdkPath);
+      add(route.apiStackName, logicalId, route.apiCdkPath, apiKindLabel(route.source));
     }
   } catch (err) {
     getLogger().warn(
@@ -118,7 +148,7 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
 
   const { apis, errors } = discoverWebSocketApis(stacks);
   for (const api of apis) {
-    add(api.apiStackName, api.apiLogicalId, api.apiCdkPath);
+    add(api.apiStackName, api.apiLogicalId, api.apiCdkPath, 'WebSocket');
   }
   for (const e of errors) {
     getLogger().warn(`Could not enumerate a WebSocket API target: ${e}`);

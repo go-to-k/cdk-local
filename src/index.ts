@@ -251,17 +251,29 @@ export { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from './local/docke
 
 /**
  * `start-api` API-server grouping — splits a flat discovered-route list into
- * one group per local HTTP server (one per RestApi / HTTP API / Function URL)
- * and filters the route list to a single API by a user-supplied `--api`
- * identifier. Exposed only as the consuming host's `import` statements
- * require them.
+ * one group per local HTTP server (one per RestApi / HTTP API / Function URL),
+ * filters the route list to a single API (`filterRoutesByApiIdentifier`) or to
+ * the UNION of several identifiers (`filterRoutesByApiIdentifiers`, the
+ * variadic `start-api <target...>` subset shape). Exposed only as the
+ * consuming host's `import` statements require them.
  */
 export {
   availableApiIdentifiers,
   filterRoutesByApiIdentifier,
+  filterRoutesByApiIdentifiers,
   groupRoutesByServer,
   type ApiServerGroup,
 } from './local/api-server-grouping.js';
+
+/**
+ * `start-api` target-subset resolver — the pure core behind the variadic
+ * `start-api <target...>` path. Filters routes to the union of the supplied
+ * identifiers (throwing on a bare logical id in a multi-stack app or an empty
+ * union) and reports the identifiers that matched nothing for one-shot
+ * "ignored" warnings. Exposed for host CLIs that drive the subset selection
+ * themselves.
+ */
+export { resolveApiTargetSubset, type ApiTargetSubset } from './cli/commands/local-start-api.js';
 
 /**
  * `invoke` / `start-api` literal-ARN Lambda Layer materializer — downloads a

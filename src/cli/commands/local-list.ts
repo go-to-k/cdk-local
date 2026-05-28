@@ -111,7 +111,7 @@ export function formatTargetListing(
   const long = options.long ?? false;
   const sections: string[][] = [
     formatSection('Lambda Functions', `${cliName} invoke <target>`, listing.lambdas, long),
-    formatSection('APIs', `${cliName} start-api [target]`, listing.apis, long),
+    formatSection('APIs', `${cliName} start-api [target...]`, listing.apis, long),
     formatSection(
       'ECS Services',
       `${cliName} start-service <target...>`,
@@ -148,7 +148,10 @@ function formatSection(
   const lines = [`${title}  ->  ${command}`];
   for (const entry of entries) {
     const primary = entry.displayPath ?? entry.qualifiedId;
-    lines.push(`  ${primary}`);
+    // Append the API surface kind (REST API v1 / HTTP API v2 / Function URL
+    // / WebSocket) so the API group's otherwise-similar paths are
+    // distinguishable; only `apis` entries carry a kind.
+    lines.push(entry.kind ? `  ${primary}  (${entry.kind})` : `  ${primary}`);
     // The qualified ID is only extra info when a display path was shown;
     // when it IS the primary, don't repeat it.
     if (long && entry.displayPath) {
@@ -167,8 +170,8 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
         'Lambda functions (invoke), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket surfaces ' +
         '(start-api), ECS services (start-service), and ECS task definitions (run-task). Each target is ' +
         'shown by its CDK display path; pass -l to also print the stack-qualified logical ID. Tip: you ' +
-        'usually do not need to copy these — just run the command (e.g. `invoke`) and pick from the list, ' +
-        'or pass -i.'
+        'usually do not need to copy these — just run the command (e.g. `invoke`) with no target in a ' +
+        'terminal and pick from the list.'
     )
     .addOption(
       new Option(

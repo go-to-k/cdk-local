@@ -185,6 +185,31 @@ export function filterRoutesByApiIdentifier(
 }
 
 /**
+ * Filter the route list to the UNION of several user-supplied
+ * identifiers — the variadic `cdkl start-api <target...>` shape, where
+ * passing two or more API identifiers serves exactly that subset (each
+ * on its own port, via {@link groupRoutesByServer}).
+ *
+ * A route is kept when it matches ANY of the identifiers (same matching
+ * rules as {@link filterRoutesByApiIdentifier}). Output order is the
+ * input route order, so {@link groupRoutesByServer}'s stable grouping is
+ * preserved. An empty `identifiers` list returns every route unchanged
+ * (the "serve all" default path never calls this with an empty set, but
+ * the no-op behavior keeps the helper total).
+ *
+ * Returns an empty array when no route matches any identifier — the
+ * caller surfaces a "no API matched" error with the available
+ * identifiers (see {@link availableApiIdentifiers}).
+ */
+export function filterRoutesByApiIdentifiers(
+  routes: readonly RouteWithAuth[],
+  identifiers: readonly string[]
+): RouteWithAuth[] {
+  if (identifiers.length === 0) return [...routes];
+  return routes.filter((rwa) => identifiers.some((id) => routeMatchesIdentifier(rwa.route, id)));
+}
+
+/**
  * Predicate behind {@link filterRoutesByApiIdentifier} and
  * {@link availableApiIdentifiers}'s primary-form selection. Exported
  * for test coverage only — the production code path goes through

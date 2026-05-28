@@ -22,8 +22,8 @@ import {
 import type { TargetEntry } from '../../../src/local/target-lister.js';
 
 const entries: TargetEntry[] = [
-  { logicalId: 'A', stackName: 'S', qualifiedId: 'S:A', displayPath: 'S/A' },
-  { logicalId: 'B', stackName: 'S', qualifiedId: 'S:B' }, // no display path
+  { logicalId: 'A', stackName: 'S', qualifiedId: 'S:A', displayPath: 'S/A', kind: 'HTTP API v2' },
+  { logicalId: 'B', stackName: 'S', qualifiedId: 'S:B' }, // no display path, no kind
 ];
 
 let origStdin: boolean | undefined;
@@ -60,14 +60,14 @@ describe('isInteractive', () => {
 });
 
 describe('pickOneTarget', () => {
-  it('maps entries to options (display path label, qualified ID hint), appends a key hint, and returns the choice', async () => {
+  it('maps entries to options (display path label, surface-kind hint), appends a key hint, and returns the choice', async () => {
     vi.mocked(select).mockResolvedValue('S/A');
     const result = await pickOneTarget('Pick one', entries);
     expect(result).toBe('S/A');
     expect(select).toHaveBeenCalledWith({
       message: 'Pick one (up/down to move, enter to select)',
       options: [
-        { value: 'S/A', label: 'S/A', hint: 'S:A' },
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
         { value: 'S:B', label: 'S:B' },
       ],
     });
@@ -90,11 +90,33 @@ describe('pickManyTargets', () => {
     expect(multiselect).toHaveBeenCalledWith({
       message: 'Pick many (space to select, enter to confirm)',
       options: [
-        { value: 'S/A', label: 'S/A', hint: 'S:A' },
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
         { value: 'S:B', label: 'S:B' },
       ],
       required: true,
     });
+  });
+
+  it('pre-selects every row via initialValues when preselectAll is set (Enter = all)', async () => {
+    vi.mocked(multiselect).mockResolvedValue(['S/A', 'S:B']);
+    const result = await pickManyTargets('Pick many', entries, { preselectAll: true });
+    expect(result).toEqual(['S/A', 'S:B']);
+    expect(multiselect).toHaveBeenCalledWith({
+      message: 'Pick many (space to select, enter to confirm)',
+      options: [
+        { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
+        { value: 'S:B', label: 'S:B' },
+      ],
+      required: true,
+      initialValues: ['S/A', 'S:B'],
+    });
+  });
+
+  it('omits initialValues when preselectAll is not set (no pre-selection)', async () => {
+    vi.mocked(multiselect).mockResolvedValue(['S/A']);
+    await pickManyTargets('Pick many', entries);
+    const callArg = vi.mocked(multiselect).mock.calls[0]?.[0] as { initialValues?: unknown };
+    expect(callArg.initialValues).toBeUndefined();
   });
 
   it('throws TargetSelectionCancelledError on cancel', async () => {
@@ -107,10 +129,9 @@ describe('pickManyTargets', () => {
 });
 
 describe('resolveSingleTarget', () => {
-  it('returns the provided target without prompting when -i is absent', async () => {
+  it('returns the provided target without prompting', async () => {
     setTty(true);
     const result = await resolveSingleTarget('Stack/Given', {
-      interactive: false,
       entries,
       message: 'm',
       noun: 'Lambda functions',
@@ -120,25 +141,22 @@ describe('resolveSingleTarget', () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it('prompts even when a target is provided if -i is set', async () => {
-    setTty(true);
-    vi.mocked(select).mockResolvedValue('S/A');
+  it('returns the provided target without prompting even in a non-TTY', async () => {
+    setTty(false);
     const result = await resolveSingleTarget('Stack/Given', {
-      interactive: true,
       entries,
       message: 'm',
       noun: 'Lambda functions',
       onMissing,
     });
-    expect(result).toBe('S/A');
-    expect(select).toHaveBeenCalledOnce();
+    expect(result).toBe('Stack/Given');
+    expect(select).not.toHaveBeenCalled();
   });
 
-  it('throws the command onMissing error when omitted in a non-TTY without -i', async () => {
+  it('throws the command onMissing error when omitted in a non-TTY', async () => {
     setTty(false);
     await expect(
       resolveSingleTarget(undefined, {
-        interactive: false,
         entries,
         message: 'm',
         noun: 'Lambda functions',
@@ -148,24 +166,10 @@ describe('resolveSingleTarget', () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it('throws InteractiveTtyRequiredError when -i is set without a TTY', async () => {
-    setTty(false);
-    await expect(
-      resolveSingleTarget(undefined, {
-        interactive: true,
-        entries,
-        message: 'm',
-        noun: 'Lambda functions',
-        onMissing,
-      })
-    ).rejects.toBeInstanceOf(InteractiveTtyRequiredError);
-  });
-
-  it('errors when there are no candidates to pick from', async () => {
+  it('errors when there are no candidates to pick from (TTY, omitted)', async () => {
     setTty(true);
     await expect(
       resolveSingleTarget(undefined, {
-        interactive: true,
         entries: [],
         message: 'm',
         noun: 'Lambda functions',
@@ -179,7 +183,6 @@ describe('resolveSingleTarget', () => {
     setTty(true);
     vi.mocked(select).mockResolvedValue('S:B');
     const result = await resolveSingleTarget(undefined, {
-      interactive: false,
       entries,
       message: 'm',
       noun: 'Lambda functions',
@@ -191,10 +194,9 @@ describe('resolveSingleTarget', () => {
 });
 
 describe('resolveMultiTarget', () => {
-  it('returns provided targets without prompting when -i is absent', async () => {
+  it('returns provided targets without prompting', async () => {
     setTty(true);
     const result = await resolveMultiTarget(['S/A', 'S:B'], {
-      interactive: false,
       entries,
       message: 'm',
       noun: 'ECS services',
@@ -208,7 +210,6 @@ describe('resolveMultiTarget', () => {
     setTty(true);
     vi.mocked(multiselect).mockResolvedValue(['S/A']);
     const result = await resolveMultiTarget([], {
-      interactive: false,
       entries,
       message: 'm',
       noun: 'ECS services',
@@ -218,11 +219,10 @@ describe('resolveMultiTarget', () => {
     expect(multiselect).toHaveBeenCalledOnce();
   });
 
-  it('throws the onMissing error when omitted in a non-TTY without -i', async () => {
+  it('throws the onMissing error when omitted in a non-TTY', async () => {
     setTty(false);
     await expect(
       resolveMultiTarget([], {
-        interactive: false,
         entries,
         message: 'm',
         noun: 'ECS services',

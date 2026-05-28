@@ -120,6 +120,7 @@ describe('listTargets — APIs', () => {
         stackName: 'App',
         qualifiedId: 'App:HttpApi',
         displayPath: 'App/HttpApi',
+        kind: 'HTTP API v2',
       },
     ]);
   });
@@ -145,6 +146,7 @@ describe('listTargets — APIs', () => {
         stackName: 'App',
         qualifiedId: 'App:Handler',
         displayPath: 'App/Handler',
+        kind: 'Function URL',
       },
     ]);
   });
@@ -183,6 +185,7 @@ describe('listTargets — APIs', () => {
         stackName: 'App',
         qualifiedId: 'App:WsApi',
         displayPath: 'App/WsApi',
+        kind: 'WebSocket',
       },
     ]);
   });
