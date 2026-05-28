@@ -4,6 +4,7 @@ import {
   InteractiveTtyRequiredError,
   TargetSelectionCancelledError,
 } from '../utils/error-handler.js';
+import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 import type { TargetEntry } from './target-lister.js';
 
@@ -94,6 +95,11 @@ export async function resolveSingleTarget(
   params: ResolveParams
 ): Promise<string> {
   if (provided && !params.interactive) return provided;
+  if (provided && params.interactive) {
+    getLogger().warn(
+      `-i/--interactive ignores the provided target '${provided}' — pick one from the list instead.`
+    );
+  }
   ensureCanPrompt(params.interactive, params.onMissing);
   ensureHasCandidates(params.entries.length, params.noun);
   return pickOneTarget(params.message, params.entries);
@@ -109,6 +115,11 @@ export async function resolveMultiTarget(
   params: ResolveParams
 ): Promise<string[]> {
   if (provided.length > 0 && !params.interactive) return provided;
+  if (provided.length > 0 && params.interactive) {
+    getLogger().warn(
+      `-i/--interactive ignores the provided target(s) [${provided.join(', ')}] — pick from the list instead.`
+    );
+  }
   ensureCanPrompt(params.interactive, params.onMissing);
   ensureHasCandidates(params.entries.length, params.noun);
   return pickManyTargets(params.message, params.entries);

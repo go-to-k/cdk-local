@@ -294,24 +294,12 @@ async function localStartApiCommand(
   // `-i/--interactive` lets the user pick ONE API to serve from a list.
   // Unlike the required-target commands, a bare `start-api` already has a
   // useful default (serve every discovered API), so the picker is opt-in
-  // via the flag only — never auto-launched on an omitted target. It is
-  // therefore mutually exclusive with any explicit single-target selector
-  // and with `--all-stacks`. The actual prompt runs once inside
-  // `synthesizeAndBuild` (it needs the synthesized API list); `--watch`
-  // reloads reuse the first pick via `interactivePicked`.
-  if (options.interactive) {
-    if (apiFilter !== undefined || options.allStacks) {
-      throw new Error(
-        '`-i/--interactive` cannot be combined with a positional target, --api, or --all-stacks; ' +
-          'it interactively picks one API to serve. Drop the selector, or drop -i.'
-      );
-    }
-    if (!isInteractive()) {
-      throw new InteractiveTtyRequiredError(
-        '`-i/--interactive` requires an interactive terminal, but stdin/stdout is not a TTY.'
-      );
-    }
-  }
+  // via the flag only — never auto-launched on an omitted target. The
+  // guard below rejects the contradictory combinations; the actual prompt
+  // runs once inside `synthesizeAndBuild` (it needs the synthesized API
+  // list), with `--watch` reloads reusing the first pick via
+  // `interactivePicked`.
+  assertStartApiInteractiveAllowed(options.interactive, apiFilter, options.allStacks);
   // Effective single-target selector — set by the interactive picker on
   // first synth, otherwise the positional `target`. Drives the synth
   // stack-prefix inference below.
@@ -1398,6 +1386,38 @@ export function allStacksConflicts(
     conflicts.push(`--from-cfn-stack '${options.fromCfnStack}'`);
   }
   return conflicts;
+}
+
+/**
+ * Validate `-i/--interactive` for `start-api`. The picker is opt-in here
+ * (a bare `start-api` serves every API), so `-i` is mutually exclusive
+ * with any single-target selector (`apiFilter` = positional target OR
+ * `--api`) and with `--all-stacks`, and it requires a TTY. Throws when
+ * the combination is invalid; otherwise returns and the prompt runs
+ * later inside `synthesizeAndBuild`.
+ *
+ * Extracted as a pure-ish function (TTY is read via {@link isInteractive})
+ * so the error contract is unit-testable without booting the server.
+ *
+ * @internal exported for unit tests.
+ */
+export function assertStartApiInteractiveAllowed(
+  interactive: boolean,
+  apiFilter: string | undefined,
+  allStacks: boolean | undefined
+): void {
+  if (!interactive) return;
+  if (apiFilter !== undefined || allStacks) {
+    throw new Error(
+      '`-i/--interactive` cannot be combined with a positional target, --api, or --all-stacks; ' +
+        'it interactively picks one API to serve. Drop the selector, or drop -i.'
+    );
+  }
+  if (!isInteractive()) {
+    throw new InteractiveTtyRequiredError(
+      '`-i/--interactive` requires an interactive terminal, but stdin/stdout is not a TTY.'
+    );
+  }
 }
 
 /**
