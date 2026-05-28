@@ -201,9 +201,11 @@ cdkl invoke MyStack/MyApi/Handler --from-cfn-stack MyExplicitCfnStackName
 # Cross-region CFn stack — --stack-region drives the CFn client region.
 cdkl invoke MyStack/MyApi/Handler --from-cfn-stack --stack-region eu-west-1
 
-# Combine with --env-vars to override a single key (override wins)
+# Combine with --env-vars to override a single key (override wins).
+# --env-vars takes a JSON file path; e.g. ./env.json holding
+# {"Parameters":{"DEBUG":"1"}}.
 cdkl invoke MyStack/MyApi/Handler --from-cfn-stack \
-  --env-vars '{"Parameters":{"DEBUG":"1"}}'
+  --env-vars ./env.json
 ```
 
 **What's resolved**: `Ref: <LogicalId>` against
