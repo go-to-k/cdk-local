@@ -78,13 +78,18 @@ cdkl start-api
 cdkl start-api MyStack/MyApi
 ```
 
-In a multi-stack app, a bare `cdkl start-api` errors out rather than serving every stack's API at once (so a side-stack's API is never booted by accident). Pick the synth stack with the first of these you supply:
+In a multi-stack app, a bare `cdkl start-api` errors out rather than serving every stack's API at once (so a side-stack's API is never booted by accident). Either serve them all explicitly, or pick one stack with the first selector you supply:
+
+```bash
+# Serve every stack's API (each on its own port)
+cdkl start-api --all-stacks
+```
 
 - `--stack <name>` — the synth stack name, matched against your CDK app.
 - `--from-cfn-stack <name>` — the deployed CloudFormation stack name; doubles as the stack selector (see [section 2](#2-bound-to-a-deployed-stack)).
 - a stack-qualified target like `MyStack/MyApi` — the `MyStack` prefix selects the stack.
 
-See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
+`--all-stacks` is mutually exclusive with those single-target selectors (the bare `--from-cfn-stack` flag stays compatible). See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
 #### ECS — `run-task` / `start-service`
 

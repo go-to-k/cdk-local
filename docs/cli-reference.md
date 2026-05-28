@@ -301,6 +301,7 @@ cdkl start-api                              # auto-allocate one port PER discove
 cdkl start-api --port 3000                  # first API → 3000, second API → 3001, ...
 cdkl start-api MyAdminApi                   # logical id (single-stack apps)
 cdkl start-api MyStack/MyAdminApi           # OR: CDK Construct path (prefix-matched)
+cdkl start-api --all-stacks                 # multi-stack: serve EVERY stack's API
 cdkl start-api --warm                       # pre-start one container per Lambda
 ```
 
@@ -351,7 +352,8 @@ an error — they're mutually exclusive.
 | --- | --- | --- |
 | `--port <port>` | `0` (auto-allocate) | First API server's port (subsequent APIs get `port+1`, `port+2`, ...). Pass `0` (default) to auto-allocate each. The actual port assignment is printed at startup. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`). |
+| `--stack <name>` | single-stack auto-detect | Required when the app has multiple stacks AND no other selector identifies the target. In multi-stack apps the synth stack is picked from the first match of: (1) `--stack <name>`, (2) `--from-cfn-stack <explicit-name>`, (3) the positional target's stack-name prefix (e.g. `MyStack/MyApi` → `MyStack`), (4) `--all-stacks` (serve every stack). |
+| `--all-stacks` | off | Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out for an ambiguous selection. Mutually exclusive with a positional target, `--stack`, and an explicit `--from-cfn-stack <name>` (those name a single stack); the bare `--from-cfn-stack` flag stays compatible — it binds each routed stack to its own CFn stack. No-op in a single-stack app (that one stack is already served). |
 | `--warm` | off | Pre-start one container per discovered Lambda at server boot. Trades RAM for first-request latency. |
 | `--per-lambda-concurrency <n>` | `2` | Pool size cap per Lambda. Max 4 in v1; above-cap values are clamped with a warn. |
 | `--no-pull` | off | Skip `docker pull` (use cached image). |
