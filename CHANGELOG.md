@@ -1,3 +1,10 @@
+# [0.20.0](https://github.com/go-to-k/cdk-local/compare/v0.19.1...v0.20.0) (2026-05-28)
+
+
+### Features
+
+* **exports:** expose setEmbedConfig / getEmbedConfig / resetEmbedConfig ([#85](https://github.com/go-to-k/cdk-local/issues/85)) ([1f0926a](https://github.com/go-to-k/cdk-local/commit/1f0926a860cb63d143d8e7c81e16d5bf543568a9))
+
 ## [0.19.1](https://github.com/go-to-k/cdk-local/compare/v0.19.0...v0.19.1) (2026-05-28)
 
 
