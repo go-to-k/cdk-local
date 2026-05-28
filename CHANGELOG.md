@@ -1,3 +1,5 @@
+# [0.31.0](https://github.com/go-to-k/cdk-local/compare/v0.30.0...v0.31.0) (2026-05-28)
+
 # [0.30.0](https://github.com/go-to-k/cdk-local/compare/v0.29.1...v0.30.0) (2026-05-28)
 
 
