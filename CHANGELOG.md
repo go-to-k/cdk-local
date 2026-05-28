@@ -1,3 +1,10 @@
+# [0.16.0](https://github.com/go-to-k/cdk-local/compare/v0.15.0...v0.16.0) (2026-05-28)
+
+
+### Features
+
+* **run-task,start-service:** remap privileged container ports on macOS ([#80](https://github.com/go-to-k/cdk-local/issues/80)) ([b6c3649](https://github.com/go-to-k/cdk-local/commit/b6c3649f5faf429f42942ecd03345d09d44e7eab))
+
 # [0.15.0](https://github.com/go-to-k/cdk-local/compare/v0.14.0...v0.15.0) (2026-05-28)
 
 
