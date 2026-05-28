@@ -1,4 +1,7 @@
+import { existsSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AssemblyReader, type StackInfo, type AssemblyReadOptions } from './assembly-reader.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * Synthesis options accepted by the four `cdkl` commands.
@@ -40,10 +43,30 @@ export interface SynthesisResult {
  * Thin wrapper around {@link AssemblyReader} that mimics cdkd's
  * `Synthesizer` API so the ported `cdkl invoke` / `start-api` /
  * `run-task` / `start-service` source compiles without rewrites.
+ *
+ * When `app` resolves to an existing directory it is read as a
+ * pre-synthesized cloud assembly (no subprocess synth); otherwise it is
+ * executed as the CDK app command.
  */
 export class Synthesizer {
   async synthesize(opts: SynthesisOptions): Promise<SynthesisResult> {
     const reader = new AssemblyReader();
+
+    // CDK CLI compatibility: when `--app` points at an existing directory,
+    // treat it as a pre-synthesized cloud assembly and skip the subprocess
+    // synth — `Toolkit.fromCdkApp()` would otherwise try to exec the
+    // directory as a shell command and fail with "is a directory".
+    // (Mirrors aws-cdk's `exec.ts`: "bypass 'synth' if app points to a
+    // cloud assembly".) Context / profile / region overrides do not apply
+    // to an already-synthesized assembly, so they are intentionally ignored
+    // on this path.
+    const appPath = resolve(opts.app);
+    if (existsSync(appPath) && statSync(appPath).isDirectory()) {
+      getLogger().debug(`Using pre-synthesized cloud assembly at ${appPath}`);
+      const stacks = await reader.readFromDirectory(appPath);
+      return { stacks };
+    }
+
     const readOpts: AssemblyReadOptions = {};
     if (opts.output !== undefined) {
       readOpts.outdir = opts.output;
