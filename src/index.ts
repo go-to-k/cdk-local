@@ -234,6 +234,14 @@ export {
 } from './local/websocket-mgmt-api.js';
 
 /**
+ * `start-api` WebSocket frame-body codec — converts a ws-emitted message
+ * buffer into the AWS-canonical `{ body, isBase64Encoded }` shape (text
+ * frames pass through as UTF-8, binary frames are base64-encoded). Exposed
+ * only as the consuming host's `import` statements require it.
+ */
+export { bufferToBody } from './local/websocket-body.js';
+
+/**
  * `start-api` Docker host-gateway version probe — gates the
  * `--add-host=...:host-gateway` mapping WebSocket Lambda containers need to
  * reach the host server on Linux native dockerd. Exposed only as the
