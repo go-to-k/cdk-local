@@ -151,3 +151,41 @@ export { attachStageContext, buildStageMap, type ResolvedStage } from './local/s
  * the service runner) imports it as a type alongside the class.
  */
 export { CloudMapRegistry, type RegistrationHandle } from './local/cloud-map-registry.js';
+
+/**
+ * `invoke` / `start-api` Lambda runtime → ECR base-image + source-file
+ * extension + in-container code-mount-path resolution. Exposed only as the
+ * consuming host's `import` statements require them (the host's runtime-image
+ * shim re-exports exactly these three).
+ */
+export {
+  resolveRuntimeCodeMountPath,
+  resolveRuntimeFileExtension,
+  resolveRuntimeImage,
+} from './local/runtime-image.js';
+
+/**
+ * `start-api` WebSocket API event-shape builders — synthesize the
+ * `$connect` / `$disconnect` / message Lambda event payloads for a local
+ * WebSocket handshake.
+ */
+export {
+  buildConnectEvent,
+  buildDisconnectEvent,
+  buildMessageEvent,
+  type WebSocketHandshakeSnapshot,
+  type WebSocketLambdaEvent,
+} from './local/websocket-event.js';
+
+/**
+ * `start-api` WebSocket `@connections` management API — in-process
+ * connection registry + the local management-endpoint HTTP handler
+ * (POST / GET / DELETE `/@connections/{connectionId}`).
+ */
+export {
+  ConnectionRegistry,
+  type ConnectionRegistryEntry,
+  buildMgmtEndpointEnvUrl,
+  handleConnectionsRequest,
+  parseConnectionsPath,
+} from './local/websocket-mgmt-api.js';
