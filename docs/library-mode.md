@@ -89,7 +89,6 @@ pure, dependency-free helpers those modules expose:
   Gateway request-parameter mapping.
 - `translateLambdaResponse` (+ `TranslatedHttpResponse`) — Lambda
   proxy response → HTTP response translation.
-- `bufferToBody` — websocket frame buffer → string/base64 body coercion.
 - `getContainerNetworkIp` — read a container's per-network IP via
   `docker inspect`.
 
