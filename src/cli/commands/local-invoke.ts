@@ -17,7 +17,11 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
-import { createLocalStateProvider, type ExtraStateProviders } from './local-state-source.js';
+import {
+  createLocalStateProvider,
+  resolveCfnFallbackRegion,
+  type ExtraStateProviders,
+} from './local-state-source.js';
 import {
   getEmbedConfig,
   setEmbedConfig,
@@ -302,7 +306,7 @@ async function localInvokeCommand(
     const stateProvider = createLocalStateProvider(
       options,
       lambda.stack.stackName,
-      lambda.stack.region,
+      await resolveCfnFallbackRegion(options, lambda.stack.region),
       extraStateProviders
     );
     if (stateProvider) {

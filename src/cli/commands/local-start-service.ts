@@ -43,6 +43,7 @@ import { matchStacks } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
   rejectExplicitCfnStackWithMultipleStacks,
+  resolveCfnFallbackRegion,
   type ExtraStateProviders,
 } from './local-state-source.js';
 import {
@@ -374,7 +375,7 @@ async function bootOneTarget(
   const stateProvider = createLocalStateProvider(
     options,
     candidate?.stackName ?? '',
-    candidate?.region,
+    await resolveCfnFallbackRegion(options, candidate?.region),
     extraStateProviders
   );
 

@@ -201,9 +201,13 @@ non-secret property, so this exposes nothing the deployed function
 doesn't already surface to a caller with `lambda:GetFunctionConfiguration`.
 
 **Region handling**: the CFn client is region-bound at construction
-time using the precedence `--stack-region` > `AWS_REGION` >
-`AWS_DEFAULT_REGION` > the synth-derived stack region. When NONE of
-these signals is set, the CLI throws with a remediation message — CFn
+time using the precedence `--stack-region` > `--region` > `AWS_REGION` >
+`AWS_DEFAULT_REGION` > the synth-derived stack region > the `--profile`'s
+configured region (`~/.aws/config`). The profile fallback means
+`--from-cfn-stack --profile <p>` works against an env-agnostic stack
+without an explicit `--region`, the same way `aws cloudformation
+... --profile <p>` resolves region from the profile. When NONE of these
+signals is set, the CLI throws with a remediation message — CFn
 `ListStackResources` queries a specific region and silently
 picking `us-east-1` would query the wrong stack environment.
 

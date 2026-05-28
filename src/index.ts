@@ -28,6 +28,7 @@ export {
   isCfnFlagPresent,
   rejectExplicitCfnStackWithMultipleStacks,
   resolveCfnRegion,
+  resolveCfnFallbackRegion,
   resolveCfnStackName,
   LocalStateSourceError,
   type ExtraStateProviders,
