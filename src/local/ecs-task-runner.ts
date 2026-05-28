@@ -5,7 +5,14 @@ import { promisify } from 'node:util';
 import graphlib from 'graphlib';
 import { getDockerCmd, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
-import { DockerRunnerError, pullImage, removeContainer } from './docker-runner.js';
+import {
+  DockerRunnerError,
+  pullImage,
+  removeContainer,
+  appendEnvFlags,
+  execEnvForSecrets,
+  SENSITIVE_ENV_KEYS,
+} from './docker-runner.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
@@ -351,7 +358,7 @@ export async function runEcsTask(
 
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
-  const dockerCmds = new Map<string, string[]>();
+  const dockerCmds = new Map<string, { args: string[]; sensitiveEnv: Record<string, string> }>();
   for (const container of task.containers) {
     const image = imagePlan.get(container.name);
     if (!image) {
@@ -400,11 +407,14 @@ export async function runEcsTask(
     const container = task.containers.find((c) => c.name === containerName)!;
     await awaitDependencies(container, startedByName);
 
-    const args = dockerCmds.get(container.name)!;
+    const { args, sensitiveEnv } = dockerCmds.get(container.name)!;
     logger.info(`Starting container '${container.name}' (image=${imagePlan.get(container.name)})`);
     let id: string;
     try {
-      const { stdout } = await execFileAsync(getDockerCmd(), args, { maxBuffer: 10 * 1024 * 1024 });
+      const { stdout } = await execFileAsync(getDockerCmd(), args, {
+        maxBuffer: 10 * 1024 * 1024,
+        ...execEnvForSecrets(sensitiveEnv),
+      });
       id = stdout.trim();
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
@@ -879,7 +889,10 @@ interface BuildDockerRunArgs {
  * Exported (no-leading-underscore) so the unit tests can assert against
  * the shape directly without spawning a process.
  */
-export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
+export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
+  args: string[];
+  sensitiveEnv: Record<string, string>;
+} {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
 
@@ -1010,9 +1023,13 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
     applyOverrideMap(finalEnv, overrides[container.name]);
   }
 
-  for (const [k, v] of Object.entries(finalEnv)) {
-    args.push('-e', `${k}=${v}`);
-  }
+  // Resolved secret values (and any AWS credentials that landed in the
+  // env) route through docker's value-from-process-env form (`-e KEY`,
+  // value supplied via the spawned docker process's env) so they never
+  // appear in `docker run`'s argv. Non-secret config keeps `-e KEY=VALUE`.
+  const sensitiveEnvKeys = new Set<string>(SENSITIVE_ENV_KEYS);
+  for (const s of secrets) sensitiveEnvKeys.add(s.name);
+  const sensitiveEnv = appendEnvFlags(args, finalEnv, sensitiveEnvKeys);
 
   if (container.user) args.push('--user', container.user);
   if (container.privileged) args.push('--privileged');
@@ -1048,7 +1065,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): string[] {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return args;
+  return { args, sensitiveEnv };
 }
 
 function applyOverrideMap(
