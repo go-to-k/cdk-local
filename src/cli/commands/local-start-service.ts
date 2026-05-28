@@ -586,8 +586,12 @@ async function assumeTaskRole(
 
 /**
  * Build the substitution context the ECS resolver consumes.
+ *
+ * Exported for the site-level binding test that locks the `--from-cfn-stack`
+ * SSM-parameter resolution call (issue #94) into this start-service call site
+ * (mirrors `local-run-task`'s exported helper).
  */
-async function buildEcsImageResolutionContext(
+export async function buildEcsImageResolutionContext(
   target: string,
   stacks: StackInfo[],
   options: LocalStartServiceOptions,

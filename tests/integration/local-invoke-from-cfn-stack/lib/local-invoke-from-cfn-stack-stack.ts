@@ -4,8 +4,17 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * SSM parameter name the fixture's `verify.sh` `put-parameter`s BEFORE
+ * `cdk deploy` (CloudFormation resolves `AWS::SSM::Parameter::Value<String>`
+ * parameters at the start of a deploy, so the SSM value must already exist).
+ * Kept in sync with `verify.sh`'s `SSM_PARAM_NAME`.
+ */
+const SSM_DB_HOST_PARAM = '/cdkl-integ/invoke-from-cfn-stack/db-host';
 
 /**
  * Fixture stack for `cdkl invoke --from-cfn-stack` (issue #606).
@@ -67,6 +76,13 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         // A literal env var to confirm --from-cfn-stack doesn't break
         // normal-case behavior on its way through.
         STATIC_VALUE: 'always-the-same',
+        // issue #94: a `Ref` to an `AWS::SSM::Parameter::Value<String>`
+        // CloudFormation parameter (what `valueForStringParameter`
+        // synthesizes). ListStackResources cannot resolve this (it is a
+        // CFn PARAMETER, not a resource), so without --from-cfn-stack it
+        // warns-and-drops; with it, the new SSM resolver reads the value
+        // from SSM and substitutes it.
+        DB_HOST: ssm.StringParameter.valueForStringParameter(this, SSM_DB_HOST_PARAM),
       },
       timeout: cdk.Duration.seconds(10),
     });

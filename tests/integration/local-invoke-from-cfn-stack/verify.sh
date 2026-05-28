@@ -37,6 +37,16 @@ export AWS_REGION="${REGION}"
 STACK="CdkLocalInvokeFromCfnStackFixture"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
+# issue #94: the stack's DB_HOST env var is a Ref to an
+# AWS::SSM::Parameter::Value<String> CFn parameter (synthesized by
+# `ssm.StringParameter.valueForStringParameter`). CloudFormation resolves
+# that parameter at the START of `cdk deploy`, so the SSM parameter must
+# already exist — verify.sh `put-parameter`s it before deploy and deletes
+# it on exit. SSM_PARAM_NAME is kept in sync with the stack's
+# SSM_DB_HOST_PARAM constant.
+SSM_PARAM_NAME="/cdkl-integ/invoke-from-cfn-stack/db-host"
+SSM_PARAM_VALUE="db.internal.example"
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
@@ -61,12 +71,19 @@ docker pull "${IMAGE}"
 # and run `cdk destroy` on a stack we did NOT create, silently deleting
 # user resources. The sentinel is set only after `cdk deploy` succeeds.
 WE_CREATED_STACK=0
+WE_CREATED_PARAM=0
 cleanup() {
   rc=$?
   if [ "${rc}" -ne 0 ] && [ "${WE_CREATED_STACK}" -eq 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cdk destroy to clean up"
     (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \
       --no-version-reporting --no-asset-metadata --no-path-metadata) || true
+  fi
+  # The SSM parameter is created OUTSIDE the stack (CloudFormation must see
+  # it BEFORE deploy), so delete it on EVERY exit — success or failure —
+  # gated only on "we created it". Best-effort.
+  if [ "${WE_CREATED_PARAM}" -eq 1 ]; then
+    aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   exit "${rc}"
 }
@@ -78,6 +95,19 @@ if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION
   echo "          aws cloudformation delete-stack --stack-name ${STACK} --region ${REGION}"
   exit 1
 fi
+
+echo "[verify] step 2b: put the SSM parameter the stack's DB_HOST resolves to"
+# Must exist BEFORE cdk deploy: CloudFormation resolves the stack's
+# AWS::SSM::Parameter::Value<String> parameter at deploy start. `--overwrite`
+# keeps the put idempotent across reruns; cleanup() deletes it on exit.
+WE_CREATED_PARAM=1
+aws ssm put-parameter \
+  --name "${SSM_PARAM_NAME}" \
+  --value "${SSM_PARAM_VALUE}" \
+  --type String \
+  --overwrite \
+  --region "${REGION}" >/dev/null
+echo "[verify]   put ${SSM_PARAM_NAME}=${SSM_PARAM_VALUE}"
 
 echo "[verify] step 3: cdk deploy (upstream CDK CLI)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
@@ -173,6 +203,10 @@ echo "${RESULT_BASELINE}" | grep -q '"siblingArn":"unset"' || {
   echo "[verify] FAIL: expected SIBLING_ARN to be dropped (GetAtt warn-and-drop), got: ${RESULT_BASELINE}"
   exit 1
 }
+echo "${RESULT_BASELINE}" | grep -q '"dbHost":"unset"' || {
+  echo "[verify] FAIL: expected DB_HOST to be dropped (SSM-param Ref warn-and-drop without --from-cfn-stack), got: ${RESULT_BASELINE}"
+  exit 1
+}
 echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
@@ -192,6 +226,10 @@ echo "${RESULT_FROM_CFN}" | grep -q "\"siblingArn\":\"${DEPLOYED_SIBLING_ARN}\""
   echo "[verify] FAIL: expected SIBLING_ARN=${DEPLOYED_SIBLING_ARN} (deployed-env GetAtt fallback), got: ${RESULT_FROM_CFN}"
   exit 1
 }
+echo "${RESULT_FROM_CFN}" | grep -q "\"dbHost\":\"${SSM_PARAM_VALUE}\"" || {
+  echo "[verify] FAIL: expected DB_HOST=${SSM_PARAM_VALUE} (AWS::SSM::Parameter::Value resolved from SSM, issue #94), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
 echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
   exit 1
@@ -203,5 +241,6 @@ cdk destroy "${STACK}" --force --region "${REGION}" \
 
 echo ""
 echo "[verify] All checks passed:"
-echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATIC_VALUE (literal) passed through, baseline drops both intrinsics."
-echo "[verify]   - new behavior: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env."
+echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATIC_VALUE (literal) passed through, baseline drops the intrinsics."
+echo "[verify]   - GetAtt fallback: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env."
+echo "[verify]   - issue #94: DB_HOST (Ref to AWS::SSM::Parameter::Value<String>) resolved from SSM under --from-cfn-stack, dropped without it."

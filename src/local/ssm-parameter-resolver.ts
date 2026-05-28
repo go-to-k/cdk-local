@@ -97,6 +97,16 @@ export function collectSsmParameterRefs(
  * String parameters resolve too (matching how CloudFormation resolves
  * the `AWS::SSM::Parameter::Value<String>` type at deploy time).
  *
+ * Security note: a decrypted SecureString value resolved here is then
+ * baked into the container's `Environment` like any other resolved env
+ * value, so it follows the standard plaintext-env exposure path — it can
+ * appear on the `docker run -e KEY=VALUE` argv (visible in host `ps`) and
+ * is not redacted by `redactAwsCredentialsInArgs` (which only covers
+ * `SENSITIVE_ENV_KEYS`). This mirrors the deployed Lambda/ECS env and is
+ * the same inherent exposure documented in `docker-runner`; routing
+ * SecureString-resolved values through the value-from-process-env form is
+ * tracked as a follow-up.
+ *
  * Best-effort: a failed `GetParameters` chunk logs a warn and is skipped
  * (the other chunks still contribute their values); the function never
  * throws.
