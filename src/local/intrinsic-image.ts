@@ -346,6 +346,26 @@ function resolveImageIntrinsicAny(
     if (resources[logicalId]?.Type !== 'AWS::ECR::Repository') return undefined;
     const cached = context?.stateResources?.[logicalId]?.attributes?.[attr];
     if (typeof cached === 'string' && cached.length > 0) return cached;
+    // No recorded attribute. `--from-cfn-stack` resolves state from
+    // `ListStackResources`, which returns physical IDs only (never the
+    // `Arn` / `RepositoryUri` attributes), so the canonical
+    // `ContainerImage.fromEcrRepository` join — which extracts the
+    // account + region by `Fn::Select`-ing over `Fn::Split(":", <Arn>)` —
+    // would otherwise fail here. A same-stack ECR repository's Arn /
+    // RepositoryUri are deterministic, so synthesize them from the repo's
+    // physical name (the `ListStackResources` physical ID) plus the
+    // already-resolved account / region / partition / URL suffix (the
+    // stack's own, which is where a same-stack repo lives).
+    const physicalId = context?.stateResources?.[logicalId]?.physicalId;
+    const p = context?.pseudoParameters;
+    if (physicalId && p?.region && p.accountId) {
+      if (attr === 'Arn' && p.partition) {
+        return `arn:${p.partition}:ecr:${p.region}:${p.accountId}:repository/${physicalId}`;
+      }
+      if (attr === 'RepositoryUri' && p.urlSuffix) {
+        return `${p.accountId}.dkr.ecr.${p.region}.${p.urlSuffix}/${physicalId}`;
+      }
+    }
     return undefined;
   }
 
