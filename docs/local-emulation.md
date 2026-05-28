@@ -575,7 +575,7 @@ the same tier; cdk-local uses literal-segment count as a heuristic).
 | `--debug-port-base <port>` | unset | Allocate a contiguous `--inspect-brk` port range across Lambdas (one per Lambda). |
 | `--env-vars <file>` | unset | SAM-shape JSON: `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. Same format as `cdkl invoke`. |
 | `--assume-role <arn-or-pair>` | unset | Repeatable. Bare `<arn>` = global default; `<LogicalId>=<arn>` = per-Lambda override. Per-Lambda > global > unset (developer creds passed through). |
-| `--watch` | off | Hot reload: re-synth + re-discover routes when `cdk.out/` or any routed Lambda's asset directory changes. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
+| `--watch` | off | Hot reload: re-synth + re-discover routes when the CDK app's source tree (the directory holding `cdk.json`) changes. Honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Synth failures keep the previous version serving (warn-and-continue, never crashes the server). |
 | `--stage <name>` | first attached | Select an API Gateway Stage by `StageName`. Drives `event.stageVariables` (REST v1 + HTTP API v2). When the override doesn't match any Stage on a given API, that API's routes get `stageVariables: null` and the CLI emits a warn line up front. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` placeholders + AWS pseudo parameters in Lambda env vars with the deployed physical IDs / exports. **The bare form is the typical shape** — `cdkl start-api MyStack/MyApi --from-cfn-stack` resolves to the CDK stack name (`MyStack` here) per routed stack. Pass an explicit value (`--from-cfn-stack <name>`) only when the deployed CFn stack name differs from the CDK stack name (e.g. CDK's `stackName` prop was overridden). The explicit form is rejected when more than one stack is routed in one invocation; the bare form is fine for multi-stack. `Fn::GetAtt` (and other intrinsics `ListStackResources` can't resolve) in a routed Lambda's OWN env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Re-runs against fresh CFn data on every hot-reload firing (`--watch`). ListStackResources failures degrade per-stack to warn-and-fall-back so an unreadable stack never aborts the server. |
 | `--stack-region <region>` | auto | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
@@ -602,11 +602,28 @@ region and no `AWS_REGION` env still surfaces that SDK error — set
 
 When `--watch` is set, cdk-local installs a
 [chokidar](https://github.com/paulmillr/chokidar)-backed file watcher
-over `cdk.out/` plus every routed Lambda's asset directory. A change
-in any watched path triggers a debounced (500ms window) reload:
+over the CDK app's **source tree** — the synth working directory, which
+is where `cdk.json` lives. Editing handler or construct source and
+saving triggers a debounced (500ms window) reload, so no separate
+`cdk watch` / `cdk synth` process is needed.
 
-1. Re-run `cdk synth` (skipped when `-a <dir>` was passed at server
-   boot — the directory is treated as already-synthesized).
+The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
+globs (mirroring `cdk watch`); `watch.include` defaults to `**` and a
+missing `watch` block is not an error. Three paths are ALWAYS excluded:
+
+- the synth **output directory** (`cdk.out/`, or the `--output` value),
+- `node_modules`,
+- `.git`.
+
+Excluding the output directory is load-bearing for correctness: each
+reload re-synths INTO `cdk.out/`, so watching it would make the reload's
+own writes re-trigger the watcher forever. Because the output directory
+is pruned, those re-synth writes are invisible to the watcher and there
+is no reload loop.
+
+A qualifying change triggers the reload sequence:
+
+1. Re-run `cdk synth`.
 2. Re-run route discovery, stage resolution, and CORS-config
    extraction.
 3. Build per-Lambda specs + a fresh container pool.
