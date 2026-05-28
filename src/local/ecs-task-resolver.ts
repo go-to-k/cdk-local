@@ -1022,8 +1022,9 @@ function parseContainerImage(
   // as a `Fn::Join` that builds the ECR URI from nested `Fn::Select` /
   // `Fn::Split` over the repository's `Arn` GetAtt plus a `Ref` to the
   // repo and `Ref: AWS::URLSuffix`. The repository's account-id and
-  // region only exist in cdkd's S3 state (set at deploy time), so this
-  // shape inherently requires `--from-state` (Tier 2).
+  // region are only available from deployed-stack state (recorded at
+  // deploy time), so this shape inherently requires loading state via
+  // `--from-cfn-stack` (Tier 2).
   const joinResolved = tryResolveImageFnJoin(raw, resources, context);
   if (joinResolved.kind === 'resolved') {
     return classifyResolvedImage(joinResolved.uri);
@@ -1032,7 +1033,7 @@ function parseContainerImage(
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
         `${getEmbedConfig().cliName} run-task cannot resolve the repository URI without state — ` +
-        'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
+        'pass --from-cfn-stack to load the deployed stack state, ' +
         'build via ContainerImage.fromAsset, or pin a public image.'
     );
   }
@@ -1078,7 +1079,7 @@ function parseContainerImage(
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
           `${getEmbedConfig().cliName} run-task v1 cannot resolve the repository URI without state — ` +
-          'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
+          'pass --from-cfn-stack to load the deployed stack state, ' +
           'build via ContainerImage.fromAsset, or pin a public image.'
       );
     }
