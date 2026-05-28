@@ -71,3 +71,27 @@ Every field is optional and independently falls back to the cdk-local
 default, so omitting `embedConfig` (or any single field) leaves native
 `cdkl` behavior unchanged. Pass the same `embedConfig` to each factory
 the host mounts so the branding is consistent across commands.
+
+## Low-level building blocks (shim hosts)
+
+Most hosts only need the command factories above. A host that instead
+re-exports cdk-local's individual `src/local/**` modules verbatim
+(rather than carrying its own byte-identical copy) can also import the
+pure, dependency-free helpers those modules expose:
+
+- `pickRefLogicalId` — extract the logical id from a `{ Ref: ... }`
+  intrinsic.
+- `resolveLambdaArnIntrinsic` (+ `LambdaArnResolveOutcome`) — resolve a
+  Lambda ARN expressed as `Ref` / `Fn::GetAtt` / the REST-v1 invoke-ARN
+  `Fn::Join` / `Fn::Sub` wrappers.
+- `resolveServiceIntegrationParameters` / `resolveSelectionExpression`
+  (+ `RequestParameterContext` / `ResolveParametersOutcome`) — API
+  Gateway request-parameter mapping.
+- `translateLambdaResponse` (+ `TranslatedHttpResponse`) — Lambda
+  proxy response → HTTP response translation.
+- `getContainerNetworkIp` — read a container's per-network IP via
+  `docker inspect`.
+
+These are stable, side-effect-free utilities; they are exposed for
+1:1 re-export and are not a recommended way to build a custom CLI (use
+the factories for that).
