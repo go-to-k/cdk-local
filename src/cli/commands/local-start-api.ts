@@ -3078,7 +3078,7 @@ function hasExtraStateProviderActive(
   return false;
 }
 
-async function loadStateForRoutedStacks(
+export async function loadStateForRoutedStacks(
   stacks: readonly StackInfo[],
   routes: readonly DiscoveredRoute[],
   routesWithAuth: readonly RouteWithAuth[],
