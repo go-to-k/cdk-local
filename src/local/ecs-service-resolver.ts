@@ -7,6 +7,7 @@ import {
   parseEcsTarget,
   resolveEcsTaskTarget,
   type EcsImageResolutionContext,
+  type ParsedEcsTarget,
   type ResolvedEcsTask,
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -188,7 +189,7 @@ export function resolveEcsServiceTarget(
       ({ logicalId: l }) => resources[l]?.Type === 'AWS::ECS::Service'
     );
     if (services.length === 0) {
-      throw notFoundError(target, stack, resources);
+      throw notFoundError(target, stack, resources, parsed);
     }
     if (services.length > 1) {
       throw new EcsTaskResolutionError(
@@ -201,11 +202,11 @@ export function resolveEcsServiceTarget(
     serviceResource = resources[serviceLogicalId];
   } else {
     serviceResource = resources[parsed.pathOrId];
-    if (!serviceResource) throw notFoundError(target, stack, resources);
+    if (!serviceResource) throw notFoundError(target, stack, resources, parsed);
     serviceLogicalId = parsed.pathOrId;
   }
 
-  if (!serviceLogicalId || !serviceResource) throw notFoundError(target, stack, resources);
+  if (!serviceLogicalId || !serviceResource) throw notFoundError(target, stack, resources, parsed);
 
   if (serviceResource.Type === 'AWS::ECS::TaskDefinition') {
     throw new EcsTaskResolutionError(
@@ -579,19 +580,46 @@ function pickStack(
 function notFoundError(
   target: string,
   stack: StackInfo,
-  resources: Record<string, TemplateResource>
+  resources: Record<string, TemplateResource>,
+  parsed: ParsedEcsTarget
 ): EcsTaskResolutionError {
-  const services = Object.entries(resources)
-    .filter(([, r]) => r.Type === 'AWS::ECS::Service')
-    .map(([id]) => id);
+  const services: { displayPath: string; logicalId: string }[] = [];
+  for (const [logicalId, r] of Object.entries(resources)) {
+    if (r.Type !== 'AWS::ECS::Service') continue;
+    const meta = r.Metadata;
+    const cdkPath = typeof meta?.['aws:cdk:path'] === 'string' ? meta['aws:cdk:path'] : '';
+    services.push({ displayPath: cdkPath || logicalId, logicalId });
+  }
   if (services.length === 0) {
     return new EcsTaskResolutionError(
       `Target '${target}' did not match any resource in ${stack.stackName}, and the stack ` +
         'declares no AWS::ECS::Service resources at all.'
     );
   }
-  return new EcsTaskResolutionError(
-    `Target '${target}' did not match any ECS Service in ${stack.stackName}. ` +
-      `Available services: ${services.join(', ')}.`
-  );
+  // Show BOTH forms per service so the message itself documents how to
+  // address each: the 'Stack/Path' form matches the CDK construct path
+  // (left column), the 'Stack:LogicalId' form matches the logical ID
+  // (right column).
+  const width = Math.max(...services.map((s) => s.displayPath.length));
+  let msg = `Target '${target}' did not match any ECS Service in ${stack.stackName}.\n\n`;
+  msg += `Available services in ${stack.stackName} (CDK path and logical ID):\n`;
+  for (const s of services) {
+    msg += `  ${s.displayPath.padEnd(width)}  (${s.logicalId})\n`;
+  }
+  // When a 'Stack/Path'-form target's trailing segment is exactly a
+  // service logical ID, the user almost certainly meant the colon form —
+  // the slash form resolves CDK construct paths, not logical IDs, so it
+  // dead-ends with an "Available services" list that appears to contain
+  // the very name they typed. Call out the fix explicitly.
+  if (parsed.isPath) {
+    const tail = parsed.pathOrId.includes('/')
+      ? parsed.pathOrId.slice(parsed.pathOrId.lastIndexOf('/') + 1)
+      : parsed.pathOrId;
+    if (services.some((s) => s.logicalId === tail)) {
+      msg +=
+        `\n'${tail}' is a logical ID, but the 'Stack/Path' form matches CDK construct paths. ` +
+        `To target it by logical ID, use the colon form: '${stack.stackName}:${tail}'.`;
+    }
+  }
+  return new EcsTaskResolutionError(msg.trimEnd());
 }
