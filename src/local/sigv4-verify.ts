@@ -21,20 +21,30 @@
  *   4. Compare the recomputed signature against the header's `signature`
  *      value (constant-time compare).
  *
- * # Local-vs-deployed semantics (per `feedback_match_aws_default_over_opinionated.md`)
+ * # Local-vs-deployed semantics
  *
  * Verification can only succeed when the request was signed with the
- * **same** credentials the local server can read. When the request's
- * `Credential=AKID/...` scope names a different access-key-id than the
- * one the dev has locally, cdk-local cannot reproduce the signing key — we
- * **warn-and-pass** in that case (allow + log a one-line warn), matching
- * AWS's "verify locally what we can; defer real authorization to deploy
- * time" model. Refusing would force every dev with a SigV4-signed client
- * to use the exact same credential the local server sees, which is rarely
- * what they want.
+ * **same** credentials the local server can read. SigV4 is an HMAC
+ * (shared-secret) signature: reproducing it requires the signer's secret
+ * key. For a foreign access-key-id — a federated / Cognito Identity Pool /
+ * cross-account signer — cdk-local does not have that secret and AWS never
+ * publishes it, so local verification is **impossible**. The deployed API
+ * Gateway CAN verify the very same request because AWS holds the secret;
+ * this asymmetry is a local-only limitation, not a sign the request is
+ * invalid.
  *
- * Genuinely missing / malformed signatures **are** rejected — those would
- * never reach the deployed API either.
+ * When the request's `Credential=AKID/...` scope names a different
+ * access-key-id than the one the dev has locally, we therefore **deny by
+ * default** (fail-closed). A fail-open default would let anyone forge an
+ * `Authorization: AWS4-HMAC-SHA256 Credential=AKID-X/...` header and be
+ * admitted as principal `AKID-X` against handler code that trusts
+ * `event.requestContext.identity.accessKey`. The `--allow-unverified-sigv4`
+ * flag (or an OAC-fronted Function URL, where CloudFront re-signs the
+ * origin request in production) is the explicit opt-in to **warn-and-pass**
+ * instead: allow + a one-line warn + an obviously-fake principalId.
+ *
+ * Genuinely missing / malformed signatures **are** rejected too — those
+ * would never reach the deployed API either.
  *
  * # NOT IN SCOPE
  *
@@ -262,7 +272,13 @@ export async function verifySigV4(
     const reason = err instanceof Error ? err.message : String(err);
     if (!opts.allowUnverified) {
       logger.warn(
-        `AWS_IAM authorizer: failed to resolve local AWS credentials (${reason}). Denying request; configure AWS credentials or pass --allow-unverified-sigv4 to opt into the warn-and-pass dev behavior.`
+        `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the ` +
+          `request's SigV4 signature cannot be verified — SigV4 is an HMAC (shared-secret) ` +
+          `signature, and reproducing it requires credentials cdk-local can read. This is a ` +
+          `local-only limitation (the deployed API Gateway verifies the same request against ` +
+          `AWS's copy of the secret), not a rejection of an invalid request. Denying by ` +
+          `default; configure AWS credentials, or pass --allow-unverified-sigv4 to ` +
+          `warn-and-pass in dev.`
       );
       return { allow: false, identityHash: undefined };
     }
@@ -302,9 +318,14 @@ export async function verifySigV4(
     if (!opts.allowUnverified) {
       if (!warned || !warned.has(dedupKey)) {
         logger.warn(
-          `AWS_IAM authorizer: request signed with foreign access-key-id '${parsed.credentialAccessKeyId}'. ` +
-            `Denying; pass --allow-unverified-sigv4 to opt into ` +
-            `the warn-and-pass dev behavior, or call with credentials whose access-key-id matches your local one.`
+          `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+            `which differs from the AWS credentials cdk-local resolved locally. SigV4 is an HMAC ` +
+            `(shared-secret) signature, so cdk-local can only verify signatures made with its own ` +
+            `credentials — never a federated / Cognito Identity Pool / cross-account signer's (the ` +
+            `deployed API Gateway verifies the same request because AWS holds that secret). This is ` +
+            `a local-only limitation, not a rejection of an invalid request. Denying by default; ` +
+            `pass --allow-unverified-sigv4 to warn-and-pass in dev, or sign the request with the ` +
+            `same credentials cdk-local resolves locally.`
         );
         warned?.add(dedupKey);
       }
