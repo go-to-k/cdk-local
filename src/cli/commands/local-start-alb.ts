@@ -13,7 +13,7 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
 import {
   resolveAlbFrontDoor,
   isApplicationLoadBalancer,
-  type FrontDoorForwardTarget,
+  type ResolvedListenerAction,
 } from '../../local/elb-front-door-resolver.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
@@ -22,7 +22,7 @@ import {
   type EcsServiceEmulatorOptions,
   type EmulatorStrategy,
   type ServiceBoot,
-  type PlannedForwardTarget,
+  type PlannedAction,
   type PlannedFrontDoorListener,
 } from './ecs-service-emulator.js';
 
@@ -179,15 +179,42 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
         const resolution = resolveAlbFrontDoor(stack, albLogicalId);
         warnings.push(...resolution.warnings);
 
-        // Qualify a resolver target (`serviceLogicalId`) into a `Stack:LogicalId`
-        // service-boot target and record it as a service we must run.
-        const qualify = (t: FrontDoorForwardTarget): PlannedForwardTarget => {
-          const serviceTarget = `${stack.stackName}:${t.serviceLogicalId}`;
-          serviceTargets.add(serviceTarget);
+        // Qualify a resolver action into a planned action: forward targets get
+        // their `serviceLogicalId` qualified into a `Stack:LogicalId`
+        // service-boot target (and recorded as a service we must run);
+        // redirect / fixed-response carry no service.
+        const qualify = (action: ResolvedListenerAction): PlannedAction => {
+          if (action.kind === 'forward') {
+            return {
+              kind: 'forward',
+              targets: action.targets.map((t) => {
+                const serviceTarget = `${stack.stackName}:${t.serviceLogicalId}`;
+                serviceTargets.add(serviceTarget);
+                return {
+                  serviceTarget,
+                  targetContainerName: t.targetContainerName,
+                  targetContainerPort: t.targetContainerPort,
+                  weight: t.weight,
+                };
+              }),
+            };
+          }
+          if (action.kind === 'redirect') {
+            return {
+              kind: 'redirect',
+              statusCode: action.statusCode,
+              ...(action.protocol !== undefined && { protocol: action.protocol }),
+              ...(action.host !== undefined && { host: action.host }),
+              ...(action.port !== undefined && { port: action.port }),
+              ...(action.path !== undefined && { path: action.path }),
+              ...(action.query !== undefined && { query: action.query }),
+            };
+          }
           return {
-            serviceTarget,
-            targetContainerName: t.targetContainerName,
-            targetContainerPort: t.targetContainerPort,
+            kind: 'fixed-response',
+            statusCode: action.statusCode,
+            ...(action.contentType !== undefined && { contentType: action.contentType }),
+            ...(action.messageBody !== undefined && { messageBody: action.messageBody }),
           };
         };
 
@@ -206,11 +233,12 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
           listeners.push({
             listenerPort: listener.listenerPort,
             hostPort,
-            ...(listener.defaultTarget ? { defaultTarget: qualify(listener.defaultTarget) } : {}),
+            ...(listener.defaultAction ? { defaultAction: qualify(listener.defaultAction) } : {}),
             rules: listener.rules.map((r) => ({
               priority: r.priority,
               pathPatterns: r.pathPatterns,
-              target: qualify(r.target),
+              hostPatterns: r.hostPatterns,
+              action: qualify(r.action),
             })),
           });
         }
@@ -255,13 +283,14 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
     .description(
       'Run an Application Load Balancer locally: name the ALB, and cdk-local boots the ECS ' +
         'service(s) behind its HTTP listeners and stands up a local front-door on each listener ' +
-        'port that round-robins across the running replicas and path-routes its path-pattern ' +
-        'rules across the backing services — a stable host endpoint, like behind a ' +
-        'real load balancer. The symmetric ALB counterpart of `start-api`. Each <target> accepts ' +
-        'a CDK display path (MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may ' +
-        'omit the stack prefix. Supports HTTP listeners, single-target forward actions, and ' +
-        'path-pattern rules; HTTPS listeners, Lambda target groups, weighted forwards, other rule ' +
-        'conditions, and redirect/fixed-response actions are skipped with a warning. Omit ' +
+        'port that round-robins across the running replicas and routes its listener rules across ' +
+        'the backing services — a stable host endpoint, like behind a real load balancer. The ' +
+        'symmetric ALB counterpart of `start-api`. Each <target> accepts a CDK display path ' +
+        '(MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may omit the stack ' +
+        'prefix. Supports HTTP listeners; path-pattern and host-header rule conditions; forward ' +
+        '(single and weighted), redirect, and fixed-response actions. HTTPS listeners, Lambda ' +
+        'target groups, the other rule conditions (http-header / query-string / source-ip / ' +
+        'http-request-method), and authenticate-* actions are skipped with a warning. Omit ' +
         '<targets> in an interactive terminal to multi-select the load balancers from a list.'
     )
     .argument(

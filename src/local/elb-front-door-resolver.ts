@@ -8,33 +8,41 @@ import type { TemplateResource } from '../types/resource.js';
  * cdk-local discovers the services behind it (mirroring how `start-api` names
  * the API and discovers the backing Lambdas).
  *
- * The synthesized linkage (confirmed against real `cdk synth` of
- * `ApplicationLoadBalancedFargateService` + an `addAction` path rule):
+ * The synthesized linkage (confirmed against real `cdk synth` of an
+ * `ApplicationLoadBalancer` + `addAction` rules):
  *
  * ```
  * ElasticLoadBalancingV2::LoadBalancer  (the ALB you name)
  * ElasticLoadBalancingV2::Listener      : { LoadBalancerArn:{Ref:<ALB>}, Port, Protocol,
- *     DefaultActions:[{ Type:"forward", TargetGroupArn:{Ref:<TG>} }] }
+ *     DefaultActions:[ <action> ] }
  * ElasticLoadBalancingV2::ListenerRule  : { ListenerArn:{Ref:<Listener>}, Priority,
- *     Conditions:[{ Field:"path-pattern", PathPatternConfig:{ Values:["/api/*"] } }],
- *     Actions:[{ Type:"forward", TargetGroupArn:{Ref:<TG>} }] }
+ *     Conditions:[{ Field:"path-pattern", PathPatternConfig:{ Values:["/api/*"] } },
+ *                 { Field:"host-header",  HostHeaderConfig:{ Values:["api.example.com"] } }],
+ *     Actions:[ <action> ] }
  * ElasticLoadBalancingV2::TargetGroup   : { Port, Protocol, TargetType:"ip" }
  * ECS::Service.LoadBalancers[]          -> { ContainerName, ContainerPort, TargetGroupArn:{Ref:<TG>} }
  * ```
  *
+ * Each `<action>` is one of:
+ *   - `forward` — `{ Type:"forward", TargetGroupArn:{Ref} }` (single target) OR
+ *     `{ Type:"forward", ForwardConfig:{ TargetGroups:[{ TargetGroupArn:{Ref}, Weight }] } }`
+ *     (one or more weighted targets);
+ *   - `redirect` — `{ Type:"redirect", RedirectConfig:{ Protocol/Host/Port/Path/Query/StatusCode } }`;
+ *   - `fixed-response` — `{ Type:"fixed-response", FixedResponseConfig:{ StatusCode/ContentType/MessageBody } }`.
+ *
  * Resolution walks ALB -> listeners (by `LoadBalancerArn` Ref) -> their default
- * `forward` action AND any `path-pattern` ListenerRules -> the ECS Service whose
+ * action AND any ListenerRules -> for each `forward`, the ECS Service whose
  * `LoadBalancers[]` references each target group (a reverse scan; there is no
  * direct TG -> service pointer). Output is a per-listener routing table: a
- * default forward target (when the default action is a resolvable forward) plus
- * the ordered path-pattern rules.
+ * default action plus the ordered rules, each carrying its resolved action and
+ * its path / host conditions.
  *
- * Scope: HTTP listeners, `path-pattern` conditions, single-target `forward`
- * actions to ECS services. Skipped with a warning: HTTPS/TLS listeners,
- * `TargetType:"lambda"` target groups, weighted (multi-target) forwards, rules
- * with non-`path-pattern` conditions (host-header / http-header / query-string
- * / etc.), and `redirect` / `fixed-response` / `authenticate-*` actions. Those
- * remaining listener-rule features are tracked in #123.
+ * Scope: HTTP listeners; `path-pattern` + `host-header` conditions; `forward`
+ * (single or weighted) to ECS services; `redirect` / `fixed-response` actions.
+ * Skipped with a warning: HTTPS/TLS listeners, `TargetType:"lambda"` target
+ * groups, the other condition fields (http-header / http-request-method /
+ * query-string / source-ip), and `authenticate-cognito` / `authenticate-oidc`
+ * actions. Those remaining listener-rule features are tracked in #123.
  */
 
 const ALB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -43,7 +51,7 @@ const LISTENER_RULE_TYPE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
 const TARGET_GROUP_TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
 const SERVICE_TYPE = 'AWS::ECS::Service';
 
-/** The backing (service, container) a listener action forwards to. */
+/** The backing (service, container) one forward target group routes to, plus its weight. */
 export interface FrontDoorForwardTarget {
   /** Logical id of the `AWS::ECS::Service` behind the target group. */
   serviceLogicalId: string;
@@ -53,19 +61,68 @@ export interface FrontDoorForwardTarget {
   targetContainerPort: number;
   /** Logical id of the resolved target group (diagnostics). */
   targetGroupLogicalId: string;
+  /**
+   * Forward weight for weighted routing. A single-target forward defaults to 1;
+   * a `ForwardConfig.TargetGroups[]` entry carries its declared `Weight`
+   * (weight 0 means "never routed", per ALB semantics).
+   */
+  weight: number;
 }
 
-/** One resolved path-pattern routing rule on a listener. */
+/** A resolved `redirect` action (ALB builds a `Location` from these + request placeholders). */
+export interface FrontDoorRedirectAction {
+  kind: 'redirect';
+  /** HTTP status (301 permanent / 302 found). ALB emits `HTTP_301` / `HTTP_302`. */
+  statusCode: 301 | 302;
+  /** `#{protocol}` (default) / `HTTP` / `HTTPS`. */
+  protocol?: string;
+  /** `#{host}` (default) or a literal host. */
+  host?: string;
+  /** `#{port}` (default) or a literal port. */
+  port?: string;
+  /** `/#{path}` (default) or a literal path; ALB requires a leading `/`. */
+  path?: string;
+  /** `#{query}` (default) or a literal query (without the leading `?`). */
+  query?: string;
+}
+
+/** A resolved `fixed-response` action (ALB synthesizes the whole response). */
+export interface FrontDoorFixedResponseAction {
+  kind: 'fixed-response';
+  /** HTTP status code (ALB stores it as a numeric string, e.g. `"404"`). */
+  statusCode: number;
+  /** Response `Content-Type` (defaults to `text/plain` when absent). */
+  contentType?: string;
+  /** Response body (empty when absent). */
+  messageBody?: string;
+}
+
+/** A resolved `forward` action: one or more weighted ECS-service targets. */
+export interface FrontDoorForwardAction {
+  kind: 'forward';
+  /** The weighted forward targets (length >= 1; single-target forward = one entry, weight 1). */
+  targets: FrontDoorForwardTarget[];
+}
+
+/** Any resolved listener / rule action the local front-door can serve. */
+export type ResolvedListenerAction =
+  | FrontDoorForwardAction
+  | FrontDoorRedirectAction
+  | FrontDoorFixedResponseAction;
+
+/** One resolved routing rule on a listener (path / host conditions + an action). */
 export interface ResolvedListenerRule {
   /** ALB rule priority (lower = evaluated first). */
   priority: number;
-  /** The rule's `path-pattern` condition values (OR-matched). */
+  /** The rule's `path-pattern` condition values (OR-matched; empty = no path constraint). */
   pathPatterns: string[];
-  /** The backing forward target this rule routes to. */
-  target: FrontDoorForwardTarget;
+  /** The rule's `host-header` condition values (OR-matched; empty = no host constraint). */
+  hostPatterns: string[];
+  /** The action this rule performs when its conditions match. */
+  action: ResolvedListenerAction;
 }
 
-/** A resolved listener front-door: one host port, an optional default target + path rules. */
+/** A resolved listener front-door: one host port, an optional default action + rules. */
 export interface ResolvedListenerFrontDoor {
   /** Listener port declared on the ALB (the stable host endpoint port). */
   listenerPort: number;
@@ -74,13 +131,13 @@ export interface ResolvedListenerFrontDoor {
   /** Logical id of the listener (diagnostics). */
   listenerLogicalId: string;
   /**
-   * Default-action forward target. Present when the listener's `DefaultActions`
-   * is a resolvable single `forward` to an ECS service; absent when the default
-   * is a `fixed-response` / `redirect` (a rules-only listener) — unmatched
-   * requests then get a 404 from the front-door.
+   * Default action. Present when the listener's `DefaultActions` is a resolvable
+   * forward / redirect / fixed-response; absent only when every default action
+   * was skipped (e.g. an authenticate-* default) — unmatched requests then get
+   * a 404 from the front-door.
    */
-  defaultTarget?: FrontDoorForwardTarget;
-  /** Path-pattern rules (unordered here; the matcher evaluates by priority). */
+  defaultAction?: ResolvedListenerAction;
+  /** Rules (unordered here; the matcher evaluates by priority). */
   rules: ResolvedListenerRule[];
 }
 
@@ -127,7 +184,7 @@ export function resolveAlbFrontDoor(
       continue;
     }
 
-    const defaultTarget = resolveForwardTarget(
+    const defaultAction = resolveAction(
       props['DefaultActions'],
       resources,
       tgToService,
@@ -140,17 +197,22 @@ export function resolveAlbFrontDoor(
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
       const priority = parsePriority(ruleProps['Priority']);
       const ruleLabel = `Listener rule '${ruleLogicalId}' (priority ${priority})`;
-      const { patterns, unsupported } = parseRulePathPatterns(ruleProps['Conditions']);
+      const { pathPatterns, hostPatterns, unsupported } = parseRuleConditions(
+        ruleProps['Conditions']
+      );
       if (unsupported.length > 0) {
         warnings.push(
           `${ruleLabel} uses unsupported condition(s): ${unsupported.join(', ')}. The local ALB ` +
-            'front-door supports path-pattern conditions only (host-header / http-header / ' +
+            'front-door supports path-pattern and host-header conditions only (http-header / ' +
             'query-string / http-request-method / source-ip deferred). Skipping it.'
         );
         continue;
       }
-      if (patterns.length === 0) continue; // no path-pattern values to route on
-      const target = resolveForwardTarget(
+      if (pathPatterns.length === 0 && hostPatterns.length === 0) {
+        // No supported condition to route on (an empty / catch-all rule).
+        continue;
+      }
+      const action = resolveAction(
         ruleProps['Actions'],
         resources,
         tgToService,
@@ -158,13 +220,13 @@ export function resolveAlbFrontDoor(
         `${ruleLabel} action`,
         warnings
       );
-      if (!target) continue; // resolveForwardTarget already warned
-      rules.push({ priority, pathPatterns: patterns, target });
+      if (!action) continue; // resolveAction already warned (or it was an authenticate-* action)
+      rules.push({ priority, pathPatterns, hostPatterns, action });
     }
 
-    if (!defaultTarget && rules.length === 0) {
-      // The listener forwards to nothing cdk-local can serve (e.g. a
-      // redirect-only listener, or every action was skipped above).
+    if (!defaultAction && rules.length === 0) {
+      // The listener serves nothing cdk-local can route (e.g. an authenticate-*
+      // default and every rule skipped above).
       continue;
     }
 
@@ -172,7 +234,7 @@ export function resolveAlbFrontDoor(
       listenerPort: port,
       listenerProtocol: 'HTTP',
       listenerLogicalId,
-      ...(defaultTarget ? { defaultTarget } : {}),
+      ...(defaultAction ? { defaultAction } : {}),
       rules,
     });
   }
@@ -195,23 +257,73 @@ interface BackingServiceRef {
 }
 
 /**
- * Resolve a listener / rule `Actions` (or `DefaultActions`) array to a single
- * ECS-service forward target, or `undefined` when it is not a resolvable
- * single forward (warning emitted for the cases worth surfacing).
+ * Resolve a listener / rule `Actions` (or `DefaultActions`) array to the single
+ * action the local front-door serves, or `undefined` when it is not resolvable
+ * (a warning is emitted for the cases worth surfacing). ALB allows exactly one
+ * non-authenticate terminal action per action set, optionally preceded by
+ * authenticate-* actions (which the local front-door does not enforce — they
+ * are skipped with a warning and the terminal action is honored).
  */
-function resolveForwardTarget(
+function resolveAction(
   actions: unknown,
   resources: Record<string, TemplateResource>,
   tgToService: Map<string, BackingServiceRef>,
   stackName: string,
   label: string,
   warnings: string[]
-): FrontDoorForwardTarget | undefined {
-  const tgRefs = collectForwardTargetGroupRefs(actions);
-  if (tgRefs.size === 0) {
-    // No forward at all (redirect / fixed-response — silent) or a non-Ref
-    // forward we cannot resolve to an in-stack target group (worth a warning).
-    if (hasUnresolvableForward(actions)) {
+): ResolvedListenerAction | undefined {
+  if (!Array.isArray(actions)) return undefined;
+
+  let sawAuthenticate = false;
+  for (const action of actions) {
+    if (!action || typeof action !== 'object') continue;
+    const a = action as Record<string, unknown>;
+    const type = a['Type'];
+
+    if (type === 'authenticate-cognito' || type === 'authenticate-oidc') {
+      sawAuthenticate = true;
+      continue;
+    }
+    if (type === 'forward') {
+      return resolveForwardAction(a, resources, tgToService, stackName, label, warnings);
+    }
+    if (type === 'redirect') {
+      const redirect = resolveRedirectAction(a, label, warnings);
+      if (redirect) return redirect;
+      continue;
+    }
+    if (type === 'fixed-response') {
+      return resolveFixedResponseAction(a);
+    }
+    if (typeof type === 'string') {
+      warnings.push(
+        `${label} uses an unsupported action type '${type}'. The local ALB front-door supports ` +
+          'forward / redirect / fixed-response actions only. Skipping it.'
+      );
+    }
+  }
+
+  if (sawAuthenticate) {
+    warnings.push(
+      `${label} is an authenticate-* action with no local-servable terminal action. The local ALB ` +
+        'front-door does not enforce authenticate-cognito / authenticate-oidc; skipping it.'
+    );
+  }
+  return undefined;
+}
+
+/** Resolve a `forward` action into one or more weighted ECS-service targets. */
+function resolveForwardAction(
+  action: Record<string, unknown>,
+  resources: Record<string, TemplateResource>,
+  tgToService: Map<string, BackingServiceRef>,
+  stackName: string,
+  label: string,
+  warnings: string[]
+): FrontDoorForwardAction | undefined {
+  const refs = collectForwardTargetGroupRefs(action);
+  if (refs.length === 0) {
+    if (hasUnresolvableForward(action)) {
       warnings.push(
         `${label} forwards to a non-Ref TargetGroupArn (literal / cross-stack / imported); the ` +
           'local front-door only supports in-stack target groups. Skipping it.'
@@ -219,45 +331,80 @@ function resolveForwardTarget(
     }
     return undefined;
   }
-  if (tgRefs.size > 1) {
-    warnings.push(
-      `${label} is a weighted forward (multiple target groups); the local front-door supports a ` +
-        'single target group per action (weighted routing deferred). Skipping it.'
-    );
+
+  const targets: FrontDoorForwardTarget[] = [];
+  for (const { tgRef, weight } of refs) {
+    const tg = resources[tgRef];
+    if (!tg || tg.Type !== TARGET_GROUP_TYPE) {
+      warnings.push(
+        `${label} forwards to target group '${tgRef}', but no ${TARGET_GROUP_TYPE} with that ` +
+          `logical id exists in ${stackName}. Skipping that target group.`
+      );
+      continue;
+    }
+    const tgType = (tg.Properties as Record<string, unknown> | undefined)?.['TargetType'];
+    if (tgType === 'lambda') {
+      warnings.push(
+        `${label} forwards to a Lambda target group '${tgRef}' (TargetType: lambda). The local ALB ` +
+          'front-door supports ECS targets only; Lambda targets are deferred. Skipping that target group.'
+      );
+      continue;
+    }
+    const backing = tgToService.get(tgRef);
+    if (!backing) {
+      warnings.push(
+        `${label} forwards to target group '${tgRef}', which is not referenced by any ` +
+          `${SERVICE_TYPE}.LoadBalancers[] in ${stackName}; cdk-local has no ECS service to front ` +
+          'behind it. Skipping that target group.'
+      );
+      continue;
+    }
+    targets.push({
+      serviceLogicalId: backing.serviceLogicalId,
+      targetContainerName: backing.containerName,
+      targetContainerPort: backing.containerPort,
+      targetGroupLogicalId: tgRef,
+      weight,
+    });
+  }
+
+  if (targets.length === 0) return undefined; // every target group was skipped (already warned)
+  return { kind: 'forward', targets };
+}
+
+/** Resolve a `redirect` action into its `Location`-template fields + status code. */
+function resolveRedirectAction(
+  action: Record<string, unknown>,
+  label: string,
+  warnings: string[]
+): FrontDoorRedirectAction | undefined {
+  const cfg = action['RedirectConfig'];
+  if (!cfg || typeof cfg !== 'object') {
+    warnings.push(`${label} is a redirect with no RedirectConfig; skipping it.`);
     return undefined;
   }
-  const tgRef = [...tgRefs][0]!;
-  const tg = resources[tgRef];
-  if (!tg || tg.Type !== TARGET_GROUP_TYPE) {
-    warnings.push(
-      `${label} forwards to target group '${tgRef}', but no ${TARGET_GROUP_TYPE} with that logical ` +
-        `id exists in ${stackName}. Skipping it.`
-    );
-    return undefined;
-  }
-  const tgType = (tg.Properties as Record<string, unknown> | undefined)?.['TargetType'];
-  if (tgType === 'lambda') {
-    warnings.push(
-      `${label} forwards to a Lambda target group '${tgRef}' (TargetType: lambda). The local ALB ` +
-        'front-door supports ECS targets only; Lambda targets are deferred. Skipping it.'
-    );
-    return undefined;
-  }
-  const backing = tgToService.get(tgRef);
-  if (!backing) {
-    warnings.push(
-      `${label} forwards to target group '${tgRef}', which is not referenced by any ` +
-        `${SERVICE_TYPE}.LoadBalancers[] in ${stackName}; cdk-local has no ECS service to front ` +
-        'behind it. Skipping it.'
-    );
-    return undefined;
-  }
-  return {
-    serviceLogicalId: backing.serviceLogicalId,
-    targetContainerName: backing.containerName,
-    targetContainerPort: backing.containerPort,
-    targetGroupLogicalId: tgRef,
-  };
+  const c = cfg as Record<string, unknown>;
+  const statusCode = parseRedirectStatusCode(c['StatusCode']);
+  const out: FrontDoorRedirectAction = { kind: 'redirect', statusCode };
+  if (typeof c['Protocol'] === 'string') out.protocol = c['Protocol'];
+  if (typeof c['Host'] === 'string') out.host = c['Host'];
+  if (typeof c['Port'] === 'string') out.port = c['Port'];
+  if (typeof c['Path'] === 'string') out.path = c['Path'];
+  if (typeof c['Query'] === 'string') out.query = c['Query'];
+  return out;
+}
+
+/** Resolve a `fixed-response` action into its status / content-type / body. */
+function resolveFixedResponseAction(
+  action: Record<string, unknown>
+): FrontDoorFixedResponseAction | undefined {
+  const cfg = action['FixedResponseConfig'];
+  const c = cfg && typeof cfg === 'object' ? (cfg as Record<string, unknown>) : {};
+  const statusCode = parseFixedResponseStatusCode(c['StatusCode']);
+  const out: FrontDoorFixedResponseAction = { kind: 'fixed-response', statusCode };
+  if (typeof c['ContentType'] === 'string') out.contentType = c['ContentType'];
+  if (typeof c['MessageBody'] === 'string') out.messageBody = c['MessageBody'];
+  return out;
 }
 
 /**
@@ -307,82 +454,91 @@ function indexRulesByListener(
 }
 
 /**
- * Parse a ListenerRule's `Conditions` into its `path-pattern` values plus the
- * field names of any non-`path-pattern` conditions (which make the rule
- * unsupported in this version). A rule is only usable when every condition is a
- * `path-pattern` — ALB ANDs conditions together, and we cannot honor the others
- * locally yet.
+ * Parse a ListenerRule's `Conditions` into its supported `path-pattern` and
+ * `host-header` values plus the field names of any unsupported conditions
+ * (which make the rule unsupported). ALB ANDs conditions of different fields,
+ * so a rule with an unsupported field cannot be honored locally. Multiple
+ * conditions of the same field merge their values (each field OR-matches).
  */
-function parseRulePathPatterns(conditions: unknown): { patterns: string[]; unsupported: string[] } {
-  const patterns: string[] = [];
+function parseRuleConditions(conditions: unknown): {
+  pathPatterns: string[];
+  hostPatterns: string[];
+  unsupported: string[];
+} {
+  const pathPatterns: string[] = [];
+  const hostPatterns: string[] = [];
   const unsupported: string[] = [];
-  if (!Array.isArray(conditions)) return { patterns, unsupported };
+  if (!Array.isArray(conditions)) return { pathPatterns, hostPatterns, unsupported };
   for (const cond of conditions) {
     if (!cond || typeof cond !== 'object') continue;
     const c = cond as Record<string, unknown>;
     const field = typeof c['Field'] === 'string' ? c['Field'] : '(unknown)';
-    if (field !== 'path-pattern') {
+    if (field === 'path-pattern') {
+      pathPatterns.push(...conditionValues(c, 'PathPatternConfig'));
+    } else if (field === 'host-header') {
+      hostPatterns.push(...conditionValues(c, 'HostHeaderConfig'));
+    } else {
       unsupported.push(field);
-      continue;
-    }
-    const cfg = c['PathPatternConfig'];
-    const values =
-      cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
-        ? ((cfg as Record<string, unknown>)['Values'] as unknown[])
-        : Array.isArray(c['Values'])
-          ? (c['Values'] as unknown[])
-          : [];
-    for (const v of values) if (typeof v === 'string') patterns.push(v);
-  }
-  return { patterns, unsupported };
-}
-
-function collectForwardTargetGroupRefs(actions: unknown): Set<string> {
-  const refs = new Set<string>();
-  if (!Array.isArray(actions)) return refs;
-  for (const action of actions) {
-    if (!action || typeof action !== 'object') continue;
-    const a = action as Record<string, unknown>;
-    if (a['Type'] !== 'forward') continue;
-    const direct = refOf(a['TargetGroupArn']);
-    if (direct) refs.add(direct);
-    const forwardConfig = a['ForwardConfig'];
-    if (forwardConfig && typeof forwardConfig === 'object') {
-      const groups = (forwardConfig as Record<string, unknown>)['TargetGroups'];
-      if (Array.isArray(groups)) {
-        for (const g of groups) {
-          if (!g || typeof g !== 'object') continue;
-          const ref = refOf((g as Record<string, unknown>)['TargetGroupArn']);
-          if (ref) refs.add(ref);
-        }
-      }
     }
   }
-  return refs;
+  return { pathPatterns, hostPatterns, unsupported };
 }
 
 /**
- * True when `actions` has at least one `forward` action that references a target
- * group via a NON-`Ref` arn (literal / `Fn::GetAtt` / cross-stack) — i.e. a
- * forward we could not resolve to an in-stack target group. Used to warn rather
- * than silently skip such a listener / rule.
+ * Extract a condition's string values from either the typed `<Field>Config`
+ * sub-object's `Values` or the legacy top-level `Values` array.
  */
-function hasUnresolvableForward(actions: unknown): boolean {
-  if (!Array.isArray(actions)) return false;
-  for (const action of actions) {
-    if (!action || typeof action !== 'object') continue;
-    const a = action as Record<string, unknown>;
-    if (a['Type'] !== 'forward') continue;
-    if (a['TargetGroupArn'] !== undefined && refOf(a['TargetGroupArn']) === undefined) return true;
-    const forwardConfig = a['ForwardConfig'];
-    if (forwardConfig && typeof forwardConfig === 'object') {
-      const groups = (forwardConfig as Record<string, unknown>)['TargetGroups'];
-      if (Array.isArray(groups)) {
-        for (const g of groups) {
-          if (!g || typeof g !== 'object') continue;
-          const arn = (g as Record<string, unknown>)['TargetGroupArn'];
-          if (arn !== undefined && refOf(arn) === undefined) return true;
-        }
+function conditionValues(cond: Record<string, unknown>, configKey: string): string[] {
+  const cfg = cond[configKey];
+  const raw =
+    cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
+      ? ((cfg as Record<string, unknown>)['Values'] as unknown[])
+      : Array.isArray(cond['Values'])
+        ? (cond['Values'] as unknown[])
+        : [];
+  return raw.filter((v): v is string => typeof v === 'string');
+}
+
+/** Collect a forward action's `(targetGroupRef, weight)` pairs (single + ForwardConfig forms). */
+function collectForwardTargetGroupRefs(
+  action: Record<string, unknown>
+): Array<{ tgRef: string; weight: number }> {
+  const out: Array<{ tgRef: string; weight: number }> = [];
+  const direct = refOf(action['TargetGroupArn']);
+  if (direct) out.push({ tgRef: direct, weight: 1 });
+  const forwardConfig = action['ForwardConfig'];
+  if (forwardConfig && typeof forwardConfig === 'object') {
+    const groups = (forwardConfig as Record<string, unknown>)['TargetGroups'];
+    if (Array.isArray(groups)) {
+      for (const g of groups) {
+        if (!g || typeof g !== 'object') continue;
+        const gObj = g as Record<string, unknown>;
+        const ref = refOf(gObj['TargetGroupArn']);
+        if (ref) out.push({ tgRef: ref, weight: parseWeight(gObj['Weight']) });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * True when `action` is a `forward` that references a target group via a
+ * NON-`Ref` arn (literal / `Fn::GetAtt` / cross-stack) — i.e. a forward we
+ * could not resolve to an in-stack target group. Used to warn rather than
+ * silently skip.
+ */
+function hasUnresolvableForward(action: Record<string, unknown>): boolean {
+  if (action['TargetGroupArn'] !== undefined && refOf(action['TargetGroupArn']) === undefined) {
+    return true;
+  }
+  const forwardConfig = action['ForwardConfig'];
+  if (forwardConfig && typeof forwardConfig === 'object') {
+    const groups = (forwardConfig as Record<string, unknown>)['TargetGroups'];
+    if (Array.isArray(groups)) {
+      for (const g of groups) {
+        if (!g || typeof g !== 'object') continue;
+        const arn = (g as Record<string, unknown>)['TargetGroupArn'];
+        if (arn !== undefined && refOf(arn) === undefined) return true;
       }
     }
   }
@@ -408,6 +564,30 @@ function parsePort(raw: unknown): number | undefined {
 
 function parseContainerPort(raw: unknown): number | undefined {
   return parsePort(raw);
+}
+
+/**
+ * Parse a `ForwardConfig.TargetGroups[].Weight`. ALB weights are 0-999; a
+ * missing weight defaults to 1 (CDK's `weightedForward` always emits one, but
+ * a hand-rolled template may omit it). Negative / non-numeric clamps to 0.
+ */
+function parseWeight(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw < 0 ? 0 : raw;
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
+  return 1;
+}
+
+/** ALB emits redirect status as `HTTP_301` / `HTTP_302`; default to 302 when absent / unknown. */
+function parseRedirectStatusCode(raw: unknown): 301 | 302 {
+  if (raw === 'HTTP_301' || raw === '301' || raw === 301) return 301;
+  return 302;
+}
+
+/** Parse a `FixedResponseConfig.StatusCode` (a numeric string); default 200 when absent. */
+function parseFixedResponseStatusCode(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
+  return 200;
 }
 
 /**

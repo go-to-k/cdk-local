@@ -66,6 +66,8 @@ import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
 import {
   startFrontDoorServer,
   type StartedFrontDoorServer,
+  type RouteAction,
+  type WeightedPool,
 } from '../../local/front-door-server.js';
 import { matchAlbPathRule, type AlbPathRule } from '../../local/alb-path-matcher.js';
 
@@ -127,7 +129,7 @@ export interface ServiceBoot {
   target: string;
 }
 
-/** The backing (service target, container) a listener action forwards to. */
+/** The backing (service target, container) one weighted forward target routes to. */
 export interface PlannedForwardTarget {
   /** Service target string (`Stack:LogicalId`) whose replica pool serves this. */
   serviceTarget: string;
@@ -135,18 +137,56 @@ export interface PlannedForwardTarget {
   targetContainerName: string;
   /** Container port the target group targets. */
   targetContainerPort: number;
+  /** Forward weight for weighted routing (single-target forward = 1). */
+  weight: number;
 }
 
-/** One host front-door listener: a bound host port + its path-routing table. */
+/** A planned forward action: one or more weighted backing targets. */
+export interface PlannedForwardAction {
+  kind: 'forward';
+  targets: PlannedForwardTarget[];
+}
+
+/** A planned redirect action (no backing pool). */
+export interface PlannedRedirectAction {
+  kind: 'redirect';
+  statusCode: 301 | 302;
+  protocol?: string;
+  host?: string;
+  port?: string;
+  path?: string;
+  query?: string;
+}
+
+/** A planned fixed-response action (no backing pool). */
+export interface PlannedFixedResponseAction {
+  kind: 'fixed-response';
+  statusCode: number;
+  contentType?: string;
+  messageBody?: string;
+}
+
+/** Any planned listener / rule action (the strategy-side mirror of the front-door's RouteAction). */
+export type PlannedAction =
+  | PlannedForwardAction
+  | PlannedRedirectAction
+  | PlannedFixedResponseAction;
+
+/** One host front-door listener: a bound host port + its routing table. */
 export interface PlannedFrontDoorListener {
   /** ALB listener port (for the `X-Forwarded-Port` header / logs). */
   listenerPort: number;
   /** Host port to bind (the listener port, or its `--lb-port` override). */
   hostPort: number;
-  /** Default-action forward target (absent for a rules-only listener -> 404 on miss). */
-  defaultTarget?: PlannedForwardTarget;
-  /** Path-pattern rules, evaluated by priority (lower first). */
-  rules: Array<{ priority: number; pathPatterns: string[]; target: PlannedForwardTarget }>;
+  /** Default action (absent for a rules-only listener -> 404 on miss). */
+  defaultAction?: PlannedAction;
+  /** Rules, evaluated by priority (lower first); each carries path + host conditions. */
+  rules: Array<{
+    priority: number;
+    pathPatterns: string[];
+    hostPatterns: string[];
+    action: PlannedAction;
+  }>;
 }
 
 /** The full set of host front-doors to stand up for one emulator invocation. */
@@ -610,20 +650,51 @@ export async function buildFrontDoor(
     }
     return entry.pool;
   };
+  // Convert a planned action into the front-door's RouteAction, building /
+  // reusing a pool per weighted forward target.
+  const toRouteAction = (action: PlannedAction): RouteAction => {
+    if (action.kind === 'forward') {
+      const pools: WeightedPool[] = action.targets.map((t) => ({
+        pool: poolFor(t),
+        weight: t.weight,
+      }));
+      return { kind: 'forward', pools };
+    }
+    if (action.kind === 'redirect') {
+      return {
+        kind: 'redirect',
+        statusCode: action.statusCode,
+        ...(action.protocol !== undefined && { protocol: action.protocol }),
+        ...(action.host !== undefined && { host: action.host }),
+        ...(action.port !== undefined && { port: action.port }),
+        ...(action.path !== undefined && { path: action.path }),
+        ...(action.query !== undefined && { query: action.query }),
+      };
+    }
+    return {
+      kind: 'fixed-response',
+      statusCode: action.statusCode,
+      ...(action.contentType !== undefined && { contentType: action.contentType }),
+      ...(action.messageBody !== undefined && { messageBody: action.messageBody }),
+    };
+  };
 
   try {
     for (const listener of plan.listeners) {
-      const defaultPool = listener.defaultTarget ? poolFor(listener.defaultTarget) : undefined;
-      const ruleRoutes: AlbPathRule<FrontDoorEndpointPool>[] = listener.rules.map((r) => ({
+      const defaultRoute = listener.defaultAction
+        ? toRouteAction(listener.defaultAction)
+        : undefined;
+      const ruleRoutes: AlbPathRule<RouteAction>[] = listener.rules.map((r) => ({
         priority: r.priority,
         pathPatterns: r.pathPatterns,
-        target: poolFor(r.target),
+        hostPatterns: r.hostPatterns,
+        target: toRouteAction(r.action),
       }));
-      const selectPool = (requestPath: string): FrontDoorEndpointPool | undefined =>
-        matchAlbPathRule(requestPath, ruleRoutes) ?? defaultPool;
+      const route = (req: { path: string; host?: string }): RouteAction | undefined =>
+        matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
 
       const server = await startFrontDoorServer({
-        selectPool,
+        route,
         port: listener.hostPort,
         host: containerHost,
         listenerPort: listener.listenerPort,
@@ -634,16 +705,16 @@ export async function buildFrontDoor(
       logger.info(
         `ALB front-door: http://${server.host}:${server.port} (listener port ${listener.listenerPort})`
       );
-      if (listener.defaultTarget) {
-        logger.info(`  default -> ${describeTarget(listener.defaultTarget)} (round-robin)`);
+      if (listener.defaultAction) {
+        logger.info(`  default -> ${describeAction(listener.defaultAction)}`);
       }
       for (const r of [...listener.rules].sort((a, b) => a.priority - b.priority)) {
         logger.info(
-          `  path ${r.pathPatterns.join(', ')} (priority ${r.priority}) -> ${describeTarget(r.target)}`
+          `  ${describeConditions(r)} (priority ${r.priority}) -> ${describeAction(r.action)}`
         );
       }
-      if (!listener.defaultTarget) {
-        logger.info('  (no default action: unmatched paths return 404)');
+      if (!listener.defaultAction) {
+        logger.info('  (no default action: unmatched requests return 404)');
       }
     }
   } catch (err) {
@@ -668,8 +739,28 @@ export async function buildFrontDoor(
   return { servers, frontDoorByService };
 }
 
-function describeTarget(t: PlannedForwardTarget): string {
-  return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort})`;
+/** Human-readable summary of a planned rule's path / host conditions (for the boot banner). */
+function describeConditions(rule: { pathPatterns: string[]; hostPatterns: string[] }): string {
+  const parts: string[] = [];
+  if (rule.pathPatterns.length > 0) parts.push(`path ${rule.pathPatterns.join(', ')}`);
+  if (rule.hostPatterns.length > 0) parts.push(`host ${rule.hostPatterns.join(', ')}`);
+  return parts.join(' AND ') || '(no condition)';
+}
+
+/** Human-readable summary of a planned action (for the boot banner). */
+function describeAction(action: PlannedAction): string {
+  if (action.kind === 'redirect') {
+    return `redirect ${action.statusCode}`;
+  }
+  if (action.kind === 'fixed-response') {
+    return `fixed-response ${action.statusCode}`;
+  }
+  if (action.targets.length === 1) {
+    const t = action.targets[0]!;
+    return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort}) (round-robin)`;
+  }
+  const weights = action.targets.map((t) => `${t.serviceTarget}@${t.weight}`).join(', ');
+  return `weighted forward [${weights}]`;
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {

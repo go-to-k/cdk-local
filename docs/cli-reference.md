@@ -1005,9 +1005,11 @@ ECS service(s) behind its HTTP listeners, boots their replicas
 `start-service`), and stands up a host-side **front-door** on each
 listener port that round-robins each request across the running replicas
 — one stable host endpoint, like behind a real load balancer. The
-front-door applies the listener's **`path-pattern` rules**, so one host
-port can path-route across several backing services (e.g. `/api/*` to one
-service, the default to another) the way the deployed ALB does.
+front-door applies the listener's **`path-pattern` and `host-header`
+rules**, so one host port can route across several backing services (e.g.
+`/api/*` or `api.example.com` to one service, the default to another) the
+way the deployed ALB does — including **weighted** forwards and
+**`redirect` / `fixed-response`** actions.
 
 `start-service` vs `start-alb` mirrors `invoke` / `run-task` (the compute
 alone) vs `start-api` (the routed entry in front of the compute). Use
@@ -1020,15 +1022,18 @@ service you want to reach the way external traffic does.
 
 `start-alb` resolves the ALB you name → its
 `AWS::ElasticLoadBalancingV2::Listener`s (matched by `LoadBalancerArn`) →
-each listener's default `forward` action **and** its
-`AWS::ElasticLoadBalancingV2::ListenerRule`s with a `path-pattern`
-condition → each action's `AWS::ElasticLoadBalancingV2::TargetGroup` →
-the `AWS::ECS::Service` whose `LoadBalancers[]` references that target
-group (a reverse scan — there is no direct TG → service pointer). The
-front-door for a listener port holds a routing table: each request is
-matched against the rules in `Priority` order (lower number first; ALB
-`*` / `?` glob semantics, path only), falling back to the default action;
-an unmatched request with no default action returns 404. Each booted
+each listener's default action **and** its
+`AWS::ElasticLoadBalancingV2::ListenerRule`s with a `path-pattern` and/or
+`host-header` condition → each `forward` action's
+`AWS::ElasticLoadBalancingV2::TargetGroup`(s) → the `AWS::ECS::Service`
+whose `LoadBalancers[]` references that target group (a reverse scan —
+there is no direct TG → service pointer). The front-door for a listener
+port holds a routing table: each request is matched against the rules in
+`Priority` order (lower number first; ALB `*` / `?` glob, path-only +
+case-insensitive host), falling back to the default action; an unmatched
+request with no default action returns 404. A `redirect` / `fixed-response`
+action is synthesized directly; a weighted `forward` picks a target group
+by weight. Each booted
 replica publishes its target container port on an **ephemeral** host port
 (so N replicas never collide), and the front-door forwards to those —
 cross-platform, since traffic goes through published ports rather than
@@ -1061,12 +1066,17 @@ cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 
 ### Scope
 
-**HTTP** listeners, **ECS** targets, single-target `forward` actions, and
-`path-pattern` listener rules (priority-ordered). Out of scope, skipped with
-a warning, and tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123):
-other rule conditions (`host-header` / `http-header` / `http-request-method`
-/ `query-string` / `source-ip`), weighted (multi-target) forwards,
-`redirect` / `fixed-response` / `authenticate-*` actions, HTTPS / TLS
+**HTTP** listeners and **ECS** targets, with priority-ordered listener rules
+matching `path-pattern` and `host-header` conditions (ALB `*` / `?` glob;
+host is matched case-insensitively, path-only excludes the query string). Both
+default actions and rule actions support single-target `forward`, **weighted**
+(multi-target) `forward` (weighted-random pool selection; weight 0 never
+selected), `redirect` (301 / 302 with the `#{protocol|host|port|path|query}`
+placeholders resolved against the request), and `fixed-response` (synthesized
+status / content-type / body). Out of scope, skipped with a warning, and
+tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123): the other
+rule conditions (`http-header` / `http-request-method` / `query-string` /
+`source-ip`), `authenticate-cognito` / `authenticate-oidc` actions, HTTPS / TLS
 termination, and Lambda target groups.
 
 ### `cdkl start-alb` exit codes
