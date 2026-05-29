@@ -34,10 +34,12 @@ Enter
 # (3 API surfaces, kind-grouped: HTTP API v2 / REST API v1 / Function URL).
 # The cursor starts on MyHttpApi (HTTP API v2) — the curl target. Space
 # selects it, Enter opens the Y/n confirm, Enter accepts the default (Yes).
-# (Press → instead of Space to select all.) TUNE every Sleep below.
-Sleep 4s
+# (Press → instead of Space to select all.) The first Sleep MUST outlast the
+# synth + picker mount so Space toggles the picker instead of leaking into the
+# terminal; a little extra also lets the multi-select stay on screen.
+Sleep 5s
 Space
-Sleep 700ms
+Sleep 900ms
 Enter
 Sleep 900ms
 Enter

@@ -69,5 +69,10 @@ fi
   && pnpm install --silent >/dev/null 2>&1 \
   && pnpm exec cdk synth >/dev/null 2>&1 )
 
+# Kill any stale `demo` session left by an aborted prior run (e.g. a vhs
+# SIGKILL that skipped the cleanup trap, or back-to-back re-records) so this
+# run never fails with "duplicate session: demo".
+tmux kill-session -t demo 2>/dev/null || true
+
 tmux -f "$CONF" new-session -d -s demo -x 180 -y 35 "$PANE_DIR/invoke.sh"
 tmux attach -t demo
