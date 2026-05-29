@@ -1,3 +1,10 @@
+# [0.45.0](https://github.com/go-to-k/cdk-local/compare/v0.44.0...v0.45.0) (2026-05-29)
+
+
+### Features
+
+* **start-alb:** ALB -> Lambda targets ([#148](https://github.com/go-to-k/cdk-local/issues/148)) ([94a39e4](https://github.com/go-to-k/cdk-local/commit/94a39e4dd8d36546971f012041cb3ed6ccb8dde8))
+
 # [0.44.0](https://github.com/go-to-k/cdk-local/compare/v0.43.0...v0.44.0) (2026-05-29)
 
 
