@@ -1,3 +1,10 @@
+# [0.44.0](https://github.com/go-to-k/cdk-local/compare/v0.43.0...v0.44.0) (2026-05-29)
+
+
+### Features
+
+* **start-alb:** host-header + weighted forward + redirect/fixed-response routing ([#146](https://github.com/go-to-k/cdk-local/issues/146)) ([8987f99](https://github.com/go-to-k/cdk-local/commit/8987f9901e36909912330e795d77a5308fc687aa))
+
 # [0.43.0](https://github.com/go-to-k/cdk-local/compare/v0.42.0...v0.43.0) (2026-05-29)
 
 
