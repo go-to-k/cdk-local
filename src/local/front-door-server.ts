@@ -155,6 +155,7 @@ function handleProxyRequest(
     };
 
     const headers = { ...req.headers };
+    stripHopByHopHeaders(headers);
     appendForwardedHeaders(headers, req, opts.listenerPort);
 
     const proxyReq = httpRequest(
@@ -166,7 +167,9 @@ function handleProxyRequest(
         headers,
       },
       (proxyRes) => {
-        res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+        const resHeaders = { ...proxyRes.headers };
+        stripHopByHopHeaders(resHeaders);
+        res.writeHead(proxyRes.statusCode ?? 502, resHeaders);
         proxyRes.pipe(res);
         proxyRes.on('end', done);
         proxyRes.on('error', () => {
@@ -215,6 +218,37 @@ function handleProxyRequest(
 
     req.pipe(proxyReq);
   });
+}
+
+/** Standard hop-by-hop headers (RFC 7230 §6.1) — a proxy must not forward these. */
+const HOP_BY_HOP_HEADERS = [
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+];
+
+/**
+ * Strip hop-by-hop headers before relaying a request to / a response from the
+ * upstream, mirroring what a real ALB does. Forwarding the upstream's
+ * `Transfer-Encoding` / `Connection` verbatim while Node re-frames the body can
+ * produce a malformed response; the headers named in a `Connection` token list
+ * are also hop-by-hop and removed. Mutates `headers` in place.
+ */
+function stripHopByHopHeaders(headers: NodeJS.Dict<string | string[]>): void {
+  const connection = headers['connection'];
+  const connectionValue = Array.isArray(connection) ? connection.join(',') : connection;
+  if (connectionValue) {
+    for (const token of connectionValue.split(',')) {
+      const name = token.trim().toLowerCase();
+      if (name) delete headers[name];
+    }
+  }
+  for (const name of HOP_BY_HOP_HEADERS) delete headers[name];
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   startFrontDoorServer,
   type StartedFrontDoorServer,
 } from '../../../src/local/front-door-server.js';
+import { matchAlbPathRule, type AlbPathRule } from '../../../src/local/alb-path-matcher.js';
 
 interface Upstream {
   server: Server;
@@ -167,5 +168,84 @@ describe('startFrontDoorServer', () => {
     const res = await fetchText(front.port, '/nope');
     expect(res.status).toBe(404);
     expect(res.body).toMatch(/No listener rule matched/);
+  });
+
+  it('routes through the real matchAlbPathRule honoring rule priority (no default -> 404)', async () => {
+    const admin = await startUpstream('admin');
+    const api = await startUpstream('api');
+    const adminPool = new FrontDoorEndpointPool();
+    adminPool.register('admin:r0', { host: '127.0.0.1', port: admin.port });
+    const apiPool = new FrontDoorEndpointPool();
+    apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
+    // /api/admin/* (priority 10) must win over /api/* (priority 20) for an
+    // overlapping path — the exact integration the matcher guarantees.
+    const rules: AlbPathRule<FrontDoorEndpointPool>[] = [
+      { priority: 20, pathPatterns: ['/api/*'], target: apiPool },
+      { priority: 10, pathPatterns: ['/api/admin/*'], target: adminPool },
+    ];
+    const front = await startFrontWith((path) => matchAlbPathRule(path, rules));
+
+    expect((await fetchText(front.port, '/api/admin/users')).body).toBe('admin');
+    expect((await fetchText(front.port, '/api/orders')).body).toBe('api');
+    expect((await fetchText(front.port, '/')).status).toBe(404); // no default action
+  });
+
+  it('strips hop-by-hop request headers, including those named in Connection', async () => {
+    const up = await startUpstream('up');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: up.port });
+    const front = await startFront(pool);
+
+    // `Connection: x-hop` marks `x-hop` itself as hop-by-hop -> both must be
+    // dropped before forwarding; an ordinary header passes through. (Node
+    // re-adds its own `Connection` for the upstream hop, so we don't assert on
+    // `connection` directly — we assert the token-listed header is gone.)
+    await new Promise<void>((resolve, reject) => {
+      const req = get(
+        {
+          host: '127.0.0.1',
+          port: front.port,
+          path: '/',
+          headers: { connection: 'x-hop', 'x-hop': 'secret', 'x-keep': 'kept' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve());
+        }
+      );
+      req.on('error', reject);
+    });
+    expect(up.lastHeaders?.['x-hop']).toBeUndefined();
+    expect(up.lastHeaders?.['x-keep']).toBe('kept');
+  });
+
+  it('strips hop-by-hop headers from the upstream response', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, {
+        // `proxy-authenticate` is hop-by-hop and is neither added nor stripped
+        // by Node's own server machinery (unlike `connection` / `keep-alive`),
+        // so it is a clean signal that the proxy removed it.
+        'proxy-authenticate': 'Basic',
+        'x-app': 'kept',
+        'content-type': 'text/plain',
+      });
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const upPort = (server.address() as AddressInfo).port;
+    cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upPort });
+    const front = await startFront(pool);
+
+    const headers = await new Promise<IncomingMessage['headers']>((resolve, reject) => {
+      const req = get({ host: '127.0.0.1', port: front.port, path: '/' }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.headers));
+      });
+      req.on('error', reject);
+    });
+    expect(headers['proxy-authenticate']).toBeUndefined();
+    expect(headers['x-app']).toBe('kept'); // non-hop-by-hop headers pass through
   });
 });

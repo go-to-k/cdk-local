@@ -172,6 +172,67 @@ describe('albStrategy.resolveBoots multi-service', () => {
     );
     expect(boots.map((b) => b.target).sort()).toEqual(['Multi:Svc1', 'Multi:Svc2']);
   });
+
+  it('keeps only the first listener when two listeners claim the same host port', () => {
+    // Both ALBs expose a listener on port 80 (no --lb-port remap), so they
+    // would bind the same host port -> the second is skipped with a warning.
+    const collisionStack = {
+      stackName: 'Multi',
+      template: {
+        Resources: {
+          Alb1: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+          Alb2: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+          Tg1: {
+            Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+            Properties: { Port: 80, Protocol: 'HTTP', TargetType: 'ip' },
+          },
+          Tg2: {
+            Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+            Properties: { Port: 80, Protocol: 'HTTP', TargetType: 'ip' },
+          },
+          L1: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'Alb1' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: 'Tg1' } }],
+            },
+          },
+          L2: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'Alb2' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: 'Tg2' } }],
+            },
+          },
+          Svc1: {
+            Type: 'AWS::ECS::Service',
+            Properties: {
+              LoadBalancers: [{ ContainerName: 'web', ContainerPort: 80, TargetGroupArn: { Ref: 'Tg1' } }],
+            },
+          },
+          Svc2: {
+            Type: 'AWS::ECS::Service',
+            Properties: {
+              LoadBalancers: [{ ContainerName: 'api', ContainerPort: 80, TargetGroupArn: { Ref: 'Tg2' } }],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+
+    const { boots, frontDoor, warnings } = albStrategy({} as never).resolveBoots(
+      [collisionStack],
+      ['Multi:Alb1', 'Multi:Alb2']
+    );
+    // Only the first listener is fronted -> only its backing service is booted.
+    expect(frontDoor!.listeners).toHaveLength(1);
+    expect(boots).toEqual([{ target: 'Multi:Svc1' }]);
+    expect(warnings.join('\n')).toMatch(/already.*claimed by listener port 80/);
+  });
 });
 
 describe('albStrategy --lb-port no-match warning', () => {

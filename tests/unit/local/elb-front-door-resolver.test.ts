@@ -139,6 +139,23 @@ describe('resolveAlbFrontDoor', () => {
     ]);
   });
 
+  it('sorts a rule with no Priority last (Number.MAX_SAFE_INTEGER fallback)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          // No Priority -> must fall back to MAX_SAFE_INTEGER (loses to any numbered rule).
+          ListenerArn: { Ref: LISTENER },
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules[0]!.priority).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
   it('reads the legacy top-level Conditions[].Values path-pattern shape', () => {
     const stack = stackWith({
       ...apiServiceResources,
