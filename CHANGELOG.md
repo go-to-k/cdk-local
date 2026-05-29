@@ -1,3 +1,10 @@
+# [0.46.0](https://github.com/go-to-k/cdk-local/compare/v0.45.0...v0.46.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** deepen --from-cfn-stack + credential parity ([#149](https://github.com/go-to-k/cdk-local/issues/149)) ([6c4edc5](https://github.com/go-to-k/cdk-local/commit/6c4edc59c330a79aae4a98f99433218cc592b4b1))
+
 # [0.45.0](https://github.com/go-to-k/cdk-local/compare/v0.44.0...v0.45.0) (2026-05-29)
 
 
