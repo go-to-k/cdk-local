@@ -164,6 +164,35 @@ describe('resolveAlbFrontDoor', () => {
     expect(warnings.join('\n')).toMatch(/non-Ref TargetGroupArn/);
   });
 
+  it('warns on a non-Ref target group inside a ForwardConfig.TargetGroups[] (weighted)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'forward',
+              ForwardConfig: {
+                TargetGroups: [
+                  {
+                    TargetGroupArn:
+                      'arn:aws:elasticloadbalancing:us-east-1:111:targetgroup/imported/abc',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { services, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(services).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/non-Ref TargetGroupArn/);
+  });
+
   it('skips a redirect-only listener silently (no warning)', () => {
     const stack = stackWith({
       [LISTENER]: {

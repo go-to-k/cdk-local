@@ -153,6 +153,7 @@ function notFound(
  * names the API and serves its backing Lambdas.
  */
 export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrategy {
+  const lbPortOverrides = parseLbPortOverrides(options.lbPort);
   return {
     pickEntries: (stacks) => listTargets(stacks).loadBalancers,
     pickerMessage: 'Select one or more Application Load Balancers to run',
@@ -179,9 +180,24 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
           }
         }
       }
-      return { boots: [...byServiceTarget.values()], warnings };
+      const boots = [...byServiceTarget.values()];
+      // Warn about a `--lb-port <listenerPort>=...` override whose listener
+      // port matched NONE of the resolved front-door listeners — almost always
+      // a typo, and otherwise a silent no-op.
+      const resolvedPorts = new Set<number>();
+      for (const b of boots) for (const t of b.frontDoorTargets) resolvedPorts.add(t.listenerPort);
+      for (const portStr of Object.keys(lbPortOverrides)) {
+        const port = Number(portStr);
+        if (!resolvedPorts.has(port)) {
+          warnings.push(
+            `--lb-port override for listener port ${port} matched no ALB listener resolved for ` +
+              'the named target(s); it was ignored.'
+          );
+        }
+      }
+      return { boots, warnings };
     },
-    lbPortOverrides: parseLbPortOverrides(options.lbPort),
+    lbPortOverrides,
   };
 }
 

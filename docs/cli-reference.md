@@ -821,14 +821,16 @@ default 3), and keeps every replica running until `^C`. Failed
 replicas restart per `--restart-policy` with exponential backoff (1s →
 30s capped) so a crash-looping container does not hammer docker.
 
-Each replica gets its own per-task docker network on a UNIQUE
-`169.254.<N>.0/24` subnet (170, 171, 172, ...) so concurrent replicas
-don't collide on a single /24 — the same metadata-endpoint sidecar
-starts at `169.254.<N>.2` per replica.
+Every replica booted in one CLI invocation joins ONE shared docker
+network (`<cluster>-svc-<rand>`, subnet `169.254.171.0/24`, with the
+metadata-endpoint sidecar at `169.254.171.2`) so peer services reach
+each other by container IP / network alias without `docker network
+connect` choreography. (`cdkl run-task` differs — it uses a per-task
+network on `169.254.170.0/24`.)
 
 When two or more `<targets>` are supplied, every service is booted into
-a shared Cloud Map / Service Connect registry so peer services discover
-each other via a `docker --add-host` DNS overlay.
+a shared Cloud Map / Service Connect registry on that one network so peer
+services discover each other via a `docker --add-host` DNS overlay.
 
 > **Host-port publishing and multi-replica services.** A
 > **single-replica** service publishes its container `PortMappings` to

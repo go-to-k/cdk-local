@@ -145,6 +145,24 @@ describe('albStrategy.resolveBoots multi-service', () => {
   });
 });
 
+describe('albStrategy --lb-port no-match warning', () => {
+  it('warns when a --lb-port override matches no resolved listener', () => {
+    const { warnings } = albStrategy({ lbPort: ['9999=8080'] } as never).resolveBoots(
+      [albStack()],
+      ['AlbStack:WebLB']
+    );
+    expect(warnings.join('\n')).toMatch(/--lb-port override for listener port 9999 matched no/);
+  });
+
+  it('does not warn when the --lb-port override matches a resolved listener', () => {
+    const { warnings } = albStrategy({ lbPort: ['80=8080'] } as never).resolveBoots(
+      [albStack()],
+      ['AlbStack:WebLB']
+    );
+    expect(warnings.join('\n')).not.toMatch(/--lb-port override/);
+  });
+});
+
 describe('start-alb / start-service strategy binding', () => {
   it('start-alb resolves an ALB target into backing-service boots WITH front-door targets', () => {
     const strategy = albStrategy({ lbPort: ['80=8080'] } as never);
