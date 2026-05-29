@@ -142,7 +142,7 @@ The hooks split into three classes:
 ## 3. Markgate-backed gates
 
 The four markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
-`pr-review-gate.sh`, and the planned `integ-gate.sh`) are all
+`pr-review-gate.sh`, and `integ-gate.sh`) are all
 **cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
 parses leading `cd <path>` and the last `git -C <path>` /
 `gh -C <path>` flag from the command, then `cd`s to that resolved
@@ -240,13 +240,13 @@ construction.
   sentinel (next `/review-pr` run) and `markgate verify` reports
   stale automatically. No bespoke sha tracking inside the hook.
 
-### integ-gate (pre-merge, TODO)
+### integ-gate (pre-merge)
 
-The `integ` markgate marker is wired (set by `/run-integ` when the
+The `integ` markgate marker is set by `/run-integ` when the
 Docker-based fixture run is clean and all orphan sweeps return
-empty), but the matching gate hook is not yet installed.
+empty. `integ-gate.sh` is installed and consults it.
 
-When shipped, `integ-gate.sh` will block `gh pr merge` on PRs whose
+`integ-gate.sh` blocks `gh pr merge` on PRs whose
 diff touches `src/**` or `tests/integration/**` when the `integ`
 marker is stale (digest differs OR expired by the 14-day TTL).
 The 14d TTL is on top of the file-scope check — Docker base-image

@@ -168,7 +168,7 @@ mise exec -- markgate set docs
 mise exec -- markgate set verify-pr
 ```
 
-The `verify-pr` marker is the one consulted by `.claude/hooks/verify-pr-gate.sh` (to ship in a follow-up PR) to allow `gh pr create` and `gh pr merge`. It is intentionally settable ONLY by this skill — running it by hand from a shell to bypass the gate defeats the whole point. If a check legitimately cannot pass right now (e.g. the live-test cannot run because Docker is unavailable), say so explicitly in the report and DO NOT set the marker — the gate exits non-zero so the human can decide whether to override.
+The `verify-pr` marker is the one consulted by `.claude/hooks/verify-pr-gate.sh` to allow `gh pr create` and `gh pr merge`. It is intentionally settable ONLY by this skill — running it by hand from a shell to bypass the gate defeats the whole point. If a check legitimately cannot pass right now (e.g. the live-test cannot run because Docker is unavailable), say so explicitly in the report and DO NOT set the marker — the gate exits non-zero so the human can decide whether to override.
 
 Then, if there are uncommitted changes (e.g., lint fixes, doc updates made during this run), commit them and push to the remote. This ensures the remote branch is always up to date when reporting "PR is ready to merge."
 
