@@ -1,3 +1,10 @@
+# [0.39.0](https://github.com/go-to-k/cdk-local/compare/v0.38.0...v0.39.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** stream SSE /invocations responses incrementally ([#138](https://github.com/go-to-k/cdk-local/issues/138)) ([abdc024](https://github.com/go-to-k/cdk-local/commit/abdc02498d944ed2fd490509938f24dfd4381d02))
+
 # [0.38.0](https://github.com/go-to-k/cdk-local/compare/v0.37.1...v0.38.0) (2026-05-29)
 
 
