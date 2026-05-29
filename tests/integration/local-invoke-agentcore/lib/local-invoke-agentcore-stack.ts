@@ -6,6 +6,7 @@ import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import {
   Runtime,
   AgentRuntimeArtifact,
+  AgentCoreRuntime,
   RuntimeAuthorizerConfiguration,
   ProtocolType,
 } from 'aws-cdk-lib/aws-bedrockagentcore';
@@ -67,6 +68,19 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
         platform: Platform.LINUX_ARM64,
       }),
       protocolConfiguration: ProtocolType.MCP,
+    });
+
+    // A CodeConfiguration (managed-runtime) runtime authored as plain source
+    // (no Dockerfile) via fromCodeAsset. `cdkl invoke-agentcore` builds it from
+    // source for the declared runtime (pip install + run the entrypoint), which
+    // self-serves the same 8080 HTTP contract.
+    new Runtime(this, 'CodeAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromCodeAsset({
+        path: path.join(__dirname, '../code-agent'),
+        runtime: AgentCoreRuntime.PYTHON_3_12,
+        entrypoint: ['app.py'],
+      }),
+      environmentVariables: { GREETING: 'hello-from-code' },
     });
   }
 }

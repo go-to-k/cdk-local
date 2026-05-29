@@ -153,21 +153,76 @@ describe('resolveAgentCoreTarget — target matching', () => {
   });
 });
 
-describe('resolveAgentCoreTarget — out-of-scope artifacts', () => {
-  it('rejects a CodeConfiguration (managed-runtime) artifact', () => {
+describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () => {
+  function codeRuntime(code: Record<string, unknown>): TemplateResource {
+    return {
+      Type: 'AWS::BedrockAgentCore::Runtime',
+      Properties: {
+        AgentRuntimeName: 'my-agent',
+        ProtocolConfiguration: 'HTTP',
+        AgentRuntimeArtifact: { CodeConfiguration: code },
+      },
+    };
+  }
+
+  it('extracts runtime, entryPoint, and the fromCodeAsset hash (Prefix <hash>.zip)', () => {
     const stack = buildStack('App', {
-      ChatAgent: containerRuntime({
-        AgentRuntimeArtifact: {
-          CodeConfiguration: {
-            Code: { S3: { Bucket: 'b', Prefix: 'p' } },
-            EntryPoint: ['app.py'],
-            Runtime: 'PYTHON_3_12',
-          },
-        },
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: { 'Fn::Sub': 'cdk-assets-${AWS::AccountId}' }, Prefix: 'abc123def456.zip' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_13',
       }),
     });
-    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/container artifacts only/);
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.containerUri).toBeUndefined();
+    expect(resolved.codeArtifact).toEqual({
+      runtime: 'PYTHON_3_13',
+      entryPoint: ['app.py'],
+      codeAssetHash: 'abc123def456',
+    });
   });
+
+  it('strips a key prefix from Code.S3.Prefix when deriving the hash', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: 'b', Prefix: 'assets/abc123.zip' } },
+        EntryPoint: ['opentelemetry-instrument', 'main.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.codeAssetHash).toBe('abc123');
+    expect(resolved.codeArtifact?.entryPoint).toEqual(['opentelemetry-instrument', 'main.py']);
+  });
+
+  it('throws when Runtime is missing', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({ Code: { S3: { Bucket: 'b', Prefix: 'h.zip' } }, EntryPoint: ['app.py'] }),
+    });
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/no string Runtime/);
+  });
+
+  it('throws when EntryPoint is missing/empty', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({ Code: { S3: { Bucket: 'b', Prefix: 'h.zip' } }, Runtime: 'PYTHON_3_12' }),
+    });
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/no EntryPoint/);
+  });
+
+  it('throws (fromS3 not supported) when Code.S3.Prefix is a non-literal intrinsic', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: 'b', Prefix: { Ref: 'SomeParam' } } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/not a literal string/);
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/fromS3/);
+  });
+});
+
+describe('resolveAgentCoreTarget — out-of-scope artifacts', () => {
 
   it('rejects the A2A protocol with a not-served-yet error', () => {
     const stack = buildStack('App', {

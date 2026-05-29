@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 const {
   loadManifestMock,
+  getFileAssetsMock,
+  getAssetSourcePathMock,
   getDockerImageBySourceHashMock,
   buildContainerImageMock,
+  buildAgentCoreCodeImageMock,
   parseEcrUriMock,
   pullEcrImageMock,
   pullImageMock,
@@ -11,8 +14,11 @@ const {
   verifyJwtViaDiscoveryMock,
 } = vi.hoisted(() => ({
   loadManifestMock: vi.fn(),
+  getFileAssetsMock: vi.fn(),
+  getAssetSourcePathMock: vi.fn(),
   getDockerImageBySourceHashMock: vi.fn(),
   buildContainerImageMock: vi.fn(),
+  buildAgentCoreCodeImageMock: vi.fn(),
   parseEcrUriMock: vi.fn(),
   pullEcrImageMock: vi.fn(),
   pullImageMock: vi.fn(),
@@ -40,6 +46,12 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
       async loadManifest(): Promise<unknown> {
         return loadManifestMock();
       }
+      getFileAssets(manifest: unknown): unknown {
+        return getFileAssetsMock(manifest);
+      }
+      getAssetSourcePath(dir: string, asset: unknown): unknown {
+        return getAssetSourcePathMock(dir, asset);
+      }
     },
     getDockerImageBySourceHash: getDockerImageBySourceHashMock,
   };
@@ -48,6 +60,11 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
 vi.mock('../../../src/local/docker-image-builder.js', async (importActual) => ({
   ...(await importActual<object>()),
   buildContainerImage: buildContainerImageMock,
+}));
+
+vi.mock('../../../src/local/agentcore-code-build.js', async (importActual) => ({
+  ...(await importActual<object>()),
+  buildAgentCoreCodeImage: buildAgentCoreCodeImageMock,
 }));
 
 vi.mock('../../../src/local/ecr-puller.js', async (importActual) => ({
@@ -143,6 +160,95 @@ describe('resolveAgentCoreImage — acquisition fallback order', () => {
     expect(image).toBe(uri);
     expect(pullImageMock).toHaveBeenCalledWith(uri, true);
     expect(pullEcrImageMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
+  // A real dir so the command's existsSync/isDirectory source check passes.
+  let realSourceDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    realSourceDir = mkdtempSync(join(tmpdir(), 'cdkl-code-src-'));
+    getAssetSourcePathMock.mockReturnValue(realSourceDir);
+  });
+
+  function codeRuntime(): ResolvedAgentCoreRuntime {
+    return {
+      stack: { stackName: 'App', assetManifestPath: '/cdk.out/App.assets.json' } as never,
+      logicalId: 'CodeAgent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      environmentVariables: {},
+      protocol: 'HTTP',
+      codeArtifact: { runtime: 'PYTHON_3_13', entryPoint: ['app.py'], codeAssetHash: 'h123' },
+    };
+  }
+
+  it('locates the fromCodeAsset source dir by hash and builds from source', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    buildAgentCoreCodeImageMock.mockResolvedValue('cdkl-agentcore-code-deadbeef');
+
+    const image = await resolveAgentCoreImage(codeRuntime(), imageOpts());
+    expect(image).toBe('cdkl-agentcore-code-deadbeef');
+    expect(buildAgentCoreCodeImageMock).toHaveBeenCalledWith({
+      sourceDir: realSourceDir,
+      runtime: 'PYTHON_3_13',
+      entryPoint: ['app.py'],
+      architecture: 'arm64',
+      noBuild: false,
+    });
+    // The container path must NOT run for a code artifact.
+    expect(buildContainerImageMock).not.toHaveBeenCalled();
+    expect(pullEcrImageMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a destination objectKey match when the source-hash key misses', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    // Keyed by a DIFFERENT source hash, but the destination objectKey is h123.zip.
+    getFileAssetsMock.mockReturnValue(
+      new Map([
+        ['srcHashXYZ', { source: { path: 'asset.x' }, destinations: { current: { objectKey: 'h123.zip' } } }],
+      ])
+    );
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+    await resolveAgentCoreImage(codeRuntime(), imageOpts());
+    expect(buildAgentCoreCodeImageMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceDir: realSourceDir })
+    );
+  });
+
+  it('errors (fromS3 not supported) when the code asset is not in the manifest', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map()); // no asset by hash or objectKey
+    await expect(resolveAgentCoreImage(codeRuntime(), imageOpts())).rejects.toThrow(/fromS3/);
+    expect(buildAgentCoreCodeImageMock).not.toHaveBeenCalled();
+  });
+
+  it('errors when the resolved source dir does not exist (stale cdk.out)', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue('/cdk.out/does-not-exist-xyz');
+    await expect(resolveAgentCoreImage(codeRuntime(), imageOpts())).rejects.toThrow(
+      /does not exist or is not a directory/
+    );
+    expect(buildAgentCoreCodeImageMock).not.toHaveBeenCalled();
+  });
+
+  it('errors when the stack has no asset manifest', async () => {
+    const noManifest = { ...codeRuntime(), stack: { stackName: 'App' } as never };
+    await expect(resolveAgentCoreImage(noManifest, imageOpts())).rejects.toThrow(/no asset/);
+    expect(buildAgentCoreCodeImageMock).not.toHaveBeenCalled();
+  });
+
+  it('threads --no-build through to the code builder', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+    await resolveAgentCoreImage(codeRuntime(), imageOpts({ build: false }));
+    expect(buildAgentCoreCodeImageMock).toHaveBeenCalledWith(
+      expect.objectContaining({ noBuild: true })
+    );
   });
 });
 

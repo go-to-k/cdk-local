@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -31,8 +31,10 @@ import {
 import {
   AGENTCORE_MCP_PROTOCOL,
   resolveAgentCoreTarget,
+  type AgentCoreCodeArtifact,
   type ResolvedAgentCoreRuntime,
 } from '../../local/agentcore-resolver.js';
+import { buildAgentCoreCodeImage } from '../../local/agentcore-code-build.js';
 import {
   invokeAgentCore,
   waitForAgentCorePing,
@@ -66,6 +68,7 @@ import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
 } from '../../assets/asset-manifest-loader.js';
+import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import { applyProfileCredentialsOverlay } from './local-invoke.js';
@@ -135,9 +138,10 @@ export interface CreateLocalInvokeAgentCoreCommandOptions {
  * locally and invoke it once over the AgentCore HTTP contract. Resolves
  * the `AWS::BedrockAgentCore::Runtime`, pulls / builds its container,
  * starts it on port 8080, waits for `GET /ping`, POSTs the event to
- * `POST /invocations`, prints the response, and tears down. v1 covers the
- * container artifact + HTTP protocol; the agent's calls to real AWS go to
- * real AWS (credentials injected like `cdkl invoke`).
+ * `POST /invocations`, prints the response, and tears down. Covers the
+ * container artifact and the CodeConfiguration managed-runtime artifact
+ * (fromCodeAsset, built from source) on the HTTP + MCP protocols; the agent's
+ * calls to real AWS go to real AWS (credentials injected like `cdkl invoke`).
  */
 async function localInvokeAgentCoreCommand(
   target: string | undefined,
@@ -398,9 +402,10 @@ export async function resolveInboundAuthorization(
 }
 
 /**
- * Acquire the agent container image. Mirrors the container-Lambda path:
- * build from a local cdk.out asset when the URI matches one, else pull
- * from ECR, else pull a plain registry image.
+ * Acquire the agent image. A CODE artifact (managed runtime) is built from
+ * source (generated Dockerfile over the bundle's cdk.out asset). A CONTAINER
+ * artifact mirrors the container-Lambda path: build from a local cdk.out asset
+ * when the URI matches one, else pull from ECR, else pull a plain registry image.
  */
 export async function resolveAgentCoreImage(
   resolved: ResolvedAgentCoreRuntime,
@@ -409,13 +414,25 @@ export async function resolveAgentCoreImage(
   const logger = getLogger();
   const architecture = platformToArchitecture(options.platform);
 
+  if (resolved.codeArtifact) {
+    return resolveAgentCoreCodeImage(resolved, resolved.codeArtifact, options, architecture);
+  }
+
+  const containerUri = resolved.containerUri;
+  if (containerUri === undefined) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' has neither a container image nor a code artifact to run.`,
+      'LOCAL_INVOKE_AGENTCORE_NO_ARTIFACT'
+    );
+  }
+
   const manifestPath = resolved.stack.assetManifestPath;
   if (manifestPath) {
     const cdkOutDir = dirname(manifestPath);
     const loader = new AssetManifestLoader();
     const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
     if (manifest) {
-      const entry = getDockerImageBySourceHash(manifest, resolved.containerUri);
+      const entry = getDockerImageBySourceHash(manifest, containerUri);
       if (entry) {
         return buildContainerImage(entry.asset, cdkOutDir, {
           architecture,
@@ -425,9 +442,9 @@ export async function resolveAgentCoreImage(
     }
   }
 
-  if (parseEcrUri(resolved.containerUri)) {
-    logger.info(`Pulling agent image from ECR: ${resolved.containerUri}`);
-    return pullEcrImage(resolved.containerUri, {
+  if (parseEcrUri(containerUri)) {
+    logger.info(`Pulling agent image from ECR: ${containerUri}`);
+    return pullEcrImage(containerUri, {
       skipPull: options.pull === false,
       ...(options.region !== undefined && { region: options.region }),
       ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
@@ -435,8 +452,84 @@ export async function resolveAgentCoreImage(
     });
   }
 
-  await pullImage(resolved.containerUri, options.pull === false);
-  return resolved.containerUri;
+  await pullImage(containerUri, options.pull === false);
+  return containerUri;
+}
+
+/**
+ * Build a local image from a `CodeConfiguration` (managed-runtime) bundle:
+ * locate the fromCodeAsset source dir in cdk.out via its asset hash, then run
+ * the from-source build (generated Dockerfile → install deps → run EntryPoint).
+ * A bundle with no local asset (fromS3) hard-errors — not supported yet.
+ */
+async function resolveAgentCoreCodeImage(
+  resolved: ResolvedAgentCoreRuntime,
+  code: AgentCoreCodeArtifact,
+  options: LocalInvokeAgentCoreOptions,
+  architecture: 'x86_64' | 'arm64'
+): Promise<string> {
+  const manifestPath = resolved.stack.assetManifestPath;
+  if (!manifestPath) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' uses a code artifact, but its stack has no asset ` +
+        `manifest in cdk.out to read the bundle source from.`,
+      'LOCAL_INVOKE_AGENTCORE_CODE_NO_MANIFEST'
+    );
+  }
+  const cdkOutDir = dirname(manifestPath);
+  const loader = new AssetManifestLoader();
+  const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
+  const fileAssets = manifest ? loader.getFileAssets(manifest) : undefined;
+  // The manifest's `files` are keyed by SOURCE hash; for the default
+  // synthesizer that equals the destination objectKey hash (`<hash>.zip`), so a
+  // direct key lookup hits. Fall back to matching the destination objectKey so
+  // a synthesizer that emits a prefixed / differing objectKey still resolves.
+  const asset = fileAssets
+    ? (fileAssets.get(code.codeAssetHash) ??
+      findFileAssetByObjectKey(fileAssets, code.codeAssetHash))
+    : undefined;
+  if (!asset) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' code bundle (asset ${code.codeAssetHash}) was not found ` +
+        `in the cdk.out asset manifest. ${getEmbedConfig().cliName} invoke-agentcore runs a local from-source ` +
+        `build of a fromCodeAsset bundle; a fromS3 bundle (a pre-existing S3 object) is not supported yet.`,
+      'LOCAL_INVOKE_AGENTCORE_CODE_ASSET_NOT_FOUND'
+    );
+  }
+  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset);
+  if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' code bundle source '${sourceDir}' does not exist or is not a ` +
+        `directory. Re-synthesize the app and retry.`,
+      'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
+    );
+  }
+  return buildAgentCoreCodeImage({
+    sourceDir,
+    runtime: code.runtime,
+    entryPoint: code.entryPoint,
+    architecture,
+    noBuild: options.build === false,
+  });
+}
+
+/**
+ * Find the file asset whose destination objectKey is `<hash>.zip` (matching the
+ * `Code.S3.Prefix`'s hash) when the source-hash-keyed lookup misses — covers a
+ * synthesizer whose source hash differs from the destination objectKey.
+ */
+function findFileAssetByObjectKey(
+  fileAssets: Map<string, FileAsset>,
+  hash: string
+): FileAsset | undefined {
+  const zip = `${hash}.zip`;
+  for (const asset of fileAssets.values()) {
+    const hit = Object.values(asset.destinations).some(
+      (d) => d.objectKey === zip || d.objectKey.endsWith(`/${zip}`)
+    );
+    if (hit) return asset;
+  }
+  return undefined;
 }
 
 /**
@@ -768,7 +861,8 @@ export function createLocalInvokeAgentCoreCommand(
         '--event). Target accepts a CDK display path (MyStack/MyAgent) or stack-qualified logical ID ' +
         '(MyStack:MyAgentRuntime1234). Single-stack apps may omit the stack prefix. ' +
         'Omit <target> in an interactive terminal to pick from a list. ' +
-        'Supports the container artifact on the HTTP + MCP protocols; the agent calls real AWS for managed services.'
+        'Supports the container artifact and the CodeConfiguration managed-runtime artifact ' +
+        '(fromCodeAsset, built from source) on the HTTP + MCP protocols; the agent calls real AWS for managed services.'
     )
     .argument(
       '[target]',

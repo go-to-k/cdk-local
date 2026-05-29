@@ -34,9 +34,12 @@ AWS managed services.
   `path-pattern` rules across the backing services (other conditions —
   host-header / weighted / Lambda targets / redirect+fixed-response
   actions — deferred to #123)
-- Bedrock AgentCore Runtime agents — the agent container served over its
-  protocol contract, invoked once locally (`cdkl invoke-agentcore`); covers
-  container artifacts on the HTTP and MCP protocols. HTTP runs the
+- Bedrock AgentCore Runtime agents — the agent served over its protocol
+  contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
+  container artifact and the CodeConfiguration managed-runtime artifact
+  (`fromCodeAsset` — Python 3.10-3.14 / Node 22, built from source: a generated
+  Dockerfile installs the bundle's deps and runs the EntryPoint, which
+  self-serves the contract) on the HTTP and MCP protocols. HTTP runs the
   `POST /invocations` + `GET /ping` contract on 8080: an inbound
   `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
   the runtime's OIDC discovery URL before the container starts and forwarded to

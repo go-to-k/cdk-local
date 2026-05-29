@@ -58,7 +58,7 @@ cdkl list                                      # every runnable target, grouped 
 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`. Add **`--watch`** to re-synth and hot-reload on CDK source changes ([details](docs/local-emulation.md#hot-reload---watch)).
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host and log `Reach it at 127.0.0.1:<port>` (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS).
-- **`invoke-agentcore`** runs the agent container, waits for `GET /ping`, POSTs your `--event` to `POST /invocations`, and streams an SSE response live. A `customJwtAuthorizer` is enforced locally — pass `--bearer-token <jwt>` (verified against the runtime's OIDC discovery URL). MCP-protocol runtimes (`ProtocolConfiguration = MCP`) are also served — the `POST /mcp` Streamable-HTTP contract on 8000, with one JSON-RPC request (`tools/list` by default, or `--event`'s `{"method":...,"params":...}`).
+- **`invoke-agentcore`** runs the agent (a container, or a `fromCodeAsset` managed-runtime bundle — Python 3.10-3.14 / Node 22 — built from source), waits for `GET /ping`, POSTs your `--event` to `POST /invocations`, and streams an SSE response live. A `customJwtAuthorizer` is enforced locally — pass `--bearer-token <jwt>` (verified against the runtime's OIDC discovery URL). MCP-protocol runtimes (`ProtocolConfiguration = MCP`) are also served — the `POST /mcp` Streamable-HTTP contract on 8000, with one JSON-RPC request (`tools/list` by default, or `--event`'s `{"method":...,"params":...}`).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
@@ -105,7 +105,7 @@ Format + full precedence: [docs/cli-reference.md](docs/cli-reference.md).
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
 | `AWS::ElasticLoadBalancingV2::*` (start-alb: ALB front-door + `path-pattern` rules) | ✓ |
-| `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container artifact, HTTP + MCP) | ✓ |
+| `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container + fromCodeAsset artifacts, HTTP + MCP) | ✓ |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 

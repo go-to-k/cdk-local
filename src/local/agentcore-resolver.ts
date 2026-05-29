@@ -36,10 +36,10 @@ const SUPPORTED_AGENTCORE_PROTOCOLS = [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_MCP_PR
  * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
- * Covers the CONTAINER artifact on the HTTP + MCP protocols — the resolver
- * hard-errors on `CodeConfiguration` artifacts (S3 zip + managed runtime)
- * and the A2A / AGUI protocols so the command never starts a container it
- * can't speak to.
+ * Covers the CONTAINER artifact and the `CodeConfiguration` (fromCodeAsset)
+ * managed-runtime artifact on the HTTP + MCP protocols — the resolver
+ * hard-errors on a fromS3 code bundle (a non-literal `Code.S3.Prefix`) and the
+ * A2A / AGUI protocols so the command never starts something it can't run.
  */
 export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
@@ -50,7 +50,9 @@ export interface ResolvedAgentCoreRuntime {
   resource: TemplateResource;
   /**
    * Resolved container image URI from
-   * `AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`.
+   * `AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`. Set for a
+   * CONTAINER artifact; undefined for a {@link codeArtifact} one (exactly one
+   * of the two is set).
    *
    * May still carry `${AWS::*}` placeholders when the source was an
    * `Fn::Sub` (the canonical `fromAsset` shape): the asset-hash match in
@@ -58,7 +60,14 @@ export interface ResolvedAgentCoreRuntime {
    * path substitutes them via `--from-cfn-stack` state. A literal URI
    * passes through verbatim.
    */
-  containerUri: string;
+  containerUri?: string;
+  /**
+   * Resolved `AgentRuntimeArtifact.CodeConfiguration` (managed-runtime / from
+   * source) when the runtime declares one instead of a container — the command
+   * builds a local image from the bundle's source. Undefined for a container
+   * artifact (exactly one of {@link containerUri} / `codeArtifact` is set).
+   */
+  codeArtifact?: AgentCoreCodeArtifact;
   /**
    * `Properties.EnvironmentVariables` as it appears in the template
    * (a `Record<string, unknown>` — intrinsic-valued entries are left
@@ -94,6 +103,18 @@ export interface AgentCoreJwtAuthorizer {
   discoveryUrl: string;
   allowedAudience?: string[];
   allowedClients?: string[];
+}
+
+/**
+ * A resolved `AgentRuntimeArtifact.CodeConfiguration` (managed-runtime).
+ * `codeAssetHash` is the cdk.out file-asset hash (from `Code.S3.Prefix`,
+ * `<hash>.zip`) the command looks up to find the bundle's local source dir;
+ * `entryPoint` is the `EntryPoint` argv and `runtime` the `Runtime` enum.
+ */
+export interface AgentCoreCodeArtifact {
+  runtime: string;
+  entryPoint: string[];
+  codeAssetHash: string;
 }
 
 export class AgentCoreResolutionError extends Error {
@@ -232,7 +253,7 @@ function extractRuntimeProperties(
   const props = resource.Properties ?? {};
 
   const protocol = extractProtocol(props['ProtocolConfiguration'], logicalId, stack.stackName);
-  const containerUri = extractContainerUri(
+  const artifact = extractArtifact(
     props['AgentRuntimeArtifact'],
     logicalId,
     stack.stackName,
@@ -255,7 +276,9 @@ function extractRuntimeProperties(
     stack,
     logicalId,
     resource,
-    containerUri,
+    ...(artifact.kind === 'container'
+      ? { containerUri: artifact.containerUri }
+      : { codeArtifact: artifact.codeArtifact }),
     environmentVariables,
     protocol,
     ...(roleArn !== undefined && { roleArn }),
@@ -328,19 +351,24 @@ function extractProtocol(value: unknown, logicalId: string, stackName: string): 
   return value;
 }
 
+type ExtractedArtifact =
+  | { kind: 'container'; containerUri: string }
+  | { kind: 'code'; codeArtifact: AgentCoreCodeArtifact };
+
 /**
- * Extract + resolve the container image URI from `AgentRuntimeArtifact`.
- * Rejects the `CodeConfiguration` artifact (S3 zip + managed runtime),
- * which has no Dockerfile and is deferred from v1.
+ * Resolve `AgentRuntimeArtifact` to either a container image URI or a code
+ * artifact (managed runtime). A `ContainerConfiguration` yields the resolved
+ * `ContainerUri`; a `CodeConfiguration` yields its `Runtime` / `EntryPoint` +
+ * the cdk.out asset hash the command uses to locate the bundle source.
  */
-function extractContainerUri(
+function extractArtifact(
   artifact: unknown,
   logicalId: string,
   stackName: string,
   resources: Record<string, TemplateResource>,
   region: string | undefined,
   imageContext: ImageResolutionContext | undefined
-): string {
+): ExtractedArtifact {
   if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} has no AgentRuntimeArtifact.`
@@ -349,12 +377,10 @@ function extractContainerUri(
   const art = artifact as Record<string, unknown>;
 
   if (art['CodeConfiguration'] && !art['ContainerConfiguration']) {
-    throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} uses a code artifact (CodeConfiguration). ` +
-        `${getEmbedConfig().cliName} invoke-agentcore v1 runs container artifacts only — ` +
-        `running a managed-runtime code artifact locally needs a from-source build that is not yet supported. ` +
-        `Build the agent as a container (e.g. AgentCoreRuntime fromAsset / a Dockerfile) to run it locally.`
-    );
+    return {
+      kind: 'code',
+      codeArtifact: extractCodeArtifact(art['CodeConfiguration'], logicalId, stackName),
+    };
   }
 
   const container = art['ContainerConfiguration'];
@@ -377,7 +403,62 @@ function extractContainerUri(
         `A same-stack AWS::ECR::Repository reference is not supported — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
     );
   }
-  return uri;
+  return { kind: 'container', containerUri: uri };
+}
+
+/**
+ * Extract a `CodeConfiguration` (managed-runtime) artifact. Reads `Runtime`,
+ * `EntryPoint`, and the cdk.out file-asset hash from `Code.S3.Prefix`
+ * (`<hash>.zip`, the `fromCodeAsset` shape). A non-literal `Code.S3.Prefix`
+ * (an intrinsic, or a `fromS3` object key the command can't map to a local
+ * asset) hard-errors — downloading a pre-existing S3 bundle is not supported
+ * locally yet.
+ */
+function extractCodeArtifact(
+  codeConfig: unknown,
+  logicalId: string,
+  stackName: string
+): AgentCoreCodeArtifact {
+  const cfg =
+    codeConfig && typeof codeConfig === 'object' && !Array.isArray(codeConfig)
+      ? (codeConfig as Record<string, unknown>)
+      : {};
+
+  const runtime = cfg['Runtime'];
+  if (typeof runtime !== 'string' || runtime.length === 0) {
+    throw new AgentCoreResolutionError(
+      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration with no string Runtime.`
+    );
+  }
+
+  const entryPointRaw = cfg['EntryPoint'];
+  const entryPoint = Array.isArray(entryPointRaw)
+    ? entryPointRaw.filter((x): x is string => typeof x === 'string')
+    : [];
+  if (entryPoint.length === 0) {
+    throw new AgentCoreResolutionError(
+      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration with no EntryPoint.`
+    );
+  }
+
+  const s3 =
+    cfg['Code'] && typeof cfg['Code'] === 'object'
+      ? (cfg['Code'] as Record<string, unknown>)['S3']
+      : undefined;
+  const prefix =
+    s3 && typeof s3 === 'object' ? (s3 as Record<string, unknown>)['Prefix'] : undefined;
+  if (typeof prefix !== 'string' || prefix.length === 0) {
+    throw new AgentCoreResolutionError(
+      `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration whose Code.S3.Prefix is not a literal string. ` +
+        `${getEmbedConfig().cliName} invoke-agentcore runs a local from-source build of the fromCodeAsset bundle; ` +
+        `downloading a pre-existing S3 bundle (fromS3) is not supported yet.`
+    );
+  }
+
+  // Prefix is `<assetHash>.zip` (possibly with a key prefix) → the cdk.out
+  // file-asset hash the command looks up to find the bundle source dir.
+  const codeAssetHash = prefix.replace(/^.*\//, '').replace(/\.zip$/, '');
+  return { runtime, entryPoint, codeAssetHash };
 }
 
 /**
