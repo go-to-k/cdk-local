@@ -2,8 +2,11 @@
 # is a build artifact, not a committed source (matches local-run-task).
 pnpm-lock.yaml
 
-# Override the parent integ .gitignore so the agent container's source
-# files are tracked. The Dockerfile builds against /app/server.js inside
-# a plain node base image that serves the AgentCore HTTP contract on 8080.
+# Override the parent integ .gitignore so the agent containers' source
+# files are tracked. Each Dockerfile builds against its /app/server.js inside
+# a plain node base image: agent/ serves the AgentCore HTTP contract on 8080,
+# mcp-agent/ serves the MCP Streamable-HTTP contract on 8000.
 !agent/*.js
 !agent/Dockerfile
+!mcp-agent/*.js
+!mcp-agent/Dockerfile

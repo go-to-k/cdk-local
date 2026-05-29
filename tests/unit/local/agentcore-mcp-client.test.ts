@@ -92,8 +92,10 @@ describe('mcpInvokeOnce', () => {
     ]);
     expect(calls.every((c) => c.url.endsWith(MCP_PATH))).toBe(true);
 
-    // initialize MUST NOT carry a session id (none exists yet).
+    // initialize MUST NOT carry a session id (none exists yet) NOR the
+    // negotiated protocol-version header (it is being negotiated here).
     expect(calls[0]?.headers['Mcp-Session-Id']).toBeUndefined();
+    expect(calls[0]?.headers['MCP-Protocol-Version']).toBeUndefined();
     // Post-initialize calls echo the assigned session id + the protocol version.
     expect(calls[1]?.headers['Mcp-Session-Id']).toBe('sess-123');
     expect(calls[2]?.headers['Mcp-Session-Id']).toBe('sess-123');
@@ -159,6 +161,41 @@ describe('mcpInvokeOnce', () => {
     await expect(
       mcpInvokeOnce('127.0.0.1', 8000, { method: 'tools/list' }, { fetchImpl, readyTimeoutMs: 200 })
     ).rejects.toThrow(/did not become ready/);
+  });
+
+  it('retries a reachable-but-non-2xx initialize, surfacing the status in the readiness error', async () => {
+    // A server that is up but answers initialize with a steady 500 (e.g. still
+    // wiring its /mcp route) is retried until the window expires; the last
+    // HTTP status is reported so the failure is diagnosable.
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempts += 1;
+      return new Response('boom', { status: 500 });
+    }) as unknown as typeof fetch;
+    await expect(
+      mcpInvokeOnce('127.0.0.1', 8000, { method: 'tools/list' }, { fetchImpl, readyTimeoutMs: 200 })
+    ).rejects.toThrow(/did not become ready[\s\S]*initialize returned HTTP 500/);
+    expect(attempts).toBeGreaterThan(1); // retried, not failed on first non-2xx
+  });
+
+  it('maps a per-request timeout (AbortError) to a clear timeout error', async () => {
+    // initialize + initialized succeed; the real request aborts (timeout).
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'initialize') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 0, result: {} }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+      const err = new Error('The operation was aborted');
+      (err as { name?: string }).name = 'AbortError';
+      throw err;
+    }) as unknown as typeof fetch;
+    await expect(
+      mcpInvokeOnce('127.0.0.1', 8000, { method: 'tools/list' }, { fetchImpl, requestTimeoutMs: 50 })
+    ).rejects.toThrow(/timed out after 50ms/);
   });
 });
 

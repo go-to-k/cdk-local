@@ -136,12 +136,15 @@ async function initializeWithRetry(
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      // Any HTTP response (even an error status) means the server is up; we
-      // only retry while the socket itself is refused/reset during boot.
       await response.text().catch(() => undefined);
       if (response.status >= 200 && response.status < 300) {
         return response.headers.get(SESSION_ID_HEADER) ?? undefined;
       }
+      // A reachable-but-non-2xx initialize is treated as "up but not ready to
+      // handle the protocol yet" (e.g. a framework still wiring its /mcp
+      // route) and retried like a connect error — mirroring how the HTTP
+      // path's GET /ping retries a non-2xx while the server warms up. The last
+      // status is surfaced in the readiness error if the window expires.
       lastDetail = `initialize returned HTTP ${response.status}`;
       throw new Error(lastDetail);
     } catch (err) {
