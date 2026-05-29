@@ -268,7 +268,7 @@ async function localInvokeAgentCommand(
  * build from a local cdk.out asset when the URI matches one, else pull
  * from ECR, else pull a plain registry image.
  */
-async function resolveAgentImage(
+export async function resolveAgentImage(
   resolved: ResolvedAgentRuntime,
   options: LocalInvokeAgentOptions
 ): Promise<string> {
@@ -310,7 +310,7 @@ async function resolveAgentImage(
  * overrides, + `--from-cfn-stack` state substitution) plus AWS credentials
  * (`--assume-role` STS temp creds, else `--profile` / dev creds).
  */
-async function buildContainerEnv(
+export async function buildContainerEnv(
   resolved: ResolvedAgentRuntime,
   options: LocalInvokeAgentOptions,
   profileCredentials:
@@ -454,7 +454,7 @@ export function resolveAssumeRoleArn(
   return undefined;
 }
 
-function emitResult(result: AgentInvokeResult): void {
+export function emitResult(result: AgentInvokeResult): void {
   const logger = getLogger();
   if (result.status >= 400) {
     logger.warn(`Agent /invocations returned HTTP ${result.status}.`);
@@ -601,7 +601,9 @@ export function createLocalInvokeAgentCommand(
       new Option(
         '--platform <platform>',
         'docker --platform for the agent container (linux/amd64 or linux/arm64)'
-      ).default('linux/arm64')
+      )
+        .choices(['linux/amd64', 'linux/arm64'])
+        .default('linux/arm64')
     )
     .addOption(
       new Option(

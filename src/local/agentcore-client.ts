@@ -148,9 +148,8 @@ export async function invokeAgent(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -160,6 +159,15 @@ export async function invokeAgent(
       body,
       signal: controller.signal,
     });
+    // Read the body under the SAME abort signal — an agent that returns
+    // headers but stalls mid-body (realistic for long SSE streams) would
+    // otherwise hang past `timeoutMs` since `fetch` resolves on headers.
+    const raw = await response.text();
+    return {
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      raw,
+    };
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new Error(
@@ -171,11 +179,4 @@ export async function invokeAgent(
   } finally {
     clearTimeout(timer);
   }
-
-  const raw = await response.text();
-  return {
-    status: response.status,
-    contentType: response.headers.get('content-type'),
-    raw,
-  };
 }
