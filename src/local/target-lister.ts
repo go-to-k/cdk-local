@@ -185,13 +185,14 @@ function sortEntries(entries: TargetEntry[]): TargetEntry[] {
 const API_KIND_ORDER = ['HTTP API v2', 'REST API v1', 'Function URL', 'WebSocket'];
 
 /**
- * Group API surfaces by kind (in {@link API_KIND_ORDER}), then sort by display
- * path within each kind — so the `cdkl list` output and the interactive picker
- * present REST / HTTP / Function URL / WebSocket as readable blocks. Exported
- * for unit testing.
+ * Order API surfaces by stack, then kind (in {@link API_KIND_ORDER}), then
+ * display path — so a multi-stack app shows each stack's APIs as a block,
+ * grouped by kind inside it (single-stack apps are simply kind-grouped). Used
+ * by both `cdkl list` and the interactive picker. Exported for unit testing.
  */
 export function sortApiEntries(entries: TargetEntry[]): TargetEntry[] {
   return [...entries].sort((a, b) => {
+    if (a.stackName !== b.stackName) return a.stackName.localeCompare(b.stackName);
     const ka = API_KIND_ORDER.indexOf(a.kind ?? '');
     const kb = API_KIND_ORDER.indexOf(b.kind ?? '');
     if (ka !== kb) return ka - kb;

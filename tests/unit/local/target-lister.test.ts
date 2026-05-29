@@ -33,6 +33,29 @@ describe('sortApiEntries', () => {
       'Ws', // WebSocket
     ]);
   });
+
+  it('orders by stack first in a multi-stack app, then kind, then path', () => {
+    const e = (stackName: string, logicalId: string, kind: string): TargetEntry => ({
+      logicalId,
+      stackName,
+      qualifiedId: `${stackName}:${logicalId}`,
+      displayPath: `${stackName}/${logicalId}`,
+      kind,
+    });
+    const sorted = sortApiEntries([
+      e('Beta', 'BFn', 'Function URL'),
+      e('Alpha', 'AFn', 'Function URL'),
+      e('Beta', 'BHttp', 'HTTP API v2'),
+      e('Alpha', 'AHttp', 'HTTP API v2'),
+    ]);
+    // Alpha block (kind-grouped) first, then Beta block.
+    expect(sorted.map((x) => `${x.stackName}:${x.logicalId}`)).toEqual([
+      'Alpha:AHttp',
+      'Alpha:AFn',
+      'Beta:BHttp',
+      'Beta:BFn',
+    ]);
+  });
 });
 
 afterEach(() => {
