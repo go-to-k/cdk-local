@@ -1,3 +1,10 @@
+# [0.47.0](https://github.com/go-to-k/cdk-local/compare/v0.46.0...v0.47.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** stream over the agent /ws WebSocket with --ws ([#154](https://github.com/go-to-k/cdk-local/issues/154)) ([4791d28](https://github.com/go-to-k/cdk-local/commit/4791d28119e1a4a363fa3a5fe9ee3f3dc67de5c7))
+
 # [0.46.0](https://github.com/go-to-k/cdk-local/compare/v0.45.0...v0.46.0) (2026-05-29)
 
 
