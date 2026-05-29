@@ -481,9 +481,9 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
 | `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the agent's published port to. |
-| `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN in the template; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
+| `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN, else resolves it from `--from-cfn-stack` state; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR for cross-account / centralized registries. |
-| `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports. Bare form uses the resolved stack name. |
+| `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports, resolve a same-stack `AWS::ECR::Repository` ContainerUri to the deployed image, and resolve `AWS::SSM::Parameter::Value` env values (decrypted `SecureString` values are kept off the `docker run` argv). Bare form uses the resolved stack name. |
 | `--stack-region <region>` | — | Region of the state record to read; the CFn client region for `--from-cfn-stack`. |
 
 ### Credentials
@@ -493,6 +493,12 @@ the container. Precedence matches `cdkl invoke`: `--assume-role` (STS
 temp creds) wins, otherwise the developer's shell credentials are
 forwarded, overlaid with `--profile` when set (and the bind-mounted
 shared-credentials file so `fromIni({ profile })` resolves).
+
+Bare `--assume-role` (no ARN) uses the runtime's `RoleArn` when it is a
+literal ARN; when it is an intrinsic (the common L2 case — `Fn::GetAtt` to
+an auto-created role), the execution-role ARN is resolved from
+`--from-cfn-stack` state where available (a role whose ARN is not in the
+state record falls back to dev creds with a warning).
 
 ### Inbound JWT auth (`customJwtAuthorizer`)
 

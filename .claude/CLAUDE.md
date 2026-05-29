@@ -50,7 +50,11 @@ AWS managed services.
   to stdout incrementally. MCP runs the Streamable-HTTP `POST /mcp` contract on
   8000: the session handshake (initialize -> notifications/initialized) then one
   JSON-RPC request (`tools/list` by default, or the method/params from
-  `--event`)
+  `--event`). `--from-cfn-stack` deepens to parity with `cdkl invoke` /
+  `run-task`: a same-stack ECR ContainerUri resolves to the deployed image,
+  `AWS::SSM::Parameter::Value` env values resolve (decrypted `SecureString`
+  values kept off the `docker run` argv), and bare `--assume-role` resolves an
+  intrinsic `RoleArn` from state
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 

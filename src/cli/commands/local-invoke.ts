@@ -1037,13 +1037,14 @@ function suggestAssumeRoleFromState(state: StackState, logicalId: string): void 
 }
 
 export function resolveExecutionRoleArnFromState(
-  state: StackState,
-  logicalId: string
+  state: Pick<StackState, 'resources'>,
+  logicalId: string,
+  roleProperty = 'Role'
 ): string | undefined {
   const lambda = state.resources[logicalId];
   if (!lambda) return undefined;
 
-  const roleRef = lambda.properties?.['Role'] ?? lambda.observedProperties?.['Role'];
+  const roleRef = lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
   if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
     return roleRef;
   }

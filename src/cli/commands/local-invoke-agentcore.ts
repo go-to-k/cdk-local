@@ -23,6 +23,8 @@ import {
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
 } from './local-state-source.js';
+import type { LocalStateProvider, LocalStateRecord } from '../../local/local-state-provider.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   getEmbedConfig,
   setEmbedConfig,
@@ -30,6 +32,7 @@ import {
 } from '../../local/embed-config.js';
 import {
   AGENTCORE_MCP_PROTOCOL,
+  pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
   type AgentCoreCodeArtifact,
   type ResolvedAgentCoreRuntime,
@@ -53,7 +56,10 @@ import {
   substituteEnvVarsFromStateAsync,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
-import { derivePseudoParametersFromRegion } from '../../local/intrinsic-image.js';
+import {
+  derivePseudoParametersFromRegion,
+  type ImageResolutionContext,
+} from '../../local/intrinsic-image.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -71,7 +77,10 @@ import {
 import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
-import { applyProfileCredentialsOverlay } from './local-invoke.js';
+import {
+  applyProfileCredentialsOverlay,
+  resolveExecutionRoleArnFromState,
+} from './local-invoke.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -157,9 +166,19 @@ async function localInvokeAgentCoreCommand(
   let stopLogs: (() => void) | undefined;
   let sigintHandler: (() => void) | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
+  let stateProvider: LocalStateProvider | undefined;
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      if (stateProvider) {
+        try {
+          stateProvider.dispose();
+        } catch (err) {
+          getLogger().debug(
+            `state provider dispose failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
       if (stopLogs) {
         try {
           stopLogs();
@@ -237,7 +256,23 @@ async function localInvokeAgentCoreCommand(
         ),
     });
 
-    const resolved = resolveAgentCoreTarget(resolvedTarget, stacks);
+    // Build a `--from-cfn-stack` image-resolution context BEFORE resolving the
+    // target, so a same-stack AWS::ECR::Repository Fn::Join ContainerUri (or an
+    // Fn::Sub asset URI) reduces to the deployed image URI. The state load is
+    // shared with the env-substitution + role-from-state steps below.
+    const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
+    stateProvider = createLocalStateProvider(
+      options,
+      candidate?.stackName ?? '',
+      await resolveCfnFallbackRegion(options, candidate?.region),
+      extraStateProviders
+    );
+    const { context: imageContext, loaded: loadedState } =
+      stateProvider && candidate
+        ? await buildAgentCoreImageContext(candidate, stateProvider, options)
+        : { context: undefined, loaded: undefined };
+
+    const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
 
@@ -271,12 +306,14 @@ async function localInvokeAgentCoreCommand(
 
     const image = await resolveAgentCoreImage(resolved, options);
 
-    const dockerEnv = await buildContainerEnv(
+    const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
       resolved,
       options,
       profileCredentials,
       profileCredsFile,
-      extraStateProviders
+      stateProvider,
+      loadedState,
+      imageContext
     );
 
     const hostPort = await pickFreePort();
@@ -300,6 +337,8 @@ async function localInvokeAgentCoreCommand(
       platform: options.platform,
       name: containerName,
       ...(isMcp && { containerPort: MCP_CONTAINER_PORT }),
+      // Keep decrypted SecureString SSM env values off the `docker run` argv.
+      ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
     });
 
     stopLogs = streamLogs(containerId);
@@ -533,9 +572,16 @@ function findFileAssetByObjectKey(
 }
 
 /**
- * Build the container env: resolved template env vars (+ `--env-vars`
- * overrides, + `--from-cfn-stack` state substitution) plus AWS credentials
- * (`--assume-role` STS temp creds, else `--profile` / dev creds).
+ * Build the container env + the set of env keys to keep off the `docker run`
+ * argv. Substitutes `--from-cfn-stack` state into the template env (reusing the
+ * shared state load + image-resolution context — Ref / Fn::Sub / Fn::Join +
+ * SSM parameters, with decrypted SecureString values flagged sensitive),
+ * applies `--env-vars` overrides, then injects AWS credentials (`--assume-role`
+ * STS temp creds — resolving an intrinsic RoleArn from state for bare
+ * `--assume-role` — else `--profile` / dev creds).
+ *
+ * The state provider + loaded record + image context are built once by the
+ * caller and shared here, so this does not re-load state.
  */
 export async function buildContainerEnv(
   resolved: ResolvedAgentCoreRuntime,
@@ -544,43 +590,40 @@ export async function buildContainerEnv(
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
-  extraStateProviders: ExtraStateProviders | undefined
-): Promise<Record<string, string>> {
+  stateProvider: LocalStateProvider | undefined,
+  loaded: LocalStateRecord | undefined,
+  imageContext: ImageResolutionContext | undefined
+): Promise<{ env: Record<string, string>; sensitiveEnvKeys: Set<string> }> {
   const logger = getLogger();
   let templateEnv: Record<string, unknown> = resolved.environmentVariables;
+  const sensitiveEnvKeys = new Set<string>();
 
-  const stateProvider = createLocalStateProvider(
-    options,
-    resolved.stack.stackName,
-    await resolveCfnFallbackRegion(options, resolved.stack.region),
-    extraStateProviders
-  );
-  if (stateProvider) {
-    try {
-      const loaded = await stateProvider.load(resolved.stack.stackName, resolved.stack.region);
-      if (loaded) {
-        const subContext: SubstitutionContext = {
-          resources: loaded.resources,
-          consumerRegion: loaded.region,
-        };
-        const pseudo = derivePseudoParametersFromRegion(loaded.region);
-        if (pseudo) subContext.pseudoParameters = pseudo;
-        const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
-        if (resolver) subContext.crossStackResolver = resolver;
-        const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
-        templateEnv = env;
-        for (const key of audit.resolvedKeys) {
-          logger.debug(`${stateProvider.label}: substituted env var ${key}`);
-        }
-        for (const { key, reason } of audit.unresolved) {
-          logger.warn(
-            `${stateProvider.label}: could not substitute env var ${key} (${reason}). ` +
-              `Override it via --env-vars or it will be dropped.`
-          );
-        }
-      }
-    } finally {
-      stateProvider.dispose();
+  if (stateProvider && loaded) {
+    const subContext: SubstitutionContext = {
+      resources: imageContext?.stateResources ?? loaded.resources,
+      consumerRegion: loaded.region,
+    };
+    const pseudo =
+      imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
+    if (pseudo) subContext.pseudoParameters = pseudo;
+    if (imageContext?.stateParameters) subContext.parameters = imageContext.stateParameters;
+    if (imageContext?.stateSensitiveParameters?.length) {
+      subContext.sensitiveParameters = new Set(imageContext.stateSensitiveParameters);
+    }
+    const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
+    if (resolver) subContext.crossStackResolver = resolver;
+    const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+    templateEnv = env;
+    for (const key of audit.resolvedKeys) {
+      logger.debug(`${stateProvider.label}: substituted env var ${key}`);
+    }
+    // Decrypted SecureString SSM values: keep them off the `docker run` argv.
+    for (const key of audit.sensitiveKeys) sensitiveEnvKeys.add(key);
+    for (const { key, reason } of audit.unresolved) {
+      logger.warn(
+        `${stateProvider.label}: could not substitute env var ${key} (${reason}). ` +
+          `Override it via --env-vars or it will be dropped.`
+      );
     }
   }
 
@@ -597,7 +640,7 @@ export async function buildContainerEnv(
   }
 
   const dockerEnv: Record<string, string> = { ...envResult.resolved };
-  const assumeRoleArn = resolveAssumeRoleArn(options, resolved);
+  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
@@ -609,7 +652,69 @@ export async function buildContainerEnv(
       },
     }),
   });
-  return dockerEnv;
+  return { env: dockerEnv, sensitiveEnvKeys };
+}
+
+/**
+ * Build the `--from-cfn-stack` image-resolution context + return the loaded
+ * state record (loaded once, reused by env substitution + role resolution).
+ * Mirrors `run-task`'s `buildEcsImageResolutionContext`: pseudo parameters
+ * (region + STS account id), the deployed resources, and SSM template
+ * parameters (decrypted SecureString logical ids flagged sensitive).
+ */
+export async function buildAgentCoreImageContext(
+  candidate: StackInfo,
+  stateProvider: LocalStateProvider,
+  options: LocalInvokeAgentCoreOptions
+): Promise<{ context: ImageResolutionContext | undefined; loaded: LocalStateRecord | undefined }> {
+  const logger = getLogger();
+  const region =
+    options.region ??
+    process.env['AWS_REGION'] ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    candidate.region;
+
+  let accountId: string | undefined;
+  try {
+    accountId = await resolveCallerAccountId(region, options.profile);
+  } catch (err) {
+    logger.warn(
+      `--from-cfn-stack: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
+    );
+  }
+
+  const context: ImageResolutionContext = {};
+  const pseudo = derivePseudoParametersFromRegion(region, accountId);
+  if (pseudo) context.pseudoParameters = pseudo;
+
+  const loaded = await stateProvider.load(candidate.stackName, candidate.region);
+  if (loaded) {
+    context.stateResources = loaded.resources;
+    if (stateProvider.resolveTemplateSsmParameters) {
+      const ssm = await stateProvider.resolveTemplateSsmParameters(candidate.template);
+      if (Object.keys(ssm.values).length > 0) context.stateParameters = ssm.values;
+      if (ssm.secureStringLogicalIds.length > 0) {
+        context.stateSensitiveParameters = ssm.secureStringLogicalIds;
+      }
+    }
+  }
+  return { context, loaded: loaded ?? undefined };
+}
+
+/** STS `GetCallerIdentity` for the `${AWS::AccountId}` pseudo parameter (threads `--profile`). */
+async function resolveCallerAccountId(
+  region: string | undefined,
+  profile: string | undefined
+): Promise<string | undefined> {
+  const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
+  try {
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    return identity.Account;
+  } finally {
+    sts.destroy();
+  }
 }
 
 /**
@@ -662,18 +767,31 @@ export async function applyAgentCoreCredentialEnv(
 
 /**
  * Resolve the role ARN to assume, honoring the three `--assume-role` forms.
- * Bare `--assume-role` uses the runtime's literal `RoleArn`; warns when it
- * is an intrinsic (no ARN to assume) and falls back to dev creds.
+ * Bare `--assume-role` uses the runtime's literal `RoleArn`; when that is an
+ * intrinsic (the common L2 case — `Fn::GetAtt` to an auto-created role) it
+ * resolves the execution-role ARN from `--from-cfn-stack` state, and only
+ * warns + falls back to dev creds when neither is available.
  */
 export function resolveAssumeRoleArn(
   options: LocalInvokeAgentCoreOptions,
-  resolved: ResolvedAgentCoreRuntime
+  resolved: ResolvedAgentCoreRuntime,
+  loaded: LocalStateRecord | undefined
 ): string | undefined {
   if (typeof options.assumeRole === 'string') return options.assumeRole;
   if (options.assumeRole === true) {
     if (resolved.roleArn) return resolved.roleArn;
+    if (loaded) {
+      const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
+      if (fromState) {
+        getLogger().debug(`--assume-role: resolved RoleArn from state: ${fromState}`);
+        return fromState;
+      }
+    }
     getLogger().warn(
-      "--assume-role passed without an ARN, but the runtime's RoleArn is not a literal ARN in the template. " +
+      "--assume-role passed without an ARN, but the runtime's RoleArn is not a literal ARN in the template " +
+        (loaded
+          ? 'and could not be resolved from the deployed stack state. '
+          : 'and no --from-cfn-stack state is available to resolve it. ') +
         'Pass the ARN explicitly: --assume-role <arn>. ' +
         "Falling back to the developer's shell credentials."
     );

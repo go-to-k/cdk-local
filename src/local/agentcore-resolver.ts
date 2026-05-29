@@ -162,6 +162,28 @@ export function resolveAgentCoreTarget(
 }
 
 /**
+ * Best-effort pick of the candidate stack a target lives in, BEFORE full
+ * resolution — so the command can build a `--from-cfn-stack` image-resolution
+ * context (state load + pseudo parameters) and thread it into
+ * {@link resolveAgentCoreTarget} so a same-stack `AWS::ECR::Repository`
+ * `Fn::Join` ContainerUri resolves to the deployed URI. Returns undefined when
+ * the stack is ambiguous (multi-stack app, no prefix) — the caller proceeds
+ * without a context and the resolver surfaces its own error if one is needed.
+ * Mirrors `run-task`'s `pickCandidateStack`.
+ */
+export function pickAgentCoreCandidateStack(
+  target: string,
+  stacks: StackInfo[]
+): StackInfo | undefined {
+  const parsed = parseTarget(target);
+  if (parsed.stackPattern === null) {
+    return stacks.length === 1 ? stacks[0] : undefined;
+  }
+  const matched = matchStacks(stacks, [parsed.stackPattern]);
+  return matched.length === 1 ? matched[0] : undefined;
+}
+
+/**
  * Single-stack auto-detect: if the app has exactly one stack the user may
  * omit the stack prefix; otherwise an explicit stack pattern is required.
  * Mirrors the Lambda / ECS resolvers' behavior via the shared
