@@ -29,6 +29,7 @@ import {
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
 import {
+  AGENTCORE_MCP_PROTOCOL,
   resolveAgentCoreTarget,
   type ResolvedAgentCoreRuntime,
 } from '../../local/agentcore-resolver.js';
@@ -37,6 +38,13 @@ import {
   waitForAgentCorePing,
   type AgentCoreInvokeResult,
 } from '../../local/agentcore-client.js';
+import {
+  mcpInvokeOnce,
+  MCP_CONTAINER_PORT,
+  MCP_PATH,
+  type McpInvokeResult,
+  type McpJsonRpcRequest,
+} from '../../local/agentcore-mcp-client.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
@@ -227,18 +235,35 @@ async function localInvokeAgentCoreCommand(
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
+    const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
 
     // Read + validate the event (and resolve the session id) BEFORE any
     // Docker work, so a bad --event / --event-stdin fails fast instead of
     // after paying for an image build + container boot.
     const sessionId = options.sessionId ?? randomUUID();
     const event = await readEvent(options);
+    // For MCP, parse the event into a JSON-RPC request up front so a malformed
+    // one fails fast too (default: tools/list).
+    const mcpRequest = isMcp ? buildMcpRequest(event) : undefined;
 
     // Inbound JWT auth: when the runtime declares a customJwtAuthorizer,
     // verify the supplied bearer token against its OIDC discovery URL BEFORE
     // any Docker work — rejecting a missing / invalid token the way AgentCore
     // does. Returns the `Authorization` header to forward to the container.
-    const authorization = await resolveInboundAuthorization(resolved, options);
+    // MCP talks vanilla MCP directly to the container; its bearer / session is
+    // an AgentCore managed-plane concern the front door maps to Mcp-Session-Id,
+    // so it is not applied to a direct local /mcp call.
+    let authorization: string | undefined;
+    if (isMcp) {
+      if (resolved.jwtAuthorizer || options.bearerToken) {
+        logger.info(
+          `MCP runtime: invoking the local container's ${MCP_PATH} directly (vanilla MCP). ` +
+            `An inbound JWT / --bearer-token is an AgentCore managed-plane concern and is not applied locally.`
+        );
+      }
+    } else {
+      authorization = await resolveInboundAuthorization(resolved, options);
+    }
 
     const image = await resolveAgentCoreImage(resolved, options);
 
@@ -257,7 +282,10 @@ async function localInvokeAgentCoreCommand(
     // if the process is killed before teardown — unlike a one-shot Lambda
     // invoke, the agent container runs a long-lived HTTP server.
     const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    logger.info(`Starting agent container (image=${image}, port=${hostPort})...`);
+    const containerPortLabel = isMcp ? `${MCP_CONTAINER_PORT}${MCP_PATH}` : '8080';
+    logger.info(
+      `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
+    );
     containerId = await runDetached({
       image,
       mounts: [],
@@ -267,6 +295,7 @@ async function localInvokeAgentCoreCommand(
       host: containerHost,
       platform: options.platform,
       name: containerName,
+      ...(isMcp && { containerPort: MCP_CONTAINER_PORT }),
     });
 
     stopLogs = streamLogs(containerId);
@@ -276,20 +305,30 @@ async function localInvokeAgentCoreCommand(
     };
     process.on('SIGINT', sigintHandler);
 
-    await waitForAgentCorePing(containerHost, hostPort);
+    if (isMcp && mcpRequest) {
+      // MCP has no /ping: mcpInvokeOnce folds the boot-wait into a retried
+      // `initialize`, then runs the session handshake + the one request.
+      logger.info(`MCP request: ${mcpRequest.method}`);
+      const mcp = await mcpInvokeOnce(containerHost, hostPort, mcpRequest);
+      // Settle so container logs flush before teardown.
+      await new Promise((r) => setTimeout(r, 250));
+      emitMcpResult(mcp);
+    } else {
+      await waitForAgentCorePing(containerHost, hostPort);
 
-    const result = await invokeAgentCore(containerHost, hostPort, event, {
-      sessionId,
-      timeoutMs: 120_000,
-      // Stream a text/event-stream response to stdout as it arrives, so a
-      // token-streaming agent shows incrementally rather than all at once.
-      onChunk: (text) => process.stdout.write(text),
-      ...(authorization && { authorization }),
-    });
+      const result = await invokeAgentCore(containerHost, hostPort, event, {
+        sessionId,
+        timeoutMs: 120_000,
+        // Stream a text/event-stream response to stdout as it arrives, so a
+        // token-streaming agent shows incrementally rather than all at once.
+        onChunk: (text) => process.stdout.write(text),
+        ...(authorization && { authorization }),
+      });
 
-    // Settle so container logs flush before teardown.
-    await new Promise((r) => setTimeout(r, 250));
-    emitResult(result);
+      // Settle so container logs flush before teardown.
+      await new Promise((r) => setTimeout(r, 250));
+      emitResult(result);
+    }
   } finally {
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     await cleanup();
@@ -564,6 +603,47 @@ export function emitResult(result: AgentCoreInvokeResult): void {
   process.stdout.write(`${result.raw}\n`);
 }
 
+/**
+ * Build the JSON-RPC request to send to an MCP runtime from `--event`:
+ *   - no `--event` (empty object) → `tools/list` (discover the server's tools),
+ *   - an object with a string `method` → that method + its `params`,
+ *   - anything else → a fail-fast error.
+ *
+ * Exported for unit testing.
+ */
+export function buildMcpRequest(event: unknown): McpJsonRpcRequest {
+  if (event === undefined || event === null) return { method: 'tools/list', params: {} };
+  if (typeof event !== 'object' || Array.isArray(event)) {
+    throw new CdkLocalError(
+      'MCP --event must be a JSON object describing a JSON-RPC request ' +
+        '(e.g. {"method":"tools/call","params":{"name":"...","arguments":{...}}}).',
+      'LOCAL_INVOKE_AGENTCORE_MCP_EVENT_INVALID'
+    );
+  }
+  const obj = event as Record<string, unknown>;
+  if (Object.keys(obj).length === 0) return { method: 'tools/list', params: {} };
+  if (typeof obj['method'] !== 'string') {
+    throw new CdkLocalError(
+      'MCP --event must include a string "method" (a JSON-RPC method such as ' +
+        `"tools/list" or "tools/call"). Got keys: ${Object.keys(obj).join(', ')}.`,
+      'LOCAL_INVOKE_AGENTCORE_MCP_EVENT_INVALID'
+    );
+  }
+  return {
+    method: obj['method'],
+    ...(obj['params'] !== undefined && { params: obj['params'] }),
+  };
+}
+
+/** Print the MCP JSON-RPC response; exit 1 when it carried a JSON-RPC error. */
+export function emitMcpResult(result: McpInvokeResult): void {
+  if (!result.ok) {
+    getLogger().warn('MCP server returned a JSON-RPC error.');
+    process.exitCode = 1;
+  }
+  process.stdout.write(`${result.raw}\n`);
+}
+
 /** Map a `--platform` value to the architecture `buildContainerImage` expects. */
 export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
   return platform === 'linux/amd64' ? 'x86_64' : 'arm64';
@@ -680,13 +760,15 @@ export function createLocalInvokeAgentCoreCommand(
   setEmbedConfig(opts.embedConfig);
   const cmd = new Command('invoke-agentcore')
     .description(
-      'Run a Bedrock AgentCore Runtime container locally and invoke it once over the AgentCore HTTP ' +
-        'contract (POST /invocations + GET /ping on port 8080). Resolves the AWS::BedrockAgentCore::Runtime, ' +
-        'pulls/builds its container, injects env vars + AWS credentials, and prints the response. ' +
-        'Target accepts a CDK display path (MyStack/MyAgent) or stack-qualified logical ID ' +
+      'Run a Bedrock AgentCore Runtime container locally and invoke it once over its protocol ' +
+        'contract: HTTP (POST /invocations + GET /ping on 8080) or MCP (POST /mcp Streamable HTTP ' +
+        'on 8000). Resolves the AWS::BedrockAgentCore::Runtime, pulls/builds its container, injects ' +
+        'env vars + AWS credentials, and prints the response. For an MCP runtime, runs the session ' +
+        'handshake then sends one JSON-RPC request (tools/list by default, or the method/params from ' +
+        '--event). Target accepts a CDK display path (MyStack/MyAgent) or stack-qualified logical ID ' +
         '(MyStack:MyAgentRuntime1234). Single-stack apps may omit the stack prefix. ' +
         'Omit <target> in an interactive terminal to pick from a list. ' +
-        'v1 supports the container artifact + HTTP protocol; the agent calls real AWS for managed services.'
+        'Supports the container artifact on the HTTP + MCP protocols; the agent calls real AWS for managed services.'
     )
     .argument(
       '[target]',

@@ -13,7 +13,7 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | --- | --- | --- |
 | `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
-| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container + the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080) |
+| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container on its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080) or MCP (`POST /mcp` on 8000) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
@@ -416,20 +416,25 @@ same sized `/tmp`.
 ## `cdkl invoke-agentcore` (run Bedrock AgentCore Runtime agents locally)
 
 `cdkl invoke-agentcore <target>` runs an `AWS::BedrockAgentCore::Runtime`
-agent container locally and invokes it once over the AgentCore HTTP
-contract. It resolves the runtime, pulls / builds its container, starts
-it on port 8080, waits for `GET /ping` to return a 2xx, POSTs the event
-to `POST /invocations` (with the session-id header), prints the response
-body, and tears the container down.
+agent container locally and invokes it once over its protocol contract. It
+resolves the runtime, pulls / builds its container, starts it, waits for it
+to become ready, sends one request, prints the response, and tears the
+container down. The exact contract depends on `ProtocolConfiguration`:
+
+- **HTTP** (default) — starts on port 8080, waits for `GET /ping` to return
+  a 2xx, then POSTs the event to `POST /invocations` (with the session-id
+  header) and prints the response body.
+- **MCP** — starts on port 8000, then speaks the Model Context Protocol over
+  Streamable HTTP at `POST /mcp`: see [MCP protocol](#mcp-protocol) below.
 
 This is the same request/response loop AgentCore runs in the cloud,
-exercised locally before deploy. v1 supports the **container artifact**
-(`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) on the
-**HTTP** protocol only; `CodeConfiguration` (S3 zip + managed runtime)
-artifacts and the `MCP` / `A2A` / `AGUI` protocols are rejected with an
-actionable error. The agent's own calls to AWS managed services (Bedrock
-models, memory, etc.) go to real AWS — credentials are injected exactly
-like `cdkl invoke` (see below).
+exercised locally before deploy. It supports the **container artifact**
+(`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) on the **HTTP**
+and **MCP** protocols; `CodeConfiguration` (S3 zip + managed runtime)
+artifacts and the `A2A` / `AGUI` protocols are rejected with an actionable
+error. The agent's own calls to AWS managed services (Bedrock models,
+memory, etc.) go to real AWS — credentials are injected exactly like
+`cdkl invoke` (see below).
 
 The container image is resolved like a container Lambda: a local cdk.out
 asset (the `fromAsset` / Dockerfile path) is built with `docker build`;
@@ -495,18 +500,43 @@ before the container starts:
 
 ### Streaming responses
 
-A JSON (`application/json`) response is printed verbatim once the request
-completes. A streaming SSE (`text/event-stream`) response is written to
-stdout chunk-by-chunk as it arrives — so a token-streaming agent shows
-incrementally, the same UX AgentCore gives in the cloud — rather than all
-at once at the end. Bidirectional `/ws` WebSocket streaming is a follow-up.
+(HTTP protocol.) A JSON (`application/json`) response is printed verbatim
+once the request completes. A streaming SSE (`text/event-stream`) response
+is written to stdout chunk-by-chunk as it arrives — so a token-streaming
+agent shows incrementally, the same UX AgentCore gives in the cloud —
+rather than all at once at the end. Bidirectional `/ws` WebSocket streaming
+is a follow-up.
+
+### MCP protocol
+
+When `ProtocolConfiguration = MCP`, the runtime's container serves the Model
+Context Protocol over Streamable HTTP at `POST /mcp` on port 8000 (there is
+no `GET /ping` — readiness is a successful `initialize`). `cdkl
+invoke-agentcore` runs the minimal MCP session lifecycle:
+
+1. `initialize` (retried while the container boots — this is the readiness
+   wait); the server may assign an `Mcp-Session-Id` that subsequent requests
+   echo,
+2. `notifications/initialized`,
+3. one JSON-RPC request — **`tools/list` by default**, or the
+   `{"method": ..., "params": ...}` from `--event` (e.g.
+   `{"method":"tools/call","params":{"name":"...","arguments":{...}}}`).
+
+The JSON-RPC response is printed (handling both an `application/json` and a
+`text/event-stream` reply). Talking to the local container is **vanilla
+MCP**: the AgentCore session header and inbound OAuth bearer are managed-plane
+concerns the cloud front door maps to MCP's own `Mcp-Session-Id`, so they are
+not applied to a direct local `/mcp` call (`--bearer-token` / `--session-id`
+are HTTP-protocol options and are ignored for MCP). The `A2A` / `AGUI`
+protocols are not supported yet.
 
 ### `cdkl invoke-agentcore` exit codes
 
-- `0` — the agent answered `POST /invocations` with a 2xx status.
-- `1` — the agent returned a 4xx/5xx from `/invocations`, OR a
-  cdk-local-side error: Docker not installed, image build / pull failed,
-  target not found, the agent never became ready on `GET /ping` within
+- `0` — the agent answered with a success: a 2xx from `POST /invocations`
+  (HTTP), or a JSON-RPC response with no top-level `error` (MCP).
+- `1` — the agent returned a 4xx/5xx from `/invocations` or a JSON-RPC
+  `error` (MCP), OR a cdk-local-side error: Docker not installed, image
+  build / pull failed, target not found, the agent never became ready within
   the readiness window, or the container exited before responding.
 
 ## `cdkl start-api` (long-running local API server)
