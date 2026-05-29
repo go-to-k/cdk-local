@@ -88,4 +88,18 @@ describe('invokeAgentCore', () => {
     expect(result.contentType).toBe('text/event-stream');
     expect(result.raw).toBe(sse);
   });
+
+  it('maps an aborted request (timeout) to a clear timeout error', async () => {
+    // The abort fires while the request (or its body read) is in flight; the
+    // client surfaces it as a timeout rather than a raw AbortError.
+    const fetchMock = vi.fn(async () => {
+      const err = new Error('The operation was aborted');
+      (err as { name?: string }).name = 'AbortError';
+      throw err;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      invokeAgentCore('127.0.0.1', 9000, {}, { sessionId: 's', timeoutMs: 50 })
+    ).rejects.toThrow(/timed out after 50ms/);
+  });
 });
