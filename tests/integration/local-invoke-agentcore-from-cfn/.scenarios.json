@@ -1,0 +1,6 @@
+{
+  "scenarios": [
+    "agentcore-from-cfn-ssm-substitution",
+    "agentcore-securestring-off-argv"
+  ]
+}
