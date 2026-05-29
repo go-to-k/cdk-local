@@ -98,12 +98,7 @@ export {
   type ResolvedSsmParameters,
 } from './local/ssm-parameter-resolver.js';
 
-/**
- * Low-level local-execution building blocks (`cdk-local/internal`),
- * re-exported here so the main entry remains the full union for hosts
- * that shim cdk-local's `src/local/**` modules verbatim (e.g. cdkd).
- * These carry NO SEMVER GUARANTEE — see `src/internal.ts`. New shim
- * hosts should import them from `cdk-local/internal` directly; this
- * re-export keeps existing `cdk-local` imports working unchanged.
- */
-export * from './internal.js';
+// Low-level local-execution building blocks are intentionally NOT
+// re-exported here; they live behind the `cdk-local/internal` subpath
+// (`src/internal.ts`) and carry no semver guarantee. Shim hosts (e.g.
+// cdkd) import them from `cdk-local/internal` directly.
