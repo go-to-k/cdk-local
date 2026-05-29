@@ -65,8 +65,9 @@ Gateway).
   cloud-map-registry, lambda-resolver, ecs-task-resolver,
   route-discovery, authorizer-resolver, lambda-authorizer, cognito-jwt,
   sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
-  (`cdkl list` target enumeration), target-picker (`-i/--interactive`
-  arrow-key target selection via `@clack/prompts`), embed-config
+  (`cdkl list` target enumeration), target-picker (interactive arrow-key
+  target selection via `@clack/prompts` when a target is omitted in a TTY),
+  embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), etc.
