@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
-import { Runtime, AgentRuntimeArtifact } from 'aws-cdk-lib/aws-bedrockagentcore';
+import {
+  Runtime,
+  AgentRuntimeArtifact,
+  RuntimeAuthorizerConfiguration,
+} from 'aws-cdk-lib/aws-bedrockagentcore';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,6 +37,24 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
         platform: Platform.LINUX_ARM64,
       }),
       environmentVariables: { GREETING: 'hello-from-agent' },
+    });
+
+    // A JWT-protected runtime for the inbound-auth tests. The discovery URL
+    // is deliberately unreachable (localhost:1), so `cdkl invoke-agentcore`
+    // falls back to JWKS/discovery pass-through (accept + warn) — exercising
+    // the auth wiring end-to-end offline: a missing token is rejected before
+    // the container starts, `--no-verify-auth` skips, and `--bearer-token` is
+    // forwarded to /invocations.
+    new Runtime(this, 'ProtectedAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      environmentVariables: { GREETING: 'hello-from-agent' },
+      authorizerConfiguration: RuntimeAuthorizerConfiguration.usingJWT(
+        'https://127.0.0.1:1/.well-known/openid-configuration',
+        ['client-9'],
+        ['aud-1']
+      ),
     });
   }
 }

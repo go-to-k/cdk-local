@@ -24,6 +24,7 @@ cd "$(dirname "$0")"
 
 CDKL="node ../../../dist/cli.js"
 TARGET="CdkLocalInvokeAgentCoreFixture/EchoAgent"
+PROTECTED="CdkLocalInvokeAgentCoreFixture/ProtectedAgent"
 BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
 
 echo "==> Verifying Docker is available"
@@ -38,7 +39,7 @@ if [[ ! -d node_modules ]]; then
 fi
 
 # Test 1 — default empty event: env injection + auto session id.
-echo "==> [1/4] Invoking EchoAgent with default empty event"
+echo "==> [1/7] Invoking EchoAgent with default empty event"
 RESULT_1=$(${CDKL} invoke-agentcore "${TARGET}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
@@ -52,7 +53,7 @@ echo "${RESULT_1}" | grep -Eq '"sessionId":"[0-9a-fA-F-]{8,}' || {
 }
 
 # Test 2 — event payload via --event echoes through /invocations.
-echo "==> [2/4] Invoking EchoAgent with --event payload"
+echo "==> [2/7] Invoking EchoAgent with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
@@ -64,7 +65,7 @@ echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
 }
 
 # Test 3 — --env-vars override wins over the template env.
-echo "==> [3/4] Invoking EchoAgent with --env-vars override"
+echo "==> [3/7] Invoking EchoAgent with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -76,7 +77,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — explicit --session-id reaches the container's session header.
-echo "==> [4/4] Invoking EchoAgent with explicit --session-id"
+echo "==> [4/7] Invoking EchoAgent with explicit --session-id"
 SESSION="cdkl-integ-session-1234567890abcdef"
 RESULT_4=$(${CDKL} invoke-agentcore "${TARGET}" --session-id "${SESSION}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_4}"
@@ -85,5 +86,47 @@ echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
   exit 1
 }
 
+# Test 5 — a JWT-protected runtime invoked WITHOUT a token is rejected
+# BEFORE any container starts (AgentCore returns 401 in the cloud).
+echo "==> [5/7] ProtectedAgent without --bearer-token must be rejected pre-container"
+set +e
+OUT_5=$(${CDKL} invoke-agentcore "${PROTECTED}" 2>&1)
+RC_5=$?
+set -e
+echo "    exit=${RC_5}"
+[[ ${RC_5} -ne 0 ]] || {
+  echo "FAIL: expected a non-zero exit for the protected runtime with no token, got 0. Output: ${OUT_5}"
+  exit 1
+}
+echo "${OUT_5}" | grep -q "requires an inbound JWT" || {
+  echo "FAIL: expected an 'requires an inbound JWT' error, got: ${OUT_5}"
+  exit 1
+}
+RUNNING=$(docker ps -a --filter name=cdkl-agentcore- -q | wc -l | tr -d ' ')
+[[ "${RUNNING}" == "0" ]] || {
+  echo "FAIL: a container was created despite the pre-container auth rejection (${RUNNING} found)"
+  exit 1
+}
+
+# Test 6 — --no-verify-auth skips verification and proceeds.
+echo "==> [6/7] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
+RESULT_6=$(${CDKL} invoke-agentcore "${PROTECTED}" --no-verify-auth 2>/dev/null | tail -1)
+echo "    response: ${RESULT_6}"
+echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
+  echo "FAIL: expected the agent to respond under --no-verify-auth, got: ${RESULT_6}"
+  exit 1
+}
+
+# Test 7 — a --bearer-token (discovery URL unreachable -> pass-through accept)
+# is verified and forwarded to /invocations as the Authorization header.
+echo "==> [7/7] ProtectedAgent with --bearer-token forwards the Authorization header"
+TOKEN="header.payload.sig"
+RESULT_7=$(${CDKL} invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}" 2>/dev/null | tail -1)
+echo "    response: ${RESULT_7}"
+echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
+  echo "FAIL: expected the bearer token forwarded as Authorization: Bearer ${TOKEN}, got: ${RESULT_7}"
+  exit 1
+}
+
 echo ""
-echo "==> All 4 local-invoke-agentcore tests passed"
+echo "==> All 7 local-invoke-agentcore tests passed"

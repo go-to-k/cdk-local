@@ -447,6 +447,8 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--event-stdin` | off | Read the event JSON from stdin instead of a file (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block. `null` clears a key. |
 | `--session-id <id>` | random UUID | Value for the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` request header. |
+| `--bearer-token <jwt>` | — | Bearer JWT to present when the runtime declares a `customJwtAuthorizer`. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` as `Authorization: Bearer <jwt>`. |
+| `--no-verify-auth` | off (verify on) | Skip inbound JWT verification even when the runtime declares a `customJwtAuthorizer` (local-dev escape hatch). A `--bearer-token`, if given, is still forwarded. |
 | `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container (AgentCore requires ARM64; override to `linux/amd64` if needed). |
 | `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
 | `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
@@ -463,6 +465,29 @@ the container. Precedence matches `cdkl invoke`: `--assume-role` (STS
 temp creds) wins, otherwise the developer's shell credentials are
 forwarded, overlaid with `--profile` when set (and the bind-mounted
 shared-credentials file so `fromIni({ profile })` resolves).
+
+### Inbound JWT auth (`customJwtAuthorizer`)
+
+When the runtime declares an `AuthorizerConfiguration.CustomJWTAuthorizer`,
+`cdkl invoke-agentcore` enforces it the way AgentCore does in the cloud —
+before the container starts:
+
+- **No `--bearer-token`** → rejected (AgentCore returns 401). Pass a token,
+  or `--no-verify-auth` to skip for local dev.
+- **`--bearer-token <jwt>`** → the token is verified against the runtime's
+  OIDC discovery URL: the discovery document is fetched for its `issuer` +
+  `jwks_uri`, then the JWT's RS256 signature, `iss`, `exp`, and audience are
+  checked (the audience allowlist is `allowedAudience` ∪ `allowedClients`,
+  matched against `aud` / `client_id`). An invalid token is rejected
+  (AgentCore returns 403); a valid one is forwarded to `/invocations` as
+  `Authorization: Bearer <jwt>`.
+- **Discovery URL / JWKS unreachable** → falls back to pass-through (accept +
+  warn), the same offline-dev trade-off `cdkl start-api` makes for
+  unreachable Cognito JWKS.
+- **`--no-verify-auth`** → skips verification entirely; a `--bearer-token`,
+  if given, is still forwarded.
+
+`allowedScopes` + `customClaims` validation is not yet enforced (follow-up).
 
 ### Streaming responses
 

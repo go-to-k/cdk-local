@@ -144,7 +144,7 @@ cdkl invoke-agentcore MyStack/ChatAgent --event ./event.json
 
 For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
 
-`invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS.
+`invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS. When the runtime declares a JWT authorizer (`customJwtAuthorizer`), pass `--bearer-token <jwt>` — it's verified against the runtime's OIDC discovery URL (signature / issuer / expiry / audience) and forwarded to `/invocations`, the way AgentCore gates inbound requests; a missing or invalid token is rejected before the container starts (use `--no-verify-auth` to skip for local dev).
 
 Use this for fast iteration on Lambda code, API routing checks, container task smoke tests, and agent request/response checks.
 

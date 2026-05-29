@@ -10,6 +10,7 @@ import {
 } from './intrinsic-image.js';
 import { parseTarget, type ParsedTarget } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * CloudFormation resource type for a Bedrock AgentCore Runtime.
@@ -66,6 +67,26 @@ export interface ResolvedAgentCoreRuntime {
   roleArn?: string;
   /** Always `HTTP` in v1 (validated at resolution time). */
   protocol: string;
+  /**
+   * `Properties.AuthorizerConfiguration.CustomJWTAuthorizer` when present
+   * with a literal `DiscoveryUrl` — the inbound JWT (OAuth / OIDC) authorizer
+   * AgentCore uses to gate `/invocations`. Undefined when the runtime is
+   * unauthenticated, or when `DiscoveryUrl` is an unresolved intrinsic.
+   */
+  jwtAuthorizer?: AgentCoreJwtAuthorizer;
+}
+
+/**
+ * The inbound custom-JWT authorizer config a runtime declares
+ * (`AuthorizerConfiguration.CustomJWTAuthorizer`). `discoveryUrl` is the
+ * OIDC discovery document URL (`.well-known/openid-configuration`);
+ * `allowedAudience` / `allowedClients` are the `aud` / `client_id`
+ * allowlists the token must satisfy.
+ */
+export interface AgentCoreJwtAuthorizer {
+  discoveryUrl: string;
+  allowedAudience?: string[];
+  allowedClients?: string[];
 }
 
 export class AgentCoreResolutionError extends Error {
@@ -221,6 +242,7 @@ function extractRuntimeProperties(
       : {};
 
   const roleArn = typeof props['RoleArn'] === 'string' ? props['RoleArn'] : undefined;
+  const jwtAuthorizer = extractJwtAuthorizer(props['AuthorizerConfiguration'], logicalId);
 
   return {
     stack,
@@ -230,6 +252,49 @@ function extractRuntimeProperties(
     environmentVariables,
     protocol,
     ...(roleArn !== undefined && { roleArn }),
+    ...(jwtAuthorizer !== undefined && { jwtAuthorizer }),
+  };
+}
+
+/**
+ * Extract a literal `CustomJWTAuthorizer` from `AuthorizerConfiguration`.
+ * Returns undefined when there is no authorizer, or when `DiscoveryUrl` is
+ * not a literal string (an unresolved intrinsic) — verification needs a
+ * concrete URL to fetch, so an intrinsic is warn-and-skipped by the caller.
+ */
+function extractJwtAuthorizer(
+  authorizerConfig: unknown,
+  logicalId: string
+): AgentCoreJwtAuthorizer | undefined {
+  if (
+    !authorizerConfig ||
+    typeof authorizerConfig !== 'object' ||
+    Array.isArray(authorizerConfig)
+  ) {
+    return undefined;
+  }
+  const jwt = (authorizerConfig as Record<string, unknown>)['CustomJWTAuthorizer'];
+  if (!jwt || typeof jwt !== 'object' || Array.isArray(jwt)) return undefined;
+  const cfg = jwt as Record<string, unknown>;
+
+  const discoveryUrl = cfg['DiscoveryUrl'];
+  if (typeof discoveryUrl !== 'string' || discoveryUrl.length === 0) {
+    getLogger().warn(
+      `AgentCore Runtime '${logicalId}' declares a CustomJWTAuthorizer whose DiscoveryUrl is not a literal string; ` +
+        `${getEmbedConfig().cliName} invoke-agentcore cannot verify inbound JWTs against it and will skip auth.`
+    );
+    return undefined;
+  }
+
+  const toStringArray = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
+  const allowedAudience = toStringArray(cfg['AllowedAudience']);
+  const allowedClients = toStringArray(cfg['AllowedClients']);
+
+  return {
+    discoveryUrl,
+    ...(allowedAudience && allowedAudience.length > 0 && { allowedAudience }),
+    ...(allowedClients && allowedClients.length > 0 && { allowedClients }),
   };
 }
 

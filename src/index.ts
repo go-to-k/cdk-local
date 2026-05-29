@@ -167,7 +167,9 @@ export {
   buildJwksUrlFromIssuer,
   verifyCognitoJwt,
   verifyJwtAuthorizer,
+  verifyJwtViaDiscovery,
   type JwksCache,
+  type DiscoveryJwtAuthorizer,
 } from './local/cognito-jwt.js';
 export {
   buildMethodArn,
@@ -386,6 +388,7 @@ export {
   AGENTCORE_RUNTIME_TYPE,
   AGENTCORE_HTTP_PROTOCOL,
   type ResolvedAgentCoreRuntime,
+  type AgentCoreJwtAuthorizer,
 } from './local/agentcore-resolver.js';
 export {
   waitForAgentCorePing,
