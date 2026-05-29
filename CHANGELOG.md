@@ -1,3 +1,10 @@
+# [0.33.0](https://github.com/go-to-k/cdk-local/compare/v0.32.0...v0.33.0) (2026-05-29)
+
+
+### Features
+
+* **exports:** expose docker-image-builder build primitives + LocalInvokeBuildError for shim consumers ([#114](https://github.com/go-to-k/cdk-local/issues/114)) ([eea0bdf](https://github.com/go-to-k/cdk-local/commit/eea0bdfa2ec6d4ecc9ac9ca9821d5f1d19bf89b5))
+
 # [0.32.0](https://github.com/go-to-k/cdk-local/compare/v0.31.0...v0.32.0) (2026-05-29)
 
 
