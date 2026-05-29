@@ -58,6 +58,8 @@ flag — bare-in-a-TTY is the trigger.)
 `start-api`'s multi-select starts with **every** discovered API
 pre-selected, so a bare Enter serves them all (its long-standing default)
 and deselecting rows serves a subset — each selected API on its own port.
+In any multi-select, Space toggles the current row, `→` selects all, `←`
+clears all, and Enter confirms.
 Each API row is tagged with its surface kind — `REST API v1` /
 `HTTP API v2` / `Function URL` / `WebSocket` — so otherwise-similar
 surfaces are easy to tell apart. (The picker shows the CDK display path,

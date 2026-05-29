@@ -1,4 +1,14 @@
-import { isCancel, multiselect, select } from '@clack/prompts';
+import { MultiSelectPrompt } from '@clack/core';
+import {
+  isCancel,
+  select,
+  S_BAR,
+  S_BAR_END,
+  S_BAR_START,
+  S_CHECKBOX_ACTIVE,
+  S_CHECKBOX_INACTIVE,
+  S_CHECKBOX_SELECTED,
+} from '@clack/prompts';
 import {
   CdkLocalError,
   InteractiveTtyRequiredError,
@@ -6,6 +16,16 @@ import {
 } from '../utils/error-handler.js';
 import { getEmbedConfig } from './embed-config.js';
 import type { TargetEntry } from './target-lister.js';
+
+// Minimal raw-ANSI helpers (cdk-local has no color-lib dependency; the
+// logger uses raw escapes too). Kept local to the picker render.
+const ANSI = {
+  cyan: (s: string): string => `\x1b[36m${s}\x1b[0m`,
+  dim: (s: string): string => `\x1b[2m${s}\x1b[0m`,
+  green: (s: string): string => `\x1b[32m${s}\x1b[0m`,
+};
+
+type PickerOption = { value: string; label: string; hint?: string };
 
 /**
  * True when both stdin and stdout are TTYs — the precondition for any
@@ -46,33 +66,82 @@ export async function pickOneTarget(message: string, entries: TargetEntry[]): Pr
 }
 
 /**
+ * The selected-value array after a bulk action — `all` selects every
+ * option, `none` clears the selection. Pure (no prompt state) so the
+ * arrow-key bulk-select wiring is unit-testable without a TTY.
+ */
+export function bulkSelectValues(options: PickerOption[], action: 'all' | 'none'): string[] {
+  return action === 'all' ? options.map((o) => o.value) : [];
+}
+
+/**
  * Prompt for one or more targets (at least one required). Caller must
  * have already confirmed a TTY and a non-empty `entries`. Throws
  * {@link TargetSelectionCancelledError} on Ctrl+C / Esc.
  *
- * The key hint is baked into the message because multi-select's
- * space-to-toggle is not discoverable — users expect enter to pick the
- * highlighted row and miss that nothing is selected yet.
+ * Built on `@clack/core`'s `MultiSelectPrompt` (rather than the high-level
+ * `multiselect`) so it can add bulk-selection keys the high-level wrapper
+ * does not expose: Up/Down move, Space toggles, **Right selects all**,
+ * **Left clears all**, Enter confirms. `MultiSelectPrompt` tracks the
+ * selection in `this.value`, so the Right/Left handlers set it directly —
+ * the same mechanism the built-in `toggleAll` uses.
  *
- * When `preselectAll` is true, every row starts selected (via
- * `@clack/prompts` `initialValues`) so a bare Enter confirms the whole
- * set — used by `start-api`, whose long-standing default is "serve every
- * discovered API". The user deselects rows to serve a subset.
+ * When `preselectAll` is true, every row starts selected so a bare Enter
+ * confirms the whole set — used by `start-api`, whose long-standing default
+ * is "serve every discovered API". The user clears (Left) or deselects rows
+ * to serve a subset.
  */
 export async function pickManyTargets(
   message: string,
   entries: TargetEntry[],
   options: { preselectAll?: boolean } = {}
 ): Promise<string[]> {
-  const opts = entries.map(toOption);
-  const chosen = await multiselect({
-    message: `${message} (space to select, enter to confirm)`,
+  const opts: PickerOption[] = entries.map(toOption);
+
+  const prompt = new MultiSelectPrompt<PickerOption>({
     options: opts,
     required: true,
-    ...(options.preselectAll && { initialValues: opts.map((o) => o.value) }),
+    ...(options.preselectAll ? { initialValues: bulkSelectValues(opts, 'all') } : {}),
+    render() {
+      const header = `${S_BAR_START}  ${message}`;
+      if (this.state === 'submit' || this.state === 'cancel') {
+        const n = (this.value ?? []).length;
+        return `${header}\n${S_BAR}  ${ANSI.dim(`${n} selected`)}`;
+      }
+      const selected = new Set(this.value ?? []);
+      const rows = this.options.map((opt, i) => {
+        const isActive = i === this.cursor;
+        const isSelected = selected.has(opt.value);
+        const box = isSelected
+          ? S_CHECKBOX_SELECTED
+          : isActive
+            ? S_CHECKBOX_ACTIVE
+            : S_CHECKBOX_INACTIVE;
+        const label = isActive
+          ? ANSI.cyan(opt.label)
+          : isSelected
+            ? ANSI.green(opt.label)
+            : ANSI.dim(opt.label);
+        const hint = opt.hint && isActive ? ANSI.dim(` (${opt.hint})`) : '';
+        return `${S_BAR}  ${box} ${label}${hint}`;
+      });
+      const keys = ANSI.dim('space toggle · → all · ← none · enter confirm');
+      return `${header}\n${rows.join('\n')}\n${S_BAR}  ${keys}\n${S_BAR_END}`;
+    },
   });
-  if (isCancel(chosen)) throw new TargetSelectionCancelledError();
-  return chosen as string[];
+
+  // Right selects every row; Left clears. MultiSelectPrompt uses Up/Down for
+  // the cursor and Space to toggle, so Left/Right are free. Setting
+  // `prompt.value` is exactly how the built-in toggleAll works; the prompt
+  // re-renders after each keypress.
+  prompt.on('key', (_char, info) => {
+    if (info?.name === 'right') prompt.value = bulkSelectValues(opts, 'all');
+    else if (info?.name === 'left') prompt.value = bulkSelectValues(opts, 'none');
+  });
+
+  const result = await prompt.prompt();
+  if (isCancel(result)) throw new TargetSelectionCancelledError();
+  return result as string[];
 }
 
 interface ResolveParams {
