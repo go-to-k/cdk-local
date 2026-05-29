@@ -8,7 +8,7 @@ import { CfnRuntime } from 'aws-cdk-lib/aws-bedrockagentcore';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Fixture stack for the `cdkl invoke-agent` integ test.
+ * Fixture stack for the `cdkl invoke-agentcore` integ test.
  *
  * Single AWS::BedrockAgentCore::Runtime — `EchoAgent` — whose container is
  * built from a local Dockerfile in `agent/`. The container serves the
@@ -17,7 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * header, and the injected `GREETING` env var so verify.sh can assert each.
  *
  * No AWS deploy required. The integ exercises the local-build path:
- * `cdkl invoke-agent` finds the asset via the cdk.out asset manifest,
+ * `cdkl invoke-agentcore` finds the asset via the cdk.out asset manifest,
  * `docker build`s it, runs it on 8080, waits for /ping, and POSTs to
  * /invocations.
  *
@@ -25,7 +25,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * developer's shell credentials (no --assume-role), so the role is never
  * assumed locally.
  */
-export class LocalInvokeAgentStack extends cdk.Stack {
+export class LocalInvokeAgentCoreStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 

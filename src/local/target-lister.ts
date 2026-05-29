@@ -56,7 +56,7 @@ export interface TargetListing {
   ecsServices: TargetEntry[];
   /** `AWS::ECS::TaskDefinition` — `cdkl run-task`. */
   ecsTaskDefinitions: TargetEntry[];
-  /** `AWS::BedrockAgentCore::Runtime` — `cdkl invoke-agent`. */
+  /** `AWS::BedrockAgentCore::Runtime` — `cdkl invoke-agentcore`. */
   agentCoreRuntimes: TargetEntry[];
 }
 

@@ -53,17 +53,17 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   pullImage: pullImageMock,
 }));
 
-const { resolveAgentImage, emitResult, buildContainerEnv } = await import(
-  '../../../src/cli/commands/local-invoke-agent.js'
+const { resolveAgentCoreImage, emitResult, buildContainerEnv } = await import(
+  '../../../src/cli/commands/local-invoke-agentcore.js'
 );
-import type { ResolvedAgentRuntime } from '../../../src/local/agentcore-resolver.js';
+import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 
 function runtime(
   containerUri: string,
-  overrides: Partial<ResolvedAgentRuntime> = {}
-): ResolvedAgentRuntime {
+  overrides: Partial<ResolvedAgentCoreRuntime> = {}
+): ResolvedAgentCoreRuntime {
   return {
-    stack: { stackName: 'App' } as ResolvedAgentRuntime['stack'],
+    stack: { stackName: 'App' } as ResolvedAgentCoreRuntime['stack'],
     logicalId: 'ChatAgent',
     resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
     containerUri,
@@ -75,10 +75,10 @@ function runtime(
 
 const imageOpts = (over: Record<string, unknown> = {}) =>
   ({ platform: 'linux/arm64', pull: true, build: true, ...over }) as unknown as Parameters<
-    typeof resolveAgentImage
+    typeof resolveAgentCoreImage
   >[1];
 
-describe('resolveAgentImage — acquisition fallback order', () => {
+describe('resolveAgentCoreImage — acquisition fallback order', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -91,7 +91,7 @@ describe('resolveAgentImage — acquisition fallback order', () => {
     getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc123', asset: { source: {} } });
     buildContainerImageMock.mockResolvedValue('cdkl-agent-build:abc123');
 
-    const image = await resolveAgentImage(resolved, imageOpts());
+    const image = await resolveAgentCoreImage(resolved, imageOpts());
     expect(image).toBe('cdkl-agent-build:abc123');
     expect(buildContainerImageMock).toHaveBeenCalledWith({ source: {} }, '/cdk.out', {
       architecture: 'arm64',
@@ -107,7 +107,7 @@ describe('resolveAgentImage — acquisition fallback order', () => {
     parseEcrUriMock.mockReturnValue({ registry: 'r', accountId: '1', region: 'ap-northeast-1' });
     pullEcrImageMock.mockResolvedValue(uri);
 
-    const image = await resolveAgentImage(resolved, imageOpts({ profile: 'dev' }));
+    const image = await resolveAgentCoreImage(resolved, imageOpts({ profile: 'dev' }));
     expect(image).toBe(uri);
     expect(pullEcrImageMock).toHaveBeenCalledWith(uri, { skipPull: false, profile: 'dev' });
     expect(buildContainerImageMock).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ describe('resolveAgentImage — acquisition fallback order', () => {
     parseEcrUriMock.mockReturnValue(undefined);
     pullImageMock.mockResolvedValue(undefined);
 
-    const image = await resolveAgentImage(resolved, imageOpts({ pull: false }));
+    const image = await resolveAgentCoreImage(resolved, imageOpts({ pull: false }));
     expect(image).toBe(uri);
     expect(pullImageMock).toHaveBeenCalledWith(uri, true);
     expect(pullEcrImageMock).not.toHaveBeenCalled();

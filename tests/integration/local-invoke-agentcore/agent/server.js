@@ -1,4 +1,4 @@
-// Minimal Bedrock AgentCore Runtime agent for the cdkl invoke-agent integ
+// Minimal Bedrock AgentCore Runtime agent for the cdkl invoke-agentcore integ
 // test. Serves the AgentCore HTTP contract on 0.0.0.0:8080:
 //   GET  /ping        -> 200 {"status":"Healthy", ...}
 //   POST /invocations -> echoes the request body, the received session-id

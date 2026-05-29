@@ -13,16 +13,16 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | --- | --- | --- |
 | `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
-| `cdkl invoke-agent <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container + the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080) |
+| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container + the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 
-The five run commands (`invoke` / `invoke-agent` / `start-api` /
+The five run commands (`invoke` / `invoke-agentcore` / `start-api` /
 `run-task` / `start-service`) require Docker on the developer's machine.
 The first run pulls the relevant base image (~600MB for the
 language-specific Lambda images, ~50MB for `provided.*`, the agent's own
-container base for `invoke-agent`, plus the ECS metadata sidecar for
+container base for `invoke-agentcore`, plus the ECS metadata sidecar for
 `run-task` / `start-service`). Subsequent runs reuse the cached image;
 pass `--no-pull` to skip the `docker pull` round-trip. `cdkl list` only
 synthesizes the app, so it needs no Docker.
@@ -48,11 +48,11 @@ per-command sections below.
 
 ## Interactive target selection
 
-The five run commands — `invoke`, `invoke-agent`, `run-task`,
+The five run commands — `invoke`, `invoke-agentcore`, `run-task`,
 `start-service`, `start-api` — open an arrow-key picker (powered by
 `@clack/prompts`) when you OMIT the positional target in an interactive
 terminal, instead of making you type a CDK path / logical ID. `invoke` /
-`invoke-agent` / `run-task` pick a single target; `start-service` /
+`invoke-agentcore` / `run-task` pick a single target; `start-service` /
 `start-api` open a multi-select (pick
 one or more). The list is the same set `cdkl list` prints, so a Function
 URL appears under its backing Lambda. (There is no `-i` / `--interactive`
@@ -73,7 +73,7 @@ not the stack-qualified logical ID — `cdkl list -l` still prints it.)
 The picker requires a TTY. In a non-interactive context (CI, pipes,
 redirected stdin/stdout):
 
-- `invoke` / `invoke-agent` / `run-task` / `start-service` fall back to
+- `invoke` / `invoke-agentcore` / `run-task` / `start-service` fall back to
   the command's usual "target required" error — pass the target
   explicitly instead;
 - `start-api` is the exception: bare in a non-TTY it serves **every**
@@ -126,7 +126,7 @@ ECS Services  ->  cdkl start-service <target...>
 ECS Task Definitions  ->  cdkl run-task <target>
   MyStack/WebTask
 
-AgentCore Runtimes  ->  cdkl invoke-agent <target>
+AgentCore Runtimes  ->  cdkl invoke-agentcore <target>
   MyStack/ChatAgent
 ```
 
@@ -409,9 +409,9 @@ same sized `/tmp`.
   installed, image pull failed, target not found, RIE port unreachable
   after the readiness window, container exited before responding.
 
-## `cdkl invoke-agent` (run Bedrock AgentCore Runtime agents locally)
+## `cdkl invoke-agentcore` (run Bedrock AgentCore Runtime agents locally)
 
-`cdkl invoke-agent <target>` runs an `AWS::BedrockAgentCore::Runtime`
+`cdkl invoke-agentcore <target>` runs an `AWS::BedrockAgentCore::Runtime`
 agent container locally and invokes it once over the AgentCore HTTP
 contract. It resolves the runtime, pulls / builds its container, starts
 it on port 8080, waits for `GET /ping` to return a 2xx, POSTs the event
@@ -471,7 +471,7 @@ The `/invocations` response is printed verbatim, so both the JSON
 through. Incremental display of an SSE stream is a follow-up; v1 prints
 the full body once the request completes.
 
-### `cdkl invoke-agent` exit codes
+### `cdkl invoke-agentcore` exit codes
 
 - `0` — the agent answered `POST /invocations` with a 2xx status.
 - `1` — the agent returned a 4xx/5xx from `/invocations`, OR a

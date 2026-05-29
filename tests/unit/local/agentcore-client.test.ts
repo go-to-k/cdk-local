@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   AGENTCORE_SESSION_ID_HEADER,
-  invokeAgent,
-  waitForAgentPing,
+  invokeAgentCore,
+  waitForAgentCorePing,
 } from '../../../src/local/agentcore-client.js';
 
 afterEach(() => {
@@ -10,21 +10,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('waitForAgentPing', () => {
+describe('waitForAgentCorePing', () => {
   it('returns once GET /ping responds 200', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       expect(url).toBe('http://127.0.0.1:9000/ping');
       return new Response('{"status":"Healthy"}', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
-    await expect(waitForAgentPing('127.0.0.1', 9000, 2000)).resolves.toBeUndefined();
+    await expect(waitForAgentCorePing('127.0.0.1', 9000, 2000)).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalled();
   });
 
   it('keeps polling while /ping is non-2xx, then throws on timeout', async () => {
     const fetchMock = vi.fn(async () => new Response('warming', { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
-    await expect(waitForAgentPing('127.0.0.1', 9000, 250)).rejects.toThrow(
+    await expect(waitForAgentCorePing('127.0.0.1', 9000, 250)).rejects.toThrow(
       /did not become ready/
     );
     expect(fetchMock).toHaveBeenCalled();
@@ -42,12 +42,12 @@ describe('waitForAgentPing', () => {
       return new Response('{"status":"Healthy"}', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
-    await expect(waitForAgentPing('127.0.0.1', 9000, 2000)).resolves.toBeUndefined();
+    await expect(waitForAgentCorePing('127.0.0.1', 9000, 2000)).resolves.toBeUndefined();
     expect(calls).toBeGreaterThanOrEqual(2);
   });
 });
 
-describe('invokeAgent', () => {
+describe('invokeAgentCore', () => {
   it('POSTs the event with the session-id header + JSON content type and returns the body', async () => {
     let captured: { url: string; init: RequestInit } | undefined;
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
@@ -59,7 +59,7 @@ describe('invokeAgent', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await invokeAgent('127.0.0.1', 9000, { prompt: 'hello' }, {
+    const result = await invokeAgentCore('127.0.0.1', 9000, { prompt: 'hello' }, {
       sessionId: 'session-1234567890abcdefghijklmnopqrstuv',
       timeoutMs: 5000,
     });
@@ -84,7 +84,7 @@ describe('invokeAgent', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await invokeAgent('127.0.0.1', 9000, {}, { sessionId: 's', timeoutMs: 5000 });
+    const result = await invokeAgentCore('127.0.0.1', 9000, {}, { sessionId: 's', timeoutMs: 5000 });
     expect(result.contentType).toBe('text/event-stream');
     expect(result.raw).toBe(sse);
   });

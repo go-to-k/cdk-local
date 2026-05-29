@@ -29,7 +29,7 @@ AWS managed services.
   Service Connect / Cloud Map registry
 - Bedrock AgentCore Runtime agents — the agent container served over the
   AgentCore HTTP contract (`POST /invocations` + `GET /ping` on port 8080),
-  invoked once locally (`cdkl invoke-agent`); v1 covers container artifacts
+  invoked once locally (`cdkl invoke-agentcore`); v1 covers container artifacts
   on the HTTP protocol
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
@@ -73,7 +73,7 @@ Gateway).
   target selection via `@clack/prompts` when a target is omitted in a TTY),
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +
   container-URI extraction) + agentcore-client (the `/ping` + `/invocations`
-  HTTP-contract client for `cdkl invoke-agent`), embed-config
+  HTTP-contract client for `cdkl invoke-agentcore`), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), etc.
@@ -242,7 +242,7 @@ vp run runtime:smoke
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / invoke-agent / start-api / run-task / start-service / list`.
+  `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / list`.
 - Do NOT write comparison tables against `aws-cdk-local` / `cdklocal` /
   LocalStack in committed artifacts (README, docs, JSDoc). The
   cdk-local vs LocalStack distinction is the

@@ -30,12 +30,12 @@ import {
 } from '../../local/embed-config.js';
 import {
   resolveAgentCoreTarget,
-  type ResolvedAgentRuntime,
+  type ResolvedAgentCoreRuntime,
 } from '../../local/agentcore-resolver.js';
 import {
-  invokeAgent,
-  waitForAgentPing,
-  type AgentInvokeResult,
+  invokeAgentCore,
+  waitForAgentCorePing,
+  type AgentCoreInvokeResult,
 } from '../../local/agentcore-client.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
@@ -65,7 +65,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 
-interface LocalInvokeAgentOptions {
+interface LocalInvokeAgentCoreOptions {
   app?: string;
   output: string;
   verbose: boolean;
@@ -101,16 +101,16 @@ interface LocalInvokeAgentOptions {
 }
 
 /**
- * Factory options for {@link createLocalInvokeAgentCommand}.
+ * Factory options for {@link createLocalInvokeAgentCoreCommand}.
  */
-export interface CreateLocalInvokeAgentCommandOptions {
+export interface CreateLocalInvokeAgentCoreCommandOptions {
   extraStateProviders?: ExtraStateProviders;
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
 }
 
 /**
- * `cdkl invoke-agent <target>` — run a Bedrock AgentCore Runtime container
+ * `cdkl invoke-agentcore <target>` — run a Bedrock AgentCore Runtime container
  * locally and invoke it once over the AgentCore HTTP contract. Resolves
  * the `AWS::BedrockAgentCore::Runtime`, pulls / builds its container,
  * starts it on port 8080, waits for `GET /ping`, POSTs the event to
@@ -118,9 +118,9 @@ export interface CreateLocalInvokeAgentCommandOptions {
  * container artifact + HTTP protocol; the agent's calls to real AWS go to
  * real AWS (credentials injected like `cdkl invoke`).
  */
-async function localInvokeAgentCommand(
+async function localInvokeAgentCoreCommand(
   target: string | undefined,
-  options: LocalInvokeAgentOptions,
+  options: LocalInvokeAgentCoreOptions,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
   const logger = getLogger();
@@ -206,16 +206,16 @@ async function localInvokeAgentCommand(
       noun: 'AgentCore Runtimes',
       onMissing: () =>
         new CdkLocalError(
-          `${getEmbedConfig().cliName} invoke-agent requires a <target> (an AgentCore Runtime display path or logical ID). ` +
+          `${getEmbedConfig().cliName} invoke-agentcore requires a <target> (an AgentCore Runtime display path or logical ID). ` +
             `Run \`${getEmbedConfig().cliName} list\` to see them, or run it in a TTY to pick interactively.`,
-          'LOCAL_INVOKE_AGENT_TARGET_REQUIRED'
+          'LOCAL_INVOKE_AGENTCORE_TARGET_REQUIRED'
         ),
     });
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
 
-    const image = await resolveAgentImage(resolved, options);
+    const image = await resolveAgentCoreImage(resolved, options);
 
     const dockerEnv = await buildContainerEnv(
       resolved,
@@ -227,6 +227,11 @@ async function localInvokeAgentCommand(
 
     const hostPort = await pickFreePort();
     const containerHost = options.containerHost;
+    // Stable `cdkl-`-prefixed name so the orphan sweep (`docker ps --filter
+    // name=cdkl-`) used by `/cleanup` + `/run-integ` can find this container
+    // if the process is killed before teardown — unlike a one-shot Lambda
+    // invoke, the agent container runs a long-lived HTTP server.
+    const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
     logger.info(`Starting agent container (image=${image}, port=${hostPort})...`);
     containerId = await runDetached({
       image,
@@ -236,6 +241,7 @@ async function localInvokeAgentCommand(
       hostPort,
       host: containerHost,
       platform: options.platform,
+      name: containerName,
     });
 
     stopLogs = streamLogs(containerId);
@@ -245,11 +251,11 @@ async function localInvokeAgentCommand(
     };
     process.on('SIGINT', sigintHandler);
 
-    await waitForAgentPing(containerHost, hostPort);
+    await waitForAgentCorePing(containerHost, hostPort);
 
     const sessionId = options.sessionId ?? randomUUID();
     const event = await readEvent(options);
-    const result = await invokeAgent(containerHost, hostPort, event, {
+    const result = await invokeAgentCore(containerHost, hostPort, event, {
       sessionId,
       timeoutMs: 120_000,
     });
@@ -268,9 +274,9 @@ async function localInvokeAgentCommand(
  * build from a local cdk.out asset when the URI matches one, else pull
  * from ECR, else pull a plain registry image.
  */
-export async function resolveAgentImage(
-  resolved: ResolvedAgentRuntime,
-  options: LocalInvokeAgentOptions
+export async function resolveAgentCoreImage(
+  resolved: ResolvedAgentCoreRuntime,
+  options: LocalInvokeAgentCoreOptions
 ): Promise<string> {
   const logger = getLogger();
   const architecture = platformToArchitecture(options.platform);
@@ -311,8 +317,8 @@ export async function resolveAgentImage(
  * (`--assume-role` STS temp creds, else `--profile` / dev creds).
  */
 export async function buildContainerEnv(
-  resolved: ResolvedAgentRuntime,
-  options: LocalInvokeAgentOptions,
+  resolved: ResolvedAgentCoreRuntime,
+  options: LocalInvokeAgentCoreOptions,
   profileCredentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
     | undefined,
@@ -371,7 +377,7 @@ export async function buildContainerEnv(
 
   const dockerEnv: Record<string, string> = { ...envResult.resolved };
   const assumeRoleArn = resolveAssumeRoleArn(options, resolved);
-  await applyAgentCredentialEnv(dockerEnv, {
+  await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
     ...(profileCredentials !== undefined && { profileCredentials }),
@@ -396,7 +402,7 @@ export async function buildContainerEnv(
  * Exported so a unit test can lock the binding (mock STS) without driving
  * the full synth + docker pipeline.
  */
-export async function applyAgentCredentialEnv(
+export async function applyAgentCoreCredentialEnv(
   dockerEnv: Record<string, string>,
   args: {
     assumeRoleArn?: string;
@@ -410,7 +416,7 @@ export async function applyAgentCredentialEnv(
   if (args.assumeRoleArn) {
     const stsRegion = args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
     try {
-      const creds = await assumeAgentExecutionRole(args.assumeRoleArn, stsRegion);
+      const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -439,8 +445,8 @@ export async function applyAgentCredentialEnv(
  * is an intrinsic (no ARN to assume) and falls back to dev creds.
  */
 export function resolveAssumeRoleArn(
-  options: LocalInvokeAgentOptions,
-  resolved: ResolvedAgentRuntime
+  options: LocalInvokeAgentCoreOptions,
+  resolved: ResolvedAgentCoreRuntime
 ): string | undefined {
   if (typeof options.assumeRole === 'string') return options.assumeRole;
   if (options.assumeRole === true) {
@@ -454,7 +460,7 @@ export function resolveAssumeRoleArn(
   return undefined;
 }
 
-export function emitResult(result: AgentInvokeResult): void {
+export function emitResult(result: AgentCoreInvokeResult): void {
   const logger = getLogger();
   if (result.status >= 400) {
     logger.warn(`Agent /invocations returned HTTP ${result.status}.`);
@@ -482,7 +488,7 @@ function forwardAwsEnv(env: Record<string, string>): void {
   }
 }
 
-async function assumeAgentExecutionRole(
+async function assumeAgentCoreExecutionRole(
   roleArn: string,
   region: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
@@ -492,7 +498,7 @@ async function assumeAgentExecutionRole(
     const response = await sts.send(
       new AssumeRoleCommand({
         RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agent-${Date.now()}`,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-agentcore-${Date.now()}`,
         DurationSeconds: 3600,
       })
     );
@@ -510,7 +516,7 @@ async function assumeAgentExecutionRole(
   }
 }
 
-async function readEvent(options: LocalInvokeAgentOptions): Promise<unknown> {
+async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<unknown> {
   if (options.event && options.eventStdin) {
     throw new Error('--event and --event-stdin are mutually exclusive.');
   }
@@ -565,11 +571,11 @@ function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | u
   return parsed as EnvOverrideFile;
 }
 
-export function createLocalInvokeAgentCommand(
-  opts: CreateLocalInvokeAgentCommandOptions = {}
+export function createLocalInvokeAgentCoreCommand(
+  opts: CreateLocalInvokeAgentCoreCommandOptions = {}
 ): Command {
   setEmbedConfig(opts.embedConfig);
-  const cmd = new Command('invoke-agent')
+  const cmd = new Command('invoke-agentcore')
     .description(
       'Run a Bedrock AgentCore Runtime container locally and invoke it once over the AgentCore HTTP ' +
         'contract (POST /invocations + GET /ping on port 8080). Resolves the AWS::BedrockAgentCore::Runtime, ' +
@@ -653,9 +659,11 @@ export function createLocalInvokeAgentCommand(
       )
     )
     .action(
-      withErrorHandling(async (target: string | undefined, options: LocalInvokeAgentOptions) => {
-        await localInvokeAgentCommand(target, options, opts.extraStateProviders);
-      })
+      withErrorHandling(
+        async (target: string | undefined, options: LocalInvokeAgentCoreOptions) => {
+          await localInvokeAgentCoreCommand(target, options, opts.extraStateProviders);
+        }
+      )
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));

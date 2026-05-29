@@ -35,7 +35,7 @@ describe('formatTargetListing', () => {
     expect(out).toContain('APIs  ->  cdkl start-api [target...]');
     expect(out).toContain('ECS Services  ->  cdkl start-service <target...>');
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
-    expect(out).toContain('AgentCore Runtimes  ->  cdkl invoke-agent <target>');
+    expect(out).toContain('AgentCore Runtimes  ->  cdkl invoke-agentcore <target>');
   });
 
   it('appends the API surface kind to each API line', () => {

@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
  *   POST /invocations  → JSON or SSE response for an arbitrary JSON body
  *
  * Unlike the Lambda path there is no Runtime Interface Emulator — this is
- * plain HTTP. `cdkl invoke-agent` runs the container, waits for `/ping`,
+ * plain HTTP. `cdkl invoke-agentcore` runs the container, waits for `/ping`,
  * then POSTs one event to `/invocations` (invoke-once).
  */
 
@@ -25,7 +25,7 @@ const INVOCATIONS_PATH = '/invocations';
  */
 export const AGENTCORE_SESSION_ID_HEADER = 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id';
 
-export interface AgentInvokeResult {
+export interface AgentCoreInvokeResult {
   /** HTTP status code of the `/invocations` response. */
   status: number;
   /** Response `Content-Type` (e.g. `application/json` or `text/event-stream`), or null. */
@@ -45,7 +45,7 @@ export interface AgentInvokeResult {
  * Agent frameworks can be slow to import, so the default window is wider
  * than the Lambda RIE probe's.
  */
-export async function waitForAgentPing(
+export async function waitForAgentCorePing(
   host: string,
   port: number,
   timeoutMs = 30_000
@@ -122,7 +122,7 @@ function isTransientNetworkError(err: unknown): boolean {
   return false;
 }
 
-export interface InvokeAgentOptions {
+export interface InvokeAgentCoreOptions {
   /** Value for the {@link AGENTCORE_SESSION_ID_HEADER} request header. */
   sessionId: string;
   /** Abort the request after this many ms. */
@@ -136,12 +136,12 @@ export interface InvokeAgentOptions {
  * prints it verbatim, so both the non-streaming JSON and streaming SSE
  * shapes pass through unchanged.
  */
-export async function invokeAgent(
+export async function invokeAgentCore(
   host: string,
   port: number,
   event: unknown,
-  options: InvokeAgentOptions
-): Promise<AgentInvokeResult> {
+  options: InvokeAgentCoreOptions
+): Promise<AgentCoreInvokeResult> {
   const url = `http://${host}:${port}${INVOCATIONS_PATH}`;
   const body = JSON.stringify(event ?? {});
 

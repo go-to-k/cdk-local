@@ -13,19 +13,19 @@ import { getEmbedConfig } from './embed-config.js';
 
 /**
  * CloudFormation resource type for a Bedrock AgentCore Runtime.
- * `cdkl invoke-agent` resolves and runs these locally.
+ * `cdkl invoke-agentcore` resolves and runs these locally.
  */
 export const AGENTCORE_RUNTIME_TYPE = 'AWS::BedrockAgentCore::Runtime';
 
 /**
- * The only protocol `cdkl invoke-agent` serves in v1. AgentCore Runtimes
+ * The only protocol `cdkl invoke-agentcore` serves in v1. AgentCore Runtimes
  * may also declare `MCP` / `A2A` / `AGUI`, which speak different wire
  * contracts and are out of scope here.
  */
 export const AGENTCORE_HTTP_PROTOCOL = 'HTTP';
 
 /**
- * Result of resolving a `cdkl invoke-agent <target>` argument back to a
+ * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
  * v1 covers the CONTAINER artifact + HTTP protocol only — the resolver
@@ -33,7 +33,7 @@ export const AGENTCORE_HTTP_PROTOCOL = 'HTTP';
  * and non-HTTP protocols so the command never starts a container it can't
  * speak to.
  */
-export interface ResolvedAgentRuntime {
+export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
   stack: StackInfo;
   /** CloudFormation logical ID of the runtime. */
@@ -77,7 +77,7 @@ export class AgentCoreResolutionError extends Error {
 }
 
 /**
- * Resolve a `cdkl invoke-agent <target>` argument against the synthesized
+ * Resolve a `cdkl invoke-agentcore <target>` argument against the synthesized
  * stacks. Accepts the same target forms as every other command
  * (`Stack:LogicalId` / `Stack/Path/...` / bare in single-stack apps),
  * reusing {@link parseTarget} + the shared stack-matcher / cdk-path index.
@@ -91,7 +91,7 @@ export function resolveAgentCoreTarget(
   target: string,
   stacks: StackInfo[],
   imageContext?: ImageResolutionContext
-): ResolvedAgentRuntime {
+): ResolvedAgentCoreRuntime {
   if (stacks.length === 0) {
     throw new AgentCoreResolutionError('No stacks found in the synthesized assembly.');
   }
@@ -105,7 +105,7 @@ export function resolveAgentCoreTarget(
   if (resource.Type !== AGENTCORE_RUNTIME_TYPE) {
     throw new AgentCoreResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not ${AGENTCORE_RUNTIME_TYPE}. ` +
-        `${getEmbedConfig().cliName} invoke-agent only runs Bedrock AgentCore Runtime resources.`
+        `${getEmbedConfig().cliName} invoke-agentcore only runs Bedrock AgentCore Runtime resources.`
     );
   }
 
@@ -193,14 +193,14 @@ function notFoundError(
   return new AgentCoreResolutionError(`Target '${target}' not found. ${hint}`);
 }
 
-/** Pull the runtime properties `cdkl invoke-agent` cares about. */
+/** Pull the runtime properties `cdkl invoke-agentcore` cares about. */
 function extractRuntimeProperties(
   stack: StackInfo,
   logicalId: string,
   resource: TemplateResource,
   resources: Record<string, TemplateResource>,
   imageContext: ImageResolutionContext | undefined
-): ResolvedAgentRuntime {
+): ResolvedAgentCoreRuntime {
   const props = resource.Properties ?? {};
 
   const protocol = extractProtocol(props['ProtocolConfiguration'], logicalId, stack.stackName);
@@ -243,13 +243,13 @@ function extractProtocol(value: unknown, logicalId: string, stackName: string): 
   if (typeof value !== 'string') {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} has a non-string ProtocolConfiguration. ` +
-        `${getEmbedConfig().cliName} invoke-agent supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1.`
+        `${getEmbedConfig().cliName} invoke-agentcore supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1.`
     );
   }
   if (value !== AGENTCORE_HTTP_PROTOCOL) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} uses the ${value} protocol. ` +
-        `${getEmbedConfig().cliName} invoke-agent supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1 ` +
+        `${getEmbedConfig().cliName} invoke-agentcore supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1 ` +
         `(MCP / A2A / AGUI speak different wire contracts).`
     );
   }
@@ -279,7 +279,7 @@ function extractContainerUri(
   if (art['CodeConfiguration'] && !art['ContainerConfiguration']) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} uses a code artifact (CodeConfiguration). ` +
-        `${getEmbedConfig().cliName} invoke-agent v1 runs container artifacts only — ` +
+        `${getEmbedConfig().cliName} invoke-agentcore v1 runs container artifacts only — ` +
         `running a managed-runtime code artifact locally needs a from-source build that is not yet supported. ` +
         `Build the agent as a container (e.g. AgentCoreRuntime fromAsset / a Dockerfile) to run it locally.`
     );
@@ -300,7 +300,7 @@ function extractContainerUri(
   );
   if (uri === undefined) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agent cannot resolve. ` +
+      `AgentCore Runtime '${logicalId}' in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agentcore cannot resolve. ` +
         `v1 resolves a literal image URI, an Fn::Sub asset URI (the fromAsset / Dockerfile path), and an imported-ECR Fn::Join. ` +
         `A same-stack AWS::ECR::Repository reference is not supported — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
     );

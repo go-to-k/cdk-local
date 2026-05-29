@@ -12,14 +12,14 @@ vi.mock('@aws-sdk/client-sts', () => ({
   },
 }));
 
-const { applyAgentCredentialEnv, resolveAssumeRoleArn } = await import(
-  '../../../src/cli/commands/local-invoke-agent.js'
+const { applyAgentCoreCredentialEnv, resolveAssumeRoleArn } = await import(
+  '../../../src/cli/commands/local-invoke-agentcore.js'
 );
-import type { ResolvedAgentRuntime } from '../../../src/local/agentcore-resolver.js';
+import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 
-function runtime(roleArn?: string): ResolvedAgentRuntime {
+function runtime(roleArn?: string): ResolvedAgentCoreRuntime {
   return {
-    stack: { stackName: 'App' } as ResolvedAgentRuntime['stack'],
+    stack: { stackName: 'App' } as ResolvedAgentCoreRuntime['stack'],
     logicalId: 'ChatAgent',
     resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
     containerUri: 'repo:tag',
@@ -55,7 +55,7 @@ describe('resolveAssumeRoleArn — three --assume-role forms', () => {
   });
 });
 
-describe('applyAgentCredentialEnv', () => {
+describe('applyAgentCoreCredentialEnv', () => {
   const savedEnv = { ...process.env };
 
   beforeEach(() => {
@@ -81,7 +81,7 @@ describe('applyAgentCredentialEnv', () => {
       },
     });
     const env: Record<string, string> = {};
-    await applyAgentCredentialEnv(env, {
+    await applyAgentCoreCredentialEnv(env, {
       assumeRoleArn: 'arn:aws:iam::1:role/Agent',
       region: 'us-east-1',
     });
@@ -96,7 +96,7 @@ describe('applyAgentCredentialEnv', () => {
     process.env['AWS_SECRET_ACCESS_KEY'] = 'secretDev';
     process.env['AWS_REGION'] = 'eu-west-1';
     const env: Record<string, string> = {};
-    await applyAgentCredentialEnv(env, {});
+    await applyAgentCoreCredentialEnv(env, {});
     expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIADEV');
     expect(env['AWS_SECRET_ACCESS_KEY']).toBe('secretDev');
     expect(env['AWS_REGION']).toBe('eu-west-1');
@@ -105,7 +105,7 @@ describe('applyAgentCredentialEnv', () => {
 
   it('overlays --profile credentials and points the SDK at the bind-mounted creds file', async () => {
     const env: Record<string, string> = {};
-    await applyAgentCredentialEnv(env, {
+    await applyAgentCoreCredentialEnv(env, {
       profileCredentials: {
         accessKeyId: 'AKIAPROFILE',
         secretAccessKey: 'secretProfile',
@@ -125,7 +125,7 @@ describe('applyAgentCredentialEnv', () => {
     process.env['AWS_ACCESS_KEY_ID'] = 'AKIADEV';
     process.env['AWS_SECRET_ACCESS_KEY'] = 'secretDev';
     const env: Record<string, string> = {};
-    await applyAgentCredentialEnv(env, { assumeRoleArn: 'arn:aws:iam::1:role/Agent' });
+    await applyAgentCoreCredentialEnv(env, { assumeRoleArn: 'arn:aws:iam::1:role/Agent' });
     expect(env['AWS_ACCESS_KEY_ID']).toBe('AKIADEV');
   });
 });

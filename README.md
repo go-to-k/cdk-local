@@ -86,7 +86,7 @@ cdkl invoke            # pick a Lambda, then invoke it
 cdkl run-task          # pick an ECS task definition, then run it
 cdkl start-service     # multi-select one or more ECS services
 cdkl start-api         # multi-select APIs to serve (→ selects all)
-cdkl invoke-agent      # pick a Bedrock AgentCore Runtime, then invoke it
+cdkl invoke-agentcore      # pick a Bedrock AgentCore Runtime, then invoke it
 ```
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
@@ -115,7 +115,7 @@ ECS Services  ->  cdkl start-service <target...>
 ECS Task Definitions  ->  cdkl run-task <target>
   MyStack/WebTask
 
-AgentCore Runtimes  ->  cdkl invoke-agent <target>
+AgentCore Runtimes  ->  cdkl invoke-agentcore <target>
   MyStack/ChatAgent
 ```
 
@@ -137,14 +137,14 @@ cdkl start-api MyStack/MyApi
 cdkl start-api
 
 # Bedrock AgentCore Runtime — run the agent container, POST one event
-cdkl invoke-agent MyStack/ChatAgent --event ./event.json
+cdkl invoke-agentcore MyStack/ChatAgent --event ./event.json
 ```
 
 `start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once; serve them all with `--all-stacks`, or select one with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target. See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
 For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
 
-`invoke-agent` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS.
+`invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS.
 
 Use this for fast iteration on Lambda code, API routing checks, container task smoke tests, and agent request/response checks.
 
@@ -235,7 +235,7 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 | `AWS::ECS::TaskDefinition` (run-task) | ✓ |
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
-| `AWS::BedrockAgentCore::Runtime` (invoke-agent, container artifact + HTTP) | ✓ |
+| `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container artifact + HTTP) | ✓ |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 
