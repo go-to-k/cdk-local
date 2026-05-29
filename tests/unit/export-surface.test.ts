@@ -31,13 +31,12 @@ describe('package export surface', () => {
     expect(internal).toHaveProperty('resolveLambdaArnIntrinsic');
   });
 
-  it('re-exports every internal symbol from the main entry (non-breaking union)', () => {
-    // The main entry re-exports `cdk-local/internal` so existing shim-host
-    // imports from `cdk-local` keep working. If someone drops the
-    // `export * from './internal.js'` re-export, this breaks loudly.
-    const missing = Object.keys(internal).filter((key) => !(key in main));
-    expect(missing, `internal symbols missing from the main entry: ${missing.join(', ')}`).toEqual(
-      [],
-    );
+  it('does NOT leak internal building blocks into the main entry', () => {
+    // The internal surface is reachable ONLY via `cdk-local/internal`; the
+    // main entry must not re-export it (otherwise those symbols would be
+    // frozen into the semver-covered public API). If someone re-adds an
+    // `export * from './internal.js'` to the main entry, this breaks loudly.
+    const leaked = Object.keys(internal).filter((key) => key in main);
+    expect(leaked, `internal symbols leaked into the main entry: ${leaked.join(', ')}`).toEqual([]);
   });
 });

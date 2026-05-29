@@ -130,9 +130,8 @@ import { pickRefLogicalId } from 'cdk-local/internal';
 **No semver guarantee.** Everything under `cdk-local/internal` is
 implementation detail of the `cdkl` CLI and may change or be removed
 without a major version bump — only the main `cdk-local` entry
-documented above is semver-covered. (For backward compatibility the
-main entry currently still re-exports these symbols, but new shim hosts
-should import them from `cdk-local/internal`.)
+documented above is semver-covered. These symbols are reachable ONLY via
+`cdk-local/internal`; the main `cdk-local` entry does not re-export them.
 
 Most hosts only need the command factories above. A host that instead
 re-exports cdk-local's individual `src/local/**` modules verbatim

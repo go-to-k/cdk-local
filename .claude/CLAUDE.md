@@ -178,8 +178,8 @@ vp run runtime:smoke
 
 - **Library + CLI dual entry**: `src/index.ts` (stable public library
   exports), `src/internal.ts` (unstable low-level building blocks for
-  shim hosts, exposed as the `cdk-local/internal` subpath — NO semver
-  guarantee; the main entry re-exports them for back-compat), and
+  shim hosts, reachable ONLY via the `cdk-local/internal` subpath — NO
+  semver guarantee; the main entry does NOT re-export them), and
   `src/cli/index.ts` (binary entrypoint). `vp pack` produces
   `dist/index.js` (library), `dist/internal.js` (internal), and
   `dist/cli.js` (CLI).
