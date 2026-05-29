@@ -395,7 +395,16 @@ export {
   AGENTCORE_MCP_PROTOCOL,
   type ResolvedAgentCoreRuntime,
   type AgentCoreJwtAuthorizer,
+  type AgentCoreCodeArtifact,
 } from './local/agentcore-resolver.js';
+export {
+  buildAgentCoreCodeImage,
+  renderCodeDockerfile,
+  toCmdArgv,
+  computeCodeImageTag,
+  SUPPORTED_CODE_RUNTIMES,
+  type BuildAgentCoreCodeImageOptions,
+} from './local/agentcore-code-build.js';
 export {
   waitForAgentCorePing,
   invokeAgentCore,

@@ -13,7 +13,7 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | --- | --- | --- |
 | `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
-| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container on its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080) or MCP (`POST /mcp` on 8000) |
+| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent (container or fromCodeAsset managed-runtime) on its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080) or MCP (`POST /mcp` on 8000) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
@@ -429,17 +429,36 @@ container down. The exact contract depends on `ProtocolConfiguration`:
 
 This is the same request/response loop AgentCore runs in the cloud,
 exercised locally before deploy. It supports the **container artifact**
-(`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) on the **HTTP**
-and **MCP** protocols; `CodeConfiguration` (S3 zip + managed runtime)
-artifacts and the `A2A` / `AGUI` protocols are rejected with an actionable
-error. The agent's own calls to AWS managed services (Bedrock models,
-memory, etc.) go to real AWS — credentials are injected exactly like
-`cdkl invoke` (see below).
+(`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) and the
+**CodeConfiguration** managed-runtime artifact (`fromCodeAsset`, built from
+source — see [CodeConfiguration](#codeconfiguration-managed-runtime) below)
+on the **HTTP** and **MCP** protocols; the `A2A` / `AGUI` protocols are
+rejected with an actionable error. The agent's own calls to AWS managed
+services (Bedrock models, memory, etc.) go to real AWS — credentials are
+injected exactly like `cdkl invoke` (see below).
 
 The container image is resolved like a container Lambda: a local cdk.out
 asset (the `fromAsset` / Dockerfile path) is built with `docker build`;
 otherwise an ECR URI is pulled (`--ecr-role-arn` for cross-account
 registries), and a plain registry URI is `docker pull`ed.
+
+### CodeConfiguration (managed runtime)
+
+A `CodeConfiguration` artifact ships source + an `EntryPoint` + a `Runtime`
+instead of a container — AWS runs it on a managed runtime whose entrypoint
+self-serves the same HTTP (or MCP) contract (typically via the
+`bedrock-agentcore` SDK). cdk-local replicates that with a **local from-source
+build**: it reads the `fromCodeAsset` bundle from `cdk.out`, generates a
+Dockerfile for the runtime's base image (`PYTHON_3_10`-`PYTHON_3_14` →
+`python:3.x-slim`, `NODE_22` → `node:22-slim`), installs the bundle's
+dependencies (`requirements.txt` / `pyproject.toml` for Python,
+`package.json` for Node — when present), runs the `EntryPoint`, then drives
+the started container with the same protocol client as a container artifact.
+
+Only `fromCodeAsset` (a CDK-managed local code asset) is supported; a
+`fromS3` bundle (a pre-existing S3 object that would need an AWS download) is
+rejected with an actionable error. `--no-build` reuses the previously-built
+image tag.
 
 ### Target resolution
 
