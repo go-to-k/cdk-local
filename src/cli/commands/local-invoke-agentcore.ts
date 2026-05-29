@@ -37,6 +37,7 @@ import {
   waitForAgentCorePing,
   type AgentCoreInvokeResult,
 } from '../../local/agentcore-client.js';
+import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   substituteEnvVarsFromStateAsync,
@@ -83,6 +84,18 @@ interface LocalInvokeAgentCoreOptions {
   platform: string;
   /** Session id forwarded via the AgentCore session-id header (auto-generated when omitted). */
   sessionId?: string;
+  /**
+   * Bearer JWT to present when the runtime declares a `customJwtAuthorizer`.
+   * Verified against the runtime's OIDC discovery URL before the container
+   * starts, then forwarded to `/invocations` as `Authorization: Bearer <jwt>`.
+   */
+  bearerToken?: string;
+  /**
+   * Commander maps `--no-verify-auth` to `verifyAuth: boolean` (default
+   * `true`). When `false`, skip inbound JWT verification entirely (local-dev
+   * escape hatch) — the token, if any, is still forwarded.
+   */
+  verifyAuth: boolean;
   /**
    * Optional execution role to assume before invoking. Commander's `[arn]`
    * maps to `string | boolean`:
@@ -221,6 +234,12 @@ async function localInvokeAgentCoreCommand(
     const sessionId = options.sessionId ?? randomUUID();
     const event = await readEvent(options);
 
+    // Inbound JWT auth: when the runtime declares a customJwtAuthorizer,
+    // verify the supplied bearer token against its OIDC discovery URL BEFORE
+    // any Docker work — rejecting a missing / invalid token the way AgentCore
+    // does. Returns the `Authorization` header to forward to the container.
+    const authorization = await resolveInboundAuthorization(resolved, options);
+
     const image = await resolveAgentCoreImage(resolved, options);
 
     const dockerEnv = await buildContainerEnv(
@@ -262,6 +281,7 @@ async function localInvokeAgentCoreCommand(
     const result = await invokeAgentCore(containerHost, hostPort, event, {
       sessionId,
       timeoutMs: 120_000,
+      ...(authorization && { authorization }),
     });
 
     // Settle so container logs flush before teardown.
@@ -271,6 +291,68 @@ async function localInvokeAgentCoreCommand(
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     await cleanup();
   }
+}
+
+/**
+ * Enforce the runtime's inbound JWT authorizer (when declared) and return
+ * the `Authorization` header to forward to `/invocations`.
+ *
+ * - No authorizer → forward the token verbatim if one was given (no-op
+ *   otherwise).
+ * - `--no-verify-auth` → warn + forward without verifying (local-dev escape).
+ * - Authorizer + no token → reject (AgentCore returns 401).
+ * - Authorizer + token → verify against the OIDC discovery URL; reject on
+ *   failure (AgentCore returns 403); forward on success. An unreachable
+ *   discovery URL falls back to pass-through accept (offline-dev fallback in
+ *   {@link verifyJwtViaDiscovery}).
+ *
+ * Exported so a unit test can drive the gate without the full Docker pipeline.
+ */
+export async function resolveInboundAuthorization(
+  resolved: ResolvedAgentCoreRuntime,
+  options: { bearerToken?: string; verifyAuth: boolean }
+): Promise<string | undefined> {
+  const logger = getLogger();
+  const authorizer = resolved.jwtAuthorizer;
+  const header = options.bearerToken ? `Bearer ${options.bearerToken}` : undefined;
+
+  if (!authorizer) return header;
+
+  if (options.verifyAuth === false) {
+    logger.warn(
+      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer, but --no-verify-auth was set — ` +
+        `skipping inbound JWT verification (local-dev escape hatch).`
+    );
+    return header;
+  }
+
+  if (!header) {
+    throw new CdkLocalError(
+      `Runtime '${resolved.logicalId}' requires an inbound JWT (customJwtAuthorizer). ` +
+        `Pass --bearer-token <jwt>, or --no-verify-auth to skip verification for local dev.`,
+      'LOCAL_INVOKE_AGENTCORE_AUTH_REQUIRED'
+    );
+  }
+
+  const result = await verifyJwtViaDiscovery(
+    {
+      discoveryUrl: authorizer.discoveryUrl,
+      ...(authorizer.allowedAudience && { allowedAudience: authorizer.allowedAudience }),
+      ...(authorizer.allowedClients && { allowedClients: authorizer.allowedClients }),
+    },
+    header,
+    createJwksCache(),
+    { warned: new Set() }
+  );
+  if (!result.allow) {
+    throw new CdkLocalError(
+      `Inbound JWT rejected by the runtime's customJwtAuthorizer ` +
+        `(signature / issuer / expiry / audience check failed against ${authorizer.discoveryUrl}).`,
+      'LOCAL_INVOKE_AGENTCORE_AUTH_DENIED'
+    );
+  }
+  logger.info(`Inbound JWT verified against ${authorizer.discoveryUrl}.`);
+  return header;
 }
 
 /**
@@ -613,6 +695,22 @@ export function createLocalInvokeAgentCoreCommand(
       new Option(
         '--session-id <id>',
         'AgentCore runtime session id header value (default: a random UUID)'
+      )
+    )
+    .addOption(
+      new Option(
+        '--bearer-token <jwt>',
+        'Bearer JWT to present when the runtime declares a customJwtAuthorizer. ' +
+          'Verified against the runtime OIDC discovery URL (signature / issuer / expiry / ' +
+          'audience) before the container starts, then forwarded to /invocations as ' +
+          'Authorization: Bearer <jwt>.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--no-verify-auth',
+        'Skip inbound JWT verification even when the runtime declares a customJwtAuthorizer ' +
+          '(local-dev escape hatch). A --bearer-token, if given, is still forwarded.'
       )
     )
     .addOption(

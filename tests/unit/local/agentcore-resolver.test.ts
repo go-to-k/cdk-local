@@ -176,3 +176,56 @@ describe('resolveAgentCoreTarget — out-of-scope artifacts', () => {
     expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/MCP protocol/);
   });
 });
+
+describe('resolveAgentCoreTarget — JWT authorizer extraction', () => {
+  it('extracts discoveryUrl + allowedAudience + allowedClients', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            AllowedAudience: ['aud-1', 'aud-2'],
+            AllowedClients: ['client-9'],
+          },
+        },
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.jwtAuthorizer).toEqual({
+      discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+      allowedAudience: ['aud-1', 'aud-2'],
+      allowedClients: ['client-9'],
+    });
+  });
+
+  it('returns undefined when there is no AuthorizerConfiguration', () => {
+    const stack = buildStack('App', { ChatAgent: containerRuntime() });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer).toBeUndefined();
+  });
+
+  it('omits the audience/client allowlists when absent (discoveryUrl only)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+          },
+        },
+      }),
+    });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer).toEqual({
+      discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+    });
+  });
+
+  it('skips (undefined) when DiscoveryUrl is an unresolved intrinsic', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: { DiscoveryUrl: { Ref: 'SomeParam' } },
+        },
+      }),
+    });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer).toBeUndefined();
+  });
+});

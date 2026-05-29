@@ -127,6 +127,12 @@ export interface InvokeAgentCoreOptions {
   sessionId: string;
   /** Abort the request after this many ms. */
   timeoutMs: number;
+  /**
+   * Optional `Authorization` header to forward (e.g. `Bearer <jwt>`). Real
+   * AgentCore forwards the validated request to the container, so agents
+   * that read the header behave the same locally. Omitted when unset.
+   */
+  authorization?: string;
 }
 
 /**
@@ -155,6 +161,7 @@ export async function invokeAgentCore(
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
         [AGENTCORE_SESSION_ID_HEADER]: options.sessionId,
+        ...(options.authorization && { Authorization: options.authorization }),
       },
       body,
       signal: controller.signal,

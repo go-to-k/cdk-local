@@ -72,9 +72,28 @@ describe('invokeAgentCore', () => {
       'session-1234567890abcdefghijklmnopqrstuv'
     );
     expect(captured?.init.body).toBe('{"prompt":"hello"}');
+    expect(headers['Authorization']).toBeUndefined();
     expect(result.status).toBe(200);
     expect(result.contentType).toBe('application/json');
     expect(result.raw).toBe('{"response":"hi","status":"success"}');
+  });
+
+  it('forwards the Authorization header when supplied', async () => {
+    let captured: { init: RequestInit } | undefined;
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      captured = { init };
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await invokeAgentCore('127.0.0.1', 9000, {}, {
+      sessionId: 's',
+      timeoutMs: 5000,
+      authorization: 'Bearer the.jwt.token',
+    });
+
+    const headers = captured?.init.headers as Record<string, string>;
+    expect(headers['Authorization']).toBe('Bearer the.jwt.token');
   });
 
   it('passes an SSE response body through verbatim', async () => {

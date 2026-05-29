@@ -2,7 +2,8 @@
 // test. Serves the AgentCore HTTP contract on 0.0.0.0:8080:
 //   GET  /ping        -> 200 {"status":"Healthy", ...}
 //   POST /invocations -> echoes the request body, the received session-id
-//                        header, and the injected GREETING env var.
+//                        header, the received Authorization header, and the
+//                        injected GREETING env var.
 // Startup logs go to stderr so the host's stdout carries only the cdkl
 // result line.
 const http = require('node:http');
@@ -33,6 +34,7 @@ const server = http.createServer((req, res) => {
         JSON.stringify({
           echoed,
           sessionId: req.headers[SESSION_HEADER] ?? null,
+          authorization: req.headers['authorization'] ?? null,
           greeting: process.env.GREETING ?? 'unset',
         })
       );

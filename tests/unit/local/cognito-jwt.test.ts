@@ -1,11 +1,12 @@
 import { generateKeyPairSync, createSign } from 'node:crypto';
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   buildCognitoJwksUrl,
   buildJwksUrlFromIssuer,
   createJwksCache,
   verifyCognitoJwt,
   verifyJwtAuthorizer,
+  verifyJwtViaDiscovery,
 } from '../../../src/local/cognito-jwt.js';
 import type {
   CognitoUserPoolAuthorizer,
@@ -796,5 +797,156 @@ describe('verifyCognitoJwt — multi-pool federation', () => {
     const resultB = await verifyCognitoJwt(auth, `Bearer ${tokenB}`, cache);
     expect(resultB.allow).toBe(true);
     expect(bFetched).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
+  const ISSUER = 'https://idp.example.com';
+  const DISCOVERY = `${ISSUER}/.well-known/openid-configuration`;
+  // Deliberately NOT the `<issuer>/.well-known/jwks.json` convention URL, so
+  // the test proves the jwks_uri is read from the discovery document.
+  const JWKS_URI = `${ISSUER}/oauth2/keys`;
+
+  function setup(fixture: ReturnType<typeof makeJwtFixture>): {
+    discoveryFetch: ReturnType<typeof vi.fn>;
+    cache: ReturnType<typeof createJwksCache>;
+  } {
+    const discoveryDoc = JSON.stringify({ issuer: ISSUER, jwks_uri: JWKS_URI });
+    const discoveryFetch = vi.fn(async (url: string) => ({
+      ok: url === DISCOVERY,
+      status: url === DISCOVERY ? 200 : 404,
+      text: async () => (url === DISCOVERY ? discoveryDoc : '{}'),
+    }));
+    const jwksBody = JSON.stringify({ keys: [fixture.jwk] });
+    const cache = createJwksCache({
+      fetchImpl: async (url: string) => ({
+        ok: url === JWKS_URI,
+        status: url === JWKS_URI ? 200 : 404,
+        text: async () => (url === JWKS_URI ? jwksBody : '{}'),
+      }),
+    });
+    return { discoveryFetch, cache };
+  }
+
+  const future = (): number => Math.floor(Date.now() / 1000) + 3600;
+
+  it('allows a valid token, reading jwks_uri + issuer from the discovery doc', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: discoveryFetch, warned: new Set() }
+    );
+    expect(r.allow).toBe(true);
+    expect(discoveryFetch).toHaveBeenCalledWith(DISCOVERY);
+  });
+
+  it('allows when client_id matches allowedClients', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const token = f.sign({}, { iss: ISSUER, exp: future(), client_id: 'client-9' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedClients: ['client-9'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: discoveryFetch, warned: new Set() }
+    );
+    expect(r.allow).toBe(true);
+  });
+
+  it('denies a token whose audience is not allowed', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'other' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: discoveryFetch, warned: new Set() }
+    );
+    expect(r.allow).toBe(false);
+  });
+
+  it('denies an expired token', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const token = f.sign({}, { iss: ISSUER, exp: Math.floor(Date.now() / 1000) - 10, aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: discoveryFetch, warned: new Set() }
+    );
+    expect(r.allow).toBe(false);
+  });
+
+  it('denies a token with the wrong issuer', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const token = f.sign({}, { iss: 'https://evil.example.com', exp: future(), aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: discoveryFetch, warned: new Set() }
+    );
+    expect(r.allow).toBe(false);
+  });
+
+  it('denies when no bearer token is supplied', async () => {
+    const f = makeJwtFixture();
+    const { discoveryFetch, cache } = setup(f);
+    const r = await verifyJwtViaDiscovery({ discoveryUrl: DISCOVERY }, undefined, cache, {
+      fetchImpl: discoveryFetch,
+      warned: new Set(),
+    });
+    expect(r.allow).toBe(false);
+  });
+
+  it('falls back to pass-through accept when the discovery doc is unreachable', async () => {
+    const f = makeJwtFixture();
+    const { cache } = setup(f);
+    const unreachable = vi.fn(async () => ({ ok: false, status: 500, text: async () => 'err' }));
+    const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: unreachable, warned: new Set() }
+    );
+    expect(r.allow).toBe(true);
+  });
+
+  it('pass-through accepts a malformed (non-JWT) token when discovery is unreachable', async () => {
+    const f = makeJwtFixture();
+    const { cache } = setup(f);
+    const unreachable = vi.fn(async () => ({ ok: false, status: 500, text: async () => 'err' }));
+    const r = await verifyJwtViaDiscovery({ discoveryUrl: DISCOVERY }, 'Bearer not-a-jwt', cache, {
+      fetchImpl: unreachable,
+      warned: new Set(),
+    });
+    expect(r.allow).toBe(true);
+    expect(r.principalId).toBe('unknown');
+  });
+
+  it('pass-through accepts when the discovery doc is missing issuer / jwks_uri', async () => {
+    const f = makeJwtFixture();
+    const { cache } = setup(f);
+    const malformedDoc = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '{"not":"an-oidc-doc"}',
+    }));
+    const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: malformedDoc, warned: new Set() }
+    );
+    expect(r.allow).toBe(true);
   });
 });

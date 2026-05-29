@@ -311,6 +311,99 @@ export async function verifyJwtAuthorizer(
   );
 }
 
+/**
+ * Inbound custom-JWT authorizer fronted by an OIDC discovery URL — the
+ * shape Bedrock AgentCore Runtime declares
+ * (`AuthorizerConfiguration.CustomJWTAuthorizer`).
+ */
+export interface DiscoveryJwtAuthorizer {
+  /** OIDC discovery document URL (`.well-known/openid-configuration`). */
+  discoveryUrl: string;
+  /** Allowed `aud` values. */
+  allowedAudience?: readonly string[];
+  /** Allowed `client_id` values. */
+  allowedClients?: readonly string[];
+}
+
+/**
+ * Verify a Bearer JWT against an OIDC-discovery-URL authorizer (Bedrock
+ * AgentCore Runtime's `customJwtAuthorizer`).
+ *
+ * Fetches the discovery document to learn the `issuer` + `jwks_uri`, then
+ * delegates to {@link verifyAndShape} for the RS256 signature + `iss` +
+ * `exp` + audience checks. The audience allowlist is
+ * `allowedAudience ∪ allowedClients`, matched against the token's `aud`
+ * (ID tokens) or `client_id` (access tokens).
+ *
+ * Failure modes mirror the JWKS-unreachable behavior: an absent / malformed
+ * Bearer token is denied, but an unreachable / malformed discovery document
+ * falls back to pass-through (accept + warn) so offline local dev still
+ * works — the same trade-off `cdkl start-api` makes for unreachable JWKS.
+ */
+export async function verifyJwtViaDiscovery(
+  authorizer: DiscoveryJwtAuthorizer,
+  authorizationHeader: string | undefined,
+  jwksCache: JwksCache,
+  opts: {
+    now?: () => number;
+    warned?: Set<string>;
+    fetchImpl?: (
+      url: string
+    ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
+  } = {}
+): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
+  const now = opts.now ?? ((): number => Date.now());
+  const token = extractBearer(authorizationHeader);
+  if (!token) {
+    return { allow: false, identityHash: undefined, ttlSeconds: 0 };
+  }
+  const fetchImpl =
+    opts.fetchImpl ?? (async (url): ReturnType<typeof globalThis.fetch> => globalThis.fetch(url));
+
+  let issuer: string;
+  let jwksUri: string;
+  try {
+    const response = await fetchImpl(authorizer.discoveryUrl);
+    if (!response.ok) {
+      throw new Error(`discovery fetch returned HTTP ${response.status}`);
+    }
+    const doc = JSON.parse(await response.text()) as { issuer?: unknown; jwks_uri?: unknown };
+    if (typeof doc.issuer !== 'string' || typeof doc.jwks_uri !== 'string') {
+      throw new Error('discovery document missing issuer / jwks_uri');
+    }
+    issuer = doc.issuer;
+    jwksUri = doc.jwks_uri;
+  } catch (err) {
+    // Discovery unreachable / malformed → pass-through accept (offline dev),
+    // mirroring the JWKS-unreachable fallback in `createJwksCache`.
+    if (opts.warned && !opts.warned.has(authorizer.discoveryUrl)) {
+      opts.warned.add(authorizer.discoveryUrl);
+      getLogger()
+        .child('cognito-jwt')
+        .warn(
+          `OIDC discovery unreachable at ${authorizer.discoveryUrl}: ${
+            err instanceof Error ? err.message : String(err)
+          }. Token accepted without verification — local dev fallback.`
+        );
+    }
+    const identityHash = buildIdentityHash([token]);
+    const parsed = parseJwt(token);
+    if (parsed) return shapeAllowResult(parsed, identityHash, now);
+    return { allow: true, principalId: 'unknown', context: {}, identityHash, ttlSeconds: 0 };
+  }
+
+  const allowlist = [...(authorizer.allowedAudience ?? []), ...(authorizer.allowedClients ?? [])];
+  return verifyAndShape(
+    token,
+    jwksUri,
+    issuer.replace(/\/+$/, ''),
+    allowlist.length > 0 ? allowlist : undefined,
+    jwksCache,
+    opts.warned,
+    now
+  );
+}
+
 async function verifyAndShape(
   token: string,
   jwksUrl: string,

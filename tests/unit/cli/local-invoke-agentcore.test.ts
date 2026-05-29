@@ -8,6 +8,7 @@ const {
   pullEcrImageMock,
   pullImageMock,
   createLocalStateProviderMock,
+  verifyJwtViaDiscoveryMock,
 } = vi.hoisted(() => ({
   loadManifestMock: vi.fn(),
   getDockerImageBySourceHashMock: vi.fn(),
@@ -16,6 +17,13 @@ const {
   pullEcrImageMock: vi.fn(),
   pullImageMock: vi.fn(),
   createLocalStateProviderMock: vi.fn(),
+  verifyJwtViaDiscoveryMock: vi.fn(),
+}));
+
+vi.mock('../../../src/local/cognito-jwt.js', async (importActual) => ({
+  ...(await importActual<object>()),
+  createJwksCache: vi.fn(() => ({ fetchAndCache: vi.fn(), peek: vi.fn(), clear: vi.fn() })),
+  verifyJwtViaDiscovery: verifyJwtViaDiscoveryMock,
 }));
 
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importActual) => ({
@@ -60,6 +68,7 @@ const {
   readEvent,
   readEnvOverridesFile,
   platformToArchitecture,
+  resolveInboundAuthorization,
 } = await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -278,5 +287,76 @@ describe('platformToArchitecture', () => {
 
   it('defaults any other value to arm64 (AgentCore-required arch)', () => {
     expect(platformToArchitecture('something-else')).toBe('arm64');
+  });
+});
+
+describe('resolveInboundAuthorization — JWT gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const withAuthorizer = (over: Partial<ResolvedAgentCoreRuntime> = {}) =>
+    runtime('repo:tag', {
+      jwtAuthorizer: {
+        discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+        allowedAudience: ['aud-1'],
+      },
+      ...over,
+    });
+
+  it('forwards a token unchanged when no authorizer is configured (no verify)', async () => {
+    const header = await resolveInboundAuthorization(runtime('repo:tag'), {
+      bearerToken: 'tok',
+      verifyAuth: true,
+    });
+    expect(header).toBe('Bearer tok');
+    expect(verifyJwtViaDiscoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('returns undefined when no authorizer and no token', async () => {
+    expect(
+      await resolveInboundAuthorization(runtime('repo:tag'), { verifyAuth: true })
+    ).toBeUndefined();
+  });
+
+  it('skips verification with --no-verify-auth (forwards token, no verify)', async () => {
+    const header = await resolveInboundAuthorization(withAuthorizer(), {
+      bearerToken: 'tok',
+      verifyAuth: false,
+    });
+    expect(header).toBe('Bearer tok');
+    expect(verifyJwtViaDiscoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects (pre-container) when the authorizer is set but no token is given', async () => {
+    await expect(
+      resolveInboundAuthorization(withAuthorizer(), { verifyAuth: true })
+    ).rejects.toThrow(/requires an inbound JWT/);
+    expect(verifyJwtViaDiscoveryMock).not.toHaveBeenCalled();
+  });
+
+  it('verifies + forwards when the token is accepted', async () => {
+    verifyJwtViaDiscoveryMock.mockResolvedValue({ allow: true, identityHash: 'h', ttlSeconds: 0 });
+    const header = await resolveInboundAuthorization(withAuthorizer(), {
+      bearerToken: 'tok',
+      verifyAuth: true,
+    });
+    expect(header).toBe('Bearer tok');
+    expect(verifyJwtViaDiscoveryMock).toHaveBeenCalledWith(
+      {
+        discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+        allowedAudience: ['aud-1'],
+      },
+      'Bearer tok',
+      expect.anything(),
+      expect.objectContaining({ warned: expect.any(Set) })
+    );
+  });
+
+  it('rejects when the token is denied by the authorizer', async () => {
+    verifyJwtViaDiscoveryMock.mockResolvedValue({ allow: false, identityHash: undefined, ttlSeconds: 0 });
+    await expect(
+      resolveInboundAuthorization(withAuthorizer(), { bearerToken: 'bad', verifyAuth: true })
+    ).rejects.toThrow(/rejected by the runtime's customJwtAuthorizer/);
   });
 });
