@@ -105,7 +105,7 @@ export function formatTargetListing(
   options: FormatTargetListingOptions = {}
 ): string {
   if (countTargets(listing) === 0) {
-    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes) found in this CDK app.`;
+    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, AgentCore Runtimes, load balancers) found in this CDK app.`;
   }
 
   const long = options.long ?? false;
@@ -128,6 +128,12 @@ export function formatTargetListing(
       'AgentCore Runtimes',
       `${cliName} invoke-agentcore <target>`,
       listing.agentCoreRuntimes,
+      long
+    ),
+    formatSection(
+      'Application Load Balancers',
+      `${cliName} start-alb <target...>`,
+      listing.loadBalancers,
       long
     ),
   ];
@@ -174,8 +180,8 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
     .description(
       'List the runnable targets in the synthesized CDK app, grouped by the command that runs them: ' +
         'Lambda functions (invoke), API Gateway REST v1 / HTTP v2 / Function URL / WebSocket surfaces ' +
-        '(start-api), ECS services (start-service), ECS task definitions (run-task), and AgentCore ' +
-        'Runtimes (invoke-agentcore). Each target is ' +
+        '(start-api), ECS services (start-service), ECS task definitions (run-task), AgentCore ' +
+        'Runtimes (invoke-agentcore), and Application Load Balancers (start-alb). Each target is ' +
         'shown by its CDK display path; pass -l to also print the stack-qualified logical ID. Tip: you ' +
         'usually do not need to copy these — just run the command (e.g. `invoke`) with no target in a ' +
         'terminal and pick from the list.'

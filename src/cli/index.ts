@@ -6,6 +6,7 @@ import { createLocalInvokeAgentCoreCommand } from './commands/local-invoke-agent
 import { createLocalStartApiCommand } from './commands/local-start-api.js';
 import { createLocalRunTaskCommand } from './commands/local-run-task.js';
 import { createLocalStartServiceCommand } from './commands/local-start-service.js';
+import { createLocalStartAlbCommand } from './commands/local-start-alb.js';
 import { createLocalListCommand } from './commands/local-list.js';
 
 declare const __CDK_LOCAL_VERSION__: string;
@@ -21,6 +22,7 @@ program.addCommand(createLocalInvokeAgentCoreCommand());
 program.addCommand(createLocalStartApiCommand());
 program.addCommand(createLocalRunTaskCommand());
 program.addCommand(createLocalStartServiceCommand());
+program.addCommand(createLocalStartAlbCommand());
 program.addCommand(createLocalListCommand());
 
 void program.parseAsync(process.argv);

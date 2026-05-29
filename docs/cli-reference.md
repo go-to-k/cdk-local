@@ -16,14 +16,15 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container + the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
-| `cdkl start-service <targets...>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
+| `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
+| `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
 
-The five run commands (`invoke` / `invoke-agentcore` / `start-api` /
-`run-task` / `start-service`) require Docker on the developer's machine.
-The first run pulls the relevant base image (~600MB for the
-language-specific Lambda images, ~50MB for `provided.*`, the agent's own
-container base for `invoke-agentcore`, plus the ECS metadata sidecar for
-`run-task` / `start-service`). Subsequent runs reuse the cached image;
+The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
+`start-service` / `start-alb`) require Docker on the developer's machine. The
+first run pulls the relevant base image (~600MB for the language-specific
+Lambda images, ~50MB for `provided.*`, the agent's own container base for
+`invoke-agentcore`, plus the ECS metadata sidecar for
+`run-task` / `start-service` / `start-alb`). Subsequent runs reuse the cached image;
 pass `--no-pull` to skip the `docker pull` round-trip. `cdkl list` only
 synthesizes the app, so it needs no Docker.
 
@@ -128,6 +129,9 @@ ECS Task Definitions  ->  cdkl run-task <target>
 
 AgentCore Runtimes  ->  cdkl invoke-agentcore <target>
   MyStack/ChatAgent
+
+Application Load Balancers  ->  cdkl start-alb <target...>
+  MyStack/WebAlb
 ```
 
 ```text
@@ -837,7 +841,11 @@ each other via a `docker --add-host` DNS overlay.
 > matches production. Peers still reach a multi-replica service by
 > container IP / network alias on the shared docker network; to hit a
 > specific replica from the host, `docker exec` into it or read its IP
-> from `docker inspect`.
+> from `docker inspect`. To reach an **ALB-fronted** service the way
+> external traffic does — a single stable host endpoint that round-robins
+> across the replicas — run [`cdkl start-alb`](#cdkl-start-alb-run-an-alb-fronted-service-locally)
+> (name the ALB) instead; `start-service` itself is a pure replica runner
+> and opens no front-door.
 >
 > **macOS privileged ports.** The host port equals the container port by
 > default. On macOS, Docker Desktop binds host ports below 1024 through a
@@ -897,9 +905,86 @@ ECS Services on Fargate require `awsvpc`. cdk-local maps `awsvpc` to a
 per-task docker bridge network with a startup warn; security groups
 are NOT enforced locally and per-task ENIs are not emulated.
 
+### ALB front-door
+
+`start-service` is a pure compute runner and opens no load-balancer
+front-door. To reach an ALB-fronted service the way external traffic does,
+run [`cdkl start-alb`](#cdkl-start-alb-run-an-alb-fronted-service-locally)
+and name the ALB.
+
 ### `cdkl start-service` exit codes
 
 - `0` — server started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, target not an ECS Service,
   network creation failed) OR uncaught exception during the run.
+- `130` — exited via SIGINT (`^C`).
+
+## `cdkl start-alb` (run an ALB-fronted service locally)
+
+`cdkl start-alb <targets...>` is the ALB counterpart of `cdkl start-api`:
+you name the **Application Load Balancer**, and cdk-local discovers the
+ECS service(s) behind its HTTP `forward` listeners, boots their replicas
+(the same shared docker network + Cloud Map + restart watcher as
+`start-service`), and stands up a host-side **front-door** on each
+listener port that round-robins each request across the running replicas
+— one stable host endpoint, like behind a real load balancer.
+
+`start-service` vs `start-alb` mirrors `invoke` / `run-task` (the compute
+alone) vs `start-api` (the routed entry in front of the compute). Use
+`start-service` for an ECS service with no load balancer (workers, queue
+consumers, Service-Connect-only services) or to run the containers and
+hit them directly; use `start-alb` for an `ApplicationLoadBalancedFargateService`-style
+service you want to reach the way external traffic does.
+
+### Resolution model
+
+`start-alb` resolves the ALB you name → its
+`AWS::ElasticLoadBalancingV2::Listener`s (matched by `LoadBalancerArn`) →
+each listener's default `forward` `AWS::ElasticLoadBalancingV2::TargetGroup`
+→ the `AWS::ECS::Service` whose `LoadBalancers[]` references that target
+group (a reverse scan — there is no direct TG → service pointer). Each
+booted replica publishes its target container port on an **ephemeral**
+host port (so N replicas never collide), and the front-door forwards to
+those — cross-platform, since traffic goes through published ports rather
+than docker-network IPs the host can't reach on macOS Docker Desktop.
+
+### Target resolution
+
+- `Stack/Alb` (display path) or `Stack:LogicalId`; single-stack apps may
+  omit the stack prefix. Omit `<targets>` in a TTY to multi-select.
+- The target MUST resolve to an application
+  `AWS::ElasticLoadBalancingV2::LoadBalancer` (NLBs are skipped).
+
+### Options
+
+Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
+`--restart-policy`, `--env-vars`, `--container-host`, `--assume-task-role`,
+`--ecr-role-arn`, `--platform`, `--no-pull`, `--from-cfn-stack`,
+`--stack-region`, plus the [common flags](#common-flags)), except
+`--host-port` is replaced by:
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--lb-port <listenerPort=hostPort>` | — | Bind the front-door on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
+
+```bash
+# ALB listener on :80 -> remap to a non-privileged host port on macOS
+cdkl start-alb MyStack/WebAlb --lb-port 80=8080
+# then: curl http://127.0.0.1:8080/  (round-robins across replicas)
+```
+
+### Scope (v1)
+
+Single default-action `forward` to an **HTTP** listener, **ECS** targets
+only. Full listener-rule routing (path / host / header / query / source-ip
+conditions, priority, weighted target groups, `redirect` / `fixed-response`),
+HTTPS / TLS termination, and Lambda targets are out of scope — listener-rule
+routing is tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123).
+HTTPS listeners and Lambda target groups are skipped with a warning.
+
+### `cdkl start-alb` exit codes
+
+- `0` — front-door + services started cleanly and shut down on SIGTERM.
+- `1` — startup failure (Docker missing, target not an application ALB, no
+  frontable ECS service behind it, port bind failure) OR uncaught exception.
 - `130` — exited via SIGINT (`^C`).

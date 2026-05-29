@@ -336,6 +336,23 @@ describe('countTargets', () => {
       ecsServices: [],
       ecsTaskDefinitions: [],
       agentCoreRuntimes: [],
+      loadBalancers: [],
     });
+  });
+
+  it('enumerates application load balancers (start-alb) and skips network LBs', () => {
+    const stack = buildStack('App', {
+      WebLB: {
+        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        Properties: { Type: 'application' },
+      },
+      DefaultLB: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: {} },
+      Nlb: {
+        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        Properties: { Type: 'network' },
+      },
+    });
+    const listing = listTargets([stack]);
+    expect(listing.loadBalancers.map((e) => e.logicalId).sort()).toEqual(['DefaultLB', 'WebLB']);
   });
 });

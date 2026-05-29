@@ -117,6 +117,9 @@ ECS Task Definitions  ->  cdkl run-task <target>
 
 AgentCore Runtimes  ->  cdkl invoke-agentcore <target>
   MyStack/ChatAgent
+
+Application Load Balancers  ->  cdkl start-alb <target...>
+  MyStack/WebAlb
 ```
 
 #### Passing a target explicitly
@@ -132,6 +135,10 @@ cdkl invoke MyStack:ItemsHandler1234ABCD --event ./event.json   # logical ID (an
 cdkl run-task MyStack/MyTask
 cdkl start-service MyStack/OrdersService MyStack/Frontend
 
+# ECS behind an ALB — name the load balancer; cdkl boots the services
+# behind it and serves the listener port (round-robined across replicas)
+cdkl start-alb MyStack/WebAlb
+
 # API Gateway / Function URLs — one API, or every API in the stack
 cdkl start-api MyStack/MyApi
 cdkl start-api
@@ -142,7 +149,29 @@ cdkl invoke-agentcore MyStack/ChatAgent --event ./event.json
 
 `start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once; serve them all with `--all-stacks`, or select one with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target. See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
-For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
+For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry.
+
+**`start-service` vs `start-alb` — which do I run?** They mirror `run-task`/`invoke` (the compute alone) vs `start-api` (the routed entry in front of the compute):
+
+| Command | You name | What runs | Use when |
+| --- | --- | --- | --- |
+| `cdkl start-service <Service>` | the ECS **service** | just the service's replicas (no load balancer) | workers / queue consumers / Service-Connect-only services, or to run the containers and hit them directly |
+| `cdkl start-alb <Alb>` | the **ALB** | the ECS service(s) behind the ALB **plus** a local **front-door** on each listener port | an `ApplicationLoadBalancedFargateService`-style service you want to reach the way external traffic does |
+
+`start-alb` is the ALB counterpart of `start-api`: you name the load balancer, and cdk-local discovers the ECS service(s) behind its HTTP `forward` listeners, boots their replicas, and stands up a host-side **front-door** on each listener port that round-robins requests across the running replicas — one stable host endpoint, just like behind a real load balancer. `start-service` stays a pure compute runner and never opens a front-door.
+
+```bash
+# Just the service replicas (no load balancer) — a worker, or direct container debugging:
+cdkl start-service MyStack/Worker
+
+# The ALB-fronted experience — name the ALB; cdkl boots the backing service(s) and
+# fronts each listener. On macOS, remap the privileged listener port 80 to a
+# non-privileged host port with --lb-port.
+cdkl start-alb MyStack/WebAlb --lb-port 80=8080
+curl http://127.0.0.1:8080/   # round-robins across the running replicas
+```
+
+See [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally) for `start-alb`'s resolution model and scope (single HTTP `forward`, ECS targets).
 
 `invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS.
 
