@@ -475,7 +475,8 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--event-stdin` | off | Read the event JSON from stdin instead of a file (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block. `null` clears a key. |
 | `--session-id <id>` | random UUID | Value for the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` request header. |
-| `--bearer-token <jwt>` | — | Bearer JWT to present when the runtime declares a `customJwtAuthorizer`. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` as `Authorization: Bearer <jwt>`. |
+| `--ws` | off | Stream over the HTTP-protocol agent's bidirectional `/ws` WebSocket endpoint (on 8080) instead of `POST /invocations`: send `--event` as the first frame and print every received frame to stdout until the agent closes. See [WebSocket transport](#websocket-transport---ws) below. Ignored for an MCP runtime. |
+| `--bearer-token <jwt>` | — | Bearer JWT to present when the runtime declares a `customJwtAuthorizer`. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` (or the `/ws` upgrade) as `Authorization: Bearer <jwt>`. |
 | `--no-verify-auth` | off (verify on) | Skip inbound JWT verification even when the runtime declares a `customJwtAuthorizer` (local-dev escape hatch). A `--bearer-token`, if given, is still forwarded. |
 | `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container (AgentCore requires ARM64; override to `linux/amd64` if needed). |
 | `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
@@ -529,8 +530,27 @@ before the container starts:
 once the request completes. A streaming SSE (`text/event-stream`) response
 is written to stdout chunk-by-chunk as it arrives — so a token-streaming
 agent shows incrementally, the same UX AgentCore gives in the cloud —
-rather than all at once at the end. Bidirectional `/ws` WebSocket streaming
-is a follow-up.
+rather than all at once at the end. For full duplex, see the WebSocket
+transport below.
+
+### WebSocket transport (`--ws`)
+
+An HTTP-protocol agent can also expose a bidirectional `/ws` WebSocket
+endpoint on the same 8080 container (AWS supports `GET /ws` alongside
+`POST /invocations` + `GET /ping`; the SDK's `BedrockAgentCoreApp`
+registers it). `--ws` exercises it:
+
+1. wait for `GET /ping`, then open `ws://<host>:8080/ws` with the
+   `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header (and, for a
+   protected runtime, `Authorization: Bearer <jwt>` after the same inbound
+   JWT check above),
+2. send `--event` (default `{}`) as the first frame,
+3. print every received frame to stdout in arrival order until the agent
+   closes the stream.
+
+The over-the-wire framing on `/ws` is agent-defined — AWS pipes bytes
+transparently — so `cdkl` mirrors that and does not interpret the frames.
+`--ws` is HTTP-only; it is ignored (with a warning) for an MCP runtime.
 
 ### MCP protocol
 

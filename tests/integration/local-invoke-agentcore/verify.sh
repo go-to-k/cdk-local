@@ -16,7 +16,10 @@
 # MCP-protocol runtime (McpAgent, POST /mcp on 8000) exercises the MCP session
 # handshake + tools/list / tools/call. A third runtime (CodeAgent) is a
 # CodeConfiguration / managed-runtime artifact authored as plain Python source
-# (fromCodeAsset) that cdkl builds from source and runs.
+# (fromCodeAsset) that cdkl builds from source and runs. The final scenario
+# exercises `--ws`: the EchoAgent's bidirectional /ws WebSocket endpoint (same
+# 8080 container), sending the event as the first frame and streaming the
+# received frames to stdout.
 #
 # Run via `/run-integ local-invoke-agentcore` (recommended) or directly:
 #
@@ -49,7 +52,7 @@ if [[ ! -d node_modules ]]; then
 fi
 
 # Test 1 — default empty event: env injection + auto session id.
-echo "==> [1/12] Invoking EchoAgent with default empty event"
+echo "==> [1/13] Invoking EchoAgent with default empty event"
 RESULT_1=$(${CDKL} invoke-agentcore "${TARGET}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
@@ -63,7 +66,7 @@ echo "${RESULT_1}" | grep -Eq '"sessionId":"[0-9a-fA-F-]{8,}' || {
 }
 
 # Test 2 — event payload via --event echoes through /invocations.
-echo "==> [2/12] Invoking EchoAgent with --event payload"
+echo "==> [2/13] Invoking EchoAgent with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
@@ -75,7 +78,7 @@ echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
 }
 
 # Test 3 — --env-vars override wins over the template env.
-echo "==> [3/12] Invoking EchoAgent with --env-vars override"
+echo "==> [3/13] Invoking EchoAgent with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -87,7 +90,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — explicit --session-id reaches the container's session header.
-echo "==> [4/12] Invoking EchoAgent with explicit --session-id"
+echo "==> [4/13] Invoking EchoAgent with explicit --session-id"
 SESSION="cdkl-integ-session-1234567890abcdef"
 RESULT_4=$(${CDKL} invoke-agentcore "${TARGET}" --session-id "${SESSION}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_4}"
@@ -98,7 +101,7 @@ echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
 
 # Test 5 — a JWT-protected runtime invoked WITHOUT a token is rejected
 # BEFORE any container starts (AgentCore returns 401 in the cloud).
-echo "==> [5/12] ProtectedAgent without --bearer-token must be rejected pre-container"
+echo "==> [5/13] ProtectedAgent without --bearer-token must be rejected pre-container"
 set +e
 OUT_5=$(${CDKL} invoke-agentcore "${PROTECTED}" 2>&1)
 RC_5=$?
@@ -119,7 +122,7 @@ RUNNING=$(docker ps -a --filter name=cdkl-agentcore- -q | wc -l | tr -d ' ')
 }
 
 # Test 6 — --no-verify-auth skips verification and proceeds.
-echo "==> [6/12] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
+echo "==> [6/13] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
 RESULT_6=$(${CDKL} invoke-agentcore "${PROTECTED}" --no-verify-auth 2>/dev/null | tail -1)
 echo "    response: ${RESULT_6}"
 echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
@@ -129,7 +132,7 @@ echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
 
 # Test 7 — a --bearer-token (discovery URL unreachable -> pass-through accept)
 # is verified and forwarded to /invocations as the Authorization header.
-echo "==> [7/12] ProtectedAgent with --bearer-token forwards the Authorization header"
+echo "==> [7/13] ProtectedAgent with --bearer-token forwards the Authorization header"
 TOKEN="header.payload.sig"
 RESULT_7=$(${CDKL} invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_7}"
@@ -142,7 +145,7 @@ echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
 # The agent emits SSE frames when the event carries {"stream": true}; we assert
 # every streamed frame reached stdout (the full body, not a single buffered
 # line — so we capture all output, not just tail -1).
-echo "==> [8/12] EchoAgent streams a text/event-stream response to stdout"
+echo "==> [8/13] EchoAgent streams a text/event-stream response to stdout"
 STREAM_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}"' EXIT
 echo '{"stream":true}' > "${STREAM_EVENT}"
@@ -162,7 +165,7 @@ echo "${RESULT_8}" | grep -q '\[DONE\]' || {
 # Test 9 — an MCP-protocol runtime, no --event: the session handshake runs and
 # the default tools/list request returns the server's tools. The container
 # serves POST /mcp on 8000 (no /ping); readiness is a successful initialize.
-echo "==> [9/12] McpAgent (no --event) runs the handshake + tools/list"
+echo "==> [9/13] McpAgent (no --event) runs the handshake + tools/list"
 RESULT_9=$(${CDKL} invoke-agentcore "${MCP}" 2>/dev/null)
 echo "    response: ${RESULT_9}"
 echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
@@ -171,7 +174,7 @@ echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
 }
 
 # Test 10 — an MCP tools/call via --event returns the tool result.
-echo "==> [10/12] McpAgent with --event runs tools/call"
+echo "==> [10/13] McpAgent with --event runs tools/call"
 CALL_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}"' EXIT
 echo '{"method":"tools/call","params":{"name":"add_numbers","arguments":{"a":2,"b":3}}}' > "${CALL_EVENT}"
@@ -185,7 +188,7 @@ echo "${RESULT_10}" | grep -q '"text": "5"' || {
 # Test 11 — a CodeConfiguration (managed-runtime) runtime authored as plain
 # source (no Dockerfile): cdkl builds it from source (pip install + run the
 # entrypoint) and the entrypoint self-serves the 8080 HTTP contract.
-echo "==> [11/12] CodeAgent (fromCodeAsset) builds from source + responds"
+echo "==> [11/13] CodeAgent (fromCodeAsset) builds from source + responds"
 RESULT_11=$(${CDKL} invoke-agentcore "${CODE}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_11}"
 echo "${RESULT_11}" | grep -q '"runtime":"python-code"' || {
@@ -198,7 +201,7 @@ echo "${RESULT_11}" | grep -q '"greeting":"hello-from-code"' || {
 }
 
 # Test 12 — a --event payload echoes through the from-source agent.
-echo "==> [12/12] CodeAgent with --event echoes the payload"
+echo "==> [12/13] CodeAgent with --event echoes the payload"
 CODE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}"' EXIT
 echo '{"prompt":"hello code"}' > "${CODE_EVENT}"
@@ -209,5 +212,32 @@ echo "${RESULT_12}" | grep -q '"prompt":"hello code"' || {
   exit 1
 }
 
+# Test 13 — the bidirectional /ws WebSocket transport: --ws sends the event as
+# the first frame and streams every received frame to stdout until the agent
+# closes. The fixture agent replies with one JSON frame (echo + session id +
+# Authorization + GREETING) then a second text frame, then closes.
+echo "==> [13/13] EchoAgent over the /ws WebSocket (--ws)"
+WS_EVENT=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}"' EXIT
+echo '{"prompt":"hello ws"}' > "${WS_EVENT}"
+RESULT_13=$(${CDKL} invoke-agentcore "${TARGET}" --ws --event "${WS_EVENT}" 2>/dev/null)
+echo "    response: ${RESULT_13}"
+echo "${RESULT_13}" | grep -q '"ws":true' || {
+  echo "FAIL: expected the /ws frame marker \"ws\":true, got: ${RESULT_13}"
+  exit 1
+}
+echo "${RESULT_13}" | grep -q '"prompt":"hello ws"' || {
+  echo "FAIL: expected the echoed event over /ws, got: ${RESULT_13}"
+  exit 1
+}
+echo "${RESULT_13}" | grep -q '"greeting":"hello-from-agent"' || {
+  echo "FAIL: expected GREETING injected over /ws, got: ${RESULT_13}"
+  exit 1
+}
+echo "${RESULT_13}" | grep -q 'ws-frame-2' || {
+  echo "FAIL: expected the second streamed /ws frame, got: ${RESULT_13}"
+  exit 1
+}
+
 echo ""
-echo "==> All 12 local-invoke-agentcore tests passed"
+echo "==> All 13 local-invoke-agentcore tests passed"

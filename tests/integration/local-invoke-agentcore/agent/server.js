@@ -7,11 +7,19 @@
 //                        {"stream": true}, instead responds with a
 //                        text/event-stream body emitting a few SSE frames with
 //                        small gaps, to exercise incremental streaming.
+//   GET  /ws (upgrade) -> bidirectional WebSocket: on the first received frame,
+//                        sends one JSON frame echoing the frame + session-id +
+//                        Authorization + GREETING, then a second text frame, then
+//                        closes — exercising `cdkl invoke-agentcore --ws`.
+// The WebSocket handshake + framing is implemented over the built-in `http`
+// `upgrade` event so the container needs no npm deps.
 // Startup logs go to stderr so the host's stdout carries only the cdkl
 // result line.
 const http = require('node:http');
+const crypto = require('node:crypto');
 
 const SESSION_HEADER = 'x-amzn-bedrock-agentcore-runtime-session-id';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function streamSse(res) {
   res.writeHead(200, {
@@ -31,6 +39,104 @@ function streamSse(res) {
     clearInterval(timer);
     res.end();
   }, 50);
+}
+
+// Encode a single unmasked text frame (server -> client). Payloads here are
+// small, so only the 7-bit and 16-bit length forms are needed.
+function encodeTextFrame(text) {
+  const payload = Buffer.from(text, 'utf-8');
+  const len = payload.length;
+  let header;
+  if (len < 126) {
+    header = Buffer.from([0x81, len]);
+  } else {
+    header = Buffer.from([0x81, 126, (len >> 8) & 0xff, len & 0xff]);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+function encodeCloseFrame() {
+  // FIN + opcode 0x8 (close), zero-length payload.
+  return Buffer.from([0x88, 0x00]);
+}
+
+// Decode the FIRST complete frame in `buf`. Returns { opcode, payload } or null
+// when the buffer does not yet hold a full frame. Client frames are masked.
+function decodeFrame(buf) {
+  if (buf.length < 2) return null;
+  const opcode = buf[0] & 0x0f;
+  const masked = (buf[1] & 0x80) !== 0;
+  let len = buf[1] & 0x7f;
+  let offset = 2;
+  if (len === 126) {
+    if (buf.length < offset + 2) return null;
+    len = buf.readUInt16BE(offset);
+    offset += 2;
+  } else if (len === 127) {
+    if (buf.length < offset + 8) return null;
+    len = Number(buf.readBigUInt64BE(offset));
+    offset += 8;
+  }
+  let maskKey;
+  if (masked) {
+    if (buf.length < offset + 4) return null;
+    maskKey = buf.subarray(offset, offset + 4);
+    offset += 4;
+  }
+  if (buf.length < offset + len) return null;
+  const payload = Buffer.from(buf.subarray(offset, offset + len));
+  if (masked) {
+    for (let i = 0; i < payload.length; i += 1) payload[i] ^= maskKey[i % 4];
+  }
+  return { opcode, payload };
+}
+
+function handleUpgrade(req, socket) {
+  const key = req.headers['sec-websocket-key'];
+  if (!key) {
+    socket.destroy();
+    return;
+  }
+  const accept = crypto
+    .createHash('sha1')
+    .update(key + WS_GUID)
+    .digest('base64');
+  socket.write(
+    'HTTP/1.1 101 Switching Protocols\r\n' +
+      'Upgrade: websocket\r\n' +
+      'Connection: Upgrade\r\n' +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+  );
+
+  let replied = false;
+  socket.on('data', (chunk) => {
+    if (replied) return;
+    const frame = decodeFrame(chunk);
+    if (!frame) return; // wait for the rest of the frame
+    if (frame.opcode === 0x8) {
+      socket.end();
+      return;
+    }
+    replied = true;
+    let echoed;
+    try {
+      echoed = JSON.parse(frame.payload.toString('utf-8') || '{}');
+    } catch {
+      echoed = frame.payload.toString('utf-8');
+    }
+    const reply = JSON.stringify({
+      ws: true,
+      echoed,
+      sessionId: req.headers[SESSION_HEADER] ?? null,
+      authorization: req.headers['authorization'] ?? null,
+      greeting: process.env.GREETING ?? 'unset',
+    });
+    socket.write(encodeTextFrame(reply));
+    socket.write(encodeTextFrame('ws-frame-2'));
+    socket.write(encodeCloseFrame());
+    socket.end();
+  });
+  socket.on('error', () => socket.destroy());
 }
 
 const server = http.createServer((req, res) => {
@@ -71,6 +177,14 @@ const server = http.createServer((req, res) => {
 
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'not found' }));
+});
+
+server.on('upgrade', (req, socket) => {
+  if (req.url === '/ws') {
+    handleUpgrade(req, socket);
+    return;
+  }
+  socket.destroy();
 });
 
 server.listen(8080, '0.0.0.0', () => {

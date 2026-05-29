@@ -82,6 +82,7 @@ const {
   resolveAgentCoreImage,
   emitResult,
   emitMcpResult,
+  emitWsResult,
   buildMcpRequest,
   buildContainerEnv,
   readEvent,
@@ -288,6 +289,28 @@ describe('emitResult — exit codes', () => {
     // The SSE body was already written incrementally via onChunk; emitResult
     // must not echo `raw` again, just close the line.
     emitResult({ status: 200, contentType: 'text/event-stream', raw: '', streamed: true });
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).toHaveBeenCalledWith('\n');
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+describe('emitWsResult', () => {
+  let writeSpy: ReturnType<typeof vi.spyOn>;
+  const savedExitCode = process.exitCode;
+
+  beforeEach(() => {
+    process.exitCode = undefined;
+    writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    writeSpy.mockRestore();
+    process.exitCode = savedExitCode;
+  });
+
+  it('only terminates with a newline (frames were already streamed) and leaves exit code unset', () => {
+    emitWsResult({ frames: 3 });
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(writeSpy).toHaveBeenCalledWith('\n');
     expect(process.exitCode).toBeUndefined();
