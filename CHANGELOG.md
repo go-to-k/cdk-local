@@ -1,3 +1,10 @@
+# [0.34.0](https://github.com/go-to-k/cdk-local/compare/v0.33.0...v0.34.0) (2026-05-29)
+
+
+### Features
+
+* **exports:** expose file-watcher + watch-predicates + watch-config for watch-source shim consumers ([#116](https://github.com/go-to-k/cdk-local/issues/116)) ([1c62469](https://github.com/go-to-k/cdk-local/commit/1c624698309980847dc7e53c4d97e46b35c58c76))
+
 # [0.33.0](https://github.com/go-to-k/cdk-local/compare/v0.32.0...v0.33.0) (2026-05-29)
 
 
