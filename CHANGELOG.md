@@ -1,3 +1,10 @@
+# [0.32.0](https://github.com/go-to-k/cdk-local/compare/v0.31.0...v0.32.0) (2026-05-29)
+
+
+### Features
+
+* **exports:** parameterize sigv4 strictness messaging via embedConfig + expose http-server/authorizer/sigv4 symbols for shim consumers ([#113](https://github.com/go-to-k/cdk-local/issues/113)) ([9233a3c](https://github.com/go-to-k/cdk-local/commit/9233a3c33144082e4ea795f4eb98add47e36fc8a))
+
 # [0.31.0](https://github.com/go-to-k/cdk-local/compare/v0.30.0...v0.31.0) (2026-05-28)
 
 # [0.30.0](https://github.com/go-to-k/cdk-local/compare/v0.29.1...v0.30.0) (2026-05-28)
