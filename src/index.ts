@@ -409,7 +409,7 @@ export {
 /**
  * `invoke` local container-Lambda build error. Exposed so a consuming host that
  * shims `docker-image-builder` can catch it at the shim boundary and re-throw
- * its OWN error class — the host's error base (e.g. cdkd's `CdkdError`) differs
+ * its OWN error class — the host's error base differs
  * from cdk-local's `CdkLocalError`, so the host's top-level error handler /
  * `instanceof` checks need the host's class identity, which a boundary
  * translation in the shim provides.

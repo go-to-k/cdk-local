@@ -148,8 +148,9 @@ async function localStartServiceCommand(
   // Hoisted out of the try block so the single-flight cleanup closure
   // can teardown the shared network after every container is gone.
   let sharedNetwork: TaskNetwork | undefined;
-  // ECS analogue of cdkd PR #670: synthesized AWS shared credentials
-  // file bind-mounted into every service replica's containers so
+  // ECS analogue of the Lambda-container credential fix: synthesized AWS
+  // shared credentials file bind-mounted into every service replica's
+  // containers so
   // `fromIni({ profile })` handlers resolve to the same creds the
   // sidecar serves. One-per-CLI-invocation (mirrors the shared
   // sidecar's shape — `--profile` is a CLI-level concern, not a
@@ -284,8 +285,8 @@ async function localStartServiceCommand(
     // Create ONE shared docker network used by every service-replica
     // boot in this CLI invocation.
     //
-    // cdkd#658: when `--profile <p>` is set, the resolved credentials
-    // are forwarded to the AWS-published metadata-endpoints sidecar so
+    // When `--profile <p>` is set, the resolved credentials are forwarded
+    // to the AWS-published metadata-endpoints sidecar so
     // its `/role/<role-arn>` endpoint serves them to user containers.
     // Without this, the sidecar starts inside a fresh container with
     // no SSO config / no `~/.aws/credentials` and falls back to its
@@ -307,8 +308,9 @@ async function localStartServiceCommand(
         `Failed to create shared service network: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    // ECS analogue of cdkd PR #670 — when `--profile <p>` is set, write
-    // ONCE the host-side credentials file used by every replica's
+    // ECS analogue of the Lambda-container credential fix — when
+    // `--profile <p>` is set, write ONCE the host-side credentials file
+    // used by every replica's
     // containers. Mirrors the shared-sidecar shape (one-per-CLI-
     // invocation): `--profile` is a CLI-level concern. Per-service
     // `--assume-task-role <Service>=<arn>` overrides are independent
@@ -508,8 +510,8 @@ async function runOneTarget(
   if (options.profile) taskOpts.profile = options.profile;
   const hostPortOverrides = parseHostPortOverrides(options.hostPort);
   if (Object.keys(hostPortOverrides).length > 0) taskOpts.hostPortOverrides = hostPortOverrides;
-  // Per-service gating (mirrors cdkd PR #670 fix-back finding #1
-  // applied in `local-run-task.ts`): the shared credentials file is
+  // Per-service gating (mirrors the fix-back applied in
+  // `local-run-task.ts`): the shared credentials file is
   // bound ONLY to services that did NOT win an `--assume-task-role`.
   // An assume-role'd service serves its own STS creds via the
   // sidecar's `/role/<arn>` endpoint; injecting
@@ -768,7 +770,7 @@ function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
 }
 
 /**
- * cdkd#658: pick the credentials forwarded to the AWS-published
+ * Pick the credentials forwarded to the AWS-published
  * `amazon-ecs-local-container-endpoints` sidecar. `cdkl start-service`'s
  * sidecar is SHARED across every replica boot in one CLI invocation, so
  * this resolves ONCE at startup. Precedence:
@@ -789,7 +791,7 @@ function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none' {
  *
  * Extracted as an exported helper so a unit test can exercise both
  * branches without having to mock the full Synth + Docker + AWS
- * pipeline (the strategy cdkd#655 used for the Lambda container path).
+ * pipeline (the strategy used for the Lambda container path).
  */
 export async function resolveSharedSidecarCredentials(options: {
   profile?: string;

@@ -1,12 +1,11 @@
 /**
  * Logger interface and console implementation for cdk-local.
  *
- * API-compatible with cdkd's logger (same `Logger` / `LogLevel` shape, same
- * `getLogger()` / `setLogger()` exports, same `ConsoleLogger` class with
- * `child(prefix)`). The cdk-local variant drops cdkd's multi-stack output
- * buffer (`stack-context`) and live progress renderer (`live-renderer`)
- * because cdk-local invokes a single Lambda / API / task at a time — there
- * is no parallel multi-stack output to interleave.
+ * A minimal `Logger` / `LogLevel` interface with a `ConsoleLogger`
+ * (`getLogger()` / `setLogger()` exports, `child(prefix)` for prefixed
+ * sub-loggers). cdk-local invokes a single Lambda / API / task at a time,
+ * so there is no parallel multi-stack output to interleave — a plain
+ * console logger with no output buffer or live progress renderer suffices.
  */
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';

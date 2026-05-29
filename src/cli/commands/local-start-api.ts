@@ -358,8 +358,8 @@ async function localStartApiCommand(
   // shutdown path is the single owner of cleanup so leaks are
   // bounded by server lifetime).
   const layerTmpDirs = new Set<string>();
-  // cdkd PR #670 (deferred follow-up from #655): synthesized AWS shared
-  // credentials file bind-mounted into every Lambda container so handlers
+  // Synthesized AWS shared credentials file bind-mounted into every Lambda
+  // container so handlers
   // using `fromIni({ profile })` explicitly resolve to the same creds as
   // the default chain. Created ONCE at server boot (NOT on hot reload —
   // re-resolving profile creds is fine for env vars but rewriting the
@@ -630,7 +630,7 @@ async function localStartApiCommand(
     // doesn't have its own `--assume-role`. Drives the SDK's default
     // credential provider chain (SSO / IAM Identity Center / fromIni /
     // role-assumption profiles all handled uniformly — same chain that
-    // already resolves `--profile` for cdkd's own CFn / CC API clients).
+    // already resolves `--profile` for the host's own AWS SDK clients).
     // Resolved here so a stack with N Lambdas pays one STS round-trip.
     // SSO temp creds typically last 1h+; long-running `--watch` sessions
     // outliving the creds need a cdk-local restart (auto-refresh deferred,
@@ -639,8 +639,8 @@ async function localStartApiCommand(
       ? await resolveProfileCredentials(options.profile)
       : undefined;
 
-    // cdkd PR #670 (deferred follow-up from #655): when `--profile <p>`
-    // is set, ALSO synthesize a shared AWS credentials file with the
+    // When `--profile <p>` is set, ALSO synthesize a shared AWS
+    // credentials file with the
     // resolved creds under `[<p>]` and bind-mount it into every Lambda
     // container at `/cdk-local-aws/credentials`. This lets handlers that
     // use `fromIni({ profile: '<p>' })` explicitly inside their code
@@ -653,7 +653,7 @@ async function localStartApiCommand(
     // and the new env vars flow to the next cold start, but the on-disk
     // file is NOT re-written. Long-running sessions whose SSO temp creds
     // expire need a cdk-local restart (matches the auto-refresh-deferred
-    // stance for env vars from cdkd#655).
+    // stance for env vars).
     //
     // Assigned to outer-scope `profileCredsFile` so the cleanup chain
     // disposes the file at shutdown. Only ever assigned on the FIRST
@@ -1222,8 +1222,7 @@ async function localStartApiCommand(
         );
       }
     }
-    // cdkd PR #670 (deferred follow-up from #655): dispose the synthesized
-    // profile credentials file (one INI file under
+    // Dispose the synthesized profile credentials file (one INI file under
     // `/tmp/cdk-local-profile-creds-*/`). Leaving temp credential files on
     // disk after process exit is a security smell; `dispose()` rm's the
     // tempdir recursively + force, so re-entrant calls (signal-mid-finally
@@ -1891,8 +1890,8 @@ async function buildContainerSpec(args: {
    */
   profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
   /**
-   * cdkd PR #670 (deferred follow-up from #655): when set, a synthesized
-   * AWS shared credentials file (one INI section, the resolved
+   * When set, a synthesized AWS shared credentials file (one INI section,
+   * the resolved
    * `[<profile-name>]` block) the container should bind-mount + reference
    * via `AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE` env vars. Lets
    * handlers that use `fromIni({ profile })` explicitly inside their
@@ -1986,7 +1985,7 @@ async function buildContainerSpec(args: {
   // Env vars: literal template values + --env-vars overlay. When
   // `--from-state` was passed (and state for this Lambda's stack
   // loaded), intrinsic-valued template entries are first substituted
-  // against deployed cdkd state + AWS pseudo parameters via
+  // against deployed-stack state + AWS pseudo parameters via
   // `substituteEnvVarsFromState`. Per-key failures (state missing for
   // a referenced logical id, attribute not captured at deploy time,
   // unsupported intrinsic shape) warn-and-drop with context. Keys the
@@ -2100,8 +2099,8 @@ async function buildContainerSpec(args: {
       }
     }
 
-    // cdkd PR #670 (profile-aware SDK config inside container): when the
-    // server boot synthesized a credentials file via
+    // Profile-aware SDK config inside container: when the server boot
+    // synthesized a credentials file via
     // `writeProfileCredentialsFile(options.profile, ...)`, point the
     // container's SDK chain at the bind-mounted path so
     // `fromIni({ profile: '<name>' })` calls inside the handler resolve
@@ -2114,8 +2113,7 @@ async function buildContainerSpec(args: {
     // the file path too. Without this nesting, a handler in an
     // assume-role'd Lambda that called `fromIni({ profile: '<name>' })`
     // explicitly would silently bypass the execution-role creds and use
-    // the `--profile <name>` creds — breaking the documented precedence
-    // (cdkd PR #670 code review finding #1).
+    // the `--profile <name>` creds — breaking the documented precedence.
     if (profileCredsFile) {
       dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
       dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
@@ -2849,10 +2847,10 @@ function forwardAwsEnv(env: Record<string, string>): void {
  * AWS SDK call fails with `Could not load credentials from any providers`.
  *
  * This helper constructs a transient `STSClient({ profile })` to drive
- * the SDK's default credential provider chain — same code path cdkd's
- * own CFn / CC API clients use when `--profile` is set, so SSO / IAM
+ * the SDK's default credential provider chain — same code path the
+ * host's own AWS SDK clients use when `--profile` is set, so SSO / IAM
  * Identity Center / role-assumption profiles all resolve the same way
- * they already do for cdkd's outbound calls. We then extract the
+ * they already do for the host's outbound calls. We then extract the
  * resolved `AwsCredentialIdentity` via `sts.config.credentials()` and
  * return the underlying `{ accessKeyId, secretAccessKey, sessionToken? }`
  * for env-var injection.

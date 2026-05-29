@@ -167,10 +167,9 @@ async function localInvokeCommand(
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
   let sigintHandler: (() => void) | undefined;
-  // cdkd PR #670 (deferred follow-up from #655): synthesized AWS shared
-  // credentials file (one INI section) bind-mounted into the container so
-  // handlers using `fromIni({ profile })` explicitly resolve to the same
-  // creds. Disposed in the shared `cleanup` single-flight.
+  // Synthesized AWS shared credentials file (one INI section) bind-mounted
+  // into the container so handlers using `fromIni({ profile })` explicitly
+  // resolve to the same creds. Disposed in the shared `cleanup` single-flight.
   let profileCredsFile: ProfileCredentialsFile | undefined;
 
   /**
@@ -261,9 +260,8 @@ async function localInvokeCommand(
       ? await resolveProfileCredentials(options.profile)
       : undefined;
 
-    // cdkd PR #670 (deferred follow-up from #655): synthesize an AWS
-    // shared credentials file with the resolved creds under
-    // `[<options.profile>]` so handler code that uses
+    // Synthesize an AWS shared credentials file with the resolved creds
+    // under `[<options.profile>]` so handler code that uses
     // `fromIni({ profile: '<options.profile>' })` explicitly (instead of
     // the default credential chain) resolves to the same creds locally.
     // Mounted read-only into the container at the path pointed to by
@@ -486,8 +484,8 @@ async function localInvokeCommand(
     if (!assumeSucceeded) {
       forwardAwsEnv(dockerEnv);
       applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
-      // cdkd PR #670 (deferred follow-up from #655): point the container's
-      // SDK chain at the bind-mounted credentials file so
+      // Point the container's SDK chain at the bind-mounted credentials
+      // file so
       // `fromIni({ profile })` calls inside the handler resolve to the
       // same creds. `AWS_PROFILE` makes `fromIni()` (no explicit arg)
       // ALSO use this profile.
@@ -521,8 +519,8 @@ async function localInvokeCommand(
       );
     }
     logger.info(`Starting container (image=${imagePlan.image}, port=${hostPort})...`);
-    // cdkd PR #670 (deferred follow-up from #655): append the profile
-    // credentials file bind-mount to the existing extraMounts (which
+    // Append the profile credentials file bind-mount to the existing
+    // extraMounts (which
     // already carry the /opt layer mount when present). Read-only — the
     // container has no business writing to its credentials file; a
     // writable mount would let a compromised handler tamper with the

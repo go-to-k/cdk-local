@@ -1,8 +1,8 @@
 /**
  * Schema versions for the state.json the host writes via cdk-local.
  *
- * - 1 — legacy layout: `s3://{bucket}/cdkd/{stackName}/state.json` (pre PR 1).
- * - 2 — region-prefixed layout: `s3://{bucket}/cdkd/{stackName}/{region}/state.json`.
+ * - 1 — legacy layout: per-stack key with no region segment.
+ * - 2 — region-prefixed layout: the key includes the region segment.
  * - 3 — adds `ResourceState.observedProperties` (AWS-current snapshot
  *       captured at deploy/import time, used as the drift comparator's
  *       baseline). Layout is the same as v2; only the resource-level shape
@@ -22,14 +22,13 @@
  *       as v4; only the resource-level shape grew. v4 readers see v5 as
  *       `version: 5` and fail clearly.
  * - 6 — adds `StackState.parentStack` / `parentLogicalId` / `parentRegion`
- *       to support `AWS::CloudFormation::Stack` nested-stack adoption (issue
- *       [#459](https://github.com/go-to-k/cdkd/issues/459)). Child stacks
- *       record their parent's name + the child's logical id in the parent's
- *       template, so `cdkl state list` / `state show` can surface the
- *       parent → child tree and `cdkl destroy <child-only>` can reject
- *       with a clear pointer at the parent. The child's S3 key uses
- *       `cdkd/<parent>~<NestedStackLogicalId>/<region>/state.json` (the `~`
- *       separator avoids ambiguity with CDK Stage's `/`). Layout
+ *       to support `AWS::CloudFormation::Stack` nested-stack adoption.
+ *       Child stacks record their parent's name + the child's logical id
+ *       in the parent's template, so the host can surface the
+ *       parent → child tree and reject a child-only destroy with a clear
+ *       pointer at the parent. The child's S3 key embeds the parent name +
+ *       child logical id joined by `~` (the separator avoids ambiguity
+ *       with CDK Stage's `/`). Layout
  *       superset of v5; only the stack-level shape grew. v5 readers
  *       see v6 as `version: 6` and fail clearly. v6 writers always emit
  *       the new fields (undefined on top-level stacks, populated on
@@ -37,8 +36,8 @@
  *       the `NestedStackProvider` that consumes the fields lands in a
  *       follow-up.
  * - 7 — adds `ResourceState.provisionedBy: 'sdk' | 'cc-api'` to support
- *       per-resource Cloud Control API routing for silent-drop properties
- *       (issue [#614](https://github.com/go-to-k/cdkd/issues/614)). When
+ *       per-resource Cloud Control API routing for silent-drop properties.
+ *       When
  *       a fresh deploy detects a silent-drop top-level CFn property on a
  *       Tier 1 type, the resource is routed through Cloud Control API
  *       (which forwards the full property map to AWS) instead of the SDK
@@ -134,8 +133,8 @@ export interface StackState {
 
   /**
    * Parent stack's physical name when THIS state record describes a
-   * nested-stack child (issue [#459](https://github.com/go-to-k/cdkd/issues/459)).
-   * Undefined on top-level stacks. The pre-v6 reader sees the field as
+   * nested-stack child. Undefined on top-level stacks.
+   * The pre-v6 reader sees the field as
    * undefined and degrades to "I am a top-level stack" — which is correct
    * for every state file written before nested-stack support shipped.
    * v6+ writers populate this on child state records so `cdkl state list`
@@ -240,8 +239,7 @@ export interface ResourceState {
   updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate' | undefined;
 
   /**
-   * Which provisioning layer owns this resource (schema v7+, issue
-   * [#614](https://github.com/go-to-k/cdkd/issues/614)).
+   * Which provisioning layer owns this resource (schema v7+).
    *
    * - `'sdk'` — SDK Provider (the preferred fast path: direct
    *   synchronous AWS SDK calls per resource type, no polling).

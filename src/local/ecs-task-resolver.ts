@@ -180,7 +180,7 @@ export function derivePartitionAndUrlSuffix(region: string): {
  * parameters (`${AWS::AccountId}` / `${AWS::Region}` / `${AWS::Partition}` /
  * `${AWS::URLSuffix}`) and / or same-stack `AWS::ECR::Repository` refs are
  * resolvable at runtime when the caller can supply the account ID + region
- * (Tier 1, no state needed) and optionally the cdkd state-recorded
+ * (Tier 1, no state needed) and optionally the host state-recorded
  * `physicalId` map (Tier 2, `--from-state`).
  *
  * The CLI command resolves both blocks lazily — STS is only invoked when
@@ -533,7 +533,7 @@ export function parseEcsTarget(target: string): ParsedEcsTarget {
  * available task definition in the matched stack) on any miss.
  *
  * Optional `context` (issue #264): when the caller can supply AWS
- * pseudo-parameter values (Tier 1) and / or cdkd state-recorded resources
+ * pseudo-parameter values (Tier 1) and / or host state-recorded resources
  * (Tier 2), `Fn::Sub`-shaped ECR image URIs that reference
  * `${AWS::AccountId}` / `${AWS::Region}` / a same-stack
  * `AWS::ECR::Repository` are substituted before classification.

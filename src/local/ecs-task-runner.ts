@@ -186,7 +186,7 @@ export interface RunEcsTaskOptions {
    */
   networkAliasesByContainer?: ReadonlyMap<string, ReadonlyArray<string>>;
   /**
-   * ECS analogue of the Lambda-container fix shipped in cdkd PR #670:
+   * ECS analogue of the Lambda-container credential fix:
    * synthesized AWS shared credentials file (one INI section under
    * `[<profileName>]`) bind-mounted read-only into EVERY user
    * container, plus `AWS_SHARED_CREDENTIALS_FILE` +
@@ -899,7 +899,7 @@ interface BuildDockerRunArgs {
    */
   networkAliases?: ReadonlyArray<string>;
   /**
-   * ECS analogue of the Lambda-container fix in cdkd PR #670 — bind-mounts
+   * ECS analogue of the Lambda-container credential fix — bind-mounts
    * a host-side AWS shared credentials file (one `[<profileName>]`
    * INI section) read-only into the container and sets
    * `AWS_SHARED_CREDENTIALS_FILE` + `AWS_PROFILE` env vars so handler
@@ -1027,8 +1027,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     }
   }
 
-  // cdkd PR #670 follow-up — bind-mount the host-side profile credentials
-  // file read-only at the fixed in-container path so `fromIni({
+  // Bind-mount the host-side profile credentials file read-only at the
+  // fixed in-container path so `fromIni({
   // profile })` handlers resolve to the same creds the sidecar
   // serves. The `:ro` flag is load-bearing: a compromised handler
   // must not be able to tamper with the host-side temp file. Set
@@ -1078,8 +1078,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     ...(opts.sidecarIp !== undefined && { sidecarIp: opts.sidecarIp }),
   });
   Object.assign(finalEnv, metaEnv);
-  // cdkd PR #670 follow-up — point the container's SDK chain at the bind-
-  // mounted credentials file so `fromIni({ profile })` calls inside
+  // Point the container's SDK chain at the bind-mounted credentials file
+  // so `fromIni({ profile })` calls inside
   // the handler resolve to the same creds. `AWS_PROFILE` makes
   // `fromIni()` (no explicit arg) ALSO use this profile. Sits ABOVE
   // template / secret / --env-vars overrides so a user template that

@@ -30,7 +30,7 @@ import type { TemplateResource } from '../types/resource.js';
  * `${AWS::Region}` / `${AWS::AccountId}` / `${AWS::URLSuffix}` /
  * `${AWS::Partition}`); `stateResources` covers Tier 2 (`--from-state`
  * — substitutes same-stack ECR `Ref` / `Fn::GetAtt: [<Repo>, 'Arn']`
- * against cdkd's recorded `physicalId` / `attributes`).
+ * against the host state-recorded `physicalId` / `attributes`).
  *
  * The CLI command resolves both blocks lazily — STS is only invoked when
  * at least one image references the pseudo parameters — and passes the
@@ -72,7 +72,7 @@ export interface ImageResolutionContext {
 
 /**
  * Derive the AWS pseudo parameters that are trivially knowable from the
- * deploy region alone, without any STS call or cdkd state load.
+ * deploy region alone, without any STS call or state load.
  * `urlSuffix` and `partition` follow the canonical AWS partition rules:
  *
  *   - region prefix `cn-*`        → partition `aws-cn`,     urlSuffix `amazonaws.com.cn`
@@ -144,7 +144,7 @@ export type FnJoinResolveOutcome =
  * nested `Fn::Select` / `Fn::Split` over an `Fn::GetAtt: [<Repo>, 'Arn']`
  * plus a `Ref` to the same `AWS::ECR::Repository` and a
  * `Ref: AWS::URLSuffix`. For SAME-STACK references the account-id +
- * region only exist in cdkd's S3 state (recorded at deploy time on the
+ * region only exist in the host's S3 state (recorded at deploy time on the
  * Repository's `Arn` attribute), so the resolver inherently requires
  * `--from-state` (Tier 2) for that variant. For IMPORTED repositories
  * the URI components are flat strings + `Ref: AWS::URLSuffix` and

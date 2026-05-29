@@ -9,13 +9,9 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 /**
  * Stack information extracted from a CDK Cloud Assembly.
  *
- * This interface mirrors the shape cdkd's `src/local/**` files import,
- * so the ported source compiles without rewrites. The backing
- * implementation differs: cdk-local parses `cdk.out/manifest.json` by hand
- * (PR #4 self-implemented synth); cdk-local delegates to
- * `@aws-cdk/toolkit-lib` (`Toolkit.fromCdkApp()` + `Toolkit.synth()`)
- * and maps each synthesized `CloudFormationStackArtifact` to a
- * `StackInfo` record.
+ * cdk-local delegates synthesis to `@aws-cdk/toolkit-lib`
+ * (`Toolkit.fromCdkApp()` + `Toolkit.synth()`) and maps each synthesized
+ * `CloudFormationStackArtifact` to a `StackInfo` record.
  */
 export interface StackInfo {
   /** Physical CloudFormation stack name (e.g., "MyStage-MyStack"). */

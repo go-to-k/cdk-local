@@ -166,7 +166,7 @@ export interface DeleteContext {
  * `AWS::IAM::Policy` resource, not the role/user/group itself. Without
  * filtering them out, every Role/User/Group whose CDK code uses
  * `addToPolicy` / `grantRead` / `ContainerImage.fromEcrRepository`
- * fires false drift on every `cdkd drift` run.
+ * fires false drift on every drift run.
  *
  * The context carries the same-stack siblings (excluding the resource
  * being read) so the IAM providers can match `ListRolePolicies` output
@@ -180,7 +180,7 @@ export interface ReadCurrentStateContext {
   /**
    * All resources in the same stack EXCEPT the one being read.
    * Keyed by logicalId. `resourceType` and `properties` come from
-   * cdkd state (`ResourceState`); `properties` may carry intrinsics
+   * the host state (`ResourceState`); `properties` may carry intrinsics
    * unresolved for resources written by older binaries — providers
    * that consume this should match by literal values only.
    */
@@ -349,11 +349,11 @@ export interface ResourceProvider {
    * Read the **currently-deployed** properties of an existing resource as
    * seen by AWS, scoped to the property set this provider manages
    * (`handledProperties`-equivalent). The returned object is suitable for
-   * direct comparison against the `properties` field in cdkd state.
+   * direct comparison against the `properties` field in the host state.
    *
-   * Used by `cdkd drift <stack>` to detect divergence between cdkd state and
+   * Used by the host's drift command to detect divergence between state and
    * AWS reality without going through CloudFormation. Implementations should
-   * return only the keys cdk-local actually manages — the `cdkd drift` comparator
+   * return only the keys cdk-local actually manages — the drift comparator
    * already ignores keys not present in state, but returning a tighter set
    * keeps the wire payload smaller.
    *
@@ -415,9 +415,9 @@ export interface ResourceProvider {
    * the CDK template, and return its physical id + attributes so the state
    * file can be reconstructed.
    *
-   * Used by `cdkd state import` to recover state after disasters (lost state
-   * file, manual deletion, drift between cdkd and AWS) and to adopt
-   * AWS-resident resources into cdkd's management.
+   * Used by the host's state-import flow to recover state after disasters
+   * (lost state file, manual deletion, drift between state and AWS) and to
+   * adopt AWS-resident resources into the host's management.
    *
    * Lookup strategy is provider-specific. Recommended order:
    *   1. If the template's `properties` carries an explicit name field
@@ -433,8 +433,8 @@ export interface ResourceProvider {
    * surface them.
    *
    * Optional: providers without an `import` implementation are reported as
-   * unsupported by `cdkd state import` and the corresponding logical IDs are
-   * skipped with a warning.
+   * unsupported by the host's state-import flow and the corresponding
+   * logical IDs are skipped with a warning.
    */
   import?(input: ResourceImportInput): Promise<ResourceImportResult | null>;
 }

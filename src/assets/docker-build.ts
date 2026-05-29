@@ -29,16 +29,16 @@ import { getLogger } from '../utils/logger.js';
  * is load-bearing for layer-cache reproducibility across both callers.
  *
  * The caller-supplied `wrapError` lets each consumer wrap the failure
- * with its own typed error class (`AssetError` for the publisher,
- * `LocalInvokeBuildError` for local invoke).
+ * with its own typed error class (`LocalInvokeBuildError` for local
+ * invoke; a host's asset-publish path supplies its own).
  */
 
 export interface BuildDockerImageOptions {
   /**
    * Local image tag (`--tag`) for `directory` mode. The caller chooses a
-   * deterministic tag so subsequent runs hit Docker's layer cache (the
-   * publisher uses `cdkd-asset-<hash>`; local-invoke uses
-   * `cdkl-invoke-<hash>`). Ignored in `executable` mode — there
+   * deterministic tag so subsequent runs hit Docker's layer cache
+   * (local-invoke uses `cdkl-invoke-<hash>`). Ignored in `executable`
+   * mode — there
    * the executable returns its own tag on stdout.
    */
   tag?: string;

@@ -64,10 +64,9 @@
  *   - `Fn::ImportValue: '<exportName>'` (or an intrinsic-valued argument
  *     that resolves to a string against state + pseudo parameters) —
  *     looked up via `crossStackResolver.resolveImport(exportName)`. The
- *     resolver typically reads the persistent exports index at
- *     `s3://{bucket}/cdkd/_index/{region}/exports.json` populated by
- *     `cdkl deploy`, falling back to a per-stack state.json scan on
- *     index miss (closes issue #454).
+ *     resolver typically reads the host's persistent exports index,
+ *     falling back to a per-stack state.json scan on index miss
+ *     (closes issue #454).
  *   - `Fn::GetStackOutput: { StackName, OutputName, Region? }` — looked
  *     up via `crossStackResolver.resolveGetStackOutput(stackName, region,
  *     outputName)`. The resolver typically reads the producer stack's
@@ -154,9 +153,8 @@ export interface PseudoParameters {
 export interface CrossStackResolver {
   /**
    * Look an export by name against the consumer's region. Implementations
-   * typically consult the persistent exports index at
-   * `s3://{bucket}/cdkd/_index/{region}/exports.json`, falling back to a
-   * per-stack `state.json` scan on miss.
+   * typically consult the host's persistent exports index, falling back
+   * to a per-stack `state.json` scan on miss.
    */
   resolveImport(exportName: string): Promise<string | undefined>;
   /**

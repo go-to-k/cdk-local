@@ -6,13 +6,10 @@ import { getLogger } from '../utils/logger.js';
 /**
  * Synthesis options accepted by the four `cdkl` commands.
  *
- * Mirrors the cdkd `SynthesisOptions` shape so ported source files
- * compile without rewrites. cdk-local delegates the heavy lifting to
- * `@aws-cdk/toolkit-lib`'s `Toolkit.fromCdkApp()` (via {@link AssemblyReader}),
- * which handles subprocess execution + manifest parsing + context
- * resolution internally — there is no per-field substitution layer like
- * cdkd's hand-rolled `AppExecutor` / `ContextStore` / context-provider
- * loop.
+ * cdk-local delegates the heavy lifting to `@aws-cdk/toolkit-lib`'s
+ * `Toolkit.fromCdkApp()` (via {@link AssemblyReader}), which handles
+ * subprocess execution + manifest parsing + context resolution
+ * internally — there is no per-field substitution layer.
  */
 export interface SynthesisOptions {
   /** CDK app command or pre-synthesized assembly directory (cdk.json `app`). */
@@ -40,9 +37,9 @@ export interface SynthesisResult {
 }
 
 /**
- * Thin wrapper around {@link AssemblyReader} that mimics cdkd's
- * `Synthesizer` API so the ported `cdkl invoke` / `start-api` /
- * `run-task` / `start-service` source compiles without rewrites.
+ * Thin wrapper around {@link AssemblyReader} exposing a `Synthesizer`
+ * API used by the `cdkl invoke` / `start-api` / `run-task` /
+ * `start-service` commands.
  *
  * When `app` resolves to an existing directory it is read as a
  * pre-synthesized cloud assembly (no subprocess synth); otherwise it is
