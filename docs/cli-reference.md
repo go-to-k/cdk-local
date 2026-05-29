@@ -1025,9 +1025,11 @@ service you want to reach the way external traffic does.
 each listener's default action **and** its
 `AWS::ElasticLoadBalancingV2::ListenerRule`s with a `path-pattern` and/or
 `host-header` condition → each `forward` action's
-`AWS::ElasticLoadBalancingV2::TargetGroup`(s) → the `AWS::ECS::Service`
-whose `LoadBalancers[]` references that target group (a reverse scan —
-there is no direct TG → service pointer). The front-door for a listener
+`AWS::ElasticLoadBalancingV2::TargetGroup`(s) → either the
+`AWS::ECS::Service` whose `LoadBalancers[]` references that target group (a
+reverse scan — there is no direct TG → service pointer) or, for a
+`TargetType: lambda` group, the backing `AWS::Lambda::Function` it targets.
+The front-door for a listener
 port holds a routing table: each request is matched against the rules in
 `Priority` order (lower number first; ALB `*` / `?` glob, path-only +
 case-insensitive host), falling back to the default action; an unmatched
@@ -1066,18 +1068,22 @@ cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 
 ### Scope
 
-**HTTP** listeners and **ECS** targets, with priority-ordered listener rules
-matching `path-pattern` and `host-header` conditions (ALB `*` / `?` glob;
-host is matched case-insensitively, path-only excludes the query string). Both
-default actions and rule actions support single-target `forward`, **weighted**
-(multi-target) `forward` (weighted-random pool selection; weight 0 never
-selected), `redirect` (301 / 302 with the `#{protocol|host|port|path|query}`
-placeholders resolved against the request), and `fixed-response` (synthesized
-status / content-type / body). Out of scope, skipped with a warning, and
-tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123): the other
-rule conditions (`http-header` / `http-request-method` / `query-string` /
-`source-ip`), `authenticate-cognito` / `authenticate-oidc` actions, HTTPS / TLS
-termination, and Lambda target groups.
+**HTTP** listeners with **ECS** and **Lambda** targets, with priority-ordered
+listener rules matching `path-pattern` and `host-header` conditions (ALB `*` /
+`?` glob; host is matched case-insensitively, path-only excludes the query
+string). Both default actions and rule actions support single-target `forward`,
+**weighted** (multi-target) `forward` (weighted-random selection; weight 0 never
+selected; a forward may mix ECS and Lambda targets), `redirect` (301 / 302 with
+the `#{protocol|host|port|path|query}` placeholders resolved against the
+request), and `fixed-response` (synthesized status / content-type / body). A
+`TargetType: lambda` target group invokes the backing Lambda locally — the
+request becomes the ALB `requestContext.elb` event, runs through the Lambda RIE,
+and the response is translated back (a malformed response → 502). Out of scope,
+skipped with a warning, and tracked in
+[#123](https://github.com/go-to-k/cdk-local/issues/123): the other rule
+conditions (`http-header` / `http-request-method` / `query-string` /
+`source-ip`), `authenticate-cognito` / `authenticate-oidc` actions, and HTTPS /
+TLS termination.
 
 ### `cdkl start-alb` exit codes
 
