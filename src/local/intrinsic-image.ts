@@ -68,6 +68,14 @@ export interface ImageResolutionContext {
    * SSM-backed parameters / no state source is in effect.
    */
   stateParameters?: Record<string, string>;
+  /**
+   * Logical IDs of {@link stateParameters} entries whose SSM `Type` is
+   * `SecureString` (decrypted). Threaded into
+   * `SubstitutionContext.sensitiveParameters` so the consuming container
+   * env keys are routed off the `docker run` argv (issue #99). Undefined
+   * when no SecureString parameter was resolved.
+   */
+  stateSensitiveParameters?: readonly string[];
 }
 
 /**

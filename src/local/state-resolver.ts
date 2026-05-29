@@ -187,6 +187,25 @@ export interface SubstitutionContext {
    * absent when no SSM-backed parameter was resolved.
    */
   parameters?: Record<string, string>;
+  /**
+   * Logical IDs of `parameters` entries whose value is sensitive — today
+   * the decrypted `SecureString` SSM parameters resolved under
+   * `--from-cfn-stack` (issue #99). When a `Ref` resolves to one of these,
+   * {@link onSensitiveParameterConsumed} fires so the caller can route the
+   * consuming env key through docker's value-from-process-env form and keep
+   * the secret off the `docker run` argv. Optional; absent when no
+   * sensitive parameter was resolved.
+   */
+  sensitiveParameters?: ReadonlySet<string>;
+  /**
+   * Called whenever a `Ref` resolves to a logical ID listed in
+   * {@link sensitiveParameters} — including refs buried inside `Fn::Join` /
+   * `Fn::Sub` (the combinators recurse through the same context, so the
+   * composed value that embeds the secret triggers it too). The env-var
+   * helpers install a per-key sink so they can mark which output keys
+   * consumed a sensitive parameter. Optional; ignored when unset.
+   */
+  onSensitiveParameterConsumed?: (logicalId: string) => void;
   /** Optional pseudo-parameter bag for AWS::* placeholders. */
   pseudoParameters?: PseudoParameters;
   /**
@@ -323,6 +342,13 @@ function resolveRef(arg: unknown, context: SubstitutionContext): StateSubstituti
   // values via SSM and feeds them in on `context.parameters`.
   const parameterValue = context.parameters?.[arg];
   if (parameterValue !== undefined) {
+    // Flag sensitive (SecureString) parameter consumption so the caller
+    // keeps the consuming env key off the `docker run` argv (issue #99).
+    // Fires for refs nested in Fn::Join / Fn::Sub too — the combinators
+    // recurse through this same resolveRef with the same context.
+    if (context.sensitiveParameters?.has(arg)) {
+      context.onSensitiveParameterConsumed?.(arg);
+    }
     return { kind: 'literal', value: parameterValue };
   }
   return {
@@ -1006,6 +1032,13 @@ export interface StateEnvSubstitutionAudit {
    * CLI layer can warn-and-drop with context.
    */
   unresolved: Array<{ key: string; reason: string }>;
+  /**
+   * Keys whose resolved value consumed a sensitive (SecureString) parameter
+   * (see {@link SubstitutionContext.sensitiveParameters}). The CLI layer
+   * routes these through docker's value-from-process-env form so the
+   * decrypted secret never lands on the `docker run` argv (issue #99).
+   */
+  sensitiveKeys: string[];
 }
 
 /**
@@ -1024,7 +1057,7 @@ export function substituteEnvVarsFromState(
   contextOrResources: SubstitutionContext | Record<string, ResourceState>
 ): { env: Record<string, unknown>; audit: StateEnvSubstitutionAudit } {
   const env: Record<string, unknown> = {};
-  const audit: StateEnvSubstitutionAudit = { resolvedKeys: [], unresolved: [] };
+  const audit: StateEnvSubstitutionAudit = { resolvedKeys: [], unresolved: [], sensitiveKeys: [] };
 
   if (!templateEnv) return { env, audit };
 
@@ -1040,10 +1073,11 @@ export function substituteEnvVarsFromState(
       continue;
     }
 
-    const result = substituteAgainstState(value, context);
+    const { result, consumedSensitive } = resolveWithSensitivity(value, context);
     if (result.kind === 'literal') {
       env[key] = result.value;
       audit.resolvedKeys.push(key);
+      if (consumedSensitive) audit.sensitiveKeys.push(key);
     } else {
       audit.unresolved.push({ key, reason: result.reason });
       // Intentionally drop the key — that way the downstream
@@ -1053,6 +1087,55 @@ export function substituteEnvVarsFromState(
   }
 
   return { env, audit };
+}
+
+/**
+ * Resolve a single intrinsic value while detecting whether its resolution
+ * consumed a sensitive (SecureString) parameter — including refs nested in
+ * `Fn::Join` / `Fn::Sub`, since the combinators recurse through the same
+ * per-key context. Installs a per-call sink on a shallow context copy so
+ * the shared input context is never mutated. Used by both the sync and
+ * async env-var helpers (the async path delegates these intrinsics to the
+ * sync resolver, so the sink fires identically).
+ */
+export function resolveWithSensitivity(
+  value: unknown,
+  context: SubstitutionContext
+): { result: StateSubstitutionResult; consumedSensitive: boolean } {
+  if (!context.sensitiveParameters || context.sensitiveParameters.size === 0) {
+    return { result: substituteAgainstState(value, context), consumedSensitive: false };
+  }
+  let consumedSensitive = false;
+  const keyContext: SubstitutionContext = {
+    ...context,
+    onSensitiveParameterConsumed: () => {
+      consumedSensitive = true;
+    },
+  };
+  return { result: substituteAgainstState(value, keyContext), consumedSensitive };
+}
+
+/**
+ * Async sibling of {@link resolveWithSensitivity}. Routes through
+ * {@link substituteAgainstStateAsync} (for `Fn::ImportValue` /
+ * `Fn::GetStackOutput`), which delegates SSM-parameter-bearing intrinsics
+ * to the sync resolver — so the sensitivity sink fires the same way.
+ */
+export async function resolveWithSensitivityAsync(
+  value: unknown,
+  context: SubstitutionContext
+): Promise<{ result: StateSubstitutionResult; consumedSensitive: boolean }> {
+  if (!context.sensitiveParameters || context.sensitiveParameters.size === 0) {
+    return { result: await substituteAgainstStateAsync(value, context), consumedSensitive: false };
+  }
+  let consumedSensitive = false;
+  const keyContext: SubstitutionContext = {
+    ...context,
+    onSensitiveParameterConsumed: () => {
+      consumedSensitive = true;
+    },
+  };
+  return { result: await substituteAgainstStateAsync(value, keyContext), consumedSensitive };
 }
 
 /**
@@ -1074,7 +1157,7 @@ export async function substituteEnvVarsFromStateAsync(
   contextOrResources: SubstitutionContext | Record<string, ResourceState>
 ): Promise<{ env: Record<string, unknown>; audit: StateEnvSubstitutionAudit }> {
   const env: Record<string, unknown> = {};
-  const audit: StateEnvSubstitutionAudit = { resolvedKeys: [], unresolved: [] };
+  const audit: StateEnvSubstitutionAudit = { resolvedKeys: [], unresolved: [], sensitiveKeys: [] };
 
   if (!templateEnv) return { env, audit };
 
@@ -1088,10 +1171,11 @@ export async function substituteEnvVarsFromStateAsync(
       continue;
     }
 
-    const result = await substituteAgainstStateAsync(value, context);
+    const { result, consumedSensitive } = await resolveWithSensitivityAsync(value, context);
     if (result.kind === 'literal') {
       env[key] = result.value;
       audit.resolvedKeys.push(key);
+      if (consumedSensitive) audit.sensitiveKeys.push(key);
     } else {
       audit.unresolved.push({ key, reason: result.reason });
     }

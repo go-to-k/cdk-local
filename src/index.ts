@@ -87,6 +87,7 @@ export {
   collectSsmParameterRefs,
   resolveSsmParameters,
   type SsmParameterRef,
+  type ResolvedSsmParameters,
 } from './local/ssm-parameter-resolver.js';
 
 /**

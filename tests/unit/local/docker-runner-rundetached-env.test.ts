@@ -64,6 +64,31 @@ describe('runDetached sensitive-env wiring', () => {
     expect(options.env!['PATH']).toBe(process.env['PATH']);
   });
 
+  it('routes caller-flagged sensitiveEnvKeys (SecureString SSM, #99) off the argv', async () => {
+    await runDetached({
+      image: 'public.ecr.aws/lambda/nodejs:20',
+      mounts: [],
+      env: { API_KEY: 's3cr3t-ssm-value', TABLE_NAME: 'my-table' },
+      // API_KEY resolved to a decrypted SecureString SSM parameter.
+      sensitiveEnvKeys: new Set(['API_KEY']),
+      cmd: ['index.handler'],
+      hostPort: 9003,
+    });
+    const [, args, options] = execFileMock.mock.calls[0] as [
+      string,
+      string[],
+      { env?: NodeJS.ProcessEnv },
+    ];
+    const joined = args.join(' ');
+    // The SecureString value never appears in argv; routed as `-e API_KEY`.
+    expect(joined).not.toContain('s3cr3t-ssm-value');
+    expect(args).toContain('API_KEY');
+    expect(args.some((a) => a.startsWith('API_KEY='))).toBe(false);
+    // Non-sensitive config still inline; value carried via process env.
+    expect(args).toContain('TABLE_NAME=my-table');
+    expect(options.env!['API_KEY']).toBe('s3cr3t-ssm-value');
+  });
+
   it('uses no env option when the container has no sensitive env', async () => {
     await runDetached({
       image: 'public.ecr.aws/lambda/nodejs:20',

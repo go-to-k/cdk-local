@@ -5,11 +5,15 @@ import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/e
 // buildDockerRunArgs reads only a bounded subset of the container/task
 // shapes (name/environment/image + the iterated collections), so a cast
 // partial keeps the fixture small.
-function minimalContainer(environment: Record<string, string>): ResolvedEcsContainer {
+function minimalContainer(
+  environment: Record<string, string>,
+  sensitiveEnvKeys: string[] = []
+): ResolvedEcsContainer {
   return {
     name: 'app',
     image: { kind: 'public', uri: 'public.ecr.aws/docker/library/busybox:latest' },
     environment,
+    sensitiveEnvKeys,
     secrets: [],
     portMappings: [],
     mountPoints: [],
@@ -53,6 +57,36 @@ describe('buildDockerRunArgs secret env routing', () => {
     // The value is carried in the passthrough map (merged into the docker
     // process env at the run site), not in argv.
     expect(sensitiveEnv['DB_PASSWORD']).toBe('p@ss-w0rd');
+    expect(sensitiveEnv['LOG_LEVEL']).toBeUndefined();
+  });
+
+  it('routes SecureString-backed env keys off the argv too (issue #99)', () => {
+    const { args, sensitiveEnv } = buildDockerRunArgs({
+      task,
+      // API_KEY resolved to a decrypted SecureString SSM param — flagged on
+      // the container so the runner keeps it off the `docker run` argv.
+      container: minimalContainer({ LOG_LEVEL: 'info', API_KEY: 's3cr3t' }, ['API_KEY']),
+      image: 'public.ecr.aws/docker/library/busybox:latest',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+    });
+
+    // API_KEY is the value-less `-e API_KEY` form; the secret never in argv.
+    const i = args.indexOf('API_KEY');
+    expect(i).toBeGreaterThan(0);
+    expect(args[i - 1]).toBe('-e');
+    expect(args.some((a) => a.startsWith('API_KEY='))).toBe(false);
+    expect(args.join(' ')).not.toContain('s3cr3t');
+    expect(sensitiveEnv['API_KEY']).toBe('s3cr3t');
+
+    // Non-sensitive config still inline.
+    expect(args).toContain('LOG_LEVEL=info');
     expect(sensitiveEnv['LOG_LEVEL']).toBeUndefined();
   });
 });

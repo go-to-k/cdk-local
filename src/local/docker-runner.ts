@@ -56,6 +56,15 @@ export interface DockerRunOptions {
   /** Environment variables to forward into the container. */
   env: Record<string, string>;
   /**
+   * Extra env keys (beyond {@link SENSITIVE_ENV_KEYS}) whose VALUES are
+   * sensitive and must be routed through docker's value-from-process-env
+   * form (`-e KEY`) so they never appear on the `docker run` argv. Today
+   * this carries the env keys that resolved to a decrypted `SecureString`
+   * SSM parameter under `--from-cfn-stack` (issue #99). Unioned with
+   * {@link SENSITIVE_ENV_KEYS} before {@link appendEnvFlags}.
+   */
+  sensitiveEnvKeys?: ReadonlySet<string>;
+  /**
    * Container CMD. For ZIP Lambda base images this is the handler string,
    * e.g. `index.handler`. For container Lambdas (PR 5) this is the
    * `ImageConfig.Command` array — passed verbatim, may be empty when the
@@ -240,11 +249,16 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
     }
   }
 
-  // AWS credentials route through docker's value-from-process-env form
-  // (`-e KEY`, value supplied via the spawned process's env below) so they
-  // never appear in `docker run`'s argv. Non-credential env keeps the
-  // inline `-e KEY=VALUE` form.
-  const passthroughEnv = appendEnvFlags(args, opts.env, SENSITIVE_ENV_KEYS);
+  // AWS credentials (and any caller-flagged sensitive keys, e.g. decrypted
+  // SecureString SSM values — issue #99) route through docker's
+  // value-from-process-env form (`-e KEY`, value supplied via the spawned
+  // process's env below) so they never appear in `docker run`'s argv.
+  // Non-sensitive env keeps the inline `-e KEY=VALUE` form.
+  const sensitiveKeys =
+    opts.sensitiveEnvKeys && opts.sensitiveEnvKeys.size > 0
+      ? new Set<string>([...SENSITIVE_ENV_KEYS, ...opts.sensitiveEnvKeys])
+      : SENSITIVE_ENV_KEYS;
+  const passthroughEnv = appendEnvFlags(args, opts.env, sensitiveKeys);
 
   // Issue #440 — Lambda EphemeralStorage.Size: emit `--tmpfs
   // <target>:rw,size=<N>m` so the container's `/tmp` is capped at the

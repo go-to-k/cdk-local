@@ -89,7 +89,9 @@ describe('loadStateForRoutedStacks SSM-parameter resolution (site binding)', () 
       label: '--from-cfn-stack',
       load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
       buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
-      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({ SsmDbHost: 'db.internal' }),
+      resolveTemplateSsmParameters: vi
+        .fn()
+        .mockResolvedValue({ values: { SsmDbHost: 'db.internal' }, secureStringLogicalIds: [] }),
       dispose: vi.fn(),
     };
     createProviderMock.mockReturnValue(provider);
@@ -117,7 +119,34 @@ describe('loadStateForRoutedStacks SSM-parameter resolution (site binding)', () 
 
     // Stashed for buildContainerSpec to feed the substitution context.
     expect(result.get('MyStack')?.ssmParameters).toEqual({ SsmDbHost: 'db.internal' });
+    // No SecureString -> no sensitive logical IDs stashed.
+    expect(result.get('MyStack')?.ssmSecureStringLogicalIds).toBeUndefined();
     expect(provider.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('stashes secureStringLogicalIds on the bundle for SecureString params (issue #99)', async () => {
+    const provider = {
+      label: '--from-cfn-stack',
+      load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({
+        values: { SsmDbHost: 's3cr3t' },
+        secureStringLogicalIds: ['SsmDbHost'],
+      }),
+      dispose: vi.fn(),
+    };
+    createProviderMock.mockReturnValue(provider);
+
+    const result = await loadStateForRoutedStacks(
+      [lambdaStackWithSsmParam()],
+      [routeTo('EchoFn')],
+      [],
+      {} as never,
+      undefined
+    );
+
+    expect(result.get('MyStack')?.ssmParameters).toEqual({ SsmDbHost: 's3cr3t' });
+    expect(result.get('MyStack')?.ssmSecureStringLogicalIds).toEqual(['SsmDbHost']);
   });
 
   it('leaves ssmParameters absent when the provider resolves nothing', async () => {
@@ -125,7 +154,9 @@ describe('loadStateForRoutedStacks SSM-parameter resolution (site binding)', () 
       label: '--from-cfn-stack',
       load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
       buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
-      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({}),
+      resolveTemplateSsmParameters: vi
+        .fn()
+        .mockResolvedValue({ values: {}, secureStringLogicalIds: [] }),
       dispose: vi.fn(),
     };
     createProviderMock.mockReturnValue(provider);
@@ -140,6 +171,7 @@ describe('loadStateForRoutedStacks SSM-parameter resolution (site binding)', () 
 
     expect(provider.resolveTemplateSsmParameters).toHaveBeenCalledTimes(1);
     expect(result.get('MyStack')?.ssmParameters).toBeUndefined();
+    expect(result.get('MyStack')?.ssmSecureStringLogicalIds).toBeUndefined();
   });
 
   it('skips the SSM resolution cleanly for a provider without resolveTemplateSsmParameters', async () => {

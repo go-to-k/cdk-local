@@ -76,8 +76,24 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
 
     const out = await provider.resolveTemplateSsmParameters(templateWithSsmString());
 
-    expect(out).toEqual({ SsmDbHost: 'db.internal' });
+    expect(out).toEqual({ values: { SsmDbHost: 'db.internal' }, secureStringLogicalIds: [] });
     expect(ssmSendMock).toHaveBeenCalledTimes(1);
+    provider.dispose();
+  });
+
+  it('flags a SecureString param via secureStringLogicalIds (issue #99)', async () => {
+    ssmSendMock.mockResolvedValueOnce({
+      Parameters: [{ Name: '/app/db-host', Value: 's3cr3t', Type: 'SecureString' }],
+      InvalidParameters: [],
+    });
+    const provider = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+
+    const out = await provider.resolveTemplateSsmParameters(templateWithSsmString());
+
+    expect(out).toEqual({
+      values: { SsmDbHost: 's3cr3t' },
+      secureStringLogicalIds: ['SsmDbHost'],
+    });
     provider.dispose();
   });
 
@@ -95,7 +111,10 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
       },
     } as Tmpl);
 
-    expect(out).toEqual({ SsmSubnets: 'subnet-a,subnet-b' });
+    expect(out).toEqual({
+      values: { SsmSubnets: 'subnet-a,subnet-b' },
+      secureStringLogicalIds: [],
+    });
     provider.dispose();
   });
 
@@ -107,7 +126,7 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
       Parameters: { Plain: { Type: 'String', Default: 'x' } },
     } as Tmpl);
 
-    expect(out).toEqual({});
+    expect(out).toEqual({ values: {}, secureStringLogicalIds: [] });
     expect(ssmCtorMock).not.toHaveBeenCalled();
     expect(ssmSendMock).not.toHaveBeenCalled();
     provider.dispose();
@@ -119,7 +138,10 @@ describe('CfnLocalStateProvider.resolveTemplateSsmParameters', () => {
     );
     const provider = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
 
-    expect(await provider.resolveTemplateSsmParameters(templateWithSsmString())).toEqual({});
+    expect(await provider.resolveTemplateSsmParameters(templateWithSsmString())).toEqual({
+      values: {},
+      secureStringLogicalIds: [],
+    });
     provider.dispose();
   });
 

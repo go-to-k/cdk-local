@@ -30,6 +30,7 @@ function containerWithPort(): ResolvedEcsContainer {
     name: 'app',
     image: { kind: 'public', uri: 'public.ecr.aws/docker/library/busybox:latest' },
     environment: {},
+    sensitiveEnvKeys: [],
     secrets: [],
     portMappings: [{ containerPort: 80, protocol: 'tcp' }],
     mountPoints: [],

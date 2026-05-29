@@ -55,6 +55,22 @@ export interface SsmParameterRef {
 }
 
 /**
+ * Result of {@link resolveSsmParameters}: the resolved `logicalId -> value`
+ * map plus the subset of logical IDs whose SSM parameter is a
+ * `SecureString`. The decrypted SecureString values are routed through
+ * docker's value-from-process-env form (`-e KEY`) downstream so they never
+ * land on the `docker run` argv (issue #99); the caller threads
+ * `secureStringLogicalIds` into the substitution context as
+ * `sensitiveParameters` so the env-flag builder can pick the safe form.
+ */
+export interface ResolvedSsmParameters {
+  /** `parameterLogicalId -> resolved value`. */
+  values: Record<string, string>;
+  /** Logical IDs whose SSM `Type` is `SecureString` (decrypted values). */
+  secureStringLogicalIds: string[];
+}
+
+/**
  * Scan a synthesized template's `Parameters` block for entries whose
  * `Type` is one of the SSM-backed parameter types AND whose `Default`
  * carries a usable SSM parameter name. Pure — no AWS calls.
@@ -97,15 +113,16 @@ export function collectSsmParameterRefs(
  * String parameters resolve too (matching how CloudFormation resolves
  * the `AWS::SSM::Parameter::Value<String>` type at deploy time).
  *
- * Security note: a decrypted SecureString value resolved here is then
- * baked into the container's `Environment` like any other resolved env
- * value, so it follows the standard plaintext-env exposure path — it can
- * appear on the `docker run -e KEY=VALUE` argv (visible in host `ps`) and
- * is not redacted by `redactAwsCredentialsInArgs` (which only covers
- * `SENSITIVE_ENV_KEYS`). This mirrors the deployed Lambda/ECS env and is
- * the same inherent exposure documented in `docker-runner`; routing
- * SecureString-resolved values through the value-from-process-env form is
- * tracked as a follow-up.
+ * Security note (issue #99): a decrypted SecureString value resolved here
+ * would otherwise be baked into the container's `Environment` like any
+ * other resolved value and could appear on the `docker run -e KEY=VALUE`
+ * argv (visible in host `ps`). To prevent that, the returned
+ * {@link ResolvedSsmParameters.secureStringLogicalIds} flags every
+ * SecureString parameter; downstream the consuming env keys are routed
+ * through docker's value-from-process-env form (`-e KEY`, value supplied
+ * via the spawned docker process's env) so the secret never lands on the
+ * argv. The value still appears in `docker inspect` Config.Env, which is
+ * inherent to container env and matches deployed behavior.
  *
  * Best-effort: a failed `GetParameters` chunk logs a warn and is skipped
  * (the other chunks still contribute their values); the function never
@@ -120,8 +137,8 @@ export async function resolveSsmParameters(
   client: SSMClient,
   refs: readonly SsmParameterRef[],
   label: string
-): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
+): Promise<ResolvedSsmParameters> {
+  const out: ResolvedSsmParameters = { values: {}, secureStringLogicalIds: [] };
   if (refs.length === 0) return out;
 
   const logger = getLogger();
@@ -140,7 +157,11 @@ export async function resolveSsmParameters(
 
   for (let i = 0; i < uniqueNames.length; i += CHUNK) {
     const names = uniqueNames.slice(i, i + CHUNK);
-    let resolved: Array<{ Name?: string | undefined; Value?: string | undefined }>;
+    let resolved: Array<{
+      Name?: string | undefined;
+      Value?: string | undefined;
+      Type?: string | undefined;
+    }>;
     try {
       const resp = await client.send(
         new GetParametersCommand({ Names: names, WithDecryption: true })
@@ -165,13 +186,18 @@ export async function resolveSsmParameters(
       if (typeof p.Name !== 'string' || typeof p.Value !== 'string') continue;
       const requesters = byName.get(p.Name);
       if (!requesters) continue;
+      const isSecure = p.Type === 'SecureString';
       for (const ref of requesters) {
         // CloudFormation surfaces a `List<String>` SSM value as a
         // comma-delimited string when referenced; SSM returns the value
         // already comma-joined for StringList parameters, so we pass it
         // through verbatim — the `isList` flag is retained for clarity
         // and future divergence but needs no transform here.
-        out[ref.logicalId] = p.Value;
+        out.values[ref.logicalId] = p.Value;
+        // SecureString values are decrypted (WithDecryption) — flag the
+        // logical ID so downstream the consuming env key is kept off the
+        // `docker run` argv (issue #99).
+        if (isSecure) out.secureStringLogicalIds.push(ref.logicalId);
       }
     }
   }

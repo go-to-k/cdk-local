@@ -12,6 +12,8 @@ import {
 import {
   substituteAgainstState,
   substituteAgainstStateAsync,
+  resolveWithSensitivity,
+  resolveWithSensitivityAsync,
   type SubstitutionContext,
 } from './state-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -87,6 +89,13 @@ export interface ResolvedEcsContainer {
   workingDirectory?: string;
   /** Literal-only env vars; intrinsic-valued entries are dropped (matches `cdkl invoke` v1). */
   environment: Record<string, string>;
+  /**
+   * Env keys whose value resolved to a decrypted `SecureString` SSM
+   * parameter (issue #99). The runner unions these into the
+   * value-from-process-env set so the secret never lands on the
+   * `docker run` argv.
+   */
+  sensitiveEnvKeys: string[];
   /** SecretArn entries. Resolved to real values by `ecs-secrets-resolver.ts`. */
   secrets: { name: string; valueFrom: string }[];
   /**
@@ -763,6 +772,7 @@ function parseContainerDefinition(
 
   const subContext = buildSubstitutionContextFromImageContext(context);
   const environment: Record<string, string> = {};
+  const sensitiveEnvKeys: string[] = [];
   const droppedEnvKeys: { key: string; reason: string }[] = [];
   if (Array.isArray(c['Environment'])) {
     for (const entry of c['Environment'] as unknown[]) {
@@ -780,9 +790,11 @@ function parseContainerDefinition(
       // value is dropped and a warn is surfaced via the task's
       // `warnings` array (matches PR 1 `cdkl invoke` semantics).
       if (subContext) {
-        const sub = substituteAgainstState(value, subContext);
+        const { result: sub, consumedSensitive } = resolveWithSensitivity(value, subContext);
         if (sub.kind === 'literal') {
           environment[key] = String(sub.value);
+          // SecureString-backed value — keep it off the `docker run` argv (#99).
+          if (consumedSensitive) sensitiveEnvKeys.push(key);
           continue;
         }
         droppedEnvKeys.push({ key, reason: sub.reason });
@@ -933,6 +945,7 @@ function parseContainerDefinition(
     name,
     image,
     environment,
+    sensitiveEnvKeys,
     secrets,
     portMappings,
     mountPoints,
@@ -968,6 +981,9 @@ function buildSubstitutionContextFromImageContext(
   }
   if (context.stateParameters) {
     subContext.parameters = { ...context.stateParameters };
+  }
+  if (context.stateSensitiveParameters?.length) {
+    subContext.sensitiveParameters = new Set(context.stateSensitiveParameters);
   }
   return subContext;
 }
@@ -1552,10 +1568,17 @@ export async function applyCrossStackResolverToTask(
           // produce a different outcome.
           continue;
         }
-        const sub = await substituteAgainstStateAsync(value, context);
+        const { result: sub, consumedSensitive } = await resolveWithSensitivityAsync(
+          value,
+          context
+        );
         if (sub.kind === 'literal') {
           container.environment[key] = String(sub.value);
           resolvedEnvKeys.add(key);
+          // SecureString-backed value — keep it off the `docker run` argv (#99).
+          if (consumedSensitive && !container.sensitiveEnvKeys.includes(key)) {
+            container.sensitiveEnvKeys.push(key);
+          }
         }
       }
     }

@@ -61,7 +61,9 @@ describe('buildEcsImageResolutionContext SSM-parameter resolution (site binding)
       label: '--from-cfn-stack',
       load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
       buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
-      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({ SsmDbHost: 'db.internal' }),
+      resolveTemplateSsmParameters: vi
+        .fn()
+        .mockResolvedValue({ values: { SsmDbHost: 'db.internal' }, secureStringLogicalIds: [] }),
       dispose: vi.fn(),
     } as unknown as LocalStateProvider & {
       resolveTemplateSsmParameters: ReturnType<typeof vi.fn>;
@@ -75,6 +77,25 @@ describe('buildEcsImageResolutionContext SSM-parameter resolution (site binding)
     };
     expect(passed.Parameters?.['SsmDbHost']).toBeDefined();
     expect(ctx?.stateParameters).toEqual({ SsmDbHost: 'db.internal' });
+    // No SecureString -> no sensitive logical IDs threaded.
+    expect(ctx?.stateSensitiveParameters).toBeUndefined();
+  });
+
+  it('stashes stateSensitiveParameters for SecureString params (issue #99)', async () => {
+    const provider = {
+      label: '--from-cfn-stack',
+      load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({
+        values: { SsmDbHost: 's3cr3t' },
+        secureStringLogicalIds: ['SsmDbHost'],
+      }),
+      dispose: vi.fn(),
+    } as unknown as LocalStateProvider;
+
+    const ctx = await buildEcsImageResolutionContext(taskStackWithSsmParam(), provider, {} as never);
+    expect(ctx?.stateParameters).toEqual({ SsmDbHost: 's3cr3t' });
+    expect(ctx?.stateSensitiveParameters).toEqual(['SsmDbHost']);
   });
 
   it('leaves stateParameters absent when the provider resolves nothing', async () => {
@@ -82,12 +103,15 @@ describe('buildEcsImageResolutionContext SSM-parameter resolution (site binding)
       label: '--from-cfn-stack',
       load: vi.fn().mockResolvedValue({ resources: {}, outputs: {}, region: 'us-east-1' }),
       buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
-      resolveTemplateSsmParameters: vi.fn().mockResolvedValue({}),
+      resolveTemplateSsmParameters: vi
+        .fn()
+        .mockResolvedValue({ values: {}, secureStringLogicalIds: [] }),
       dispose: vi.fn(),
     } as unknown as LocalStateProvider;
 
     const ctx = await buildEcsImageResolutionContext(taskStackWithSsmParam(), provider, {} as never);
     expect(ctx?.stateParameters).toBeUndefined();
+    expect(ctx?.stateSensitiveParameters).toBeUndefined();
   });
 
   it('skips SSM resolution cleanly for a provider without resolveTemplateSsmParameters', async () => {
