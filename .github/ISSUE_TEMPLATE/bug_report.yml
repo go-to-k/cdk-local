@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a problem with cdk-local (the `cdkl` CLI or library)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! cdk-local runs your CDK app's compute in Docker
+        and (with `--from-cfn-stack`) talks to real AWS, so most issues hinge on
+        the environment. Please include the versions and the exact command below —
+        it lets us reproduce quickly.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what happened instead?
+      placeholder: Expected the route to return 200; got a 502 with "..." in the logs.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `cdkl` command you ran (redact any real ARNs / account IDs / secrets).
+      placeholder: cdkl start-api --from-cfn-stack MyStack --port 8080
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / logs
+      description: Re-run with `--verbose` and paste the relevant output. Redact secrets.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: cdkl-version
+    attributes:
+      label: cdk-local version
+      description: From `cdkl --version`, or the version in your package.json / lockfile.
+      placeholder: 0.35.1
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: macOS 14.5 (arm64) / Ubuntu 22.04 (x86_64)
+    validations:
+      required: true
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: From `docker version --format '{{.Server.Version}}'`.
+      placeholder: "27.1.1"
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: From `node --version`.
+      placeholder: v20.11.0
+    validations:
+      required: true
+  - type: textarea
+    id: cdk-context
+    attributes:
+      label: Relevant CDK app context
+      description: >-
+        The relevant construct snippet and/or your `cdk.json` `app` command.
+        A minimal CDK app that reproduces the issue is the fastest path to a fix.
+      render: typescript
+    validations:
+      required: false

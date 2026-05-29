@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest a capability or improvement for cdk-local
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        cdk-local runs your **application compute** locally and talks to real AWS
+        for managed services — it deliberately does NOT emulate managed services.
+        Requests that fit that scope (Lambda / API Gateway / ECS coverage, the
+        `--from-cfn-stack` binding, CLI ergonomics) are the best fit.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do that cdk-local doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like cdk-local to do? A CLI sketch helps.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other tools you compared against.
+    validations:
+      required: false
