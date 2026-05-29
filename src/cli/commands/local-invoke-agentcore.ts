@@ -281,6 +281,9 @@ async function localInvokeAgentCoreCommand(
     const result = await invokeAgentCore(containerHost, hostPort, event, {
       sessionId,
       timeoutMs: 120_000,
+      // Stream a text/event-stream response to stdout as it arrives, so a
+      // token-streaming agent shows incrementally rather than all at once.
+      onChunk: (text) => process.stdout.write(text),
       ...(authorization && { authorization }),
     });
 
@@ -551,6 +554,12 @@ export function emitResult(result: AgentCoreInvokeResult): void {
   if (result.status >= 400) {
     logger.warn(`Agent /invocations returned HTTP ${result.status}.`);
     process.exitCode = 1;
+  }
+  if (result.streamed) {
+    // The SSE body was already written chunk-by-chunk via the onChunk sink;
+    // just terminate with a newline so the shell prompt resumes cleanly.
+    process.stdout.write('\n');
+    return;
   }
   process.stdout.write(`${result.raw}\n`);
 }

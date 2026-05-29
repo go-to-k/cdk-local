@@ -10,6 +10,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Build a `text/event-stream` Response whose body emits `chunks` in order. */
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
 describe('waitForAgentCorePing', () => {
   it('returns once GET /ping responds 200', async () => {
     const fetchMock = vi.fn(async (url: string) => {
@@ -76,6 +91,7 @@ describe('invokeAgentCore', () => {
     expect(result.status).toBe(200);
     expect(result.contentType).toBe('application/json');
     expect(result.raw).toBe('{"response":"hi","status":"success"}');
+    expect(result.streamed).toBe(false);
   });
 
   it('forwards the Authorization header when supplied', async () => {
@@ -96,7 +112,46 @@ describe('invokeAgentCore', () => {
     expect(headers['Authorization']).toBe('Bearer the.jwt.token');
   });
 
-  it('passes an SSE response body through verbatim', async () => {
+  it('buffers a JSON response into raw (streamed=false) even when an onChunk sink is given', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('{"response":"hi"}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const received: string[] = [];
+    const result = await invokeAgentCore('127.0.0.1', 9000, {}, {
+      sessionId: 's',
+      timeoutMs: 5000,
+      onChunk: (t) => received.push(t),
+    });
+
+    expect(received).toEqual([]); // non-SSE → not streamed
+    expect(result.streamed).toBe(false);
+    expect(result.raw).toBe('{"response":"hi"}');
+  });
+
+  it('streams an SSE body chunk-by-chunk through onChunk in arrival order', async () => {
+    const chunks = ['data: {"token":"a"}\n\n', 'data: {"token":"b"}\n\n', 'data: [DONE]\n\n'];
+    const fetchMock = vi.fn(async () => sseResponse(chunks));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const received: string[] = [];
+    const result = await invokeAgentCore('127.0.0.1', 9000, {}, {
+      sessionId: 's',
+      timeoutMs: 5000,
+      onChunk: (t) => received.push(t),
+    });
+
+    expect(received).toEqual(chunks);
+    expect(result.streamed).toBe(true);
+    expect(result.raw).toBe('');
+    expect(result.contentType).toBe('text/event-stream');
+  });
+
+  it('buffers an SSE body into raw (streamed=false) when no onChunk sink is given', async () => {
     const sse = 'data: {"event":"a"}\ndata: {"event":"b"}\n';
     const fetchMock = vi.fn(async () =>
       new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } })
@@ -106,6 +161,7 @@ describe('invokeAgentCore', () => {
     const result = await invokeAgentCore('127.0.0.1', 9000, {}, { sessionId: 's', timeoutMs: 5000 });
     expect(result.contentType).toBe('text/event-stream');
     expect(result.raw).toBe(sse);
+    expect(result.streamed).toBe(false);
   });
 
   it('maps an aborted request (timeout) to a clear timeout error', async () => {

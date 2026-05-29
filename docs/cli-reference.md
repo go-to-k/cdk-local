@@ -495,10 +495,11 @@ before the container starts:
 
 ### Streaming responses
 
-The `/invocations` response is printed verbatim, so both the JSON
-(`application/json`) and SSE (`text/event-stream`) response shapes pass
-through. Incremental display of an SSE stream is a follow-up; v1 prints
-the full body once the request completes.
+A JSON (`application/json`) response is printed verbatim once the request
+completes. A streaming SSE (`text/event-stream`) response is written to
+stdout chunk-by-chunk as it arrives — so a token-streaming agent shows
+incrementally, the same UX AgentCore gives in the cloud — rather than all
+at once at the end. Bidirectional `/ws` WebSocket streaming is a follow-up.
 
 ### `cdkl invoke-agentcore` exit codes
 

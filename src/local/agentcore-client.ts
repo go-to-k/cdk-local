@@ -30,8 +30,18 @@ export interface AgentCoreInvokeResult {
   status: number;
   /** Response `Content-Type` (e.g. `application/json` or `text/event-stream`), or null. */
   contentType: string | null;
-  /** Raw response body — JSON or SSE (`data: ...`) passed through verbatim. */
+  /**
+   * Response body for the buffered path — JSON or SSE passed through verbatim.
+   * Empty when {@link streamed} is true (the body was delivered chunk-by-chunk
+   * via {@link InvokeAgentCoreOptions.onChunk} instead of buffered).
+   */
   raw: string;
+  /**
+   * True when a `text/event-stream` body was streamed incrementally through
+   * {@link InvokeAgentCoreOptions.onChunk} (already emitted; `raw` is empty);
+   * false for the buffered path.
+   */
+  streamed: boolean;
 }
 
 /**
@@ -133,14 +143,25 @@ export interface InvokeAgentCoreOptions {
    * that read the header behave the same locally. Omitted when unset.
    */
   authorization?: string;
+  /**
+   * Sink for incremental `text/event-stream` output. When provided AND the
+   * response Content-Type is `text/event-stream`, the body is decoded and
+   * streamed chunk-by-chunk through this callback as it arrives — matching the
+   * incremental UX AgentCore gives in the cloud — instead of being buffered.
+   * The result then has `streamed: true` and an empty `raw`. For a non-SSE
+   * response (or when omitted), the body is buffered into `raw` as before.
+   */
+  onChunk?: (text: string) => void;
 }
 
 /**
  * POST the event body to the agent's `/invocations` endpoint with the
- * session-id header and a JSON content type. Returns the raw response body
- * (JSON or SSE) together with its status + content type — the command
- * prints it verbatim, so both the non-streaming JSON and streaming SSE
- * shapes pass through unchanged.
+ * session-id header and a JSON content type, then return the response.
+ *
+ * A `text/event-stream` response is streamed incrementally through
+ * `options.onChunk` (when given) so the user sees tokens as they arrive — the
+ * result is then `streamed: true` with an empty `raw`. Any other response (or
+ * a missing sink) is buffered into `raw` and returned verbatim.
  */
 export async function invokeAgentCore(
   host: string,
@@ -166,15 +187,24 @@ export async function invokeAgentCore(
       body,
       signal: controller.signal,
     });
-    // Read the body under the SAME abort signal — an agent that returns
-    // headers but stalls mid-body (realistic for long SSE streams) would
-    // otherwise hang past `timeoutMs` since `fetch` resolves on headers.
+
+    const contentType = response.headers.get('content-type');
+    const isSse = (contentType ?? '').includes('text/event-stream');
+
+    if (isSse && options.onChunk && response.body) {
+      // Stream chunk-by-chunk under the SAME abort signal — an agent that
+      // emits SSE frames slowly (a chat agent streaming tokens) reaches stdout
+      // as it arrives instead of all at once on completion. The abort fires if
+      // the whole stream exceeds `timeoutMs`.
+      await streamBody(response.body, options.onChunk);
+      return { status: response.status, contentType, raw: '', streamed: true };
+    }
+
+    // Buffer the body under the SAME abort signal — an agent that returns
+    // headers but stalls mid-body would otherwise hang past `timeoutMs` since
+    // `fetch` resolves on headers.
     const raw = await response.text();
-    return {
-      status: response.status,
-      contentType: response.headers.get('content-type'),
-      raw,
-    };
+    return { status: response.status, contentType, raw, streamed: false };
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new Error(
@@ -185,5 +215,33 @@ export async function invokeAgentCore(
     throw err;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Decode a response body stream to UTF-8 text and push each chunk to `onChunk`
+ * as it arrives. Uses the reader API (portable across Node versions) and a
+ * streaming TextDecoder so a multi-byte char split across chunk boundaries is
+ * not corrupted.
+ */
+async function streamBody(
+  body: ReadableStream<Uint8Array>,
+  onChunk: (text: string) => void
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        const text = decoder.decode(value, { stream: true });
+        if (text) onChunk(text);
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) onChunk(tail);
+  } finally {
+    reader.releaseLock();
   }
 }

@@ -37,7 +37,9 @@ AWS managed services.
   invoked once locally (`cdkl invoke-agentcore`); v1 covers container artifacts
   on the HTTP protocol. An inbound `customJwtAuthorizer` is enforced locally —
   `--bearer-token` is verified against the runtime's OIDC discovery URL before
-  the container starts and forwarded to `/invocations`
+  the container starts and forwarded to `/invocations`. A streaming SSE
+  (`text/event-stream`) response is printed to stdout incrementally as it
+  arrives
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 
