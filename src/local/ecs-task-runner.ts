@@ -89,12 +89,14 @@ export interface RunEcsTaskOptions {
   /**
    * Issue #86 v1 — container ports to publish on docker-assigned EPHEMERAL
    * host ports (`-p <containerHost>::<port>/tcp`), independent of
-   * {@link skipHostPortPublish}. Set by `cdkl start-service` for ALB-fronted
-   * services: each replica publishes its target container port on a unique
+   * {@link skipHostPortPublish}. Set by `cdkl start-alb` for the ALB-fronted
+   * service: each replica publishes its target container port on a unique
    * ephemeral host port (so N replicas never collide) and the local front-door
    * round-robins to `127.0.0.1:<ephemeralPort>`. The caller discovers the
-   * assigned host port post-boot via `getPublishedHostPort`. Empty / unset →
-   * no extra publish flags emitted.
+   * assigned host port post-boot via `getPublishedHostPort`. A port listed here
+   * is NOT also fixed-published (the declared `-p host:port:port` is suppressed
+   * for it) so the ephemeral binding is unambiguous. Empty / unset → no extra
+   * publish flags emitted.
    */
   ephemeralPublishContainerPorts?: number[];
   /** Optional STS-issued temp credentials to expose via the metadata sidecar (`--assume-task-role`). */
@@ -1035,8 +1037,16 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // allocated`. Peer comms still works via container IP / network alias
   // on the shared docker network (production-like — real ECS Service
   // Connect tasks have per-task ENIs and never share a host port).
+  // Ports that are published ephemerally for the front-door (below) must NOT
+  // also get the fixed declared publish — otherwise a single-replica ALB
+  // service would bind the same container port TWICE (`-p host:80:80` AND
+  // `-p host::80`), and `getPublishedHostPort` could read the fixed binding
+  // instead of the ephemeral one. The ephemeral publish is the front-door's
+  // sole binding for these ports.
+  const ephemeralPorts = new Set(opts.ephemeralPublishContainerPorts ?? []);
   if (!opts.skipHostPortPublish) {
     for (const pm of container.portMappings) {
+      if (ephemeralPorts.has(pm.containerPort)) continue;
       const declaredHostPort = pm.hostPort ?? pm.containerPort;
       const hostPort = opts.hostPortOverrides?.[pm.containerPort] ?? declaredHostPort;
       if (hostPort !== declaredHostPort) {
@@ -1058,11 +1068,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // container port without colliding because the host port is unallocated; the
   // service runner discovers the assigned port via `getPublishedHostPort` and
   // round-robins the front-door to it.
-  if (opts.ephemeralPublishContainerPorts && opts.ephemeralPublishContainerPorts.length > 0) {
-    const wanted = new Set(opts.ephemeralPublishContainerPorts);
+  if (ephemeralPorts.size > 0) {
     const alreadyEphemeral = new Set<number>();
     for (const pm of container.portMappings) {
-      if (!wanted.has(pm.containerPort) || alreadyEphemeral.has(pm.containerPort)) continue;
+      if (!ephemeralPorts.has(pm.containerPort) || alreadyEphemeral.has(pm.containerPort)) continue;
       alreadyEphemeral.add(pm.containerPort);
       args.push('-p', `${containerHost}::${pm.containerPort}/${pm.protocol}`);
     }

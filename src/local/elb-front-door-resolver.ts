@@ -94,7 +94,20 @@ export function resolveAlbFrontDoor(
     if (port === undefined) continue;
     const protocol = typeof props['Protocol'] === 'string' ? props['Protocol'] : 'HTTP';
     const tgRefs = collectForwardTargetGroupRefs(props['DefaultActions']);
-    if (tgRefs.size === 0) continue;
+    if (tgRefs.size === 0) {
+      // A forward action whose TargetGroupArn is a literal / cross-stack /
+      // imported (non-Ref) arn can't be resolved locally — warn so it isn't a
+      // silent no-op. Listeners with no forward action at all (e.g. a
+      // redirect-only HTTP->HTTPS listener) are skipped silently.
+      if (hasUnresolvableForward(props['DefaultActions'])) {
+        warnings.push(
+          `Listener '${listenerLogicalId}' on port ${port} forwards to a non-Ref TargetGroupArn ` +
+            '(literal / cross-stack / imported); the local front-door only supports in-stack ' +
+            'target groups. Skipping it.'
+        );
+      }
+      continue;
+    }
 
     if (protocol !== 'HTTP') {
       warnings.push(
@@ -228,6 +241,34 @@ function collectForwardTargetGroupRefs(defaultActions: unknown): Set<string> {
     }
   }
   return refs;
+}
+
+/**
+ * True when `DefaultActions` has at least one `forward` action that references
+ * a target group via a NON-`Ref` arn (literal / `Fn::GetAtt` / cross-stack) —
+ * i.e. a forward we could not resolve to an in-stack target group. Used to warn
+ * rather than silently skip such a listener.
+ */
+function hasUnresolvableForward(defaultActions: unknown): boolean {
+  if (!Array.isArray(defaultActions)) return false;
+  for (const action of defaultActions) {
+    if (!action || typeof action !== 'object') continue;
+    const a = action as Record<string, unknown>;
+    if (a['Type'] !== 'forward') continue;
+    if (a['TargetGroupArn'] !== undefined && refOf(a['TargetGroupArn']) === undefined) return true;
+    const forwardConfig = a['ForwardConfig'];
+    if (forwardConfig && typeof forwardConfig === 'object') {
+      const groups = (forwardConfig as Record<string, unknown>)['TargetGroups'];
+      if (Array.isArray(groups)) {
+        for (const g of groups) {
+          if (!g || typeof g !== 'object') continue;
+          const arn = (g as Record<string, unknown>)['TargetGroupArn'];
+          if (arn !== undefined && refOf(arn) === undefined) return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 function refOf(raw: unknown): string | undefined {

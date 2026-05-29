@@ -63,6 +63,88 @@ describe('resolveAlbTarget', () => {
   });
 });
 
+/** Two ALBs; `wiring` decides whether they front the same service or two. */
+function twoAlbStack(wiring: 'same-service' | 'two-services'): StackInfo {
+  const resources: Record<string, unknown> = {
+    Alb1: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+    Alb2: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } },
+    Tg1: {
+      Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+      Properties: { Port: 80, Protocol: 'HTTP', TargetType: 'ip' },
+    },
+    L1: {
+      Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      Properties: {
+        LoadBalancerArn: { Ref: 'Alb1' },
+        Port: 80,
+        Protocol: 'HTTP',
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: 'Tg1' } }],
+      },
+    },
+    Svc1: {
+      Type: 'AWS::ECS::Service',
+      Properties: {
+        LoadBalancers: [{ ContainerName: 'web', ContainerPort: 80, TargetGroupArn: { Ref: 'Tg1' } }],
+      },
+    },
+  };
+  if (wiring === 'same-service') {
+    // Alb2's listener (port 8080) ALSO forwards to Tg1 -> same Svc1.
+    resources['L2'] = {
+      Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      Properties: {
+        LoadBalancerArn: { Ref: 'Alb2' },
+        Port: 8080,
+        Protocol: 'HTTP',
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: 'Tg1' } }],
+      },
+    };
+  } else {
+    resources['Tg2'] = {
+      Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+      Properties: { Port: 80, Protocol: 'HTTP', TargetType: 'ip' },
+    };
+    resources['L2'] = {
+      Type: 'AWS::ElasticLoadBalancingV2::Listener',
+      Properties: {
+        LoadBalancerArn: { Ref: 'Alb2' },
+        Port: 8080,
+        Protocol: 'HTTP',
+        DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: 'Tg2' } }],
+      },
+    };
+    resources['Svc2'] = {
+      Type: 'AWS::ECS::Service',
+      Properties: {
+        LoadBalancers: [{ ContainerName: 'api', ContainerPort: 80, TargetGroupArn: { Ref: 'Tg2' } }],
+      },
+    };
+  }
+  return { stackName: 'Multi', template: { Resources: resources } } as unknown as StackInfo;
+}
+
+describe('albStrategy.resolveBoots multi-service', () => {
+  it('merges two ALBs fronting the SAME service into one boot with both listeners', () => {
+    const { boots } = albStrategy({} as never).resolveBoots(
+      [twoAlbStack('same-service')],
+      ['Multi:Alb1', 'Multi:Alb2']
+    );
+    expect(boots).toHaveLength(1);
+    expect(boots[0]!.target).toBe('Multi:Svc1');
+    expect(boots[0]!.frontDoorTargets.map((t) => t.listenerPort).sort((a, b) => a - b)).toEqual([
+      80, 8080,
+    ]);
+  });
+
+  it('produces two boots when two ALBs front two different services', () => {
+    const { boots } = albStrategy({} as never).resolveBoots(
+      [twoAlbStack('two-services')],
+      ['Multi:Alb1', 'Multi:Alb2']
+    );
+    expect(boots.map((b) => b.target).sort()).toEqual(['Multi:Svc1', 'Multi:Svc2']);
+  });
+});
+
 describe('start-alb / start-service strategy binding', () => {
   it('start-alb resolves an ALB target into backing-service boots WITH front-door targets', () => {
     const strategy = albStrategy({ lbPort: ['80=8080'] } as never);

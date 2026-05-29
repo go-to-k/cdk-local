@@ -106,11 +106,41 @@ function allPublishArgs(opts: {
 }
 
 describe('buildDockerRunArgs ALB front-door ephemeral publish (#86)', () => {
-  it('publishes the target container port on an ephemeral host port', () => {
+  it('publishes the target container port ONCE (ephemeral only) — the declared fixed publish is suppressed', () => {
+    // Single-replica ALB-fronted service: skipHostPortPublish is false, but the
+    // ephemeral-published port must NOT also be fixed-published, or
+    // getPublishedHostPort could read the wrong binding.
     expect(allPublishArgs({ ephemeralPublishContainerPorts: [80] })).toEqual([
-      '127.0.0.1:80:80/tcp', // declared publish
-      '127.0.0.1::80/tcp', // ephemeral publish for the front-door
+      '127.0.0.1::80/tcp', // ephemeral publish for the front-door (the only binding for :80)
     ]);
+  });
+
+  it('still fixed-publishes a non-ephemeral declared port alongside the ephemeral one', () => {
+    // A container declaring 80 (ephemeral, front-door) AND 9090 (not fronted)
+    // keeps the fixed publish for 9090.
+    const args = buildDockerRunArgs({
+      task,
+      container: {
+        ...containerWithPort(),
+        portMappings: [
+          { containerPort: 80, protocol: 'tcp' },
+          { containerPort: 9090, protocol: 'tcp' },
+        ],
+      } as unknown as ResolvedEcsContainer,
+      image: 'public.ecr.aws/docker/library/busybox:latest',
+      network: 'net',
+      volumeByName: new Map(),
+      secrets: [],
+      envOverrides: undefined,
+      containerHost: '127.0.0.1',
+      roleArn: undefined,
+      platformOverride: undefined,
+      region: undefined,
+      ephemeralPublishContainerPorts: [80],
+    });
+    const published: string[] = [];
+    for (let i = 0; i < args.args.length; i++) if (args.args[i] === '-p') published.push(args.args[i + 1]!);
+    expect(published).toEqual(['127.0.0.1:9090:9090/tcp', '127.0.0.1::80/tcp']);
   });
 
   it('publishes the ephemeral port EVEN when skipHostPortPublish drops the declared mapping', () => {

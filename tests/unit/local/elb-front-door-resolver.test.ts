@@ -141,6 +141,46 @@ describe('resolveAlbFrontDoor', () => {
     expect(warnings.join('\n')).toMatch(/not\s+referenced by any AWS::ECS::Service/);
   });
 
+  it('warns when a forward listener uses a non-Ref (literal / cross-stack) target group arn', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'forward',
+              TargetGroupArn:
+                'arn:aws:elasticloadbalancing:us-east-1:111:targetgroup/imported/abc',
+            },
+          ],
+        },
+      },
+    });
+    const { services, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(services).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/non-Ref TargetGroupArn/);
+  });
+
+  it('skips a redirect-only listener silently (no warning)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'redirect', RedirectConfig: { Protocol: 'HTTPS', Port: '443' } }],
+        },
+      },
+    });
+    const { services, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(services).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
   it('warns when the forwarded target group is missing from the template', () => {
     const stack = stackWith({ [TG]: undefined });
     const { services, warnings } = resolveAlbFrontDoor(stack, ALB);
