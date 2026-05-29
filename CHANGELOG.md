@@ -1,3 +1,10 @@
+# [0.42.0](https://github.com/go-to-k/cdk-local/compare/v0.41.0...v0.42.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** run MCP-protocol runtimes locally (POST /mcp) ([#142](https://github.com/go-to-k/cdk-local/issues/142)) ([9643780](https://github.com/go-to-k/cdk-local/commit/96437808fa70a84c924622353f97a47a808788ad))
+
 # [0.41.0](https://github.com/go-to-k/cdk-local/compare/v0.40.0...v0.41.0) (2026-05-29)
 
 
