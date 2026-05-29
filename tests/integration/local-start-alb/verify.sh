@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# verify.sh — cdkl start-service ALB front-door integ test (#86, no AWS deploy)
+# verify.sh — cdkl start-alb front-door integ test (#86, no AWS deploy)
 #
-# Boots a 2-replica ECS Service that is ALB-fronted (LoadBalancers[] ->
-# TargetGroup -> HTTP:80 Listener). Each replica is a tiny Python HTTP server
-# that returns its own hostname. Asserts:
+# Names an Application Load Balancer; cdkl boots the 2-replica ECS Service
+# behind it (LoadBalancers[] -> TargetGroup <- ALB HTTP:80 Listener). Each
+# replica is a tiny Python HTTP server that returns its own hostname. Asserts:
 #   - The host-side ALB front-door endpoint comes up on the --lb-port host port.
 #   - curl-ing it repeatedly returns HTTP 200 and reaches >= 2 distinct
 #     replicas (round-robin across the local replica pool).
 #   - SIGTERM tears every container + network + front-door socket down.
 #
-#     bash tests/integration/local-start-service-alb/verify.sh
+#     bash tests/integration/local-start-alb/verify.sh
 
 set -euo pipefail
 
@@ -55,10 +55,10 @@ fi
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
-echo "==> Booting ALB-fronted service (DesiredCount=2), front-door on host port ${LB_HOST_PORT}"
+echo "==> start-alb: naming the ALB (DesiredCount=2 backing service), front-door on host port ${LB_HOST_PORT}"
 # Remap the privileged listener port 80 to a non-privileged host port so the
 # front-door binds without root (the macOS Docker Desktop privileged-port path).
-${CDKL} start-service CdkLocalStartServiceAlbFixture:WebService \
+${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
   --container-host 127.0.0.1 --lb-port "80=${LB_HOST_PORT}" \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
@@ -170,4 +170,4 @@ if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT}/" >/dev/null 2>&1; t
 fi
 
 echo ""
-echo "==> local-start-service-alb test passed (front-door round-robined 2 replicas, clean teardown)"
+echo "==> local-start-alb test passed (front-door round-robined 2 replicas, clean teardown)"

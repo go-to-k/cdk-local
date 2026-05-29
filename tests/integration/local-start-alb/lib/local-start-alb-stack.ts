@@ -4,7 +4,7 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { Construct } from 'constructs';
 
 /**
- * Fixture for the `cdkl start-service` ALB front-door (Issue #86 v1).
+ * Fixture for `cdkl start-alb` (Issue #86 v1).
  *
  * Hand-rolls the synthesized shape of an ALB-fronted ECS service using L1
  * resources so the fixture stays VPC-free and deterministic (cdk-local only
@@ -40,7 +40,7 @@ const HELLO_SERVER = [
   "http.server.HTTPServer(('0.0.0.0',80),H).serve_forever()",
 ].join('\n');
 
-export class LocalStartServiceAlbStack extends cdk.Stack {
+export class LocalStartAlbStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 

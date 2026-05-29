@@ -309,6 +309,28 @@ describe('countTargets', () => {
     });
     const listing = listTargets([stack]);
     expect(countTargets(listing)).toBe(0);
-    expect(listing).toEqual({ lambdas: [], apis: [], ecsServices: [], ecsTaskDefinitions: [] });
+    expect(listing).toEqual({
+      lambdas: [],
+      apis: [],
+      ecsServices: [],
+      ecsTaskDefinitions: [],
+      loadBalancers: [],
+    });
+  });
+
+  it('enumerates application load balancers (start-alb) and skips network LBs', () => {
+    const stack = buildStack('App', {
+      WebLB: {
+        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        Properties: { Type: 'application' },
+      },
+      DefaultLB: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: {} },
+      Nlb: {
+        Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        Properties: { Type: 'network' },
+      },
+    });
+    const listing = listTargets([stack]);
+    expect(listing.loadBalancers.map((e) => e.logicalId).sort()).toEqual(['DefaultLB', 'WebLB']);
   });
 });

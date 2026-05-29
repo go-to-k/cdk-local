@@ -1,8 +1,8 @@
 {
-  "name": "cdkl-integ-local-start-service-alb",
+  "name": "cdkl-integ-local-start-alb",
   "version": "1.0.0",
   "private": true,
-  "description": "Integration test fixture for cdkl start-service ALB front-door (#86)",
+  "description": "Integration test fixture for cdkl start-alb front-door (#86)",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

@@ -3,7 +3,7 @@
  *
  * Hosts embedding `cdk-local` (e.g. cdkd, which injects its own
  * S3-backed `LocalStateProvider` via `extraStateProviders`) consume the
- * four Commander factories below + the supporting types and helpers.
+ * Commander factories below + the supporting types and helpers.
  */
 
 export {
@@ -22,6 +22,10 @@ export {
   createLocalStartServiceCommand,
   type CreateLocalStartServiceCommandOptions,
 } from './cli/commands/local-start-service.js';
+export {
+  createLocalStartAlbCommand,
+  type CreateLocalStartAlbCommandOptions,
+} from './cli/commands/local-start-alb.js';
 export {
   createLocalListCommand,
   formatTargetListing,

@@ -55,6 +55,8 @@ export interface TargetListing {
   ecsServices: TargetEntry[];
   /** `AWS::ECS::TaskDefinition` — `cdkl run-task`. */
   ecsTaskDefinitions: TargetEntry[];
+  /** Application `AWS::ElasticLoadBalancingV2::LoadBalancer` — `cdkl start-alb`. */
+  loadBalancers: TargetEntry[];
 }
 
 function makeEntry(
@@ -158,12 +160,31 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
 }
 
 /**
- * Walk every synthesized stack and collect the resources the four
- * `cdkl` commands can run locally, grouped by command.
+ * Enumerate the application Load Balancers `cdkl start-alb` can front. Only
+ * `Type: application` (the default) is included — NLBs / Gateway LBs are a
+ * different architecture the local front-door does not emulate.
+ */
+function scanApplicationLoadBalancers(stacks: readonly StackInfo[]): TargetEntry[] {
+  const entries: TargetEntry[] = [];
+  for (const stack of stacks) {
+    const resources = stack.template.Resources ?? {};
+    for (const [logicalId, resource] of Object.entries(resources)) {
+      if (resource.Type !== 'AWS::ElasticLoadBalancingV2::LoadBalancer') continue;
+      const type = (resource.Properties as Record<string, unknown> | undefined)?.['Type'];
+      if (type !== undefined && type !== 'application') continue;
+      entries.push(makeEntry(stack.stackName, logicalId, readCdkPathOrUndefined(resource)));
+    }
+  }
+  return entries;
+}
+
+/**
+ * Walk every synthesized stack and collect the resources the `cdkl` commands
+ * can run locally, grouped by command.
  *
  * Pure over the synthesized {@link StackInfo}[] — no Docker / AWS /
- * filesystem access — so both `cdkl list` and (future) interactive
- * target pickers can share it.
+ * filesystem access — so both `cdkl list` and the interactive target
+ * pickers can share it.
  */
 export function listTargets(stacks: readonly StackInfo[]): TargetListing {
   return {
@@ -171,6 +192,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     apis: sortApiEntries(listApiSurfaces(stacks)),
     ecsServices: sortEntries(scanByType(stacks, 'AWS::ECS::Service')),
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
+    loadBalancers: sortEntries(scanApplicationLoadBalancers(stacks)),
   };
 }
 
@@ -206,6 +228,7 @@ export function countTargets(listing: TargetListing): number {
     listing.lambdas.length +
     listing.apis.length +
     listing.ecsServices.length +
-    listing.ecsTaskDefinitions.length
+    listing.ecsTaskDefinitions.length +
+    listing.loadBalancers.length
   );
 }

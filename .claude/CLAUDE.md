@@ -26,10 +26,12 @@ AWS managed services.
 - API Gateway routing — REST v1 / HTTP v2 / Function URL / WebSocket
   served by a local HTTP server
 - ECS tasks and services — real Docker containers with awsvpc /
-  Service Connect / Cloud Map registry, plus a local ALB front-door
-  (single default-action `forward`) that round-robins the listener
-  port across a service's replicas (full listener-rule routing —
-  path / host / weighted — deferred to #123)
+  Service Connect / Cloud Map registry. `start-service` runs a service's
+  replicas only (pure compute, no load balancer). `start-alb` is the ALB
+  counterpart of `start-api`: name the ALB, and it boots the ECS
+  service(s) behind it plus a local front-door (single default-action
+  `forward`) that round-robins each listener port across the replicas
+  (full listener-rule routing — path / host / weighted — deferred to #123)
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 
@@ -58,8 +60,12 @@ Gateway).
 
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
   `createLocalStartApiCommand`, `createLocalRunTaskCommand`,
-  `createLocalStartServiceCommand`, `createLocalListCommand`) + shared
-  option helpers.
+  `createLocalStartServiceCommand`, `createLocalStartAlbCommand`,
+  `createLocalListCommand`) + shared option helpers. `start-service` and
+  `start-alb` share one neutral orchestration in
+  `commands/ecs-service-emulator.ts` (synth + shared docker network +
+  Cloud Map + restart watcher + optional front-door); each command is a
+  thin strategy over it (service targets vs ALB targets).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -73,11 +79,12 @@ Gateway).
   embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
-  `--from-cfn-stack`), elb-front-door-resolver (resolves an ECS Service's
-  `LoadBalancers[]` -> TargetGroup -> Listener into the host listener port a
-  local ALB front-door fronts), front-door-pool (round-robin pool of live
-  replica endpoints), front-door-server (host HTTP reverse proxy that
-  round-robins `start-service` replicas behind the ALB listener port), etc.
+  `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
+  Listeners -> TargetGroups -> backing ECS Services + the host listener
+  port each front-door fronts; the `start-alb` entry), front-door-pool
+  (round-robin pool of live replica endpoints), front-door-server (host
+  HTTP reverse proxy that round-robins a service's replicas behind the
+  ALB listener port), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
@@ -243,7 +250,7 @@ vp run runtime:smoke
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / start-api / run-task / start-service / list`.
+  `cdkl invoke / start-api / run-task / start-service / start-alb / list`.
 - Do NOT write comparison tables against `aws-cdk-local` / `cdklocal` /
   LocalStack in committed artifacts (README, docs, JSDoc). The
   cdk-local vs LocalStack distinction is the

@@ -105,7 +105,7 @@ export function formatTargetListing(
   options: FormatTargetListingOptions = {}
 ): string {
   if (countTargets(listing) === 0) {
-    return `No runnable targets (Lambda functions, APIs, ECS services / tasks) found in this CDK app.`;
+    return `No runnable targets (Lambda functions, APIs, ECS services / tasks, load balancers) found in this CDK app.`;
   }
 
   const long = options.long ?? false;
@@ -122,6 +122,12 @@ export function formatTargetListing(
       'ECS Task Definitions',
       `${cliName} run-task <target>`,
       listing.ecsTaskDefinitions,
+      long
+    ),
+    formatSection(
+      'Application Load Balancers',
+      `${cliName} start-alb <target...>`,
+      listing.loadBalancers,
       long
     ),
   ];

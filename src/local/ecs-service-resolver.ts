@@ -23,39 +23,11 @@ import { getEmbedConfig } from './embed-config.js';
  * so the Cloud Map registry can publish each replica's endpoint for
  * peer discovery via the docker `--add-host` DNS overlay.
  *
- * `LoadBalancers[]` is surfaced (Issue #86 v1) as
- * {@link ResolvedServiceLoadBalancer}[] so `cdkl start-service` can stand up a
- * local ALB front-door (single default-action `forward`) on the listener port.
- * Full listener-rule routing (path / host / weighted) remains deferred to
- * Issue #123.
+ * `LoadBalancers[]` is intentionally NOT surfaced in v1 — local
+ * load-balancer emulation is deferred to a follow-up PR per the issue's
+ * own PR-split recommendation (see CLAUDE.md "cdkl start-service"
+ * bullet for the deferral list).
  */
-/**
- * Resolved entry of `AWS::ECS::Service.LoadBalancers[]` (Issue #86 v1). Each
- * entry binds a target group to one container port on the task. cdk-local
- * chains `TargetGroupArn` → `AWS::ElasticLoadBalancingV2::TargetGroup` →
- * the default-`forward` `AWS::ElasticLoadBalancingV2::Listener` (see
- * `elb-front-door-resolver.ts`) to learn which host listener port should
- * front this service's local replica pool.
- *
- * Only the canonical `TargetGroupArn: { Ref: <TargetGroupLogicalId> }` shape
- * (what CDK emits for an in-stack target group) is surfaced; intrinsic /
- * cross-stack shapes leave `targetGroupLogicalId` undefined and are skipped by
- * the front-door resolver with a warning.
- */
-export interface ResolvedServiceLoadBalancer {
-  /** `LoadBalancers[].ContainerName` — the container the listener forwards to. */
-  containerName: string;
-  /** `LoadBalancers[].ContainerPort` — the container port the target group targets. */
-  containerPort: number;
-  /**
-   * Logical id of the `AWS::ElasticLoadBalancingV2::TargetGroup` the entry's
-   * `TargetGroupArn` `Ref`s. `undefined` when the arn is a literal string or a
-   * non-`Ref` intrinsic (cross-stack / imported target groups — out of scope
-   * for the local front-door).
-   */
-  targetGroupLogicalId?: string;
-}
-
 /**
  * Resolved `AWS::ECS::Service.ServiceConnectConfiguration` (Phase 3 of #262).
  * Pre-PR cdk-local warned and skipped this block; post-PR each entry's
@@ -173,13 +145,6 @@ export interface ResolvedEcsService {
    */
   serviceRegistries: ReadonlyArray<ResolvedServiceRegistry>;
   /**
-   * Issue #86 v1 — parsed `LoadBalancers[]`. Empty when the service has
-   * no load balancer attached (the common non-fronted case). The CLI
-   * chains each entry through `resolveFrontDoorTargets` to stand up a
-   * local ALB front-door on the listener port.
-   */
-  loadBalancers: ReadonlyArray<ResolvedServiceLoadBalancer>;
-  /**
    * Resolution warnings (e.g. `awsvpc` → bridge map from the task
    * resolver, or load-balancer fields not honored locally). Non-fatal —
    * the runner still proceeds.
@@ -293,10 +258,15 @@ export function extractServiceProperties(
   );
   const serviceName = parseServiceName(props['ServiceName'], serviceLogicalId);
 
-  // Issue #86 v1 — parse `LoadBalancers[]` so the CLI can stand up a
-  // local ALB front-door on the listener port. Full listener-rule
-  // routing (path / host / weighted) is still deferred to #123.
-  const loadBalancers = extractLoadBalancers(props['LoadBalancers'], serviceLogicalId, warnings);
+  // Surface deferred-feature warnings so users learn what's NOT
+  // emulated locally without reading source.
+  if (Array.isArray(props['LoadBalancers']) && (props['LoadBalancers'] as unknown[]).length > 0) {
+    warnings.push(
+      `ECS Service '${serviceLogicalId}' declares LoadBalancers, but local load-balancer ` +
+        'emulation is deferred to a follow-up PR. Containers are NOT registered to a local ' +
+        'listener; reach them via their published ports.'
+    );
+  }
 
   // Phase 3 of #262 / Issue #460 — Service Connect + ServiceRegistries
   // are now first-class. Parse + surface; the registry/runner layer
@@ -316,7 +286,6 @@ export function extractServiceProperties(
     desiredCount,
     healthCheckGracePeriodSeconds,
     task,
-    loadBalancers,
     serviceRegistries,
     warnings,
   };
@@ -482,65 +451,6 @@ function extractServiceRegistries(
     out.push(reg);
   }
   return out;
-}
-
-/**
- * Parse `LoadBalancers[]` into {@link ResolvedServiceLoadBalancer}[]. Each
- * entry must carry a numeric `ContainerPort` and a `ContainerName`; entries
- * missing either are skipped with a warning (a load balancer that can't name
- * its target container can't be fronted locally). The `TargetGroupArn` is
- * resolved to its logical id only for the canonical `{ Ref: <id> }` shape;
- * literal-string / cross-stack arns leave `targetGroupLogicalId` undefined so
- * the front-door resolver can warn-and-skip them downstream.
- */
-function extractLoadBalancers(
-  raw: unknown,
-  serviceLogicalId: string,
-  warnings: string[]
-): ReadonlyArray<ResolvedServiceLoadBalancer> {
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  const out: ResolvedServiceLoadBalancer[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object') continue;
-    const e = entry as Record<string, unknown>;
-    const containerName = typeof e['ContainerName'] === 'string' ? e['ContainerName'] : undefined;
-    const containerPort = parseContainerPort(e['ContainerPort']);
-    if (!containerName || containerPort === undefined) {
-      warnings.push(
-        `ECS Service '${serviceLogicalId}' has a LoadBalancers[] entry without a usable ` +
-          `ContainerName / ContainerPort (${JSON.stringify(entry)}); skipping it for the local ` +
-          'front-door.'
-      );
-      continue;
-    }
-    const lb: ResolvedServiceLoadBalancer = { containerName, containerPort };
-    const targetGroupLogicalId = resolveTargetGroupRef(e['TargetGroupArn']);
-    if (targetGroupLogicalId !== undefined) lb.targetGroupLogicalId = targetGroupLogicalId;
-    out.push(lb);
-  }
-  return out;
-}
-
-function parseContainerPort(raw: unknown): number | undefined {
-  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 65535) return raw;
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) {
-    const n = parseInt(raw, 10);
-    if (n >= 1 && n <= 65535) return n;
-  }
-  return undefined;
-}
-
-/**
- * Pull the logical id out of a `TargetGroupArn: { Ref: <TargetGroupLogicalId> }`.
- * Returns `undefined` for literal-string arns or non-`Ref` intrinsics — those
- * are cross-stack / imported target groups the local front-door can't resolve.
- */
-function resolveTargetGroupRef(raw: unknown): string | undefined {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const ref = (raw as Record<string, unknown>)['Ref'];
-    if (typeof ref === 'string' && ref.length > 0) return ref;
-  }
-  return undefined;
 }
 
 function pickServiceConnectNamespace(raw: unknown): string | undefined {

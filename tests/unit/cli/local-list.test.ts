@@ -9,7 +9,13 @@ function entry(displayPath: string | undefined, qualifiedId: string): TargetEntr
   return e;
 }
 
-const empty: TargetListing = { lambdas: [], apis: [], ecsServices: [], ecsTaskDefinitions: [] };
+const empty: TargetListing = {
+  lambdas: [],
+  apis: [],
+  ecsServices: [],
+  ecsTaskDefinitions: [],
+  loadBalancers: [],
+};
 
 describe('formatTargetListing', () => {
   it('reports a clear message when nothing is runnable', () => {
@@ -22,12 +28,14 @@ describe('formatTargetListing', () => {
       apis: [entry('App/HttpApi', 'App:HttpApi')],
       ecsServices: [entry('App/OrdersService/Service', 'App:OrdersService')],
       ecsTaskDefinitions: [entry('App/TaskDef', 'App:TaskDef')],
+      loadBalancers: [entry('App/WebLB', 'App:WebLB')],
     };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
     expect(out).toContain('APIs  ->  cdkl start-api [target...]');
     expect(out).toContain('ECS Services  ->  cdkl start-service <target...>');
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
+    expect(out).toContain('Application Load Balancers  ->  cdkl start-alb <target...>');
   });
 
   it('appends the API surface kind to each API line', () => {
