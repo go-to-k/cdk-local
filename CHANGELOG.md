@@ -1,3 +1,10 @@
+# [0.36.0](https://github.com/go-to-k/cdk-local/compare/v0.35.1...v0.36.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** run Bedrock AgentCore Runtime agents locally ([#126](https://github.com/go-to-k/cdk-local/issues/126)) ([c967f9c](https://github.com/go-to-k/cdk-local/commit/c967f9cbf18c16fe64a9485157baaa7a052f890c))
+
 ## [0.35.1](https://github.com/go-to-k/cdk-local/compare/v0.35.0...v0.35.1) (2026-05-29)
 
 
