@@ -172,9 +172,13 @@ vp run runtime:smoke
   import { foo } from './bar';     // wrong
   ```
 
-- **Library + CLI dual entry**: `src/index.ts` (library exports) and
-  `src/cli/index.ts` (binary entrypoint). `vp pack` produces both
-  `dist/index.js` (library) and `dist/cli.js` (CLI).
+- **Library + CLI dual entry**: `src/index.ts` (stable public library
+  exports), `src/internal.ts` (unstable low-level building blocks for
+  shim hosts, exposed as the `cdk-local/internal` subpath — NO semver
+  guarantee; the main entry re-exports them for back-compat), and
+  `src/cli/index.ts` (binary entrypoint). `vp pack` produces
+  `dist/index.js` (library), `dist/internal.js` (internal), and
+  `dist/cli.js` (CLI).
 
 - **Toolkit-lib integration**: `src/synthesis/assembly-reader.ts`
   delegates synthesis to `@aws-cdk/toolkit-lib`'s `Toolkit.fromCdkApp()`.
