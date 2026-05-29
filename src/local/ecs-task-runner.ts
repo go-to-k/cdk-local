@@ -1049,14 +1049,13 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       if (ephemeralPorts.has(pm.containerPort)) continue;
       const declaredHostPort = pm.hostPort ?? pm.containerPort;
       const hostPort = opts.hostPortOverrides?.[pm.containerPort] ?? declaredHostPort;
-      if (hostPort !== declaredHostPort) {
-        getLogger()
-          .child('ecs')
-          .info(
-            `Container '${container.name}' container port ${pm.containerPort} published on ` +
-              `${containerHost}:${hostPort} (--host-port override). Reach it at ${containerHost}:${hostPort}.`
-          );
-      }
+      const overrideNote = hostPort !== declaredHostPort ? ' (--host-port override)' : '';
+      getLogger()
+        .child('ecs')
+        .info(
+          `Container '${container.name}' container port ${pm.containerPort} published on ` +
+            `${containerHost}:${hostPort}${overrideNote}. Reach it at ${containerHost}:${hostPort}.`
+        );
       args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
     }
   }
