@@ -1,3 +1,10 @@
+## [0.36.1](https://github.com/go-to-k/cdk-local/compare/v0.36.0...v0.36.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **invoke-agentcore:** validate --event before starting the container ([#132](https://github.com/go-to-k/cdk-local/issues/132)) ([08a1b1c](https://github.com/go-to-k/cdk-local/commit/08a1b1c66feeea6ff06ac94d390f250d629ba8b9))
+
 # [0.36.0](https://github.com/go-to-k/cdk-local/compare/v0.35.1...v0.36.0) (2026-05-29)
 
 
