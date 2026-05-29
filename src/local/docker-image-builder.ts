@@ -14,9 +14,9 @@ import { getEmbedConfig } from './embed-config.js';
  * + build-args fingerprint, so successive `cdkl invoke` runs hit
  * Docker's layer cache instead of re-building from scratch.
  *
- * Failures are wrapped in `LocalInvokeBuildError` (mirrors the publisher's
- * `AssetError` shape) so the global error handler surfaces a class
- * specific to local-invoke instead of the more general "asset" class.
+ * Failures are wrapped in `LocalInvokeBuildError` so the global error
+ * handler surfaces a class specific to local-invoke instead of a more
+ * general asset-build error.
  */
 
 export interface BuildContainerImageOptions {

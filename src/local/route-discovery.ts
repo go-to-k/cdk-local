@@ -117,7 +117,7 @@ export interface DiscoveredRoute {
    * form (`MyStack/MyHttpApi`) with prefix-rule matching (matches
    * the input exactly OR when the input is the parent L2 path that
    * resolves down to this resource's L1 child) — mirrors the same
-   * prefix rule `cdkd orphan` uses.
+   * upstream CDK construct-path prefix rule.
    */
   apiCdkPath?: string;
   /**

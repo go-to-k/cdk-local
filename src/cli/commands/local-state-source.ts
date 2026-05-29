@@ -10,8 +10,8 @@
  * Host-extensible state sources (via the `extraStateProviders` option):
  *
  *   - Hosts embedding cdk-local can register additional `LocalStateProvider`
- *     factories that respond to their own CLI flags (e.g. cdkd's
- *     `--from-state` for S3-backed cdkd state). Each entry is keyed by
+ *     factories that respond to their own CLI flags (e.g. a host-registered
+ *     `--from-state` backed by an S3 state store). Each entry is keyed by
  *     the camel-case Commander option name (e.g. `'fromState'`) so the
  *     dispatcher reads the corresponding boolean / string off the parsed
  *     options bag.
@@ -40,7 +40,7 @@ import type { LocalStateProvider } from '../../local/local-state-provider.js';
  * Options each `cdkl` command gathers from its flag set. The built-in
  * `--from-cfn-stack` flag is always present; the host may add fields
  * for its own `extraStateProviders` entries (e.g. `fromState: boolean`
- * for the cdkd shim's `--from-state`).
+ * for a host's `--from-state` shim).
  */
 export interface LocalStateSourceOptions {
   /**
@@ -215,7 +215,7 @@ export function rejectExplicitCfnStackWithMultipleStacks(
  * fallback for the CFn client when no explicit region override is set.
  *
  * `extraStateProviders` is the host-supplied registry of additional
- * state sources (e.g. cdkd's `--from-state` / `S3LocalStateProvider`).
+ * state sources (e.g. a host's `--from-state` / S3-backed provider).
  * Each entry's key is the camel-case Commander option name; the
  * dispatcher activates the matching factory when the corresponding
  * options field is truthy.
@@ -234,7 +234,7 @@ export function createLocalStateProvider(
   const cfnFlagPresent = isCfnFlagPresent(options);
 
   // Mutual-exclusion: count active state sources. Both --from-cfn-stack
-  // and every host-registered extra flag (e.g. cdkd's --from-state) are
+  // and every host-registered extra flag (e.g. a host's --from-state) are
   // counted; the user must pick exactly one.
   const activeExtras: string[] = [];
   if (extraStateProviders) {

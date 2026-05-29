@@ -118,8 +118,8 @@ interface ContainerSpecBase {
    */
   extraHosts?: { host: string; ip: string }[];
   /**
-   * cdkd PR #670 (deferred follow-up from #655) — when `cdkl *` is
-   * invoked with `--profile <name>`, this is the host path of a
+   * When `cdkl *` is invoked with `--profile <name>`, this is the host
+   * path of a
    * synthesized AWS shared credentials file (one INI section, the
    * resolved `[<name>]` block). The pool bind-mounts it read-only at
    * the container path so SDK calls via `fromIni({ profile: '<name>' })`
@@ -342,8 +342,8 @@ export function createContainerPool(
       const optMount = spec.optDir
         ? [{ hostPath: spec.optDir, containerPath: '/opt', readOnly: true }]
         : [];
-      // Append the profile credentials file mount (cdkd PR #670 deferred
-      // from #655) when --profile was passed. Read-only — the container
+      // Append the profile credentials file mount when --profile was
+      // passed. Read-only — the container
       // has no business writing to its credentials file, and a writable
       // mount would let a compromised handler tamper with the host-side
       // temp file. Combined with `optMount` since Docker accepts an array

@@ -342,8 +342,8 @@ async function assumeRoleForEcr(
 
 /**
  * Authenticate the local docker daemon against the target ECR registry.
- * Mirrors `DockerAssetPublisher.ecrLogin` but stays in this module so the
- * local-invoke path doesn't depend on the publisher's larger surface area.
+ * Self-contained in this module so the local-invoke path stays
+ * independent of any full asset-publish path's larger surface area.
  */
 async function ecrLogin(client: ECRClient, accountId: string, region: string): Promise<void> {
   const logger = getLogger().child('ecr-puller');

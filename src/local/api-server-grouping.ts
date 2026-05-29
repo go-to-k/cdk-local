@@ -164,9 +164,9 @@ export function groupRoutesByServer(routes: readonly RouteWithAuth[]): ApiServer
  *      exact match on the resource's `aws:cdk:path` metadata.
  *   4. **CDK Construct path prefix** — when the input is a strict
  *      ancestor of the resource's `aws:cdk:path` (i.e.
- *      `cdkPath.startsWith(input + '/')`). Mirrors the prefix rule
- *      `cdkd orphan` uses so an L2 wrapper path resolves to its L1
- *      child (`MyStack/MyHttpApi` matches `MyStack/MyHttpApi/Resource`).
+ *      `cdkPath.startsWith(input + '/')`). Mirrors the upstream CDK
+ *      construct-path prefix rule so an L2 wrapper path resolves to its
+ *      L1 child (`MyStack/MyHttpApi` matches `MyStack/MyHttpApi/Resource`).
  *
  * Routes discovered before this field set was added (or routes where
  * the synthesized template doesn't carry `aws:cdk:path` metadata —

@@ -7,7 +7,7 @@ import { getEmbedConfig } from '../local/embed-config.js';
  *
  * Two parity decisions with `aws-cdk-cli`'s `cdk-assets-lib`:
  *   1. `CDK_DOCKER` env var swaps the binary so podman / finch users can
- *      run cdk-local without code changes (`CDK_DOCKER=podman cdkd deploy`).
+ *      run cdk-local without code changes (`CDK_DOCKER=podman cdkl invoke`).
  *   2. `runDockerStreaming` uses streaming spawn rather than `execFile`'s
  *      buffered `maxBuffer` ceiling. BuildKit's progress output can run to
  *      tens of MB on multi-stage builds with `# syntax=docker/dockerfile:1`

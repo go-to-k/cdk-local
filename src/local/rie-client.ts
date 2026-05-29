@@ -398,12 +398,12 @@ export async function invokeRieStreaming(
   }
 
   // Whether we synthesized a default prelude because no separator was found
-  // in the response. See the cdkd#664 fix block below for the rationale.
+  // in the response. See the fix block below for the rationale.
   let preludeSynthesized = false;
 
   if (separatorIdx < 0) {
     // No prelude/body separator found in the entire response. Two real-world
-    // scenarios produce this — empirically verified 2026-05-27 for cdkd#664
+    // scenarios produce this — empirically verified 2026-05-27
     // against `public.ecr.aws/lambda/nodejs:22`:
     //
     //   (1) The handler is wrapped by `awslambda.streamifyResponse(...)` AND

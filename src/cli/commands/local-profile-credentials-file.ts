@@ -1,6 +1,6 @@
 // Profile-aware credentials file mount for cdk-local Lambda containers.
 //
-// Background: cdkd#655 / #657 forward `--profile <p>`-resolved credentials to
+// Background: cdk-local forwards `--profile <p>`-resolved credentials to
 // the Lambda container as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
 // `AWS_SESSION_TOKEN` env vars. The SDK's default credential provider chain
 // reads those env vars, so the common handler pattern
@@ -84,8 +84,8 @@ export async function writeProfileCredentialsFile(
   profileName: string,
   creds: { accessKeyId: string; secretAccessKey: string; sessionToken?: string }
 ): Promise<ProfileCredentialsFile> {
-  // cdkd PR #670 code review finding #2: validate the profile name before
-  // interpolating into the INI section header / AWS_PROFILE env var.
+  // Validate the profile name before interpolating into the INI section
+  // header / AWS_PROFILE env var.
   // The injection surface is local-dev-only (the caller is the user's
   // own `--profile <name>` arg) so this is hardening, not security
   // boundary — but a value containing `]` would silently start a second
