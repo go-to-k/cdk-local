@@ -30,10 +30,11 @@ AWS managed services.
   replicas only (pure compute, no load balancer). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
-  listener port across the replicas and path-routes the listener's
-  `path-pattern` rules across the backing services (other conditions —
-  host-header / weighted / Lambda targets / redirect+fixed-response
-  actions — deferred to #123)
+  listener port across the replicas and routes the listener's
+  `path-pattern` + `host-header` rules across the backing services,
+  honoring weighted forwards and `redirect` / `fixed-response` actions
+  (Lambda targets and `http-header` / `query-string` / `source-ip`
+  conditions — deferred to #123)
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -98,12 +99,14 @@ Gateway).
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
-  Listeners + path-pattern ListenerRules -> TargetGroups -> backing ECS
-  Services into a per-listener routing table; the `start-alb` entry),
-  alb-path-matcher (ALB `*` / `?` glob path-pattern matcher, priority
-  ordered), front-door-pool (round-robin pool of live replica endpoints),
-  front-door-server (host HTTP reverse proxy that path-routes each request
-  to a service's replica pool behind the ALB listener port), etc.
+  Listeners + `path-pattern`/`host-header` ListenerRules -> forward /
+  weighted-forward / redirect / fixed-response actions -> backing ECS
+  Services, into a per-listener routing table; the `start-alb` entry),
+  alb-path-matcher (ALB `*` / `?` glob matcher for path + host rules,
+  priority ordered), front-door-pool (round-robin pool of live replica
+  endpoints), front-door-server (host HTTP reverse proxy that resolves a
+  per-request RouteAction — weighted forward to a replica pool, redirect,
+  or fixed-response — behind the ALB listener port), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

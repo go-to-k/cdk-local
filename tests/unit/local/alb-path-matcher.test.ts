@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   albPathPatternMatches,
+  albHostPatternMatches,
   matchAlbPathRule,
   type AlbPathRule,
 } from '../../../src/local/alb-path-matcher.js';
@@ -42,6 +43,36 @@ describe('albPathPatternMatches', () => {
   });
 });
 
+describe('albHostPatternMatches', () => {
+  it('matches a literal host case-insensitively', () => {
+    expect(albHostPatternMatches('api.example.com', 'api.example.com')).toBe(true);
+    expect(albHostPatternMatches('api.example.com', 'API.EXAMPLE.COM')).toBe(true);
+    expect(albHostPatternMatches('API.example.com', 'api.example.com')).toBe(true);
+    expect(albHostPatternMatches('api.example.com', 'web.example.com')).toBe(false);
+  });
+
+  it('strips the :port suffix from the request host before matching', () => {
+    expect(albHostPatternMatches('api.example.com', 'api.example.com:8080')).toBe(true);
+    expect(albHostPatternMatches('api.example.com', 'api.example.com:443')).toBe(true);
+  });
+
+  it('treats * / ? as wildcards (subdomain / single-char)', () => {
+    expect(albHostPatternMatches('*.example.com', 'api.example.com')).toBe(true);
+    expect(albHostPatternMatches('*.example.com', 'a.b.example.com')).toBe(true);
+    expect(albHostPatternMatches('*.example.com', 'example.com')).toBe(false); // needs a subdomain
+    expect(albHostPatternMatches('img?.example.com', 'img1.example.com')).toBe(true);
+    expect(albHostPatternMatches('img?.example.com', 'img.example.com')).toBe(false);
+  });
+
+  it('escapes the literal dots (not "any char")', () => {
+    expect(albHostPatternMatches('a.example.com', 'axexample.com')).toBe(false);
+  });
+
+  it('strips the port from an IPv6 literal host', () => {
+    expect(albHostPatternMatches('[::1]', '[::1]:8080')).toBe(true);
+  });
+});
+
 describe('matchAlbPathRule', () => {
   const rules: AlbPathRule<string>[] = [
     { priority: 20, pathPatterns: ['/api/*'], target: 'api' },
@@ -72,5 +103,47 @@ describe('matchAlbPathRule', () => {
 
   it('strips the query string before matching', () => {
     expect(matchAlbPathRule('/api/orders?page=2', rules)).toBe('api');
+  });
+
+  it('accepts a bare path string (path-only form, no Host)', () => {
+    expect(matchAlbPathRule('/api/orders', rules)).toBe('api');
+  });
+});
+
+describe('matchAlbPathRule with host-header conditions', () => {
+  const rules: AlbPathRule<string>[] = [
+    // host-only rule
+    { priority: 10, pathPatterns: [], hostPatterns: ['api.example.com'], target: 'api-host' },
+    // host AND path rule (both must match)
+    {
+      priority: 5,
+      pathPatterns: ['/admin/*'],
+      hostPatterns: ['api.example.com'],
+      target: 'api-admin',
+    },
+    // path-only rule
+    { priority: 30, pathPatterns: ['/static/*'], target: 'static' },
+  ];
+
+  it('matches a host-only rule against the Host header', () => {
+    expect(matchAlbPathRule({ path: '/anything', host: 'api.example.com' }, rules)).toBe('api-host');
+  });
+
+  it('matches the AND rule only when both host and path match (priority 5 wins)', () => {
+    expect(matchAlbPathRule({ path: '/admin/users', host: 'api.example.com' }, rules)).toBe(
+      'api-admin'
+    );
+    // Path matches the AND rule but host does not -> falls to no match (no other rule fits).
+    expect(matchAlbPathRule({ path: '/admin/users', host: 'web.example.com' }, rules)).toBeUndefined();
+  });
+
+  it('does not match a host-constrained rule when no Host header is present', () => {
+    expect(matchAlbPathRule({ path: '/anything' }, rules)).toBeUndefined();
+    // A path-only rule still matches without a Host header.
+    expect(matchAlbPathRule({ path: '/static/app.js' }, rules)).toBe('static');
+  });
+
+  it('matches the Host header case-insensitively and ignores the :port', () => {
+    expect(matchAlbPathRule({ path: '/', host: 'API.EXAMPLE.COM:8080' }, rules)).toBe('api-host');
   });
 });

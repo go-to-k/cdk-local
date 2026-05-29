@@ -72,7 +72,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 | `cdkl start-service <Service>` | the ECS **service** | just the service's replicas (no load balancer) | workers / queue consumers / Service-Connect-only services, or to hit the containers directly |
 | `cdkl start-alb <Alb>` | the **ALB** | the ECS service(s) behind it **plus** a local **front-door** on each listener port | an `ApplicationLoadBalancedFargateService`-style service you want to reach the way external traffic does |
 
-`start-alb` discovers the ECS service(s) behind the ALB's HTTP listeners, boots their replicas, and stands up a host-side front-door on each listener port that round-robins across the replicas — one stable host endpoint, like behind a real load balancer. It honors **`path-pattern` listener rules**, so a listener routing `/api/*` to one service and everything else to another is reproduced locally.
+`start-alb` discovers the ECS service(s) behind the ALB's HTTP listeners, boots their replicas, and stands up a host-side front-door on each listener port that round-robins across the replicas — one stable host endpoint, like behind a real load balancer. It honors **`path-pattern` and `host-header` listener rules**, **weighted** forwards, and **`redirect` / `fixed-response`** actions, so a listener routing `/api/*` (or `api.example.com`) to one service and everything else to another — or returning a redirect / canned response — is reproduced locally.
 
 ```bash
 cdkl start-alb MyStack/WebAlb --lb-port 80=8080   # remap the privileged listener port 80 (macOS)
@@ -80,7 +80,7 @@ curl http://127.0.0.1:8080/        # default action -> the default service (roun
 curl http://127.0.0.1:8080/api/x   # path-pattern rule /api/* -> the api service
 ```
 
-Resolution model + scope (HTTP listeners, default `forward` + `path-pattern` rules, ECS targets; host-header / weighted / Lambda targets / redirect + fixed-response actions deferred): [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
+Resolution model + scope (HTTP listeners, `path-pattern` + `host-header` rules, weighted forwards, `redirect` / `fixed-response`, ECS targets; Lambda targets and `http-header` / `query-string` / `source-ip` conditions deferred): [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 
 ## Override env vars without a state source
 
@@ -104,7 +104,7 @@ Format + full precedence: [docs/cli-reference.md](docs/cli-reference.md).
 | `AWS::ECS::TaskDefinition` (run-task) | ✓ |
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
-| `AWS::ElasticLoadBalancingV2::*` (start-alb: ALB front-door + `path-pattern` rules) | ✓ |
+| `AWS::ElasticLoadBalancingV2::*` (start-alb: ALB front-door; `path-pattern` + `host-header` rules, weighted forward, redirect / fixed-response) | ✓ |
 | `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container + fromCodeAsset artifacts, HTTP + MCP) | ✓ |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.

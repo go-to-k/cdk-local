@@ -68,6 +68,12 @@ const apiServiceResources: Record<string, unknown> = {
   },
 };
 
+/** Convenience: the single forward target of a resolved action (throws if not a forward). */
+function forwardTarget(action: import('../../../src/local/elb-front-door-resolver.js').ResolvedListenerAction | undefined) {
+  if (action?.kind !== 'forward') throw new Error(`expected a forward action, got ${action?.kind}`);
+  return action.targets[0]!;
+}
+
 describe('resolveAlbFrontDoor', () => {
   it('resolves ALB -> listener default forward -> backing ECS service', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stackWith(), ALB);
@@ -77,11 +83,17 @@ describe('resolveAlbFrontDoor', () => {
         listenerPort: 80,
         listenerProtocol: 'HTTP',
         listenerLogicalId: LISTENER,
-        defaultTarget: {
-          serviceLogicalId: SERVICE,
-          targetContainerName: 'web',
-          targetContainerPort: 80,
-          targetGroupLogicalId: TG,
+        defaultAction: {
+          kind: 'forward',
+          targets: [
+            {
+              serviceLogicalId: SERVICE,
+              targetContainerName: 'web',
+              targetContainerPort: 80,
+              targetGroupLogicalId: TG,
+              weight: 1,
+            },
+          ],
         },
         rules: [],
       },
@@ -105,7 +117,7 @@ describe('resolveAlbFrontDoor', () => {
     const { listeners } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners).toHaveLength(1);
     expect(listeners[0]!.listenerPort).toBe(8080);
-    expect(listeners[0]!.defaultTarget?.serviceLogicalId).toBe(SERVICE);
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
   });
 
   it('resolves path-pattern ListenerRules into a routing table (default + rule, two services)', () => {
@@ -124,19 +136,190 @@ describe('resolveAlbFrontDoor', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(warnings).toEqual([]);
     expect(listeners).toHaveLength(1);
-    expect(listeners[0]!.defaultTarget?.serviceLogicalId).toBe(SERVICE);
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
     expect(listeners[0]!.rules).toEqual([
       {
         priority: 10,
         pathPatterns: ['/api/*'],
-        target: {
-          serviceLogicalId: API_SERVICE,
-          targetContainerName: 'api',
-          targetContainerPort: 8080,
-          targetGroupLogicalId: API_TG,
+        hostPatterns: [],
+        action: {
+          kind: 'forward',
+          targets: [
+            {
+              serviceLogicalId: API_SERVICE,
+              targetContainerName: 'api',
+              targetContainerPort: 8080,
+              targetGroupLogicalId: API_TG,
+              weight: 1,
+            },
+          ],
         },
       },
     ]);
+  });
+
+  it('resolves a host-header condition (and an ANDed path-pattern) on a rule', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'host-header', HostHeaderConfig: { Values: ['api.example.com'] } },
+            { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.pathPatterns).toEqual(['/api/*']);
+    expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['api.example.com']);
+    expect(forwardTarget(listeners[0]!.rules[0]!.action).serviceLogicalId).toBe(API_SERVICE);
+  });
+
+  it('resolves a host-header-only rule (no path constraint)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 5,
+          Conditions: [{ Field: 'host-header', HostHeaderConfig: { Values: ['*.api.example.com'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.pathPatterns).toEqual([]);
+    expect(listeners[0]!.rules[0]!.hostPatterns).toEqual(['*.api.example.com']);
+  });
+
+  it('resolves a weighted (multi-target) forward into all targets with weights', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'forward',
+              ForwardConfig: {
+                TargetGroups: [
+                  { TargetGroupArn: { Ref: TG }, Weight: 80 },
+                  { TargetGroupArn: { Ref: API_TG }, Weight: 20 },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    const action = listeners[0]!.defaultAction;
+    expect(action?.kind).toBe('forward');
+    if (action?.kind === 'forward') {
+      expect(action.targets.map((t) => [t.serviceLogicalId, t.weight])).toEqual([
+        [SERVICE, 80],
+        [API_SERVICE, 20],
+      ]);
+    }
+  });
+
+  it('resolves a redirect default action (HTTP_301 -> statusCode 301)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'redirect',
+              RedirectConfig: {
+                Protocol: 'HTTPS',
+                Host: 'new.example.com',
+                Port: '443',
+                Path: '/#{path}',
+                Query: '#{query}',
+                StatusCode: 'HTTP_301',
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.defaultAction).toEqual({
+      kind: 'redirect',
+      statusCode: 301,
+      protocol: 'HTTPS',
+      host: 'new.example.com',
+      port: '443',
+      path: '/#{path}',
+      query: '#{query}',
+    });
+  });
+
+  it('resolves a fixed-response default action (status / content-type / body)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'fixed-response',
+              FixedResponseConfig: {
+                StatusCode: '410',
+                ContentType: 'application/json',
+                MessageBody: '{"gone":true}',
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.defaultAction).toEqual({
+      kind: 'fixed-response',
+      statusCode: 410,
+      contentType: 'application/json',
+      messageBody: '{"gone":true}',
+    });
+  });
+
+  it('honors a forward terminal action preceded by an authenticate-* action', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            { Type: 'authenticate-cognito', AuthenticateCognitoConfig: {}, Order: 1 },
+            { Type: 'forward', TargetGroupArn: { Ref: TG }, Order: 2 },
+          ],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(forwardTarget(listeners[0]!.defaultAction).serviceLogicalId).toBe(SERVICE);
   });
 
   it('sorts a rule with no Priority last (Number.MAX_SAFE_INTEGER fallback)', () => {
@@ -173,7 +356,7 @@ describe('resolveAlbFrontDoor', () => {
     expect(listeners[0]!.rules[0]!.pathPatterns).toEqual(['/legacy/*']);
   });
 
-  it('skips + warns on a rule with an unsupported (non-path-pattern) condition', () => {
+  it('skips + warns on a rule with a still-unsupported condition field (http-header)', () => {
     const stack = stackWith({
       ...apiServiceResources,
       [RULE]: {
@@ -181,7 +364,12 @@ describe('resolveAlbFrontDoor', () => {
         Properties: {
           ListenerArn: { Ref: LISTENER },
           Priority: 10,
-          Conditions: [{ Field: 'host-header', HostHeaderConfig: { Values: ['api.example.com'] } }],
+          Conditions: [
+            {
+              Field: 'http-header',
+              HttpHeaderConfig: { HttpHeaderName: 'X-Custom', Values: ['yes'] },
+            },
+          ],
           Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
         },
       },
@@ -189,12 +377,16 @@ describe('resolveAlbFrontDoor', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     // The listener still resolves via its default forward; only the rule is dropped.
     expect(listeners[0]!.rules).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/unsupported condition\(s\): host-header/);
+    expect(warnings.join('\n')).toMatch(/unsupported condition\(s\): http-header/);
   });
 
-  it('skips + warns on a weighted (multi-target) forward', () => {
+  it('drops only the unsupported target group inside a weighted forward (others kept)', () => {
     const stack = stackWith({
       ...apiServiceResources,
+      LambdaTg: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: { TargetType: 'lambda' },
+      },
       [LISTENER]: {
         Type: 'AWS::ElasticLoadBalancingV2::Listener',
         Properties: {
@@ -205,7 +397,10 @@ describe('resolveAlbFrontDoor', () => {
             {
               Type: 'forward',
               ForwardConfig: {
-                TargetGroups: [{ TargetGroupArn: { Ref: TG } }, { TargetGroupArn: { Ref: API_TG } }],
+                TargetGroups: [
+                  { TargetGroupArn: { Ref: API_TG }, Weight: 70 },
+                  { TargetGroupArn: { Ref: 'LambdaTg' }, Weight: 30 },
+                ],
               },
             },
           ],
@@ -213,11 +408,16 @@ describe('resolveAlbFrontDoor', () => {
       },
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    expect(listeners).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/weighted forward/);
+    const action = listeners[0]!.defaultAction;
+    expect(action?.kind).toBe('forward');
+    if (action?.kind === 'forward') {
+      // The Lambda target group is dropped; the ECS one survives.
+      expect(action.targets.map((t) => t.serviceLogicalId)).toEqual([API_SERVICE]);
+    }
+    expect(warnings.join('\n')).toMatch(/Lambda target group/);
   });
 
-  it('serves a rules-only listener (fixed-response default + path rule -> no defaultTarget)', () => {
+  it('serves a rules-only listener (fixed-response default + path rule)', () => {
     const stack = stackWith({
       ...apiServiceResources,
       [LISTENER]: {
@@ -242,8 +442,8 @@ describe('resolveAlbFrontDoor', () => {
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(warnings).toEqual([]);
     expect(listeners).toHaveLength(1);
-    expect(listeners[0]!.defaultTarget).toBeUndefined();
-    expect(listeners[0]!.rules[0]!.target.serviceLogicalId).toBe(API_SERVICE);
+    expect(listeners[0]!.defaultAction).toEqual({ kind: 'fixed-response', statusCode: 404 });
+    expect(forwardTarget(listeners[0]!.rules[0]!.action).serviceLogicalId).toBe(API_SERVICE);
   });
 
   it('ignores listeners belonging to a different ALB', () => {
@@ -350,8 +550,10 @@ describe('resolveAlbFrontDoor', () => {
     expect(warnings.join('\n')).toMatch(/non-Ref TargetGroupArn/);
   });
 
-  it('skips a redirect-only listener silently (no warning)', () => {
+  it('serves a redirect-only listener (no backing service) without warnings', () => {
     const stack = stackWith({
+      // No backing service needed for a pure-redirect listener.
+      [SERVICE]: undefined,
       [LISTENER]: {
         Type: 'AWS::ElasticLoadBalancingV2::Listener',
         Properties: {
@@ -363,8 +565,27 @@ describe('resolveAlbFrontDoor', () => {
       },
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    expect(listeners).toEqual([]);
     expect(warnings).toEqual([]);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]!.defaultAction?.kind).toBe('redirect');
+  });
+
+  it('skips + warns on an authenticate-only default action (no terminal action)', () => {
+    const stack = stackWith({
+      [SERVICE]: undefined,
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'authenticate-oidc', AuthenticateOidcConfig: {} }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/authenticate-/);
   });
 
   it('warns when the forwarded target group is missing from the template', () => {

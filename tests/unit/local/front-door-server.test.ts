@@ -1,10 +1,14 @@
 import { describe, it, expect, afterEach } from 'vite-plus/test';
-import { createServer, get, type IncomingMessage, type Server } from 'node:http';
+import { createServer, get, request, type IncomingMessage, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { FrontDoorEndpointPool } from '../../../src/local/front-door-pool.js';
 import {
   startFrontDoorServer,
+  buildRedirectLocation,
+  pickWeightedPool,
   type StartedFrontDoorServer,
+  type RouteAction,
+  type RedirectRouteAction,
 } from '../../../src/local/front-door-server.js';
 import { matchAlbPathRule, type AlbPathRule } from '../../../src/local/alb-path-matcher.js';
 
@@ -35,19 +39,24 @@ async function startUpstream(id: string): Promise<Upstream> {
   return up;
 }
 
+/** Wrap a single pool into a constant forward route (the default-action case). */
+function forward(pool: FrontDoorEndpointPool): RouteAction {
+  return { kind: 'forward', pools: [{ pool, weight: 1 }] };
+}
+
 async function startFront(
   pool: FrontDoorEndpointPool,
   upstreamTimeoutMs?: number
 ): Promise<StartedFrontDoorServer> {
-  return startFrontWith(() => pool, upstreamTimeoutMs);
+  return startFrontWith(() => forward(pool), upstreamTimeoutMs);
 }
 
 async function startFrontWith(
-  selectPool: (requestPath: string) => FrontDoorEndpointPool | undefined,
+  route: (req: { path: string; host?: string }) => RouteAction | undefined,
   upstreamTimeoutMs?: number
 ): Promise<StartedFrontDoorServer> {
   const front = await startFrontDoorServer({
-    selectPool,
+    route,
     port: 0,
     host: '127.0.0.1',
     listenerPort: 80,
@@ -83,6 +92,46 @@ function fetchText(
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
     });
     req.on('error', reject);
+  });
+}
+
+/** Like `fetchText` but sends an explicit `Host` header (for host-header rule tests). */
+function fetchTextWithHost(
+  port: number,
+  path: string,
+  hostHeader: string
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = get({ host: '127.0.0.1', port, path, headers: { host: hostHeader } }, (res) => {
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', reject);
+  });
+}
+
+/** Issue a request and capture the status + `Location` header (for redirect tests). */
+function fetchHead(
+  port: number,
+  path: string,
+  hostHeader: string
+): Promise<{ status: number; location?: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      { host: '127.0.0.1', port, path, method: 'GET', headers: { host: hostHeader } },
+      (res) => {
+        res.resume();
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            ...(typeof res.headers.location === 'string' && { location: res.headers.location }),
+          })
+        );
+      }
+    );
+    req.on('error', reject);
+    req.end();
   });
 }
 
@@ -146,7 +195,7 @@ describe('startFrontDoorServer', () => {
     expect(res.status).toBe(504);
   });
 
-  it('path-routes each request to the pool selectPool returns', async () => {
+  it('path-routes each request to the action route() returns', async () => {
     const web = await startUpstream('web');
     const api = await startUpstream('api');
     const webPool = new FrontDoorEndpointPool();
@@ -154,8 +203,8 @@ describe('startFrontDoorServer', () => {
     const apiPool = new FrontDoorEndpointPool();
     apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
     // `/api/*` -> apiPool, everything else -> webPool (the default).
-    const front = await startFrontWith((path) =>
-      path.startsWith('/api/') ? apiPool : webPool
+    const front = await startFrontWith(({ path }) =>
+      path.startsWith('/api/') ? forward(apiPool) : forward(webPool)
     );
 
     expect((await fetchText(front.port, '/')).body).toBe('web');
@@ -163,7 +212,7 @@ describe('startFrontDoorServer', () => {
     expect((await fetchText(front.port, '/api/users')).body).toBe('api');
   });
 
-  it('returns 404 when selectPool finds no matching rule and no default', async () => {
+  it('returns 404 when route() finds no matching rule and no default', async () => {
     const front = await startFrontWith(() => undefined);
     const res = await fetchText(front.port, '/nope');
     expect(res.status).toBe(404);
@@ -179,15 +228,62 @@ describe('startFrontDoorServer', () => {
     apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
     // /api/admin/* (priority 10) must win over /api/* (priority 20) for an
     // overlapping path — the exact integration the matcher guarantees.
-    const rules: AlbPathRule<FrontDoorEndpointPool>[] = [
-      { priority: 20, pathPatterns: ['/api/*'], target: apiPool },
-      { priority: 10, pathPatterns: ['/api/admin/*'], target: adminPool },
+    const rules: AlbPathRule<RouteAction>[] = [
+      { priority: 20, pathPatterns: ['/api/*'], target: forward(apiPool) },
+      { priority: 10, pathPatterns: ['/api/admin/*'], target: forward(adminPool) },
     ];
-    const front = await startFrontWith((path) => matchAlbPathRule(path, rules));
+    const front = await startFrontWith((req) => matchAlbPathRule(req, rules));
 
     expect((await fetchText(front.port, '/api/admin/users')).body).toBe('admin');
     expect((await fetchText(front.port, '/api/orders')).body).toBe('api');
     expect((await fetchText(front.port, '/')).status).toBe(404); // no default action
+  });
+
+  it('host-routes through the real matchAlbPathRule (Host header -> the matching pool)', async () => {
+    const apiHost = await startUpstream('api-host');
+    const webHost = await startUpstream('web-host');
+    const apiPool = new FrontDoorEndpointPool();
+    apiPool.register('api:r0', { host: '127.0.0.1', port: apiHost.port });
+    const webPool = new FrontDoorEndpointPool();
+    webPool.register('web:r0', { host: '127.0.0.1', port: webHost.port });
+    // host-header api.example.com -> apiPool; default -> webPool.
+    const rules: AlbPathRule<RouteAction>[] = [
+      { priority: 10, pathPatterns: [], hostPatterns: ['api.example.com'], target: forward(apiPool) },
+    ];
+    const front = await startFrontWith((req) => matchAlbPathRule(req, rules) ?? forward(webPool));
+
+    expect((await fetchTextWithHost(front.port, '/', 'api.example.com')).body).toBe('api-host');
+    // The case-insensitive host comparison still matches.
+    expect((await fetchTextWithHost(front.port, '/', 'API.EXAMPLE.COM')).body).toBe('api-host');
+    expect((await fetchTextWithHost(front.port, '/', 'other.example.com')).body).toBe('web-host');
+  });
+
+  it('synthesizes a fixed-response action without an upstream', async () => {
+    const front = await startFrontWith(() => ({
+      kind: 'fixed-response',
+      statusCode: 410,
+      contentType: 'application/json',
+      messageBody: '{"gone":true}',
+    }));
+    const res = await fetchText(front.port, '/gone/x');
+    expect(res.status).toBe(410);
+    expect(res.body).toBe('{"gone":true}');
+  });
+
+  it('synthesizes a 301 redirect with a Location built from the request', async () => {
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 301,
+      protocol: 'HTTPS',
+      host: 'new.example.com',
+      port: '443',
+      path: '/#{path}',
+      query: '#{query}',
+    };
+    const front = await startFrontWith(() => action);
+    const res = await fetchHead(front.port, '/old/page?x=1', 'orig.example.com');
+    expect(res.status).toBe(301);
+    expect(res.location).toBe('https://new.example.com/old/page?x=1');
   });
 
   it('strips hop-by-hop request headers, including those named in Connection', async () => {
@@ -247,5 +343,142 @@ describe('startFrontDoorServer', () => {
     });
     expect(headers['proxy-authenticate']).toBeUndefined();
     expect(headers['x-app']).toBe('kept'); // non-hop-by-hop headers pass through
+  });
+
+  it('distributes a weighted forward across pools roughly by weight', async () => {
+    const heavy = await startUpstream('heavy');
+    const light = await startUpstream('light');
+    const heavyPool = new FrontDoorEndpointPool();
+    heavyPool.register('heavy:r0', { host: '127.0.0.1', port: heavy.port });
+    const lightPool = new FrontDoorEndpointPool();
+    lightPool.register('light:r0', { host: '127.0.0.1', port: light.port });
+    const action: RouteAction = {
+      kind: 'forward',
+      pools: [
+        { pool: heavyPool, weight: 90 },
+        { pool: lightPool, weight: 10 },
+      ],
+    };
+    const front = await startFrontWith(() => action);
+
+    const counts: Record<string, number> = { heavy: 0, light: 0 };
+    for (let i = 0; i < 200; i++) {
+      const body = (await fetchText(front.port)).body;
+      counts[body] = (counts[body] ?? 0) + 1;
+    }
+    // 90/10 split: the heavy pool should dominate by a wide margin. The bound is
+    // loose enough to be robust to the random sample but still proves weighting.
+    expect(counts['heavy']!).toBeGreaterThan(counts['light']!);
+    expect(counts['heavy']!).toBeGreaterThan(120);
+    expect(counts['light']!).toBeGreaterThan(0); // weight 10 is still occasionally hit
+  });
+
+  it('never routes to a weight-0 pool in a weighted forward', async () => {
+    const live = await startUpstream('live');
+    const livePool = new FrontDoorEndpointPool();
+    livePool.register('live:r0', { host: '127.0.0.1', port: live.port });
+    const zeroPool = new FrontDoorEndpointPool();
+    zeroPool.register('zero:r0', { host: '127.0.0.1', port: live.port }); // would also answer
+    const action: RouteAction = {
+      kind: 'forward',
+      pools: [
+        { pool: livePool, weight: 100 },
+        { pool: zeroPool, weight: 0 },
+      ],
+    };
+    const front = await startFrontWith(() => action);
+    for (let i = 0; i < 20; i++) {
+      expect((await fetchText(front.port)).body).toBe('live');
+    }
+  });
+
+  it('returns 502 when every weighted forward pool has weight 0', async () => {
+    const dead = new FrontDoorEndpointPool();
+    const action: RouteAction = { kind: 'forward', pools: [{ pool: dead, weight: 0 }] };
+    const front = await startFrontWith(() => action);
+    const res = await fetchText(front.port);
+    expect(res.status).toBe(502);
+    expect(res.body).toMatch(/weight 0/);
+  });
+});
+
+describe('pickWeightedPool', () => {
+  const a = new FrontDoorEndpointPool();
+  const b = new FrontDoorEndpointPool();
+
+  it('returns the single pool when its weight is positive', () => {
+    expect(pickWeightedPool([{ pool: a, weight: 1 }])).toBe(a);
+  });
+
+  it('returns undefined for an empty set or all-zero weights', () => {
+    expect(pickWeightedPool([])).toBeUndefined();
+    expect(pickWeightedPool([{ pool: a, weight: 0 }])).toBeUndefined();
+    expect(
+      pickWeightedPool([
+        { pool: a, weight: 0 },
+        { pool: b, weight: 0 },
+      ])
+    ).toBeUndefined();
+  });
+
+  it('skips weight-0 members and only ever returns a positive-weight pool', () => {
+    for (let i = 0; i < 50; i++) {
+      expect(
+        pickWeightedPool([
+          { pool: a, weight: 0 },
+          { pool: b, weight: 5 },
+        ])
+      ).toBe(b);
+    }
+  });
+});
+
+describe('buildRedirectLocation', () => {
+  const req = (url: string, host = 'orig.example.com'): { url: string; headers: { host: string } } => ({
+    url,
+    headers: { host },
+  });
+
+  it('fills #{path} / #{query} from the request and omits a default port', () => {
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 301,
+      protocol: 'HTTPS',
+      host: 'new.example.com',
+      port: '443',
+      path: '/#{path}',
+      query: '#{query}',
+    };
+    expect(buildRedirectLocation(action, req('/old/page?a=1&b=2'), 80)).toBe(
+      'https://new.example.com/old/page?a=1&b=2'
+    );
+    expect(buildRedirectLocation(action, req('/old/page'), 80)).toBe(
+      'https://new.example.com/old/page'
+    );
+  });
+
+  it('defaults to the request host/path/query and the listener port when unset', () => {
+    // A bare redirect to HTTPS keeps host + path; the listener port 80 is the
+    // default for http, so a same-scheme redirect would carry it, but here the
+    // protocol is unset (defaults to http) and port 8080 is non-default -> kept.
+    const action: RedirectRouteAction = { kind: 'redirect', statusCode: 302 };
+    expect(buildRedirectLocation(action, req('/a/b?x=1'), 8080)).toBe(
+      'http://orig.example.com:8080/a/b?x=1'
+    );
+  });
+
+  it('keeps a non-default explicit port and honors a literal host/path', () => {
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 302,
+      protocol: 'HTTPS',
+      host: 'cdn.example.com',
+      port: '8443',
+      path: '/static/index.html',
+      query: '',
+    };
+    expect(buildRedirectLocation(action, req('/whatever?drop=me'), 80)).toBe(
+      'https://cdn.example.com:8443/static/index.html'
+    );
   });
 });

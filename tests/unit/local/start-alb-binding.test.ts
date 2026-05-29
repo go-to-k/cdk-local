@@ -161,7 +161,11 @@ describe('albStrategy.resolveBoots multi-service', () => {
       80, 8080,
     ]);
     for (const l of frontDoor!.listeners) {
-      expect(l.defaultTarget?.serviceTarget).toBe('Multi:Svc1');
+      const action = l.defaultAction;
+      expect(action?.kind).toBe('forward');
+      if (action?.kind === 'forward') {
+        expect(action.targets[0]?.serviceTarget).toBe('Multi:Svc1');
+      }
     }
   });
 
@@ -263,10 +267,16 @@ describe('start-alb / start-service strategy binding', () => {
       {
         listenerPort: 80,
         hostPort: 8080, // remapped by --lb-port 80=8080
-        defaultTarget: {
-          serviceTarget: 'AlbStack:WebService',
-          targetContainerName: 'web',
-          targetContainerPort: 80,
+        defaultAction: {
+          kind: 'forward',
+          targets: [
+            {
+              serviceTarget: 'AlbStack:WebService',
+              targetContainerName: 'web',
+              targetContainerPort: 80,
+              weight: 1,
+            },
+          ],
         },
         rules: [],
       },
@@ -293,16 +303,33 @@ describe('buildFrontDoor', () => {
           {
             listenerPort: 80,
             hostPort: 0, // ephemeral: avoid privileged-port binding in the unit test
-            defaultTarget: {
-              serviceTarget: 'S:Web',
-              targetContainerName: 'web',
-              targetContainerPort: 80,
+            defaultAction: {
+              kind: 'forward',
+              targets: [
+                {
+                  serviceTarget: 'S:Web',
+                  targetContainerName: 'web',
+                  targetContainerPort: 80,
+                  weight: 1,
+                },
+              ],
             },
             rules: [
               {
                 priority: 10,
                 pathPatterns: ['/api/*'],
-                target: { serviceTarget: 'S:Api', targetContainerName: 'api', targetContainerPort: 8080 },
+                hostPatterns: [],
+                action: {
+                  kind: 'forward',
+                  targets: [
+                    {
+                      serviceTarget: 'S:Api',
+                      targetContainerName: 'api',
+                      targetContainerPort: 8080,
+                      weight: 1,
+                    },
+                  ],
+                },
               },
             ],
           },
@@ -318,6 +345,61 @@ describe('buildFrontDoor', () => {
       expect(frontDoorByService.get('S:Web')).toEqual([
         expect.objectContaining({ targetContainerName: 'web', targetContainerPort: 80 }),
       ]);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it('builds one pool per weighted forward target and groups them by service', async () => {
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers, frontDoorByService } = await buildFrontDoor(
+      {
+        listeners: [
+          {
+            listenerPort: 80,
+            hostPort: 0,
+            defaultAction: {
+              kind: 'forward',
+              targets: [
+                { serviceTarget: 'S:Blue', targetContainerName: 'app', targetContainerPort: 80, weight: 80 },
+                { serviceTarget: 'S:Green', targetContainerName: 'app', targetContainerPort: 80, weight: 20 },
+              ],
+            },
+            rules: [],
+          },
+        ],
+      },
+      '127.0.0.1',
+      logger
+    );
+    try {
+      // Each weighted target group gets its own pool, grouped by service target.
+      expect([...frontDoorByService.keys()].sort()).toEqual(['S:Blue', 'S:Green']);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
+  });
+
+  it('stands up a fixed-response-default listener with no backing pool', async () => {
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers, frontDoorByService } = await buildFrontDoor(
+      {
+        listeners: [
+          {
+            listenerPort: 80,
+            hostPort: 0,
+            defaultAction: { kind: 'fixed-response', statusCode: 404, messageBody: 'nope' },
+            rules: [],
+          },
+        ],
+      },
+      '127.0.0.1',
+      logger
+    );
+    try {
+      expect(servers).toHaveLength(1);
+      // A fixed-response action has no forward target -> no service pools.
+      expect(frontDoorByService.size).toBe(0);
     } finally {
       await Promise.all(servers.map((s) => s.close()));
     }
