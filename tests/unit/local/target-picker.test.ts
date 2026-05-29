@@ -15,7 +15,10 @@ interface MsInstance {
 }
 
 const { msState } = vi.hoisted(() => ({
-  msState: { instances: [] as MsInstance[], result: undefined as unknown },
+  // `results` is a queue: each `prompt()` call shifts the next picker result,
+  // so a confirm-decline loop can be driven across iterations. Throwing when
+  // it is empty turns an accidental infinite loop into a clear test failure.
+  msState: { instances: [] as MsInstance[], results: [] as unknown[] },
 }));
 
 // `pickManyTargets` builds a custom prompt on `@clack/core`'s
@@ -39,7 +42,10 @@ vi.mock('@clack/core', () => ({
       this.handlers[event] = cb;
     }
     prompt(): Promise<unknown> {
-      return Promise.resolve(msState.result);
+      if (msState.results.length === 0) {
+        throw new Error('mock MultiSelectPrompt: no queued result (would infinite-loop)');
+      }
+      return Promise.resolve(msState.results.shift());
     }
   },
 }));
@@ -92,7 +98,7 @@ beforeEach(() => {
   vi.mocked(isCancel).mockReturnValue(false);
   vi.mocked(confirm).mockResolvedValue(true);
   msState.instances = [];
-  msState.result = undefined;
+  msState.results = [];
 });
 
 afterEach(() => {
@@ -144,9 +150,13 @@ describe('bulkSelectValues', () => {
   });
 });
 
+function confirmMessage(call: number): string {
+  return (vi.mocked(confirm).mock.calls[call]![0] as { message: string }).message;
+}
+
 describe('pickManyTargets', () => {
   it('builds an unselected, optional prompt and returns the confirmed selection', async () => {
-    msState.result = ['S/A', 'S:B'];
+    msState.results = [['S/A', 'S:B']];
     const result = await pickManyTargets('Pick many', entries);
     expect(result).toEqual(['S/A', 'S:B']);
     const inst = msState.instances.at(-1)!;
@@ -162,24 +172,41 @@ describe('pickManyTargets', () => {
     expect(confirm).toHaveBeenCalledOnce();
   });
 
-  it('exits (throws) when nothing is selected', async () => {
-    msState.result = [];
-    await expect(pickManyTargets('Pick many', entries)).rejects.toBeInstanceOf(
-      TargetSelectionCancelledError
-    );
-    expect(confirm).not.toHaveBeenCalled();
+  it('lists the selected targets in the confirmation message', async () => {
+    msState.results = [['S/A', 'S:B']];
+    await pickManyTargets('Pick many', entries);
+    const msg = confirmMessage(0);
+    expect(msg).toContain('• [HTTP API v2] S/A');
+    expect(msg).toContain('• S:B');
   });
 
-  it('throws when the confirmation is declined', async () => {
-    msState.result = ['S/A'];
-    vi.mocked(confirm).mockResolvedValue(false);
+  it('asks to confirm exit when nothing is selected; Yes exits (throws)', async () => {
+    msState.results = [[]];
     await expect(pickManyTargets('Pick many', entries)).rejects.toBeInstanceOf(
       TargetSelectionCancelledError
     );
+    expect(confirmMessage(0)).toMatch(/nothing selected/i);
+  });
+
+  it('returns to the picker when the empty-exit confirm is declined', async () => {
+    msState.results = [[], ['S/A']]; // empty -> "exit?" no -> loop -> pick S/A
+    vi.mocked(confirm).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const result = await pickManyTargets('Pick many', entries);
+    expect(result).toEqual(['S/A']);
+    expect(msState.instances).toHaveLength(2);
+  });
+
+  it('returns to the picker (selection preserved) when the run confirm is declined', async () => {
+    msState.results = [['S/A'], ['S/A', 'S:B']];
+    vi.mocked(confirm).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const result = await pickManyTargets('Pick many', entries);
+    expect(result).toEqual(['S/A', 'S:B']);
+    expect(msState.instances).toHaveLength(2);
+    expect(msState.instances[1]!.opts.initialValues).toEqual(['S/A']);
   });
 
   it('Right selects all and Left clears, via the key handler', async () => {
-    msState.result = ['S/A'];
+    msState.results = [['S/A']];
     await pickManyTargets('Pick many', entries);
     const inst = msState.instances.at(-1)!;
     inst.value = [];
@@ -190,7 +217,7 @@ describe('pickManyTargets', () => {
   });
 
   it('leaves the selection unchanged on other keys', async () => {
-    msState.result = ['S/A'];
+    msState.results = [['S/A']];
     await pickManyTargets('Pick many', entries);
     const inst = msState.instances.at(-1)!;
     inst.value = ['S/A'];
@@ -199,7 +226,7 @@ describe('pickManyTargets', () => {
   });
 
   it('render returns a string in the active and submit states (smoke)', async () => {
-    msState.result = ['S/A'];
+    msState.results = [['S/A']];
     await pickManyTargets('Pick many', entries);
     const inst = msState.instances.at(-1)!;
     expect(typeof inst.opts.render.call(inst)).toBe('string');
@@ -208,7 +235,7 @@ describe('pickManyTargets', () => {
   });
 
   it('throws TargetSelectionCancelledError on cancel', async () => {
-    msState.result = Symbol('cancel');
+    msState.results = [Symbol('cancel')];
     vi.mocked(isCancel).mockReturnValue(true);
     await expect(pickManyTargets('Pick many', entries)).rejects.toBeInstanceOf(
       TargetSelectionCancelledError
@@ -296,7 +323,7 @@ describe('resolveMultiTarget', () => {
 
   it('multi-selects when omitted in a TTY', async () => {
     setTty(true);
-    msState.result = ['S/A'];
+    msState.results = [['S/A']];
     const result = await resolveMultiTarget([], {
       entries,
       message: 'm',

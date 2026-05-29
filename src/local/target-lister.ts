@@ -168,17 +168,35 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
 export function listTargets(stacks: readonly StackInfo[]): TargetListing {
   return {
     lambdas: sortEntries(scanByType(stacks, 'AWS::Lambda::Function')),
-    apis: sortEntries(listApiSurfaces(stacks)),
+    apis: sortApiEntries(listApiSurfaces(stacks)),
     ecsServices: sortEntries(scanByType(stacks, 'AWS::ECS::Service')),
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
   };
 }
 
+const pathOf = (e: TargetEntry): string => e.displayPath ?? e.qualifiedId;
+
 /** Stable, human-readable ordering: by display path, falling back to the qualified ID. */
 function sortEntries(entries: TargetEntry[]): TargetEntry[] {
-  return [...entries].sort((a, b) =>
-    (a.displayPath ?? a.qualifiedId).localeCompare(b.displayPath ?? b.qualifiedId)
-  );
+  return [...entries].sort((a, b) => pathOf(a).localeCompare(pathOf(b)));
+}
+
+/** Display order for API surface kinds; entries are grouped in this order. */
+const API_KIND_ORDER = ['HTTP API v2', 'REST API v1', 'Function URL', 'WebSocket'];
+
+/**
+ * Group API surfaces by kind (in {@link API_KIND_ORDER}), then sort by display
+ * path within each kind — so the `cdkl list` output and the interactive picker
+ * present REST / HTTP / Function URL / WebSocket as readable blocks. Exported
+ * for unit testing.
+ */
+export function sortApiEntries(entries: TargetEntry[]): TargetEntry[] {
+  return [...entries].sort((a, b) => {
+    const ka = API_KIND_ORDER.indexOf(a.kind ?? '');
+    const kb = API_KIND_ORDER.indexOf(b.kind ?? '');
+    if (ka !== kb) return ka - kb;
+    return pathOf(a).localeCompare(pathOf(b));
+  });
 }
 
 /** Total number of targets across every category. */

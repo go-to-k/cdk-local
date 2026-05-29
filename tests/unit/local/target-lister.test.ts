@@ -1,8 +1,39 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
-import { countTargets, listTargets } from '../../../src/local/target-lister.js';
+import {
+  countTargets,
+  listTargets,
+  sortApiEntries,
+  type TargetEntry,
+} from '../../../src/local/target-lister.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+
+describe('sortApiEntries', () => {
+  it('groups by kind (HTTP -> REST -> Function URL -> WebSocket), then path within a kind', () => {
+    const e = (logicalId: string, kind: string): TargetEntry => ({
+      logicalId,
+      stackName: 'App',
+      qualifiedId: `App:${logicalId}`,
+      displayPath: `App/${logicalId}`,
+      kind,
+    });
+    const sorted = sortApiEntries([
+      e('OacUrl', 'Function URL'),
+      e('MyRest', 'REST API v1'),
+      e('IamUrl', 'Function URL'),
+      e('MyHttp', 'HTTP API v2'),
+      e('Ws', 'WebSocket'),
+    ]);
+    expect(sorted.map((x) => x.logicalId)).toEqual([
+      'MyHttp', // HTTP API v2
+      'MyRest', // REST API v1
+      'IamUrl', // Function URL, path-sorted (App/IamUrl < App/OacUrl)
+      'OacUrl',
+      'Ws', // WebSocket
+    ]);
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

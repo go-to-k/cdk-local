@@ -103,59 +103,77 @@ function kindTags(opts: PickerOption[]): string[] {
 export async function pickManyTargets(message: string, entries: TargetEntry[]): Promise<string[]> {
   const opts: PickerOption[] = entries.map(toOption);
   const tags = kindTags(opts);
+  // `[kind] label` per value, for the confirmation bullet list.
+  const displayByValue = new Map(
+    opts.map((o) => [o.value, o.hint ? `[${o.hint}] ${o.label}` : o.label])
+  );
 
-  const prompt = new MultiSelectPrompt<PickerOption>({
-    options: opts,
-    // Allow an empty submit — handled below as "exit", rather than clack's
-    // built-in "select at least one" error, which the user found confusing.
-    required: false,
-    render() {
-      const header = `${S_BAR_START}  ${message}`;
-      if (this.state === 'submit' || this.state === 'cancel') {
-        const n = (this.value ?? []).length;
-        return `${header}\n${S_BAR}  ${`${n} selected`}`;
-      }
-      const selected = new Set(this.value ?? []);
-      const rows = this.options.map((opt, i) => {
-        const isActive = i === this.cursor;
-        const isSelected = selected.has(opt.value);
-        const box = isSelected
-          ? S_CHECKBOX_SELECTED
-          : isActive
-            ? S_CHECKBOX_ACTIVE
-            : S_CHECKBOX_INACTIVE;
-        // Whole row coloured by state: active = cyan, selected = green,
-        // otherwise plain (the terminal's default fg — never dim/grey, which
-        // is hard to read). The `[kind]` tag follows the row's colour.
-        const text = `${tags[i]}${opt.label}`;
-        const coloured = isActive ? ANSI.cyan(text) : isSelected ? ANSI.green(text) : text;
-        return `${S_BAR}  ${box} ${coloured}`;
-      });
-      const keys = ANSI.dim('space toggle · → all · ← none · enter confirm');
-      return `${header}\n${rows.join('\n')}\n${S_BAR}  ${keys}\n${S_BAR_END}`;
-    },
-  });
+  // Loop so that declining the confirmation returns to the picker with the
+  // current selection preserved (via `initialValues`).
+  let initialValues: string[] = [];
+  for (;;) {
+    const prompt = new MultiSelectPrompt<PickerOption>({
+      options: opts,
+      // Allow an empty submit — handled below (confirm "exit?"), rather than
+      // clack's built-in "select at least one" error.
+      required: false,
+      ...(initialValues.length > 0 ? { initialValues } : {}),
+      render() {
+        if (this.state === 'submit' || this.state === 'cancel') {
+          return `${S_BAR_START}  ${message}\n${S_BAR}  ${(this.value ?? []).length} selected`;
+        }
+        // Key hints live on the message line, `action: key` form, `|`-separated.
+        const header = `${S_BAR_START}  ${message} (toggle: space | all: → | none: ← | confirm: enter)`;
+        const selected = new Set(this.value ?? []);
+        const rows = this.options.map((opt, i) => {
+          const isActive = i === this.cursor;
+          const isSelected = selected.has(opt.value);
+          // Checked box is green (matching the confirm prompt's check colour);
+          // the cursor row's box is cyan; otherwise the default checkbox.
+          const box = isSelected
+            ? ANSI.green(S_CHECKBOX_SELECTED)
+            : isActive
+              ? ANSI.cyan(S_CHECKBOX_ACTIVE)
+              : S_CHECKBOX_INACTIVE;
+          // Row text: active = cyan, selected = green, otherwise the default
+          // fg (white) — never dim/grey, which is hard to read. The `[kind]`
+          // tag follows the row's colour.
+          const text = `${tags[i]}${opt.label}`;
+          const coloured = isActive ? ANSI.cyan(text) : isSelected ? ANSI.green(text) : text;
+          return `${S_BAR}  ${box} ${coloured}`;
+        });
+        return `${header}\n${rows.join('\n')}\n${S_BAR_END}`;
+      },
+    });
 
-  // Right selects every row; Left clears. MultiSelectPrompt uses Up/Down for
-  // the cursor and Space to toggle, so Left/Right are free. Setting
-  // `prompt.value` is exactly how the built-in toggleAll works; the prompt
-  // re-renders after each keypress.
-  prompt.on('key', (_char, info) => {
-    if (info?.name === 'right') prompt.value = bulkSelectValues(opts, 'all');
-    else if (info?.name === 'left') prompt.value = bulkSelectValues(opts, 'none');
-  });
+    // Right selects every row; Left clears. MultiSelectPrompt uses Up/Down for
+    // the cursor and Space to toggle, so Left/Right are free. Setting
+    // `prompt.value` is exactly how the built-in toggleAll works; the prompt
+    // re-renders after each keypress.
+    prompt.on('key', (_char, info) => {
+      if (info?.name === 'right') prompt.value = bulkSelectValues(opts, 'all');
+      else if (info?.name === 'left') prompt.value = bulkSelectValues(opts, 'none');
+    });
 
-  const picked = await prompt.prompt();
-  if (isCancel(picked)) throw new TargetSelectionCancelledError();
-  const values = (picked as string[] | undefined) ?? [];
-  // Nothing selected -> exit cleanly instead of doing something surprising.
-  if (values.length === 0) throw new TargetSelectionCancelledError();
+    const picked = await prompt.prompt();
+    if (isCancel(picked)) throw new TargetSelectionCancelledError();
+    const values = (picked as string[] | undefined) ?? [];
 
-  // Confirmation step before committing to the (possibly large) run.
-  const summary = values.length === 1 ? '1 target' : `${values.length} targets`;
-  const ok = await confirm({ message: `Run ${summary}?` });
-  if (isCancel(ok) || ok !== true) throw new TargetSelectionCancelledError();
-  return values;
+    if (values.length === 0) {
+      const exit = await confirm({ message: 'Nothing selected. Exit without running anything?' });
+      if (isCancel(exit)) throw new TargetSelectionCancelledError();
+      if (exit === true) throw new TargetSelectionCancelledError();
+      initialValues = [];
+      continue; // back to the picker
+    }
+
+    const bullets = values.map((v) => `  • ${displayByValue.get(v) ?? v}`).join('\n');
+    const noun = values.length === 1 ? 'this target' : `these ${values.length} targets`;
+    const ok = await confirm({ message: `Run ${noun}?\n${bullets}` });
+    if (isCancel(ok)) throw new TargetSelectionCancelledError();
+    if (ok === true) return values;
+    initialValues = values; // declined -> back to the picker, selection kept
+  }
 }
 
 interface ResolveParams {

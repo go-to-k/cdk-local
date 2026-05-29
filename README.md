@@ -69,7 +69,7 @@ cdkl start-api         # multi-select APIs to serve (→ selects all)
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
 
-Omitting the target in an interactive terminal opens the picker automatically. `invoke` / `run-task` pick one; `start-service` / `start-api` open a multi-select that starts with **nothing** selected. In any multi-select, press space to toggle a row, → to select all, ← to clear all, and enter to confirm — then a Y/n confirmation runs before launch. Submitting with nothing selected just exits. For `start-api`, each selected API is served on its own port. (Outside a TTY, bare `start-api` still serves every API — see below.)
+Omitting the target in an interactive terminal opens the picker automatically. `invoke` / `run-task` pick one; `start-service` / `start-api` open a multi-select that starts with **nothing** selected. In any multi-select, press space to toggle a row, → to select all, ← to clear all, and enter to confirm — then a Y/n confirmation runs before launch (declining returns you to the picker with your selection kept). Submitting with nothing selected asks whether to exit. For `start-api`, each selected API is served on its own port. (Outside a TTY, bare `start-api` still serves every API — see below.)
 
 Outside a TTY — CI, pipes, redirected stdin — the picker can't run. `invoke` / `run-task` / `start-service` fall back to a "target required" error; pass the target explicitly there (see [below](#passing-a-target-explicitly)). `start-api` is the exception: bare in a non-TTY it serves **every** API (its serve-all default needs no prompt), so scripts keep working unchanged.
 

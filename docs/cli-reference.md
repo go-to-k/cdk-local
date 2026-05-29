@@ -57,8 +57,9 @@ flag — bare-in-a-TTY is the trigger.)
 
 The multi-select starts with **nothing** selected. Space toggles the
 current row, `→` selects all, `←` clears all, and Enter confirms — then a
-Y/n confirmation runs before launch. Submitting with nothing selected
-exits cleanly (so a stray Enter never launches anything). For `start-api`,
+Y/n confirmation runs before launch (declining returns to the picker with
+the selection kept). Submitting with nothing selected asks whether to exit
+(so a stray Enter never launches anything). For `start-api`,
 each selected API is served on its own port; to serve them all, press `→`
 then Enter (or, outside a TTY, just run bare `start-api` — see below).
 Each API row is tagged with its surface kind — `REST API v1` /
