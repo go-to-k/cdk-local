@@ -53,9 +53,17 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
   pullImage: pullImageMock,
 }));
 
-const { resolveAgentCoreImage, emitResult, buildContainerEnv } = await import(
-  '../../../src/cli/commands/local-invoke-agentcore.js'
-);
+const {
+  resolveAgentCoreImage,
+  emitResult,
+  buildContainerEnv,
+  readEvent,
+  readEnvOverridesFile,
+  platformToArchitecture,
+} = await import('../../../src/cli/commands/local-invoke-agentcore.js');
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 
 function runtime(
@@ -189,5 +197,86 @@ describe('buildContainerEnv — --from-cfn-stack env substitution', () => {
     expect(fakeProvider.load).toHaveBeenCalled();
     expect(fakeProvider.dispose).toHaveBeenCalled();
     expect(dockerEnv['TABLE_NAME']).toBe('tbl-123');
+  });
+});
+
+const opts = (o: Record<string, unknown>) => o as unknown as Parameters<typeof readEvent>[0];
+
+describe('readEvent', () => {
+  it('defaults to {} when no event is given', async () => {
+    expect(await readEvent(opts({}))).toEqual({});
+  });
+
+  it('rejects when --event and --event-stdin are both set', async () => {
+    await expect(readEvent(opts({ event: 'e.json', eventStdin: true }))).rejects.toThrow(
+      /mutually exclusive/
+    );
+  });
+
+  it('reads + parses a JSON --event file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-agentcore-event-'));
+    const file = join(dir, 'event.json');
+    writeFileSync(file, '{"prompt":"hi","n":3}', 'utf-8');
+    expect(await readEvent(opts({ event: file }))).toEqual({ prompt: 'hi', n: 3 });
+  });
+
+  it('throws a clear error for a malformed --event JSON file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-agentcore-event-'));
+    const file = join(dir, 'bad.json');
+    writeFileSync(file, '{not json', 'utf-8');
+    await expect(readEvent(opts({ event: file }))).rejects.toThrow(/Failed to parse event payload/);
+  });
+
+  it('throws a clear error when the --event file cannot be read', async () => {
+    await expect(readEvent(opts({ event: '/no/such/cdkl-agentcore-event.json' }))).rejects.toThrow(
+      /Failed to read --event file/
+    );
+  });
+});
+
+describe('readEnvOverridesFile', () => {
+  it('returns undefined when no path is given', () => {
+    expect(readEnvOverridesFile(undefined)).toBeUndefined();
+  });
+
+  it('throws when the file cannot be read', () => {
+    expect(() => readEnvOverridesFile('/no/such/cdkl-agentcore-env.json')).toThrow(
+      /Failed to read --env-vars file/
+    );
+  });
+
+  it('throws on malformed JSON', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-agentcore-env-'));
+    const file = join(dir, 'bad.json');
+    writeFileSync(file, '{nope', 'utf-8');
+    expect(() => readEnvOverridesFile(file)).toThrow(/Failed to parse --env-vars file/);
+  });
+
+  it('throws when the top level is not a JSON object', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-agentcore-env-'));
+    const file = join(dir, 'arr.json');
+    writeFileSync(file, '["a","b"]', 'utf-8');
+    expect(() => readEnvOverridesFile(file)).toThrow(/must contain a JSON object/);
+  });
+
+  it('parses a valid SAM-shape override object', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-agentcore-env-'));
+    const file = join(dir, 'ok.json');
+    writeFileSync(file, '{"Parameters":{"GREETING":"hi"}}', 'utf-8');
+    expect(readEnvOverridesFile(file)).toEqual({ Parameters: { GREETING: 'hi' } });
+  });
+});
+
+describe('platformToArchitecture', () => {
+  it('maps linux/amd64 to x86_64', () => {
+    expect(platformToArchitecture('linux/amd64')).toBe('x86_64');
+  });
+
+  it('maps linux/arm64 to arm64', () => {
+    expect(platformToArchitecture('linux/arm64')).toBe('arm64');
+  });
+
+  it('defaults any other value to arm64 (AgentCore-required arch)', () => {
+    expect(platformToArchitecture('something-else')).toBe('arm64');
   });
 });
