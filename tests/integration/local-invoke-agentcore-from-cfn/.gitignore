@@ -1,0 +1,9 @@
+# The integ runner installs deps fresh via `vp install`, so the lockfile
+# is a build artifact, not a committed source (matches local-run-task).
+pnpm-lock.yaml
+
+# Override the parent integ .gitignore so the agent container's source
+# files are tracked (the parent ignores *.js). The Dockerfile builds
+# /app/server.js into a plain node base serving the 8080 HTTP contract.
+!agent/*.js
+!agent/Dockerfile
