@@ -1,3 +1,10 @@
+# [0.49.0](https://github.com/go-to-k/cdk-local/compare/v0.48.0...v0.49.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** support fromS3 CodeConfiguration bundles ([#156](https://github.com/go-to-k/cdk-local/issues/156)) ([9a271f2](https://github.com/go-to-k/cdk-local/commit/9a271f229e0833b78920b3e75d472440b7d91690))
+
 # [0.48.0](https://github.com/go-to-k/cdk-local/compare/v0.47.0...v0.48.0) (2026-05-29)
 
 # [0.47.0](https://github.com/go-to-k/cdk-local/compare/v0.46.0...v0.47.0) (2026-05-29)
