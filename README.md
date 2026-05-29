@@ -4,16 +4,42 @@
 [![CI](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml/badge.svg)](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/npm/l/cdk-local.svg)](./LICENSE)
 
-Local runner for your CDK app's Lambda functions, API Gateway, and ECS tasks/services. Run it with no AWS account, or bind it to your deployed stack to hit real AWS resources and data. A native, CDK-first alternative to `sam local`.
+Run your CDK app's Lambda functions, API Gateway, and ECS tasks/services on your own machine — with **no AWS account**, or bound to your **deployed stack to hit real AWS resources and data**. A native, CDK-first alternative to `sam local`.
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
+
+## Quick start
+
+Requires **Docker** (running) and **Node.js 20+**.
+
+### 1. Run locally — no AWS account
+
+```bash
+npm install -g cdk-local      # installs the `cdkl` command
+
+cd your-cdk-app               # the directory holding cdk.json
+cdkl invoke                   # pick a Lambda from the list, then run it locally
+```
+
+`cdkl` synths your CDK app and runs the real handler inside a real `public.ecr.aws/lambda/*` container. Run any command with no target and it opens an arrow-key picker — you rarely need to type a CDK path.
+
+### 2. Bind to real AWS data — add `--from-cfn-stack`
+
+```bash
+cdkl start-api --from-cfn-stack                  # pick an API → real AWS data + real Cognito JWT
+cdkl start-api MyStack/MyApi --from-cfn-stack    # or name the API explicitly
+```
+
+cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container — your local handler reads and writes the exact same data the deployed app does, with no `.env` to wire up and no test data to seed. Point a frontend at it and you're debugging end-to-end against production-shaped state.
 
 ## Why cdk-local
 
 Two pains, one tool:
 
 - **Zero-friction local execution.** No AWS account, no IAM access, no deploy — just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's AWS account.
-- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` injects real ARNs, Secret values, and IAM credentials straight from CloudFormation into the local container — no `.env` file to maintain, no manual ARN copy-paste. Your local Lambda hits the same DynamoDB rows, S3 objects, Cognito users, Secret values, and anything else your IAM credentials reach through public AWS APIs that the deployed app sees. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` injects real ARNs, Secret values, and IAM credentials straight from CloudFormation into the local container — no `.env` file to maintain, no manual ARN copy-paste. Your local Lambda hits the same DynamoDB rows, S3 objects, Cognito users, Secret values, and anything else your IAM credentials reach that the deployed app sees.
+
+  An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
   - dumping production data into a local DB
   - mirroring Secret values into local Secrets Manager
   - anonymizing fixtures across schema changes
@@ -21,17 +47,15 @@ Two pains, one tool:
 
   cdk-local skips all of that by keeping you on the real thing.
 
-cdk-local deliberately does NOT emulate AWS managed services. The bet is: keep dependencies real, swap only the compute layer.
-
 It also picks up where `sam local` leaves off:
 
 - **CDK-native** — point it at your CDK app's `cdk.json`. No SAM templates, no extra config files.
-- **Wider coverage** — Lambda (ZIP + container image, plus Function URL), API Gateway REST v1 / HTTP v2 / WebSocket API, ECS run-task, ECS service with Service Connect + Cloud Map.
-- **Real container images** — Lambda code runs in the real `public.ecr.aws/lambda/*` base image via Lambda Runtime Interface Emulator (RIE). ECS tasks run as real Docker containers. The only dependency is Docker.
+- **Wider coverage** — Lambda (ZIP + container image + Function URL), API Gateway REST v1 / HTTP v2 / WebSocket, ECS run-task, ECS service with Service Connect + Cloud Map.
+- **Real container images** — Lambda code runs in the real `public.ecr.aws/lambda/*` base image via the Lambda Runtime Interface Emulator (RIE); ECS tasks run as real Docker containers. The only dependency is Docker.
 
 ## What runs locally, what doesn't
 
-cdk-local runs your **application compute** locally in Docker, using your CDK app as the source of truth. It does NOT emulate AWS managed services.
+cdk-local runs your **application compute** locally in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services — the bet is: keep dependencies real, swap only the compute layer.
 
 **Runs locally (application compute):**
 
@@ -43,16 +67,8 @@ cdk-local runs your **application compute** locally in Docker, using your CDK ap
 **Calls real AWS (managed services):**
 
 - DynamoDB / S3 / Secrets Manager / SSM / SNS / SQS / Kinesis / EventBridge / Step Functions / etc.
-- Your Lambda code talks to real AWS via your IAM credentials (`--assume-role` or `--from-cfn-stack` to bind to a deployed stack)
-- If you want offline emulation of managed services, pair cdk-local with a service emulator like LocalStack — cdk-local does not bundle one.
-
-## Install
-
-```bash
-npm install -g cdk-local
-```
-
-This installs the `cdkl` command.
+- Your Lambda code talks to real AWS via your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack)
+- Want offline emulation of managed services too? Pair cdk-local with a service emulator like LocalStack — cdk-local does not bundle one.
 
 ## Two ways to use it
 
@@ -73,9 +89,7 @@ cdkl start-api         # multi-select APIs to serve (→ selects all)
 
 ![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
 
-Omitting the target in an interactive terminal opens the picker automatically. `invoke` / `run-task` pick one; `start-service` / `start-api` open a multi-select that starts with **nothing** selected. In any multi-select, press space to toggle a row, → to select all, ← to clear all, and enter to confirm — then a Y/n confirmation runs before launch (declining returns you to the picker with your selection kept). Submitting with nothing selected asks whether to exit. For `start-api`, each selected API is served on its own port. (Outside a TTY, bare `start-api` still serves every API — see below.)
-
-Outside a TTY — CI, pipes, redirected stdin — the picker can't run. `invoke` / `run-task` / `start-service` fall back to a "target required" error; pass the target explicitly there (see [below](#passing-a-target-explicitly)). `start-api` is the exception: bare in a non-TTY it serves **every** API (its serve-all default needs no prompt), so scripts keep working unchanged.
+`invoke` / `run-task` pick one target; `start-service` / `start-api` open a multi-select (space toggles, → selects all, ← clears, enter confirms). Outside a TTY — CI, pipes, redirected stdin — the picker can't run: `invoke` / `run-task` / `start-service` need the target passed explicitly (see [below](#passing-a-target-explicitly)), while a bare `start-api` serves **every** API so scripts keep working. Full picker + non-TTY behavior: [docs/cli-reference.md](docs/cli-reference.md#interactive-target-selection).
 
 #### See what's available — `list` (alias `ls`)
 
@@ -118,19 +132,17 @@ cdkl start-api MyStack/MyApi
 cdkl start-api
 ```
 
-`start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once (so a side-stack's API is never booted by accident); serve them all with `--all-stacks`, or select one stack with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target like `MyStack/MyApi`. `--all-stacks` is mutually exclusive with those single-target selectors (the bare `--from-cfn-stack` flag stays compatible). See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
+`start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once; serve them all with `--all-stacks`, or select one with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target. See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
-For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>` (surfaced to `ECS_CONTAINER_METADATA_URI_V4` and used as the local Docker network prefix); `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
+For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
 
 Use this for fast iteration on Lambda code, API routing checks, and container task smoke tests.
 
 ### 2. Bound to a deployed stack
 
-Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), pass `--from-cfn-stack <StackName>` and cdk-local reads the deployed CloudFormation stack to inject real ARNs, Secrets values, and IAM credentials (resolved from your current AWS profile) into the local execution.
+Once your stack is deployed to AWS (via the AWS CDK CLI or any other tool), pass `--from-cfn-stack <StackName>` and cdk-local reads the deployed CloudFormation stack to inject real ARNs, Secret values, and IAM credentials (resolved from your current AWS profile) into the local execution. Env vars that reference deploy-time CloudFormation intrinsics or SSM-backed parameters are resolved too, so a Lambda or container that depends on a sibling resource's ARN or an SSM parameter runs locally without a manual `--env-vars` entry. See [docs/local-emulation.md](docs/local-emulation.md#cloudformation-driven-env-recovery---from-cfn-stack) for the full resolution model.
 
-For Lambda (`invoke`, `start-api`), this also recovers env-var values that CloudFormation resolved at deploy time but `ListStackResources` does not expose — e.g. `SIBLING_ARN: Fn::GetAtt <OtherFunction>.Arn`. cdk-local reads the deployed function's own resolved `Environment.Variables` (via `lambda:GetFunctionConfiguration`) and fills those keys, so a Lambda that calls a sibling Lambda by ARN runs locally without a manual `--env-vars` entry. (These values enter the local container env in plaintext; Lambda env vars are a non-secret property, so this exposes nothing the deployed function doesn't already surface to any caller with `lambda:GetFunctionConfiguration`.)
-
-`--from-cfn-stack` also resolves env vars that reference an SSM-backed CloudFormation parameter — the `AWS::SSM::Parameter::Value<String>` (and `List<String>`) type CDK synthesizes for `ssm.StringParameter.valueForStringParameter(...)`. cdk-local reads the parameter's current value from SSM Parameter Store (via `ssm:GetParameters`, using the same credentials/region as the stack lookup) and injects it, so a Lambda or ECS container whose env `Ref`s such a parameter runs locally without a manual `--env-vars` entry. If the SSM read fails (no permission, parameter not created), the key falls back to the usual warn-and-drop. A `SecureString` parameter is decrypted (`WithDecryption`) and injected like any other resolved value, but its env key is passed to the container through docker's value-from-process-env form so the decrypted value never appears on the `docker run` argv (`ps` / `/proc/<pid>/cmdline`); it is still visible in `docker inspect`, inherent to container env.
+> SSM `SecureString` parameters are decrypted and injected like any other resolved value, but passed via docker's value-from-process-env form so the decrypted value never appears on the `docker run` argv.
 
 #### HTTP APIs & Function URLs — `start-api` (the headline use case)
 
@@ -147,7 +159,7 @@ cdkl start-api MyStack/MyApi --from-cfn-stack
 
 #### Lambda — `invoke`
 
-Single-function debugging against real upstreams (DynamoDB rows, S3 objects, Secrets values).
+Single-function debugging against real upstreams (DynamoDB rows, S3 objects, Secret values).
 
 ```bash
 cdkl invoke MyStack/MyFunction --event ./event.json --from-cfn-stack MyStack
@@ -172,11 +184,9 @@ Pass `--watch` to `cdkl start-api` and the server re-synths and hot-reloads when
 cdkl start-api MyStack/MyApi --watch
 ```
 
-- 500 ms debounced [chokidar](https://github.com/paulmillr/chokidar) file watcher on your CDK app's source tree (the directory holding `cdk.json`). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, exactly like `cdk watch`.
-- `cdk.out/`, `node_modules`, and `.git` are always excluded — the reload's own re-synth writes to `cdk.out/` never re-trigger the watcher, so there is no reload loop.
-- Re-synths and re-discovers routes on each firing — adding a new route to your CDK app shows up locally on save. No separate `cdk watch` / `cdk synth` process is needed.
-- Synth failures keep the previous version serving (warn-and-continue, never crashes the server).
-- Compatible with `--from-cfn-stack`: each reload re-reads the deployed CloudFormation stack so newly-deployed ARNs are picked up on your next source save without restarting the server.
+- 500 ms debounced [chokidar](https://github.com/paulmillr/chokidar) file watcher on your CDK app's source tree, honoring `cdk.json`'s `watch.include` / `watch.exclude` globs exactly like `cdk watch`. `cdk.out/`, `node_modules`, and `.git` are always excluded, so the reload's own re-synth never re-triggers the watcher.
+- Re-synths and re-discovers routes on each firing — adding a new route to your CDK app shows up locally on save, with no separate `cdk watch` / `cdk synth` process. Synth failures keep the previous version serving (warn-and-continue, never crashes the server).
+- Compatible with `--from-cfn-stack`: each reload re-reads the deployed stack so newly-deployed ARNs are picked up on your next source save without restarting the server.
 
 See [docs/local-emulation.md](docs/local-emulation.md#hot-reload---watch) for the full lifecycle, `watch.include` / `watch.exclude` semantics, and known limitations.
 
@@ -199,10 +209,9 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 ```
 
 - `Parameters` applies to every function / container; function-specific blocks override it.
-- For Lambda (`invoke`, `start-api`), function-specific keys can be either a **CDK display path** (`MyStack/MyFunction` — recommended for new files; same form `cdkl invoke` accepts as a target) or a **CloudFormation logical ID** (`MyFunctionLogicalId1234ABCD` — named in `cdk.out/<Stack>.template.json`, the SAM-compatible form). Both coexist; if both are listed for the same function, the later JSON entry wins (matching SAM's apply-in-order semantics).
-- For ECS (`run-task`, `start-service`), function-specific keys are container names from the task definition's `ContainerDefinitions[].Name` field.
-- The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file (logical-ID keys) works unchanged.
-- Composes with `--from-cfn-stack`: the state source resolves env vars first, then `--env-vars` overrides only the keys you list (unnamed keys keep their state-resolved value). Full precedence in [docs/cli-reference.md](docs/cli-reference.md).
+- For Lambda (`invoke`, `start-api`), function-specific keys can be a **CDK display path** (`MyStack/MyFunction` — same form `cdkl invoke` accepts) or a **CloudFormation logical ID** (`MyFunctionLogicalId1234ABCD`, the SAM-compatible form). For ECS (`run-task`, `start-service`), keys are container names from the task definition.
+- The file format matches `sam local invoke --env-vars`, so an existing SAM env-vars file works unchanged.
+- Composes with `--from-cfn-stack`: the state source resolves env vars first, then `--env-vars` overrides only the keys you list. Full precedence in [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Supported resources
 
@@ -216,6 +225,8 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 | `AWS::ECS::TaskDefinition` (run-task) | ✓ |
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
+
+Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 
 ## Programmatic use
 
