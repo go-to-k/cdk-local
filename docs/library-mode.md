@@ -72,6 +72,25 @@ default, so omitting `embedConfig` (or any single field) leaves native
 `cdkl` behavior unchanged. Pass the same `embedConfig` to each factory
 the host mounts so the branding is consistent across commands.
 
+Two further optional fields tune the AWS_IAM SigV4 warn-message wording
+for a host whose `start-api` ships a different unverifiable-signature
+default than cdk-local's `warn-and-pass`:
+
+```typescript
+const embedConfig: CdkLocalEmbedConfig = {
+  // ...branding fields above...
+  sigV4StrictByDefault: true,            // host fails-closed by default (cdk-local default: false)
+  sigV4OptFlag: '--allow-unverified-sigv4', // host's strictness flag (cdk-local default: '--strict-sigv4')
+};
+```
+
+`sigV4StrictByDefault` flips the polarity of the SigV4 deny / pass warn
+messages (so a fail-closed host's advice reads "pass `<flag>` to
+warn-and-pass" instead of cdk-local's opt-in "remove `--strict-sigv4`
+…"), and `sigV4OptFlag` substitutes the host's own flag name. They affect
+only message text — the actual deny / pass decision is driven by the
+`sigV4Strict` argument the host passes to `startApiServer`.
+
 ### Shim hosts that don't use the factories
 
 A host that re-exports cdk-local's leaf modules as shims

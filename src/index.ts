@@ -286,13 +286,16 @@ export { materializeLayerFromArn } from './local/layer-arn-materializer.js';
 /**
  * `start-api` CORS handling — parses CFn `CorsConfiguration` (and the CloudFront
  * distribution chain) into a per-API CORS config and answers OPTIONS preflight
- * for HTTP API v2. Exposed only as the consuming host's `import` statements
- * require them.
+ * for HTTP API v2. `isFunctionUrlOacFronted` reports whether a Function URL is
+ * fronted by a CloudFront Origin Access Control distribution (the AWS_IAM
+ * authorizer relaxes SigV4 verification for such routes). Exposed only as the
+ * consuming host's `import` statements require them.
  */
 export {
   applyCorsResponseHeaders,
   buildCorsConfigByApiId,
   buildCorsConfigFromCloudFrontChain,
+  isFunctionUrlOacFronted,
   matchPreflight,
   type CorsConfig,
 } from './local/cors-handler.js';
@@ -310,6 +313,42 @@ export {
   tryResolveImageFnJoin,
   type ImageResolutionContext,
 } from './local/intrinsic-image.js';
+
+/**
+ * `start-api` local HTTP server — boots the per-API Node HTTP(S) server that
+ * routes requests to Lambda / VTL integrations, and reads the optional mTLS
+ * client-cert materials off disk. `ServerState` / `StartedApiServer` /
+ * `MtlsServerConfig` are the server-lifecycle types. Exposed only as the
+ * consuming host's `import` statements require them.
+ */
+export {
+  startApiServer,
+  readMtlsMaterialsFromDisk,
+  type ServerState,
+  type StartedApiServer,
+  type MtlsServerConfig,
+} from './local/http-server.js';
+
+/**
+ * `start-api` authorizer wiring — attaches the discovered authorizers (Lambda
+ * TOKEN / REQUEST, Cognito JWT, AWS_IAM SigV4) to the route list. `AuthorizerInfo`
+ * is the per-route resolved-authorizer descriptor; `RouteWithAuth` is a route
+ * paired with its authorizer. Exposed only as the consuming host's `import`
+ * statements require them.
+ */
+export {
+  attachAuthorizers,
+  type AuthorizerInfo,
+  type RouteWithAuth,
+} from './local/authorizer-resolver.js';
+
+/**
+ * `start-api` AWS_IAM SigV4 verification — the default local-credential loader
+ * the verifier reproduces signing keys from. `CredentialsLoader` is the loader
+ * factory signature a host can override. Exposed only as the consuming host's
+ * `import` statements require them.
+ */
+export { defaultCredentialsLoader, type CredentialsLoader } from './local/sigv4-verify.js';
 
 /**
  * `start-service` Cloud Map service-discovery index — parses the

@@ -73,6 +73,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
 import { buildIdentityHash } from './authorizer-resolver.js';
+import { getEmbedConfig } from './embed-config.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
 
 /**
@@ -283,19 +284,27 @@ export async function verifySigV4(
     // fail-closed. OAC-fronted routes always pass (no client signature
     // exists to verify in production).
     const reason = err instanceof Error ? err.message : String(err);
+    const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
       logger.warn(
-        `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the ` +
-          `request's SigV4 signature cannot be verified. --strict-sigv4 is set, so cdk-local ` +
-          `denies unverifiable IAM requests; remove --strict-sigv4 to warn-and-pass (the ` +
-          `default), or configure AWS credentials cdk-local can read.`
+        sigV4StrictByDefault
+          ? `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the ` +
+              `request's SigV4 signature cannot be verified. cdk-local denies unverifiable IAM ` +
+              `requests by default; pass ${optFlag} to warn-and-pass, or configure AWS ` +
+              `credentials cdk-local can read.`
+          : `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the ` +
+              `request's SigV4 signature cannot be verified. ${optFlag} is set, so cdk-local ` +
+              `denies unverifiable IAM requests; remove ${optFlag} to warn-and-pass (the ` +
+              `default), or configure AWS credentials cdk-local can read.`
       );
       return { allow: false, identityHash: undefined };
     }
     logger.warn(
       opts.oacFronted
         ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC (CloudFront re-signs origin requests in production), and local AWS credentials could not be resolved (${reason}). Passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
-        : `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the request's SigV4 signature cannot be verified locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies it against AWS's copy of the secret). Passing through with unverified principalId 'unverified-no-creds' — cdk-local's default for unverifiable IAM requests; pass --strict-sigv4 to deny instead. Do NOT trust event.requestContext.identity.accessKey in handler code.`
+        : sigV4StrictByDefault
+          ? `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the request's SigV4 signature cannot be verified locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies it against AWS's copy of the secret). ${optFlag} is set; passing through with unverified principalId 'unverified-no-creds'. Do NOT trust event.requestContext.identity.accessKey in handler code.`
+          : `AWS_IAM authorizer: could not resolve local AWS credentials (${reason}), so the request's SigV4 signature cannot be verified locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies it against AWS's copy of the secret). Passing through with unverified principalId 'unverified-no-creds' — cdk-local's default for unverifiable IAM requests; pass ${optFlag} to deny instead. Do NOT trust event.requestContext.identity.accessKey in handler code.`
     );
     return {
       allow: true,
@@ -324,15 +333,23 @@ export async function verifySigV4(
     // warn line per case. Case-insensitive compare → case-insensitive
     // dedup. (PR #484 review MINOR.)
     const dedupKey = parsed.credentialAccessKeyId.toLowerCase();
+    const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
       if (!warned || !warned.has(dedupKey)) {
         logger.warn(
-          `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
-            `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
-            `shared-secret) can only be verified with the signer's own credentials, never a ` +
-            `federated / Cognito Identity Pool / cross-account signer's. --strict-sigv4 is set, so ` +
-            `cdk-local denies it; remove --strict-sigv4 to warn-and-pass (the default), or sign the ` +
-            `request with the same credentials cdk-local resolves locally.`
+          sigV4StrictByDefault
+            ? `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+                `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
+                `shared-secret) can only be verified with the signer's own credentials, never a ` +
+                `federated / Cognito Identity Pool / cross-account signer's. cdk-local denies it by ` +
+                `default; pass ${optFlag} to warn-and-pass, or sign the request with the same ` +
+                `credentials cdk-local resolves locally.`
+            : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+                `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
+                `shared-secret) can only be verified with the signer's own credentials, never a ` +
+                `federated / Cognito Identity Pool / cross-account signer's. ${optFlag} is set, so ` +
+                `cdk-local denies it; remove ${optFlag} to warn-and-pass (the default), or sign the ` +
+                `request with the same credentials cdk-local resolves locally.`
         );
         warned?.add(dedupKey);
       }
@@ -344,12 +361,19 @@ export async function verifySigV4(
           ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC — in production CloudFront re-signs the origin request, so the local client's signature (access-key-id '${parsed.credentialAccessKeyId}') cannot be verified. ` +
               `Passing through with unverified principalId 'unverified-foreign-identity'. ` +
               `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
-          : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+          : sigV4StrictByDefault
+            ? `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+              `a federated / Cognito Identity Pool / cross-account signer cdk-local cannot verify ` +
+              `locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies ` +
+              `it because AWS holds the secret). ${optFlag} is set; passing through with unverified ` +
+              `principalId 'unverified-foreign-identity'. Do NOT trust ` +
+              `event.requestContext.authorizer.principalId in handler code.`
+            : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
               `a federated / Cognito Identity Pool / cross-account signer cdk-local cannot verify ` +
               `locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies ` +
               `it because AWS holds the secret). Passing through with unverified principalId ` +
               `'unverified-foreign-identity' — cdk-local's default for unverifiable IAM requests; ` +
-              `pass --strict-sigv4 to deny instead. Do NOT trust ` +
+              `pass ${optFlag} to deny instead. Do NOT trust ` +
               `event.requestContext.authorizer.principalId in handler code.`
       );
       warned?.add(dedupKey);

@@ -29,6 +29,8 @@ describe('embed-config', () => {
       resourceNamePrefix: 'cdkl',
       awsBindMountPath: '/cdk-local-aws',
       envPrefix: 'CDKL',
+      sigV4StrictByDefault: false,
+      sigV4OptFlag: '--strict-sigv4',
     });
   });
 
@@ -40,6 +42,8 @@ describe('embed-config', () => {
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdkd-aws',
       envPrefix: 'CDKD',
+      sigV4StrictByDefault: true,
+      sigV4OptFlag: '--allow-unverified-sigv4',
     });
     expect(getEmbedConfig()).toEqual({
       cliName: 'cdkd local',
@@ -48,6 +52,8 @@ describe('embed-config', () => {
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdkd-aws',
       envPrefix: 'CDKD',
+      sigV4StrictByDefault: true,
+      sigV4OptFlag: '--allow-unverified-sigv4',
     });
   });
 
@@ -60,6 +66,8 @@ describe('embed-config', () => {
       resourceNamePrefix: 'cdkd-local',
       awsBindMountPath: '/cdk-local-aws',
       envPrefix: 'CDKL',
+      sigV4StrictByDefault: false,
+      sigV4OptFlag: '--strict-sigv4',
     });
   });
 
