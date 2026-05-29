@@ -1,3 +1,10 @@
+# [0.35.0](https://github.com/go-to-k/cdk-local/compare/v0.34.0...v0.35.0) (2026-05-29)
+
+
+### Features
+
+* **picker:** arrow-key bulk select, confirmation, kind-grouped multi-select ([#117](https://github.com/go-to-k/cdk-local/issues/117)) ([95e6296](https://github.com/go-to-k/cdk-local/commit/95e629672c2a5cae9fa62765c3523c439a0ce616))
+
 # [0.34.0](https://github.com/go-to-k/cdk-local/compare/v0.33.0...v0.34.0) (2026-05-29)
 
 
