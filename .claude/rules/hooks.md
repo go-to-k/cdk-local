@@ -24,6 +24,23 @@ The hooks split into three classes:
   outer-shell quote tracking miscounts when the body contains
   apostrophes / backticks; use `git commit -F <file>` instead.
 
+- **`control-char-gate.sh`** blocks `git commit` (incl. the
+  `cd <path> && git commit` / `git -C <path> commit` worktree forms)
+  when a staged text file's blob contains a NUL (`\x00`) or any other
+  C0 control byte except tab / newline / carriage-return. Catches the
+  editing-artifact foot-gun where a separator lands as a raw control
+  byte inside source (the formatter / linter does NOT flag it, but it
+  makes `grep` treat the file as binary and silently suppress matches,
+  and ships a control byte in committed text). Scans the STAGED BLOB
+  (`git show :<file>`) of each `--diff-filter=ACM` file, not the diff —
+  a NUL makes `git diff` report "Binary files differ" and hide the
+  added lines, so a diff-only scan would miss exactly this case.
+  Binary / asset extensions (images, fonts, archives, `.wasm`, etc.)
+  are skipped (control bytes are legitimate there). Cwd-aware (same
+  `git -C` > `cd` > payload `cwd` resolution as `branch-gate.sh`).
+  Fails open when `git` / `perl` are unavailable or nothing is staged.
+  No bypass marker — the fix is to remove the stray byte and re-stage.
+
 - **`closes-paren-form-gate.sh`** blocks `gh pr merge <N>` when the
   target PR's body uses `Closes (#N)` / `Fixes (#N)` /
   `Resolves (#N)` (parens form) — GitHub's auto-close grammar
