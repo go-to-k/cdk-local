@@ -919,4 +919,34 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
     );
     expect(r.allow).toBe(true);
   });
+
+  it('pass-through accepts a malformed (non-JWT) token when discovery is unreachable', async () => {
+    const f = makeJwtFixture();
+    const { cache } = setup(f);
+    const unreachable = vi.fn(async () => ({ ok: false, status: 500, text: async () => 'err' }));
+    const r = await verifyJwtViaDiscovery({ discoveryUrl: DISCOVERY }, 'Bearer not-a-jwt', cache, {
+      fetchImpl: unreachable,
+      warned: new Set(),
+    });
+    expect(r.allow).toBe(true);
+    expect(r.principalId).toBe('unknown');
+  });
+
+  it('pass-through accepts when the discovery doc is missing issuer / jwks_uri', async () => {
+    const f = makeJwtFixture();
+    const { cache } = setup(f);
+    const malformedDoc = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '{"not":"an-oidc-doc"}',
+    }));
+    const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+    const r = await verifyJwtViaDiscovery(
+      { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
+      `Bearer ${token}`,
+      cache,
+      { fetchImpl: malformedDoc, warned: new Set() }
+    );
+    expect(r.allow).toBe(true);
+  });
 });
