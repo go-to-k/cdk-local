@@ -91,6 +91,32 @@ describe('resolveAgentCoreTarget — happy path', () => {
       '123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag'
     );
   });
+
+  it('substitutes ${AWS::*} in an Fn::Sub container URI when an imageContext is supplied', () => {
+    const sub = '${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/agent:tag';
+    const stack = buildStack('App', { ChatAgent: containerRuntime({}, { 'Fn::Sub': sub }) });
+    const resolved = resolveAgentCoreTarget('ChatAgent', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+    });
+    expect(resolved.containerUri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/agent:tag');
+  });
+});
+
+describe('resolveAgentCoreTarget — unresolvable container URI', () => {
+  it('throws an actionable error for an unsupported intrinsic container URI', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({}, { 'Fn::ImportValue': 'SomeExportedUri' }),
+    });
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(
+      AgentCoreResolutionError
+    );
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/cannot resolve/);
+  });
 });
 
 describe('resolveAgentCoreTarget — target matching', () => {

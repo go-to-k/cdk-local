@@ -300,9 +300,9 @@ function extractContainerUri(
   );
   if (uri === undefined) {
     throw new AgentCoreResolutionError(
-      `AgentCore Runtime '${logicalId}' in ${stackName} has an unresolvable ContainerConfiguration.ContainerUri. ` +
-        `${getEmbedConfig().cliName} invoke-agent resolves a literal URI, an Fn::Sub asset URI, and the canonical ` +
-        `CDK Fn::Join ECR shape; same-stack ECR repositories need --from-cfn-stack to recover the deployed URI.`
+      `AgentCore Runtime '${logicalId}' in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agent cannot resolve. ` +
+        `v1 resolves a literal image URI, an Fn::Sub asset URI (the fromAsset / Dockerfile path), and an imported-ECR Fn::Join. ` +
+        `A same-stack AWS::ECR::Repository reference is not supported — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
     );
   }
   return uri;
