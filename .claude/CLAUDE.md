@@ -63,7 +63,7 @@ Gateway).
 `src/` layout:
 
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
-  `createLocalInvokeAgentCommand`, `createLocalStartApiCommand`,
+  `createLocalInvokeAgentCoreCommand`, `createLocalStartApiCommand`,
   `createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
   `createLocalStartAlbCommand`, `createLocalListCommand`) + shared option
   helpers. `start-service` and `start-alb` share one neutral orchestration
