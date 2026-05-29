@@ -262,7 +262,7 @@ vp run runtime:smoke
   pre-flight + verify.sh + post-run orphan sweep + (for
   `*-from-cfn-stack` tests) AWS stack orphan check in one block.
   Skipping any step risks setting the `integ` marker on incomplete
-  verification. The matching `integ-gate.sh` hook (TODO) will block
+  verification. The `integ-gate.sh` hook blocks
   `gh pr merge` when `src/**` or `tests/integration/**` is touched
   and the marker is stale.
 
