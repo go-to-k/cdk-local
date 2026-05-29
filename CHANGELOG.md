@@ -1,3 +1,10 @@
+# [0.38.0](https://github.com/go-to-k/cdk-local/compare/v0.37.1...v0.38.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** verify inbound JWT auth (customJwtAuthorizer) ([#135](https://github.com/go-to-k/cdk-local/issues/135)) ([f6fc342](https://github.com/go-to-k/cdk-local/commit/f6fc3420d19142c87d26ef1497ee20a2e9b2f9f1))
+
 ## [0.37.1](https://github.com/go-to-k/cdk-local/compare/v0.37.0...v0.37.1) (2026-05-29)
 
 
