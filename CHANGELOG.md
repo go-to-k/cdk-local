@@ -1,3 +1,10 @@
+# [0.40.0](https://github.com/go-to-k/cdk-local/compare/v0.39.0...v0.40.0) (2026-05-29)
+
+
+### Features
+
+* **start-alb:** ALB path-pattern listener-rule routing across backing services ([#139](https://github.com/go-to-k/cdk-local/issues/139)) ([131921b](https://github.com/go-to-k/cdk-local/commit/131921bdd5eb55e2038d40c612d94db99874a84a))
+
 # [0.39.0](https://github.com/go-to-k/cdk-local/compare/v0.38.0...v0.39.0) (2026-05-29)
 
 
