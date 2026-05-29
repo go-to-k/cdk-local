@@ -38,6 +38,7 @@ import {
   type ResolvedAgentCoreRuntime,
 } from '../../local/agentcore-resolver.js';
 import { buildAgentCoreCodeImage } from '../../local/agentcore-code-build.js';
+import { downloadAndExtractS3Bundle } from '../../local/agentcore-s3-bundle.js';
 import {
   invokeAgentCore,
   waitForAgentCorePing,
@@ -314,7 +315,7 @@ async function localInvokeAgentCoreCommand(
       authorization = await resolveInboundAuthorization(resolved, options);
     }
 
-    const image = await resolveAgentCoreImage(resolved, options);
+    const image = await resolveAgentCoreImage(resolved, options, loadedState);
 
     const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
       resolved,
@@ -467,19 +468,31 @@ export async function resolveInboundAuthorization(
 
 /**
  * Acquire the agent image. A CODE artifact (managed runtime) is built from
- * source (generated Dockerfile over the bundle's cdk.out asset). A CONTAINER
- * artifact mirrors the container-Lambda path: build from a local cdk.out asset
- * when the URI matches one, else pull from ECR, else pull a plain registry image.
+ * source — a fromCodeAsset bundle from its cdk.out asset, a fromS3 bundle
+ * downloaded + extracted from S3. A CONTAINER artifact mirrors the
+ * container-Lambda path: build from a local cdk.out asset when the URI matches
+ * one, else pull from ECR, else pull a plain registry image.
+ *
+ * `loaded` is the `--from-cfn-stack` state record (when available) — threaded
+ * through so a bare `--assume-role` can resolve the execution-role ARN from
+ * state for the fromS3 download.
  */
 export async function resolveAgentCoreImage(
   resolved: ResolvedAgentCoreRuntime,
-  options: LocalInvokeAgentCoreOptions
+  options: LocalInvokeAgentCoreOptions,
+  loaded?: LocalStateRecord
 ): Promise<string> {
   const logger = getLogger();
   const architecture = platformToArchitecture(options.platform);
 
   if (resolved.codeArtifact) {
-    return resolveAgentCoreCodeImage(resolved, resolved.codeArtifact, options, architecture);
+    return resolveAgentCoreCodeImage(
+      resolved,
+      resolved.codeArtifact,
+      options,
+      architecture,
+      loaded
+    );
   }
 
   const containerUri = resolved.containerUri;
@@ -521,17 +534,32 @@ export async function resolveAgentCoreImage(
 }
 
 /**
- * Build a local image from a `CodeConfiguration` (managed-runtime) bundle:
- * locate the fromCodeAsset source dir in cdk.out via its asset hash, then run
- * the from-source build (generated Dockerfile → install deps → run EntryPoint).
- * A bundle with no local asset (fromS3) hard-errors — not supported yet.
+ * Build a local image from a `CodeConfiguration` (managed-runtime) bundle.
+ *
+ * - fromS3 (`code.s3Source` set, a literal S3 object): download + extract the
+ *   bundle, then run the from-source build over the extracted dir.
+ * - fromCodeAsset: locate the source dir in cdk.out via its asset hash, then
+ *   run the same from-source build (generated Dockerfile → install deps → run
+ *   EntryPoint).
  */
 async function resolveAgentCoreCodeImage(
   resolved: ResolvedAgentCoreRuntime,
   code: AgentCoreCodeArtifact,
   options: LocalInvokeAgentCoreOptions,
-  architecture: 'x86_64' | 'arm64'
+  architecture: 'x86_64' | 'arm64',
+  loaded?: LocalStateRecord
 ): Promise<string> {
+  if (code.s3Source) {
+    return resolveAgentCoreCodeImageFromS3(
+      resolved,
+      code,
+      code.s3Source,
+      options,
+      architecture,
+      loaded
+    );
+  }
+
   const manifestPath = resolved.stack.assetManifestPath;
   if (!manifestPath) {
     throw new CdkLocalError(
@@ -556,7 +584,8 @@ async function resolveAgentCoreCodeImage(
     throw new CdkLocalError(
       `AgentCore Runtime '${resolved.logicalId}' code bundle (asset ${code.codeAssetHash}) was not found ` +
         `in the cdk.out asset manifest. ${getEmbedConfig().cliName} invoke-agentcore runs a local from-source ` +
-        `build of a fromCodeAsset bundle; a fromS3 bundle (a pre-existing S3 object) is not supported yet.`,
+        `build of a fromCodeAsset bundle — re-synthesize the app so the asset is staged in cdk.out and retry. ` +
+        `(A fromS3 bundle is downloaded from S3 instead; this runtime has no literal Code.S3.Bucket.)`,
       'LOCAL_INVOKE_AGENTCORE_CODE_ASSET_NOT_FOUND'
     );
   }
@@ -575,6 +604,66 @@ async function resolveAgentCoreCodeImage(
     architecture,
     noBuild: options.build === false,
   });
+}
+
+/**
+ * Build a local image from a fromS3 CodeConfiguration bundle: download +
+ * extract the S3 object, run the from-source build over the extracted dir, then
+ * clean up the temp dir.
+ *
+ * Credentials mirror the rest of the command: an `--assume-role` ARN (explicit,
+ * or resolved from `--from-cfn-stack` state for the bare form) yields STS temp
+ * creds for the download; otherwise `--profile` / the default chain is used.
+ * The region is `--region` / `--stack-region` / env / the stack's region.
+ */
+async function resolveAgentCoreCodeImageFromS3(
+  resolved: ResolvedAgentCoreRuntime,
+  code: AgentCoreCodeArtifact,
+  s3Source: NonNullable<AgentCoreCodeArtifact['s3Source']>,
+  options: LocalInvokeAgentCoreOptions,
+  architecture: 'x86_64' | 'arm64',
+  loaded: LocalStateRecord | undefined
+): Promise<string> {
+  const logger = getLogger();
+  const region =
+    options.region ??
+    options.stackRegion ??
+    process.env['AWS_REGION'] ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    resolved.stack.region;
+
+  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
+  let credentials:
+    | { accessKeyId: string; secretAccessKey: string; sessionToken: string }
+    | undefined;
+  if (assumeRoleArn) {
+    try {
+      credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+    } catch (err) {
+      logger.warn(
+        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for the fromS3 bundle download: ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
+      );
+    }
+  }
+
+  const bundle = await downloadAndExtractS3Bundle(s3Source, {
+    ...(region !== undefined && { region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+    ...(credentials !== undefined && { credentials }),
+  });
+  try {
+    return await buildAgentCoreCodeImage({
+      sourceDir: bundle.dir,
+      runtime: code.runtime,
+      entryPoint: code.entryPoint,
+      architecture,
+      noBuild: options.build === false,
+    });
+  } finally {
+    await bundle.cleanup();
+  }
 }
 
 /**

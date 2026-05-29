@@ -36,10 +36,10 @@ const SUPPORTED_AGENTCORE_PROTOCOLS = [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_MCP_PR
  * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
- * Covers the CONTAINER artifact and the `CodeConfiguration` (fromCodeAsset)
- * managed-runtime artifact on the HTTP + MCP protocols — the resolver
- * hard-errors on a fromS3 code bundle (a non-literal `Code.S3.Prefix`) and the
- * A2A / AGUI protocols so the command never starts something it can't run.
+ * Covers the CONTAINER artifact and the `CodeConfiguration` managed-runtime
+ * artifact (fromCodeAsset AND fromS3) on the HTTP + MCP protocols — the
+ * resolver hard-errors on a non-literal `Code.S3.Prefix` and the A2A / AGUI
+ * protocols so the command never starts something it can't run.
  */
 export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
@@ -108,13 +108,22 @@ export interface AgentCoreJwtAuthorizer {
 /**
  * A resolved `AgentRuntimeArtifact.CodeConfiguration` (managed-runtime).
  * `codeAssetHash` is the cdk.out file-asset hash (from `Code.S3.Prefix`,
- * `<hash>.zip`) the command looks up to find the bundle's local source dir;
- * `entryPoint` is the `EntryPoint` argv and `runtime` the `Runtime` enum.
+ * `<hash>.zip`) the command looks up to find the bundle's local source dir
+ * (the `fromCodeAsset` shape); `entryPoint` is the `EntryPoint` argv and
+ * `runtime` the `Runtime` enum.
+ *
+ * `s3Source` is set for the `fromS3` shape — a bundle whose `Code.S3.Bucket`
+ * is a literal string (a pre-existing S3 object, NOT the CDK staging bucket,
+ * which renders as an `Fn::Sub` intrinsic for `fromCodeAsset`). The command
+ * downloads + extracts it and runs the same from-source build. Undefined when
+ * the bucket is an intrinsic (the fromCodeAsset case, or a fromS3 bundle whose
+ * bucket is a `Ref` — not resolvable locally yet).
  */
 export interface AgentCoreCodeArtifact {
   runtime: string;
   entryPoint: string[];
   codeAssetHash: string;
+  s3Source?: { bucket: string; key: string; versionId?: string };
 }
 
 export class AgentCoreResolutionError extends Error {
@@ -430,11 +439,13 @@ function extractArtifact(
 
 /**
  * Extract a `CodeConfiguration` (managed-runtime) artifact. Reads `Runtime`,
- * `EntryPoint`, and the cdk.out file-asset hash from `Code.S3.Prefix`
- * (`<hash>.zip`, the `fromCodeAsset` shape). A non-literal `Code.S3.Prefix`
- * (an intrinsic, or a `fromS3` object key the command can't map to a local
- * asset) hard-errors — downloading a pre-existing S3 bundle is not supported
- * locally yet.
+ * `EntryPoint`, and the `Code.S3` location. `Code.S3.Prefix` must be a literal
+ * string (the object key) — it doubles as the cdk.out file-asset hash for the
+ * `fromCodeAsset` shape (`<hash>.zip`). When `Code.S3.Bucket` is ALSO a literal
+ * string, this is a `fromS3` bundle (a pre-existing S3 object — the CDK staging
+ * bucket of a fromCodeAsset renders as an `Fn::Sub` intrinsic, not a literal),
+ * captured in `s3Source` so the command downloads + extracts it. A non-literal
+ * `Code.S3.Prefix` (an unresolved intrinsic) hard-errors.
  */
 function extractCodeArtifact(
   codeConfig: unknown,
@@ -467,20 +478,36 @@ function extractCodeArtifact(
     cfg['Code'] && typeof cfg['Code'] === 'object'
       ? (cfg['Code'] as Record<string, unknown>)['S3']
       : undefined;
-  const prefix =
-    s3 && typeof s3 === 'object' ? (s3 as Record<string, unknown>)['Prefix'] : undefined;
+  const s3Obj =
+    s3 && typeof s3 === 'object' && !Array.isArray(s3) ? (s3 as Record<string, unknown>) : {};
+  const prefix = s3Obj['Prefix'];
   if (typeof prefix !== 'string' || prefix.length === 0) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} has a CodeConfiguration whose Code.S3.Prefix is not a literal string. ` +
-        `${getEmbedConfig().cliName} invoke-agentcore runs a local from-source build of the fromCodeAsset bundle; ` +
-        `downloading a pre-existing S3 bundle (fromS3) is not supported yet.`
+        `${getEmbedConfig().cliName} invoke-agentcore needs a literal object key — re-synthesize a fromCodeAsset bundle, ` +
+        `or pass a literal bucket + key for a fromS3 bundle.`
     );
   }
 
   // Prefix is `<assetHash>.zip` (possibly with a key prefix) → the cdk.out
-  // file-asset hash the command looks up to find the bundle source dir.
+  // file-asset hash the command looks up to find a fromCodeAsset bundle source.
   const codeAssetHash = prefix.replace(/^.*\//, '').replace(/\.zip$/, '');
-  return { runtime, entryPoint, codeAssetHash };
+
+  // A literal Bucket means a fromS3 bundle (a pre-existing object). The CDK
+  // staging bucket of a fromCodeAsset renders as an `Fn::Sub` intrinsic, so it
+  // is not a literal string and `s3Source` stays undefined for that case.
+  const bucket = s3Obj['Bucket'];
+  const versionId = s3Obj['VersionId'];
+  const s3Source =
+    typeof bucket === 'string' && bucket.length > 0
+      ? {
+          bucket,
+          key: prefix,
+          ...(typeof versionId === 'string' && versionId.length > 0 && { versionId }),
+        }
+      : undefined;
+
+  return { runtime, entryPoint, codeAssetHash, ...(s3Source && { s3Source }) };
 }
 
 /**
