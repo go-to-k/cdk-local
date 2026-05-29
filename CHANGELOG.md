@@ -1,3 +1,10 @@
+## [0.35.1](https://github.com/go-to-k/cdk-local/compare/v0.35.0...v0.35.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **from-cfn-stack:** keep decrypted SecureString SSM values off the docker argv ([#121](https://github.com/go-to-k/cdk-local/issues/121)) ([c46a39b](https://github.com/go-to-k/cdk-local/commit/c46a39be9fd17cd355d3c7e0efc1cd4a1b640323))
+
 # [0.35.0](https://github.com/go-to-k/cdk-local/compare/v0.34.0...v0.35.0) (2026-05-29)
 
 
