@@ -1,3 +1,10 @@
+# [0.43.0](https://github.com/go-to-k/cdk-local/compare/v0.42.0...v0.43.0) (2026-05-29)
+
+
+### Features
+
+* **invoke-agentcore:** run CodeConfiguration (managed-runtime) artifacts from source ([#145](https://github.com/go-to-k/cdk-local/issues/145)) ([31fdcd5](https://github.com/go-to-k/cdk-local/commit/31fdcd505999cb5e2016989fed2c572d5e3ecb90))
+
 # [0.42.0](https://github.com/go-to-k/cdk-local/compare/v0.41.0...v0.42.0) (2026-05-29)
 
 
