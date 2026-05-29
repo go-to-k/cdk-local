@@ -380,17 +380,19 @@ export { buildCloudMapIndex, type CloudMapIndex } from './local/cloud-map-resolv
 export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
 
 /**
- * `invoke-agentcore` Bedrock AgentCore Runtime resolution + HTTP-contract
- * client. `resolveAgentCoreTarget` maps a target argument to a runnable
- * container runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the
- * `GET /ping` + `POST /invocations` contract. Exposed only as the
- * consuming host's `import` statements require them.
+ * `invoke-agentcore` Bedrock AgentCore Runtime resolution + protocol clients.
+ * `resolveAgentCoreTarget` maps a target argument to a runnable container
+ * runtime; `waitForAgentCorePing` / `invokeAgentCore` speak the HTTP
+ * `GET /ping` + `POST /invocations` contract; `mcpInvokeOnce` speaks the MCP
+ * Streamable-HTTP `POST /mcp` contract. Exposed only as the consuming host's
+ * `import` statements require them.
  */
 export {
   resolveAgentCoreTarget,
   AgentCoreResolutionError,
   AGENTCORE_RUNTIME_TYPE,
   AGENTCORE_HTTP_PROTOCOL,
+  AGENTCORE_MCP_PROTOCOL,
   type ResolvedAgentCoreRuntime,
   type AgentCoreJwtAuthorizer,
 } from './local/agentcore-resolver.js';
@@ -401,6 +403,16 @@ export {
   type AgentCoreInvokeResult,
   type InvokeAgentCoreOptions,
 } from './local/agentcore-client.js';
+export {
+  mcpInvokeOnce,
+  parseSseForJsonRpc,
+  MCP_CONTAINER_PORT,
+  MCP_PATH,
+  MCP_PROTOCOL_VERSION,
+  type McpInvokeResult,
+  type McpInvokeOptions,
+  type McpJsonRpcRequest,
+} from './local/agentcore-mcp-client.js';
 
 /**
  * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the

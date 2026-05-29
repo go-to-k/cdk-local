@@ -19,20 +19,27 @@ import { getLogger } from '../utils/logger.js';
 export const AGENTCORE_RUNTIME_TYPE = 'AWS::BedrockAgentCore::Runtime';
 
 /**
- * The only protocol `cdkl invoke-agentcore` serves in v1. AgentCore Runtimes
- * may also declare `MCP` / `A2A` / `AGUI`, which speak different wire
- * contracts and are out of scope here.
+ * AgentCore Runtime protocols `cdkl invoke-agentcore` can serve.
+ *
+ * - `HTTP` — the agent contract (`POST /invocations` + `GET /ping` on 8080).
+ * - `MCP` — Model Context Protocol over Streamable HTTP (`POST /mcp` on 8000).
+ *
+ * `A2A` / `AGUI` declare yet other wire contracts and are not served yet.
  */
 export const AGENTCORE_HTTP_PROTOCOL = 'HTTP';
+export const AGENTCORE_MCP_PROTOCOL = 'MCP';
+
+/** Protocols this CLI can run a container for. */
+const SUPPORTED_AGENTCORE_PROTOCOLS = [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_MCP_PROTOCOL] as const;
 
 /**
  * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
- * v1 covers the CONTAINER artifact + HTTP protocol only — the resolver
+ * Covers the CONTAINER artifact on the HTTP + MCP protocols — the resolver
  * hard-errors on `CodeConfiguration` artifacts (S3 zip + managed runtime)
- * and non-HTTP protocols so the command never starts a container it can't
- * speak to.
+ * and the A2A / AGUI protocols so the command never starts a container it
+ * can't speak to.
  */
 export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
@@ -65,7 +72,7 @@ export interface ResolvedAgentCoreRuntime {
    * an intrinsic role falls back to an explicit `--assume-role <arn>`.
    */
   roleArn?: string;
-  /** Always `HTTP` in v1 (validated at resolution time). */
+  /** `HTTP` or `MCP` (validated at resolution time). */
   protocol: string;
   /**
    * `Properties.AuthorizerConfiguration.CustomJWTAuthorizer` when present
@@ -299,23 +306,23 @@ function extractJwtAuthorizer(
 }
 
 /**
- * Validate `ProtocolConfiguration`. v1 serves only `HTTP`; absent is
- * treated as `HTTP` (the runtime contract's default request/response
- * shape). Any explicit non-HTTP value hard-errors.
+ * Validate `ProtocolConfiguration`. Serves `HTTP` (the default when absent)
+ * and `MCP`; `A2A` / `AGUI` speak other wire contracts and hard-error with a
+ * pointer to the follow-up.
  */
 function extractProtocol(value: unknown, logicalId: string, stackName: string): string {
   if (value === undefined || value === null) return AGENTCORE_HTTP_PROTOCOL;
   if (typeof value !== 'string') {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} has a non-string ProtocolConfiguration. ` +
-        `${getEmbedConfig().cliName} invoke-agentcore supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1.`
+        `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols.`
     );
   }
-  if (value !== AGENTCORE_HTTP_PROTOCOL) {
+  if (!(SUPPORTED_AGENTCORE_PROTOCOLS as readonly string[]).includes(value)) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} uses the ${value} protocol. ` +
-        `${getEmbedConfig().cliName} invoke-agentcore supports the ${AGENTCORE_HTTP_PROTOCOL} protocol only in v1 ` +
-        `(MCP / A2A / AGUI speak different wire contracts).`
+        `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols ` +
+        `(A2A / AGUI speak different wire contracts and are not served yet).`
     );
   }
   return value;

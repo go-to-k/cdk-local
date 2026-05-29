@@ -64,6 +64,8 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
 const {
   resolveAgentCoreImage,
   emitResult,
+  emitMcpResult,
+  buildMcpRequest,
   buildContainerEnv,
   readEvent,
   readEnvOverridesFile,
@@ -182,6 +184,57 @@ describe('emitResult — exit codes', () => {
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(writeSpy).toHaveBeenCalledWith('\n');
     expect(process.exitCode).toBeUndefined();
+  });
+});
+
+describe('buildMcpRequest', () => {
+  it('defaults to tools/list when no --event was given (empty object)', () => {
+    expect(buildMcpRequest({})).toEqual({ method: 'tools/list', params: {} });
+  });
+
+  it('passes a method + params through verbatim', () => {
+    expect(
+      buildMcpRequest({ method: 'tools/call', params: { name: 'add', arguments: { a: 1 } } })
+    ).toEqual({ method: 'tools/call', params: { name: 'add', arguments: { a: 1 } } });
+  });
+
+  it('omits params when the event has only a method', () => {
+    expect(buildMcpRequest({ method: 'tools/list' })).toEqual({ method: 'tools/list' });
+  });
+
+  it('rejects a non-object event', () => {
+    expect(() => buildMcpRequest([1, 2])).toThrow(/JSON object/);
+  });
+
+  it('rejects an object that has keys but no string method', () => {
+    expect(() => buildMcpRequest({ params: {} })).toThrow(/string "method"/);
+  });
+});
+
+describe('emitMcpResult — exit codes', () => {
+  let writeSpy: ReturnType<typeof vi.spyOn>;
+  const savedExitCode = process.exitCode;
+
+  beforeEach(() => {
+    process.exitCode = undefined;
+    writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    writeSpy.mockRestore();
+    process.exitCode = savedExitCode;
+  });
+
+  it('prints the JSON-RPC response and leaves exit code unset when ok', () => {
+    emitMcpResult({ ok: true, raw: '{"result":{"tools":[]}}' });
+    expect(writeSpy).toHaveBeenCalledWith('{"result":{"tools":[]}}\n');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('sets exit code 1 (but still prints) on a JSON-RPC error', () => {
+    emitMcpResult({ ok: false, raw: '{"error":{"message":"nope"}}' });
+    expect(writeSpy).toHaveBeenCalledWith('{"error":{"message":"nope"}}\n');
+    expect(process.exitCode).toBe(1);
   });
 });
 

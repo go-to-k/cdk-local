@@ -71,8 +71,15 @@ export interface DockerRunOptions {
    * image's own CMD is sufficient.
    */
   cmd: string[];
-  /** Host port to bind the RIE port (8080) to. */
+  /** Host port to bind the container port ({@link containerPort}) to. */
   hostPort: number;
+  /**
+   * Container port to publish {@link hostPort} to. Defaults to `8080` (the
+   * Lambda RIE port + the AgentCore HTTP contract port). `cdkl
+   * invoke-agentcore` overrides it to `8000` for an MCP-protocol runtime,
+   * whose container serves `POST /mcp` on `0.0.0.0:8000`.
+   */
+  containerPort?: number;
   /** Host to bind to (default `127.0.0.1`). */
   host?: string;
   /**
@@ -228,7 +235,7 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   }
 
   const host = opts.host ?? '127.0.0.1';
-  args.push('-p', `${host}:${opts.hostPort}:8080`);
+  args.push('-p', `${host}:${opts.hostPort}:${opts.containerPort ?? 8080}`);
   if (opts.debugPort !== undefined) {
     args.push('-p', `${host}:${opts.debugPort}:${opts.debugPort}`);
   }

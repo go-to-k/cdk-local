@@ -12,7 +12,9 @@
 # header, and the injected GREETING env var, so we can assert the full
 # request/response contract + env injection + session-id binding. When the
 # event carries {"stream": true} it responds with a text/event-stream body, so
-# we can assert the SSE response is streamed to stdout incrementally.
+# we can assert the SSE response is streamed to stdout incrementally. A second
+# MCP-protocol runtime (McpAgent, POST /mcp on 8000) exercises the MCP session
+# handshake + tools/list / tools/call.
 #
 # Run via `/run-integ local-invoke-agentcore` (recommended) or directly:
 #
@@ -27,6 +29,7 @@ cd "$(dirname "$0")"
 CDKL="node ../../../dist/cli.js"
 TARGET="CdkLocalInvokeAgentCoreFixture/EchoAgent"
 PROTECTED="CdkLocalInvokeAgentCoreFixture/ProtectedAgent"
+MCP="CdkLocalInvokeAgentCoreFixture/McpAgent"
 BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
 
 echo "==> Verifying Docker is available"
@@ -41,7 +44,7 @@ if [[ ! -d node_modules ]]; then
 fi
 
 # Test 1 — default empty event: env injection + auto session id.
-echo "==> [1/8] Invoking EchoAgent with default empty event"
+echo "==> [1/10] Invoking EchoAgent with default empty event"
 RESULT_1=$(${CDKL} invoke-agentcore "${TARGET}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
@@ -55,7 +58,7 @@ echo "${RESULT_1}" | grep -Eq '"sessionId":"[0-9a-fA-F-]{8,}' || {
 }
 
 # Test 2 — event payload via --event echoes through /invocations.
-echo "==> [2/8] Invoking EchoAgent with --event payload"
+echo "==> [2/10] Invoking EchoAgent with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
@@ -67,7 +70,7 @@ echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
 }
 
 # Test 3 — --env-vars override wins over the template env.
-echo "==> [3/8] Invoking EchoAgent with --env-vars override"
+echo "==> [3/10] Invoking EchoAgent with --env-vars override"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
@@ -79,7 +82,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — explicit --session-id reaches the container's session header.
-echo "==> [4/8] Invoking EchoAgent with explicit --session-id"
+echo "==> [4/10] Invoking EchoAgent with explicit --session-id"
 SESSION="cdkl-integ-session-1234567890abcdef"
 RESULT_4=$(${CDKL} invoke-agentcore "${TARGET}" --session-id "${SESSION}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_4}"
@@ -90,7 +93,7 @@ echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
 
 # Test 5 — a JWT-protected runtime invoked WITHOUT a token is rejected
 # BEFORE any container starts (AgentCore returns 401 in the cloud).
-echo "==> [5/8] ProtectedAgent without --bearer-token must be rejected pre-container"
+echo "==> [5/10] ProtectedAgent without --bearer-token must be rejected pre-container"
 set +e
 OUT_5=$(${CDKL} invoke-agentcore "${PROTECTED}" 2>&1)
 RC_5=$?
@@ -111,7 +114,7 @@ RUNNING=$(docker ps -a --filter name=cdkl-agentcore- -q | wc -l | tr -d ' ')
 }
 
 # Test 6 — --no-verify-auth skips verification and proceeds.
-echo "==> [6/8] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
+echo "==> [6/10] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
 RESULT_6=$(${CDKL} invoke-agentcore "${PROTECTED}" --no-verify-auth 2>/dev/null | tail -1)
 echo "    response: ${RESULT_6}"
 echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
@@ -121,7 +124,7 @@ echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
 
 # Test 7 — a --bearer-token (discovery URL unreachable -> pass-through accept)
 # is verified and forwarded to /invocations as the Authorization header.
-echo "==> [7/8] ProtectedAgent with --bearer-token forwards the Authorization header"
+echo "==> [7/10] ProtectedAgent with --bearer-token forwards the Authorization header"
 TOKEN="header.payload.sig"
 RESULT_7=$(${CDKL} invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_7}"
@@ -134,7 +137,7 @@ echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
 # The agent emits SSE frames when the event carries {"stream": true}; we assert
 # every streamed frame reached stdout (the full body, not a single buffered
 # line — so we capture all output, not just tail -1).
-echo "==> [8/8] EchoAgent streams a text/event-stream response to stdout"
+echo "==> [8/10] EchoAgent streams a text/event-stream response to stdout"
 STREAM_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}"' EXIT
 echo '{"stream":true}' > "${STREAM_EVENT}"
@@ -151,5 +154,28 @@ echo "${RESULT_8}" | grep -q '\[DONE\]' || {
   exit 1
 }
 
+# Test 9 — an MCP-protocol runtime, no --event: the session handshake runs and
+# the default tools/list request returns the server's tools. The container
+# serves POST /mcp on 8000 (no /ping); readiness is a successful initialize.
+echo "==> [9/10] McpAgent (no --event) runs the handshake + tools/list"
+RESULT_9=$(${CDKL} invoke-agentcore "${MCP}" 2>/dev/null)
+echo "    response: ${RESULT_9}"
+echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
+  echo "FAIL: expected tools/list to return the add_numbers tool, got: ${RESULT_9}"
+  exit 1
+}
+
+# Test 10 — an MCP tools/call via --event returns the tool result.
+echo "==> [10/10] McpAgent with --event runs tools/call"
+CALL_EVENT=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}"' EXIT
+echo '{"method":"tools/call","params":{"name":"add_numbers","arguments":{"a":2,"b":3}}}' > "${CALL_EVENT}"
+RESULT_10=$(${CDKL} invoke-agentcore "${MCP}" --event "${CALL_EVENT}" 2>/dev/null)
+echo "    response: ${RESULT_10}"
+echo "${RESULT_10}" | grep -q '"text": "5"' || {
+  echo "FAIL: expected tools/call add_numbers(2,3) to return text \"5\", got: ${RESULT_10}"
+  exit 1
+}
+
 echo ""
-echo "==> All 8 local-invoke-agentcore tests passed"
+echo "==> All 10 local-invoke-agentcore tests passed"

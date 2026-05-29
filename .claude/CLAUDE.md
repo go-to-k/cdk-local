@@ -34,14 +34,17 @@ AWS managed services.
   `path-pattern` rules across the backing services (other conditions —
   host-header / weighted / Lambda targets / redirect+fixed-response
   actions — deferred to #123)
-- Bedrock AgentCore Runtime agents — the agent container served over the
-  AgentCore HTTP contract (`POST /invocations` + `GET /ping` on port 8080),
-  invoked once locally (`cdkl invoke-agentcore`); v1 covers container artifacts
-  on the HTTP protocol. An inbound `customJwtAuthorizer` is enforced locally —
-  `--bearer-token` is verified against the runtime's OIDC discovery URL before
-  the container starts and forwarded to `/invocations`. A streaming SSE
-  (`text/event-stream`) response is printed to stdout incrementally as it
-  arrives
+- Bedrock AgentCore Runtime agents — the agent container served over its
+  protocol contract, invoked once locally (`cdkl invoke-agentcore`); covers
+  container artifacts on the HTTP and MCP protocols. HTTP runs the
+  `POST /invocations` + `GET /ping` contract on 8080: an inbound
+  `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
+  the runtime's OIDC discovery URL before the container starts and forwarded to
+  `/invocations`), and a streaming SSE (`text/event-stream`) response is printed
+  to stdout incrementally. MCP runs the Streamable-HTTP `POST /mcp` contract on
+  8000: the session handshake (initialize -> notifications/initialized) then one
+  JSON-RPC request (`tools/list` by default, or the method/params from
+  `--event`)
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 

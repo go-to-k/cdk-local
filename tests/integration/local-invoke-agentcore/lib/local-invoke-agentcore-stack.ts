@@ -7,6 +7,7 @@ import {
   Runtime,
   AgentRuntimeArtifact,
   RuntimeAuthorizerConfiguration,
+  ProtocolType,
 } from 'aws-cdk-lib/aws-bedrockagentcore';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,17 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
         ['client-9'],
         ['aud-1']
       ),
+    });
+
+    // An MCP-protocol runtime (ProtocolConfiguration = MCP). Its container
+    // serves the MCP Streamable-HTTP contract on 8000 at POST /mcp (no /ping).
+    // `cdkl invoke-agentcore` runs the session handshake then one JSON-RPC
+    // request — tools/list by default, or the method/params from --event.
+    new Runtime(this, 'McpAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../mcp-agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      protocolConfiguration: ProtocolType.MCP,
     });
   }
 }

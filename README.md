@@ -4,7 +4,7 @@
 [![CI](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml/badge.svg)](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/npm/l/cdk-local.svg)](./LICENSE)
 
-Run your CDK app's Lambda functions, API Gateway, and ECS tasks/services on your own machine — with **no AWS account**, or bound to your **deployed stack to hit real AWS resources and data**. A native, CDK-first alternative to `sam local`.
+Run your CDK app's Lambda functions, API Gateway, ECS tasks/services, and Bedrock AgentCore agents on your own machine — with **no AWS account**, or bound to your **deployed stack to hit real AWS resources and data**. A native, CDK-first alternative to `sam local`.
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
 
@@ -62,7 +62,7 @@ cdk-local runs your **application compute** locally in Docker, using your CDK ap
 - **Lambda functions** — your code in a real `public.ecr.aws/lambda/*` container via the Lambda Runtime Interface Emulator
 - **HTTP APIs & Function URLs** — API Gateway REST v1 / HTTP v2 / WebSocket and Lambda Function URLs served by a local HTTP server
 - **ECS** — tasks and services as real Docker containers (awsvpc / Service Connect / Cloud Map registry)
-- **Bedrock AgentCore Runtime** — your agent container served over the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080), invoked once locally before deploy
+- **Bedrock AgentCore Runtime** — your agent container served over its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080) or MCP (`POST /mcp` Streamable HTTP on 8000) — invoked once locally before deploy
 - **Authorizers** — Lambda authorizers, Cognito User Pool JWT verification, IAM SigV4 verification
 
 **Calls real AWS (managed services):**
@@ -176,7 +176,7 @@ See [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fron
 
 When you run a container directly — `run-task`, or a single-replica `start-service` — cdk-local publishes its declared container ports on the host and logs the address (`Reach it at 127.0.0.1:<port>`), so `curl http://127.0.0.1:<port>` or a browser reaches it. The bind IP defaults to `127.0.0.1` (override with `--container-host`); `--host-port <containerPort>=<hostPort>` remaps a port (handy on macOS to avoid the Docker admin prompt for privileged ports < 1024). For an ALB-fronted service, reach the replicas through the `start-alb` front-door above instead.
 
-`invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS. When the runtime declares a JWT authorizer (`customJwtAuthorizer`), pass `--bearer-token <jwt>` — it's verified against the runtime's OIDC discovery URL (signature / issuer / expiry / audience) and forwarded to `/invocations`, the way AgentCore gates inbound requests; a missing or invalid token is rejected before the container starts (use `--no-verify-auth` to skip for local dev). A streaming SSE (`text/event-stream`) response is printed incrementally as it arrives, so a token-streaming agent shows live.
+`invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS. When the runtime declares a JWT authorizer (`customJwtAuthorizer`), pass `--bearer-token <jwt>` — it's verified against the runtime's OIDC discovery URL (signature / issuer / expiry / audience) and forwarded to `/invocations`, the way AgentCore gates inbound requests; a missing or invalid token is rejected before the container starts (use `--no-verify-auth` to skip for local dev). A streaming SSE (`text/event-stream`) response is printed incrementally as it arrives, so a token-streaming agent shows live. An **MCP-protocol** runtime (`ProtocolConfiguration = MCP`) is also supported: cdk-local runs the container's `POST /mcp` Streamable-HTTP contract on 8000, performs the MCP session handshake, then sends one JSON-RPC request — `tools/list` by default, or the `{"method":...,"params":...}` from `--event` (e.g. `tools/call`) — and prints the response. (A2A / AG-UI protocols are not supported yet.)
 
 Use this for fast iteration on Lambda code, API routing checks, container task smoke tests, and agent request/response checks.
 
@@ -267,7 +267,7 @@ cdkl invoke MyStack/MyFunction --event ./event.json --env-vars ./env.json
 | `AWS::ECS::TaskDefinition` (run-task) | ✓ |
 | `AWS::ECS::Service` (start-service) | ✓ |
 | `AWS::ServiceDiscovery::*` (Cloud Map / Service Connect) | ✓ |
-| `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container artifact + HTTP) | ✓ |
+| `AWS::BedrockAgentCore::Runtime` (invoke-agentcore, container artifact, HTTP + MCP) | ✓ |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 
