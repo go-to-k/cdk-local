@@ -34,16 +34,33 @@ async function startUpstream(id: string): Promise<Upstream> {
   return up;
 }
 
-async function startFront(pool: FrontDoorEndpointPool): Promise<StartedFrontDoorServer> {
+async function startFront(
+  pool: FrontDoorEndpointPool,
+  upstreamTimeoutMs?: number
+): Promise<StartedFrontDoorServer> {
   const front = await startFrontDoorServer({
     pool,
     port: 0,
     host: '127.0.0.1',
     listenerPort: 80,
     serviceName: 'TestSvc',
+    ...(upstreamTimeoutMs !== undefined && { upstreamTimeoutMs }),
   });
   cleanups.push(() => front.close());
   return front;
+}
+
+/** An upstream that accepts the connection but never responds (a hung replica). */
+async function startHungUpstream(): Promise<Upstream> {
+  const up: Upstream = { server: undefined as unknown as Server, port: 0 };
+  const server = createServer(() => {
+    /* deliberately never responds */
+  });
+  up.server = server;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  up.port = (server.address() as AddressInfo).port;
+  cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
+  return up;
 }
 
 function fetchText(
@@ -108,5 +125,15 @@ describe('startFrontDoorServer', () => {
 
     const res = await fetchText(front.port);
     expect(res.status).toBe(502);
+  });
+
+  it('returns 504 when the upstream accepts but never responds (no infinite hang)', async () => {
+    const hung = await startHungUpstream();
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: hung.port });
+    const front = await startFront(pool, 150); // short upstream timeout for the test
+
+    const res = await fetchText(front.port);
+    expect(res.status).toBe(504);
   });
 });

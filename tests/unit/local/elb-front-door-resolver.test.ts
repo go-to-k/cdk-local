@@ -140,4 +140,22 @@ describe('resolveFrontDoorTargets', () => {
     expect(targets).toEqual([]);
     expect(warnings.join('\n')).toMatch(/no AWS::ElasticLoadBalancingV2::TargetGroup/);
   });
+
+  it('keeps only the first front-door when two listeners forward to the TG on the same port', () => {
+    const tmpl = httpForwardTemplate({
+      // A second HTTP listener, also on port 80, also default-forwarding to TG.
+      SecondListener: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+        },
+      },
+    });
+    const { targets, warnings } = resolveFrontDoorTargets(stackWith(tmpl), [lb(TG)]);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.listenerPort).toBe(80);
+    expect(warnings.join('\n')).toMatch(/Multiple load-balancer targets resolve to host listener port 80/);
+  });
 });

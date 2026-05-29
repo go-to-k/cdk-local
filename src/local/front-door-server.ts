@@ -36,7 +36,17 @@ export interface StartFrontDoorServerOptions {
   listenerPort: number;
   /** Service name for log lines. */
   serviceName: string;
+  /**
+   * Per-request upstream timeout (ms). A replica that accepts the connection
+   * but never responds (deadlocked app, half-open socket) must not hang the
+   * request forever; on timeout the upstream socket is destroyed and the
+   * client gets a 504. Defaults to {@link DEFAULT_UPSTREAM_TIMEOUT_MS}.
+   */
+  upstreamTimeoutMs?: number;
 }
+
+/** Default per-request upstream timeout — a hung replica yields a 504, not a hang. */
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
 
 export interface StartedFrontDoorServer {
   /** Actual bound port (equals `opts.port`; surfaced for symmetry / tests). */
@@ -110,6 +120,16 @@ function handleProxyRequest(
       return;
     }
 
+    // `settled` makes the resolve idempotent — the timeout, upstream error,
+    // client-disconnect, and normal-end paths can race, and only the first
+    // should settle the request.
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
     const headers = { ...req.headers };
     appendForwardedHeaders(headers, req, opts.listenerPort);
 
@@ -124,13 +144,32 @@ function handleProxyRequest(
       (proxyRes) => {
         res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
         proxyRes.pipe(res);
-        proxyRes.on('end', () => resolve());
+        proxyRes.on('end', done);
         proxyRes.on('error', () => {
-          if (!res.writableEnded) res.end();
-          resolve();
+          // Upstream reset mid-body (headers already sent): destroy rather than
+          // cleanly end so the client sees a broken transfer, not a truncated 200.
+          if (!res.writableEnded) res.destroy();
+          done();
         });
       }
     );
+
+    // A replica that accepts the connection but never responds must not hang
+    // the request forever — destroy the upstream and surface a 504.
+    proxyReq.setTimeout(opts.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS, () => {
+      if (!res.headersSent) {
+        writeError(
+          res,
+          504,
+          `Replica ${endpoint.host}:${endpoint.port} for service '${opts.serviceName}' did not ` +
+            'respond in time.'
+        );
+      } else if (!res.writableEnded) {
+        res.destroy();
+      }
+      proxyReq.destroy();
+      done();
+    });
 
     proxyReq.on('error', () => {
       if (!res.headersSent) {
@@ -141,9 +180,15 @@ function handleProxyRequest(
             `'${opts.serviceName}'.`
         );
       } else if (!res.writableEnded) {
-        res.end();
+        res.destroy();
       }
-      resolve();
+      done();
+    });
+
+    // Client disconnected before the upstream finished — tear the upstream
+    // request down so its socket doesn't leak against the replica.
+    res.on('close', () => {
+      if (!res.writableEnded) proxyReq.destroy();
     });
 
     req.pipe(proxyReq);
