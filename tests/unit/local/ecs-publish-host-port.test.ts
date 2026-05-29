@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vite-plus/test';
 import { buildDockerRunArgs, parseHostPortOverrides } from '../../../src/local/ecs-task-runner.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
@@ -44,8 +44,8 @@ function containerWithPort(): ResolvedEcsContainer {
 
 const task = { family: 'fam' } as unknown as ResolvedEcsTask;
 
-function publishArg(hostPortOverrides?: Record<number, number>): string | undefined {
-  const { args } = buildDockerRunArgs({
+function baseOpts(): Parameters<typeof buildDockerRunArgs>[0] {
+  return {
     task,
     container: containerWithPort(),
     image: 'public.ecr.aws/docker/library/busybox:latest',
@@ -57,6 +57,12 @@ function publishArg(hostPortOverrides?: Record<number, number>): string | undefi
     roleArn: undefined,
     platformOverride: undefined,
     region: undefined,
+  };
+}
+
+function publishArg(hostPortOverrides?: Record<number, number>): string | undefined {
+  const { args } = buildDockerRunArgs({
+    ...baseOpts(),
     ...(hostPortOverrides && { hostPortOverrides }),
   });
   const i = args.indexOf('-p');
@@ -157,5 +163,42 @@ describe('buildDockerRunArgs ALB front-door ephemeral publish (#86)', () => {
 
   it('emits no ephemeral publish when the list is empty', () => {
     expect(allPublishArgs({ skipHostPortPublish: true })).toEqual([]);
+  });
+});
+
+describe('buildDockerRunArgs port-publish logging', () => {
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    infoSpy.mockRestore();
+  });
+
+  function reachLine(): string | undefined {
+    return infoSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('Reach it at'));
+  }
+
+  it('logs the published host:port even without a --host-port override', () => {
+    publishArg();
+    const line = reachLine();
+    expect(line).toBeDefined();
+    expect(line).toContain('Reach it at 127.0.0.1:80');
+    expect(line).not.toContain('--host-port override');
+  });
+
+  it('annotates the log with (--host-port override) when the port is remapped', () => {
+    publishArg({ 80: 8080 });
+    const line = reachLine();
+    expect(line).toBeDefined();
+    expect(line).toContain('Reach it at 127.0.0.1:8080');
+    expect(line).toContain('(--host-port override)');
+  });
+
+  it('does not log a published port when host-port publish is skipped (multi-replica)', () => {
+    buildDockerRunArgs({ ...baseOpts(), skipHostPortPublish: true });
+    expect(reachLine()).toBeUndefined();
   });
 });

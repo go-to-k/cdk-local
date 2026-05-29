@@ -173,6 +173,8 @@ curl http://127.0.0.1:8080/   # round-robins across the running replicas
 
 See [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally) for `start-alb`'s resolution model and scope (single HTTP `forward`, ECS targets).
 
+When you run a container directly — `run-task`, or a single-replica `start-service` — cdk-local publishes its declared container ports on the host and logs the address (`Reach it at 127.0.0.1:<port>`), so `curl http://127.0.0.1:<port>` or a browser reaches it. The bind IP defaults to `127.0.0.1` (override with `--container-host`); `--host-port <containerPort>=<hostPort>` remaps a port (handy on macOS to avoid the Docker admin prompt for privileged ports < 1024). For an ALB-fronted service, reach the replicas through the `start-alb` front-door above instead.
+
 `invoke-agentcore` runs a Bedrock AgentCore Runtime's container locally, waits for `GET /ping`, then POSTs your `--event` (or `{}`) to `POST /invocations` and prints the response — the same request/response loop AgentCore runs in the cloud, without a deploy. v1 covers container-artifact runtimes on the HTTP protocol; the agent's own calls to Bedrock models / memory / other managed services go to real AWS.
 
 Use this for fast iteration on Lambda code, API routing checks, container task smoke tests, and agent request/response checks.
