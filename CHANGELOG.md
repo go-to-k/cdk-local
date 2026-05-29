@@ -1,3 +1,10 @@
+# [0.41.0](https://github.com/go-to-k/cdk-local/compare/v0.40.0...v0.41.0) (2026-05-29)
+
+
+### Features
+
+* **hooks:** control-char-gate — block NUL / control bytes in staged text ([#141](https://github.com/go-to-k/cdk-local/issues/141)) ([7669377](https://github.com/go-to-k/cdk-local/commit/76693777f7df50b29a4903c235445076f4d65335))
+
 # [0.40.0](https://github.com/go-to-k/cdk-local/compare/v0.39.0...v0.40.0) (2026-05-29)
 
 
