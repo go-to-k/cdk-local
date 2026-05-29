@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -68,6 +68,7 @@ import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
 } from '../../assets/asset-manifest-loader.js';
+import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import { applyProfileCredentialsOverlay } from './local-invoke.js';
@@ -478,7 +479,15 @@ async function resolveAgentCoreCodeImage(
   const cdkOutDir = dirname(manifestPath);
   const loader = new AssetManifestLoader();
   const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
-  const asset = manifest ? loader.getFileAssets(manifest).get(code.codeAssetHash) : undefined;
+  const fileAssets = manifest ? loader.getFileAssets(manifest) : undefined;
+  // The manifest's `files` are keyed by SOURCE hash; for the default
+  // synthesizer that equals the destination objectKey hash (`<hash>.zip`), so a
+  // direct key lookup hits. Fall back to matching the destination objectKey so
+  // a synthesizer that emits a prefixed / differing objectKey still resolves.
+  const asset = fileAssets
+    ? (fileAssets.get(code.codeAssetHash) ??
+      findFileAssetByObjectKey(fileAssets, code.codeAssetHash))
+    : undefined;
   if (!asset) {
     throw new CdkLocalError(
       `AgentCore Runtime '${resolved.logicalId}' code bundle (asset ${code.codeAssetHash}) was not found ` +
@@ -488,6 +497,13 @@ async function resolveAgentCoreCodeImage(
     );
   }
   const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset);
+  if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' code bundle source '${sourceDir}' does not exist or is not a ` +
+        `directory. Re-synthesize the app and retry.`,
+      'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
+    );
+  }
   return buildAgentCoreCodeImage({
     sourceDir,
     runtime: code.runtime,
@@ -495,6 +511,25 @@ async function resolveAgentCoreCodeImage(
     architecture,
     noBuild: options.build === false,
   });
+}
+
+/**
+ * Find the file asset whose destination objectKey is `<hash>.zip` (matching the
+ * `Code.S3.Prefix`'s hash) when the source-hash-keyed lookup misses — covers a
+ * synthesizer whose source hash differs from the destination objectKey.
+ */
+function findFileAssetByObjectKey(
+  fileAssets: Map<string, FileAsset>,
+  hash: string
+): FileAsset | undefined {
+  const zip = `${hash}.zip`;
+  for (const asset of fileAssets.values()) {
+    const hit = Object.values(asset.destinations).some(
+      (d) => d.objectKey === zip || d.objectKey.endsWith(`/${zip}`)
+    );
+    if (hit) return asset;
+  }
+  return undefined;
 }
 
 /**

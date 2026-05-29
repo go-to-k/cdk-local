@@ -36,10 +36,10 @@ const SUPPORTED_AGENTCORE_PROTOCOLS = [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_MCP_PR
  * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
- * Covers the CONTAINER artifact on the HTTP + MCP protocols — the resolver
- * hard-errors on `CodeConfiguration` artifacts (S3 zip + managed runtime)
- * and the A2A / AGUI protocols so the command never starts a container it
- * can't speak to.
+ * Covers the CONTAINER artifact and the `CodeConfiguration` (fromCodeAsset)
+ * managed-runtime artifact on the HTTP + MCP protocols — the resolver
+ * hard-errors on a fromS3 code bundle (a non-literal `Code.S3.Prefix`) and the
+ * A2A / AGUI protocols so the command never starts something it can't run.
  */
 export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
