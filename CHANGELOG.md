@@ -1,3 +1,10 @@
+## [0.37.1](https://github.com/go-to-k/cdk-local/compare/v0.37.0...v0.37.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **ecs:** always log the published host port ([#134](https://github.com/go-to-k/cdk-local/issues/134)) ([0689d35](https://github.com/go-to-k/cdk-local/commit/0689d3524bed4108c0148c24dc770cdd5707e72f))
+
 # [0.37.0](https://github.com/go-to-k/cdk-local/compare/v0.36.1...v0.37.0) (2026-05-29)
 
 
