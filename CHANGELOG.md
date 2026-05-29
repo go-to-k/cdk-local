@@ -1,3 +1,10 @@
+# [0.37.0](https://github.com/go-to-k/cdk-local/compare/v0.36.1...v0.37.0) (2026-05-29)
+
+
+### Features
+
+* **start-alb:** local ALB front-door command for ECS services ([#86](https://github.com/go-to-k/cdk-local/issues/86)) ([#125](https://github.com/go-to-k/cdk-local/issues/125)) ([d20d4be](https://github.com/go-to-k/cdk-local/commit/d20d4be19769069b700cdafac00ccb7726437289))
+
 ## [0.36.1](https://github.com/go-to-k/cdk-local/compare/v0.36.0...v0.36.1) (2026-05-29)
 
 
