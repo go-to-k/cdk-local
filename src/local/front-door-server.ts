@@ -595,6 +595,10 @@ function handleLambdaRequest(
           // same header injection as the ECS proxy path so the event a handler
           // sees locally matches production.
           const forwardHeaders: NodeJS.Dict<string | string[]> = { ...req.headers };
+          // Strip hop-by-hop headers (as the ECS proxy path does) so the Lambda
+          // event's headers match what a real ALB forwards — no connection /
+          // transfer-encoding / keep-alive leaking into the handler.
+          stripHopByHopHeaders(forwardHeaders);
           appendForwardedHeaders(forwardHeaders, req, opts.listenerPort);
           const snapshot = snapshotFromIncoming(req, body);
           for (const [name, value] of Object.entries(forwardHeaders)) {

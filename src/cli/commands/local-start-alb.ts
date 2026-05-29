@@ -308,10 +308,11 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
         'symmetric ALB counterpart of `start-api`. Each <target> accepts a CDK display path ' +
         '(MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may omit the stack ' +
         'prefix. Supports HTTP listeners; path-pattern and host-header rule conditions; forward ' +
-        '(single and weighted), redirect, and fixed-response actions. HTTPS listeners, Lambda ' +
-        'target groups, the other rule conditions (http-header / query-string / source-ip / ' +
-        'http-request-method), and authenticate-* actions are skipped with a warning. Omit ' +
-        '<targets> in an interactive terminal to multi-select the load balancers from a list.'
+        '(single and weighted), redirect, and fixed-response actions; and ECS or Lambda targets ' +
+        '(a Lambda target group is invoked locally via the Lambda RIE). HTTPS listeners, the ' +
+        'other rule conditions (http-header / query-string / source-ip / http-request-method), ' +
+        'and authenticate-* actions are skipped with a warning. Omit <targets> in an interactive ' +
+        'terminal to multi-select the load balancers from a list.'
     )
     .argument(
       '[targets...]',
