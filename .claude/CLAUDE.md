@@ -40,9 +40,10 @@ AWS managed services.
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
-  (`fromCodeAsset` — Python 3.10-3.14 / Node 22, built from source: a generated
-  Dockerfile installs the bundle's deps and runs the EntryPoint, which
-  self-serves the contract) on the HTTP and MCP protocols. HTTP runs the
+  (`fromCodeAsset` AND `fromS3` — Python 3.10-3.14 / Node 22, built from source:
+  a generated Dockerfile installs the bundle's deps and runs the EntryPoint,
+  which self-serves the contract; a `fromS3` bundle's ZIP is downloaded from S3
+  and extracted first) on the HTTP and MCP protocols. HTTP runs the
   `POST /invocations` + `GET /ping` contract on 8080: an inbound
   `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
   the runtime's OIDC discovery URL before the container starts and forwarded to
@@ -105,7 +106,9 @@ Gateway).
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +
   container-URI extraction) + agentcore-client (the `/ping` + `/invocations`
   HTTP-contract client for `cdkl invoke-agentcore`) + agentcore-ws-client (the
-  bidirectional `/ws` WebSocket client for `--ws`), embed-config
+  bidirectional `/ws` WebSocket client for `--ws`) + agentcore-s3-bundle
+  (downloads + extracts a fromS3 CodeConfiguration bundle for the from-source
+  build), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->

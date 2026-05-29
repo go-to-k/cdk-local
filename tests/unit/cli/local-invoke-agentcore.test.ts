@@ -7,6 +7,7 @@ const {
   getDockerImageBySourceHashMock,
   buildContainerImageMock,
   buildAgentCoreCodeImageMock,
+  downloadAndExtractS3BundleMock,
   parseEcrUriMock,
   pullEcrImageMock,
   pullImageMock,
@@ -19,6 +20,7 @@ const {
   getDockerImageBySourceHashMock: vi.fn(),
   buildContainerImageMock: vi.fn(),
   buildAgentCoreCodeImageMock: vi.fn(),
+  downloadAndExtractS3BundleMock: vi.fn(),
   parseEcrUriMock: vi.fn(),
   pullEcrImageMock: vi.fn(),
   pullImageMock: vi.fn(),
@@ -65,6 +67,11 @@ vi.mock('../../../src/local/docker-image-builder.js', async (importActual) => ({
 vi.mock('../../../src/local/agentcore-code-build.js', async (importActual) => ({
   ...(await importActual<object>()),
   buildAgentCoreCodeImage: buildAgentCoreCodeImageMock,
+}));
+
+vi.mock('../../../src/local/agentcore-s3-bundle.js', async (importActual) => ({
+  ...(await importActual<object>()),
+  downloadAndExtractS3Bundle: downloadAndExtractS3BundleMock,
 }));
 
 vi.mock('../../../src/local/ecr-puller.js', async (importActual) => ({
@@ -220,10 +227,10 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     );
   });
 
-  it('errors (fromS3 not supported) when the code asset is not in the manifest', async () => {
+  it('errors (re-synthesize) when a fromCodeAsset bundle is not in the manifest', async () => {
     loadManifestMock.mockResolvedValue({ files: {} });
     getFileAssetsMock.mockReturnValue(new Map()); // no asset by hash or objectKey
-    await expect(resolveAgentCoreImage(codeRuntime(), imageOpts())).rejects.toThrow(/fromS3/);
+    await expect(resolveAgentCoreImage(codeRuntime(), imageOpts())).rejects.toThrow(/re-synthesize/);
     expect(buildAgentCoreCodeImageMock).not.toHaveBeenCalled();
   });
 
@@ -250,6 +257,74 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     await resolveAgentCoreImage(codeRuntime(), imageOpts({ build: false }));
     expect(buildAgentCoreCodeImageMock).toHaveBeenCalledWith(
       expect.objectContaining({ noBuild: true })
+    );
+  });
+});
+
+describe('resolveAgentCoreImage — CodeConfiguration fromS3 (download + build)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function s3CodeRuntime(): ResolvedAgentCoreRuntime {
+    return {
+      stack: { stackName: 'App', region: 'us-west-2' } as never,
+      logicalId: 'S3Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      environmentVariables: {},
+      protocol: 'HTTP',
+      codeArtifact: {
+        runtime: 'PYTHON_3_12',
+        entryPoint: ['app.py'],
+        codeAssetHash: 'agent',
+        s3Source: { bucket: 'my-bundles', key: 'agents/agent.zip' },
+      },
+    };
+  }
+
+  it('downloads + extracts the fromS3 bundle, builds from the extracted dir, then cleans up', async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/extracted-xyz', cleanup });
+    buildAgentCoreCodeImageMock.mockResolvedValue('cdkl-agentcore-code-froms3');
+
+    const image = await resolveAgentCoreImage(s3CodeRuntime(), imageOpts({ profile: 'dev' }));
+
+    expect(image).toBe('cdkl-agentcore-code-froms3');
+    expect(downloadAndExtractS3BundleMock).toHaveBeenCalledWith(
+      { bucket: 'my-bundles', key: 'agents/agent.zip' },
+      expect.objectContaining({ profile: 'dev' })
+    );
+    expect(buildAgentCoreCodeImageMock).toHaveBeenCalledWith({
+      sourceDir: '/tmp/extracted-xyz',
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['app.py'],
+      architecture: 'arm64',
+      noBuild: false,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    // The fromCodeAsset cdk.out path must NOT run for a fromS3 bundle.
+    expect(loadManifestMock).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the temp dir even when the build fails', async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/extracted-zzz', cleanup });
+    buildAgentCoreCodeImageMock.mockRejectedValue(new Error('docker build boom'));
+
+    await expect(resolveAgentCoreImage(s3CodeRuntime(), imageOpts())).rejects.toThrow(
+      /docker build boom/
+    );
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers --stack-region for the download region', async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/x', cleanup });
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+    await resolveAgentCoreImage(s3CodeRuntime(), imageOpts({ stackRegion: 'eu-central-1' }));
+    expect(downloadAndExtractS3BundleMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ region: 'eu-central-1' })
     );
   });
 });

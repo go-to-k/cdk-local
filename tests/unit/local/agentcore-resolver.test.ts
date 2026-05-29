@@ -166,7 +166,7 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
     };
   }
 
-  it('extracts runtime, entryPoint, and the fromCodeAsset hash (Prefix <hash>.zip)', () => {
+  it('extracts runtime, entryPoint, and the fromCodeAsset hash (Prefix <hash>.zip); intrinsic Bucket => no s3Source', () => {
     const stack = buildStack('App', {
       ChatAgent: codeRuntime({
         Code: { S3: { Bucket: { 'Fn::Sub': 'cdk-assets-${AWS::AccountId}' }, Prefix: 'abc123def456.zip' } },
@@ -180,6 +180,39 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
       runtime: 'PYTHON_3_13',
       entryPoint: ['app.py'],
       codeAssetHash: 'abc123def456',
+    });
+    // The CDK staging bucket is an Fn::Sub intrinsic, so this is fromCodeAsset.
+    expect(resolved.codeArtifact?.s3Source).toBeUndefined();
+  });
+
+  it('carries s3Source for a fromS3 bundle (literal Bucket + Prefix)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: 'my-bundles', Prefix: 'agents/chat.zip' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source).toEqual({
+      bucket: 'my-bundles',
+      key: 'agents/chat.zip',
+    });
+  });
+
+  it('captures a Code.S3.VersionId on the fromS3 s3Source', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: 'my-bundles', Prefix: 'chat.zip', VersionId: 'v-42' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source).toEqual({
+      bucket: 'my-bundles',
+      key: 'chat.zip',
+      versionId: 'v-42',
     });
   });
 
@@ -210,7 +243,7 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
     expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/no EntryPoint/);
   });
 
-  it('throws (fromS3 not supported) when Code.S3.Prefix is a non-literal intrinsic', () => {
+  it('throws when Code.S3.Prefix is a non-literal intrinsic', () => {
     const stack = buildStack('App', {
       ChatAgent: codeRuntime({
         Code: { S3: { Bucket: 'b', Prefix: { Ref: 'SomeParam' } } },
@@ -219,7 +252,6 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
       }),
     });
     expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/not a literal string/);
-    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/fromS3/);
   });
 });
 

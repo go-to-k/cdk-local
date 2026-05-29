@@ -334,6 +334,13 @@ export {
   type InvokeAgentCoreWsOptions,
   type AgentCoreWsResult,
 } from './local/agentcore-ws-client.js';
+export {
+  downloadAndExtractS3Bundle,
+  type S3BundleLocation,
+  type S3BundleCredentials,
+  type DownloadS3BundleOptions,
+  type ExtractedS3Bundle,
+} from './local/agentcore-s3-bundle.js';
 
 /**
  * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the
