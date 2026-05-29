@@ -48,7 +48,7 @@ export function serviceStrategy(): EmulatorStrategy {
           'or run it in a TTY to pick interactively.'
       ),
     resolveBoots: (_stacks, chosenTargets) => ({
-      boots: chosenTargets.map((target) => ({ target, frontDoorTargets: [] })),
+      boots: chosenTargets.map((target) => ({ target })),
       warnings: [],
     }),
     lbPortOverrides: {},

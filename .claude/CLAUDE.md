@@ -29,9 +29,11 @@ AWS managed services.
   Service Connect / Cloud Map registry. `start-service` runs a service's
   replicas only (pure compute, no load balancer). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
-  service(s) behind it plus a local front-door (single default-action
-  `forward`) that round-robins each listener port across the replicas
-  (full listener-rule routing — path / host / weighted — deferred to #123)
+  service(s) behind it plus a local front-door that round-robins each
+  listener port across the replicas and path-routes the listener's
+  `path-pattern` rules across the backing services (other conditions —
+  host-header / weighted / Lambda targets / redirect+fixed-response
+  actions — deferred to #123)
 - Bedrock AgentCore Runtime agents — the agent container served over the
   AgentCore HTTP contract (`POST /invocations` + `GET /ping` on port 8080),
   invoked once locally (`cdkl invoke-agentcore`); v1 covers container artifacts
@@ -90,11 +92,12 @@ Gateway).
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
-  Listeners -> TargetGroups -> backing ECS Services + the host listener
-  port each front-door fronts; the `start-alb` entry), front-door-pool
-  (round-robin pool of live replica endpoints), front-door-server (host
-  HTTP reverse proxy that round-robins a service's replicas behind the
-  ALB listener port), etc.
+  Listeners + path-pattern ListenerRules -> TargetGroups -> backing ECS
+  Services into a per-listener routing table; the `start-alb` entry),
+  alb-path-matcher (ALB `*` / `?` glob path-pattern matcher, priority
+  ordered), front-door-pool (round-robin pool of live replica endpoints),
+  front-door-server (host HTTP reverse proxy that path-routes each request
+  to a service's replica pool behind the ALB listener port), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
