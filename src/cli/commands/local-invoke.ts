@@ -355,7 +355,12 @@ async function localInvokeCommand(
             const ssmParams = await stateProvider.resolveTemplateSsmParameters(
               lambda.stack.template
             );
-            if (Object.keys(ssmParams).length > 0) subContext.parameters = ssmParams;
+            if (Object.keys(ssmParams.values).length > 0) subContext.parameters = ssmParams.values;
+            // Flag decrypted SecureString parameters so the consuming env
+            // keys are kept off the `docker run` argv (issue #99).
+            if (ssmParams.secureStringLogicalIds.length > 0) {
+              subContext.sensitiveParameters = new Set(ssmParams.secureStringLogicalIds);
+            }
           }
           if (envHasCrossStackIntrinsic(templateEnv)) {
             const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
@@ -390,7 +395,7 @@ async function localInvokeCommand(
               }
             }
           }
-          stateAudit = { resolvedKeys, unresolved };
+          stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
           for (const { key, reason } of unresolved) {
             logger.warn(
               `${label}: could not substitute env var ${key} (${reason}). ` +
@@ -540,6 +545,10 @@ async function localInvokeCommand(
       mounts: imagePlan.mounts,
       extraMounts: extraMountsWithProfile,
       env: dockerEnv,
+      ...(stateAudit &&
+        stateAudit.sensitiveKeys.length > 0 && {
+          sensitiveEnvKeys: new Set(stateAudit.sensitiveKeys),
+        }),
       cmd: imagePlan.cmd,
       hostPort,
       host: containerHost,

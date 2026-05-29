@@ -91,6 +91,14 @@ export type ContainerSpec = ZipContainerSpec | ImageContainerSpec;
 
 interface ContainerSpecBase {
   env: Record<string, string>;
+  /**
+   * Env keys whose VALUES are sensitive and must be kept off the
+   * `docker run` argv (routed through `-e KEY`). Today: env keys that
+   * resolved to a decrypted `SecureString` SSM parameter under
+   * `--from-cfn-stack` (issue #99). Threaded verbatim into
+   * `runDetached`'s `sensitiveEnvKeys`.
+   */
+  sensitiveEnvKeys?: ReadonlySet<string>;
   containerHost: string;
   /** Optional Node.js `--inspect-brk` port. */
   debugPort?: number;
@@ -368,6 +376,7 @@ export function createContainerPool(
         mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
         extraMounts,
         env: spec.env,
+        ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
         cmd: [spec.lambda.handler],
         hostPort,
         host: spec.containerHost,
@@ -399,6 +408,7 @@ export function createContainerPool(
           ],
         }),
         env: spec.env,
+        ...(spec.sensitiveEnvKeys !== undefined && { sensitiveEnvKeys: spec.sensitiveEnvKeys }),
         cmd: spec.command,
         hostPort,
         host: spec.containerHost,

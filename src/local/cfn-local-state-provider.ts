@@ -72,6 +72,7 @@ import { LambdaClient, GetFunctionConfigurationCommand } from '@aws-sdk/client-l
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
+import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
@@ -210,12 +211,12 @@ export class CfnLocalStateProvider implements LocalStateProvider {
    */
   public async resolveTemplateSsmParameters(
     template: CloudFormationTemplate
-  ): Promise<Record<string, string>> {
+  ): Promise<ResolvedSsmParameters> {
     if (this.disposed) {
       throw new Error('CfnLocalStateProvider used after dispose()');
     }
     const refs = collectSsmParameterRefs(template);
-    if (refs.length === 0) return {};
+    if (refs.length === 0) return { values: {}, secureStringLogicalIds: [] };
     const client = this.getSsmClient();
     return resolveSsmParameters(client, refs, this.label);
   }

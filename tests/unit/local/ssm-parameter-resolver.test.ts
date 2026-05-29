@@ -78,10 +78,52 @@ describe('resolveSsmParameters', () => {
       [{ logicalId: 'SsmStr', ssmName: '/app/db-host', isList: false }],
       '--from-cfn-stack'
     );
-    expect(out).toEqual({ SsmStr: 'db.internal' });
+    expect(out.values).toEqual({ SsmStr: 'db.internal' });
+    // A plain String parameter is not flagged sensitive.
+    expect(out.secureStringLogicalIds).toEqual([]);
     // WithDecryption must be set so SecureString parameters resolve.
     const cmd = sendMock.mock.calls[0]![0] as { input: { Names: string[]; WithDecryption: boolean } };
     expect(cmd.input).toEqual({ Names: ['/app/db-host'], WithDecryption: true });
+  });
+
+  it('flags a SecureString parameter via secureStringLogicalIds (issue #99)', async () => {
+    sendMock.mockResolvedValueOnce({
+      Parameters: [
+        { Name: '/app/db-host', Value: 'db.internal', Type: 'String' },
+        { Name: '/app/api-key', Value: 's3cr3t', Type: 'SecureString' },
+      ],
+      InvalidParameters: [],
+    });
+    const client = new SSMClient({ region: 'us-east-1' });
+    const out = await resolveSsmParameters(
+      client,
+      [
+        { logicalId: 'SsmStr', ssmName: '/app/db-host', isList: false },
+        { logicalId: 'SsmSecret', ssmName: '/app/api-key', isList: false },
+      ],
+      '--from-cfn-stack'
+    );
+    expect(out.values).toEqual({ SsmStr: 'db.internal', SsmSecret: 's3cr3t' });
+    // Only the SecureString logical ID is flagged.
+    expect(out.secureStringLogicalIds).toEqual(['SsmSecret']);
+  });
+
+  it('flags every logical ID that shares one SecureString SSM name', async () => {
+    sendMock.mockResolvedValueOnce({
+      Parameters: [{ Name: '/shared/secret', Value: 'x', Type: 'SecureString' }],
+      InvalidParameters: [],
+    });
+    const client = new SSMClient({ region: 'us-east-1' });
+    const out = await resolveSsmParameters(
+      client,
+      [
+        { logicalId: 'A', ssmName: '/shared/secret', isList: false },
+        { logicalId: 'B', ssmName: '/shared/secret', isList: false },
+      ],
+      '--from-cfn-stack'
+    );
+    expect(out.values).toEqual({ A: 'x', B: 'x' });
+    expect(out.secureStringLogicalIds).toEqual(['A', 'B']);
   });
 
   it('passes the comma-joined List<String> value through verbatim', async () => {
@@ -95,7 +137,8 @@ describe('resolveSsmParameters', () => {
       [{ logicalId: 'SsmList', ssmName: '/app/subnets', isList: true }],
       '--from-cfn-stack'
     );
-    expect(out).toEqual({ SsmList: 'subnet-a,subnet-b' });
+    expect(out.values).toEqual({ SsmList: 'subnet-a,subnet-b' });
+    expect(out.secureStringLogicalIds).toEqual([]);
   });
 
   it('maps multiple logical IDs that share one SSM name', async () => {
@@ -112,7 +155,7 @@ describe('resolveSsmParameters', () => {
       ],
       '--from-cfn-stack'
     );
-    expect(out).toEqual({ A: 'one', B: 'one' });
+    expect(out.values).toEqual({ A: 'one', B: 'one' });
     // De-duped to one SSM name -> one GetParameters call.
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
@@ -135,8 +178,8 @@ describe('resolveSsmParameters', () => {
     const client = new SSMClient({ region: 'us-east-1' });
     const out = await resolveSsmParameters(client, refs, '--from-cfn-stack');
     expect(sendMock).toHaveBeenCalledTimes(2);
-    expect(Object.keys(out)).toHaveLength(12);
-    expect(out['P11']).toBe('vP11');
+    expect(Object.keys(out.values)).toHaveLength(12);
+    expect(out.values['P11']).toBe('vP11');
   });
 
   it('omits invalid parameter names from the result (warn-and-drop)', async () => {
@@ -153,7 +196,7 @@ describe('resolveSsmParameters', () => {
       ],
       '--from-cfn-stack'
     );
-    expect(out).toEqual({ Ok: 'good' });
+    expect(out.values).toEqual({ Ok: 'good' });
   });
 
   it('falls back to an empty map (no throw) when GetParameters fails', async () => {
@@ -166,7 +209,8 @@ describe('resolveSsmParameters', () => {
       [{ logicalId: 'SsmStr', ssmName: '/app/db-host', isList: false }],
       '--from-cfn-stack'
     );
-    expect(out).toEqual({});
+    expect(out.values).toEqual({});
+    expect(out.secureStringLogicalIds).toEqual([]);
   });
 
   it('keeps resolving other chunks when one chunk fails', async () => {
@@ -184,12 +228,15 @@ describe('resolveSsmParameters', () => {
     const client = new SSMClient({ region: 'us-east-1' });
     const out = await resolveSsmParameters(client, refs, '--from-cfn-stack');
     // First chunk (10) failed; second chunk (1) succeeded.
-    expect(out).toEqual({ P10: 'late' });
+    expect(out.values).toEqual({ P10: 'late' });
   });
 
-  it('returns {} without calling SSM when there are no refs', async () => {
+  it('returns an empty result without calling SSM when there are no refs', async () => {
     const client = new SSMClient({ region: 'us-east-1' });
-    expect(await resolveSsmParameters(client, [], '--from-cfn-stack')).toEqual({});
+    expect(await resolveSsmParameters(client, [], '--from-cfn-stack')).toEqual({
+      values: {},
+      secureStringLogicalIds: [],
+    });
     expect(sendMock).not.toHaveBeenCalled();
   });
 });

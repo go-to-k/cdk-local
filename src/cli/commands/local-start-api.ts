@@ -2002,6 +2002,11 @@ async function buildContainerSpec(args: {
     if (stateBundle.ssmParameters) {
       context.parameters = stateBundle.ssmParameters;
     }
+    // Flag decrypted SecureString parameters so the consuming env keys are
+    // kept off the `docker run` argv (issue #99).
+    if (stateBundle.ssmSecureStringLogicalIds?.length) {
+      context.sensitiveParameters = new Set(stateBundle.ssmSecureStringLogicalIds);
+    }
     const { env, audit } = substituteEnvVarsFromState(templateEnv, context);
     templateEnv = env;
     for (const key of audit.resolvedKeys) {
@@ -2025,7 +2030,7 @@ async function buildContainerSpec(args: {
         );
       }
     }
-    stateAudit = { resolvedKeys, unresolved };
+    stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
     for (const { key, reason } of unresolved) {
       getLogger().warn(
         `Lambda ${logicalId}: state source could not substitute env var ${key} (${reason}). ` +
@@ -2154,12 +2159,21 @@ async function buildContainerSpec(args: {
       ? { target: '/tmp', sizeMb: lambda.ephemeralStorageMb }
       : undefined;
 
+  // Env keys whose value resolved to a decrypted SecureString SSM parameter
+  // (issue #99) — routed off the `docker run` argv via the pool's
+  // value-from-process-env form.
+  const sensitiveEnvKeys =
+    stateAudit && stateAudit.sensitiveKeys.length > 0
+      ? new Set(stateAudit.sensitiveKeys)
+      : undefined;
+
   if (lambda.kind === 'zip') {
     const spec: ContainerSpec = {
       kind: 'zip',
       lambda,
       codeDir: codeDir!,
       env: dockerEnv,
+      ...(sensitiveEnvKeys && { sensitiveEnvKeys }),
       containerHost,
       ...(optDir !== undefined && { optDir }),
       ...(debugPort !== undefined && { debugPort }),
@@ -2188,6 +2202,7 @@ async function buildContainerSpec(args: {
       workingDir: lambda.imageConfig.workingDirectory,
     }),
     env: dockerEnv,
+    ...(sensitiveEnvKeys && { sensitiveEnvKeys }),
     containerHost,
     ...(debugPort !== undefined && { debugPort }),
     ...(tmpfs !== undefined && { tmpfs }),
@@ -3283,6 +3298,13 @@ interface StackStateBundle {
    * resolution (e.g. `--from-state`).
    */
   ssmParameters?: Record<string, string>;
+  /**
+   * Logical IDs of the resolved SSM parameters whose `Type` is
+   * `SecureString` (decrypted). Threaded into the substitution context's
+   * `sensitiveParameters` so the consuming env keys are routed off the
+   * `docker run` argv (issue #99). `undefined`/absent when none.
+   */
+  ssmSecureStringLogicalIds?: string[];
 }
 
 /**
@@ -3454,7 +3476,12 @@ export async function loadStateForRoutedStacks(
       // CFn provider implements `resolveTemplateSsmParameters`.
       if (stackHasIntrinsicEnv(stackName) && provider.resolveTemplateSsmParameters) {
         const ssmParameters = await provider.resolveTemplateSsmParameters(stack.template);
-        if (Object.keys(ssmParameters).length > 0) bundle.ssmParameters = ssmParameters;
+        if (Object.keys(ssmParameters.values).length > 0) {
+          bundle.ssmParameters = ssmParameters.values;
+        }
+        if (ssmParameters.secureStringLogicalIds.length > 0) {
+          bundle.ssmSecureStringLogicalIds = ssmParameters.secureStringLogicalIds;
+        }
       }
       out.set(stackName, bundle);
       logger.debug(`${provider.label}: loaded state for ${stackName} (${loaded.region})`);

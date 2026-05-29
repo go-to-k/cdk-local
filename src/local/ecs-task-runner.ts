@@ -1104,6 +1104,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   // appear in `docker run`'s argv. Non-secret config keeps `-e KEY=VALUE`.
   const sensitiveEnvKeys = new Set<string>(SENSITIVE_ENV_KEYS);
   for (const s of secrets) sensitiveEnvKeys.add(s.name);
+  // Env keys that resolved to a decrypted SecureString SSM parameter
+  // (issue #99) — same off-argv treatment as secrets.
+  for (const k of container.sensitiveEnvKeys) sensitiveEnvKeys.add(k);
   const sensitiveEnv = appendEnvFlags(args, finalEnv, sensitiveEnvKeys);
 
   if (container.user) args.push('--user', container.user);

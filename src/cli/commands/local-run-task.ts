@@ -257,6 +257,9 @@ async function localRunTaskCommand(
           ...(imageContext?.stateParameters && {
             parameters: imageContext.stateParameters,
           }),
+          ...(imageContext?.stateSensitiveParameters?.length && {
+            sensitiveParameters: new Set(imageContext.stateSensitiveParameters),
+          }),
           consumerRegion,
           crossStackResolver: resolver,
         };
@@ -519,7 +522,12 @@ export async function buildEcsImageResolutionContext(
     // being needed so image-only resolutions skip the SSM round-trip.
     if (needs.needsEnvOrSecretSubstitution && stateProvider.resolveTemplateSsmParameters) {
       const ssmParameters = await stateProvider.resolveTemplateSsmParameters(candidate.template);
-      if (Object.keys(ssmParameters).length > 0) ctx.stateParameters = ssmParameters;
+      if (Object.keys(ssmParameters.values).length > 0) ctx.stateParameters = ssmParameters.values;
+      // Flag decrypted SecureString parameters so the consuming container
+      // env keys are kept off the `docker run` argv (issue #99).
+      if (ssmParameters.secureStringLogicalIds.length > 0) {
+        ctx.stateSensitiveParameters = ssmParameters.secureStringLogicalIds;
+      }
     }
   } else if (!stateProvider && needs.needsStateResources) {
     logger.warn(

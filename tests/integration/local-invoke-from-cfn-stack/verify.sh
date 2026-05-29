@@ -47,6 +47,18 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 SSM_PARAM_NAME="/cdkl-integ/invoke-from-cfn-stack/db-host"
 SSM_PARAM_VALUE="db.internal.example"
 
+# issue #99: a SECOND SSM parameter that the stack Refs via API_KEY. It is
+# created as a plain String BEFORE deploy (CloudFormation rejects an
+# AWS::SSM::Parameter::Value<String> template parameter pointing at a
+# SecureString) and SWAPPED to a SecureString AFTER deploy. cdkl resolves
+# it directly via SSM GetParameters(WithDecryption) at invoke time, so it
+# sees the SecureString type and must keep the decrypted value off the
+# `docker run` argv. The post-swap value differs from the placeholder to
+# prove cdkl reads SSM fresh (not the deploy-time-baked value).
+SSM_API_KEY_PARAM="/cdkl-integ/invoke-from-cfn-stack/api-key"
+SSM_API_KEY_PLACEHOLDER="placeholder-not-secret"
+SSM_API_KEY_VALUE="s3cr3t-api-key-9f3a2b"
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-from-cfn-stack"
 CLI="node ${REPO_ROOT}/dist/cli.js"
@@ -84,6 +96,7 @@ cleanup() {
   # gated only on "we created it". Best-effort.
   if [ "${WE_CREATED_PARAM}" -eq 1 ]; then
     aws ssm delete-parameter --name "${SSM_PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+    aws ssm delete-parameter --name "${SSM_API_KEY_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   fi
   exit "${rc}"
 }
@@ -108,6 +121,16 @@ aws ssm put-parameter \
   --overwrite \
   --region "${REGION}" >/dev/null
 echo "[verify]   put ${SSM_PARAM_NAME}=${SSM_PARAM_VALUE}"
+# issue #99: put the api-key param as a plain String for now — deploy must
+# succeed (CloudFormation rejects an AWS::SSM::Parameter::Value<String> that
+# points at a SecureString). It is swapped to a SecureString after deploy.
+aws ssm put-parameter \
+  --name "${SSM_API_KEY_PARAM}" \
+  --value "${SSM_API_KEY_PLACEHOLDER}" \
+  --type String \
+  --overwrite \
+  --region "${REGION}" >/dev/null
+echo "[verify]   put ${SSM_API_KEY_PARAM}=${SSM_API_KEY_PLACEHOLDER} (String, pre-deploy)"
 
 echo "[verify] step 3: cdk deploy (upstream CDK CLI)"
 # The fixture deliberately uses upstream `cdk deploy` so the resulting
@@ -129,6 +152,20 @@ cdk deploy "${STACK}" \
   --no-path-metadata \
   --region "${REGION}"
 echo "[verify] step 3 ok: cdk deploy completed"
+
+echo "[verify] step 3b: swap the api-key SSM parameter to a SecureString (issue #99)"
+# SSM rejects an in-place type change on --overwrite, so delete + recreate.
+# cdkl reads this value fresh via GetParameters(WithDecryption) at invoke
+# time; the deploy-time-baked placeholder in the deployed Lambda env is
+# irrelevant because cdkl's SSM resolution succeeds (no deployed-env
+# fallback). The new value differs from the placeholder to prove freshness.
+aws ssm delete-parameter --name "${SSM_API_KEY_PARAM}" --region "${REGION}" >/dev/null
+aws ssm put-parameter \
+  --name "${SSM_API_KEY_PARAM}" \
+  --value "${SSM_API_KEY_VALUE}" \
+  --type SecureString \
+  --region "${REGION}" >/dev/null
+echo "[verify]   swapped ${SSM_API_KEY_PARAM} -> SecureString"
 
 echo "[verify] step 4: read the deployed DynamoDB table name from CloudFormation"
 DEPLOYED_TABLE=$(aws cloudformation describe-stack-resources \
@@ -207,6 +244,10 @@ echo "${RESULT_BASELINE}" | grep -q '"dbHost":"unset"' || {
   echo "[verify] FAIL: expected DB_HOST to be dropped (SSM-param Ref warn-and-drop without --from-cfn-stack), got: ${RESULT_BASELINE}"
   exit 1
 }
+echo "${RESULT_BASELINE}" | grep -q '"apiKey":"unset"' || {
+  echo "[verify] FAIL: expected API_KEY to be dropped (SecureString SSM-param Ref warn-and-drop without --from-cfn-stack), got: ${RESULT_BASELINE}"
+  exit 1
+}
 echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
@@ -234,6 +275,48 @@ echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
   exit 1
 }
+# issue #99: the decrypted SecureString value must reach the container (its
+# fresh post-swap value, NOT the deploy-time placeholder).
+echo "${RESULT_FROM_CFN}" | grep -q "\"apiKey\":\"${SSM_API_KEY_VALUE}\"" || {
+  echo "[verify] FAIL: expected API_KEY=${SSM_API_KEY_VALUE} (decrypted SecureString resolved from SSM), got: ${RESULT_FROM_CFN}"
+  exit 1
+}
+
+echo "[verify] step 6b: assert the decrypted SecureString is kept OFF the docker argv (issue #99)"
+# Re-invoke with --verbose so the docker-runner logs the full `docker run`
+# command at debug. The SecureString-backed key must appear as a value-less
+# `-e API_KEY` (value supplied via the spawned process env), and its
+# decrypted value must NOT appear on the docker command line (the inline
+# `-e API_KEY=<value>` form is what issue #99 fixes). DB_HOST (a plain
+# String SSM param) stays inline as `-e DB_HOST=<value>` — the control.
+DEBUG_OUT=$(${CLI} invoke "${STACK}/EchoTableHandler" --from-cfn-stack --no-pull --verbose 2>&1 || true)
+# Isolate the `docker run` command line (it carries the `-e` flags). The
+# Lambda's JSON response (which DOES echo apiKey) is a different line, so
+# grepping the docker-run line avoids a false positive on the value.
+DOCKER_RUN_LINE=$(echo "${DEBUG_OUT}" | grep -E '(^| )run .* -e ' | grep -- '-e API_KEY' | head -1)
+if [ -z "${DOCKER_RUN_LINE}" ]; then
+  echo "[verify] FAIL: could not find the 'docker run' debug line carrying -e API_KEY in --verbose output"
+  echo "${DEBUG_OUT}" | tail -20
+  exit 1
+fi
+echo "${DOCKER_RUN_LINE}" | grep -qE -- '-e API_KEY( |$)' || {
+  echo "[verify] FAIL: API_KEY not in the value-less '-e API_KEY' form on the docker argv: ${DOCKER_RUN_LINE}"
+  exit 1
+}
+if echo "${DOCKER_RUN_LINE}" | grep -q "API_KEY=${SSM_API_KEY_VALUE}"; then
+  echo "[verify] FAIL: decrypted SecureString value LEAKED onto the docker run argv (issue #99 regression): ${DOCKER_RUN_LINE}"
+  exit 1
+fi
+if echo "${DOCKER_RUN_LINE}" | grep -q "${SSM_API_KEY_VALUE}"; then
+  echo "[verify] FAIL: SecureString value present anywhere on the docker run argv (issue #99 regression): ${DOCKER_RUN_LINE}"
+  exit 1
+fi
+# Control: a plain String SSM param keeps the inline form (not over-routed).
+echo "${DOCKER_RUN_LINE}" | grep -q "DB_HOST=${SSM_PARAM_VALUE}" || {
+  echo "[verify] FAIL: expected the plain String DB_HOST to stay inline as -e DB_HOST=<value> (control), got: ${DOCKER_RUN_LINE}"
+  exit 1
+}
+echo "[verify]   SecureString API_KEY routed off the argv; String DB_HOST stayed inline (control)."
 
 echo "[verify] step 7: cdk destroy --force"
 cdk destroy "${STACK}" --force --region "${REGION}" \
@@ -244,3 +327,4 @@ echo "[verify] All checks passed:"
 echo "[verify]   - existing behavior intact: TABLE_NAME (Ref) substituted, STATIC_VALUE (literal) passed through, baseline drops the intrinsics."
 echo "[verify]   - GetAtt fallback: SIBLING_ARN (Fn::GetAtt .Arn) recovered from the deployed function's resolved env."
 echo "[verify]   - issue #94: DB_HOST (Ref to AWS::SSM::Parameter::Value<String>) resolved from SSM under --from-cfn-stack, dropped without it."
+echo "[verify]   - issue #99: API_KEY (SecureString SSM param) decrypted + injected under --from-cfn-stack, and kept OFF the docker run argv (value-less -e API_KEY); String DB_HOST stayed inline as the control."

@@ -36,6 +36,7 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import type { ResourceState } from '../types/state.js';
 import type { CrossStackResolver } from './state-resolver.js';
+import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 
 /**
  * Result of loading state for a specific (stack, region) pair. The
@@ -157,11 +158,13 @@ export interface LocalStateProvider {
    * name (from the template entry's `Default`) out of SSM Parameter
    * Store. `List<String>` values are surfaced comma-joined.
    *
-   * The returned map is fed into the substitution context's `parameters`
-   * field so a `Ref` to such a parameter resolves to the value instead of
-   * being dropped — these parameters are CloudFormation PARAMETERS, not
-   * resources, so they never appear in the `load()` resource map (built
-   * from `ListStackResources`).
+   * The returned `values` map is fed into the substitution context's
+   * `parameters` field so a `Ref` to such a parameter resolves to the value
+   * instead of being dropped — these parameters are CloudFormation
+   * PARAMETERS, not resources, so they never appear in the `load()`
+   * resource map (built from `ListStackResources`). The returned
+   * `secureStringLogicalIds` flags the decrypted `SecureString` parameters
+   * so the consuming env keys are kept off the `docker run` argv (#99).
    *
    * Implemented only by the CFn provider (`--from-cfn-stack`) — it owns
    * the region / credential context the SSM read needs, the same one its
@@ -173,7 +176,7 @@ export interface LocalStateProvider {
    * Note: SSM parameter VALUES land in the local container env (env-var
    * substitution). Callers must never log the values.
    */
-  resolveTemplateSsmParameters?(template: CloudFormationTemplate): Promise<Record<string, string>>;
+  resolveTemplateSsmParameters?(template: CloudFormationTemplate): Promise<ResolvedSsmParameters>;
   /**
    * Release any AWS clients the provider owns. Always called by the
    * CLI layer in the outer `finally`. Idempotent.

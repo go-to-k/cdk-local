@@ -17,6 +17,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SSM_DB_HOST_PARAM = '/cdkl-integ/invoke-from-cfn-stack/db-host';
 
 /**
+ * SSM parameter name for the issue #99 SecureString case. `verify.sh`
+ * creates it as a plain `String` BEFORE `cdk deploy` (CloudFormation
+ * rejects an `AWS::SSM::Parameter::Value<String>` template parameter that
+ * points at a SecureString), then SWAPS it to a `SecureString` AFTER
+ * deploy. cdkl resolves the parameter directly via SSM `GetParameters`
+ * (`WithDecryption`) at invoke time — independent of CloudFormation — so
+ * it sees the SecureString type and routes the decrypted value off the
+ * `docker run` argv. Kept in sync with `verify.sh`'s `SSM_API_KEY_PARAM`.
+ */
+const SSM_API_KEY_PARAM = '/cdkl-integ/invoke-from-cfn-stack/api-key';
+
+/**
  * Fixture stack for `cdkl invoke --from-cfn-stack` (issue #606).
  *
  * One echo Lambda + one DynamoDB table + one sibling Lambda. The echo
@@ -83,6 +95,13 @@ export class LocalInvokeFromCfnStackStack extends cdk.Stack {
         // warns-and-drops; with it, the new SSM resolver reads the value
         // from SSM and substitutes it.
         DB_HOST: ssm.StringParameter.valueForStringParameter(this, SSM_DB_HOST_PARAM),
+        // issue #99: a `Ref` to a second `AWS::SSM::Parameter::Value<String>`
+        // CFn parameter whose SSM parameter `verify.sh` swaps to a
+        // SecureString after deploy. Under --from-cfn-stack cdkl resolves it
+        // via SSM with WithDecryption and must route the decrypted value
+        // through docker's value-from-process-env form (`-e API_KEY`), never
+        // the inline `-e API_KEY=<value>` argv.
+        API_KEY: ssm.StringParameter.valueForStringParameter(this, SSM_API_KEY_PARAM),
       },
       timeout: cdk.Duration.seconds(10),
     });

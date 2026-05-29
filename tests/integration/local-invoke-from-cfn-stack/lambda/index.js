@@ -9,6 +9,9 @@ exports.handler = async (event) => {
     siblingArn: process.env.SIBLING_ARN ?? 'unset',
     staticValue: process.env.STATIC_VALUE ?? 'unset',
     dbHost: process.env.DB_HOST ?? 'unset',
+    // issue #99: the decrypted SecureString SSM value — proves the value
+    // reached the container even though it was kept off the docker argv.
+    apiKey: process.env.API_KEY ?? 'unset',
     event,
   };
 };
