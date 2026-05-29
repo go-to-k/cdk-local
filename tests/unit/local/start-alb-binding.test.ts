@@ -44,6 +44,49 @@ function albStack(): StackInfo {
   } as unknown as StackInfo;
 }
 
+/**
+ * An ALB whose single HTTP:80 listener default action forwards to a
+ * `TargetType: lambda` target group backed by an inline ZIP Lambda (#123).
+ * Inline code keeps the function resolvable without a cdk.out asset dir.
+ */
+function albLambdaStack(): StackInfo {
+  return {
+    stackName: 'AlbStack',
+    template: {
+      Resources: {
+        [ALB]: {
+          Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+          Properties: { Type: 'application' },
+        },
+        [TG]: {
+          Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+          Properties: {
+            TargetType: 'lambda',
+            Targets: [{ Id: { 'Fn::GetAtt': ['EchoFn', 'Arn'] } }],
+          },
+        },
+        WebListener: {
+          Type: 'AWS::ElasticLoadBalancingV2::Listener',
+          Properties: {
+            LoadBalancerArn: { Ref: ALB },
+            Port: 80,
+            Protocol: 'HTTP',
+            DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+          },
+        },
+        EchoFn: {
+          Type: 'AWS::Lambda::Function',
+          Properties: {
+            Runtime: 'nodejs20.x',
+            Handler: 'index.handler',
+            Code: { ZipFile: 'exports.handler = async () => ({ statusCode: 200 });' },
+          },
+        },
+      },
+    },
+  } as unknown as StackInfo;
+}
+
 describe('resolveAlbTarget', () => {
   it('resolves an ALB by stack-qualified logical id', () => {
     const { stack, albLogicalId } = resolveAlbTarget('AlbStack:WebLB', [albStack()]);
@@ -164,7 +207,9 @@ describe('albStrategy.resolveBoots multi-service', () => {
       const action = l.defaultAction;
       expect(action?.kind).toBe('forward');
       if (action?.kind === 'forward') {
-        expect(action.targets[0]?.serviceTarget).toBe('Multi:Svc1');
+        const target = action.targets[0]!;
+        expect(target.kind).toBe('ecs');
+        if (target.kind === 'ecs') expect(target.serviceTarget).toBe('Multi:Svc1');
       }
     }
   });
@@ -271,6 +316,7 @@ describe('start-alb / start-service strategy binding', () => {
           kind: 'forward',
           targets: [
             {
+              kind: 'ecs',
               serviceTarget: 'AlbStack:WebService',
               targetContainerName: 'web',
               targetContainerPort: 80,
@@ -292,12 +338,36 @@ describe('start-alb / start-service strategy binding', () => {
     expect(frontDoor).toBeUndefined();
     expect(strategy.lbPortOverrides).toEqual({});
   });
+
+  it('start-alb resolves a Lambda target group into a front-door Lambda target with NO ECS boot (#123)', () => {
+    const strategy = albStrategy({} as never);
+    const { boots, frontDoor, warnings } = strategy.resolveBoots(
+      [albLambdaStack()],
+      ['AlbStack:WebLB']
+    );
+    expect(warnings).toEqual([]);
+    // A Lambda-only ALB boots no ECS services.
+    expect(boots).toEqual([]);
+    expect(frontDoor!.listeners).toHaveLength(1);
+    const action = frontDoor!.listeners[0]!.defaultAction;
+    expect(action?.kind).toBe('forward');
+    if (action?.kind !== 'forward') throw new Error('expected a forward action');
+    const target = action.targets[0]!;
+    expect(target.kind).toBe('lambda');
+    if (target.kind !== 'lambda') throw new Error('expected a lambda target');
+    expect(target.lambda.logicalId).toBe('EchoFn');
+    expect(target.targetGroupArn).toBe('AlbStack:WebTargetGroup');
+    expect(target.multiValueHeaders).toBe(false);
+    expect(target.weight).toBe(1);
+  });
 });
 
 describe('buildFrontDoor', () => {
+  const fdOptions = { containerHost: '127.0.0.1', pull: true } as never;
+
   it('binds one server per listener and groups pools by service target', async () => {
     const logger = { info: () => {}, warn: () => {} } as never;
-    const { servers, frontDoorByService } = await buildFrontDoor(
+    const { servers, frontDoorByService, lambdaRunners } = await buildFrontDoor(
       {
         listeners: [
           {
@@ -307,6 +377,7 @@ describe('buildFrontDoor', () => {
               kind: 'forward',
               targets: [
                 {
+                  kind: 'ecs',
                   serviceTarget: 'S:Web',
                   targetContainerName: 'web',
                   targetContainerPort: 80,
@@ -323,6 +394,7 @@ describe('buildFrontDoor', () => {
                   kind: 'forward',
                   targets: [
                     {
+                      kind: 'ecs',
                       serviceTarget: 'S:Api',
                       targetContainerName: 'api',
                       targetContainerPort: 8080,
@@ -335,11 +407,12 @@ describe('buildFrontDoor', () => {
           },
         ],
       },
-      '127.0.0.1',
+      fdOptions,
       logger
     );
     try {
       expect(servers).toHaveLength(1);
+      expect(lambdaRunners).toEqual([]);
       // One pool per (service, container, port); grouped by service target.
       expect([...frontDoorByService.keys()].sort()).toEqual(['S:Api', 'S:Web']);
       expect(frontDoorByService.get('S:Web')).toEqual([

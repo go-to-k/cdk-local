@@ -38,11 +38,13 @@ import type { TemplateResource } from '../types/resource.js';
  * its path / host conditions.
  *
  * Scope: HTTP listeners; `path-pattern` + `host-header` conditions; `forward`
- * (single or weighted) to ECS services; `redirect` / `fixed-response` actions.
- * Skipped with a warning: HTTPS/TLS listeners, `TargetType:"lambda"` target
- * groups, the other condition fields (http-header / http-request-method /
- * query-string / source-ip), and `authenticate-cognito` / `authenticate-oidc`
- * actions. Those remaining listener-rule features are tracked in #123.
+ * (single or weighted) to ECS services AND/OR Lambda functions
+ * (`TargetType:"lambda"` target groups — #123: the TG -> backing
+ * `AWS::Lambda::Function` is resolved and the front-door invokes it locally per
+ * request); `redirect` / `fixed-response` actions. A single weighted forward may
+ * mix ECS and Lambda targets. Skipped with a warning: HTTPS/TLS listeners, the
+ * other condition fields (http-header / http-request-method / query-string /
+ * source-ip), and `authenticate-cognito` / `authenticate-oidc` actions.
  */
 
 const ALB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -50,9 +52,20 @@ const LISTENER_TYPE = 'AWS::ElasticLoadBalancingV2::Listener';
 const LISTENER_RULE_TYPE = 'AWS::ElasticLoadBalancingV2::ListenerRule';
 const TARGET_GROUP_TYPE = 'AWS::ElasticLoadBalancingV2::TargetGroup';
 const SERVICE_TYPE = 'AWS::ECS::Service';
+const LAMBDA_FUNCTION_TYPE = 'AWS::Lambda::Function';
 
-/** The backing (service, container) one forward target group routes to, plus its weight. */
-export interface FrontDoorForwardTarget {
+/**
+ * The backing target one forward target group routes to, plus its weight. A
+ * discriminated union: either an ECS service (the original `start-alb` path) or
+ * a Lambda function (`TargetType: lambda` target groups, #123). A single
+ * weighted forward may mix both. The front-door dispatches an ECS target to a
+ * replica pool and a Lambda target to a locally-invoked RIE container.
+ */
+export type FrontDoorForwardTarget = FrontDoorEcsTarget | FrontDoorLambdaTarget;
+
+/** A weighted forward target backed by an ECS service behind the target group. */
+export interface FrontDoorEcsTarget {
+  kind: 'ecs';
   /** Logical id of the `AWS::ECS::Service` behind the target group. */
   serviceLogicalId: string;
   /** Container the action forwards to (`LoadBalancers[].ContainerName`). */
@@ -61,6 +74,39 @@ export interface FrontDoorForwardTarget {
   targetContainerPort: number;
   /** Logical id of the resolved target group (diagnostics). */
   targetGroupLogicalId: string;
+  /**
+   * Forward weight for weighted routing. A single-target forward defaults to 1;
+   * a `ForwardConfig.TargetGroups[]` entry carries its declared `Weight`
+   * (weight 0 means "never routed", per ALB semantics).
+   */
+  weight: number;
+}
+
+/**
+ * A weighted forward target backed by a Lambda function (a `TargetType: lambda`
+ * target group, #123). The synthesized linkage:
+ *
+ * ```
+ * ElasticLoadBalancingV2::TargetGroup : { TargetType:"lambda",
+ *     Targets:[{ Id:{ "Fn::GetAtt":[<FnLogicalId>, "Arn"] } }],
+ *     TargetGroupAttributes?:[{ Key:"lambda.multi_value_headers.enabled", Value:"true" }] }
+ * Lambda::Permission                  : grants elasticloadbalancing principal invoke
+ * ```
+ *
+ * The backing function is read from `Targets[0].Id.Fn::GetAtt[0]`.
+ */
+export interface FrontDoorLambdaTarget {
+  kind: 'lambda';
+  /** Logical id of the backing `AWS::Lambda::Function`. */
+  lambdaLogicalId: string;
+  /** Logical id of the resolved target group (diagnostics + `requestContext.elb`). */
+  targetGroupLogicalId: string;
+  /**
+   * `lambda.multi_value_headers.enabled` target-group attribute. `true` ->
+   * the ALB event uses `multiValueHeaders` / `multiValueQueryStringParameters`;
+   * `false` (default) -> single-value `headers` / `queryStringParameters`.
+   */
+  multiValueHeaders: boolean;
   /**
    * Forward weight for weighted routing. A single-target forward defaults to 1;
    * a `ForwardConfig.TargetGroups[]` entry carries its declared `Weight`
@@ -312,7 +358,12 @@ function resolveAction(
   return undefined;
 }
 
-/** Resolve a `forward` action into one or more weighted ECS-service targets. */
+/**
+ * Resolve a `forward` action into one or more weighted targets. Each target
+ * group is either an ECS service (the original `start-alb` path) or a
+ * `TargetType: lambda` group backed by an in-stack Lambda (#123); a single
+ * weighted forward may mix both.
+ */
 function resolveForwardAction(
   action: Record<string, unknown>,
   resources: Record<string, TemplateResource>,
@@ -342,12 +393,19 @@ function resolveForwardAction(
       );
       continue;
     }
-    const tgType = (tg.Properties as Record<string, unknown> | undefined)?.['TargetType'];
+    const tgProps = (tg.Properties as Record<string, unknown> | undefined) ?? {};
+    const tgType = tgProps['TargetType'];
     if (tgType === 'lambda') {
-      warnings.push(
-        `${label} forwards to a Lambda target group '${tgRef}' (TargetType: lambda). The local ALB ` +
-          'front-door supports ECS targets only; Lambda targets are deferred. Skipping that target group.'
+      // #123 Lambda-target slice: resolve the TG -> backing Lambda function.
+      const lambdaTarget = resolveLambdaForwardTarget(
+        tgProps,
+        tgRef,
+        resources,
+        stackName,
+        label,
+        warnings
       );
+      if (lambdaTarget) targets.push({ ...lambdaTarget, weight });
       continue;
     }
     const backing = tgToService.get(tgRef);
@@ -360,6 +418,7 @@ function resolveForwardAction(
       continue;
     }
     targets.push({
+      kind: 'ecs',
       serviceLogicalId: backing.serviceLogicalId,
       targetContainerName: backing.containerName,
       targetContainerPort: backing.containerPort,
@@ -370,6 +429,45 @@ function resolveForwardAction(
 
   if (targets.length === 0) return undefined; // every target group was skipped (already warned)
   return { kind: 'forward', targets };
+}
+
+/**
+ * Resolve a `TargetType: lambda` target group into its `FrontDoorLambdaTarget`
+ * (weight applied by the caller), or `undefined` (with a warning) when the
+ * backing function is not an in-stack `AWS::Lambda::Function` reference.
+ */
+function resolveLambdaForwardTarget(
+  tgProps: Record<string, unknown>,
+  tgRef: string,
+  resources: Record<string, TemplateResource>,
+  stackName: string,
+  label: string,
+  warnings: string[]
+): Omit<FrontDoorLambdaTarget, 'weight'> | undefined {
+  const lambdaLogicalId = resolveLambdaTargetLogicalId(tgProps['Targets']);
+  if (!lambdaLogicalId) {
+    warnings.push(
+      `${label} forwards to a Lambda target group '${tgRef}', but its Targets[].Id is not an ` +
+        'in-stack { "Fn::GetAtt": [<FnLogicalId>, "Arn"] } reference; the local ALB front-door ' +
+        'supports an in-stack Lambda target only (literal / imported ARNs deferred). Skipping that target group.'
+    );
+    return undefined;
+  }
+  const lambda = resources[lambdaLogicalId];
+  if (!lambda || lambda.Type !== LAMBDA_FUNCTION_TYPE) {
+    warnings.push(
+      `${label} forwards to Lambda target group '${tgRef}', whose target resolves to ` +
+        `'${lambdaLogicalId}', but no ${LAMBDA_FUNCTION_TYPE} with that logical id exists in ` +
+        `${stackName}. Skipping that target group.`
+    );
+    return undefined;
+  }
+  return {
+    kind: 'lambda',
+    lambdaLogicalId,
+    targetGroupLogicalId: tgRef,
+    multiValueHeaders: readMultiValueHeadersAttribute(tgProps['TargetGroupAttributes']),
+  };
 }
 
 /** Resolve a `redirect` action into its `Location`-template fields + status code. */
@@ -405,6 +503,45 @@ function resolveFixedResponseAction(
   if (typeof c['ContentType'] === 'string') out.contentType = c['ContentType'];
   if (typeof c['MessageBody'] === 'string') out.messageBody = c['MessageBody'];
   return out;
+}
+
+/**
+ * Resolve a `TargetType: lambda` target group's backing Lambda logical id from
+ * its `Targets[].Id`. CDK synthesizes the registration as
+ * `Targets: [{ Id: { "Fn::GetAtt": [<FnLogicalId>, "Arn"] } }]`; a `Ref` to the
+ * function (its name) is also accepted. Returns the logical id, or `undefined`
+ * when the target is a literal / imported ARN (not an in-stack reference).
+ */
+function resolveLambdaTargetLogicalId(targets: unknown): string | undefined {
+  if (!Array.isArray(targets) || targets.length === 0) return undefined;
+  const first = targets[0];
+  if (!first || typeof first !== 'object') return undefined;
+  const id = (first as Record<string, unknown>)['Id'];
+  if (!id || typeof id !== 'object' || Array.isArray(id)) return undefined;
+  const idObj = id as Record<string, unknown>;
+  const getAtt = idObj['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && typeof getAtt[0] === 'string' && getAtt[0].length > 0) {
+    return getAtt[0];
+  }
+  const ref = idObj['Ref'];
+  if (typeof ref === 'string' && ref.length > 0) return ref;
+  return undefined;
+}
+
+/**
+ * Read the `lambda.multi_value_headers.enabled` target-group attribute (a
+ * string `"true"` / `"false"` in CFn). Defaults to `false` when absent.
+ */
+function readMultiValueHeadersAttribute(attributes: unknown): boolean {
+  if (!Array.isArray(attributes)) return false;
+  for (const attr of attributes) {
+    if (!attr || typeof attr !== 'object') continue;
+    const a = attr as Record<string, unknown>;
+    if (a['Key'] === 'lambda.multi_value_headers.enabled') {
+      return String(a['Value']).toLowerCase() === 'true';
+    }
+  }
+  return false;
 }
 
 /**

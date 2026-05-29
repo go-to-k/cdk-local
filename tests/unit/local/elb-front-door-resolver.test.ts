@@ -2,9 +2,17 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   resolveAlbFrontDoor,
   isApplicationLoadBalancer,
+  type FrontDoorEcsTarget,
+  type FrontDoorForwardTarget,
 } from '../../../src/local/elb-front-door-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
+
+/** Narrow a resolved forward target to its ECS variant (test ergonomics). */
+function ecsTarget(t: FrontDoorForwardTarget | undefined): FrontDoorEcsTarget {
+  if (!t || t.kind !== 'ecs') throw new Error(`expected an ECS forward target, got: ${t?.kind}`);
+  return t;
+}
 
 const ALB = 'WebLB';
 const TG = 'WebTargetGroup';
@@ -68,8 +76,18 @@ const apiServiceResources: Record<string, unknown> = {
   },
 };
 
-/** Convenience: the single forward target of a resolved action (throws if not a forward). */
-function forwardTarget(action: import('../../../src/local/elb-front-door-resolver.js').ResolvedListenerAction | undefined) {
+/** Convenience: the single ECS forward target of a resolved action (throws if not a forward). */
+function forwardTarget(
+  action: import('../../../src/local/elb-front-door-resolver.js').ResolvedListenerAction | undefined
+): FrontDoorEcsTarget {
+  if (action?.kind !== 'forward') throw new Error(`expected a forward action, got ${action?.kind}`);
+  return ecsTarget(action.targets[0]);
+}
+
+/** Convenience: the single forward target of a resolved action, NOT narrowed (mixed tests). */
+function forwardTargetRaw(
+  action: import('../../../src/local/elb-front-door-resolver.js').ResolvedListenerAction | undefined
+): FrontDoorForwardTarget {
   if (action?.kind !== 'forward') throw new Error(`expected a forward action, got ${action?.kind}`);
   return action.targets[0]!;
 }
@@ -87,6 +105,7 @@ describe('resolveAlbFrontDoor', () => {
           kind: 'forward',
           targets: [
             {
+              kind: 'ecs',
               serviceLogicalId: SERVICE,
               targetContainerName: 'web',
               targetContainerPort: 80,
@@ -146,6 +165,7 @@ describe('resolveAlbFrontDoor', () => {
           kind: 'forward',
           targets: [
             {
+              kind: 'ecs',
               serviceLogicalId: API_SERVICE,
               targetContainerName: 'api',
               targetContainerPort: 8080,
@@ -228,7 +248,7 @@ describe('resolveAlbFrontDoor', () => {
     const action = listeners[0]!.defaultAction;
     expect(action?.kind).toBe('forward');
     if (action?.kind === 'forward') {
-      expect(action.targets.map((t) => [t.serviceLogicalId, t.weight])).toEqual([
+      expect(action.targets.map((t) => [ecsTarget(t).serviceLogicalId, t.weight])).toEqual([
         [SERVICE, 80],
         [API_SERVICE, 20],
       ]);
@@ -493,7 +513,7 @@ describe('resolveAlbFrontDoor', () => {
     expect(action?.kind).toBe('forward');
     if (action?.kind === 'forward') {
       // The Lambda target group is dropped; the ECS one survives.
-      expect(action.targets.map((t) => t.serviceLogicalId)).toEqual([API_SERVICE]);
+      expect(action.targets.map((t) => ecsTarget(t).serviceLogicalId)).toEqual([API_SERVICE]);
     }
     expect(warnings.join('\n')).toMatch(/Lambda target group/);
   });
@@ -560,16 +580,139 @@ describe('resolveAlbFrontDoor', () => {
     expect(warnings.join('\n')).toMatch(/HTTPS/);
   });
 
-  it('skips + warns on a Lambda target group (deferred follow-up)', () => {
+  it('resolves a Lambda target group (default action) to its backing function (#123)', () => {
     const stack = stackWith({
       [TG]: {
         Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
-        Properties: { TargetType: 'lambda' },
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: { 'Fn::GetAtt': ['EchoFn1234', 'Arn'] } }],
+        },
       },
+      // No ECS service references the TG; the function is the backing target.
+      [SERVICE]: undefined,
+      EchoFn1234: { Type: 'AWS::Lambda::Function', Properties: {} },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners).toHaveLength(1);
+    expect(forwardTargetRaw(listeners[0]!.defaultAction)).toEqual({
+      kind: 'lambda',
+      lambdaLogicalId: 'EchoFn1234',
+      targetGroupLogicalId: TG,
+      multiValueHeaders: false,
+      weight: 1,
+    });
+  });
+
+  it('honors the lambda.multi_value_headers.enabled target-group attribute (#123)', () => {
+    const stack = stackWith({
+      [TG]: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: { 'Fn::GetAtt': ['EchoFn1234', 'Arn'] } }],
+          TargetGroupAttributes: [
+            { Key: 'lambda.multi_value_headers.enabled', Value: 'true' },
+            { Key: 'other.attr', Value: 'x' },
+          ],
+        },
+      },
+      [SERVICE]: undefined,
+      EchoFn1234: { Type: 'AWS::Lambda::Function', Properties: {} },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    const target = forwardTargetRaw(listeners[0]!.defaultAction);
+    expect(target.kind).toBe('lambda');
+    expect((target as { multiValueHeaders: boolean }).multiValueHeaders).toBe(true);
+  });
+
+  it('resolves a Lambda target via a Ref (function-name) registration (#123)', () => {
+    const stack = stackWith({
+      [TG]: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: { Ref: 'EchoFn1234' } }],
+        },
+      },
+      [SERVICE]: undefined,
+      EchoFn1234: { Type: 'AWS::Lambda::Function', Properties: {} },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(
+      (forwardTargetRaw(listeners[0]!.defaultAction) as { lambdaLogicalId: string }).lambdaLogicalId
+    ).toBe('EchoFn1234');
+  });
+
+  it('warns when a Lambda target group registration is a non-in-stack ARN (#123)', () => {
+    const stack = stackWith({
+      [TG]: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: 'arn:aws:lambda:us-east-1:111122223333:function:imported' }],
+        },
+      },
+      [SERVICE]: undefined,
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/Lambda target/);
+    expect(warnings.join('\n')).toMatch(/in-stack Lambda target only/);
+  });
+
+  it('warns when a Lambda target group references a missing function logical id (#123)', () => {
+    const stack = stackWith({
+      [TG]: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: { 'Fn::GetAtt': ['GhostFn', 'Arn'] } }],
+        },
+      },
+      [SERVICE]: undefined,
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/no AWS::Lambda::Function with that logical id/);
+  });
+
+  it('routes a path-rule Lambda target alongside an ECS default (#123 mixed)', () => {
+    const stack = stackWith({
+      ...apiServiceResources, // ApiService not used here; the rule forwards to a Lambda TG
+      [API_TG]: {
+        Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+        Properties: {
+          TargetType: 'lambda',
+          Targets: [{ Id: { 'Fn::GetAtt': ['ApiFn', 'Arn'] } }],
+        },
+      },
+      [API_SERVICE]: undefined,
+      ApiFn: { Type: 'AWS::Lambda::Function', Properties: {} },
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners).toHaveLength(1);
+    // Default still ECS (the web service), the /api/* rule routes to the Lambda.
+    expect(forwardTargetRaw(listeners[0]!.defaultAction).kind).toBe('ecs');
+    expect(listeners[0]!.rules).toHaveLength(1);
+    expect(forwardTargetRaw(listeners[0]!.rules[0]!.action)).toEqual({
+      kind: 'lambda',
+      lambdaLogicalId: 'ApiFn',
+      targetGroupLogicalId: API_TG,
+      multiValueHeaders: false,
+      weight: 1,
+    });
   });
 
   it('warns when no ECS service references the target group', () => {

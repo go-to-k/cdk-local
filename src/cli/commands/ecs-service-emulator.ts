@@ -65,11 +65,17 @@ import {
 import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
 import {
   startFrontDoorServer,
+  type FrontDoorDispatchTarget,
   type StartedFrontDoorServer,
   type RouteAction,
-  type WeightedPool,
+  type WeightedForwardTarget,
 } from '../../local/front-door-server.js';
 import { matchAlbPathRule, type AlbPathRule } from '../../local/alb-path-matcher.js';
+import type { ResolvedLambda } from '../../local/lambda-resolver.js';
+import {
+  createFrontDoorLambdaRunner,
+  type FrontDoorLambdaRunner,
+} from '../../local/front-door-lambda-runner.js';
 
 /**
  * Neutral ECS-service emulator orchestration shared by `cdkl start-service`
@@ -129,8 +135,16 @@ export interface ServiceBoot {
   target: string;
 }
 
-/** The backing (service target, container) one weighted forward target routes to. */
-export interface PlannedForwardTarget {
+/**
+ * The backing target one weighted forward target routes to: either an ECS
+ * service (round-robin a replica pool) or a Lambda function (invoke locally per
+ * request, #123). A single weighted forward may mix both.
+ */
+export type PlannedForwardTarget = PlannedEcsForwardTarget | PlannedLambdaForwardTarget;
+
+/** The backing (service target, container) an ECS weighted forward target routes to. */
+export interface PlannedEcsForwardTarget {
+  kind: 'ecs';
   /** Service target string (`Stack:LogicalId`) whose replica pool serves this. */
   serviceTarget: string;
   /** Container the listener forwards to. */
@@ -141,7 +155,20 @@ export interface PlannedForwardTarget {
   weight: number;
 }
 
-/** A planned forward action: one or more weighted backing targets. */
+/** A Lambda weighted forward target (#123): a resolved function invoked locally per request. */
+export interface PlannedLambdaForwardTarget {
+  kind: 'lambda';
+  /** The resolved Lambda the front-door boots + invokes. */
+  lambda: ResolvedLambda;
+  /** Target-group ARN-or-id surfaced under the event's `requestContext.elb`. */
+  targetGroupArn: string;
+  /** Whether the TG has `lambda.multi_value_headers.enabled=true`. */
+  multiValueHeaders: boolean;
+  /** Forward weight for weighted routing (single-target forward = 1). */
+  weight: number;
+}
+
+/** A planned forward action: one or more weighted backing targets (ECS and/or Lambda). */
 export interface PlannedForwardAction {
   kind: 'forward';
   targets: PlannedForwardTarget[];
@@ -257,6 +284,10 @@ export async function runEcsServiceEmulator(
   let frontDoorServers: StartedFrontDoorServer[] = [];
   // Per-service-target front-door pools to thread into each runner.
   let frontDoorByService = new Map<string, FrontDoorServicePools>();
+  // Long-lived Lambda-target containers behind the front-door (#123). Torn
+  // down alongside the front-door servers so no request is dispatched to a
+  // vanished container.
+  let frontDoorLambdaRunners: FrontDoorLambdaRunner[] = [];
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
@@ -293,6 +324,20 @@ export async function runEcsServiceEmulator(
         )
       );
       frontDoorServers = [];
+      // Stop the Lambda-target containers AFTER the front-door servers are
+      // closed so no in-flight request lands on a torn-down RIE container.
+      await Promise.allSettled(
+        frontDoorLambdaRunners.map((r) =>
+          r
+            .stop()
+            .catch((err) =>
+              getLogger().warn(
+                `front-door Lambda target teardown failed: ${err instanceof Error ? err.message : String(err)}`
+              )
+            )
+        )
+      );
+      frontDoorLambdaRunners = [];
       if (profileCredsFile) {
         try {
           await profileCredsFile.dispose();
@@ -352,9 +397,13 @@ export async function runEcsServiceEmulator(
 
     const { boots, frontDoor, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
     for (const w of warnings) logger.warn(w);
-    if (boots.length === 0) {
+    // A front-door whose listeners forward ONLY to Lambda targets (#123) has no
+    // ECS service to boot; it is still runnable (the Lambda containers live
+    // behind the front-door). Only error when there is nothing to run at all.
+    const hasFrontDoorListeners = !!frontDoor && frontDoor.listeners.length > 0;
+    if (boots.length === 0 && !hasFrontDoorListeners) {
       throw new LocalStartServiceError(
-        `No runnable ECS service resolved from ${resolvedTargets.join(', ')}.`
+        `No runnable target resolved from ${resolvedTargets.join(', ')}.`
       );
     }
 
@@ -398,9 +447,10 @@ export async function runEcsServiceEmulator(
     // bind failure should surface before any docker budget is spent. No-op when
     // the strategy returned no plan (start-service / pure compute).
     if (frontDoor && frontDoor.listeners.length > 0) {
-      const built = await buildFrontDoor(frontDoor, options.containerHost, logger);
+      const built = await buildFrontDoor(frontDoor, options, logger);
       frontDoorServers = built.servers;
       frontDoorByService = built.frontDoorByService;
+      frontDoorLambdaRunners = built.lambdaRunners;
     }
 
     sigintHandler = (): void => {
@@ -431,16 +481,32 @@ export async function runEcsServiceEmulator(
       );
     }
 
-    const summary = perTarget
-      .map(
-        (pt) =>
-          `${pt.controller!.service.serviceName} (${pt.controller!.activeReplicaCount()} replica(s))`
-      )
-      .join(', ');
-    logger.info(`Service(s) running: ${summary}.`);
+    if (perTarget.length > 0) {
+      const summary = perTarget
+        .map(
+          (pt) =>
+            `${pt.controller!.service.serviceName} (${pt.controller!.activeReplicaCount()} replica(s))`
+        )
+        .join(', ');
+      logger.info(`Service(s) running: ${summary}.`);
+    } else {
+      // Lambda-target-only front-door (#123): no ECS replicas, just the
+      // Lambda container(s) behind the front-door.
+      logger.info(
+        `Service(s) running: ${frontDoorLambdaRunners.length} Lambda target(s) behind the ALB front-door.`
+      );
+    }
     logger.info('Press ^C to shut down.');
 
-    await Promise.all(perTarget.map((pt) => pt.controller!.waitForShutdown()));
+    if (perTarget.length > 0) {
+      await Promise.all(perTarget.map((pt) => pt.controller!.waitForShutdown()));
+    } else {
+      // Block on a SIGINT/SIGTERM that resolves via the cleanup -> process.exit
+      // path. The front-door + Lambda containers keep serving until then.
+      await new Promise<void>(() => {
+        /* resolved only by the SIGINT/SIGTERM handler's process.exit */
+      });
+    }
   } finally {
     if (sigintHandler) {
       process.off('SIGINT', sigintHandler);
@@ -631,33 +697,69 @@ async function runOneTarget(
  */
 export async function buildFrontDoor(
   plan: FrontDoorPlan,
-  containerHost: string,
+  options: EcsServiceEmulatorOptions,
   logger: ReturnType<typeof getLogger>
 ): Promise<{
   servers: StartedFrontDoorServer[];
   frontDoorByService: Map<string, FrontDoorServicePools>;
+  lambdaRunners: FrontDoorLambdaRunner[];
 }> {
+  const containerHost = options.containerHost;
   const servers: StartedFrontDoorServer[] = [];
-  // poolKey -> { pool, target }. Built lazily so the same (service, container,
-  // port) reuses one pool across listeners / rules.
-  const registry = new Map<string, { pool: FrontDoorEndpointPool; target: PlannedForwardTarget }>();
-  const poolFor = (t: PlannedForwardTarget): FrontDoorEndpointPool => {
+  // ECS poolKey -> { pool, target }. Built lazily so the same (service,
+  // container, port) reuses one pool across listeners / rules.
+  const poolRegistry = new Map<
+    string,
+    { pool: FrontDoorEndpointPool; target: PlannedEcsForwardTarget }
+  >();
+  // Lambda logicalId -> one warm runner, reused across listeners / rules.
+  const lambdaRegistry = new Map<string, FrontDoorLambdaRunner>();
+
+  const dispatchFor = (t: PlannedForwardTarget): FrontDoorDispatchTarget => {
+    if (t.kind === 'lambda') {
+      let runner = lambdaRegistry.get(t.lambda.logicalId);
+      if (!runner) {
+        runner = createFrontDoorLambdaRunner(t.lambda, {
+          containerHost,
+          skipPull: options.pull === false,
+          ...(options.platform !== undefined && { platformOverride: options.platform }),
+          ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
+          ...(options.region !== undefined && { region: options.region }),
+        });
+        lambdaRegistry.set(t.lambda.logicalId, runner);
+      }
+      const boundRunner = runner;
+      return {
+        kind: 'lambda',
+        lambda: {
+          targetGroupArn: t.targetGroupArn,
+          multiValueHeaders: t.multiValueHeaders,
+          label: t.lambda.logicalId,
+          invoke: (event) => boundRunner.invoke(event),
+        },
+      };
+    }
     const key = `${t.serviceTarget} ${t.targetContainerName} ${t.targetContainerPort}`;
-    let entry = registry.get(key);
+    let entry = poolRegistry.get(key);
     if (!entry) {
       entry = { pool: new FrontDoorEndpointPool(), target: t };
-      registry.set(key, entry);
+      poolRegistry.set(key, entry);
     }
-    return entry.pool;
+    return { kind: 'pool', pool: entry.pool };
+  };
+  // Build / reuse the weighted dispatch entry for one planned forward target:
+  // an ECS pool or a Lambda invoker, carrying the target's forward weight.
+  const weightedTargetFor = (t: PlannedForwardTarget): WeightedForwardTarget => {
+    const dispatch = dispatchFor(t);
+    return dispatch.kind === 'lambda'
+      ? { lambda: dispatch.lambda, weight: t.weight }
+      : { pool: dispatch.pool, weight: t.weight };
   };
   // Convert a planned action into the front-door's RouteAction, building /
-  // reusing a pool per weighted forward target.
+  // reusing a pool or Lambda runner per weighted forward target.
   const toRouteAction = (action: PlannedAction): RouteAction => {
     if (action.kind === 'forward') {
-      const pools: WeightedPool[] = action.targets.map((t) => ({
-        pool: poolFor(t),
-        weight: t.weight,
-      }));
+      const pools: WeightedForwardTarget[] = action.targets.map(weightedTargetFor);
       return { kind: 'forward', pools };
     }
     if (action.kind === 'redirect') {
@@ -717,8 +819,18 @@ export async function buildFrontDoor(
         logger.info('  (no default action: unmatched requests return 404)');
       }
     }
+
+    // Boot every distinct Lambda-target container before returning so the
+    // front-door is invokable as soon as it accepts connections. A boot
+    // failure tears down everything started so far (servers + earlier
+    // runners) and propagates with the same `--lb-port` hint envelope.
+    for (const runner of lambdaRegistry.values()) {
+      logger.info(`Booting Lambda target '${runner.logicalId}' behind the ALB front-door...`);
+      await runner.start();
+    }
   } catch (err) {
     await Promise.allSettled(servers.map((s) => s.close()));
+    await Promise.allSettled([...lambdaRegistry.values()].map((r) => r.stop()));
     throw new LocalStartServiceError(
       `Failed to start ALB front-door: ${err instanceof Error ? err.message : String(err)}. If a ` +
         'listener port is privileged (< 1024), remap it to a non-privileged host port with ' +
@@ -727,7 +839,7 @@ export async function buildFrontDoor(
   }
 
   const frontDoorByService = new Map<string, FrontDoorServicePools>();
-  for (const { pool, target } of registry.values()) {
+  for (const { pool, target } of poolRegistry.values()) {
     const list = frontDoorByService.get(target.serviceTarget) ?? [];
     list.push({
       pool,
@@ -736,7 +848,7 @@ export async function buildFrontDoor(
     });
     frontDoorByService.set(target.serviceTarget, list);
   }
-  return { servers, frontDoorByService };
+  return { servers, frontDoorByService, lambdaRunners: [...lambdaRegistry.values()] };
 }
 
 /** Human-readable summary of a planned rule's path / host conditions (for the boot banner). */
@@ -756,11 +868,23 @@ function describeAction(action: PlannedAction): string {
     return `fixed-response ${action.statusCode}`;
   }
   if (action.targets.length === 1) {
-    const t = action.targets[0]!;
-    return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort}) (round-robin)`;
+    return describeTarget(action.targets[0]!);
   }
-  const weights = action.targets.map((t) => `${t.serviceTarget}@${t.weight}`).join(', ');
+  const weights = action.targets.map((t) => `${describeTargetShort(t)}@${t.weight}`).join(', ');
   return `weighted forward [${weights}]`;
+}
+
+/** One forward target, described in full (for a single-target forward banner). */
+function describeTarget(t: PlannedForwardTarget): string {
+  if (t.kind === 'lambda') {
+    return `Lambda ${t.lambda.logicalId} (invoke)`;
+  }
+  return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort}) (round-robin)`;
+}
+
+/** One forward target, described compactly (for a weighted-forward banner). */
+function describeTargetShort(t: PlannedForwardTarget): string {
+  return t.kind === 'lambda' ? `Lambda ${t.lambda.logicalId}` : t.serviceTarget;
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
