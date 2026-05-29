@@ -53,14 +53,18 @@ printf '\$ cdkl start-api --no-pull --port $PORT\n\n'
 exec cdkl start-api --no-pull --port $PORT
 EOF
 
-# Right pane waits out the interactive picker (left pane) + the confirm +
-# the server boot before curling. TUNE this sleep against the recorded
-# timing — it must exceed (picker keystrokes + Y confirm + RIE boot). The
-# selected HTTP API (MyHttpApi) lands on the first port ($PORT) because the
+# Right pane polls the port (instead of a fixed sleep) so the visible curl
+# fires the instant the server is accepting connections — the left pane's
+# picker + confirm + boot can take a variable amount of time, and a fixed
+# sleep left a long dead gap between "Server listening" and the curl. Probing
+# `/` (any HTTP reply, including the 404 for an undefined route) detects the
+# open port without triggering the /hello cold-start, so the visible curl to
+# /hello performs the first invoke: the viewer sees the command, a brief beat,
+# then the JSON. The selected HTTP API (MyHttpApi) lands on $PORT because the
 # picker lists HTTP API v2 first.
 cat > "$PANE_DIR/right.sh" <<EOF
 #!/usr/bin/env bash
-sleep 15
+until curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null; do sleep 0.3; done
 printf '\$ curl http://localhost:$PORT/hello\n\n'
 curl -s "http://localhost:$PORT/hello"
 echo

@@ -53,6 +53,7 @@ Enter
 Sleep 900ms
 Enter
 
-# Hold for the server boot (left) + the right pane's curl (~12s sleep + a
-# beat to read the JSON response).
-Sleep 18s
+# Hold for the server boot + the right pane's port-poll curl (fires the moment
+# the server is up) + a beat to read the JSON response. The right pane no
+# longer waits out a fixed sleep, so this hold is much shorter than before.
+Sleep 9s
