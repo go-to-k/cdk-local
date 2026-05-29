@@ -55,6 +55,21 @@ export interface CdkLocalEmbedConfig {
    * fallback). Default `'CDKL'`; cdkd passes `'CDKD'`.
    */
   envPrefix?: string;
+  /**
+   * Whether this host fails-closed by default on unverifiable AWS_IAM SigV4
+   * requests. cdk-local's default is warn-and-pass (`false`); a host like
+   * cdkd that ships fail-closed-by-default passes `true`. Drives the polarity
+   * of the SigV4 warn-message advice (whether the strictness flag reads as an
+   * opt-IN or opt-OUT). Default `false`.
+   */
+  sigV4StrictByDefault?: boolean;
+  /**
+   * The CLI flag a user toggles to change SigV4 strictness. With
+   * `sigV4StrictByDefault: false` it is an opt-IN flag (`'--strict-sigv4'`,
+   * the default); with `sigV4StrictByDefault: true` it is the host's opt-OUT
+   * flag (cdkd passes `'--allow-unverified-sigv4'`). Default `'--strict-sigv4'`.
+   */
+  sigV4OptFlag?: string;
 }
 
 export interface ResolvedEmbedConfig {
@@ -64,6 +79,8 @@ export interface ResolvedEmbedConfig {
   resourceNamePrefix: string;
   awsBindMountPath: string;
   envPrefix: string;
+  sigV4StrictByDefault: boolean;
+  sigV4OptFlag: string;
 }
 
 const DEFAULTS: ResolvedEmbedConfig = {
@@ -73,6 +90,8 @@ const DEFAULTS: ResolvedEmbedConfig = {
   resourceNamePrefix: 'cdkl',
   awsBindMountPath: '/cdk-local-aws',
   envPrefix: 'CDKL',
+  sigV4StrictByDefault: false,
+  sigV4OptFlag: '--strict-sigv4',
 };
 
 let current: ResolvedEmbedConfig = DEFAULTS;
@@ -91,6 +110,8 @@ export function setEmbedConfig(config?: CdkLocalEmbedConfig): void {
     resourceNamePrefix: config?.resourceNamePrefix ?? DEFAULTS.resourceNamePrefix,
     awsBindMountPath: config?.awsBindMountPath ?? DEFAULTS.awsBindMountPath,
     envPrefix: config?.envPrefix ?? DEFAULTS.envPrefix,
+    sigV4StrictByDefault: config?.sigV4StrictByDefault ?? DEFAULTS.sigV4StrictByDefault,
+    sigV4OptFlag: config?.sigV4OptFlag ?? DEFAULTS.sigV4OptFlag,
   };
 }
 

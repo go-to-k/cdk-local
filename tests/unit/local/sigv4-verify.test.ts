@@ -5,6 +5,7 @@ import {
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { setEmbedConfig, resetEmbedConfig } from '../../../src/local/embed-config.js';
 
 const NOW = new Date('2026-01-01T00:00:00Z');
 
@@ -154,6 +155,47 @@ describe('verifySigV4 — warn-and-pass default + --strict-sigv4 opt-in', () => 
       now: () => NOW,
     });
     expect(result.allow).toBe(false);
+    warn.restore();
+  });
+});
+
+describe('verifySigV4 — embedConfig-driven flag polarity', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // The strictness-flag wording is sourced from the active embed config, so
+    // any test that overrides it MUST restore cdk-local's defaults — otherwise
+    // a later test asserting `--strict-sigv4` would see the host flag leak.
+    resetEmbedConfig();
+  });
+
+  it('renders the host opt-OUT flag in the foreign-id DENY message when sigV4StrictByDefault is set', async () => {
+    // A host like cdkd that fails-closed by default passes its own opt-OUT
+    // flag. The deny-path advice must read in the host's polarity: name the
+    // host flag, never cdk-local's opt-IN `--strict-sigv4`.
+    setEmbedConfig({ sigV4StrictByDefault: true, sigV4OptFlag: '--allow-unverified-sigv4' });
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadLocal, {
+      strict: true,
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('--allow-unverified-sigv4');
+    expect(warns).not.toContain('--strict-sigv4');
+    warn.restore();
+  });
+
+  it('renders the host opt-OUT flag in the no-creds DENY message when sigV4StrictByDefault is set', async () => {
+    setEmbedConfig({ sigV4StrictByDefault: true, sigV4OptFlag: '--allow-unverified-sigv4' });
+    const warn = spyWarn();
+    const result = await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrows, {
+      strict: true,
+      now: () => NOW,
+    });
+    expect(result.allow).toBe(false);
+    const warns = warn.calls().join('\n');
+    expect(warns).toContain('--allow-unverified-sigv4');
+    expect(warns).not.toContain('--strict-sigv4');
     warn.restore();
   });
 });
