@@ -20,7 +20,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _json(self, status, payload):
-        data = json.dumps(payload).encode("utf-8")
+        # Compact separators (no spaces) so the response matches verify.sh's
+        # no-space grep assertions, like the Node fixtures' JSON.stringify output.
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
