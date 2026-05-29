@@ -14,6 +14,7 @@ const empty: TargetListing = {
   apis: [],
   ecsServices: [],
   ecsTaskDefinitions: [],
+  agentCoreRuntimes: [],
   loadBalancers: [],
 };
 
@@ -28,6 +29,7 @@ describe('formatTargetListing', () => {
       apis: [entry('App/HttpApi', 'App:HttpApi')],
       ecsServices: [entry('App/OrdersService/Service', 'App:OrdersService')],
       ecsTaskDefinitions: [entry('App/TaskDef', 'App:TaskDef')],
+      agentCoreRuntimes: [entry('App/ChatAgent', 'App:ChatAgent')],
       loadBalancers: [entry('App/WebLB', 'App:WebLB')],
     };
     const out = formatTargetListing(listing, 'cdkl');
@@ -35,6 +37,7 @@ describe('formatTargetListing', () => {
     expect(out).toContain('APIs  ->  cdkl start-api [target...]');
     expect(out).toContain('ECS Services  ->  cdkl start-service <target...>');
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
+    expect(out).toContain('AgentCore Runtimes  ->  cdkl invoke-agentcore <target>');
     expect(out).toContain('Application Load Balancers  ->  cdkl start-alb <target...>');
   });
 

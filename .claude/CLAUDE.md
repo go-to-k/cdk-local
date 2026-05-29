@@ -32,6 +32,10 @@ AWS managed services.
   service(s) behind it plus a local front-door (single default-action
   `forward`) that round-robins each listener port across the replicas
   (full listener-rule routing — path / host / weighted — deferred to #123)
+- Bedrock AgentCore Runtime agents — the agent container served over the
+  AgentCore HTTP contract (`POST /invocations` + `GET /ping` on port 8080),
+  invoked once locally (`cdkl invoke-agentcore`); v1 covers container artifacts
+  on the HTTP protocol
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 
@@ -59,11 +63,11 @@ Gateway).
 `src/` layout:
 
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
-  `createLocalStartApiCommand`, `createLocalRunTaskCommand`,
-  `createLocalStartServiceCommand`, `createLocalStartAlbCommand`,
-  `createLocalListCommand`) + shared option helpers. `start-service` and
-  `start-alb` share one neutral orchestration in
-  `commands/ecs-service-emulator.ts` (synth + shared docker network +
+  `createLocalInvokeAgentCommand`, `createLocalStartApiCommand`,
+  `createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
+  `createLocalStartAlbCommand`, `createLocalListCommand`) + shared option
+  helpers. `start-service` and `start-alb` share one neutral orchestration
+  in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
@@ -76,7 +80,9 @@ Gateway).
   sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
   (`cdkl list` target enumeration), target-picker (interactive arrow-key
   target selection via `@clack/prompts` when a target is omitted in a TTY),
-  embed-config
+  agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +
+  container-URI extraction) + agentcore-client (the `/ping` + `/invocations`
+  HTTP-contract client for `cdkl invoke-agentcore`), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
@@ -250,7 +256,7 @@ vp run runtime:smoke
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / start-api / run-task / start-service / start-alb / list`.
+  `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / list`.
 - Do NOT write comparison tables against `aws-cdk-local` / `cdklocal` /
   LocalStack in committed artifacts (README, docs, JSDoc). The
   cdk-local vs LocalStack distinction is the
