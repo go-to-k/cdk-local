@@ -159,15 +159,29 @@ describe('emitResult — exit codes', () => {
   });
 
   it('prints the body and leaves exit code unset on a 2xx', () => {
-    emitResult({ status: 200, contentType: 'application/json', raw: '{"ok":true}' });
+    emitResult({ status: 200, contentType: 'application/json', raw: '{"ok":true}', streamed: false });
     expect(writeSpy).toHaveBeenCalledWith('{"ok":true}\n');
     expect(process.exitCode).toBeUndefined();
   });
 
   it('sets exit code 1 (but still prints the body) on a 4xx/5xx', () => {
-    emitResult({ status: 500, contentType: 'application/json', raw: '{"error":"boom"}' });
+    emitResult({
+      status: 500,
+      contentType: 'application/json',
+      raw: '{"error":"boom"}',
+      streamed: false,
+    });
     expect(writeSpy).toHaveBeenCalledWith('{"error":"boom"}\n');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('does not re-print a streamed body — only terminates with a newline', () => {
+    // The SSE body was already written incrementally via onChunk; emitResult
+    // must not echo `raw` again, just close the line.
+    emitResult({ status: 200, contentType: 'text/event-stream', raw: '', streamed: true });
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy).toHaveBeenCalledWith('\n');
+    expect(process.exitCode).toBeUndefined();
   });
 });
 
