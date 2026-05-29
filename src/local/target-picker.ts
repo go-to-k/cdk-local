@@ -22,7 +22,6 @@ import type { TargetEntry } from './target-lister.js';
 // logger uses raw escapes too). Kept local to the picker render.
 const ANSI = {
   cyan: (s: string): string => `\x1b[36m${s}\x1b[0m`,
-  dim: (s: string): string => `\x1b[2m${s}\x1b[0m`,
   green: (s: string): string => `\x1b[32m${s}\x1b[0m`,
 };
 
@@ -146,13 +145,15 @@ export async function pickManyTargets(message: string, entries: TargetEntry[]): 
       },
     });
 
-    // Right selects every row; Left clears. MultiSelectPrompt uses Up/Down for
-    // the cursor and Space to toggle, so Left/Right are free. Setting
-    // `prompt.value` is exactly how the built-in toggleAll works; the prompt
-    // re-renders after each keypress.
+    // Right selects every row; Left clears. Setting `prompt.value` is exactly
+    // how the built-in `toggleAll` works; the prompt re-renders after each
+    // keypress. Note: MultiSelectPrompt ALSO maps Left/Right onto its cursor
+    // (as Up/Down) and that fires before this handler, so after a bulk change
+    // we pin the cursor to the top for a stable, predictable position.
     prompt.on('key', (_char, info) => {
-      if (info?.name === 'right') prompt.value = bulkSelectValues(opts, 'all');
-      else if (info?.name === 'left') prompt.value = bulkSelectValues(opts, 'none');
+      if (info?.name !== 'right' && info?.name !== 'left') return;
+      prompt.value = bulkSelectValues(opts, info.name === 'right' ? 'all' : 'none');
+      prompt.cursor = 0;
     });
 
     const picked = await prompt.prompt();

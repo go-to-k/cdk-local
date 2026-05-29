@@ -205,24 +205,30 @@ describe('pickManyTargets', () => {
     expect(msState.instances[1]!.opts.initialValues).toEqual(['S/A']);
   });
 
-  it('Right selects all and Left clears, via the key handler', async () => {
+  it('Right selects all and Left clears, pinning the cursor to the top', async () => {
     msState.results = [['S/A']];
     await pickManyTargets('Pick many', entries);
     const inst = msState.instances.at(-1)!;
     inst.value = [];
+    inst.cursor = 2;
     inst.handlers.key?.(undefined, { name: 'right' });
     expect(inst.value).toEqual(['S/A', 'S:B']);
+    expect(inst.cursor).toBe(0); // bulk op resets the cursor (arrows also move it)
+    inst.cursor = 2;
     inst.handlers.key?.(undefined, { name: 'left' });
     expect(inst.value).toEqual([]);
+    expect(inst.cursor).toBe(0);
   });
 
-  it('leaves the selection unchanged on other keys', async () => {
+  it('leaves the selection and cursor unchanged on other keys', async () => {
     msState.results = [['S/A']];
     await pickManyTargets('Pick many', entries);
     const inst = msState.instances.at(-1)!;
     inst.value = ['S/A'];
+    inst.cursor = 2;
     inst.handlers.key?.(undefined, { name: 'down' });
     expect(inst.value).toEqual(['S/A']);
+    expect(inst.cursor).toBe(2);
   });
 
   it('render returns a string in the active and submit states (smoke)', async () => {
