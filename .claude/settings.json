@@ -27,6 +27,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/control-char-gate.sh",
+            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "timeout": 15,
+            "statusMessage": "Scanning staged files for NUL / control bytes..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/gh-pr-edit-deprecation-gate.sh",
             "if": "Bash(gh pr edit*) or Bash(gh -C * pr edit*)",
             "timeout": 10,
