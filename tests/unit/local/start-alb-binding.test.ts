@@ -61,6 +61,31 @@ describe('resolveAlbTarget', () => {
       /did not match an application Load Balancer/
     );
   });
+
+  it('errors when a display path resolves to more than one ALB (ambiguous)', () => {
+    // Two ALBs share the `AlbStack/Shared` construct-path prefix, so the path
+    // `AlbStack/Shared` resolves to both -> the user must disambiguate.
+    const twoAlbStack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          AlbA: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+            Metadata: { 'aws:cdk:path': 'AlbStack/Shared/AlbA/Resource' },
+          },
+          AlbB: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+            Metadata: { 'aws:cdk:path': 'AlbStack/Shared/AlbB/Resource' },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+    expect(() => resolveAlbTarget('AlbStack/Shared', [twoAlbStack])).toThrow(
+      /matches 2 load balancers/
+    );
+  });
 });
 
 /** Two ALBs; `wiring` decides whether they front the same service or two. */
