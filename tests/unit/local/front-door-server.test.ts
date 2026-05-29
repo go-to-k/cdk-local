@@ -482,3 +482,211 @@ describe('buildRedirectLocation', () => {
     );
   });
 });
+
+import { request as httpRequest } from 'node:http';
+import type { FrontDoorDispatchTarget } from '../../../src/local/front-door-server.js';
+
+/** POST a request and capture status / headers / body. */
+function postRequest(
+  port: number,
+  path: string,
+  body: string,
+  headers: Record<string, string> = {}
+): Promise<{ status: number; headers: IncomingMessage['headers']; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port, path, method: 'POST', headers },
+      (res) => {
+        let out = '';
+        res.on('data', (c) => (out += c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: out }));
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+async function startFrontTarget(
+  selectTarget: (requestPath: string) => FrontDoorDispatchTarget | undefined
+): Promise<StartedFrontDoorServer> {
+  const front = await startFrontDoorServer({
+    selectTarget,
+    port: 0,
+    host: '127.0.0.1',
+    listenerPort: 80,
+    label: 'listener port 80',
+  });
+  cleanups.push(() => front.close());
+  return front;
+}
+
+describe('startFrontDoorServer — Lambda dispatch (#123)', () => {
+  it('translates the request -> ALB event, invokes the Lambda, and writes the response', async () => {
+    let capturedEvent: Record<string, unknown> | undefined;
+    const front = await startFrontTarget(() => ({
+      kind: 'lambda',
+      lambda: {
+        targetGroupArn: 'tg-arn',
+        multiValueHeaders: false,
+        label: 'EchoFn',
+        invoke: async (event) => {
+          capturedEvent = event;
+          return {
+            statusCode: 201,
+            statusDescription: '201 Created',
+            headers: { 'content-type': 'application/json', 'x-echo': 'yes' },
+            body: '{"ok":true}',
+          };
+        },
+      },
+    }));
+
+    const res = await postRequest(front.port, '/items?a=1', '{"hello":"world"}', {
+      'content-type': 'application/json',
+    });
+    expect(res.status).toBe(201);
+    expect(res.headers['content-type']).toBe('application/json');
+    expect(res.headers['x-echo']).toBe('yes');
+    expect(res.body).toBe('{"ok":true}');
+
+    // The event the handler saw is the ALB Lambda-target shape.
+    expect(capturedEvent!['requestContext']).toEqual({ elb: { targetGroupArn: 'tg-arn' } });
+    expect(capturedEvent!['httpMethod']).toBe('POST');
+    expect(capturedEvent!['path']).toBe('/items');
+    expect(capturedEvent!['queryStringParameters']).toEqual({ a: '1' });
+    expect(capturedEvent!['body']).toBe('{"hello":"world"}');
+    // ALB stamps x-forwarded-* onto the event headers.
+    const evHeaders = capturedEvent!['headers'] as Record<string, string>;
+    expect(evHeaders['x-forwarded-proto']).toBe('http');
+    expect(evHeaders['x-forwarded-port']).toBe('80');
+  });
+
+  it('returns 502 when the Lambda returns a malformed response', async () => {
+    const front = await startFrontTarget(() => ({
+      kind: 'lambda',
+      lambda: {
+        targetGroupArn: 'tg-arn',
+        multiValueHeaders: false,
+        label: 'BadFn',
+        invoke: async () => ({ body: 'no statusCode' }),
+      },
+    }));
+    const res = await postRequest(front.port, '/', '');
+    expect(res.status).toBe(502);
+  });
+
+  it('returns 502 when the Lambda invoke throws', async () => {
+    const front = await startFrontTarget(() => ({
+      kind: 'lambda',
+      lambda: {
+        targetGroupArn: 'tg-arn',
+        multiValueHeaders: false,
+        label: 'ThrowFn',
+        invoke: async () => {
+          throw new Error('container gone');
+        },
+      },
+    }));
+    const res = await postRequest(front.port, '/', '');
+    expect(res.status).toBe(502);
+  });
+
+  it('emits multiple Set-cookie lines from a multiValueHeaders response', async () => {
+    const front = await startFrontTarget(() => ({
+      kind: 'lambda',
+      lambda: {
+        targetGroupArn: 'tg-arn',
+        multiValueHeaders: true,
+        label: 'CookieFn',
+        invoke: async () => ({
+          statusCode: 200,
+          multiValueHeaders: { 'set-cookie': ['a=1', 'b=2'] },
+          body: 'ok',
+        }),
+      },
+    }));
+    const res = await postRequest(front.port, '/', '');
+    expect(res.status).toBe(200);
+    expect(res.headers['set-cookie']).toEqual(['a=1', 'b=2']);
+  });
+
+  it('returns 404 when selectTarget yields nothing (rule miss, no default)', async () => {
+    const front = await startFrontTarget(() => undefined);
+    const res = await postRequest(front.port, '/nope', '');
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('startFrontDoorServer — weighted forward mixing ECS + Lambda (#123)', () => {
+  it('dispatches an ECS pool target or a Lambda target by weight via route()', async () => {
+    const ecs = await startUpstream('ecs-replica');
+    const ecsPool = new FrontDoorEndpointPool();
+    ecsPool.register('ecs:r0', { host: '127.0.0.1', port: ecs.port });
+    let lambdaHits = 0;
+    // A weighted forward whose targets are an ECS pool AND a Lambda invoker;
+    // both have positive weight, so over many requests both are exercised.
+    const action: RouteAction = {
+      kind: 'forward',
+      pools: [
+        { pool: ecsPool, weight: 50 },
+        {
+          lambda: {
+            targetGroupArn: 'tg-arn',
+            multiValueHeaders: false,
+            label: 'MixFn',
+            invoke: async () => {
+              lambdaHits += 1;
+              return { statusCode: 200, headers: { 'content-type': 'text/plain' }, body: 'lambda' };
+            },
+          },
+          weight: 50,
+        },
+      ],
+    };
+    const front = await startFrontWith(() => action);
+
+    const counts: Record<string, number> = { 'ecs-replica': 0, lambda: 0 };
+    for (let i = 0; i < 60; i++) {
+      const body = (await fetchText(front.port)).body;
+      counts[body] = (counts[body] ?? 0) + 1;
+    }
+    // Both backends answered (a 50/50 split makes a zero on either side
+    // astronomically unlikely), proving ECS-pool and Lambda dispatch coexist in
+    // one weighted forward.
+    expect(counts['ecs-replica']!).toBeGreaterThan(0);
+    expect(counts['lambda']!).toBeGreaterThan(0);
+    expect(counts['ecs-replica']! + counts['lambda']!).toBe(60);
+    expect(lambdaHits).toBe(counts['lambda']);
+  });
+
+  it('never routes to a weight-0 Lambda target in a mixed weighted forward', async () => {
+    const ecs = await startUpstream('ecs-only');
+    const ecsPool = new FrontDoorEndpointPool();
+    ecsPool.register('ecs:r0', { host: '127.0.0.1', port: ecs.port });
+    let lambdaHits = 0;
+    const action: RouteAction = {
+      kind: 'forward',
+      pools: [
+        { pool: ecsPool, weight: 100 },
+        {
+          lambda: {
+            targetGroupArn: 'tg-arn',
+            multiValueHeaders: false,
+            label: 'ZeroFn',
+            invoke: async () => {
+              lambdaHits += 1;
+              return { statusCode: 200, body: 'lambda' };
+            },
+          },
+          weight: 0,
+        },
+      ],
+    };
+    const front = await startFrontWith(() => action);
+    for (let i = 0; i < 20; i++) {
+      expect((await fetchText(front.port)).body).toBe('ecs-only');
+    }
+    expect(lambdaHits).toBe(0);
+  });
+});

@@ -8,12 +8,14 @@ import {
 } from '../../local/embed-config.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { parseEcsTarget } from '../../local/ecs-task-resolver.js';
+import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
 import {
   resolveAlbFrontDoor,
   isApplicationLoadBalancer,
   type ResolvedListenerAction,
+  type FrontDoorForwardTarget,
 } from '../../local/elb-front-door-resolver.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
@@ -23,6 +25,7 @@ import {
   type EmulatorStrategy,
   type ServiceBoot,
   type PlannedAction,
+  type PlannedForwardTarget,
   type PlannedFrontDoorListener,
 } from './ecs-service-emulator.js';
 
@@ -179,25 +182,42 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
         const resolution = resolveAlbFrontDoor(stack, albLogicalId);
         warnings.push(...resolution.warnings);
 
-        // Qualify a resolver action into a planned action: forward targets get
-        // their `serviceLogicalId` qualified into a `Stack:LogicalId`
-        // service-boot target (and recorded as a service we must run);
-        // redirect / fixed-response carry no service.
+        // Qualify a resolver target into the front-door plan's target union,
+        // carrying its forward weight. An ECS target becomes a `Stack:LogicalId`
+        // service-boot target (and is recorded as a service we must run); a
+        // Lambda target (#123) is resolved to its `ResolvedLambda` here so the
+        // front-door can boot + invoke it locally (no ECS service to run for it).
+        const qualifyTarget = (t: FrontDoorForwardTarget): PlannedForwardTarget => {
+          if (t.kind === 'lambda') {
+            const lambda = resolveLambdaTarget(`${stack.stackName}:${t.lambdaLogicalId}`, stacks);
+            return {
+              kind: 'lambda',
+              lambda,
+              // The local front-door has no real target-group ARN; surface the
+              // logical id (qualified) so `requestContext.elb.targetGroupArn`
+              // is stable + identifiable in handler logs.
+              targetGroupArn: `${stack.stackName}:${t.targetGroupLogicalId}`,
+              multiValueHeaders: t.multiValueHeaders,
+              weight: t.weight,
+            };
+          }
+          const serviceTarget = `${stack.stackName}:${t.serviceLogicalId}`;
+          serviceTargets.add(serviceTarget);
+          return {
+            kind: 'ecs',
+            serviceTarget,
+            targetContainerName: t.targetContainerName,
+            targetContainerPort: t.targetContainerPort,
+            weight: t.weight,
+          };
+        };
+
+        // Qualify a resolver action into a planned action: a forward qualifies
+        // each weighted target (ECS or Lambda); redirect / fixed-response carry
+        // no backing target.
         const qualify = (action: ResolvedListenerAction): PlannedAction => {
           if (action.kind === 'forward') {
-            return {
-              kind: 'forward',
-              targets: action.targets.map((t) => {
-                const serviceTarget = `${stack.stackName}:${t.serviceLogicalId}`;
-                serviceTargets.add(serviceTarget);
-                return {
-                  serviceTarget,
-                  targetContainerName: t.targetContainerName,
-                  targetContainerPort: t.targetContainerPort,
-                  weight: t.weight,
-                };
-              }),
-            };
+            return { kind: 'forward', targets: action.targets.map(qualifyTarget) };
           }
           if (action.kind === 'redirect') {
             return {
