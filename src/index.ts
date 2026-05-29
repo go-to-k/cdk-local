@@ -11,6 +11,10 @@ export {
   type CreateLocalInvokeCommandOptions,
 } from './cli/commands/local-invoke.js';
 export {
+  createLocalInvokeAgentCommand,
+  type CreateLocalInvokeAgentCommandOptions,
+} from './cli/commands/local-invoke-agent.js';
+export {
   createLocalStartApiCommand,
   type CreateLocalStartApiCommandOptions,
 } from './cli/commands/local-start-api.js';
@@ -368,6 +372,28 @@ export { buildCloudMapIndex, type CloudMapIndex } from './local/cloud-map-resolv
  * resolver's throw would compare two distinct class objects and fail.
  */
 export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
+
+/**
+ * `invoke-agent` Bedrock AgentCore Runtime resolution + HTTP-contract
+ * client. `resolveAgentCoreTarget` maps a target argument to a runnable
+ * container runtime; `waitForAgentPing` / `invokeAgent` speak the
+ * `GET /ping` + `POST /invocations` contract. Exposed only as the
+ * consuming host's `import` statements require them.
+ */
+export {
+  resolveAgentCoreTarget,
+  AgentCoreResolutionError,
+  AGENTCORE_RUNTIME_TYPE,
+  AGENTCORE_HTTP_PROTOCOL,
+  type ResolvedAgentRuntime,
+} from './local/agentcore-resolver.js';
+export {
+  waitForAgentPing,
+  invokeAgent,
+  AGENTCORE_SESSION_ID_HEADER,
+  type AgentInvokeResult,
+  type InvokeAgentOptions,
+} from './local/agentcore-client.js';
 
 /**
  * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the

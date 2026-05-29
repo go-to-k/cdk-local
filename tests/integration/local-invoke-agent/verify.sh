@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# verify.sh — local-invoke-agent integ test (issue #87 v1)
+#
+# Fully local — no AWS resources are deployed. We synthesize a CDK app
+# whose only resource is an AWS::BedrockAgentCore::Runtime backed by a
+# local Dockerfile asset, and exercise the local-build path of
+# `cdkl invoke-agent` end-to-end: build the agent container, run it on
+# 8080, wait for GET /ping, POST the event to /invocations, print the
+# response.
+#
+# The fixture agent echoes the request body, the received session-id
+# header, and the injected GREETING env var, so we can assert the full
+# request/response contract + env injection + session-id binding.
+#
+# Run via `/run-integ local-invoke-agent` (recommended) or directly:
+#
+#     bash tests/integration/local-invoke-agent/verify.sh
+#
+# Requires Docker. The build pulls a small node base image the first time.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+CDKL="node ../../../dist/cli.js"
+TARGET="CdkLocalInvokeAgentFixture/EchoAgent"
+BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
+
+echo "==> Verifying Docker is available"
+docker version --format '{{.Server.Version}}' >/dev/null
+
+echo "==> Pulling ${BASE_IMAGE} (one-time)"
+docker pull --platform linux/arm64 "${BASE_IMAGE}" >/dev/null
+
+echo "==> Installing fixture deps"
+if [[ ! -d node_modules ]]; then
+  vp install --prefer-offline
+fi
+
+# Test 1 — default empty event: env injection + auto session id.
+echo "==> [1/4] Invoking EchoAgent with default empty event"
+RESULT_1=$(${CDKL} invoke-agent "${TARGET}" 2>/dev/null | tail -1)
+echo "    response: ${RESULT_1}"
+echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
+  echo "FAIL: expected greeting=hello-from-agent in response, got: ${RESULT_1}"
+  exit 1
+}
+# Auto-generated session id reached the container (not null).
+echo "${RESULT_1}" | grep -Eq '"sessionId":"[0-9a-fA-F-]{8,}' || {
+  echo "FAIL: expected a non-null auto session id in response, got: ${RESULT_1}"
+  exit 1
+}
+
+# Test 2 — event payload via --event echoes through /invocations.
+echo "==> [2/4] Invoking EchoAgent with --event payload"
+EVENT_FILE=$(mktemp)
+trap 'rm -f "${EVENT_FILE}"' EXIT
+echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
+RESULT_2=$(${CDKL} invoke-agent "${TARGET}" --event "${EVENT_FILE}" 2>/dev/null | tail -1)
+echo "    response: ${RESULT_2}"
+echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
+  echo "FAIL: expected echoed prompt in response, got: ${RESULT_2}"
+  exit 1
+}
+
+# Test 3 — --env-vars override wins over the template env.
+echo "==> [3/4] Invoking EchoAgent with --env-vars override"
+ENV_FILE=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
+echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
+RESULT_3=$(${CDKL} invoke-agent "${TARGET}" --env-vars "${ENV_FILE}" 2>/dev/null | tail -1)
+echo "    response: ${RESULT_3}"
+echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
+  echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
+  exit 1
+}
+
+# Test 4 — explicit --session-id reaches the container's session header.
+echo "==> [4/4] Invoking EchoAgent with explicit --session-id"
+SESSION="cdkl-integ-session-1234567890abcdef"
+RESULT_4=$(${CDKL} invoke-agent "${TARGET}" --session-id "${SESSION}" 2>/dev/null | tail -1)
+echo "    response: ${RESULT_4}"
+echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
+  echo "FAIL: expected sessionId=${SESSION} in response, got: ${RESULT_4}"
+  exit 1
+}
+
+echo ""
+echo "==> All 4 local-invoke-agent tests passed"
