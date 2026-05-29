@@ -65,6 +65,7 @@ EOF
 cat > "$PANE_DIR/right.sh" <<EOF
 #!/usr/bin/env bash
 until curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null; do sleep 0.3; done
+sleep 1  # a short beat after "Server listening" so the curl doesn't fire instantly
 printf '\$ curl http://localhost:$PORT/hello\n\n'
 curl -s "http://localhost:$PORT/hello"
 echo
