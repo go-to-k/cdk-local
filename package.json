@@ -15,6 +15,10 @@
     "./state-provider": {
       "types": "./dist/local/local-state-provider.d.ts",
       "import": "./dist/local/local-state-provider.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
     }
   },
   "files": [

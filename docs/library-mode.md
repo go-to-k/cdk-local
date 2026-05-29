@@ -121,6 +121,19 @@ config and `resetEmbedConfig()` restores the defaults (test isolation).
 
 ## Low-level building blocks (shim hosts)
 
+These live behind the dedicated `cdk-local/internal` subpath:
+
+```ts
+import { pickRefLogicalId } from 'cdk-local/internal';
+```
+
+**No semver guarantee.** Everything under `cdk-local/internal` is
+implementation detail of the `cdkl` CLI and may change or be removed
+without a major version bump — only the main `cdk-local` entry
+documented above is semver-covered. (For backward compatibility the
+main entry currently still re-exports these symbols, but new shim hosts
+should import them from `cdk-local/internal`.)
+
 Most hosts only need the command factories above. A host that instead
 re-exports cdk-local's individual `src/local/**` modules verbatim
 (rather than carrying its own byte-identical copy) can also import the
