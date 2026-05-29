@@ -45,8 +45,8 @@ export PATH="$SHADOW_BIN:\$PATH"
 export FORCE_COLOR=1
 export COLORTERM=truecolor
 cd "$SAMPLE_DIR"
-printf '\$ cdkl invoke CdklDemo/EchoHandler --event event.json\n\n'
-cdkl invoke CdklDemo/EchoHandler --event event.json
+printf '\$ cdkl invoke --event event.json\n\n'
+cdkl invoke --event event.json
 sleep 9999
 EOF
 chmod +x "$PANE_DIR/invoke.sh"
@@ -68,6 +68,11 @@ fi
 ( cd "$SAMPLE_DIR" \
   && pnpm install --silent >/dev/null 2>&1 \
   && pnpm exec cdk synth >/dev/null 2>&1 )
+
+# Kill any stale `demo` session left by an aborted prior run (e.g. a vhs
+# SIGKILL that skipped the cleanup trap, or back-to-back re-records) so this
+# run never fails with "duplicate session: demo".
+tmux kill-session -t demo 2>/dev/null || true
 
 tmux -f "$CONF" new-session -d -s demo -x 180 -y 35 "$PANE_DIR/invoke.sh"
 tmux attach -t demo

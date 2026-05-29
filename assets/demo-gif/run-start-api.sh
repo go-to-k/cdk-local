@@ -49,13 +49,23 @@ export PATH="$SHADOW_BIN:\$PATH"
 export FORCE_COLOR=1
 export COLORTERM=truecolor
 cd "$SAMPLE_DIR"
-printf '\$ cdkl start-api CdklDemo/MyApi --no-pull --port $PORT\n\n'
-exec cdkl start-api CdklDemo/MyApi --no-pull --port $PORT
+printf '\$ cdkl start-api --no-pull --port $PORT\n\n'
+exec cdkl start-api --no-pull --port $PORT
 EOF
 
+# Right pane polls the port (instead of a fixed sleep) so the visible curl
+# fires the instant the server is accepting connections — the left pane's
+# picker + confirm + boot can take a variable amount of time, and a fixed
+# sleep left a long dead gap between "Server listening" and the curl. Probing
+# `/` (any HTTP reply, including the 404 for an undefined route) detects the
+# open port without triggering the /hello cold-start, so the visible curl to
+# /hello performs the first invoke: the viewer sees the command, a brief beat,
+# then the JSON. The selected HTTP API (MyHttpApi) lands on $PORT because the
+# picker lists HTTP API v2 first.
 cat > "$PANE_DIR/right.sh" <<EOF
 #!/usr/bin/env bash
-sleep 6
+until curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null; do sleep 0.3; done
+sleep 1  # a short beat after "Server listening" so the curl doesn't fire instantly
 printf '\$ curl http://localhost:$PORT/hello\n\n'
 curl -s "http://localhost:$PORT/hello"
 echo
@@ -84,6 +94,14 @@ fi
   && pnpm install --silent >/dev/null 2>&1 \
   && pnpm exec cdk synth >/dev/null 2>&1 )
 
+# Kill any stale `demo` session left by an aborted prior run (e.g. a vhs
+# SIGKILL that skipped the cleanup trap, or back-to-back re-records) so this
+# run never fails with "duplicate session: demo".
+tmux kill-session -t demo 2>/dev/null || true
+
 tmux -f "$CONF" new-session -d -s demo -x 220 -y 35 "$PANE_DIR/left.sh"
 tmux split-window -h -t demo:0 "$PANE_DIR/right.sh"
+# Focus the LEFT pane so vhs's picker keystrokes (space/→/enter/y) drive the
+# `cdkl start-api` multi-select, not the right (curl) pane.
+tmux select-pane -t demo:0.0
 tmux attach -t demo

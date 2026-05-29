@@ -3,50 +3,64 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import { HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Minimal CDK stack used by the cdk-local demo GIFs.
+ * CDK stack used by the cdk-local demo GIFs. It deliberately exposes
+ * SEVERAL runnable targets of MULTIPLE kinds so the recorded interactive
+ * picker is illustrative:
  *
- * - `EchoHandler` is the asset-backed Node.js Lambda the `cdkl invoke`
- *   GIF runs against directly. It returns a clearly-recognizable JSON
- *   payload so the recorded output is readable in the GIF without
- *   scrolling.
- * - `MyApi` is an HTTP API v2 fronting the same Lambda, used by the
- *   `cdkl start-api` GIF. Path `/hello` → the same handler. HTTP API
- *   v2 (rather than REST API v1) keeps the demo URL prefix-free so
- *   the recorded `curl` line stays short.
+ *   - three Lambdas — `EchoHandler`, `GreetHandler`, `HealthHandler` — so
+ *     the `cdkl invoke` single-select picker has a real list to arrow
+ *     through;
+ *   - an HTTP API v2 (`MyHttpApi`, `/hello` → EchoHandler), a REST API v1
+ *     (`MyRestApi`, `/greet` → GreetHandler), and a Function URL on
+ *     `HealthHandler`, so the `cdkl start-api` multi-select picker shows
+ *     all three surface kinds (grouped HTTP API v2 / REST API v1 /
+ *     Function URL).
  *
- * The handler returns an API-Gateway-shape response when invoked
- * through the HTTP API path (event carries `requestContext`) and a
- * plain echo shape otherwise — both demos work without code-branching
- * the sample app.
+ * Every Lambda shares one asset (`../lambda`); the handler returns an API
+ * Gateway-shape response when the event carries `requestContext` (the
+ * start-api path) and a plain echo otherwise (the invoke path), so no
+ * code-branching of the sample app is needed.
  *
- * No AWS deploy required — cdkl drives the synthesized `cdk.out`
- * directly.
+ * No AWS deploy required — cdkl drives the synthesized `cdk.out` directly.
  */
 export class CdklDemoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const fn = new lambda.Function(this, 'EchoHandler', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
-      environment: {
-        GREETING: 'Hello from cdk-local!',
-      },
-      timeout: cdk.Duration.seconds(10),
-    });
+    const code = lambda.Code.fromAsset(path.join(__dirname, '../lambda'));
+    const mkFn = (logicalId: string, greeting: string): lambda.Function =>
+      new lambda.Function(this, logicalId, {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        handler: 'index.handler',
+        code,
+        environment: { GREETING: greeting },
+        timeout: cdk.Duration.seconds(10),
+      });
 
-    const api = new HttpApi(this, 'MyApi', { apiName: 'cdkl-demo' });
-    api.addRoutes({
+    const echo = mkFn('EchoHandler', 'Hello from cdk-local!');
+    const greet = mkFn('GreetHandler', 'Greetings from a REST API!');
+    const health = mkFn('HealthHandler', 'OK');
+
+    // HTTP API v2 → EchoHandler (the `curl /hello` target in the start-api GIF).
+    const httpApi = new HttpApi(this, 'MyHttpApi', { apiName: 'cdkl-demo-http' });
+    httpApi.addRoutes({
       path: '/hello',
       methods: [HttpMethod.GET],
-      integration: new HttpLambdaIntegration('HelloIntegration', fn),
+      integration: new HttpLambdaIntegration('HelloIntegration', echo),
     });
+
+    // REST API v1 → GreetHandler — a second API kind for the picker.
+    const restApi = new apigw.RestApi(this, 'MyRestApi', { restApiName: 'cdkl-demo-rest' });
+    restApi.root.addResource('greet').addMethod('GET', new apigw.LambdaIntegration(greet));
+
+    // Function URL → HealthHandler — the third API kind for the picker.
+    health.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
   }
 }
