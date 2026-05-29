@@ -415,3 +415,21 @@ export {
  * translation in the shim provides.
  */
 export { LocalInvokeBuildError } from './utils/error-handler.js';
+
+/**
+ * `start-api --watch` source-tree file watcher + the watch-target predicates
+ * and `cdk.json` `watch` config resolution. `createFileWatcher` debounces
+ * chokidar events; `createWatchPredicates` derives the watch root + the
+ * `ignored` / `shouldTrigger` filters that exclude `cdk.out` / `node_modules` /
+ * `.git` and honor `cdk.json` `watch.include` / `watch.exclude`;
+ * `resolveWatchConfig` reads that block from the cwd's `cdk.json`. Exposed so a
+ * consuming host whose `start-api` command adopts the watch-source model can
+ * wire its watcher to the app SOURCE tree (re-synth on edit) the same way.
+ */
+export {
+  createFileWatcher,
+  type FileWatcher,
+  type FileWatcherOptions,
+} from './local/file-watcher.js';
+export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
+export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
