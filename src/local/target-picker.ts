@@ -1,5 +1,6 @@
 import { MultiSelectPrompt } from '@clack/core';
 import {
+  confirm,
   isCancel,
   select,
   S_BAR,
@@ -74,10 +75,18 @@ export function bulkSelectValues(options: PickerOption[], action: 'all' | 'none'
   return action === 'all' ? options.map((o) => o.value) : [];
 }
 
+/** Pre-compute the aligned `[kind] ` tag per option (blank when no kind). */
+function kindTags(opts: PickerOption[]): string[] {
+  const raw = opts.map((o) => (o.hint ? `[${o.hint}] ` : ''));
+  const width = Math.max(0, ...raw.map((t) => t.length));
+  return raw.map((t) => t.padEnd(width));
+}
+
 /**
- * Prompt for one or more targets (at least one required). Caller must
- * have already confirmed a TTY and a non-empty `entries`. Throws
- * {@link TargetSelectionCancelledError} on Ctrl+C / Esc.
+ * Prompt for one or more targets. Caller must have already confirmed a TTY
+ * and a non-empty `entries`. Throws {@link TargetSelectionCancelledError}
+ * on Ctrl+C / Esc, on an empty selection (the user chose nothing), or when
+ * the confirmation step is declined.
  *
  * Built on `@clack/core`'s `MultiSelectPrompt` (rather than the high-level
  * `multiselect`) so it can add bulk-selection keys the high-level wrapper
@@ -86,27 +95,25 @@ export function bulkSelectValues(options: PickerOption[], action: 'all' | 'none'
  * selection in `this.value`, so the Right/Left handlers set it directly —
  * the same mechanism the built-in `toggleAll` uses.
  *
- * When `preselectAll` is true, every row starts selected so a bare Enter
- * confirms the whole set — used by `start-api`, whose long-standing default
- * is "serve every discovered API". The user clears (Left) or deselects rows
- * to serve a subset.
+ * Rows start UNSELECTED. Each row is prefixed with its surface kind
+ * (`[HTTP API v2] MyApi`) — always shown, padded so labels align. Submitting
+ * with nothing selected exits cleanly; a non-empty selection goes through a
+ * Y/n confirmation before returning.
  */
-export async function pickManyTargets(
-  message: string,
-  entries: TargetEntry[],
-  options: { preselectAll?: boolean } = {}
-): Promise<string[]> {
+export async function pickManyTargets(message: string, entries: TargetEntry[]): Promise<string[]> {
   const opts: PickerOption[] = entries.map(toOption);
+  const tags = kindTags(opts);
 
   const prompt = new MultiSelectPrompt<PickerOption>({
     options: opts,
-    required: true,
-    ...(options.preselectAll ? { initialValues: bulkSelectValues(opts, 'all') } : {}),
+    // Allow an empty submit — handled below as "exit", rather than clack's
+    // built-in "select at least one" error, which the user found confusing.
+    required: false,
     render() {
       const header = `${S_BAR_START}  ${message}`;
       if (this.state === 'submit' || this.state === 'cancel') {
         const n = (this.value ?? []).length;
-        return `${header}\n${S_BAR}  ${ANSI.dim(`${n} selected`)}`;
+        return `${header}\n${S_BAR}  ${`${n} selected`}`;
       }
       const selected = new Set(this.value ?? []);
       const rows = this.options.map((opt, i) => {
@@ -117,13 +124,12 @@ export async function pickManyTargets(
           : isActive
             ? S_CHECKBOX_ACTIVE
             : S_CHECKBOX_INACTIVE;
-        const label = isActive
-          ? ANSI.cyan(opt.label)
-          : isSelected
-            ? ANSI.green(opt.label)
-            : ANSI.dim(opt.label);
-        const hint = opt.hint && isActive ? ANSI.dim(` (${opt.hint})`) : '';
-        return `${S_BAR}  ${box} ${label}${hint}`;
+        // Whole row coloured by state: active = cyan, selected = green,
+        // otherwise plain (the terminal's default fg — never dim/grey, which
+        // is hard to read). The `[kind]` tag follows the row's colour.
+        const text = `${tags[i]}${opt.label}`;
+        const coloured = isActive ? ANSI.cyan(text) : isSelected ? ANSI.green(text) : text;
+        return `${S_BAR}  ${box} ${coloured}`;
       });
       const keys = ANSI.dim('space toggle · → all · ← none · enter confirm');
       return `${header}\n${rows.join('\n')}\n${S_BAR}  ${keys}\n${S_BAR_END}`;
@@ -139,9 +145,17 @@ export async function pickManyTargets(
     else if (info?.name === 'left') prompt.value = bulkSelectValues(opts, 'none');
   });
 
-  const result = await prompt.prompt();
-  if (isCancel(result)) throw new TargetSelectionCancelledError();
-  return result as string[];
+  const picked = await prompt.prompt();
+  if (isCancel(picked)) throw new TargetSelectionCancelledError();
+  const values = (picked as string[] | undefined) ?? [];
+  // Nothing selected -> exit cleanly instead of doing something surprising.
+  if (values.length === 0) throw new TargetSelectionCancelledError();
+
+  // Confirmation step before committing to the (possibly large) run.
+  const summary = values.length === 1 ? '1 target' : `${values.length} targets`;
+  const ok = await confirm({ message: `Run ${summary}?` });
+  if (isCancel(ok) || ok !== true) throw new TargetSelectionCancelledError();
+  return values;
 }
 
 interface ResolveParams {

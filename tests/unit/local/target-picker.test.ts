@@ -46,6 +46,7 @@ vi.mock('@clack/core', () => ({
 
 vi.mock('@clack/prompts', () => ({
   select: vi.fn(),
+  confirm: vi.fn(),
   isCancel: vi.fn(() => false),
   S_BAR: '|',
   S_BAR_START: 'T',
@@ -55,7 +56,7 @@ vi.mock('@clack/prompts', () => ({
   S_CHECKBOX_SELECTED: 'x',
 }));
 
-import { isCancel, select } from '@clack/prompts';
+import { confirm, isCancel, select } from '@clack/prompts';
 import {
   bulkSelectValues,
   isInteractive,
@@ -89,6 +90,7 @@ beforeEach(() => {
   origStdout = process.stdout.isTTY;
   vi.clearAllMocks();
   vi.mocked(isCancel).mockReturnValue(false);
+  vi.mocked(confirm).mockResolvedValue(true);
   msState.instances = [];
   msState.result = undefined;
 });
@@ -143,7 +145,7 @@ describe('bulkSelectValues', () => {
 });
 
 describe('pickManyTargets', () => {
-  it('builds the prompt with kind-hinted options and returns the chosen array', async () => {
+  it('builds an unselected, optional prompt and returns the confirmed selection', async () => {
     msState.result = ['S/A', 'S:B'];
     const result = await pickManyTargets('Pick many', entries);
     expect(result).toEqual(['S/A', 'S:B']);
@@ -152,15 +154,28 @@ describe('pickManyTargets', () => {
       { value: 'S/A', label: 'S/A', hint: 'HTTP API v2' },
       { value: 'S:B', label: 'S:B' },
     ]);
-    expect(inst.opts.required).toBe(true);
+    // Rows start unselected (no initialValues) and an empty submit is allowed
+    // (required: false) so it can be treated as "exit".
+    expect(inst.opts.required).toBe(false);
     expect(inst.opts.initialValues).toBeUndefined();
+    expect(inst.value).toEqual([]);
+    expect(confirm).toHaveBeenCalledOnce();
   });
 
-  it('pre-selects every row via initialValues when preselectAll is set (Enter = all)', async () => {
-    msState.result = ['S/A', 'S:B'];
-    await pickManyTargets('Pick many', entries, { preselectAll: true });
-    const inst = msState.instances.at(-1)!;
-    expect(inst.opts.initialValues).toEqual(['S/A', 'S:B']);
+  it('exits (throws) when nothing is selected', async () => {
+    msState.result = [];
+    await expect(pickManyTargets('Pick many', entries)).rejects.toBeInstanceOf(
+      TargetSelectionCancelledError
+    );
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('throws when the confirmation is declined', async () => {
+    msState.result = ['S/A'];
+    vi.mocked(confirm).mockResolvedValue(false);
+    await expect(pickManyTargets('Pick many', entries)).rejects.toBeInstanceOf(
+      TargetSelectionCancelledError
+    );
   });
 
   it('Right selects all and Left clears, via the key handler', async () => {

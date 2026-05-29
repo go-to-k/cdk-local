@@ -55,11 +55,12 @@ one or more). The list is the same set `cdkl list` prints, so a Function
 URL appears under its backing Lambda. (There is no `-i` / `--interactive`
 flag — bare-in-a-TTY is the trigger.)
 
-`start-api`'s multi-select starts with **every** discovered API
-pre-selected, so a bare Enter serves them all (its long-standing default)
-and deselecting rows serves a subset — each selected API on its own port.
-In any multi-select, Space toggles the current row, `→` selects all, `←`
-clears all, and Enter confirms.
+The multi-select starts with **nothing** selected. Space toggles the
+current row, `→` selects all, `←` clears all, and Enter confirms — then a
+Y/n confirmation runs before launch. Submitting with nothing selected
+exits cleanly (so a stray Enter never launches anything). For `start-api`,
+each selected API is served on its own port; to serve them all, press `→`
+then Enter (or, outside a TTY, just run bare `start-api` — see below).
 Each API row is tagged with its surface kind — `REST API v1` /
 `HTTP API v2` / `Function URL` / `WebSocket` — so otherwise-similar
 surfaces are easy to tell apart. (The picker shows the CDK display path,
@@ -410,7 +411,7 @@ but reusing cdk-local's synthesis, asset, and route-discovery
 plumbing.
 
 ```bash
-cdkl start-api                              # TTY: multi-select APIs (Enter = all); non-TTY: serve all
+cdkl start-api                              # TTY: multi-select APIs (→ all); non-TTY: serve all
 cdkl start-api --port 3000                  # first API → 3000, second API → 3001, ...
 cdkl start-api MyAdminApi                   # serve one API (logical id; single-stack apps)
 cdkl start-api MyAdminApi MyPublicApi       # serve a SUBSET (each on its own port)
@@ -443,8 +444,8 @@ Port assignment:
 
 Pass one or more positional `<targets...>` to serve exactly that
 **subset** — the union of the named APIs, each on its own port. Omit them
-to serve every API (bare in a non-TTY) or to open the pre-selected-all
-multi-select (bare in a TTY). The same target syntax `cdkl invoke` /
+to serve every API (bare in a non-TTY) or to open the multi-select picker
+(bare in a TTY). The same target syntax `cdkl invoke` /
 `cdkl run-task` use applies to each identifier:
 
 1. **Bare logical id** — `MyHttpApi`. **Single-stack apps only**.
