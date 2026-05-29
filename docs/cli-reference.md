@@ -7,20 +7,22 @@ lifecycle, mTLS, authorizers, networking), see
 [local-emulation.md](./local-emulation.md). When something breaks, see
 [troubleshooting.md](./troubleshooting.md).
 
-cdk-local has five subcommands, all under the `cdkl` binary:
+cdk-local has six subcommands, all under the `cdkl` binary:
 
 | Subcommand | Emulates | Backed by |
 | --- | --- | --- |
 | `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
+| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent container + the AgentCore HTTP contract (`POST /invocations` + `GET /ping` on 8080) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator | `run-task` machinery per replica + per-replica docker subnet allocator + restart-on-exit watcher |
 
-The four run commands (`invoke` / `start-api` / `run-task` /
-`start-service`) require Docker on the developer's machine. The first
-run pulls the relevant base image (~600MB for the language-specific
-Lambda images, ~50MB for `provided.*`, plus the ECS metadata sidecar for
+The five run commands (`invoke` / `invoke-agentcore` / `start-api` /
+`run-task` / `start-service`) require Docker on the developer's machine.
+The first run pulls the relevant base image (~600MB for the
+language-specific Lambda images, ~50MB for `provided.*`, the agent's own
+container base for `invoke-agentcore`, plus the ECS metadata sidecar for
 `run-task` / `start-service`). Subsequent runs reuse the cached image;
 pass `--no-pull` to skip the `docker pull` round-trip. `cdkl list` only
 synthesizes the app, so it needs no Docker.
@@ -46,11 +48,12 @@ per-command sections below.
 
 ## Interactive target selection
 
-The four run commands — `invoke`, `run-task`, `start-service`,
-`start-api` — open an arrow-key picker (powered by `@clack/prompts`)
-when you OMIT the positional target in an interactive terminal, instead
-of making you type a CDK path / logical ID. `invoke` / `run-task` pick a
-single target; `start-service` / `start-api` open a multi-select (pick
+The five run commands — `invoke`, `invoke-agentcore`, `run-task`,
+`start-service`, `start-api` — open an arrow-key picker (powered by
+`@clack/prompts`) when you OMIT the positional target in an interactive
+terminal, instead of making you type a CDK path / logical ID. `invoke` /
+`invoke-agentcore` / `run-task` pick a single target; `start-service` /
+`start-api` open a multi-select (pick
 one or more). The list is the same set `cdkl list` prints, so a Function
 URL appears under its backing Lambda. (There is no `-i` / `--interactive`
 flag — bare-in-a-TTY is the trigger.)
@@ -70,8 +73,9 @@ not the stack-qualified logical ID — `cdkl list -l` still prints it.)
 The picker requires a TTY. In a non-interactive context (CI, pipes,
 redirected stdin/stdout):
 
-- `invoke` / `run-task` / `start-service` fall back to the command's
-  usual "target required" error — pass the target explicitly instead;
+- `invoke` / `invoke-agentcore` / `run-task` / `start-service` fall back to
+  the command's usual "target required" error — pass the target
+  explicitly instead;
 - `start-api` is the exception: bare in a non-TTY it serves **every**
   discovered API (its serve-all default needs no prompt), so scripts
   keep working unchanged. Pass one or more positional targets to serve a
@@ -121,6 +125,9 @@ ECS Services  ->  cdkl start-service <target...>
 
 ECS Task Definitions  ->  cdkl run-task <target>
   MyStack/WebTask
+
+AgentCore Runtimes  ->  cdkl invoke-agentcore <target>
+  MyStack/ChatAgent
 ```
 
 ```text
@@ -401,6 +408,76 @@ same sized `/tmp`.
 - `1` — cdk-local-side errors before/after the handler ran: Docker not
   installed, image pull failed, target not found, RIE port unreachable
   after the readiness window, container exited before responding.
+
+## `cdkl invoke-agentcore` (run Bedrock AgentCore Runtime agents locally)
+
+`cdkl invoke-agentcore <target>` runs an `AWS::BedrockAgentCore::Runtime`
+agent container locally and invokes it once over the AgentCore HTTP
+contract. It resolves the runtime, pulls / builds its container, starts
+it on port 8080, waits for `GET /ping` to return a 2xx, POSTs the event
+to `POST /invocations` (with the session-id header), prints the response
+body, and tears the container down.
+
+This is the same request/response loop AgentCore runs in the cloud,
+exercised locally before deploy. v1 supports the **container artifact**
+(`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) on the
+**HTTP** protocol only; `CodeConfiguration` (S3 zip + managed runtime)
+artifacts and the `MCP` / `A2A` / `AGUI` protocols are rejected with an
+actionable error. The agent's own calls to AWS managed services (Bedrock
+models, memory, etc.) go to real AWS — credentials are injected exactly
+like `cdkl invoke` (see below).
+
+The container image is resolved like a container Lambda: a local cdk.out
+asset (the `fromAsset` / Dockerfile path) is built with `docker build`;
+otherwise an ECR URI is pulled (`--ecr-role-arn` for cross-account
+registries), and a plain registry URI is `docker pull`ed.
+
+### Target resolution
+
+Same target syntax as every other command — a CDK display path
+(`MyStack/ChatAgent`) or a stack-qualified logical ID
+(`MyStack:ChatAgent1234ABCD`); single-stack apps may omit the stack
+prefix. Omit the target in a TTY to pick from a list.
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-e, --event <file>` | `{}` | JSON event payload file POSTed to `/invocations`. |
+| `--event-stdin` | off | Read the event JSON from stdin instead of a file (mutually exclusive with `--event`). |
+| `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block. `null` clears a key. |
+| `--session-id <id>` | random UUID | Value for the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` request header. |
+| `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container (AgentCore requires ARM64; override to `linux/amd64` if needed). |
+| `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
+| `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
+| `--container-host <host>` | `127.0.0.1` | Host to bind the agent's published port to. |
+| `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN in the template; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR for cross-account / centralized registries. |
+| `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports. Bare form uses the resolved stack name. |
+| `--stack-region <region>` | — | Region of the state record to read; the CFn client region for `--from-cfn-stack`. |
+
+### Credentials
+
+The agent reaches real AWS via the standard SDK credential chain inside
+the container. Precedence matches `cdkl invoke`: `--assume-role` (STS
+temp creds) wins, otherwise the developer's shell credentials are
+forwarded, overlaid with `--profile` when set (and the bind-mounted
+shared-credentials file so `fromIni({ profile })` resolves).
+
+### Streaming responses
+
+The `/invocations` response is printed verbatim, so both the JSON
+(`application/json`) and SSE (`text/event-stream`) response shapes pass
+through. Incremental display of an SSE stream is a follow-up; v1 prints
+the full body once the request completes.
+
+### `cdkl invoke-agentcore` exit codes
+
+- `0` — the agent answered `POST /invocations` with a 2xx status.
+- `1` — the agent returned a 4xx/5xx from `/invocations`, OR a
+  cdk-local-side error: Docker not installed, image build / pull failed,
+  target not found, the agent never became ready on `GET /ping` within
+  the readiness window, or the container exited before responding.
 
 ## `cdkl start-api` (long-running local API server)
 

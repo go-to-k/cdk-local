@@ -139,6 +139,26 @@ describe('listTargets — ECS', () => {
   });
 });
 
+describe('listTargets — AgentCore Runtimes', () => {
+  it('enumerates AWS::BedrockAgentCore::Runtime with both target forms', () => {
+    const stack = buildStack('App', {
+      ChatAgent: withPath(
+        { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+        'App/ChatAgent/Resource'
+      ),
+    });
+    const { agentCoreRuntimes } = listTargets([stack]);
+    expect(agentCoreRuntimes).toEqual([
+      {
+        logicalId: 'ChatAgent',
+        stackName: 'App',
+        qualifiedId: 'App:ChatAgent',
+        displayPath: 'App/ChatAgent',
+      },
+    ]);
+  });
+});
+
 describe('listTargets — APIs', () => {
   it('collapses an HTTP API v2 to one entry across its routes', () => {
     const api = withPath(
@@ -298,9 +318,10 @@ describe('countTargets', () => {
       Fn: { Type: 'AWS::Lambda::Function', Properties: {} },
       Svc: { Type: 'AWS::ECS::Service', Properties: {} },
       Td: { Type: 'AWS::ECS::TaskDefinition', Properties: {} },
+      Agent: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
     });
     const listing = listTargets([stack]);
-    expect(countTargets(listing)).toBe(3);
+    expect(countTargets(listing)).toBe(4);
   });
 
   it('returns 0 for an app with no runnable targets', () => {
@@ -309,6 +330,12 @@ describe('countTargets', () => {
     });
     const listing = listTargets([stack]);
     expect(countTargets(listing)).toBe(0);
-    expect(listing).toEqual({ lambdas: [], apis: [], ecsServices: [], ecsTaskDefinitions: [] });
+    expect(listing).toEqual({
+      lambdas: [],
+      apis: [],
+      ecsServices: [],
+      ecsTaskDefinitions: [],
+      agentCoreRuntimes: [],
+    });
   });
 });

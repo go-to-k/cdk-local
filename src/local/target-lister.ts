@@ -1,6 +1,7 @@
 import { readCdkPathOrUndefined } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import { getLogger } from '../utils/logger.js';
+import { AGENTCORE_RUNTIME_TYPE } from './agentcore-resolver.js';
 import { discoverRoutes } from './route-discovery.js';
 import { discoverWebSocketApis } from './websocket-route-discovery.js';
 
@@ -55,6 +56,8 @@ export interface TargetListing {
   ecsServices: TargetEntry[];
   /** `AWS::ECS::TaskDefinition` — `cdkl run-task`. */
   ecsTaskDefinitions: TargetEntry[];
+  /** `AWS::BedrockAgentCore::Runtime` — `cdkl invoke-agentcore`. */
+  agentCoreRuntimes: TargetEntry[];
 }
 
 function makeEntry(
@@ -171,6 +174,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     apis: sortApiEntries(listApiSurfaces(stacks)),
     ecsServices: sortEntries(scanByType(stacks, 'AWS::ECS::Service')),
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
+    agentCoreRuntimes: sortEntries(scanByType(stacks, AGENTCORE_RUNTIME_TYPE)),
   };
 }
 
@@ -206,6 +210,7 @@ export function countTargets(listing: TargetListing): number {
     listing.lambdas.length +
     listing.apis.length +
     listing.ecsServices.length +
-    listing.ecsTaskDefinitions.length
+    listing.ecsTaskDefinitions.length +
+    listing.agentCoreRuntimes.length
   );
 }
