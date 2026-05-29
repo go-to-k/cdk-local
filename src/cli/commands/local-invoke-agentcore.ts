@@ -662,7 +662,7 @@ export async function buildContainerEnv(
  * (region + STS account id), the deployed resources, and SSM template
  * parameters (decrypted SecureString logical ids flagged sensitive).
  */
-async function buildAgentCoreImageContext(
+export async function buildAgentCoreImageContext(
   candidate: StackInfo,
   stateProvider: LocalStateProvider,
   options: LocalInvokeAgentCoreOptions

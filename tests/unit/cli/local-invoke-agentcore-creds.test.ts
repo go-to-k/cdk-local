@@ -10,12 +10,15 @@ vi.mock('@aws-sdk/client-sts', () => ({
   AssumeRoleCommand: class {
     constructor(public input: unknown) {}
   },
+  GetCallerIdentityCommand: class {
+    constructor(public input: unknown) {}
+  },
 }));
 
-const { applyAgentCoreCredentialEnv, resolveAssumeRoleArn } = await import(
-  '../../../src/cli/commands/local-invoke-agentcore.js'
-);
+const { applyAgentCoreCredentialEnv, resolveAssumeRoleArn, buildAgentCoreImageContext } =
+  await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
+import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 function runtime(roleArn?: string): ResolvedAgentCoreRuntime {
   return {
@@ -35,23 +38,79 @@ const opts = (assumeRole: string | boolean | undefined): Parameters<typeof resol
 
 describe('resolveAssumeRoleArn — three --assume-role forms', () => {
   it('returns the explicit ARN for --assume-role <arn>', () => {
-    expect(resolveAssumeRoleArn(opts('arn:aws:iam::1:role/X'), runtime())).toBe(
+    expect(resolveAssumeRoleArn(opts('arn:aws:iam::1:role/X'), runtime(), undefined)).toBe(
       'arn:aws:iam::1:role/X'
     );
   });
 
   it("uses the runtime's literal RoleArn for bare --assume-role", () => {
-    expect(resolveAssumeRoleArn(opts(true), runtime('arn:aws:iam::1:role/Agent'))).toBe(
+    expect(resolveAssumeRoleArn(opts(true), runtime('arn:aws:iam::1:role/Agent'), undefined)).toBe(
       'arn:aws:iam::1:role/Agent'
     );
   });
 
-  it('returns undefined for bare --assume-role when RoleArn is not a literal', () => {
-    expect(resolveAssumeRoleArn(opts(true), runtime(undefined))).toBeUndefined();
+  it('returns undefined for bare --assume-role when RoleArn is not a literal (no state)', () => {
+    expect(resolveAssumeRoleArn(opts(true), runtime(undefined), undefined)).toBeUndefined();
   });
 
   it('returns undefined when --assume-role is absent', () => {
-    expect(resolveAssumeRoleArn(opts(undefined), runtime('arn:aws:iam::1:role/Agent'))).toBeUndefined();
+    expect(
+      resolveAssumeRoleArn(opts(undefined), runtime('arn:aws:iam::1:role/Agent'), undefined)
+    ).toBeUndefined();
+  });
+});
+
+describe('buildAgentCoreImageContext', () => {
+  beforeEach(() => sendMock.mockReset());
+
+  const candidate = (): StackInfo =>
+    ({
+      stackName: 'App',
+      displayName: 'App',
+      artifactId: 'App',
+      template: { Resources: {} },
+      dependencyNames: [],
+      region: 'us-east-1',
+    }) as unknown as StackInfo;
+
+  const provider = (over: Record<string, unknown> = {}) =>
+    ({
+      label: '--from-cfn-stack',
+      load: vi.fn().mockResolvedValue({ resources: { T: { physicalId: 't1' } }, region: 'us-east-1', outputs: {} }),
+      resolveTemplateSsmParameters: vi
+        .fn()
+        .mockResolvedValue({ values: { Secret: 's3cr3t' }, secureStringLogicalIds: ['Secret'] }),
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn(),
+      ...over,
+    }) as never;
+
+  const opt = { region: 'us-east-1' } as never;
+
+  it('builds pseudo params (with STS account), state resources, and SSM params', async () => {
+    sendMock.mockResolvedValue({ Account: '123456789012' });
+    const { context, loaded } = await buildAgentCoreImageContext(candidate(), provider(), opt);
+    expect(context?.pseudoParameters).toMatchObject({
+      accountId: '123456789012',
+      region: 'us-east-1',
+      partition: 'aws',
+      urlSuffix: 'amazonaws.com',
+    });
+    expect(context?.stateResources).toEqual({ T: { physicalId: 't1' } });
+    expect(context?.stateParameters).toEqual({ Secret: 's3cr3t' });
+    expect(context?.stateSensitiveParameters).toEqual(['Secret']);
+    expect(loaded).toBeDefined();
+  });
+
+  it('omits stateResources when the state record is absent', async () => {
+    sendMock.mockResolvedValue({ Account: '1' });
+    const { context, loaded } = await buildAgentCoreImageContext(
+      candidate(),
+      provider({ load: vi.fn().mockResolvedValue(undefined) }),
+      opt
+    );
+    expect(context?.stateResources).toBeUndefined();
+    expect(loaded).toBeUndefined();
   });
 });
 
