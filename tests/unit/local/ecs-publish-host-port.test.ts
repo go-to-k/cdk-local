@@ -76,3 +76,56 @@ describe('buildDockerRunArgs host-port publishing', () => {
     expect(publishArg({ 443: 8443 })).toBe('127.0.0.1:80:80/tcp');
   });
 });
+
+function allPublishArgs(opts: {
+  skipHostPortPublish?: boolean;
+  ephemeralPublishContainerPorts?: number[];
+}): string[] {
+  const { args } = buildDockerRunArgs({
+    task,
+    container: containerWithPort(),
+    image: 'public.ecr.aws/docker/library/busybox:latest',
+    network: 'net',
+    volumeByName: new Map(),
+    secrets: [],
+    envOverrides: undefined,
+    containerHost: '127.0.0.1',
+    roleArn: undefined,
+    platformOverride: undefined,
+    region: undefined,
+    ...(opts.skipHostPortPublish && { skipHostPortPublish: true }),
+    ...(opts.ephemeralPublishContainerPorts && {
+      ephemeralPublishContainerPorts: opts.ephemeralPublishContainerPorts,
+    }),
+  });
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-p') out.push(args[i + 1]!);
+  }
+  return out;
+}
+
+describe('buildDockerRunArgs ALB front-door ephemeral publish (#86)', () => {
+  it('publishes the target container port on an ephemeral host port', () => {
+    expect(allPublishArgs({ ephemeralPublishContainerPorts: [80] })).toEqual([
+      '127.0.0.1:80:80/tcp', // declared publish
+      '127.0.0.1::80/tcp', // ephemeral publish for the front-door
+    ]);
+  });
+
+  it('publishes the ephemeral port EVEN when skipHostPortPublish drops the declared mapping', () => {
+    expect(
+      allPublishArgs({ skipHostPortPublish: true, ephemeralPublishContainerPorts: [80] })
+    ).toEqual(['127.0.0.1::80/tcp']);
+  });
+
+  it('skips a requested port the container does not declare', () => {
+    expect(
+      allPublishArgs({ skipHostPortPublish: true, ephemeralPublishContainerPorts: [443] })
+    ).toEqual([]);
+  });
+
+  it('emits no ephemeral publish when the list is empty', () => {
+    expect(allPublishArgs({ skipHostPortPublish: true })).toEqual([]);
+  });
+});

@@ -66,6 +66,13 @@ import {
   destroyTaskNetwork,
   type TaskNetwork,
 } from '../../local/ecs-network.js';
+import { resolveFrontDoorTargets } from '../../local/elb-front-door-resolver.js';
+import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
+import {
+  startFrontDoorServer,
+  type StartedFrontDoorServer,
+} from '../../local/front-door-server.js';
+import type { FrontDoorRunnerContext } from '../../local/ecs-service-runner.js';
 
 interface LocalStartServiceOptions {
   app?: string;
@@ -84,6 +91,8 @@ interface LocalStartServiceOptions {
   ecrRoleArn?: string;
   /** `--host-port <containerPort=hostPort>` overrides (repeatable; variadic array). */
   hostPort?: string[];
+  /** `--lb-port <listenerPort=hostPort>` front-door overrides (repeatable; variadic array). */
+  lbPort?: string[];
   platform?: string;
   /** Cap on local replica count regardless of template `DesiredCount`. */
   maxTasks: number;
@@ -140,6 +149,8 @@ async function localStartServiceCommand(
     target: string;
     runState: ServiceRunState;
     controller?: ServiceController;
+    /** Issue #86 v1 — host-side ALB front-door servers for this target. */
+    frontDoorServers?: StartedFrontDoorServer[];
   };
   let perTarget: PerTarget[] = [];
 
@@ -185,6 +196,20 @@ async function localStartServiceCommand(
               )
             );
           }
+          // Issue #86 v1 — close this target's front-door servers AFTER its
+          // replicas are down so no request is forwarded to a torn-down
+          // container. Idempotent + best-effort.
+          await Promise.allSettled(
+            (pt.frontDoorServers ?? []).map((s) =>
+              s
+                .close()
+                .catch((err) =>
+                  getLogger().warn(
+                    `front-door server teardown failed: ${err instanceof Error ? err.message : String(err)}`
+                  )
+                )
+            )
+          );
         })
       );
       // Profile credentials file dispose — must happen AFTER every
@@ -343,7 +368,7 @@ async function localStartServiceCommand(
     // Boot every target SEQUENTIALLY so a first-target failure surfaces
     // before we burn docker budget on the rest.
     for (const pt of perTarget) {
-      pt.controller = await bootOneTarget(
+      const booted = await bootOneTarget(
         pt.target,
         pt.runState,
         stacks,
@@ -353,6 +378,8 @@ async function localStartServiceCommand(
         extraStateProviders,
         profileCredsFile
       );
+      pt.controller = booted.controller;
+      pt.frontDoorServers = booted.frontDoorServers;
     }
 
     const summary = perTarget
@@ -376,8 +403,17 @@ async function localStartServiceCommand(
 }
 
 /**
- * Boot one target. Returns the started controller for the outer code
- * to wait + tear down.
+ * Result of booting one target: the started controller plus any host-side
+ * front-door servers (Issue #86 v1) the outer code must tear down.
+ */
+interface BootedTarget {
+  controller: ServiceController;
+  frontDoorServers: StartedFrontDoorServer[];
+}
+
+/**
+ * Boot one target. Returns the started controller + front-door servers for the
+ * outer code to wait on + tear down.
  */
 async function bootOneTarget(
   target: string,
@@ -388,7 +424,7 @@ async function bootOneTarget(
   skipPull: boolean,
   extraStateProviders: ExtraStateProviders | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined
-): Promise<ServiceController> {
+): Promise<BootedTarget> {
   const parsed = parseEcsTarget(target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
   const stateProvider = createLocalStateProvider(
@@ -423,7 +459,7 @@ async function runOneTarget(
   skipPull: boolean,
   stateProvider: LocalStateProvider | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined
-): Promise<ServiceController> {
+): Promise<BootedTarget> {
   const logger = getLogger();
 
   const imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
@@ -530,14 +566,101 @@ async function runOneTarget(
     };
   }
 
+  // Issue #86 v1 — resolve the ALB front-door target(s) and start a host-side
+  // reverse-proxy server per listener. No-op when the service has no resolvable
+  // load-balancer listener (the common non-fronted case).
+  const { frontDoorContext, frontDoorServers } = await startFrontDoorForService(
+    service,
+    options,
+    logger
+  );
+
   const runnerOpts: ServiceRunnerOptions = {
     maxTasks: options.maxTasks,
     restartPolicy: options.restartPolicy,
     taskOptions: taskOpts,
     discovery,
+    ...(frontDoorContext ? { frontDoor: frontDoorContext } : {}),
   };
 
-  return startEcsService(service, runnerOpts, runState);
+  let controller: ServiceController;
+  try {
+    controller = await startEcsService(service, runnerOpts, runState);
+  } catch (err) {
+    // startEcsService failed AFTER the front-door servers bound; close them so
+    // they don't leak a listening socket on the failure path.
+    await Promise.allSettled(frontDoorServers.map((s) => s.close()));
+    throw err;
+  }
+  return { controller, frontDoorServers };
+}
+
+/**
+ * Issue #86 v1 — resolve a service's load balancer(s) into front-door targets
+ * and start one host-side reverse-proxy server per listener. Returns the
+ * `FrontDoorRunnerContext` to thread into the runner (so each replica
+ * publishes + registers its ephemeral endpoint) plus the started servers for
+ * teardown. Returns an undefined context + empty servers when the service has
+ * no resolvable HTTP forward listener.
+ *
+ * On a bind failure (e.g. EACCES on a privileged listener port, or the port is
+ * already in use) every server started so far is closed and the error is
+ * re-thrown with a `--lb-port` hint.
+ */
+export async function startFrontDoorForService(
+  service: ReturnType<typeof resolveEcsServiceTarget>,
+  options: LocalStartServiceOptions,
+  logger: ReturnType<typeof getLogger>
+): Promise<{
+  frontDoorContext: FrontDoorRunnerContext | undefined;
+  frontDoorServers: StartedFrontDoorServer[];
+}> {
+  const resolution = resolveFrontDoorTargets(service.stack, service.loadBalancers);
+  for (const w of resolution.warnings) logger.warn(w);
+  if (resolution.targets.length === 0) {
+    return { frontDoorContext: undefined, frontDoorServers: [] };
+  }
+
+  const lbPortOverrides = parseLbPortOverrides(options.lbPort);
+  const frontDoorServers: StartedFrontDoorServer[] = [];
+  const pools: Array<{
+    pool: FrontDoorEndpointPool;
+    targetContainerName: string;
+    targetContainerPort: number;
+  }> = [];
+  try {
+    for (const t of resolution.targets) {
+      const pool = new FrontDoorEndpointPool();
+      const hostPort = lbPortOverrides[t.listenerPort] ?? t.listenerPort;
+      const server = await startFrontDoorServer({
+        pool,
+        port: hostPort,
+        host: options.containerHost,
+        listenerPort: t.listenerPort,
+        serviceName: service.serviceName,
+      });
+      frontDoorServers.push(server);
+      pools.push({
+        pool,
+        targetContainerName: t.targetContainerName,
+        targetContainerPort: t.targetContainerPort,
+      });
+      logger.info(
+        `ALB front-door: http://${server.host}:${server.port} -> ${service.serviceName} ` +
+          `(listener port ${t.listenerPort} -> container ${t.targetContainerName}:${t.targetContainerPort}, ` +
+          'round-robin across replicas)'
+      );
+    }
+  } catch (err) {
+    await Promise.allSettled(frontDoorServers.map((s) => s.close()));
+    throw new LocalStartServiceError(
+      `Failed to start ALB front-door for service '${service.serviceName}': ` +
+        `${err instanceof Error ? err.message : String(err)}. If the listener port is privileged ` +
+        '(< 1024), remap it to a non-privileged host port with --lb-port <listenerPort>=<hostPort> ' +
+        '(e.g. --lb-port 80=8080).'
+    );
+  }
+  return { frontDoorContext: { pools }, frontDoorServers };
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
@@ -753,6 +876,40 @@ function parsePositiveInt(raw: string, flagName: string): number {
 }
 
 /**
+ * Issue #86 v1 — parse `--lb-port <listenerPort>=<hostPort>` overrides into a
+ * `listenerPort -> hostPort` map. Mirrors `parseHostPortOverrides`: the local
+ * ALB front-door binds the listener port on the host by default, but a
+ * privileged listener port (e.g. 80 / 443) fails to bind as non-root on macOS,
+ * so the user opts in to a non-privileged host port (e.g. `--lb-port 80=8080`).
+ * Repeatable; each value is `<listenerPort>=<hostPort>` with both in 1-65535.
+ */
+export function parseLbPortOverrides(values: string[] | undefined): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const raw of values ?? []) {
+    const m = /^(\d+)=(\d+)$/.exec(raw.trim());
+    if (!m) {
+      throw new LocalStartServiceError(
+        `Invalid --lb-port '${raw}'. Expected <listenerPort>=<hostPort> (e.g. 80=8080).`
+      );
+    }
+    const listenerPort = Number(m[1]);
+    const hostPort = Number(m[2]);
+    for (const [label, p] of [
+      ['listener', listenerPort],
+      ['host', hostPort],
+    ] as const) {
+      if (p < 1 || p > 65535) {
+        throw new LocalStartServiceError(
+          `Invalid --lb-port '${raw}': ${label} port must be 1-65535.`
+        );
+      }
+    }
+    out[listenerPort] = hostPort;
+  }
+  return out;
+}
+
+/**
  * Hard cap on `--max-tasks` driven by the per-replica subnet allocator
  * in `ecs-service-runner.ts:pickSubnetOctet`. The allocator walks the
  * link-local /24 range `169.254.170.0..169.254.253.0` and skips 171.
@@ -855,6 +1012,15 @@ export function createLocalStartServiceCommand(
           'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
           'Desktop admin-password prompt. (Single-replica services only — multi-replica ' +
           'services do not publish host ports.)'
+      )
+    )
+    .addOption(
+      new Option(
+        '--lb-port <listenerPort=hostPort...>',
+        'Bind the local ALB front-door for an ALB-fronted service on a specific host port ' +
+          '(e.g. 80=8080); repeatable. Default: host port == ALB listener port. Use this on ' +
+          'macOS to remap a privileged listener port (< 1024) to a non-privileged host port. ' +
+          'The front-door round-robins requests across the service replicas.'
       )
     )
     .addOption(

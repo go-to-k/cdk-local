@@ -760,7 +760,9 @@ each other via a `docker --add-host` DNS overlay.
 > matches production. Peers still reach a multi-replica service by
 > container IP / network alias on the shared docker network; to hit a
 > specific replica from the host, `docker exec` into it or read its IP
-> from `docker inspect`.
+> from `docker inspect`. For an **ALB-fronted** service, the
+> [front-door](#alb-front-door) gives a single stable host endpoint that
+> round-robins across the replicas — the production-shaped way in.
 >
 > **macOS privileged ports.** The host port equals the container port by
 > default. On macOS, Docker Desktop binds host ports below 1024 through a
@@ -796,6 +798,7 @@ error.
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides; same format as `cdkl run-task`. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP to bind published container ports to. Must be a numeric IP. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. Single-replica services only. |
+| `--lb-port <listenerPort=hostPort>` | — | Bind the [ALB front-door](#alb-front-door) for an ALB-fronted service on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
 | `--assume-task-role [arn]` | unset | Assume the task definition's `TaskRoleArn` (or the supplied ARN) and forward STS-issued temp credentials via the metadata sidecar so every replica's containers run with the deployed task role. Same three-form grammar as `cdkl run-task`. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before ECR `docker pull` for cross-account / centralized registries. Same shape as `cdkl run-task`. |
 | `--platform <platform>` | inferred | Force `--platform linux/amd64` or `linux/arm64`. |
@@ -819,6 +822,38 @@ immediately so users have an escape hatch when docker hangs.
 ECS Services on Fargate require `awsvpc`. cdk-local maps `awsvpc` to a
 per-task docker bridge network with a startup warn; security groups
 are NOT enforced locally and per-task ENIs are not emulated.
+
+### ALB front-door
+
+When a service declares `LoadBalancers[]` (the
+`ApplicationLoadBalancedFargateService` shape and its hand-rolled
+equivalents), `start-service` stands up a local **front-door**: a
+host-side HTTP reverse proxy bound to the ALB's declared listener port
+that round-robins each request across the running replicas. This closes
+the "multi-replica services have no host entry point" gap — you reach
+the service the way external traffic would, at one stable endpoint.
+
+How it resolves: the service's `LoadBalancers[].TargetGroupArn` chains to
+the `AWS::ElasticLoadBalancingV2::TargetGroup`, and the
+`AWS::ElasticLoadBalancingV2::Listener` whose default action `forward`s
+to that target group supplies the listener port. Each replica publishes
+its target container port on an ephemeral host port (so N replicas never
+collide), and the front-door forwards to those — cross-platform, since
+traffic goes through published ports rather than docker-network IPs the
+host can't reach on macOS.
+
+```bash
+# ALB listener on :80 -> remap to a non-privileged host port on macOS
+cdkl start-service MyStack/MyService --lb-port 80=8080
+# then: curl http://127.0.0.1:8080/  (round-robins across replicas)
+```
+
+Scope (v1): single default-action `forward` to an **HTTP** listener,
+**ECS** targets only. Full listener-rule routing (path / host / header /
+weighted target groups / `redirect` / `fixed-response`), HTTPS/TLS
+termination, and Lambda targets are out of scope — listener-rule routing
+is tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123).
+HTTPS listeners and Lambda target groups are skipped with a warning.
 
 ### `cdkl start-service` exit codes
 

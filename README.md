@@ -134,7 +134,7 @@ cdkl start-api
 
 `start-api` serves your app's HTTP surface (API Gateway REST v1 / HTTP v2 / WebSocket + Lambda Function URLs) on a local HTTP server, one server per API. In a multi-stack app a bare `cdkl start-api` errors rather than serving every stack's API at once; serve them all with `--all-stacks`, or select one with `--stack <name>`, `--from-cfn-stack <name>`, or a stack-qualified target. See [docs/cli-reference.md](docs/cli-reference.md) for the full precedence rules.
 
-For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
+For ECS there is no cluster command — locally, Docker is the placement target a cluster abstracts away. Both `run-task` and `start-service` accept an optional `--cluster <name>`; `start-service` also wires Service Connect / Cloud Map registry. For an ALB-fronted service (the `ApplicationLoadBalancedFargateService` shape), `start-service` stands up a local **front-door** on the ALB's listener port that round-robins requests across the running replicas — so a multi-replica service has a single stable host endpoint, just like behind a real load balancer. Remap a privileged listener port (e.g. 80) to a non-privileged host port with `--lb-port 80=8080`. See [docs/cli-reference.md](docs/cli-reference.md) for the full ECS option list.
 
 Use this for fast iteration on Lambda code, API routing checks, and container task smoke tests.
 

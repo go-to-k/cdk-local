@@ -26,7 +26,10 @@ AWS managed services.
 - API Gateway routing — REST v1 / HTTP v2 / Function URL / WebSocket
   served by a local HTTP server
 - ECS tasks and services — real Docker containers with awsvpc /
-  Service Connect / Cloud Map registry
+  Service Connect / Cloud Map registry, plus a local ALB front-door
+  (single default-action `forward`) that round-robins the listener
+  port across a service's replicas (full listener-rule routing —
+  path / host / weighted — deferred to #123)
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 
@@ -70,7 +73,11 @@ Gateway).
   embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
-  `--from-cfn-stack`), etc.
+  `--from-cfn-stack`), elb-front-door-resolver (resolves an ECS Service's
+  `LoadBalancers[]` -> TargetGroup -> Listener into the host listener port a
+  local ALB front-door fronts), front-door-pool (round-robin pool of live
+  replica endpoints), front-door-server (host HTTP reverse proxy that
+  round-robins `start-service` replicas behind the ALB listener port), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

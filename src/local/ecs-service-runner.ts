@@ -10,7 +10,8 @@ import {
 import type { ResolvedEcsService } from './ecs-service-resolver.js';
 import type { CloudMapRegistry, RegistrationHandle } from './cloud-map-registry.js';
 import type { CloudMapIndex } from './cloud-map-resolver.js';
-import { getContainerNetworkIp } from './docker-inspect.js';
+import type { FrontDoorEndpointPool } from './front-door-pool.js';
+import { getContainerNetworkIp, getPublishedHostPort } from './docker-inspect.js';
 import { SHARED_SVC_SUBNET_OCTET, type TaskNetwork } from './ecs-network.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -91,6 +92,29 @@ export interface ServiceRunnerOptions {
    * entirely.
    */
   discovery?: ServiceDiscoveryContext;
+  /**
+   * Issue #86 v1 — local ALB front-door. When set, every replica publishes
+   * each pool's target container port on an ephemeral host port and registers
+   * the resulting `127.0.0.1:<port>` endpoint into the pool so the host-side
+   * front-door server can round-robin to it. Registrations are dropped on
+   * replica restart / shutdown, mirroring the Cloud Map handle lifecycle.
+   * Undefined for services with no resolvable load-balancer listener.
+   */
+  frontDoor?: FrontDoorRunnerContext;
+}
+
+/**
+ * Per-service front-door wiring threaded from the CLI. One pool per resolved
+ * listener `forward` target; each carries the container name + port the
+ * listener targets so the runner can publish + discover the right ephemeral
+ * host port per replica.
+ */
+export interface FrontDoorRunnerContext {
+  pools: ReadonlyArray<{
+    pool: FrontDoorEndpointPool;
+    targetContainerName: string;
+    targetContainerPort: number;
+  }>;
 }
 
 /**
@@ -147,6 +171,14 @@ export interface ServiceReplicaInstance {
    * supplied at startEcsService time.
    */
   cloudMapHandles: RegistrationHandle[];
+  /**
+   * Issue #86 v1 — owner key this replica's endpoint is registered under in
+   * every front-door pool (`<serviceLogicalId>:r<index>`). Set after the
+   * replica publishes its ephemeral host port; used by the restart / shutdown
+   * paths to `pool.unregister` symmetrically. `undefined` when the service has
+   * no front-door OR the replica hasn't published yet.
+   */
+  frontDoorOwnerKey: string | undefined;
   /**
    * In-flight `bootReplica()` promise when the watcher loop is mid-
    * restart (between the old state's cleanup and the new state being
@@ -309,6 +341,7 @@ export async function startEcsService(
       shuttingDown: false,
       inFlightBoot: undefined,
       cloudMapHandles: [],
+      frontDoorOwnerKey: undefined,
     };
     runState.replicas.push(instance);
     // Track the in-flight boot so a concurrent shutdown awaits it
@@ -457,6 +490,8 @@ export class ServiceController {
           }
           instance.cloudMapHandles = [];
         }
+        // Issue #86 v1 — drop this replica from every front-door pool.
+        unregisterReplicaFromFrontDoor(instance, this.options.frontDoor);
         try {
           await cleanupEcsRun(instance.state, {
             keepRunning: this.options.taskOptions.keepRunning,
@@ -581,6 +616,12 @@ async function bootReplica(
   // replica boots a single container and keeps its host-port publish.
   const replicaCount = computeReplicaCount(service.desiredCount, options.maxTasks);
   const skipHostPortPublish = replicaCount > 1;
+  // Issue #86 v1 — ALB front-door. Publish each pool's target container port on
+  // an ephemeral host port so the host-side front-door can round-robin to this
+  // replica. Distinct ports only (two pools may target the same container port).
+  const ephemeralPublishContainerPorts = options.frontDoor
+    ? [...new Set(options.frontDoor.pools.map((p) => p.targetContainerPort))]
+    : [];
   const perReplicaTaskOptions: RunEcsTaskOptions = {
     ...options.taskOptions,
     cluster: perReplicaCluster,
@@ -597,6 +638,7 @@ async function bootReplica(
       : { subnetOctet: pickSubnetOctet(instance.index) }),
     ...(addHostFlags.length > 0 ? { addHostFlags } : {}),
     ...(networkAliasesByContainer.size > 0 ? { networkAliasesByContainer } : {}),
+    ...(ephemeralPublishContainerPorts.length > 0 ? { ephemeralPublishContainerPorts } : {}),
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
   await runEcsTask(service.task, perReplicaTaskOptions, instance.state);
@@ -607,6 +649,20 @@ async function bootReplica(
   // replica is still alive, peer discovery just degrades.
   if (options.discovery) {
     await publishReplicaToCloudMap(service, instance, options.discovery, ownerKeyPrefix);
+  }
+
+  // Issue #86 v1 — ALB front-door publish. Discover the ephemeral host port
+  // each target container port was published on and register it into the pool
+  // so the host-side server can round-robin to this replica. Best-effort: a
+  // failed lookup logs warn but does NOT abort the replica.
+  if (options.frontDoor) {
+    await publishReplicaToFrontDoor(
+      service,
+      instance,
+      options.frontDoor,
+      options.taskOptions.containerHost,
+      ownerKeyPrefix
+    );
   }
 }
 
@@ -757,6 +813,83 @@ async function publishReplicaToCloudMap(
 }
 
 /**
+ * Issue #86 v1 — register this replica's host-reachable endpoint into every
+ * front-door pool. For each pool, find the target container's docker id, read
+ * back the ephemeral host port docker assigned to its target container port
+ * (`-p <host>::<port>`), and register `<containerHost>:<hostPort>` under the
+ * per-replica owner key.
+ *
+ * Best-effort, mirroring `publishReplicaToCloudMap`: a missing container / port
+ * logs a warn and skips that pool rather than aborting the replica (the
+ * replica is alive; the front-door just can't route to it until it re-boots).
+ * The owner key is stamped on the instance so the restart / shutdown paths can
+ * `pool.unregister` symmetrically.
+ */
+async function publishReplicaToFrontDoor(
+  service: ResolvedEcsService,
+  instance: ServiceReplicaInstance,
+  frontDoor: FrontDoorRunnerContext,
+  containerHost: string,
+  ownerKeyPrefix: string
+): Promise<void> {
+  const logger = getLogger().child('ecs-service');
+  instance.frontDoorOwnerKey = ownerKeyPrefix;
+  for (const target of frontDoor.pools) {
+    const started = instance.state.startedContainers.find(
+      (c) => c.name === target.targetContainerName
+    );
+    if (!started) {
+      logger.warn(
+        `ECS Service '${service.serviceLogicalId}' front-door: container ` +
+          `'${target.targetContainerName}' did not start for replica ${instance.index}; ` +
+          'the front-door cannot route to it.'
+      );
+      continue;
+    }
+    let hostPort: number | undefined;
+    try {
+      hostPort = await getPublishedHostPort(started.id, target.targetContainerPort);
+    } catch (err) {
+      logger.warn(
+        `Replica ${instance.index}: docker inspect failed before front-door publish: ` +
+          `${err instanceof Error ? err.message : String(err)}`
+      );
+      continue;
+    }
+    if (hostPort === undefined) {
+      logger.warn(
+        `Replica ${instance.index}: container port ${target.targetContainerPort} on ` +
+          `'${target.targetContainerName}' was not published on a host port; ` +
+          'skipping front-door registration for this replica.'
+      );
+      continue;
+    }
+    target.pool.register(ownerKeyPrefix, { host: containerHost, port: hostPort });
+    logger.debug(
+      `Front-door: replica ${instance.index} registered at ${containerHost}:${hostPort} ` +
+        `(container ${target.targetContainerName}:${target.targetContainerPort}).`
+    );
+  }
+}
+
+/**
+ * Drop this replica's endpoint from every front-door pool. Idempotent; called
+ * from the watcher restart branch and the controller shutdown path so a
+ * dying / restarting replica is removed from round-robin before its container
+ * is torn down.
+ */
+function unregisterReplicaFromFrontDoor(
+  instance: ServiceReplicaInstance,
+  frontDoor: FrontDoorRunnerContext | undefined
+): void {
+  if (!frontDoor || !instance.frontDoorOwnerKey) return;
+  for (const target of frontDoor.pools) {
+    target.pool.unregister(instance.frontDoorOwnerKey);
+  }
+  instance.frontDoorOwnerKey = undefined;
+}
+
+/**
  * Long-running watcher loop for one replica. Polls the essential
  * container's exit code via `docker wait`; on exit, decides whether to
  * restart per `restartPolicy` + applies exponential backoff. The loop
@@ -841,6 +974,10 @@ async function watchReplica(
       }
       instance.cloudMapHandles = [];
     }
+    // Issue #86 v1 — drop this replica from the front-door round-robin before
+    // its container is torn down so in-flight requests aren't routed to a
+    // dying replica.
+    unregisterReplicaFromFrontDoor(instance, options.frontDoor);
 
     // Tear down the old per-replica run-state before re-booting (else
     // the new boot collides on the docker network name).
