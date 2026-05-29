@@ -392,3 +392,26 @@ export {
  * fail.
  */
 export { VtlEvaluationError } from './local/vtl-engine.js';
+
+/**
+ * `invoke` local container-Lambda build — `buildContainerImage` builds a
+ * `DockerImageCode.fromImageAsset` Lambda image locally (via the shared docker
+ * build helper) and `architectureToPlatform` maps the Lambda architecture to a
+ * `--platform` value. Exposed only as the consuming host's `import` statements
+ * require them.
+ */
+export {
+  buildContainerImage,
+  architectureToPlatform,
+  type BuildContainerImageOptions,
+} from './local/docker-image-builder.js';
+
+/**
+ * `invoke` local container-Lambda build error. Exposed so a consuming host that
+ * shims `docker-image-builder` can catch it at the shim boundary and re-throw
+ * its OWN error class — the host's error base (e.g. cdkd's `CdkdError`) differs
+ * from cdk-local's `CdkLocalError`, so the host's top-level error handler /
+ * `instanceof` checks need the host's class identity, which a boundary
+ * translation in the shim provides.
+ */
+export { LocalInvokeBuildError } from './utils/error-handler.js';
