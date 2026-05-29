@@ -950,11 +950,14 @@ and name the ALB.
 
 `cdkl start-alb <targets...>` is the ALB counterpart of `cdkl start-api`:
 you name the **Application Load Balancer**, and cdk-local discovers the
-ECS service(s) behind its HTTP `forward` listeners, boots their replicas
+ECS service(s) behind its HTTP listeners, boots their replicas
 (the same shared docker network + Cloud Map + restart watcher as
 `start-service`), and stands up a host-side **front-door** on each
 listener port that round-robins each request across the running replicas
-— one stable host endpoint, like behind a real load balancer.
+— one stable host endpoint, like behind a real load balancer. The
+front-door applies the listener's **`path-pattern` rules**, so one host
+port can path-route across several backing services (e.g. `/api/*` to one
+service, the default to another) the way the deployed ALB does.
 
 `start-service` vs `start-alb` mirrors `invoke` / `run-task` (the compute
 alone) vs `start-api` (the routed entry in front of the compute). Use
@@ -967,13 +970,19 @@ service you want to reach the way external traffic does.
 
 `start-alb` resolves the ALB you name → its
 `AWS::ElasticLoadBalancingV2::Listener`s (matched by `LoadBalancerArn`) →
-each listener's default `forward` `AWS::ElasticLoadBalancingV2::TargetGroup`
-→ the `AWS::ECS::Service` whose `LoadBalancers[]` references that target
-group (a reverse scan — there is no direct TG → service pointer). Each
-booted replica publishes its target container port on an **ephemeral**
-host port (so N replicas never collide), and the front-door forwards to
-those — cross-platform, since traffic goes through published ports rather
-than docker-network IPs the host can't reach on macOS Docker Desktop.
+each listener's default `forward` action **and** its
+`AWS::ElasticLoadBalancingV2::ListenerRule`s with a `path-pattern`
+condition → each action's `AWS::ElasticLoadBalancingV2::TargetGroup` →
+the `AWS::ECS::Service` whose `LoadBalancers[]` references that target
+group (a reverse scan — there is no direct TG → service pointer). The
+front-door for a listener port holds a routing table: each request is
+matched against the rules in `Priority` order (lower number first; ALB
+`*` / `?` glob semantics, path only), falling back to the default action;
+an unmatched request with no default action returns 404. Each booted
+replica publishes its target container port on an **ephemeral** host port
+(so N replicas never collide), and the front-door forwards to those —
+cross-platform, since traffic goes through published ports rather than
+docker-network IPs the host can't reach on macOS Docker Desktop.
 
 ### Target resolution
 
@@ -1000,14 +1009,15 @@ cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 # then: curl http://127.0.0.1:8080/  (round-robins across replicas)
 ```
 
-### Scope (v1)
+### Scope
 
-Single default-action `forward` to an **HTTP** listener, **ECS** targets
-only. Full listener-rule routing (path / host / header / query / source-ip
-conditions, priority, weighted target groups, `redirect` / `fixed-response`),
-HTTPS / TLS termination, and Lambda targets are out of scope — listener-rule
-routing is tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123).
-HTTPS listeners and Lambda target groups are skipped with a warning.
+**HTTP** listeners, **ECS** targets, single-target `forward` actions, and
+`path-pattern` listener rules (priority-ordered). Out of scope, skipped with
+a warning, and tracked in [#123](https://github.com/go-to-k/cdk-local/issues/123):
+other rule conditions (`host-header` / `http-header` / `http-request-method`
+/ `query-string` / `source-ip`), weighted (multi-target) forwards,
+`redirect` / `fixed-response` / `authenticate-*` actions, HTTPS / TLS
+termination, and Lambda target groups.
 
 ### `cdkl start-alb` exit codes
 

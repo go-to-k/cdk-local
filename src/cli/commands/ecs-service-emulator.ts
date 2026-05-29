@@ -62,26 +62,28 @@ import {
   destroyTaskNetwork,
   type TaskNetwork,
 } from '../../local/ecs-network.js';
-import type { ResolvedFrontDoorTarget } from '../../local/elb-front-door-resolver.js';
 import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
 import {
   startFrontDoorServer,
   type StartedFrontDoorServer,
 } from '../../local/front-door-server.js';
-import type { FrontDoorRunnerContext } from '../../local/ecs-service-runner.js';
+import { matchAlbPathRule, type AlbPathRule } from '../../local/alb-path-matcher.js';
 
 /**
  * Neutral ECS-service emulator orchestration shared by `cdkl start-service`
  * (pure replica runner) and `cdkl start-alb` (ALB front-door entry). It synths,
  * lets a {@link EmulatorStrategy} pick targets and turn them into the concrete
- * set of {@link ServiceBoot}s, then boots every service replica pool (shared
- * docker network + Cloud Map registry + restart watcher) and, for any boot that
- * carries front-door targets, stands up a host-side reverse proxy per listener.
+ * set of {@link ServiceBoot}s (plus an optional {@link FrontDoorPlan}), then
+ * boots every service replica pool (shared docker network + Cloud Map registry
+ * + restart watcher) and, when a front-door plan is present, stands up ONE
+ * host-side reverse proxy per listener port that path-routes across the
+ * services it fronts.
  *
- * The front-door MECHANISM (generic "expose a service's replicas on host
- * ports") lives here; the ALB-specific resolution (which listener fronts which
- * service) lives entirely in the `start-alb` command. `start-service` passes
- * boots with no front-door targets, so it never touches the front-door path.
+ * The front-door MECHANISM (generic "expose services' replicas on host ports
+ * and path-route between them") lives here; the ALB-specific resolution (which
+ * listener fronts which service on which path) lives entirely in the
+ * `start-alb` command. `start-service` returns no front-door plan, so it never
+ * touches the front-door path.
  */
 
 /** Shared CLI option shape for both ECS-service commands. */
@@ -119,18 +121,51 @@ export interface EcsServiceEmulatorOptions {
   [key: string]: unknown;
 }
 
-/** One ECS service to boot, plus the front-door listeners (if any) to expose for it. */
+/** One ECS service to boot. Front-door wiring lives in the {@link FrontDoorPlan}. */
 export interface ServiceBoot {
   /** Service target string (`Stack:LogicalId` or `Stack/Path`). */
   target: string;
-  /** Front-door listener bindings to expose for this service (empty = pure compute). */
-  frontDoorTargets: ResolvedFrontDoorTarget[];
 }
+
+/** The backing (service target, container) a listener action forwards to. */
+export interface PlannedForwardTarget {
+  /** Service target string (`Stack:LogicalId`) whose replica pool serves this. */
+  serviceTarget: string;
+  /** Container the listener forwards to. */
+  targetContainerName: string;
+  /** Container port the target group targets. */
+  targetContainerPort: number;
+}
+
+/** One host front-door listener: a bound host port + its path-routing table. */
+export interface PlannedFrontDoorListener {
+  /** ALB listener port (for the `X-Forwarded-Port` header / logs). */
+  listenerPort: number;
+  /** Host port to bind (the listener port, or its `--lb-port` override). */
+  hostPort: number;
+  /** Default-action forward target (absent for a rules-only listener -> 404 on miss). */
+  defaultTarget?: PlannedForwardTarget;
+  /** Path-pattern rules, evaluated by priority (lower first). */
+  rules: Array<{ priority: number; pathPatterns: string[]; target: PlannedForwardTarget }>;
+}
+
+/** The full set of host front-doors to stand up for one emulator invocation. */
+export interface FrontDoorPlan {
+  listeners: PlannedFrontDoorListener[];
+}
+
+/** Mutable front-door pool list for a single service's runner (one entry per (container, port)). */
+type FrontDoorServicePools = Array<{
+  pool: FrontDoorEndpointPool;
+  targetContainerName: string;
+  targetContainerPort: number;
+}>;
 
 /**
  * Per-command behavior the neutral orchestration delegates to: how to pick
  * targets when none are passed, how to turn chosen targets into concrete
- * service boots (+ warnings), and the `--lb-port` host-port remap.
+ * service boots (+ an optional front-door plan + warnings), and the `--lb-port`
+ * host-port remap.
  */
 export interface EmulatorStrategy {
   pickEntries(stacks: StackInfo[]): TargetEntry[];
@@ -140,7 +175,7 @@ export interface EmulatorStrategy {
   resolveBoots(
     stacks: StackInfo[],
     chosenTargets: string[]
-  ): { boots: ServiceBoot[]; warnings: string[] };
+  ): { boots: ServiceBoot[]; frontDoor?: FrontDoorPlan; warnings: string[] };
   lbPortOverrides: Record<number, number>;
 }
 
@@ -169,8 +204,6 @@ export async function runEcsServiceEmulator(
     boot: ServiceBoot;
     runState: ServiceRunState;
     controller?: ServiceController;
-    /** Issue #86 v1 — host-side ALB front-door servers for this boot. */
-    frontDoorServers?: StartedFrontDoorServer[];
   };
   let perTarget: PerTarget[] = [];
 
@@ -178,6 +211,12 @@ export async function runEcsServiceEmulator(
   let sigintCount = 0;
   let sharedNetwork: TaskNetwork | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
+  // Host-side ALB front-door servers (one per listener port), shared across the
+  // services they front. Created once before the boot loop; torn down after all
+  // replicas are down so no request is forwarded to a vanished container.
+  let frontDoorServers: StartedFrontDoorServer[] = [];
+  // Per-service-target front-door pools to thread into each runner.
+  let frontDoorByService = new Map<string, FrontDoorServicePools>();
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
@@ -198,21 +237,22 @@ export async function runEcsServiceEmulator(
               )
             );
           }
-          // Close this boot's front-door servers AFTER its replicas are down so
-          // no request is forwarded to a torn-down container. Idempotent.
-          await Promise.allSettled(
-            (pt.frontDoorServers ?? []).map((s) =>
-              s
-                .close()
-                .catch((err) =>
-                  getLogger().warn(
-                    `front-door server teardown failed: ${err instanceof Error ? err.message : String(err)}`
-                  )
-                )
-            )
-          );
         })
       );
+      // Close the front-door servers AFTER every replica is down so no in-flight
+      // request is forwarded to a torn-down container. Idempotent.
+      await Promise.allSettled(
+        frontDoorServers.map((s) =>
+          s
+            .close()
+            .catch((err) =>
+              getLogger().warn(
+                `front-door server teardown failed: ${err instanceof Error ? err.message : String(err)}`
+              )
+            )
+        )
+      );
+      frontDoorServers = [];
       if (profileCredsFile) {
         try {
           await profileCredsFile.dispose();
@@ -270,7 +310,7 @@ export async function runEcsServiceEmulator(
       onMissing: () => strategy.onMissing(),
     });
 
-    const { boots, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
+    const { boots, frontDoor, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
     for (const w of warnings) logger.warn(w);
     if (boots.length === 0) {
       throw new LocalStartServiceError(
@@ -313,6 +353,16 @@ export async function runEcsServiceEmulator(
       sharedNetwork,
     };
 
+    // Stand up the host front-door(s) BEFORE booting replicas: the pools start
+    // empty (so the proxy answers 503 until replicas register) and a host-port
+    // bind failure should surface before any docker budget is spent. No-op when
+    // the strategy returned no plan (start-service / pure compute).
+    if (frontDoor && frontDoor.listeners.length > 0) {
+      const built = await buildFrontDoor(frontDoor, options.containerHost, logger);
+      frontDoorServers = built.servers;
+      frontDoorByService = built.frontDoorByService;
+    }
+
     sigintHandler = (): void => {
       sigintCount += 1;
       if (sigintCount >= 2) {
@@ -328,7 +378,7 @@ export async function runEcsServiceEmulator(
     // Boot every target SEQUENTIALLY so a first-target failure surfaces before
     // we burn docker budget on the rest.
     for (const pt of perTarget) {
-      const booted = await bootOneTarget(
+      pt.controller = await bootOneTarget(
         pt.boot,
         pt.runState,
         stacks,
@@ -337,10 +387,8 @@ export async function runEcsServiceEmulator(
         skipPull,
         extraStateProviders,
         profileCredsFile,
-        strategy.lbPortOverrides
+        frontDoorByService.get(pt.boot.target)
       );
-      pt.controller = booted.controller;
-      pt.frontDoorServers = booted.frontDoorServers;
     }
 
     const summary = perTarget
@@ -362,11 +410,6 @@ export async function runEcsServiceEmulator(
   }
 }
 
-interface BootedTarget {
-  controller: ServiceController;
-  frontDoorServers: StartedFrontDoorServer[];
-}
-
 async function bootOneTarget(
   boot: ServiceBoot,
   runState: ServiceRunState,
@@ -376,8 +419,8 @@ async function bootOneTarget(
   skipPull: boolean,
   extraStateProviders: ExtraStateProviders | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
-  lbPortOverrides: Record<number, number>
-): Promise<BootedTarget> {
+  frontDoorPools: FrontDoorServicePools | undefined
+): Promise<ServiceController> {
   const parsed = parseEcsTarget(boot.target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
   const stateProvider = createLocalStateProvider(
@@ -397,7 +440,7 @@ async function bootOneTarget(
       skipPull,
       stateProvider,
       profileCredsFile,
-      lbPortOverrides
+      frontDoorPools
     );
   } finally {
     if (stateProvider) stateProvider.dispose();
@@ -413,8 +456,8 @@ async function runOneTarget(
   skipPull: boolean,
   stateProvider: LocalStateProvider | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
-  lbPortOverrides: Record<number, number>
-): Promise<BootedTarget> {
+  frontDoorPools: FrontDoorServicePools | undefined
+): Promise<ServiceController> {
   const logger = getLogger();
   const target = boot.target;
 
@@ -513,100 +556,120 @@ async function runOneTarget(
     };
   }
 
-  // Front-door: stand up a host-side reverse-proxy server per listener target.
-  // No-op for a pure-compute boot (no front-door targets — e.g. start-service).
-  const { frontDoorContext, frontDoorServers } = await startFrontDoorServers(
-    boot.frontDoorTargets,
-    service,
-    options.containerHost,
-    lbPortOverrides,
-    logger
-  );
-
+  // Front-door pools for THIS service (built once at the emulator level and
+  // shared with the listener servers). Each replica publishes + registers its
+  // ephemeral endpoint into these pools as it boots. Undefined / empty for a
+  // pure-compute boot (start-service) or a service no listener forwards to.
   const runnerOpts: ServiceRunnerOptions = {
     maxTasks: options.maxTasks,
     restartPolicy: options.restartPolicy,
     taskOptions: taskOpts,
     discovery,
-    ...(frontDoorContext ? { frontDoor: frontDoorContext } : {}),
+    ...(frontDoorPools && frontDoorPools.length > 0
+      ? { frontDoor: { pools: frontDoorPools } }
+      : {}),
   };
 
-  let controller: ServiceController;
-  try {
-    controller = await startEcsService(service, runnerOpts, runState);
-  } catch (err) {
-    await Promise.allSettled(frontDoorServers.map((s) => s.close()));
-    throw err;
-  }
-  return { controller, frontDoorServers };
+  return startEcsService(service, runnerOpts, runState);
 }
 
 /**
- * Issue #86 v1 — stand up one host-side reverse-proxy server per resolved
- * front-door listener and return the {@link FrontDoorRunnerContext} to thread
- * into the runner (so each replica publishes + registers its ephemeral
- * endpoint), plus the started servers for teardown. Pure front-door MECHANISM:
- * the ALB-specific resolution that produced `frontDoorTargets` lives in the
- * `start-alb` command. Returns an undefined context + empty servers when there
- * are no front-door targets (the pure-compute path).
+ * Stand up one host-side reverse-proxy server PER LISTENER PORT from the
+ * resolved {@link FrontDoorPlan}, path-routing each request across the services
+ * the listener fronts, and return the started servers (for teardown) plus a
+ * per-service-target pool list to thread into each service's runner (so every
+ * replica publishes + registers its ephemeral endpoint into the right pool).
+ *
+ * One `FrontDoorEndpointPool` is created per distinct (service, container,
+ * port) forward target and SHARED between the listener's routing table and the
+ * owning service's runner context — same object on both sides, so a replica
+ * registering itself is immediately reachable through the front-door.
  *
  * On a bind failure (e.g. EACCES on a privileged listener port, or the port is
  * already in use) every server started so far is closed and the error is
  * re-thrown with a `--lb-port` hint.
  */
-export async function startFrontDoorServers(
-  frontDoorTargets: ResolvedFrontDoorTarget[],
-  service: ReturnType<typeof resolveEcsServiceTarget>,
+export async function buildFrontDoor(
+  plan: FrontDoorPlan,
   containerHost: string,
-  lbPortOverrides: Record<number, number>,
   logger: ReturnType<typeof getLogger>
 ): Promise<{
-  frontDoorContext: FrontDoorRunnerContext | undefined;
-  frontDoorServers: StartedFrontDoorServer[];
+  servers: StartedFrontDoorServer[];
+  frontDoorByService: Map<string, FrontDoorServicePools>;
 }> {
-  if (frontDoorTargets.length === 0) {
-    return { frontDoorContext: undefined, frontDoorServers: [] };
-  }
+  const servers: StartedFrontDoorServer[] = [];
+  // poolKey -> { pool, target }. Built lazily so the same (service, container,
+  // port) reuses one pool across listeners / rules.
+  const registry = new Map<string, { pool: FrontDoorEndpointPool; target: PlannedForwardTarget }>();
+  const poolFor = (t: PlannedForwardTarget): FrontDoorEndpointPool => {
+    const key = `${t.serviceTarget} ${t.targetContainerName} ${t.targetContainerPort}`;
+    let entry = registry.get(key);
+    if (!entry) {
+      entry = { pool: new FrontDoorEndpointPool(), target: t };
+      registry.set(key, entry);
+    }
+    return entry.pool;
+  };
 
-  const frontDoorServers: StartedFrontDoorServer[] = [];
-  const pools: Array<{
-    pool: FrontDoorEndpointPool;
-    targetContainerName: string;
-    targetContainerPort: number;
-  }> = [];
   try {
-    for (const t of frontDoorTargets) {
-      const pool = new FrontDoorEndpointPool();
-      const hostPort = lbPortOverrides[t.listenerPort] ?? t.listenerPort;
+    for (const listener of plan.listeners) {
+      const defaultPool = listener.defaultTarget ? poolFor(listener.defaultTarget) : undefined;
+      const ruleRoutes: AlbPathRule<FrontDoorEndpointPool>[] = listener.rules.map((r) => ({
+        priority: r.priority,
+        pathPatterns: r.pathPatterns,
+        target: poolFor(r.target),
+      }));
+      const selectPool = (requestPath: string): FrontDoorEndpointPool | undefined =>
+        matchAlbPathRule(requestPath, ruleRoutes) ?? defaultPool;
+
       const server = await startFrontDoorServer({
-        pool,
-        port: hostPort,
+        selectPool,
+        port: listener.hostPort,
         host: containerHost,
-        listenerPort: t.listenerPort,
-        serviceName: service.serviceName,
+        listenerPort: listener.listenerPort,
+        label: `listener port ${listener.listenerPort}`,
       });
-      frontDoorServers.push(server);
-      pools.push({
-        pool,
-        targetContainerName: t.targetContainerName,
-        targetContainerPort: t.targetContainerPort,
-      });
+      servers.push(server);
+
       logger.info(
-        `ALB front-door: http://${server.host}:${server.port} -> ${service.serviceName} ` +
-          `(listener port ${t.listenerPort} -> container ${t.targetContainerName}:${t.targetContainerPort}, ` +
-          'round-robin across replicas)'
+        `ALB front-door: http://${server.host}:${server.port} (listener port ${listener.listenerPort})`
       );
+      if (listener.defaultTarget) {
+        logger.info(`  default -> ${describeTarget(listener.defaultTarget)} (round-robin)`);
+      }
+      for (const r of [...listener.rules].sort((a, b) => a.priority - b.priority)) {
+        logger.info(
+          `  path ${r.pathPatterns.join(', ')} (priority ${r.priority}) -> ${describeTarget(r.target)}`
+        );
+      }
+      if (!listener.defaultTarget) {
+        logger.info('  (no default action: unmatched paths return 404)');
+      }
     }
   } catch (err) {
-    await Promise.allSettled(frontDoorServers.map((s) => s.close()));
+    await Promise.allSettled(servers.map((s) => s.close()));
     throw new LocalStartServiceError(
-      `Failed to start ALB front-door for service '${service.serviceName}': ` +
-        `${err instanceof Error ? err.message : String(err)}. If the listener port is privileged ` +
-        '(< 1024), remap it to a non-privileged host port with --lb-port <listenerPort>=<hostPort> ' +
-        '(e.g. --lb-port 80=8080).'
+      `Failed to start ALB front-door: ${err instanceof Error ? err.message : String(err)}. If a ` +
+        'listener port is privileged (< 1024), remap it to a non-privileged host port with ' +
+        '--lb-port <listenerPort>=<hostPort> (e.g. --lb-port 80=8080).'
     );
   }
-  return { frontDoorContext: { pools }, frontDoorServers };
+
+  const frontDoorByService = new Map<string, FrontDoorServicePools>();
+  for (const { pool, target } of registry.values()) {
+    const list = frontDoorByService.get(target.serviceTarget) ?? [];
+    list.push({
+      pool,
+      targetContainerName: target.targetContainerName,
+      targetContainerPort: target.targetContainerPort,
+    });
+    frontDoorByService.set(target.serviceTarget, list);
+  }
+  return { servers, frontDoorByService };
+}
+
+function describeTarget(t: PlannedForwardTarget): string {
+  return `${t.serviceTarget} (container ${t.targetContainerName}:${t.targetContainerPort})`;
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { resolveAlbTarget, parseLbPortOverrides, albStrategy } from '../../../src/cli/commands/local-start-alb.js';
 import { serviceStrategy } from '../../../src/cli/commands/local-start-service.js';
-import { startFrontDoorServers } from '../../../src/cli/commands/ecs-service-emulator.js';
+import { buildFrontDoor } from '../../../src/cli/commands/ecs-service-emulator.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const ALB = 'WebLB';
@@ -149,16 +149,20 @@ function twoAlbStack(wiring: 'same-service' | 'two-services'): StackInfo {
 }
 
 describe('albStrategy.resolveBoots multi-service', () => {
-  it('merges two ALBs fronting the SAME service into one boot with both listeners', () => {
-    const { boots } = albStrategy({} as never).resolveBoots(
+  it('boots one service but stands up both listeners when two ALBs front the SAME service', () => {
+    // Alb1 listener (port 80) and Alb2 listener (port 8080) both forward to
+    // Svc1 -> one boot, two listeners on distinct host ports (no collision).
+    const { boots, frontDoor } = albStrategy({} as never).resolveBoots(
       [twoAlbStack('same-service')],
       ['Multi:Alb1', 'Multi:Alb2']
     );
-    expect(boots).toHaveLength(1);
-    expect(boots[0]!.target).toBe('Multi:Svc1');
-    expect(boots[0]!.frontDoorTargets.map((t) => t.listenerPort).sort((a, b) => a - b)).toEqual([
+    expect(boots).toEqual([{ target: 'Multi:Svc1' }]);
+    expect(frontDoor!.listeners.map((l) => l.listenerPort).sort((a, b) => a - b)).toEqual([
       80, 8080,
     ]);
+    for (const l of frontDoor!.listeners) {
+      expect(l.defaultTarget?.serviceTarget).toBe('Multi:Svc1');
+    }
   });
 
   it('produces two boots when two ALBs front two different services', () => {
@@ -189,42 +193,73 @@ describe('albStrategy --lb-port no-match warning', () => {
 });
 
 describe('start-alb / start-service strategy binding', () => {
-  it('start-alb resolves an ALB target into backing-service boots WITH front-door targets', () => {
+  it('start-alb resolves an ALB target into a service boot + a front-door plan', () => {
     const strategy = albStrategy({ lbPort: ['80=8080'] } as never);
-    const { boots, warnings } = strategy.resolveBoots([albStack()], ['AlbStack:WebLB']);
+    const { boots, frontDoor, warnings } = strategy.resolveBoots([albStack()], ['AlbStack:WebLB']);
     expect(warnings).toEqual([]);
-    expect(boots).toHaveLength(1);
-    expect(boots[0]!.target).toBe('AlbStack:WebService');
-    expect(boots[0]!.frontDoorTargets).toEqual([
-      expect.objectContaining({
+    expect(boots).toEqual([{ target: 'AlbStack:WebService' }]);
+    expect(frontDoor!.listeners).toEqual([
+      {
         listenerPort: 80,
-        targetContainerName: 'web',
-        targetContainerPort: 80,
-      }),
+        hostPort: 8080, // remapped by --lb-port 80=8080
+        defaultTarget: {
+          serviceTarget: 'AlbStack:WebService',
+          targetContainerName: 'web',
+          targetContainerPort: 80,
+        },
+        rules: [],
+      },
     ]);
     // --lb-port is parsed by the ALB strategy (start-service has no such flag).
     expect(strategy.lbPortOverrides).toEqual({ 80: 8080 });
   });
 
-  it('start-service produces pure-compute boots with NO front-door targets', () => {
+  it('start-service produces pure-compute boots with NO front-door plan', () => {
     const strategy = serviceStrategy();
-    const { boots } = strategy.resolveBoots([albStack()], ['AlbStack:WebService']);
-    expect(boots).toEqual([{ target: 'AlbStack:WebService', frontDoorTargets: [] }]);
+    const { boots, frontDoor } = strategy.resolveBoots([albStack()], ['AlbStack:WebService']);
+    expect(boots).toEqual([{ target: 'AlbStack:WebService' }]);
+    expect(frontDoor).toBeUndefined();
     expect(strategy.lbPortOverrides).toEqual({});
   });
 });
 
-describe('startFrontDoorServers (pure-compute path)', () => {
-  it('returns no front-door context when there are no front-door targets', async () => {
-    const result = await startFrontDoorServers(
-      [],
-      { serviceName: 'X' } as never,
+describe('buildFrontDoor', () => {
+  it('binds one server per listener and groups pools by service target', async () => {
+    const logger = { info: () => {}, warn: () => {} } as never;
+    const { servers, frontDoorByService } = await buildFrontDoor(
+      {
+        listeners: [
+          {
+            listenerPort: 80,
+            hostPort: 0, // ephemeral: avoid privileged-port binding in the unit test
+            defaultTarget: {
+              serviceTarget: 'S:Web',
+              targetContainerName: 'web',
+              targetContainerPort: 80,
+            },
+            rules: [
+              {
+                priority: 10,
+                pathPatterns: ['/api/*'],
+                target: { serviceTarget: 'S:Api', targetContainerName: 'api', targetContainerPort: 8080 },
+              },
+            ],
+          },
+        ],
+      },
       '127.0.0.1',
-      {},
-      { info: () => {}, warn: () => {} } as never
+      logger
     );
-    expect(result.frontDoorContext).toBeUndefined();
-    expect(result.frontDoorServers).toEqual([]);
+    try {
+      expect(servers).toHaveLength(1);
+      // One pool per (service, container, port); grouped by service target.
+      expect([...frontDoorByService.keys()].sort()).toEqual(['S:Api', 'S:Web']);
+      expect(frontDoorByService.get('S:Web')).toEqual([
+        expect.objectContaining({ targetContainerName: 'web', targetContainerPort: 80 }),
+      ]);
+    } finally {
+      await Promise.all(servers.map((s) => s.close()));
+    }
   });
 });
 

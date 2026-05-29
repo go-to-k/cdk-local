@@ -13,6 +13,7 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
 import {
   resolveAlbFrontDoor,
   isApplicationLoadBalancer,
+  type FrontDoorForwardTarget,
 } from '../../local/elb-front-door-resolver.js';
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
@@ -21,6 +22,8 @@ import {
   type EcsServiceEmulatorOptions,
   type EmulatorStrategy,
   type ServiceBoot,
+  type PlannedForwardTarget,
+  type PlannedFrontDoorListener,
 } from './ecs-service-emulator.js';
 
 /**
@@ -164,28 +167,61 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
           "Pass one or more ALB paths like 'Stack/MyAlb', or run it in a TTY to pick interactively."
       ),
     resolveBoots: (stacks, chosenTargets) => {
-      const byServiceTarget = new Map<string, ServiceBoot>();
       const warnings: string[] = [];
+      // Services to boot (deduped) + the per-listener host front-door plan.
+      const serviceTargets = new Set<string>();
+      const listeners: PlannedFrontDoorListener[] = [];
+      // hostPort -> the listener port that claimed it (to explain a collision).
+      const claimedHostPorts = new Map<number, number>();
+
       for (const albTarget of chosenTargets) {
         const { stack, albLogicalId } = resolveAlbTarget(albTarget, stacks);
         const resolution = resolveAlbFrontDoor(stack, albLogicalId);
         warnings.push(...resolution.warnings);
-        for (const svc of resolution.services) {
-          const target = `${stack.stackName}:${svc.serviceLogicalId}`;
-          const existing = byServiceTarget.get(target);
-          if (existing) {
-            existing.frontDoorTargets.push(...svc.targets);
-          } else {
-            byServiceTarget.set(target, { target, frontDoorTargets: [...svc.targets] });
+
+        // Qualify a resolver target (`serviceLogicalId`) into a `Stack:LogicalId`
+        // service-boot target and record it as a service we must run.
+        const qualify = (t: FrontDoorForwardTarget): PlannedForwardTarget => {
+          const serviceTarget = `${stack.stackName}:${t.serviceLogicalId}`;
+          serviceTargets.add(serviceTarget);
+          return {
+            serviceTarget,
+            targetContainerName: t.targetContainerName,
+            targetContainerPort: t.targetContainerPort,
+          };
+        };
+
+        for (const listener of resolution.listeners) {
+          const hostPort = lbPortOverrides[listener.listenerPort] ?? listener.listenerPort;
+          const claimedBy = claimedHostPorts.get(hostPort);
+          if (claimedBy !== undefined) {
+            warnings.push(
+              `Listener port ${listener.listenerPort} would bind host port ${hostPort}, already ` +
+                `claimed by listener port ${claimedBy}; the local front-door fronts only the ` +
+                'first. Use --lb-port to remap one of them.'
+            );
+            continue;
           }
+          claimedHostPorts.set(hostPort, listener.listenerPort);
+          listeners.push({
+            listenerPort: listener.listenerPort,
+            hostPort,
+            ...(listener.defaultTarget ? { defaultTarget: qualify(listener.defaultTarget) } : {}),
+            rules: listener.rules.map((r) => ({
+              priority: r.priority,
+              pathPatterns: r.pathPatterns,
+              target: qualify(r.target),
+            })),
+          });
         }
       }
-      const boots = [...byServiceTarget.values()];
+
+      const boots: ServiceBoot[] = [...serviceTargets].map((target) => ({ target }));
+
       // Warn about a `--lb-port <listenerPort>=...` override whose listener
       // port matched NONE of the resolved front-door listeners — almost always
       // a typo, and otherwise a silent no-op.
-      const resolvedPorts = new Set<number>();
-      for (const b of boots) for (const t of b.frontDoorTargets) resolvedPorts.add(t.listenerPort);
+      const resolvedPorts = new Set(listeners.map((l) => l.listenerPort));
       for (const portStr of Object.keys(lbPortOverrides)) {
         const port = Number(portStr);
         if (!resolvedPorts.has(port)) {
@@ -195,7 +231,12 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
           );
         }
       }
-      return { boots, warnings };
+
+      return {
+        boots,
+        ...(listeners.length > 0 ? { frontDoor: { listeners } } : {}),
+        warnings,
+      };
     },
     lbPortOverrides,
   };
@@ -213,14 +254,15 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
   const cmd = new Command('start-alb')
     .description(
       'Run an Application Load Balancer locally: name the ALB, and cdk-local boots the ECS ' +
-        'service(s) behind its HTTP forward listeners and stands up a local front-door on each ' +
-        'listener port that round-robins across the running replicas — a single stable host ' +
-        'endpoint, like behind a real load balancer. The symmetric ALB counterpart of ' +
-        '`start-api`. Each <target> accepts a CDK display path (MyStack/MyAlb) or stack-qualified ' +
-        'logical ID; single-stack apps may omit the stack prefix. v1 supports a single ' +
-        'default-action forward to an HTTP listener; HTTPS listeners and Lambda target groups are ' +
-        'skipped with a warning, and listener-rule routing is tracked separately. Omit <targets> ' +
-        'in an interactive terminal to multi-select the load balancers from a list.'
+        'service(s) behind its HTTP listeners and stands up a local front-door on each listener ' +
+        'port that round-robins across the running replicas and path-routes its path-pattern ' +
+        'rules across the backing services — a stable host endpoint, like behind a ' +
+        'real load balancer. The symmetric ALB counterpart of `start-api`. Each <target> accepts ' +
+        'a CDK display path (MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may ' +
+        'omit the stack prefix. Supports HTTP listeners, single-target forward actions, and ' +
+        'path-pattern rules; HTTPS listeners, Lambda target groups, weighted forwards, other rule ' +
+        'conditions, and redirect/fixed-response actions are skipped with a warning. Omit ' +
+        '<targets> in an interactive terminal to multi-select the load balancers from a list.'
     )
     .argument(
       '[targets...]',

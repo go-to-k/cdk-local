@@ -38,12 +38,19 @@ async function startFront(
   pool: FrontDoorEndpointPool,
   upstreamTimeoutMs?: number
 ): Promise<StartedFrontDoorServer> {
+  return startFrontWith(() => pool, upstreamTimeoutMs);
+}
+
+async function startFrontWith(
+  selectPool: (requestPath: string) => FrontDoorEndpointPool | undefined,
+  upstreamTimeoutMs?: number
+): Promise<StartedFrontDoorServer> {
   const front = await startFrontDoorServer({
-    pool,
+    selectPool,
     port: 0,
     host: '127.0.0.1',
     listenerPort: 80,
-    serviceName: 'TestSvc',
+    label: 'listener port 80',
     ...(upstreamTimeoutMs !== undefined && { upstreamTimeoutMs }),
   });
   cleanups.push(() => front.close());
@@ -65,10 +72,11 @@ async function startHungUpstream(): Promise<Upstream> {
 
 function fetchText(
   port: number,
+  path = '/',
   host = '127.0.0.1'
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = get({ host, port, path: '/' }, (res) => {
+    const req = get({ host, port, path }, (res) => {
       let body = '';
       res.on('data', (c) => (body += c));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
@@ -135,5 +143,29 @@ describe('startFrontDoorServer', () => {
 
     const res = await fetchText(front.port);
     expect(res.status).toBe(504);
+  });
+
+  it('path-routes each request to the pool selectPool returns', async () => {
+    const web = await startUpstream('web');
+    const api = await startUpstream('api');
+    const webPool = new FrontDoorEndpointPool();
+    webPool.register('web:r0', { host: '127.0.0.1', port: web.port });
+    const apiPool = new FrontDoorEndpointPool();
+    apiPool.register('api:r0', { host: '127.0.0.1', port: api.port });
+    // `/api/*` -> apiPool, everything else -> webPool (the default).
+    const front = await startFrontWith((path) =>
+      path.startsWith('/api/') ? apiPool : webPool
+    );
+
+    expect((await fetchText(front.port, '/')).body).toBe('web');
+    expect((await fetchText(front.port, '/index.html')).body).toBe('web');
+    expect((await fetchText(front.port, '/api/users')).body).toBe('api');
+  });
+
+  it('returns 404 when selectPool finds no matching rule and no default', async () => {
+    const front = await startFrontWith(() => undefined);
+    const res = await fetchText(front.port, '/nope');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatch(/No listener rule matched/);
   });
 });

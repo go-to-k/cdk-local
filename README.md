@@ -158,7 +158,7 @@ For ECS there is no cluster command — locally, Docker is the placement target 
 | `cdkl start-service <Service>` | the ECS **service** | just the service's replicas (no load balancer) | workers / queue consumers / Service-Connect-only services, or to run the containers and hit them directly |
 | `cdkl start-alb <Alb>` | the **ALB** | the ECS service(s) behind the ALB **plus** a local **front-door** on each listener port | an `ApplicationLoadBalancedFargateService`-style service you want to reach the way external traffic does |
 
-`start-alb` is the ALB counterpart of `start-api`: you name the load balancer, and cdk-local discovers the ECS service(s) behind its HTTP `forward` listeners, boots their replicas, and stands up a host-side **front-door** on each listener port that round-robins requests across the running replicas — one stable host endpoint, just like behind a real load balancer. `start-service` stays a pure compute runner and never opens a front-door.
+`start-alb` is the ALB counterpart of `start-api`: you name the load balancer, and cdk-local discovers the ECS service(s) behind its HTTP listeners, boots their replicas, and stands up a host-side **front-door** on each listener port that round-robins requests across the running replicas — one stable host endpoint, just like behind a real load balancer. The front-door honors **`path-pattern` listener rules**, so a listener that routes `/api/*` to one service and everything else to another is reproduced locally: one host port, multiple backing services, path-routed per request. `start-service` stays a pure compute runner and never opens a front-door.
 
 ```bash
 # Just the service replicas (no load balancer) — a worker, or direct container debugging:
@@ -168,10 +168,11 @@ cdkl start-service MyStack/Worker
 # fronts each listener. On macOS, remap the privileged listener port 80 to a
 # non-privileged host port with --lb-port.
 cdkl start-alb MyStack/WebAlb --lb-port 80=8080
-curl http://127.0.0.1:8080/   # round-robins across the running replicas
+curl http://127.0.0.1:8080/        # default action -> the default service (round-robin)
+curl http://127.0.0.1:8080/api/x   # path-pattern rule /api/* -> the api service
 ```
 
-See [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally) for `start-alb`'s resolution model and scope (single HTTP `forward`, ECS targets).
+See [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally) for `start-alb`'s resolution model and scope (HTTP listeners, default `forward` + `path-pattern` rules, ECS targets; host-header / weighted / Lambda targets / redirect + fixed-response actions deferred).
 
 When you run a container directly — `run-task`, or a single-replica `start-service` — cdk-local publishes its declared container ports on the host and logs the address (`Reach it at 127.0.0.1:<port>`), so `curl http://127.0.0.1:<port>` or a browser reaches it. The bind IP defaults to `127.0.0.1` (override with `--container-host`); `--host-port <containerPort>=<hostPort>` remaps a port (handy on macOS to avoid the Docker admin prompt for privileged ports < 1024). For an ALB-fronted service, reach the replicas through the `start-alb` front-door above instead.
 
