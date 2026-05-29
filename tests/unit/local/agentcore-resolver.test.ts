@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   AgentCoreResolutionError,
+  pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
 } from '../../../src/local/agentcore-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -299,5 +300,29 @@ describe('resolveAgentCoreTarget — JWT authorizer extraction', () => {
       }),
     });
     expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer).toBeUndefined();
+  });
+});
+
+describe('pickAgentCoreCandidateStack', () => {
+  it('returns the only stack when no prefix is given (single-stack app)', () => {
+    const stack = buildStack('App', { ChatAgent: containerRuntime() });
+    expect(pickAgentCoreCandidateStack('ChatAgent', [stack])?.stackName).toBe('App');
+  });
+
+  it('returns undefined when the prefix is omitted in a multi-stack app (ambiguous)', () => {
+    const a = buildStack('A', { ChatAgent: containerRuntime() });
+    const b = buildStack('B', { Other: containerRuntime() });
+    expect(pickAgentCoreCandidateStack('ChatAgent', [a, b])).toBeUndefined();
+  });
+
+  it('resolves the stack from a stack-qualified target', () => {
+    const a = buildStack('A', { ChatAgent: containerRuntime() });
+    const b = buildStack('B', { Other: containerRuntime() });
+    expect(pickAgentCoreCandidateStack('B:Other', [a, b])?.stackName).toBe('B');
+  });
+
+  it('returns undefined when the stack pattern matches nothing', () => {
+    const stack = buildStack('App', { ChatAgent: containerRuntime() });
+    expect(pickAgentCoreCandidateStack('Missing:ChatAgent', [stack])).toBeUndefined();
   });
 });
