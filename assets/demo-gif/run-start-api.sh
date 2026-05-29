@@ -60,7 +60,7 @@ EOF
 # picker lists HTTP API v2 first.
 cat > "$PANE_DIR/right.sh" <<EOF
 #!/usr/bin/env bash
-sleep 12
+sleep 15
 printf '\$ curl http://localhost:$PORT/hello\n\n'
 curl -s "http://localhost:$PORT/hello"
 echo

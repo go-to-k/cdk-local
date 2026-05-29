@@ -35,9 +35,18 @@ Enter
 # The cursor starts on MyHttpApi (HTTP API v2) — the curl target. Space
 # selects it, Enter opens the Y/n confirm, Enter accepts the default (Yes).
 # (Press → instead of Space to select all.) The first Sleep MUST outlast the
-# synth + picker mount so Space toggles the picker instead of leaking into the
-# terminal; a little extra also lets the multi-select stay on screen.
+# synth + picker mount so the keys drive the picker instead of leaking into the
+# terminal as raw escapes. Walk the cursor down through all three rows — the
+# third Down wraps from the last row back to the top (clack wraps) — so it
+# reads unmistakably as an interactive selection UI, then Space-select the
+# top row (MyHttpApi, the curl target) and Enter through the Y/n confirm.
 Sleep 5s
+Down
+Sleep 700ms
+Down
+Sleep 700ms
+Down
+Sleep 700ms
 Space
 Sleep 900ms
 Enter
