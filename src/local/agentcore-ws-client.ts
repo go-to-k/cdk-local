@@ -1,4 +1,4 @@
-import { WebSocket } from 'ws';
+import { WebSocket, type RawData } from 'ws';
 import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
 
 /**
@@ -91,9 +91,16 @@ export async function invokeAgentCoreWs(
     ws.on('open', () => {
       ws.send(body);
     });
-    ws.on('message', (data: unknown) => {
+    ws.on('message', (data: RawData) => {
       frames += 1;
-      options.onMessage(typeof data === 'string' ? data : String(data));
+      // `ws` delivers a Buffer by default (binaryType 'nodebuffer'); handle the
+      // fragments / ArrayBuffer shapes too so a frame is always decoded as UTF-8.
+      const buf = Buffer.isBuffer(data)
+        ? data
+        : Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.from(data);
+      options.onMessage(buf.toString('utf-8'));
     });
     ws.on('close', () => {
       finish(() => resolve({ frames }));

@@ -60,8 +60,11 @@ function encodeCloseFrame() {
   return Buffer.from([0x88, 0x00]);
 }
 
-// Decode the FIRST complete frame in `buf`. Returns { opcode, payload } or null
-// when the buffer does not yet hold a full frame. Client frames are masked.
+// Decode the FIRST complete frame in `buf`. Returns { opcode, payload,
+// frameLength } or null when the buffer does not yet hold a full frame (the
+// caller keeps accumulating until it does). `frameLength` is the number of
+// bytes the frame consumed, so the caller can advance past it. Client frames
+// are masked.
 function decodeFrame(buf) {
   if (buf.length < 2) return null;
   const opcode = buf[0] & 0x0f;
@@ -88,7 +91,7 @@ function decodeFrame(buf) {
   if (masked) {
     for (let i = 0; i < payload.length; i += 1) payload[i] ^= maskKey[i % 4];
   }
-  return { opcode, payload };
+  return { opcode, payload, frameLength: offset + len };
 }
 
 function handleUpgrade(req, socket) {
@@ -108,33 +111,41 @@ function handleUpgrade(req, socket) {
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
 
+  let buf = Buffer.alloc(0);
   let replied = false;
   socket.on('data', (chunk) => {
     if (replied) return;
-    const frame = decodeFrame(chunk);
-    if (!frame) return; // wait for the rest of the frame
-    if (frame.opcode === 0x8) {
+    // A frame can span TCP reads (or several frames can share one read), so
+    // accumulate and drain complete frames until the first text frame arrives.
+    buf = Buffer.concat([buf, chunk]);
+    let frame;
+    while ((frame = decodeFrame(buf)) !== null) {
+      buf = buf.subarray(frame.frameLength);
+      if (frame.opcode === 0x8) {
+        socket.end();
+        return;
+      }
+      if (frame.opcode !== 0x1) continue; // skip ping/pong/continuation control frames
+      replied = true;
+      let echoed;
+      try {
+        echoed = JSON.parse(frame.payload.toString('utf-8') || '{}');
+      } catch {
+        echoed = frame.payload.toString('utf-8');
+      }
+      const reply = JSON.stringify({
+        ws: true,
+        echoed,
+        sessionId: req.headers[SESSION_HEADER] ?? null,
+        authorization: req.headers['authorization'] ?? null,
+        greeting: process.env.GREETING ?? 'unset',
+      });
+      socket.write(encodeTextFrame(reply));
+      socket.write(encodeTextFrame('ws-frame-2'));
+      socket.write(encodeCloseFrame());
       socket.end();
       return;
     }
-    replied = true;
-    let echoed;
-    try {
-      echoed = JSON.parse(frame.payload.toString('utf-8') || '{}');
-    } catch {
-      echoed = frame.payload.toString('utf-8');
-    }
-    const reply = JSON.stringify({
-      ws: true,
-      echoed,
-      sessionId: req.headers[SESSION_HEADER] ?? null,
-      authorization: req.headers['authorization'] ?? null,
-      greeting: process.env.GREETING ?? 'unset',
-    });
-    socket.write(encodeTextFrame(reply));
-    socket.write(encodeTextFrame('ws-frame-2'));
-    socket.write(encodeCloseFrame());
-    socket.end();
   });
   socket.on('error', () => socket.destroy());
 }
