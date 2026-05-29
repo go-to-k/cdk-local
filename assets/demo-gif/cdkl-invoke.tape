@@ -31,7 +31,18 @@ Show
 Type "bash run.sh"
 Enter
 
-# Hold long enough for: pre-warm finish (~2s), tmux + cdkl boot (~1s),
-# RIE container start (~3-5s), Lambda invoke (~1s), and a beat after
-# the JSON response for readability.
-Sleep 16s
+# Bare `cdkl invoke` opens the single-select picker (3 Lambdas:
+# EchoHandler / GreetHandler / HealthHandler). Arrow through it, then pick.
+# TUNE every Sleep below against the recorded result — these are estimates.
+Sleep 3s
+Down
+Sleep 700ms
+Down
+Sleep 700ms
+Up
+Sleep 700ms
+Enter
+
+# Hold for: RIE container start (~3-5s), Lambda invoke (~1s), and a beat
+# after the JSON response for readability.
+Sleep 14s

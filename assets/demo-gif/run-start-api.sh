@@ -49,13 +49,18 @@ export PATH="$SHADOW_BIN:\$PATH"
 export FORCE_COLOR=1
 export COLORTERM=truecolor
 cd "$SAMPLE_DIR"
-printf '\$ cdkl start-api CdklDemo/MyApi --no-pull --port $PORT\n\n'
-exec cdkl start-api CdklDemo/MyApi --no-pull --port $PORT
+printf '\$ cdkl start-api --no-pull --port $PORT\n\n'
+exec cdkl start-api --no-pull --port $PORT
 EOF
 
+# Right pane waits out the interactive picker (left pane) + the confirm +
+# the server boot before curling. TUNE this sleep against the recorded
+# timing — it must exceed (picker keystrokes + Y confirm + RIE boot). The
+# selected HTTP API (MyHttpApi) lands on the first port ($PORT) because the
+# picker lists HTTP API v2 first.
 cat > "$PANE_DIR/right.sh" <<EOF
 #!/usr/bin/env bash
-sleep 6
+sleep 12
 printf '\$ curl http://localhost:$PORT/hello\n\n'
 curl -s "http://localhost:$PORT/hello"
 echo
@@ -86,4 +91,7 @@ fi
 
 tmux -f "$CONF" new-session -d -s demo -x 220 -y 35 "$PANE_DIR/left.sh"
 tmux split-window -h -t demo:0 "$PANE_DIR/right.sh"
+# Focus the LEFT pane so vhs's picker keystrokes (space/→/enter/y) drive the
+# `cdkl start-api` multi-select, not the right (curl) pane.
+tmux select-pane -t demo:0.0
 tmux attach -t demo

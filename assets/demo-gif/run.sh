@@ -45,8 +45,8 @@ export PATH="$SHADOW_BIN:\$PATH"
 export FORCE_COLOR=1
 export COLORTERM=truecolor
 cd "$SAMPLE_DIR"
-printf '\$ cdkl invoke CdklDemo/EchoHandler --event event.json\n\n'
-cdkl invoke CdklDemo/EchoHandler --event event.json
+printf '\$ cdkl invoke --event event.json\n\n'
+cdkl invoke --event event.json
 sleep 9999
 EOF
 chmod +x "$PANE_DIR/invoke.sh"

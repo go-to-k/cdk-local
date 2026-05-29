@@ -30,6 +30,18 @@ Show
 Type "bash run-start-api.sh"
 Enter
 
-# Hold long enough for the curl response + a beat to read it.
-# Tune once the actual recording shows the natural settle time.
-Sleep 16s
+# Bare `cdkl start-api` opens the multi-select picker in the LEFT pane
+# (3 API surfaces, kind-grouped: HTTP API v2 / REST API v1 / Function URL).
+# The cursor starts on MyHttpApi (HTTP API v2) — the curl target. Space
+# selects it, Enter opens the Y/n confirm, Enter accepts the default (Yes).
+# (Press → instead of Space to select all.) TUNE every Sleep below.
+Sleep 4s
+Space
+Sleep 700ms
+Enter
+Sleep 900ms
+Enter
+
+# Hold for the server boot (left) + the right pane's curl (~12s sleep + a
+# beat to read the JSON response).
+Sleep 18s
