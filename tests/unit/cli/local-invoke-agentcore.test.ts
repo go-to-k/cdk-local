@@ -13,6 +13,7 @@ const {
   pullImageMock,
   createLocalStateProviderMock,
   verifyJwtViaDiscoveryMock,
+  stsSendMock,
 } = vi.hoisted(() => ({
   loadManifestMock: vi.fn(),
   getFileAssetsMock: vi.fn(),
@@ -26,6 +27,20 @@ const {
   pullImageMock: vi.fn(),
   createLocalStateProviderMock: vi.fn(),
   verifyJwtViaDiscoveryMock: vi.fn(),
+  stsSendMock: vi.fn(),
+}));
+
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: class {
+    send = stsSendMock;
+    destroy(): void {}
+  },
+  AssumeRoleCommand: class {
+    constructor(public input: unknown) {}
+  },
+  GetCallerIdentityCommand: class {
+    constructor(public input: unknown) {}
+  },
 }));
 
 vi.mock('../../../src/local/cognito-jwt.js', async (importActual) => ({
@@ -326,6 +341,60 @@ describe('resolveAgentCoreImage — CodeConfiguration fromS3 (download + build)'
       expect.anything(),
       expect.objectContaining({ region: 'eu-central-1' })
     );
+  });
+
+  it('prefers --region over --stack-region for the download region', async () => {
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/x', cleanup });
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+    await resolveAgentCoreImage(
+      s3CodeRuntime(),
+      imageOpts({ region: 'ap-south-1', stackRegion: 'eu-central-1' })
+    );
+    expect(downloadAndExtractS3BundleMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ region: 'ap-south-1' })
+    );
+  });
+
+  it('threads --assume-role STS temp creds into the fromS3 download', async () => {
+    stsSendMock.mockResolvedValue({
+      Credentials: { AccessKeyId: 'AK', SecretAccessKey: 'SK', SessionToken: 'ST' },
+    });
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/x', cleanup });
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+
+    await resolveAgentCoreImage(
+      s3CodeRuntime(),
+      imageOpts({ assumeRole: 'arn:aws:iam::1:role/Agent' })
+    );
+
+    expect(downloadAndExtractS3BundleMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        credentials: { accessKeyId: 'AK', secretAccessKey: 'SK', sessionToken: 'ST' },
+      })
+    );
+  });
+
+  it('falls back to --profile creds when the fromS3 download AssumeRole fails', async () => {
+    stsSendMock.mockRejectedValue(new Error('access denied'));
+    const cleanup = vi.fn().mockResolvedValue(undefined);
+    downloadAndExtractS3BundleMock.mockResolvedValue({ dir: '/tmp/x', cleanup });
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+
+    await resolveAgentCoreImage(
+      s3CodeRuntime(),
+      imageOpts({ assumeRole: 'arn:aws:iam::1:role/Agent', profile: 'dev' })
+    );
+
+    const passed = downloadAndExtractS3BundleMock.mock.calls[0]?.[1] as {
+      credentials?: unknown;
+      profile?: string;
+    };
+    expect(passed.credentials).toBeUndefined();
+    expect(passed.profile).toBe('dev');
   });
 });
 
