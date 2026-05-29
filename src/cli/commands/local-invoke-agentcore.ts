@@ -50,6 +50,7 @@ import {
   type McpInvokeResult,
   type McpJsonRpcRequest,
 } from '../../local/agentcore-mcp-client.js';
+import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore-ws-client.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
@@ -102,6 +103,12 @@ interface LocalInvokeAgentCoreOptions {
   containerHost: string;
   /** `--platform <linux/amd64|linux/arm64>`. Defaults to AgentCore's required arm64. */
   platform: string;
+  /**
+   * `--ws`: use the HTTP-protocol agent's bidirectional `/ws` WebSocket
+   * endpoint (on 8080) instead of `POST /invocations` — send `--event` as the
+   * first frame and stream received frames to stdout until the agent closes.
+   */
+  ws?: boolean;
   /** Session id forwarded via the AgentCore session-id header (auto-generated when omitted). */
   sessionId?: string;
   /**
@@ -275,6 +282,9 @@ async function localInvokeAgentCoreCommand(
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
+    if (isMcp && options.ws) {
+      logger.warn('--ws applies only to the HTTP protocol; ignoring it for this MCP runtime.');
+    }
 
     // Read + validate the event (and resolve the session id) BEFORE any
     // Docker work, so a bad --event / --event-stdin fails fast instead of
@@ -356,6 +366,21 @@ async function localInvokeAgentCoreCommand(
       // Settle so container logs flush before teardown.
       await new Promise((r) => setTimeout(r, 250));
       emitMcpResult(mcp);
+    } else if (options.ws) {
+      // Bidirectional `/ws` (same 8080 container as /invocations): send the
+      // event as the first frame, stream every received frame to stdout, then
+      // resolve when the agent closes the stream.
+      await waitForAgentCorePing(containerHost, hostPort);
+      logger.info('Opening the agent /ws WebSocket and streaming frames...');
+      const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
+        sessionId,
+        timeoutMs: 120_000,
+        onMessage: (text) => process.stdout.write(text),
+        ...(authorization && { authorization }),
+      });
+      // Settle so container logs flush before teardown.
+      await new Promise((r) => setTimeout(r, 250));
+      emitWsResult(wsResult);
     } else {
       await waitForAgentCorePing(containerHost, hostPort);
 
@@ -815,6 +840,16 @@ export function emitResult(result: AgentCoreInvokeResult): void {
 }
 
 /**
+ * Finish a `/ws` exchange: the frames were already streamed to stdout via the
+ * onMessage sink, so just terminate with a newline (so the shell prompt resumes
+ * cleanly) and note the frame count at debug level.
+ */
+export function emitWsResult(result: AgentCoreWsResult): void {
+  process.stdout.write('\n');
+  getLogger().debug(`Agent /ws closed after ${result.frames} frame(s).`);
+}
+
+/**
  * Build the JSON-RPC request to send to an MCP runtime from `--event`:
  *   - no `--event` (empty object) → `tools/list` (discover the server's tools),
  *   - an object with a string `method` → that method + its `params`,
@@ -999,6 +1034,14 @@ export function createLocalInvokeAgentCoreCommand(
         '--session-id <id>',
         'AgentCore runtime session id header value (default: a random UUID)'
       )
+    )
+    .addOption(
+      new Option(
+        '--ws',
+        "Stream over the HTTP-protocol agent's bidirectional /ws WebSocket endpoint (on 8080) " +
+          'instead of POST /invocations: send --event as the first frame and print every received ' +
+          'frame to stdout until the agent closes. Ignored for an MCP runtime.'
+      ).default(false)
     )
     .addOption(
       new Option(

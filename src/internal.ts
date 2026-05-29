@@ -329,6 +329,11 @@ export {
   type McpInvokeOptions,
   type McpJsonRpcRequest,
 } from './local/agentcore-mcp-client.js';
+export {
+  invokeAgentCoreWs,
+  type InvokeAgentCoreWsOptions,
+  type AgentCoreWsResult,
+} from './local/agentcore-ws-client.js';
 
 /**
  * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the

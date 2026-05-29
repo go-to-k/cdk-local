@@ -47,7 +47,10 @@ AWS managed services.
   `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
   the runtime's OIDC discovery URL before the container starts and forwarded to
   `/invocations`), and a streaming SSE (`text/event-stream`) response is printed
-  to stdout incrementally. MCP runs the Streamable-HTTP `POST /mcp` contract on
+  to stdout incrementally. `--ws` instead streams over the agent's bidirectional
+  `/ws` WebSocket endpoint on the same 8080 container — the event is sent as the
+  first frame and received frames are printed to stdout until the agent closes.
+  MCP runs the Streamable-HTTP `POST /mcp` contract on
   8000: the session handshake (initialize -> notifications/initialized) then one
   JSON-RPC request (`tools/list` by default, or the method/params from
   `--event`). `--from-cfn-stack` deepens to parity with `cdkl invoke` /
@@ -101,7 +104,8 @@ Gateway).
   target selection via `@clack/prompts` when a target is omitted in a TTY),
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +
   container-URI extraction) + agentcore-client (the `/ping` + `/invocations`
-  HTTP-contract client for `cdkl invoke-agentcore`), embed-config
+  HTTP-contract client for `cdkl invoke-agentcore`) + agentcore-ws-client (the
+  bidirectional `/ws` WebSocket client for `--ws`), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
