@@ -182,13 +182,13 @@ function handleProxyRequest(
       return;
     }
 
-    if (action.kind === 'redirect') {
-      writeRedirect(res, action, req, opts.listenerPort);
-      resolve();
-      return;
-    }
-    if (action.kind === 'fixed-response') {
-      writeFixedResponse(res, action);
+    if (action.kind === 'redirect' || action.kind === 'fixed-response') {
+      // Drain any request body (ALB serves redirect / fixed-response for every
+      // method, incl. POST) so an unconsumed body doesn't stall HTTP/1.1
+      // keep-alive socket reuse, then synthesize the response with no backend.
+      req.resume();
+      if (action.kind === 'redirect') writeRedirect(res, action, req, opts.listenerPort);
+      else writeFixedResponse(res, action);
       resolve();
       return;
     }

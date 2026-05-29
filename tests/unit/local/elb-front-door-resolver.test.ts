@@ -303,6 +303,87 @@ describe('resolveAlbFrontDoor', () => {
     });
   });
 
+  it('carries a Weight: 0 target through resolution (the seam to the 502 path)', () => {
+    // The real synth can emit Weight: 0; it must survive into target.weight so
+    // the front-door's "every weighted target has weight 0 -> 502" path fires.
+    const stack = stackWith({
+      ...apiServiceResources,
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'forward',
+              ForwardConfig: {
+                TargetGroups: [
+                  { TargetGroupArn: { Ref: TG }, Weight: 0 },
+                  { TargetGroupArn: { Ref: API_TG }, Weight: '0' },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+    const action = resolveAlbFrontDoor(stack, ALB).listeners[0]!.defaultAction;
+    expect(action?.kind).toBe('forward');
+    if (action?.kind === 'forward') {
+      expect(action.targets.map((t) => t.weight)).toEqual([0, 0]);
+    }
+  });
+
+  it('defaults a redirect with no StatusCode to 302', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'redirect', RedirectConfig: { Path: '/elsewhere' } }],
+        },
+      },
+    });
+    const action = resolveAlbFrontDoor(stack, ALB).listeners[0]!.defaultAction;
+    expect(action).toMatchObject({ kind: 'redirect', statusCode: 302, path: '/elsewhere' });
+  });
+
+  it('warns and skips a redirect action with no RedirectConfig', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'redirect' }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/redirect/i);
+  });
+
+  it('defaults a fixed-response with no FixedResponseConfig to status 200', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [{ Type: 'fixed-response' }],
+        },
+      },
+    });
+    const action = resolveAlbFrontDoor(stack, ALB).listeners[0]!.defaultAction;
+    expect(action).toEqual({ kind: 'fixed-response', statusCode: 200 });
+  });
+
   it('honors a forward terminal action preceded by an authenticate-* action', () => {
     const stack = stackWith({
       [LISTENER]: {
