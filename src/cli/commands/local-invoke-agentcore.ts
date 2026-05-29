@@ -215,6 +215,12 @@ async function localInvokeAgentCoreCommand(
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
 
+    // Read + validate the event (and resolve the session id) BEFORE any
+    // Docker work, so a bad --event / --event-stdin fails fast instead of
+    // after paying for an image build + container boot.
+    const sessionId = options.sessionId ?? randomUUID();
+    const event = await readEvent(options);
+
     const image = await resolveAgentCoreImage(resolved, options);
 
     const dockerEnv = await buildContainerEnv(
@@ -253,8 +259,6 @@ async function localInvokeAgentCoreCommand(
 
     await waitForAgentCorePing(containerHost, hostPort);
 
-    const sessionId = options.sessionId ?? randomUUID();
-    const event = await readEvent(options);
     const result = await invokeAgentCore(containerHost, hostPort, event, {
       sessionId,
       timeoutMs: 120_000,
@@ -470,7 +474,7 @@ export function emitResult(result: AgentCoreInvokeResult): void {
 }
 
 /** Map a `--platform` value to the architecture `buildContainerImage` expects. */
-function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
+export function platformToArchitecture(platform: string): 'x86_64' | 'arm64' {
   return platform === 'linux/amd64' ? 'x86_64' : 'arm64';
 }
 
@@ -516,7 +520,7 @@ async function assumeAgentCoreExecutionRole(
   }
 }
 
-async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<unknown> {
+export async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<unknown> {
   if (options.event && options.eventStdin) {
     throw new Error('--event and --event-stdin are mutually exclusive.');
   }
@@ -524,7 +528,15 @@ async function readEvent(options: LocalInvokeAgentCoreOptions): Promise<unknown>
     return parseEvent(await readStdin(), '<stdin>');
   }
   if (options.event) {
-    return parseEvent(readFileSync(options.event, 'utf-8'), options.event);
+    let raw: string;
+    try {
+      raw = readFileSync(options.event, 'utf-8');
+    } catch (err) {
+      throw new Error(
+        `Failed to read --event file '${options.event}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    return parseEvent(raw, options.event);
   }
   return {};
 }
@@ -547,7 +559,7 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
+export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
   if (!filePath) return undefined;
   let raw: string;
   try {
