@@ -1,4 +1,15 @@
-import { isCancel, multiselect, select } from '@clack/prompts';
+import { MultiSelectPrompt } from '@clack/core';
+import {
+  confirm,
+  isCancel,
+  select,
+  S_BAR,
+  S_BAR_END,
+  S_BAR_START,
+  S_CHECKBOX_ACTIVE,
+  S_CHECKBOX_INACTIVE,
+  S_CHECKBOX_SELECTED,
+} from '@clack/prompts';
 import {
   CdkLocalError,
   InteractiveTtyRequiredError,
@@ -6,6 +17,15 @@ import {
 } from '../utils/error-handler.js';
 import { getEmbedConfig } from './embed-config.js';
 import type { TargetEntry } from './target-lister.js';
+
+// Minimal raw-ANSI helpers (cdk-local has no color-lib dependency; the
+// logger uses raw escapes too). Kept local to the picker render.
+const ANSI = {
+  cyan: (s: string): string => `\x1b[36m${s}\x1b[0m`,
+  green: (s: string): string => `\x1b[32m${s}\x1b[0m`,
+};
+
+type PickerOption = { value: string; label: string; hint?: string };
 
 /**
  * True when both stdin and stdout are TTYs — the precondition for any
@@ -46,33 +66,115 @@ export async function pickOneTarget(message: string, entries: TargetEntry[]): Pr
 }
 
 /**
- * Prompt for one or more targets (at least one required). Caller must
- * have already confirmed a TTY and a non-empty `entries`. Throws
- * {@link TargetSelectionCancelledError} on Ctrl+C / Esc.
- *
- * The key hint is baked into the message because multi-select's
- * space-to-toggle is not discoverable — users expect enter to pick the
- * highlighted row and miss that nothing is selected yet.
- *
- * When `preselectAll` is true, every row starts selected (via
- * `@clack/prompts` `initialValues`) so a bare Enter confirms the whole
- * set — used by `start-api`, whose long-standing default is "serve every
- * discovered API". The user deselects rows to serve a subset.
+ * The selected-value array after a bulk action — `all` selects every
+ * option, `none` clears the selection. Pure (no prompt state) so the
+ * arrow-key bulk-select wiring is unit-testable without a TTY.
  */
-export async function pickManyTargets(
-  message: string,
-  entries: TargetEntry[],
-  options: { preselectAll?: boolean } = {}
-): Promise<string[]> {
-  const opts = entries.map(toOption);
-  const chosen = await multiselect({
-    message: `${message} (space to select, enter to confirm)`,
-    options: opts,
-    required: true,
-    ...(options.preselectAll && { initialValues: opts.map((o) => o.value) }),
-  });
-  if (isCancel(chosen)) throw new TargetSelectionCancelledError();
-  return chosen as string[];
+export function bulkSelectValues(options: PickerOption[], action: 'all' | 'none'): string[] {
+  return action === 'all' ? options.map((o) => o.value) : [];
+}
+
+/** Pre-compute the aligned `[kind] ` tag per option (blank when no kind). */
+function kindTags(opts: PickerOption[]): string[] {
+  const raw = opts.map((o) => (o.hint ? `[${o.hint}] ` : ''));
+  const width = Math.max(0, ...raw.map((t) => t.length));
+  return raw.map((t) => t.padEnd(width));
+}
+
+/**
+ * Prompt for one or more targets. Caller must have already confirmed a TTY
+ * and a non-empty `entries`. Throws {@link TargetSelectionCancelledError}
+ * on Ctrl+C / Esc, on an empty selection (the user chose nothing), or when
+ * the confirmation step is declined.
+ *
+ * Built on `@clack/core`'s `MultiSelectPrompt` (rather than the high-level
+ * `multiselect`) so it can add bulk-selection keys the high-level wrapper
+ * does not expose: Up/Down move, Space toggles, **Right selects all**,
+ * **Left clears all**, Enter confirms. `MultiSelectPrompt` tracks the
+ * selection in `this.value`, so the Right/Left handlers set it directly —
+ * the same mechanism the built-in `toggleAll` uses.
+ *
+ * Rows start UNSELECTED. Each row is prefixed with its surface kind
+ * (`[HTTP API v2] MyApi`) — always shown, padded so labels align. Submitting
+ * with nothing selected exits cleanly; a non-empty selection goes through a
+ * Y/n confirmation before returning.
+ */
+export async function pickManyTargets(message: string, entries: TargetEntry[]): Promise<string[]> {
+  const opts: PickerOption[] = entries.map(toOption);
+  const tags = kindTags(opts);
+  // `[kind] label` per value, for the confirmation bullet list.
+  const displayByValue = new Map(
+    opts.map((o) => [o.value, o.hint ? `[${o.hint}] ${o.label}` : o.label])
+  );
+
+  // Loop so that declining the confirmation returns to the picker with the
+  // current selection preserved (via `initialValues`).
+  let initialValues: string[] = [];
+  for (;;) {
+    const prompt = new MultiSelectPrompt<PickerOption>({
+      options: opts,
+      // Allow an empty submit — handled below (confirm "exit?"), rather than
+      // clack's built-in "select at least one" error.
+      required: false,
+      ...(initialValues.length > 0 ? { initialValues } : {}),
+      render() {
+        if (this.state === 'submit' || this.state === 'cancel') {
+          return `${S_BAR_START}  ${message}\n${S_BAR}  ${(this.value ?? []).length} selected`;
+        }
+        // Key hints live on the message line, `action: key` form, `|`-separated.
+        const header = `${S_BAR_START}  ${message} (toggle: space | all: → | none: ← | confirm: enter)`;
+        const selected = new Set(this.value ?? []);
+        const rows = this.options.map((opt, i) => {
+          const isActive = i === this.cursor;
+          const isSelected = selected.has(opt.value);
+          // Checked box is green (matching the confirm prompt's check colour);
+          // the cursor row's box is cyan; otherwise the default checkbox.
+          const box = isSelected
+            ? ANSI.green(S_CHECKBOX_SELECTED)
+            : isActive
+              ? ANSI.cyan(S_CHECKBOX_ACTIVE)
+              : S_CHECKBOX_INACTIVE;
+          // Row text: active = cyan, selected = green, otherwise the default
+          // fg (white) — never dim/grey, which is hard to read. The `[kind]`
+          // tag follows the row's colour.
+          const text = `${tags[i]}${opt.label}`;
+          const coloured = isActive ? ANSI.cyan(text) : isSelected ? ANSI.green(text) : text;
+          return `${S_BAR}  ${box} ${coloured}`;
+        });
+        return `${header}\n${rows.join('\n')}\n${S_BAR_END}`;
+      },
+    });
+
+    // Right selects every row; Left clears. Setting `prompt.value` is exactly
+    // how the built-in `toggleAll` works; the prompt re-renders after each
+    // keypress. Note: MultiSelectPrompt ALSO maps Left/Right onto its cursor
+    // (as Up/Down) and that fires before this handler, so after a bulk change
+    // we pin the cursor to the top for a stable, predictable position.
+    prompt.on('key', (_char, info) => {
+      if (info?.name !== 'right' && info?.name !== 'left') return;
+      prompt.value = bulkSelectValues(opts, info.name === 'right' ? 'all' : 'none');
+      prompt.cursor = 0;
+    });
+
+    const picked = await prompt.prompt();
+    if (isCancel(picked)) throw new TargetSelectionCancelledError();
+    const values = (picked as string[] | undefined) ?? [];
+
+    if (values.length === 0) {
+      const exit = await confirm({ message: 'Nothing selected. Exit without running anything?' });
+      if (isCancel(exit)) throw new TargetSelectionCancelledError();
+      if (exit === true) throw new TargetSelectionCancelledError();
+      initialValues = [];
+      continue; // back to the picker
+    }
+
+    const bullets = values.map((v) => `  • ${displayByValue.get(v) ?? v}`).join('\n');
+    const noun = values.length === 1 ? 'this target' : `these ${values.length} targets`;
+    const ok = await confirm({ message: `Run ${noun}?\n${bullets}` });
+    if (isCancel(ok)) throw new TargetSelectionCancelledError();
+    if (ok === true) return values;
+    initialValues = values; // declined -> back to the picker, selection kept
+  }
 }
 
 interface ResolveParams {

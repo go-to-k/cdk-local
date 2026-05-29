@@ -168,17 +168,36 @@ function listApiSurfaces(stacks: readonly StackInfo[]): TargetEntry[] {
 export function listTargets(stacks: readonly StackInfo[]): TargetListing {
   return {
     lambdas: sortEntries(scanByType(stacks, 'AWS::Lambda::Function')),
-    apis: sortEntries(listApiSurfaces(stacks)),
+    apis: sortApiEntries(listApiSurfaces(stacks)),
     ecsServices: sortEntries(scanByType(stacks, 'AWS::ECS::Service')),
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
   };
 }
 
+const pathOf = (e: TargetEntry): string => e.displayPath ?? e.qualifiedId;
+
 /** Stable, human-readable ordering: by display path, falling back to the qualified ID. */
 function sortEntries(entries: TargetEntry[]): TargetEntry[] {
-  return [...entries].sort((a, b) =>
-    (a.displayPath ?? a.qualifiedId).localeCompare(b.displayPath ?? b.qualifiedId)
-  );
+  return [...entries].sort((a, b) => pathOf(a).localeCompare(pathOf(b)));
+}
+
+/** Display order for API surface kinds; entries are grouped in this order. */
+const API_KIND_ORDER = ['HTTP API v2', 'REST API v1', 'Function URL', 'WebSocket'];
+
+/**
+ * Order API surfaces by stack, then kind (in {@link API_KIND_ORDER}), then
+ * display path — so a multi-stack app shows each stack's APIs as a block,
+ * grouped by kind inside it (single-stack apps are simply kind-grouped). Used
+ * by both `cdkl list` and the interactive picker. Exported for unit testing.
+ */
+export function sortApiEntries(entries: TargetEntry[]): TargetEntry[] {
+  return [...entries].sort((a, b) => {
+    if (a.stackName !== b.stackName) return a.stackName.localeCompare(b.stackName);
+    const ka = API_KIND_ORDER.indexOf(a.kind ?? '');
+    const kb = API_KIND_ORDER.indexOf(b.kind ?? '');
+    if (ka !== kb) return ka - kb;
+    return pathOf(a).localeCompare(pathOf(b));
+  });
 }
 
 /** Total number of targets across every category. */

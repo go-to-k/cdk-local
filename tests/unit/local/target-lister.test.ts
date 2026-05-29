@@ -1,8 +1,62 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
-import { countTargets, listTargets } from '../../../src/local/target-lister.js';
+import {
+  countTargets,
+  listTargets,
+  sortApiEntries,
+  type TargetEntry,
+} from '../../../src/local/target-lister.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
+
+describe('sortApiEntries', () => {
+  it('groups by kind (HTTP -> REST -> Function URL -> WebSocket), then path within a kind', () => {
+    const e = (logicalId: string, kind: string): TargetEntry => ({
+      logicalId,
+      stackName: 'App',
+      qualifiedId: `App:${logicalId}`,
+      displayPath: `App/${logicalId}`,
+      kind,
+    });
+    const sorted = sortApiEntries([
+      e('OacUrl', 'Function URL'),
+      e('MyRest', 'REST API v1'),
+      e('IamUrl', 'Function URL'),
+      e('MyHttp', 'HTTP API v2'),
+      e('Ws', 'WebSocket'),
+    ]);
+    expect(sorted.map((x) => x.logicalId)).toEqual([
+      'MyHttp', // HTTP API v2
+      'MyRest', // REST API v1
+      'IamUrl', // Function URL, path-sorted (App/IamUrl < App/OacUrl)
+      'OacUrl',
+      'Ws', // WebSocket
+    ]);
+  });
+
+  it('orders by stack first in a multi-stack app, then kind, then path', () => {
+    const e = (stackName: string, logicalId: string, kind: string): TargetEntry => ({
+      logicalId,
+      stackName,
+      qualifiedId: `${stackName}:${logicalId}`,
+      displayPath: `${stackName}/${logicalId}`,
+      kind,
+    });
+    const sorted = sortApiEntries([
+      e('Beta', 'BFn', 'Function URL'),
+      e('Alpha', 'AFn', 'Function URL'),
+      e('Beta', 'BHttp', 'HTTP API v2'),
+      e('Alpha', 'AHttp', 'HTTP API v2'),
+    ]);
+    // Alpha block (kind-grouped) first, then Beta block.
+    expect(sorted.map((x) => `${x.stackName}:${x.logicalId}`)).toEqual([
+      'Alpha:AHttp',
+      'Alpha:AFn',
+      'Beta:BHttp',
+      'Beta:BFn',
+    ]);
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

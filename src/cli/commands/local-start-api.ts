@@ -435,7 +435,7 @@ async function localStartApiCommand(
           `No APIs found in this CDK app to choose from. Run \`${getEmbedConfig().cliName} list\` to see what is available.`
         );
       }
-      const picked = await pickManyTargets('Select APIs to serve', apis, { preselectAll: true });
+      const picked = await pickManyTargets('Select APIs to serve', apis);
       apiFilters = picked;
       effectiveTargets = picked;
       interactivePicked.value = true;
