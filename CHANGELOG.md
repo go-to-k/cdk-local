@@ -1,3 +1,10 @@
+# [0.51.0](https://github.com/go-to-k/cdk-local/compare/v0.50.0...v0.51.0) (2026-05-30)
+
+
+### Features
+
+* **start-alb:** honor http-header / http-request-method / query-string / source-ip listener-rule conditions ([#159](https://github.com/go-to-k/cdk-local/issues/159)) ([0e3259a](https://github.com/go-to-k/cdk-local/commit/0e3259ab484747d53d48e64089963667e01f16a7))
+
 # [0.50.0](https://github.com/go-to-k/cdk-local/compare/v0.49.0...v0.50.0) (2026-05-30)
 
 
