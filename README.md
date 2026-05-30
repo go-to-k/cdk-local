@@ -76,7 +76,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 | Resource | Local execution |
 |----------|-----------------|
 | Lambda functions (ZIP, container image, Function URLs) | `invoke` — every current Lambda runtime |
-| API Gateway (REST v1, HTTP v2, WebSocket) | `start-api` |
+| API Gateway (REST v1, HTTP v2, WebSocket) + Lambda Function URLs | `start-api` |
 | ECS task definitions | `run-task` |
 | ECS services | `start-service` |
 | Cloud Map / Service Connect registry | service discovery between local replicas |
