@@ -436,21 +436,27 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
   });
 });
 
-describe('resolveAgentCoreTarget — out-of-scope artifacts', () => {
-
-  it('rejects the A2A protocol with a not-served-yet error', () => {
+describe('resolveAgentCoreTarget — A2A + AGUI protocols', () => {
+  it('resolves an A2A-protocol runtime', () => {
     const stack = buildStack('App', {
       ChatAgent: containerRuntime({ ProtocolConfiguration: 'A2A' }),
     });
-    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/A2A protocol/);
-    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/not served yet/);
+    expect(resolveAgentCoreTarget('ChatAgent', [stack]).protocol).toBe('A2A');
   });
 
-  it('rejects the AGUI protocol', () => {
+  it('resolves an AGUI-protocol runtime', () => {
     const stack = buildStack('App', {
       ChatAgent: containerRuntime({ ProtocolConfiguration: 'AGUI' }),
     });
-    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/AGUI protocol/);
+    expect(resolveAgentCoreTarget('ChatAgent', [stack]).protocol).toBe('AGUI');
+  });
+
+  it('rejects an unknown protocol with a supported-protocols list', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({ ProtocolConfiguration: 'CUSTOM' }),
+    });
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/CUSTOM protocol/);
+    expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/HTTP \/ MCP \/ A2A \/ AGUI/);
   });
 });
 

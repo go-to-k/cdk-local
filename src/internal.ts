@@ -301,6 +301,8 @@ export {
   AGENTCORE_RUNTIME_TYPE,
   AGENTCORE_HTTP_PROTOCOL,
   AGENTCORE_MCP_PROTOCOL,
+  AGENTCORE_A2A_PROTOCOL,
+  AGENTCORE_AGUI_PROTOCOL,
   type ResolvedAgentCoreRuntime,
   type AgentCoreJwtAuthorizer,
   type AgentCoreCustomClaim,
@@ -336,6 +338,14 @@ export {
   type InvokeAgentCoreWsOptions,
   type AgentCoreWsResult,
 } from './local/agentcore-ws-client.js';
+export {
+  a2aInvokeOnce,
+  A2A_CONTAINER_PORT,
+  A2A_PATH,
+  type A2aInvokeResult,
+  type A2aInvokeOptions,
+  type A2aJsonRpcRequest,
+} from './local/agentcore-a2a-client.js';
 export {
   downloadAndExtractS3Bundle,
   type S3BundleLocation,

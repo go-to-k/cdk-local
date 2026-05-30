@@ -426,14 +426,23 @@ container down. The exact contract depends on `ProtocolConfiguration`:
   header) and prints the response body.
 - **MCP** — starts on port 8000, then speaks the Model Context Protocol over
   Streamable HTTP at `POST /mcp`: see [MCP protocol](#mcp-protocol) below.
+- **A2A** — starts on port 9000, then speaks Agent2Agent JSON-RPC 2.0 at
+  `POST /` (the root). One JSON-RPC round-trip per invocation; default
+  method is `agent/getCard` (the agent's discovery card). See
+  [A2A protocol](#a2a-protocol) below.
+- **AGUI** — starts on port 8080 (the AG-UI wire reuses the HTTP container
+  port), serves SSE on `POST /invocations` and a bidirectional WebSocket on
+  `/ws`. Routes through the same client path as HTTP — the SSE / WS
+  handlers stream the AG-UI typed event envelope to stdout transparently
+  (pipe through `jq` for pretty-printing). See [AGUI protocol](#agui-protocol)
+  below.
 
 This is the same request/response loop AgentCore runs in the cloud,
 exercised locally before deploy. It supports the **container artifact**
 (`AgentRuntimeArtifact.ContainerConfiguration.ContainerUri`) and the
 **CodeConfiguration** managed-runtime artifact (`fromCodeAsset` AND `fromS3`,
 built from source — see [CodeConfiguration](#codeconfiguration-managed-runtime)
-below) on the **HTTP** and **MCP** protocols; the `A2A` / `AGUI` protocols are
-rejected with an actionable error. The agent's own calls to AWS managed
+below) on all four protocols. The agent's own calls to AWS managed
 services (Bedrock models, memory, etc.) go to real AWS — credentials are
 injected exactly like `cdkl invoke` (see below).
 
@@ -663,19 +672,61 @@ The JSON-RPC response is printed (handling both an `application/json` and a
 MCP**: the AgentCore session header and inbound OAuth bearer are managed-plane
 concerns the cloud front door maps to MCP's own `Mcp-Session-Id`, so they are
 not applied to a direct local `/mcp` call (`--bearer-token` / `--session-id`
-are HTTP-protocol options and are ignored for MCP). The `A2A` / `AGUI`
-protocols are not supported yet.
+are HTTP-protocol options and are ignored for MCP).
+
+### A2A protocol
+
+When `ProtocolConfiguration = A2A`, the runtime's container serves the
+Agent2Agent JSON-RPC 2.0 contract at `POST /` (the root) on port 9000.
+Unlike MCP there is no session lifecycle: each invocation is one POST that
+carries the JSON-RPC request and the response is read back from the same
+POST. `cdkl invoke-agentcore` POSTs the method/params from `--event`,
+defaulting to `agent/getCard` (the agent's discovery card) when none is
+supplied:
+
+```bash
+cdkl invoke-agentcore MyA2aAgent                                     # agent/getCard
+cdkl invoke-agentcore MyA2aAgent --event ./tasks-send.json           # tasks/send
+```
+
+Where `tasks-send.json` is e.g.
+`{"method":"tasks/send","params":{"id":"task-1","message":{...}}}`. The
+JSON-RPC response is pretty-printed; a top-level JSON-RPC `error` exits
+non-zero (matching the MCP path). Talking to the local container is
+**vanilla A2A** — the AgentCore session header and inbound OAuth bearer are
+managed-plane concerns layered on top in the cloud, so `--bearer-token` /
+`--session-id` are HTTP-protocol options and are ignored for A2A.
+
+### AGUI protocol
+
+When `ProtocolConfiguration = AGUI`, the runtime's container serves the
+AG-UI HTTP-compatible contract on port 8080 — SSE on `POST /invocations`,
+WebSocket on `/ws`. `cdkl invoke-agentcore` routes AGUI through the same
+client path as **HTTP**: it waits for `GET /ping`, POSTs `--event` to
+`/invocations`, and streams the response body to stdout as it arrives. AG-UI
+emits typed events (`RUN_STARTED`, `MESSAGE_CONTENT`, `RUN_FINISHED`, ...)
+as one `data:` line each — pipe through `jq -c .` (or any JSON line tool)
+for structured pretty-printing:
+
+```bash
+cdkl invoke-agentcore MyAguiAgent --event ./prompt.json | jq -c .
+```
+
+`--ws` / `--ws-interactive` / `--bearer-token` / `--no-verify-auth` /
+`--sigv4` all apply unchanged — AGUI's wire is the same shape as HTTP's, so
+the entire HTTP option surface carries over.
 
 ### Per-request timeout (`--timeout`)
 
-The default per-request timeout is 120 seconds. It applies to all three
-transports:
+The default per-request timeout is 120 seconds. It applies to every
+transport:
 
-- HTTP `POST /invocations` — the streaming sink keeps writing chunks while
-  the response body arrives, but the open-to-final-byte window is bounded
-  by `--timeout`.
+- HTTP / AGUI `POST /invocations` — the streaming sink keeps writing chunks
+  while the response body arrives, but the open-to-final-byte window is
+  bounded by `--timeout`.
 - MCP `POST /mcp` — applied to both the `notifications/initialized` POST
   and the one JSON-RPC request POST.
+- A2A `POST /` — applied to the JSON-RPC POST.
 - `/ws` — bounds the open-to-close window (the agent closes the stream).
 
 Raise it for long-running agents whose response exceeds 120s:

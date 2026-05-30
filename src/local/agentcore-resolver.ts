@@ -23,23 +23,32 @@ export const AGENTCORE_RUNTIME_TYPE = 'AWS::BedrockAgentCore::Runtime';
  *
  * - `HTTP` — the agent contract (`POST /invocations` + `GET /ping` on 8080).
  * - `MCP` — Model Context Protocol over Streamable HTTP (`POST /mcp` on 8000).
- *
- * `A2A` / `AGUI` declare yet other wire contracts and are not served yet.
+ * - `A2A` — Agent2Agent JSON-RPC 2.0 over HTTP (`POST /` on 9000).
+ * - `AGUI` — Agent-User Interaction event streams (SSE on `POST /invocations`,
+ *   WebSocket on `/ws`); reuses the HTTP path's container port (8080) and its
+ *   incremental SSE / WS streaming.
  */
 export const AGENTCORE_HTTP_PROTOCOL = 'HTTP';
 export const AGENTCORE_MCP_PROTOCOL = 'MCP';
+export const AGENTCORE_A2A_PROTOCOL = 'A2A';
+export const AGENTCORE_AGUI_PROTOCOL = 'AGUI';
 
 /** Protocols this CLI can run a container for. */
-const SUPPORTED_AGENTCORE_PROTOCOLS = [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_MCP_PROTOCOL] as const;
+const SUPPORTED_AGENTCORE_PROTOCOLS = [
+  AGENTCORE_HTTP_PROTOCOL,
+  AGENTCORE_MCP_PROTOCOL,
+  AGENTCORE_A2A_PROTOCOL,
+  AGENTCORE_AGUI_PROTOCOL,
+] as const;
 
 /**
  * Result of resolving a `cdkl invoke-agentcore <target>` argument back to a
  * concrete `AWS::BedrockAgentCore::Runtime` in the synthesized assembly.
  *
  * Covers the CONTAINER artifact and the `CodeConfiguration` managed-runtime
- * artifact (fromCodeAsset AND fromS3) on the HTTP + MCP protocols — the
- * resolver hard-errors on a non-literal `Code.S3.Prefix` and the A2A / AGUI
- * protocols so the command never starts something it can't run.
+ * artifact (fromCodeAsset AND fromS3) on all four protocols — HTTP / MCP /
+ * A2A / AGUI. The resolver hard-errors on a non-literal `Code.S3.Prefix`
+ * so the command never starts something it can't run.
  */
 export interface ResolvedAgentCoreRuntime {
   /** Stack the runtime belongs to. */
@@ -81,7 +90,7 @@ export interface ResolvedAgentCoreRuntime {
    * an intrinsic role falls back to an explicit `--assume-role <arn>`.
    */
   roleArn?: string;
-  /** `HTTP` or `MCP` (validated at resolution time). */
+  /** `HTTP` / `MCP` / `A2A` / `AGUI` (validated at resolution time). */
   protocol: string;
   /**
    * `Properties.AuthorizerConfiguration.CustomJWTAuthorizer` when present
@@ -479,9 +488,9 @@ function extractCustomClaims(raw: unknown, logicalId: string): AgentCoreCustomCl
 }
 
 /**
- * Validate `ProtocolConfiguration`. Serves `HTTP` (the default when absent)
- * and `MCP`; `A2A` / `AGUI` speak other wire contracts and hard-error with a
- * pointer to the follow-up.
+ * Validate `ProtocolConfiguration`. Serves the four AgentCore protocols
+ * (HTTP / MCP / A2A / AGUI); an unrecognized value hard-errors with the
+ * supported list so the command never starts something it can't run.
  */
 function extractProtocol(value: unknown, logicalId: string, stackName: string): string {
   if (value === undefined || value === null) return AGENTCORE_HTTP_PROTOCOL;
@@ -494,8 +503,7 @@ function extractProtocol(value: unknown, logicalId: string, stackName: string): 
   if (!(SUPPORTED_AGENTCORE_PROTOCOLS as readonly string[]).includes(value)) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} uses the ${value} protocol. ` +
-        `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols ` +
-        `(A2A / AGUI speak different wire contracts and are not served yet).`
+        `${getEmbedConfig().cliName} invoke-agentcore supports the ${SUPPORTED_AGENTCORE_PROTOCOLS.join(' / ')} protocols.`
     );
   }
   return value;
