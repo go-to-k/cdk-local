@@ -97,12 +97,37 @@ export interface ResolvedAgentCoreRuntime {
  * (`AuthorizerConfiguration.CustomJWTAuthorizer`). `discoveryUrl` is the
  * OIDC discovery document URL (`.well-known/openid-configuration`);
  * `allowedAudience` / `allowedClients` are the `aud` / `client_id`
- * allowlists the token must satisfy.
+ * allowlists the token must satisfy;
+ * `allowedScopes` are OAuth scopes the token's `scope` claim must include;
+ * `customClaims` are per-claim equality / membership rules the token must
+ * satisfy in addition to the standard checks.
  */
 export interface AgentCoreJwtAuthorizer {
   discoveryUrl: string;
   allowedAudience?: string[];
   allowedClients?: string[];
+  allowedScopes?: string[];
+  customClaims?: AgentCoreCustomClaim[];
+}
+
+/**
+ * A single `CustomClaims` rule from
+ * `AuthorizerConfiguration.CustomJWTAuthorizer.CustomClaims[]`. Drives
+ * per-claim verification:
+ *
+ * - `valueType: STRING` + `operator: EQUALS` — the token claim must
+ *   string-equal `value` (a single string).
+ * - `valueType: STRING_ARRAY` + `operator: CONTAINS` — the token claim must
+ *   be an array containing `value` (a single string).
+ * - `valueType: STRING_ARRAY` + `operator: CONTAINS_ANY` — the token claim
+ *   must be an array sharing at least one entry with `value` (an array of
+ *   strings).
+ */
+export interface AgentCoreCustomClaim {
+  name: string;
+  valueType: 'STRING' | 'STRING_ARRAY';
+  operator: 'EQUALS' | 'CONTAINS' | 'CONTAINS_ANY';
+  value: string | string[];
 }
 
 /**
@@ -365,12 +390,92 @@ function extractJwtAuthorizer(
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined;
   const allowedAudience = toStringArray(cfg['AllowedAudience']);
   const allowedClients = toStringArray(cfg['AllowedClients']);
+  const allowedScopes = toStringArray(cfg['AllowedScopes']);
+  const customClaims = extractCustomClaims(cfg['CustomClaims'], logicalId);
 
   return {
     discoveryUrl,
     ...(allowedAudience && allowedAudience.length > 0 && { allowedAudience }),
     ...(allowedClients && allowedClients.length > 0 && { allowedClients }),
+    ...(allowedScopes && allowedScopes.length > 0 && { allowedScopes }),
+    ...(customClaims && customClaims.length > 0 && { customClaims }),
   };
+}
+
+/**
+ * Parse a `CustomJWTAuthorizer.CustomClaims[]` array into
+ * {@link AgentCoreCustomClaim}s. The template shape (synthesized by the L2):
+ *
+ * ```
+ * {
+ *   InboundTokenClaimName: <claim name>,
+ *   InboundTokenClaimValueType: 'STRING' | 'STRING_ARRAY',
+ *   AuthorizingClaimMatchValue: {
+ *     ClaimMatchOperator: 'EQUALS' | 'CONTAINS' | 'CONTAINS_ANY',
+ *     ClaimMatchValue: { MatchValueString?: ..., MatchValueStringList?: [...] }
+ *   }
+ * }
+ * ```
+ *
+ * Each entry that fails to parse (missing name / unknown type / unknown
+ * operator / wrong value shape) is warn-and-skipped — the deployed runtime
+ * would reject a token that violates ANY claim rule, so dropping a rule we
+ * can't evaluate is the safer side (under-restrictive in `--no-verify-auth`
+ * paths, fine elsewhere because the surviving rules still gate the token).
+ */
+function extractCustomClaims(raw: unknown, logicalId: string): AgentCoreCustomClaim[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: AgentCoreCustomClaim[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    const name = e['InboundTokenClaimName'];
+    const valueType = e['InboundTokenClaimValueType'];
+    const matchObj = e['AuthorizingClaimMatchValue'];
+    if (typeof name !== 'string' || name.length === 0) continue;
+    if (valueType !== 'STRING' && valueType !== 'STRING_ARRAY') {
+      getLogger().warn(
+        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has unsupported ` +
+          `InboundTokenClaimValueType '${String(valueType)}' (expected STRING / STRING_ARRAY); skipping.`
+      );
+      continue;
+    }
+    if (!matchObj || typeof matchObj !== 'object' || Array.isArray(matchObj)) continue;
+    const m = matchObj as Record<string, unknown>;
+    const operator = m['ClaimMatchOperator'];
+    const matchValue = m['ClaimMatchValue'];
+    if (operator !== 'EQUALS' && operator !== 'CONTAINS' && operator !== 'CONTAINS_ANY') {
+      getLogger().warn(
+        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has unsupported ` +
+          `ClaimMatchOperator '${String(operator)}' (expected EQUALS / CONTAINS / CONTAINS_ANY); skipping.`
+      );
+      continue;
+    }
+    if (!matchValue || typeof matchValue !== 'object' || Array.isArray(matchValue)) continue;
+    const mv = matchValue as Record<string, unknown>;
+    // STRING + EQUALS and STRING_ARRAY + CONTAINS use MatchValueString (single
+    // string); STRING_ARRAY + CONTAINS_ANY uses MatchValueStringList (array).
+    let value: string | string[] | undefined;
+    if (operator === 'CONTAINS_ANY') {
+      const list = mv['MatchValueStringList'];
+      if (Array.isArray(list)) {
+        value = list.filter((x): x is string => typeof x === 'string');
+        if ((value as string[]).length === 0) value = undefined;
+      }
+    } else {
+      const s = mv['MatchValueString'];
+      if (typeof s === 'string' && s.length > 0) value = s;
+    }
+    if (value === undefined) {
+      getLogger().warn(
+        `AgentCore Runtime '${logicalId}' CustomClaims entry '${name}' has no usable ` +
+          `MatchValueString / MatchValueStringList for operator ${operator}; skipping.`
+      );
+      continue;
+    }
+    out.push({ name, valueType, operator, value });
+  }
+  return out;
 }
 
 /**

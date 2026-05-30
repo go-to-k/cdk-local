@@ -49,8 +49,9 @@ AWS managed services.
   intrinsic resolved against state) on the HTTP and MCP protocols. HTTP runs the
   `POST /invocations` + `GET /ping` contract on 8080: an inbound
   `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
-  the runtime's OIDC discovery URL before the container starts and forwarded to
-  `/invocations`), and a streaming SSE (`text/event-stream`) response is printed
+  the runtime's OIDC discovery URL before the container starts — signature +
+  issuer + expiry + audience + `allowedScopes` + `customClaims` — and forwarded
+  to `/invocations`), and a streaming SSE (`text/event-stream`) response is printed
   to stdout incrementally. `--ws` instead streams over the agent's bidirectional
   `/ws` WebSocket endpoint on the same 8080 container — the event is sent as the
   first frame and received frames are printed to stdout until the agent closes.

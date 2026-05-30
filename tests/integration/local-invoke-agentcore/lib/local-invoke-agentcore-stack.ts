@@ -8,6 +8,7 @@ import {
   AgentRuntimeArtifact,
   AgentCoreRuntime,
   RuntimeAuthorizerConfiguration,
+  RuntimeCustomClaim,
   ProtocolType,
 } from 'aws-cdk-lib/aws-bedrockagentcore';
 
@@ -68,6 +69,29 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
         platform: Platform.LINUX_ARM64,
       }),
       protocolConfiguration: ProtocolType.MCP,
+    });
+
+    // A JWT-protected runtime whose customJwtAuthorizer also declares
+    // `allowedScopes` + `customClaims` — exercises the resolver's extraction
+    // of the new fields end-to-end (the discovery URL is again deliberately
+    // unreachable; the verifier's pass-through path then accepts every Bearer
+    // token without firing the scope / claim checks). The unit tests cover the
+    // verifier behavior with a working discovery + JWKS + signed token.
+    new Runtime(this, 'ProtectedAgentClaims', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      environmentVariables: { GREETING: 'hello-from-agent' },
+      authorizerConfiguration: RuntimeAuthorizerConfiguration.usingJWT(
+        'https://127.0.0.1:1/.well-known/openid-configuration',
+        ['client-9'],
+        ['aud-1'],
+        ['read', 'write'],
+        [
+          RuntimeCustomClaim.withStringValue('department', 'engineering'),
+          RuntimeCustomClaim.withStringArrayValue('groups', ['admins']),
+        ]
+      ),
     });
 
     // A CodeConfiguration (managed-runtime) runtime authored as plain source

@@ -524,18 +524,29 @@ before the container starts:
   or `--no-verify-auth` to skip for local dev.
 - **`--bearer-token <jwt>`** → the token is verified against the runtime's
   OIDC discovery URL: the discovery document is fetched for its `issuer` +
-  `jwks_uri`, then the JWT's RS256 signature, `iss`, `exp`, and audience are
-  checked (the audience allowlist is `allowedAudience` ∪ `allowedClients`,
-  matched against `aud` / `client_id`). An invalid token is rejected
-  (AgentCore returns 403); a valid one is forwarded to `/invocations` as
+  `jwks_uri`, then the JWT's RS256 signature, `iss`, `exp`, audience,
+  `allowedScopes`, and `customClaims` are checked:
+  - **Audience** — `aud` (ID tokens) or `client_id` (access tokens) must
+    match the `allowedAudience` ∪ `allowedClients` allowlist.
+  - **`allowedScopes`** — the token's `scope` claim (OAuth space-separated
+    string, or an array) must include EVERY required scope.
+  - **`customClaims`** — every declared rule must hold against the token's
+    matching claim:
+    - `STRING` + `EQUALS` — claim string-equals the configured value;
+    - `STRING_ARRAY` + `CONTAINS` — claim array includes the configured
+      value;
+    - `STRING_ARRAY` + `CONTAINS_ANY` — claim array shares at least one
+      entry with the configured list.
+
+  An invalid token is rejected (AgentCore returns 403); a valid one is
+  forwarded to `/invocations` (or the `/ws` upgrade) as
   `Authorization: Bearer <jwt>`.
 - **Discovery URL / JWKS unreachable** → falls back to pass-through (accept +
   warn), the same offline-dev trade-off `cdkl start-api` makes for
-  unreachable Cognito JWKS.
+  unreachable Cognito JWKS. Scope / custom-claim verification does NOT run on
+  the pass-through path — every Bearer token is accepted.
 - **`--no-verify-auth`** → skips verification entirely; a `--bearer-token`,
   if given, is still forwarded.
-
-`allowedScopes` + `customClaims` validation is not yet enforced (follow-up).
 
 ### Streaming responses
 
