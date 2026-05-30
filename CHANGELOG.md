@@ -1,3 +1,10 @@
+# [0.58.0](https://github.com/go-to-k/cdk-local/compare/v0.57.0...v0.58.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** support A2A + AGUI protocols locally ([#175](https://github.com/go-to-k/cdk-local/issues/175)) ([ca5dea9](https://github.com/go-to-k/cdk-local/commit/ca5dea9067b4e8e82cd9481f8c7b0ce6b41fbd6b))
+
 # [0.57.0](https://github.com/go-to-k/cdk-local/compare/v0.56.0...v0.57.0) (2026-05-30)
 
 
