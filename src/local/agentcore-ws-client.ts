@@ -6,13 +6,16 @@ import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
  * endpoint (bidirectional streaming, on the same 8080 container as
  * `POST /invocations` + `GET /ping`).
  *
- * v1 is a one-shot send-and-stream transparent pipe: connect to
- * `ws://host:8080/ws`, send the `--event` as the first frame, then stream every
- * received frame to the sink until the server closes the connection. The wire
- * framing over `/ws` is agent-defined (AWS pipes bytes transparently), so this
- * mirrors that — it does not interpret the frames. The AgentCore session id is
- * sent on the upgrade as {@link AGENTCORE_SESSION_ID_HEADER}, the way the cloud
- * front door does. An interactive stdin<->ws loop is a follow-up.
+ * Connect to `ws://host:8080/ws`, send the `--event` as the first frame, and
+ * stream every received frame to the sink. When a {@link
+ * InvokeAgentCoreWsOptions.frameSource} is supplied (the `--ws-interactive`
+ * REPL path), additional frames from that async iterable are sent after the
+ * initial event, and the client closes the stream when the iterable is
+ * exhausted (or when the server closes first — whichever happens first). The
+ * wire framing over `/ws` is agent-defined (AWS pipes bytes transparently),
+ * so this mirrors that — it does not interpret the frames. The AgentCore
+ * session id is sent on the upgrade as {@link AGENTCORE_SESSION_ID_HEADER},
+ * the way the cloud front door does.
  */
 
 const WS_PATH = '/ws';
@@ -31,6 +34,16 @@ export interface InvokeAgentCoreWsOptions {
    * as in the cloud.
    */
   authorization?: string;
+  /**
+   * Optional async iterable of additional text frames to send after the
+   * initial `event`. Used by `--ws-interactive` to wire `process.stdin`
+   * (line-buffered) to the WebSocket — each yielded string becomes one text
+   * frame. The connection is closed gracefully when the iterable is
+   * exhausted; if the server closes first, iteration is stopped via the
+   * iterator's `return()` method. Errors thrown by the iterable propagate as
+   * the function's rejection.
+   */
+  frameSource?: AsyncIterable<string>;
   /** Injected WebSocket implementation for tests. Defaults to `ws`. */
   webSocketImpl?: typeof WebSocket;
 }
@@ -74,6 +87,7 @@ export async function invokeAgentCoreWs(
 
     const timer = setTimeout(() => {
       finish(() => {
+        stopIterator();
         try {
           ws.terminate();
         } catch {
@@ -88,8 +102,49 @@ export async function invokeAgentCoreWs(
       });
     }, options.timeoutMs);
 
+    let iterator: AsyncIterator<string> | undefined;
+    const stopIterator = (): void => {
+      if (iterator?.return) {
+        try {
+          // Fire-and-forget: a return() that rejects is fine, we are tearing down.
+          void iterator.return();
+        } catch {
+          /* iterator already exhausted */
+        }
+      }
+      iterator = undefined;
+    };
+
     ws.on('open', () => {
       ws.send(body);
+      if (!options.frameSource) return;
+      // Kick off the additional-frames pump in the background. Each yielded
+      // string becomes one text frame; when the iterable is exhausted we close
+      // the WS gracefully so the agent sees a clean close.
+      void (async (): Promise<void> => {
+        try {
+          iterator = options.frameSource![Symbol.asyncIterator]();
+          while (!settled) {
+            const next = await iterator.next();
+            if (settled || next.done) break;
+            // `ws.send` is async via the OS socket buffer; the callback is the
+            // only way to surface a queue write error before the next iteration.
+            await new Promise<void>((res, rej) => {
+              ws.send(next.value, (err) => (err ? rej(err) : res()));
+            });
+          }
+          if (!settled) ws.close();
+        } catch (err) {
+          finish(() => {
+            try {
+              ws.terminate();
+            } catch {
+              /* already closing */
+            }
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+        }
+      })();
     });
     ws.on('message', (data: RawData) => {
       frames += 1;
@@ -103,10 +158,16 @@ export async function invokeAgentCoreWs(
       options.onMessage(buf.toString('utf-8'));
     });
     ws.on('close', () => {
-      finish(() => resolve({ frames }));
+      finish(() => {
+        stopIterator();
+        resolve({ frames });
+      });
     });
     ws.on('error', (err: Error) => {
-      finish(() => reject(err));
+      finish(() => {
+        stopIterator();
+        reject(err);
+      });
     });
   });
 }

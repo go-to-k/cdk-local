@@ -41,6 +41,34 @@ async function startServer(
   return { port, lastHeaders: () => headers };
 }
 
+/**
+ * Variant of {@link startServer} that handles EVERY received frame (not just
+ * the first). Used by the `frameSource` REPL-loop tests where the client sends
+ * multiple frames and the server echoes each.
+ */
+async function startMultiFrameServer(
+  onFrame: (ws: WebSocket, frame: string, index: number) => void
+): Promise<StartedServer> {
+  const wss = new WebSocketServer({ port: 0, path: '/ws' });
+  servers.push(wss);
+  let headers: Record<string, string | string[] | undefined> = {};
+  wss.on('connection', (ws, req) => {
+    headers = req.headers;
+    let index = 0;
+    ws.on('message', (data) => {
+      onFrame(ws, data.toString(), index);
+      index += 1;
+    });
+  });
+  await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
+  const port = (wss.address() as AddressInfo).port;
+  return { port, lastHeaders: () => headers };
+}
+
+async function* fromArray<T>(items: T[]): AsyncIterable<T> {
+  for (const item of items) yield item;
+}
+
 describe('invokeAgentCoreWs', () => {
   it('sends the event as the first frame, streams received frames, and resolves with the frame count', async () => {
     const server = await startServer((ws, firstFrame) => {
@@ -141,5 +169,108 @@ describe('invokeAgentCoreWs', () => {
         onMessage: () => {},
       })
     ).rejects.toThrow(/timed out after 150ms/);
+  });
+
+  describe('frameSource (interactive REPL)', () => {
+    it('sends each yielded string as a follow-up text frame and gracefully closes when the iterable is exhausted', async () => {
+      const received: string[] = [];
+      const server = await startMultiFrameServer((ws, frame) => {
+        received.push(frame);
+        ws.send(`ack:${frame}`);
+      });
+
+      const fromClient: string[] = [];
+      const result = await invokeAgentCoreWs(
+        '127.0.0.1',
+        server.port,
+        { hello: true },
+        {
+          sessionId: 's',
+          timeoutMs: 5000,
+          onMessage: (t) => fromClient.push(t),
+          frameSource: fromArray(['line-1', 'line-2', 'line-3']),
+        }
+      );
+
+      // Server saw the initial event + 3 follow-up frames.
+      expect(received).toEqual(['{"hello":true}', 'line-1', 'line-2', 'line-3']);
+      // Client received an ack for each.
+      expect(fromClient).toEqual([
+        'ack:{"hello":true}',
+        'ack:line-1',
+        'ack:line-2',
+        'ack:line-3',
+      ]);
+      expect(result.frames).toBe(4);
+    });
+
+    it('stops iterating the frameSource when the server closes first', async () => {
+      // Server sends one ack then closes — the client iterator should be
+      // released via its return() so a real stdin readline tears down.
+      const server = await startMultiFrameServer((ws, frame, index) => {
+        ws.send(`ack:${frame}`);
+        if (index === 0) ws.close();
+      });
+
+      let yielded = 0;
+      let returnedEarly = false;
+      const iterable: AsyncIterable<string> = {
+        async *[Symbol.asyncIterator](): AsyncIterator<string> {
+          try {
+            while (true) {
+              yielded += 1;
+              yield `frame-${yielded}`;
+              // Slow the iteration so the server's close lands before we
+              // produce the next frame.
+              await new Promise((r) => setTimeout(r, 50));
+            }
+          } finally {
+            returnedEarly = true;
+          }
+        },
+      };
+
+      const result = await invokeAgentCoreWs(
+        '127.0.0.1',
+        server.port,
+        { hi: true },
+        {
+          sessionId: 's',
+          timeoutMs: 5000,
+          onMessage: () => {},
+          frameSource: iterable,
+        }
+      );
+
+      expect(result.frames).toBeGreaterThan(0);
+      // The async generator is suspended in `await setTimeout(50)` when the
+      // server closes; iterator.return() unblocks it on the next tick, which
+      // runs the `finally`. Wait briefly past the pending setTimeout.
+      await new Promise((r) => setTimeout(r, 100));
+      // The iterator's finally ran — it was torn down on server close.
+      expect(returnedEarly).toBe(true);
+    });
+
+    it('propagates an error thrown by the frameSource as the function rejection', async () => {
+      const server = await startMultiFrameServer((ws, frame) => {
+        ws.send(`ack:${frame}`);
+      });
+
+      const iterable: AsyncIterable<string> = {
+        async *[Symbol.asyncIterator](): AsyncIterator<string> {
+          yield 'first';
+          throw new Error('boom from frame source');
+        },
+      };
+
+      await expect(
+        invokeAgentCoreWs('127.0.0.1', server.port, {}, {
+          sessionId: 's',
+          timeoutMs: 5000,
+          onMessage: () => {},
+          frameSource: iterable,
+        })
+      ).rejects.toThrow(/boom from frame source/);
+    });
   });
 });
