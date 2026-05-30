@@ -64,13 +64,15 @@ npx cdk synth
 ### 2. Invoke the handler
 
 ```bash
-cdkl invoke HelloCdklStack/HelloHandler
+cdkl invoke
 ```
 
-cdk-local will:
+Omit the target and cdk-local opens an arrow-key picker listing every
+invokable target in your CDK app — `↑/↓` to move, `Enter` to select.
+Pick `HelloHandler` and cdk-local will:
 
 1. Read `cdk.json` and re-synth your app on demand.
-2. Resolve the `HelloCdklStack/HelloHandler` target (CDK display path — same format `cdk` itself uses).
+2. Resolve the picked target (CDK display path — same format `cdk` itself uses).
 3. Pull the `public.ecr.aws/lambda/nodejs:20` base image on first run (cached afterwards).
 4. Start a one-shot container with your function code mounted in.
 5. Send an empty event to RIE and print the response:
@@ -79,14 +81,22 @@ cdk-local will:
 {"statusCode":200,"body":"{\"greeting\":\"hello, cdkl!\",\"event\":{}}"}
 ```
 
+Or, if you'd rather name the target explicitly (handy in scripts / CI):
+
+```bash
+cdkl invoke HelloCdklStack/HelloHandler
+```
+
 ### 3. Send a real event
 
 ```bash
 echo '{"name":"world"}' > event.json
-cdkl invoke HelloCdklStack/HelloHandler --event event.json
+cdkl invoke --event event.json
 ```
 
-The event payload lands in `event` inside your handler.
+The picker opens again; pick `HelloHandler` and the payload lands in
+`event` inside your handler. Same explicit form works:
+`cdkl invoke HelloCdklStack/HelloHandler --event event.json`.
 
 ## Next steps
 
@@ -102,7 +112,17 @@ The event payload lands in `event` inside your handler.
 - **"target not found"** — the CDK display path (`Stack/Construct`) is case-sensitive and must match exactly what `cdk synth` emits. `cdkl <subcommand> --help` lists the accepted forms.
 - More patterns in [docs/troubleshooting.md](./troubleshooting.md) when it ships.
 
-## How cdk-local positions vs other tools
+## How cdk-local fits next to other tools
 
-- **vs `sam local`** — cdk-local is CDK-native (reads `cdk.json`, not SAM templates), covers more surfaces (REST v1 + HTTP v2 + Function URL + WebSocket + ECS run-task + ECS service vs SAM's Lambda + REST v1 only), and works against your CDK construct paths instead of CloudFormation logical IDs.
-- **vs LocalStack / aws-cdk-local** — cdk-local does NOT emulate AWS managed services. It runs your **application compute** locally and lets your Lambda code talk to real DynamoDB / S3 / Secrets Manager / Cognito / etc. via your IAM credentials. The two are complementary: pair cdk-local with LocalStack if you want offline emulation of managed services as well.
+- **vs `sam local`** — cdk-local is CDK-native (reads `cdk.json`, not
+  SAM templates), covers more surfaces (REST v1 + HTTP v2 + Function
+  URL + WebSocket + ECS run-task + ECS service + ECS ALB + Bedrock
+  AgentCore vs SAM's Lambda + REST v1 only), and works against your
+  CDK construct paths instead of CloudFormation logical IDs.
+- **Pair with a managed-service emulator if you need one** — cdk-local
+  does NOT emulate AWS managed services. It runs your **application
+  compute** locally and lets your Lambda code talk to real DynamoDB /
+  S3 / Secrets Manager / Cognito / etc. via your IAM credentials. If
+  you need offline emulation of those managed services too, pair
+  cdk-local with a service emulator like LocalStack — the two are
+  complementary, not competing.
