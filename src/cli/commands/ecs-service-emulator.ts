@@ -841,13 +841,17 @@ export async function buildFrontDoor(
       })
     : undefined;
 
-  // Shared JWKS cache + auth-check factory. The cache is created lazily on
-  // the first authenticate-* guard so a plan with no auth never pays for it.
+  // Shared JWKS cache + warn-once Set, both at buildFrontDoor scope so two
+  // rules pointing at the same Cognito JWKS URL de-dupe the "JWKS
+  // unreachable -> pass-through" warn line instead of each warning
+  // independently.
   const jwksCache = createJwksCache();
+  const sharedWarned = new Set<string>();
   const authForGuard = (guard: FrontDoorAuthGuard): ReturnType<typeof buildAuthCheck> =>
     buildAuthCheck(guard, jwksCache, {
       ...(options.verifyAuth === false && { noVerifyAuth: true }),
       ...(options.bearerToken !== undefined && { bearerToken: options.bearerToken }),
+      warned: sharedWarned,
     });
   const attachAuth = (action: RouteAction, guard: FrontDoorAuthGuard | undefined): RouteAction =>
     guard ? { ...action, auth: authForGuard(guard) } : action;

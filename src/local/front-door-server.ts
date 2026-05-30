@@ -329,12 +329,13 @@ function handleProxyRequest(
     // The gate runs BEFORE redirect / fixed-response so a deny-by-default
     // listener stays locked even for synthesized responses.
     if (action.auth) {
-      return action.auth
+      const auth = action.auth;
+      return auth
         .check(req.headers)
         .then((result) => {
           if (!result.allow) {
             req.resume();
-            writeUnauthorized(res, action.auth!.realm, result.reason);
+            writeUnauthorized(res, auth.realm, result.reason);
             return;
           }
           return serveAction(req, res, action, opts);
@@ -344,7 +345,7 @@ function handleProxyRequest(
             .child('front-door')
             .debug(`auth gate error: ${err instanceof Error ? err.message : String(err)}`);
           req.resume();
-          writeUnauthorized(res, action.auth!.realm, 'auth check failed');
+          writeUnauthorized(res, auth.realm, 'auth check failed');
         });
     }
     return serveAction(req, res, action, opts);

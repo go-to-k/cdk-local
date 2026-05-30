@@ -687,6 +687,104 @@ describe('buildFrontDoor', () => {
       await Promise.all(servers.map((s) => s.close()));
     }
   });
+
+  describe('authenticate-* gate threading (verifyAuth / bearerToken options)', () => {
+    /**
+     * Build a 1-listener plan with a fixed-response default action wrapped
+     * by an authGuard. The terminal action is fixed-response so the test
+     * does not need a real Lambda / ECS pool — the auth gate either denies
+     * before the action runs (401) or allows and the fixed-response 200
+     * surfaces. Locks the CLI options -> buildAuthCheck threading per
+     * `feedback_site_level_binding_test`.
+     */
+    const guard = {
+      kind: 'authenticate-cognito' as const,
+      issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc',
+      audience: 'client-abc',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_abc',
+      sessionCookieName: 'AWSELBAuthSessionCookie',
+      label: 'authenticate-cognito (UserPool=us-east-1_abc)',
+    };
+
+    function authenticatedPlan(): Parameters<typeof buildFrontDoor>[0] {
+      return {
+        listeners: [
+          {
+            listenerPort: 80,
+            hostPort: 0,
+            protocol: 'HTTP',
+            defaultAction: { kind: 'fixed-response', statusCode: 200, messageBody: 'allowed' },
+            defaultAuthGuard: guard,
+            rules: [],
+          },
+        ],
+      };
+    }
+
+    async function fetchOnce(port: number): Promise<{ status: number; body: string }> {
+      const { request } = await import('node:http');
+      return new Promise((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port, path: '/', method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    it('threads --no-verify-auth (verifyAuth: false) through to buildAuthCheck so unauthenticated requests pass', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        authenticatedPlan(),
+        { containerHost: '127.0.0.1', pull: true, verifyAuth: false } as never,
+        logger
+      );
+      try {
+        const result = await fetchOnce(servers[0]!.port);
+        expect(result.status).toBe(200);
+        expect(result.body).toBe('allowed');
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('threads --bearer-token through so an inbound request with no Authorization is allowed', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      // A guard whose audience matches the verifier's pass-through accept;
+      // since the JWKS fetch fails in unit tests the verifier returns allow
+      // for any presented bearer. The injection path is what we're locking.
+      const { servers } = await buildFrontDoor(
+        authenticatedPlan(),
+        { containerHost: '127.0.0.1', pull: true, bearerToken: 'injected-jwt' } as never,
+        logger
+      );
+      try {
+        const result = await fetchOnce(servers[0]!.port);
+        expect(result.status).toBe(200);
+        expect(result.body).toBe('allowed');
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('denies an unauthenticated request when no flag is set (default verifyAuth)', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        authenticatedPlan(),
+        { containerHost: '127.0.0.1', pull: true } as never,
+        logger
+      );
+      try {
+        const result = await fetchOnce(servers[0]!.port);
+        expect(result.status).toBe(401);
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+  });
 });
 
 describe('parseLbPortOverrides', () => {

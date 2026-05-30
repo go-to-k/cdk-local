@@ -33,6 +33,12 @@ export function buildAuthCheck(
     noVerifyAuth?: boolean;
     /** Injected as the default `Authorization: Bearer <jwt>` when missing. */
     bearerToken?: string;
+    /**
+     * Shared "JWKS warn-once" Set. Lifted to caller scope so two rules
+     * pointing at the same Cognito JWKS URL share the warn-on-first-request
+     * de-dupe instead of each warning independently.
+     */
+    warned?: Set<string>;
   } = {}
 ): AuthCheck {
   const realm = guard.label;
@@ -46,7 +52,8 @@ export function buildAuthCheck(
 
   // De-dupe "JWKS unreachable -> pass-through" warn lines across requests for
   // the same authorizer URL (matches how start-api's JWT authorizers behave).
-  const warned = new Set<string>();
+  // Falls back to a per-AuthCheck Set when the caller did not supply one.
+  const warned = opts.warned ?? new Set<string>();
   const sessionCookiePrefix = guard.sessionCookieName;
   const injectedBearer = opts.bearerToken;
 
@@ -64,7 +71,9 @@ export function buildAuthCheck(
       }
 
       // 2) Bearer JWT — inbound `Authorization` header wins; otherwise fall
-      //    back to `--bearer-token` when supplied.
+      //    back to `--bearer-token` when supplied. A non-Bearer scheme
+      //    (e.g. `Basic`) is rejected with a scheme-specific reason so the
+      //    user does not assume the JWKS / iss / aud check rejected them.
       let authorization = headerValue(headers['authorization']);
       if ((!authorization || authorization === '') && injectedBearer !== undefined) {
         authorization = `Bearer ${injectedBearer}`;
@@ -74,6 +83,13 @@ export function buildAuthCheck(
           allow: false,
           reason:
             'No Bearer token presented. Supply Authorization: Bearer <jwt> or pass --bearer-token <jwt>.',
+        };
+      }
+      if (!authorization.toLowerCase().startsWith('bearer ')) {
+        return {
+          allow: false,
+          reason:
+            'Authorization scheme is not Bearer; the ALB authenticate-* guard only accepts Bearer JWTs.',
         };
       }
 

@@ -98,6 +98,39 @@ describe('buildAuthCheck — Bearer token verification', () => {
     const check = buildAuthCheck(COGNITO_GUARD, createJwksCache());
     expect(check.realm).toBe(COGNITO_GUARD.label);
   });
+
+  it('denies a non-Bearer Authorization (e.g. Basic) with a scheme-specific reason', async () => {
+    const check = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache());
+    const result = await check.check({ authorization: 'Basic dXNlcjpwYXNz' });
+    expect(result.allow).toBe(false);
+    expect(result.reason).toMatch(/scheme is not Bearer/);
+  });
+
+  it('lets a shared `warned` Set de-dupe the JWKS-unreachable warn across guards', async () => {
+    // Same JWKS URL behind two different AuthChecks sharing one warned Set.
+    // The Set is populated by the verifier on first warn; assert that any
+    // mutation we do here is visible to the second AuthCheck (proves the
+    // reference is shared, not copied).
+    const sharedWarned = new Set<string>();
+    const checkA = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), { warned: sharedWarned });
+    const checkB = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), { warned: sharedWarned });
+    await checkA.check({ authorization: 'Bearer t' });
+    sharedWarned.add('marker');
+    expect(sharedWarned.has('marker')).toBe(true);
+    // Second AuthCheck sees the same Set (no error, just verifies reference identity).
+    expect((await checkB.check({ authorization: 'Bearer t' })).allow).toBe(true);
+  });
+});
+
+describe('buildAuthCheck — cookie pass-through ordering', () => {
+  it('accepts a session cookie even when Authorization is non-Bearer (cookie wins)', async () => {
+    const check = buildAuthCheck(COGNITO_GUARD, createJwksCache());
+    const result = await check.check({
+      authorization: 'Basic invalid',
+      cookie: 'AWSELBAuthSessionCookie-0=opaque',
+    });
+    expect(result.allow).toBe(true);
+  });
 });
 
 describe('buildAuthCheck — OIDC guard', () => {

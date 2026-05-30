@@ -1235,6 +1235,35 @@ describe('resolveAlbFrontDoor — authenticate-* guards', () => {
     expect(warnings.join('\n')).toMatch(/not in the expected/);
   });
 
+  it('warns + skips OIDC guard when Issuer is an intrinsic (Ref / GetAtt)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-oidc',
+              AuthenticateOidcConfig: {
+                Issuer: { Ref: 'MyIssuer' }, // intrinsic, not a literal
+                AuthorizationEndpoint: 'https://idp.example.com/authorize',
+                TokenEndpoint: 'https://idp.example.com/token',
+                ClientId: 'oidc-client-xyz',
+              },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/Issuer .*literal strings/);
+  });
+
   it('warns + skips listener when authenticate-* has no terminal action', () => {
     const stack = stackWith({
       [LISTENER]: {
