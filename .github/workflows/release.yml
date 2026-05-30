@@ -5,6 +5,15 @@ on:
     branches:
       - main
 
+# Serialize Release workflow runs so a back-to-back merge (#204 + #205
+# landed within ~30s and the earlier run's `git push --tags HEAD:main`
+# raced the later commit's fast-forward, exiting 1 with `! [rejected]
+# (fetch first)`). Queue the runs instead — `cancel-in-progress: false`
+# preserves every release, just runs them one at a time.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
   contents: write
   issues: write
