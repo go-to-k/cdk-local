@@ -22,7 +22,7 @@ cdkl invoke                   # pick a Lambda from the list, then run it locally
 
 `cdkl` synths your CDK app and runs the selected resource locally in Docker. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
-**Add `--from-cfn-stack`** to bind to a deployed stack — your local handler then reads and writes the same real data the deployed app does ([how it works](#why-cdk-local)).
+**Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real DynamoDB / S3 / Secrets the deployed app uses (see [Why cdk-local](#why-cdk-local) below).
 
 ```bash
 cdkl start-api --from-cfn-stack            # a local API on real AWS data + real Cognito JWT
