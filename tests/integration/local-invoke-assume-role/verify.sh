@@ -19,13 +19,12 @@
 #         assumed-role identity leaks in.
 #   2. Explicit: `cdkl invoke --from-cfn-stack <stack> --assume-role <arn>`
 #      -> Lambda sees `arn:aws:sts::<account>:assumed-role/<RoleName>/<...>`.
-#
-# The bare form (`--assume-role` with no value) is NOT covered here. With
-# the current CFn state provider it auto-resolves to `undefined` for any
-# Lambda whose execution role is a sibling resource in the same stack —
-# `attributes.Arn` is never populated from `ListStackResources` (which
-# returns PhysicalResourceId, the role NAME, not the ARN). Tracked as
-# issue #181 so this fixture covers what does work today.
+#   3. Bare:     `cdkl invoke --from-cfn-stack <stack> --assume-role`
+#      -> cdkl auto-resolves the exec-role ARN. The static state lookup
+#         misses on a sibling-stack role (`ListStackResources` returns the
+#         role's name, not its ARN), so the live fallback via
+#         `lambda:GetFunctionConfiguration.Role` covers this case (#181 /
+#         #185). Same assumed-role marker as test 2.
 #
 # Run via `/run-integ local-invoke-assume-role` (recommended) or directly:
 #
@@ -172,7 +171,19 @@ echo "${RESULT_EXPLICIT}" | grep -q "${ASSUMED_RE}" || {
 }
 echo "[verify]   ok: explicit --assume-role <arn> assumed the role; Lambda saw assumed-role identity"
 
-echo "[verify] step 7: cdk destroy --force"
+echo "[verify] step 7: bare --assume-role — auto-resolve from CFn state + GetFunctionConfiguration fallback (#185)"
+echo "[verify]   expect the same assumed-role/${ROLE_NAME} marker, but via auto-resolution"
+RESULT_BARE=$(invoke_capture "${STACK}/EchoIdentityHandler" --from-cfn-stack --assume-role)
+echo "[verify]   response: ${RESULT_BARE}"
+echo "${RESULT_BARE}" | grep -q "${ASSUMED_RE}" || {
+  echo "[verify] FAIL: expected assumed-role pattern ${ASSUMED_RE}* under bare --assume-role (auto-resolve fallback), got: ${RESULT_BARE}"
+  echo "[verify]   stderr re-run (look for 'auto-resolved execution role from GetFunctionConfiguration' info line):"
+  ${CLI} invoke "${STACK}/EchoIdentityHandler" --from-cfn-stack --assume-role --no-pull 2>&1 | tail -15
+  exit 1
+}
+echo "[verify]   ok: bare --assume-role auto-resolved via GetFunctionConfiguration; Lambda saw assumed-role identity"
+
+echo "[verify] step 8: cdk destroy --force"
 cdk destroy "${STACK}" --force --region "${REGION}" \
   --no-version-reporting --no-asset-metadata --no-path-metadata
 WE_CREATED_STACK=0
@@ -181,3 +192,4 @@ echo ""
 echo "[verify] All checks passed:"
 echo "[verify]   - baseline (no --assume-role): container has no AWS creds (cdkl does not auto-inject the shell credentials); STS fails with CredentialsProviderError."
 echo "[verify]   - explicit --assume-role <arn>: Lambda sees arn:aws:sts::<acct>:assumed-role/<RoleName>/<session>."
+echo "[verify]   - bare --assume-role (auto-resolve): same marker; the GetFunctionConfiguration.Role live fallback (#185) covers the sibling-stack-role case the static state lookup misses."
