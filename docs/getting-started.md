@@ -1,6 +1,6 @@
 # Getting Started with cdk-local
 
-A 5-minute walkthrough: install cdk-local, point it at a sample CDK app, and run a Lambda function locally with no AWS account.
+A 5-minute walkthrough: install cdk-local, point it at a sample CDK app, and run a Lambda function locally — standalone, no deploy.
 
 If you already use cdk-local and want the full surface, jump to [docs/cli-reference.md](./cli-reference.md). If something breaks, [docs/troubleshooting.md](./troubleshooting.md).
 
