@@ -1,0 +1,19 @@
+{
+  "name": "cdkl-integ-local-invoke-agentcore-froms3-from-cfn",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkl invoke-agentcore fromS3 + --from-cfn-stack (intrinsic bucket resolution)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.257.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

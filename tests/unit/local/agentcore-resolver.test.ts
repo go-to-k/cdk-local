@@ -216,6 +216,73 @@ describe('resolveAgentCoreTarget — CodeConfiguration (managed runtime)', () =>
     });
   });
 
+  it('captures bucketIntrinsic for a Ref bucket (same-stack), leaving bucket unset', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: { Ref: 'MyBucketABCD' }, Prefix: 'agent.zip' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source).toEqual({
+      bucketIntrinsic: { Ref: 'MyBucketABCD' },
+      key: 'agent.zip',
+    });
+    expect(resolved.codeArtifact?.s3Source?.bucket).toBeUndefined();
+  });
+
+  it('captures bucketIntrinsic for a Fn::ImportValue bucket', () => {
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: { 'Fn::ImportValue': 'SharedBundleBucket' }, Prefix: 'agent.zip' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source).toEqual({
+      bucketIntrinsic: { 'Fn::ImportValue': 'SharedBundleBucket' },
+      key: 'agent.zip',
+    });
+  });
+
+  it('captures bucketIntrinsic for a Fn::GetStackOutput bucket', () => {
+    const intrinsic = {
+      'Fn::GetStackOutput': { StackName: 'SharedStack', OutputName: 'BundleBucketName' },
+    };
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: { S3: { Bucket: intrinsic, Prefix: 'agent.zip' } },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source?.bucketIntrinsic).toEqual(intrinsic);
+  });
+
+  it('does NOT mark Fn::Sub as a fromS3 bucketIntrinsic (preserves fromCodeAsset routing)', () => {
+    // fromCodeAsset's staging bucket renders as `{Fn::Sub: "cdk-hnb659fds-..."}`.
+    // Routing it down the fromS3 path would try to S3-download a CDK staging
+    // asset that should be read from cdk.out — the explicit intrinsic whitelist
+    // prevents that misroute.
+    const stack = buildStack('App', {
+      ChatAgent: codeRuntime({
+        Code: {
+          S3: {
+            Bucket: { 'Fn::Sub': 'cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}' },
+            Prefix: 'abc123def456.zip',
+          },
+        },
+        EntryPoint: ['app.py'],
+        Runtime: 'PYTHON_3_12',
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.codeArtifact?.s3Source).toBeUndefined();
+  });
+
   it('strips a key prefix from Code.S3.Prefix when deriving the hash', () => {
     const stack = buildStack('App', {
       ChatAgent: codeRuntime({

@@ -43,7 +43,9 @@ AWS managed services.
   (`fromCodeAsset` AND `fromS3` — Python 3.10-3.14 / Node 22, built from source:
   a generated Dockerfile installs the bundle's deps and runs the EntryPoint,
   which self-serves the contract; a `fromS3` bundle's ZIP is downloaded from S3
-  and extracted first) on the HTTP and MCP protocols. HTTP runs the
+  and extracted first — `Code.S3.Bucket` may be a literal or, under
+  `--from-cfn-stack`, a `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput`
+  intrinsic resolved against state) on the HTTP and MCP protocols. HTTP runs the
   `POST /invocations` + `GET /ping` contract on 8080: an inbound
   `customJwtAuthorizer` is enforced locally (`--bearer-token` verified against
   the runtime's OIDC discovery URL before the container starts and forwarded to

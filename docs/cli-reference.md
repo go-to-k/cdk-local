@@ -464,9 +464,12 @@ Both bundle shapes are supported:
   uses the resolved region (`--stack-region` / `--region` / env / the stack's
   region) and credentials (`--assume-role` STS temp creds when set, else
   `--profile` / the default chain). The S3 read needs credentials that can
-  `s3:GetObject` the bundle object. Only a literal `Code.S3.Bucket` is resolved
-  locally; a bucket that is an unresolved intrinsic (a `Ref` to a stack bucket)
-  is a follow-up.
+  `s3:GetObject` the bundle object. `Code.S3.Bucket` may be either a literal
+  bucket name OR an intrinsic resolved against `--from-cfn-stack` state — the
+  same set of intrinsics env-var substitution supports: `Ref` (same-stack
+  bucket), `Fn::ImportValue` (CloudFormation export), `Fn::GetStackOutput`
+  (cdk-local cross-stack output). Without `--from-cfn-stack`, an intrinsic
+  bucket fails fast with an actionable error.
 
 `--no-build` reuses the previously-built image tag.
 
