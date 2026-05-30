@@ -259,6 +259,41 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   }
 
   /**
+   * Read a deployed Lambda function's execution-role ARN via
+   * `lambda:GetFunctionConfiguration`'s `Configuration.Role` field.
+   * See {@link LocalStateProvider.resolveLambdaExecutionRoleArn}.
+   *
+   * Best-effort: on any expected miss (function not found, access
+   * denied, throttling) logs a warn and returns `undefined` so the
+   * caller falls through to the existing "Pass the ARN explicitly:
+   * --assume-role <arn>" path. Never throws.
+   */
+  public async resolveLambdaExecutionRoleArn(
+    functionPhysicalId: string
+  ): Promise<string | undefined> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    const logger = getLogger();
+    const client = this.getLambdaClient();
+    try {
+      const resp = await client.send(
+        new GetFunctionConfigurationCommand({ FunctionName: functionPhysicalId })
+      );
+      if (typeof resp.Role === 'string' && resp.Role.startsWith('arn:')) {
+        return resp.Role;
+      }
+      return undefined;
+    } catch (err) {
+      logger.warn(
+        `${this.label}: GetFunctionConfiguration(${functionPhysicalId}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err)}. ` +
+          `Pass the ARN explicitly: --assume-role <arn>.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
    * Load the deployed CFn stack's resources + outputs and return them
    * as a synthetic `LocalStateRecord` (matching the shape the existing
    * S3-state-driven path produces). `synthRegion` is accepted for

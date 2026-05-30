@@ -150,6 +150,32 @@ export interface LocalStateProvider {
     functionPhysicalId: string
   ): Promise<Record<string, string> | undefined>;
   /**
+   * Optional: resolve a deployed Lambda function's execution-role ARN
+   * via `lambda:GetFunctionConfiguration`'s `Configuration.Role`.
+   *
+   * Closes the bare `--assume-role` auto-resolve gap (issue #181) for
+   * the common case where the Lambda's execution role is a sibling
+   * resource in the same stack. `ListStackResources` returns the role's
+   * NAME (PhysicalResourceId), not the ARN, so the static state lookup
+   * in {@link resolveExecutionRoleArnFromState} (which reads
+   * `attributes.Arn`) returns `undefined`. The function's own
+   * deploy-time-resolved configuration is the lowest-cost way to
+   * recover the ARN — same shape as
+   * {@link LocalStateProvider.resolveDeployedFunctionEnv}, one extra
+   * `lambda:GetFunctionConfiguration` call.
+   *
+   * `functionPhysicalId` is the deployed function name / ARN (the
+   * `Ref` value `ListStackResources` returns for `AWS::Lambda::Function`).
+   * Returns `undefined` on any expected miss (no such function, access
+   * denied, throttling) so the caller falls back to the existing
+   * "Pass the ARN explicitly: --assume-role <arn>" warning.
+   *
+   * Implemented only by the CFn provider (`--from-cfn-stack`) — the S3
+   * provider's state already carries deploy-time attributes, so its
+   * `attributes.Arn` resolves statically and no fallback is needed.
+   */
+  resolveLambdaExecutionRoleArn?(functionPhysicalId: string): Promise<string | undefined>;
+  /**
    * Optional: resolve a synthesized stack template's SSM-backed
    * `Parameters` (`AWS::SSM::Parameter::Value<String>` /
    * `AWS::SSM::Parameter::Value<List<String>>`, what CDK synthesizes for
