@@ -1,3 +1,10 @@
+# [0.60.0](https://github.com/go-to-k/cdk-local/compare/v0.59.0...v0.60.0) (2026-05-30)
+
+
+### Features
+
+* **start-alb:** proxy WebSocket Upgrade to ECS forward targets ([#176](https://github.com/go-to-k/cdk-local/issues/176)) ([f591110](https://github.com/go-to-k/cdk-local/commit/f591110f26a902832f896681ef7cbf1425e03ba7))
+
 # [0.59.0](https://github.com/go-to-k/cdk-local/compare/v0.58.0...v0.59.0) (2026-05-30)
 
 
