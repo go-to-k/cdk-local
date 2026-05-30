@@ -1,3 +1,10 @@
+# [0.64.0](https://github.com/go-to-k/cdk-local/compare/v0.63.0...v0.64.0) (2026-05-30)
+
+
+### Features
+
+* **start-alb:** serve cloud-HTTPS listeners over plain HTTP by default; gate real TLS behind `--tls` ([#203](https://github.com/go-to-k/cdk-local/issues/203)) ([c9f0ff4](https://github.com/go-to-k/cdk-local/commit/c9f0ff4fb2edbae8e85294b37185a0abcbd4c744))
+
 # [0.63.0](https://github.com/go-to-k/cdk-local/compare/v0.62.1...v0.63.0) (2026-05-30)
 
 
