@@ -14,6 +14,9 @@ importers:
       '@aws-cdk/toolkit-lib':
         specifier: ^1.26.0
         version: 1.26.2(@aws-cdk/cli-plugin-contract@2.182.2)
+      '@aws-crypto/sha256-js':
+        specifier: ^5.2.0
+        version: 5.2.0
       '@aws-sdk/client-cloudformation':
         specifier: ^3.1017.0
         version: 3.1053.0
@@ -56,6 +59,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.4.0
         version: 1.4.0
+      '@smithy/signature-v4':
+        specifier: ^5.4.4
+        version: 5.4.4
       aws-cdk-lib:
         specifier: ^2.0.0
         version: 2.257.0(constructs@10.6.0)
@@ -203,7 +209,7 @@ packages:
     resolution: {integrity: sha512-AXfN/lGotSQwu6HNcEsIASo7kWXZ5HYWvfOmSNKDsEqC4OashTp8alTmaz+F7TC2L083SFv5RdB+qU3Vs1kZqw==, tarball: https://registry.npmjs.org/@aws-crypto/sha256-browser/-/sha256-browser-5.2.0.tgz}
 
   '@aws-crypto/sha256-js@5.2.0':
-    resolution: {integrity: sha512-FFQQyu7edu4ufvIZ+OadFpHHOt+eSTBaYaki44c+akjg7qZg9oOQeLlk77F6tSYqjDAFClrHJk9tMf0HdVyOvA==, tarball: https://registry.npmjs.org/@aws-crypto/sha256-js/-/sha256-js-5.2.0.tgz}
+    resolution: {integrity: sha512-FFQQyu7edu4ufvIZ+OadFpHHOt+eSTBaYaki44c+akjg7qZg9oOQeLlk77F6tSYqjDAFClrHJk9tMf0HdVyOvA==}
     engines: {node: '>=16.0.0'}
 
   '@aws-crypto/supports-web-crypto@5.2.0':
@@ -1092,7 +1098,7 @@ packages:
     engines: {node: '>=18.0.0'}
 
   '@smithy/signature-v4@5.4.4':
-    resolution: {integrity: sha512-e5UtkMvsatzBfbeBZjEOt0k0Z3BEsjTFL/n6fdO5vtBLe67tdy0dX7xw2DU7uZ3acwoHyeCqpU2Fzb7pxwHb6Q==, tarball: https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.4.4.tgz}
+    resolution: {integrity: sha512-e5UtkMvsatzBfbeBZjEOt0k0Z3BEsjTFL/n6fdO5vtBLe67tdy0dX7xw2DU7uZ3acwoHyeCqpU2Fzb7pxwHb6Q==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/types@4.14.2':

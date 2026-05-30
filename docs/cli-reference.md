@@ -491,6 +491,7 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--ws` | off | Stream over the HTTP-protocol agent's bidirectional `/ws` WebSocket endpoint (on 8080) instead of `POST /invocations`: send `--event` as the first frame and print every received frame to stdout until the agent closes. See [WebSocket transport](#websocket-transport---ws) below. Ignored for an MCP runtime. |
 | `--bearer-token <jwt>` | — | Bearer JWT to present when the runtime declares a `customJwtAuthorizer`. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` (or the `/ws` upgrade) as `Authorization: Bearer <jwt>`. |
 | `--no-verify-auth` | off (verify on) | Skip inbound JWT verification even when the runtime declares a `customJwtAuthorizer` (local-dev escape hatch). A `--bearer-token`, if given, is still forwarded. |
+| `--sigv4` | off | Sign the `/invocations` POST with AWS SigV4 (service `bedrock-agentcore`) using the resolved credentials — the same `Authorization: AWS4-HMAC-SHA256 ...` + `X-Amz-*` headers the cloud receives when the runtime declares no `customJwtAuthorizer`. Opt-in: default unsigned. Mutually exclusive with `--bearer-token`; ignored on a JWT-protected runtime. See [Inbound SigV4 (`--sigv4`)](#inbound-sigv4---sigv4) below. |
 | `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container (AgentCore requires ARM64; override to `linux/amd64` if needed). |
 | `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
 | `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
@@ -547,6 +548,43 @@ before the container starts:
   the pass-through path — every Bearer token is accepted.
 - **`--no-verify-auth`** → skips verification entirely; a `--bearer-token`,
   if given, is still forwarded.
+
+### Inbound SigV4 (`--sigv4`)
+
+In the cloud, an AgentCore Runtime that declares no `customJwtAuthorizer`
+authenticates inbound `/invocations` requests via AWS IAM (SigV4) — the
+caller signs the request and AgentCore verifies the signature against the
+caller's IAM credentials. Locally the agent container has no AWS
+public-key infrastructure to validate signatures against; passing
+`--sigv4` opts into HEADER PARITY with the cloud so an agent that
+introspects the inbound `Authorization` header (e.g. through the
+`bedrock-agentcore` SDK's request context) sees the same shape it would in
+production.
+
+`--sigv4` signs the `POST /invocations` request with the resolved
+credentials and forwards the full signed header set to the agent:
+
+- `Authorization: AWS4-HMAC-SHA256 Credential=<accessKeyId>/<date>/<region>/bedrock-agentcore/aws4_request, SignedHeaders=..., Signature=...`
+- `X-Amz-Date: <ISO-8601 basic>`
+- `X-Amz-Content-Sha256: <body sha256 hex>`
+- `X-Amz-Security-Token: <token>` (only when the credentials are STS-issued)
+
+Credentials precedence (same chain as the rest of the command):
+
+1. `--assume-role <arn>` → STS temp creds (warn + fall through on STS failure);
+2. `--profile <name>` → profile creds (with `aws_session_token` when present);
+3. shell env `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ optional
+   `AWS_SESSION_TOKEN`).
+
+With none of the above set, `--sigv4` fails fast with an actionable error.
+Region resolution: `--region` / `--stack-region` / `AWS_REGION` /
+`AWS_DEFAULT_REGION` / the stack's region.
+
+`--sigv4` is mutually exclusive with `--bearer-token` (one inbound auth
+per request) and is ignored on a runtime that declares a
+`customJwtAuthorizer` (the JWT path takes precedence — `--sigv4` warns and
+falls back to the JWT flow). The MCP and `/ws` paths are unaffected by
+this flag.
 
 ### Streaming responses
 

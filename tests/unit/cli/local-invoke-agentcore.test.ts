@@ -113,6 +113,7 @@ const {
   resolveInboundAuthorization,
   resolveAssumeRoleArn,
   resolveFromS3BucketIntrinsic,
+  buildSigV4HeadersIfRequested,
 } = await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -877,5 +878,175 @@ describe('resolveFromS3BucketIntrinsic — fromS3 Code.S3.Bucket intrinsic resol
     await expect(
       resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined)
     ).rejects.toThrow(/Could not resolve/);
+  });
+});
+
+describe('buildSigV4HeadersIfRequested — --sigv4 gate', () => {
+  const ENV_BACKUP = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stsSendMock.mockReset();
+    // Start each test with a clean credential env so we're not at the mercy of
+    // the host's AWS_* env vars.
+    delete process.env['AWS_ACCESS_KEY_ID'];
+    delete process.env['AWS_SECRET_ACCESS_KEY'];
+    delete process.env['AWS_SESSION_TOKEN'];
+    delete process.env['AWS_REGION'];
+    delete process.env['AWS_DEFAULT_REGION'];
+  });
+
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) delete process.env[k];
+    Object.assign(process.env, ENV_BACKUP);
+  });
+
+  function runtime(jwtAuthorizer?: ResolvedAgentCoreRuntime['jwtAuthorizer']): ResolvedAgentCoreRuntime {
+    return {
+      stack: { stackName: 'App', region: 'us-east-1' } as never,
+      logicalId: 'Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      containerUri: 'r:t',
+      environmentVariables: {},
+      protocol: 'HTTP',
+      ...(jwtAuthorizer && { jwtAuthorizer }),
+    };
+  }
+
+  type Opts = Parameters<typeof buildSigV4HeadersIfRequested>[0];
+  const opts = (over: Partial<Opts> = {}): Opts =>
+    ({ sigv4: true, region: 'us-east-1', ...over }) as unknown as Opts;
+
+  it('returns undefined when --sigv4 is not set (default behavior is unsigned)', async () => {
+    const result = await buildSigV4HeadersIfRequested(
+      opts({ sigv4: false }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      's'
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('warns + returns undefined when the runtime declares a customJwtAuthorizer (JWT path wins)', async () => {
+    const result = await buildSigV4HeadersIfRequested(
+      opts(),
+      runtime({ discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration' }),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      's'
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('rejects --sigv4 + --bearer-token together (mutually exclusive)', async () => {
+    await expect(
+      buildSigV4HeadersIfRequested(
+        opts({ bearerToken: 'tok' }),
+        runtime(),
+        undefined,
+        '127.0.0.1',
+        9000,
+        {},
+        's'
+      )
+    ).rejects.toThrow(/mutually exclusive/);
+  });
+
+  it('errors with an actionable hint when no AWS credentials are available', async () => {
+    await expect(
+      buildSigV4HeadersIfRequested(opts(), runtime(), undefined, '127.0.0.1', 9000, {}, 's')
+    ).rejects.toThrow(/no AWS credentials available/);
+  });
+
+  it('signs using shell env credentials when present', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDEXAMPLE';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const headers = await buildSigV4HeadersIfRequested(
+      opts(),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      { prompt: 'hi' },
+      'sess-1'
+    );
+    expect(headers).toBeDefined();
+    expect(headers?.['Authorization']?.startsWith('AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/')).toBe(
+      true
+    );
+    expect(headers?.['Authorization']).toContain('/us-east-1/bedrock-agentcore/aws4_request');
+    expect(headers?.['X-Amz-Date']).toMatch(/^\d{8}T\d{6}Z$/);
+    expect(headers?.['X-Amz-Content-Sha256']).toMatch(/^[0-9a-f]{64}$/);
+    expect(headers?.['X-Amz-Security-Token']).toBeUndefined();
+  });
+
+  it('threads --assume-role STS temp creds (incl. X-Amz-Security-Token) into the signed headers', async () => {
+    stsSendMock.mockResolvedValue({
+      Credentials: { AccessKeyId: 'AK', SecretAccessKey: 'SK', SessionToken: 'ST' },
+    });
+    const headers = await buildSigV4HeadersIfRequested(
+      opts({ assumeRole: 'arn:aws:iam::1:role/Agent' }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      'sess-sts'
+    );
+    expect(headers?.['Authorization']).toContain('Credential=AK/');
+    expect(headers?.['X-Amz-Security-Token']).toBe('ST');
+  });
+
+  it('falls back to env credentials when --assume-role STS assume fails', async () => {
+    stsSendMock.mockRejectedValue(new Error('access denied'));
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDFALLBACK';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const headers = await buildSigV4HeadersIfRequested(
+      opts({ assumeRole: 'arn:aws:iam::1:role/Agent' }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      'sess-fb'
+    );
+    expect(headers?.['Authorization']).toContain('Credential=AKIDFALLBACK/');
+    expect(headers?.['X-Amz-Security-Token']).toBeUndefined();
+  });
+
+  it('errors when no region can be resolved (no --region / env / stack region)', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDREGIONLESS';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const r: ResolvedAgentCoreRuntime = {
+      stack: { stackName: 'App' } as never, // no region on the stack
+      logicalId: 'Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      containerUri: 'r:t',
+      environmentVariables: {},
+      protocol: 'HTTP',
+    };
+    await expect(
+      buildSigV4HeadersIfRequested(opts({ region: undefined }), r, undefined, '127.0.0.1', 9000, {}, 's')
+    ).rejects.toThrow(/no region resolved/);
+  });
+
+  it('prefers --region over --stack-region in the SigV4 credential scope', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDPRIO';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const headers = await buildSigV4HeadersIfRequested(
+      opts({ region: 'ap-northeast-1', stackRegion: 'eu-central-1' }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      'sess'
+    );
+    expect(headers?.['Authorization']).toContain('/ap-northeast-1/bedrock-agentcore/aws4_request');
   });
 });
