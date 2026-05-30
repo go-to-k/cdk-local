@@ -1,0 +1,5 @@
+# Override the parent integ .gitignore so the Lambda handler sources
+# (which must literally be index.js for the Node.js runtime) are
+# tracked.
+!lambda-a/*.js
+!lambda-b/*.js
