@@ -40,7 +40,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## What runs locally
 
-cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack). Want those offline too? Pair cdk-local with a service emulator like LocalStack — it does not bundle one.
+cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack). Want those offline too? Pair cdk-local with a service emulator like [LocalStack](https://www.localstack.cloud/) — it does not bundle one.
 
 The locally executable resources are listed under [Supported resources](#supported-resources).
 
@@ -89,6 +89,11 @@ Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Pytho
 ## Programmatic use
 
 cdk-local also exports its commands as Commander factories so a host project can embed it into its own CLI, register custom state sources alongside the built-in `--from-cfn-stack`, and rebrand the embedded commands. See [docs/library-mode.md](docs/library-mode.md) for the API and an example.
+
+## Get help / contribute
+
+- **Bugs / feature requests**: file an issue at [github.com/go-to-k/cdk-local/issues](https://github.com/go-to-k/cdk-local/issues). The `bug_report` and `feature_request` templates ask for the smallest reliable repro shape.
+- **Contributing code or docs**: see [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev environment setup, build / test commands, and PR checklist.
 
 ## License
 
