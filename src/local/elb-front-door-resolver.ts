@@ -680,7 +680,15 @@ function parseRuleConditions(
     } else if (field === 'http-request-method') {
       out.httpRequestMethods.push(...conditionValues(c, 'HttpRequestMethodConfig'));
     } else if (field === 'query-string') {
-      out.queryStringConditions.push(...parseQueryStringConditionValues(c));
+      const { parsed, hadEntries } = parseQueryStringConditionValues(c);
+      if (hadEntries && parsed.length === 0) {
+        warnings.push(
+          `${ruleLabel} query-string condition has no parseable { Key?, Value } entries; skipping ` +
+            'the rule.'
+        );
+        return undefined;
+      }
+      out.queryStringConditions.push(...parsed);
     } else if (field === 'source-ip') {
       const values = conditionValues(c, 'SourceIpConfig');
       const invalid = values.filter((v) => !isValidCidr(v));
@@ -723,9 +731,15 @@ function parseHttpHeaderCondition(
  * Parse a `query-string` condition's `Values` into `{ key?, value }` pairs.
  * ALB accepts either object entries (`{ Key?, Value }`) or bare strings
  * (legacy v1 shape: a string is treated as `{ value }`). Non-string `Key` /
- * `Value` fields are dropped; an entry with no `Value` is dropped.
+ * `Value` fields are dropped; an entry with no `Value` is dropped. Returns
+ * `hadEntries` so the caller can distinguish an absent / empty `Values` array
+ * (drop the field silently) from one whose entries were all unparseable
+ * (warn + skip the whole rule — silently dropping would widen routing).
  */
-function parseQueryStringConditionValues(cond: Record<string, unknown>): AlbQueryStringCondition[] {
+function parseQueryStringConditionValues(cond: Record<string, unknown>): {
+  parsed: AlbQueryStringCondition[];
+  hadEntries: boolean;
+} {
   const cfg = cond['QueryStringConfig'];
   const rawValues =
     cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
@@ -733,19 +747,19 @@ function parseQueryStringConditionValues(cond: Record<string, unknown>): AlbQuer
       : Array.isArray(cond['Values'])
         ? (cond['Values'] as unknown[])
         : [];
-  const out: AlbQueryStringCondition[] = [];
+  const parsed: AlbQueryStringCondition[] = [];
   for (const v of rawValues) {
     if (typeof v === 'string') {
-      out.push({ value: v });
+      parsed.push({ value: v });
     } else if (v && typeof v === 'object') {
       const e = v as Record<string, unknown>;
       const value = e['Value'];
       if (typeof value !== 'string') continue;
       const key = e['Key'];
-      out.push(typeof key === 'string' ? { key, value } : { value });
+      parsed.push(typeof key === 'string' ? { key, value } : { value });
     }
   }
-  return out;
+  return { parsed, hadEntries: rawValues.length > 0 };
 }
 
 /**

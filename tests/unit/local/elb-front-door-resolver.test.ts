@@ -595,6 +595,30 @@ describe('resolveAlbFrontDoor', () => {
     ]);
   });
 
+  it('skips + warns on a query-string condition whose entries are all malformed', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            {
+              Field: 'query-string',
+              // Non-string `Value` on the only entry -> 0 parseable entries.
+              QueryStringConfig: { Values: [{ Key: 'v', Value: 42 }] },
+            },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/query-string condition has no parseable/);
+  });
+
   it('resolves a source-ip condition (IPv4 + IPv6 CIDRs)', () => {
     const stack = stackWith({
       ...apiServiceResources,
