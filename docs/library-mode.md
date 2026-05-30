@@ -204,3 +204,88 @@ The `invoke` / `start-api` env-var and stage layers, plus the
 These are stable, side-effect-free utilities; they are exposed for
 1:1 re-export and are not a recommended way to build a custom CLI (use
 the factories for that).
+
+## ECS service emulator engine (`start-service` / `start-alb` hosts)
+
+A host CLI that ports `cdkl start-service` and / or `cdkl start-alb`
+verbatim (rather than re-exporting the factory) wraps the shared
+orchestrator directly. The engine boots the ECS replicas, attaches the
+shared docker network + Cloud Map / Service Connect overlay, optionally
+stands up the ALB front-door per listener, and tears everything down on
+SIGINT — every CLI behavior the upstream `cdkl` commands have:
+
+- `runEcsServiceEmulator(targets, options, strategy, extraStateProviders?)`
+  — the entry point both upstream CLI commands wrap. `strategy` decides
+  per-command behavior (target selection, picker prompts, front-door plan
+  resolution); `serviceStrategy` and `albStrategy` are the two strategies
+  the upstream CLI ships.
+- `addCommonEcsServiceOptions(cmd)` — option block shared by both
+  commands (`--cluster`, `--max-tasks`, `--container-host`,
+  `--from-cfn-stack`, etc.). Compose with `addAlbSpecificOptions(cmd)`
+  for an ALB-fronted host CLI; `start-service` hosts only need the
+  common block.
+- `addAlbSpecificOptions(cmd)` — ALB-only option block (`--lb-port`,
+  `--tls`, `--tls-cert`, `--tls-key`, `--no-verify-auth`,
+  `--bearer-token`). Calling this from a host's `start-alb` keeps the
+  option set in sync as upstream cdk-local adds or renames ALB-only
+  flags; no duplicate `.addOption(...)` blocks.
+- `albStrategy(options)` / `resolveAlbTarget(target, stacks)` /
+  `parseLbPortOverrides(values)` — the matching `EmulatorStrategy` plus
+  the target / port-override resolvers a host calls directly when it
+  composes a custom `start-alb` command around `runEcsServiceEmulator`.
+- `parseMaxTasks` / `parseRestartPolicy` — option parsers that pair with
+  `--max-tasks` and `--restart-policy` from the common block.
+- `resolveSharedSidecarCredentials` / `buildEcsImageResolutionContext`
+  — pre-boot helpers for hosts that need to materialize sidecar creds
+  or image-resolution context before delegating to the engine
+  (e.g. test setup).
+- `MAX_TASKS_SUBNET_RANGE_CAP` — the per-network replica cap the engine
+  enforces; surfaced so a host CLI can validate `--max-tasks` against
+  the same ceiling.
+- `EcsServiceEmulatorOptions` / `EmulatorStrategy` / `ServiceBoot` /
+  `FrontDoorPlan` / `PlannedAction` / `PlannedForwardAction` /
+  `PlannedRedirectAction` / `PlannedFixedResponseAction` /
+  `PlannedForwardTarget` / `PlannedEcsForwardTarget` /
+  `PlannedLambdaForwardTarget` / `PlannedFrontDoorListener` — the
+  engine's option + pre-boot-plan types.
+
+Host CLIs that wrap `start-alb` for an ALB-fronted workload typically
+look like:
+
+```ts
+import {
+  addCommonEcsServiceOptions,
+  addAlbSpecificOptions,
+  albStrategy,
+  runEcsServiceEmulator,
+  type EcsServiceEmulatorOptions,
+} from 'cdk-local/internal';
+
+const cmd = new Command('start-alb')
+  .description(...)
+  .argument('[targets...]', ...)
+  // ... host-specific options ...
+  .action(async (targets: string[], options: EcsServiceEmulatorOptions) => {
+    await runEcsServiceEmulator(targets, options, albStrategy(options));
+  });
+addAlbSpecificOptions(cmd);
+addCommonEcsServiceOptions(cmd);
+```
+
+`addAlbSpecificOptions` after host-specific options keeps the host's
+flags in their own `--help` cluster; Commander itself is
+insertion-order-independent for parsing.
+
+## ALB front-door target resolution
+
+A host wrapping `start-alb` also needs the resolver layer that turns an
+ALB target string into a listener-by-listener routing table:
+
+- `resolveAlbFrontDoor` (+ `ResolvedListenerAction` /
+  `FrontDoorForwardTarget`) — ALB → listeners → ListenerRules
+  (path / host / header / method / query / source-ip) → forward (single
+  or weighted) / redirect / fixed-response → backing ECS Services or
+  Lambda functions.
+- `isApplicationLoadBalancer` — type-narrowing predicate that
+  disambiguates ApplicationLoadBalancer from NetworkLoadBalancer when
+  picking targets.

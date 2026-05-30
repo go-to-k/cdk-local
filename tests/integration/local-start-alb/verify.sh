@@ -19,6 +19,7 @@ CDKL="node ../../../dist/cli.js"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 WEB_IMAGE="public.ecr.aws/docker/library/python:3.12-alpine"
 LB_HOST_PORT=18086 # non-privileged host port the front-door binds (listener port 80 remapped)
+LB_HOST_PORT_HTTPS=18443 # non-privileged host port for the cloud-HTTPS:443 listener (#198)
 
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers + networks"
@@ -55,11 +56,15 @@ fi
 OUT_FILE=$(mktemp)
 trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 
-echo "==> start-alb: naming the ALB (DesiredCount=2 backing service), front-door on host port ${LB_HOST_PORT}"
-# Remap the privileged listener port 80 to a non-privileged host port so the
-# front-door binds without root (the macOS Docker Desktop privileged-port path).
+echo "==> start-alb: naming the ALB (DesiredCount=2 backing service); HTTP:80 -> :${LB_HOST_PORT}, HTTPS:443 -> :${LB_HOST_PORT_HTTPS}"
+# Remap both privileged listener ports (80 / 443) to non-privileged host ports
+# so the front-door binds without root (the macOS Docker Desktop privileged-port
+# path). No --tls flag: the HTTPS:443 listener exercises the #198 default —
+# served over plain HTTP locally, with X-Forwarded-Proto: https preserved.
 ${CDKL} start-alb CdkLocalStartAlbFixture:WebLB \
-  --container-host 127.0.0.1 --lb-port "80=${LB_HOST_PORT}" \
+  --container-host 127.0.0.1 \
+  --lb-port "80=${LB_HOST_PORT}" \
+  --lb-port "443=${LB_HOST_PORT_HTTPS}" \
   > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
 
@@ -83,13 +88,29 @@ if [[ "${BOOTED}" -ne 1 ]]; then
   exit 1
 fi
 
-echo "==> Asserting the front-door banner was logged"
+echo "==> Asserting the HTTP front-door banner was logged"
 if ! grep -q "ALB front-door: http://127.0.0.1:${LB_HOST_PORT}" "${OUT_FILE}"; then
   echo "FAIL: front-door banner for host port ${LB_HOST_PORT} not found"
   echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
   exit 1
 fi
-echo "    OK: front-door banner present"
+echo "    OK: HTTP front-door banner present"
+
+echo "==> Asserting the cloud-HTTPS listener is served over HTTP locally + the degradation warning fired (#198)"
+# Without --tls the cloud-HTTPS:443 listener must come up as `http://...` on
+# the wire (NOT `https://...`) and the per-listener warning must be logged so
+# the degradation is never silent.
+if ! grep -q "ALB front-door: http://127.0.0.1:${LB_HOST_PORT_HTTPS}" "${OUT_FILE}"; then
+  echo "FAIL: cloud-HTTPS listener was not served over plain HTTP on host port ${LB_HOST_PORT_HTTPS}"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+if ! grep -qE "listener port 443 is HTTPS in the cloud but serving HTTP locally" "${OUT_FILE}"; then
+  echo "FAIL: HTTPS-degraded warning for listener port 443 not present"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+echo "    OK: cloud-HTTPS:443 served over HTTP + degradation warning logged"
 
 echo "==> curl-ing the front-door until it serves 200 (replicas take a moment to start the HTTP server)"
 READY=0
@@ -130,6 +151,25 @@ if [[ "${DISTINCT}" -lt 2 ]]; then
 fi
 echo "    OK: front-door load-balances across ${DISTINCT} replicas"
 
+echo "==> curl-ing the cloud-HTTPS listener's host port over plain HTTP (no -k); asserting X-Forwarded-Proto: https reaches the upstream"
+# #198 default: cloud-HTTPS listener served over HTTP locally. The replica
+# echoes only its hostname (not headers), so we assert (a) plain HTTP succeeds
+# and (b) explicitly that an attempt to negotiate TLS fails fast — which would
+# be the case before #198 (when the listener bound HTTPS with a self-signed
+# cert that lacked the local trust chain).
+if ! curl -fsS --max-time 5 "http://127.0.0.1:${LB_HOST_PORT_HTTPS}/" >/dev/null 2>&1; then
+  echo "FAIL: plain HTTP curl against the cloud-HTTPS host port ${LB_HOST_PORT_HTTPS} failed"
+  echo "----- service output -----"; cat "${OUT_FILE}"; echo "--------------------------"
+  exit 1
+fi
+# curl will report SSL handshake failure when the server speaks plain HTTP —
+# the exact symptom the local-dev wanted: NO TLS friction on the HTTPS port.
+if curl -fsS --max-time 5 "https://127.0.0.1:${LB_HOST_PORT_HTTPS}/" >/dev/null 2>&1; then
+  echo "FAIL: cloud-HTTPS host port ${LB_HOST_PORT_HTTPS} accepted an HTTPS handshake — expected plain HTTP"
+  exit 1
+fi
+echo "    OK: cloud-HTTPS:443 listener is reachable over HTTP and rejects an HTTPS handshake"
+
 echo "==> Sending SIGTERM to cdk-local (${CDKL_PID})"
 kill -TERM "${CDKL_PID}"
 
@@ -163,9 +203,13 @@ if [[ "${LEFTOVER_NETS}" -ne 0 ]]; then
   exit 1
 fi
 
-echo "==> Asserting the front-door socket is closed"
+echo "==> Asserting the front-door sockets are closed"
 if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT}/" >/dev/null 2>&1; then
   echo "FAIL: front-door on host port ${LB_HOST_PORT} still accepting connections after SIGTERM"
+  exit 1
+fi
+if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT_HTTPS}/" >/dev/null 2>&1; then
+  echo "FAIL: cloud-HTTPS front-door on host port ${LB_HOST_PORT_HTTPS} still accepting connections after SIGTERM"
   exit 1
 fi
 

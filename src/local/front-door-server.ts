@@ -53,8 +53,12 @@ import {
  * invokers), redirect / fixed-response synthesis, every ALB rule-condition
  * field. HTTP and HTTPS listeners are both served — HTTPS termination uses
  * the {@link StartFrontDoorServerOptions.tls} materials (a user-supplied or
- * auto-generated self-signed cert/key pair) and switches `X-Forwarded-Proto`
- * + redirect `#{protocol}` to `https`.
+ * auto-generated self-signed cert/key pair). `X-Forwarded-Proto` and the
+ * redirect `#{protocol}` default come from
+ * {@link StartFrontDoorServerOptions.forwardedProto}, which is decoupled from
+ * the wire so a cloud-HTTPS listener can be served over plain HTTP locally
+ * while still presenting `https` upstream (the wire defaults to TLS presence
+ * when the override is omitted).
  *
  * **WebSocket Upgrade** is proxied for ECS forward targets: an inbound
  * `Connection: Upgrade` request goes through the same `route()` callback
@@ -215,11 +219,17 @@ export interface StartFrontDoorServerOptions {
   label: string;
   /**
    * When set, the front-door listens over HTTPS using these PEM materials
-   * (server cert + private key). `X-Forwarded-Proto` switches to `https`
-   * and redirect `#{protocol}` placeholders resolve to `https`. Absent =
-   * plain HTTP listener (the default).
+   * (server cert + private key). Absent = plain HTTP listener (the default).
    */
   tls?: { certPem: Buffer; keyPem: Buffer };
+  /**
+   * Explicit scheme stamped onto `X-Forwarded-Proto` and used as the default
+   * for redirect `#{protocol}` placeholders. Decouples the deployed-listener
+   * protocol from the local wire so a cloud-HTTPS listener can be served
+   * over plain HTTP locally while still presenting `https` to the upstream
+   * app. Defaults to `'https'` when {@link tls} is set, otherwise `'http'`.
+   */
+  forwardedProto?: 'http' | 'https';
   /**
    * Per-request upstream timeout (ms). A replica that accepts the connection
    * but never responds (deadlocked app, half-open socket) must not hang the
@@ -251,16 +261,19 @@ export async function startFrontDoorServer(
   const logger = getLogger().child('front-door');
   const host = opts.host ?? '127.0.0.1';
 
+  const forwardedProto: 'http' | 'https' = opts.forwardedProto ?? (opts.tls ? 'https' : 'http');
+  const effectiveOpts: StartFrontDoorServerOptions = { ...opts, forwardedProto };
   const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
-    handleProxyRequest(req, res, opts).catch((err) => {
+    handleProxyRequest(req, res, effectiveOpts).catch((err) => {
       logger.debug(`front-door request error: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) writeError(res, 502, 'Bad Gateway');
     });
   };
   // HTTPS branch: `https.createServer` with the supplied PEM materials. The
   // request handler is the same — TLS only adds the handshake at the socket
-  // layer. `X-Forwarded-Proto` is stamped based on `tls` presence so a
-  // downstream app reads the right scheme.
+  // layer. `X-Forwarded-Proto` is stamped from {@link forwardedProto}, which
+  // defaults to the wire scheme but may be overridden so a cloud-HTTPS
+  // listener served over plain HTTP still presents `https` upstream.
   const server: Server = opts.tls
     ? (createHttpsServer(
         { cert: opts.tls.certPem, key: opts.tls.keyPem },
@@ -270,7 +283,7 @@ export async function startFrontDoorServer(
   const scheme: 'http' | 'https' = opts.tls ? 'https' : 'http';
   server.on('connection', (socket) => socket.setNoDelay(true));
   server.on('upgrade', (req, clientSocket, head) => {
-    handleUpgrade(req, clientSocket, head, opts).catch((err) => {
+    handleUpgrade(req, clientSocket, head, effectiveOpts).catch((err) => {
       logger.debug(`front-door upgrade error: ${err instanceof Error ? err.message : String(err)}`);
       if (!clientSocket.destroyed) clientSocket.destroy();
     });
@@ -395,7 +408,7 @@ function serveAction(
     // keep-alive socket reuse, then synthesize the response with no backend.
     req.resume();
     if (action.kind === 'redirect') {
-      writeRedirect(res, action, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+      writeRedirect(res, action, req, opts.listenerPort, resolveForwardedProto(opts));
     } else {
       writeFixedResponse(res, action);
     }
@@ -485,7 +498,7 @@ function handlePoolRequest(
 
     const headers = { ...req.headers };
     stripHopByHopHeaders(headers);
-    appendForwardedHeaders(headers, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+    appendForwardedHeaders(headers, req, opts.listenerPort, resolveForwardedProto(opts));
 
     const proxyReq = httpRequest(
       {
@@ -834,6 +847,15 @@ function stripHopByHopHeaders(headers: NodeJS.Dict<string | string[]>): void {
 }
 
 /**
+ * Resolve the scheme to stamp on `X-Forwarded-Proto` and to default
+ * redirect `#{protocol}` to: an explicit {@link StartFrontDoorServerOptions.forwardedProto}
+ * override wins, otherwise it follows the wire (TLS = `https`, no TLS = `http`).
+ */
+function resolveForwardedProto(opts: StartFrontDoorServerOptions): 'http' | 'https' {
+  return opts.forwardedProto ?? (opts.tls ? 'https' : 'http');
+}
+
+/**
  * Inject the ALB-style forwarding headers a downstream app may read. Appends
  * the client IP to any existing `X-Forwarded-For` chain (ALB appends rather
  * than replaces) and stamps the scheme / listener port. `scheme` follows the
@@ -1004,7 +1026,7 @@ function bridgeWebSocket(
       const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
       // Do NOT strip hop-by-hop: `Upgrade` / `Connection: Upgrade` are the
       // whole point of this code path. Only stamp the X-Forwarded-* set.
-      appendForwardedHeaders(headers, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+      appendForwardedHeaders(headers, req, opts.listenerPort, resolveForwardedProto(opts));
 
       const requestLine = `${req.method ?? 'GET'} ${req.url ?? '/'} HTTP/${req.httpVersion}`;
       const lines: string[] = [requestLine];

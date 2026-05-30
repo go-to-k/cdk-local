@@ -314,8 +314,10 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
         'backing services — a stable host endpoint, like behind a real load balancer. The ' +
         'symmetric ALB counterpart of `start-api`. Each <target> accepts a CDK display path ' +
         '(MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may omit the stack ' +
-        'prefix. Supports HTTP and HTTPS listeners (TLS terminated locally with --tls-cert/' +
-        '--tls-key or an auto-generated self-signed cert); all six ALB rule-condition fields ' +
+        'prefix. Supports HTTP and HTTPS listeners — by default a cloud-HTTPS listener is ' +
+        'served over plain HTTP locally (with X-Forwarded-Proto: https preserved). Pass --tls ' +
+        '(or --tls-cert / --tls-key) to terminate TLS locally with a self-signed or ' +
+        'user-supplied cert. All six ALB rule-condition fields are honored ' +
         '(path-pattern / host-header / http-header / http-request-method / query-string / ' +
         'source-ip); forward (single and weighted), redirect, and fixed-response actions; and ' +
         'ECS or Lambda targets (a Lambda target group is invoked locally via the Lambda RIE). ' +
@@ -329,6 +331,37 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
       '[targets...]',
       'One or more CDK display paths or stack-qualified logical IDs of the AWS::ElasticLoadBalancingV2::LoadBalancer resources to run (omit to multi-select interactively in a TTY)'
     )
+    .action(
+      withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
+        await runEcsServiceEmulator(
+          targets,
+          options,
+          albStrategy(options),
+          opts.extraStateProviders
+        );
+      })
+    );
+
+  addAlbSpecificOptions(cmd);
+  return addCommonEcsServiceOptions(cmd);
+}
+
+/**
+ * Register the option block that `start-alb` adds on top of
+ * {@link addCommonEcsServiceOptions} — the flags that only make sense for an
+ * ALB-fronted local emulator (front-door port mapping, TLS termination,
+ * authenticate-* gating). Shared between `cdkl start-alb` and any host CLI
+ * (e.g. cdkd's `local start-alb`) that wraps {@link runEcsServiceEmulator}
+ * with the ALB strategy, so adding or renaming an ALB-only flag here
+ * propagates to every embedder without duplicate `.addOption(...)` blocks.
+ *
+ * Call this AFTER any host-specific options and BEFORE
+ * {@link addCommonEcsServiceOptions} (Commander's internal state is
+ * insertion-order-independent, so the actual order only affects `--help`
+ * presentation). Chainable: returns `cmd`.
+ */
+export function addAlbSpecificOptions(cmd: Command): Command {
+  return cmd
     .addOption(
       new Option(
         '--lb-port <listenerPort=hostPort...>',
@@ -339,21 +372,33 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
     )
     .addOption(
       new Option(
+        '--tls',
+        'Terminate TLS locally for cloud-HTTPS listeners. Default: a cloud-HTTPS listener is ' +
+          'served over plain HTTP locally (X-Forwarded-Proto: https is preserved so the upstream ' +
+          'app still sees the deployed listener protocol). Implied by --tls-cert / --tls-key. ' +
+          'Use this when local-dev cookies need Secure / SameSite=None, when the upstream app ' +
+          'inspects TLS metadata, or for mTLS / SNI testing — otherwise plain HTTP is friendlier ' +
+          '(no self-signed cert warnings in curl / browser).'
+      )
+    )
+    .addOption(
+      new Option(
         '--tls-cert <path>',
-        'PEM-encoded server certificate for HTTPS front-door listeners. Must be set together ' +
-          'with --tls-key. Omit both flags to auto-generate a self-signed cert ' +
-          '(cached under $XDG_CACHE_HOME/cdk-local/alb-https/, default ~/.cache/cdk-local/' +
-          'alb-https/); requires openssl on PATH. The deployed Listener Certificates[] are NOT ' +
-          'fetched (ACM private keys are not retrievable by design). The auto-generated cert ' +
-          'lists DNS:localhost,IP:127.0.0.1 as SubjectAltName, so a client validating a ' +
-          'non-loopback --container-host will fail the SAN check — pass --tls-cert / --tls-key ' +
-          'with a SAN covering that host instead.'
+        'PEM-encoded server certificate for HTTPS front-door listeners. Implies --tls. Must be ' +
+          'set together with --tls-key. Pass --tls alone (without --tls-cert / --tls-key) to ' +
+          'auto-generate a self-signed cert (cached under $XDG_CACHE_HOME/cdk-local/alb-https/, ' +
+          'default ~/.cache/cdk-local/alb-https/); requires openssl on PATH. The deployed ' +
+          'Listener Certificates[] are NOT fetched (ACM private keys are not retrievable by ' +
+          'design). The auto-generated cert lists DNS:localhost,IP:127.0.0.1 as SubjectAltName, ' +
+          'so a client validating a non-loopback --container-host will fail the SAN check — pass ' +
+          '--tls-cert / --tls-key with a SAN covering that host instead.'
       )
     )
     .addOption(
       new Option(
         '--tls-key <path>',
-        'PEM-encoded server private key matching --tls-cert. Must be set together with --tls-cert.'
+        'PEM-encoded server private key matching --tls-cert. Implies --tls. Must be set ' +
+          'together with --tls-cert.'
       )
     )
     .addOption(
@@ -372,17 +417,5 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
           '(signature + iss + aud + exp). Local-dev convenience; cookie pass-through ' +
           '(AWSELBAuthSessionCookie-*) also works.'
       )
-    )
-    .action(
-      withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
-        await runEcsServiceEmulator(
-          targets,
-          options,
-          albStrategy(options),
-          opts.extraStateProviders
-        );
-      })
     );
-
-  return addCommonEcsServiceOptions(cmd);
 }

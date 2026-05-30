@@ -127,15 +127,25 @@ export interface EcsServiceEmulatorOptions {
   /** `--lb-port <listenerPort=hostPort>` front-door overrides (start-alb; repeatable). */
   lbPort?: string[];
   /**
+   * Terminate TLS locally for HTTPS front-door listeners (start-alb).
+   * Defaults to `false`: a cloud-HTTPS listener is served over plain HTTP
+   * locally (with `X-Forwarded-Proto: https` preserved so the upstream app
+   * still sees `https`). When `true` (or implied by `--tls-cert` /
+   * `--tls-key`), the listener terminates TLS using the supplied PEM pair
+   * or an auto-generated self-signed cert.
+   */
+  tls?: boolean;
+  /**
    * Path to a PEM-encoded server cert for HTTPS front-door listeners
-   * (start-alb). Must be set together with `--tls-key`. Absent =
-   * auto-generated self-signed cert (cached under
-   * `$XDG_CACHE_HOME/cdk-local/alb-https/`).
+   * (start-alb). Must be set together with `--tls-key`. Implies
+   * {@link tls}. Absent (with `--tls` alone) = auto-generated self-signed
+   * cert cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`.
    */
   tlsCert?: string;
   /**
    * Path to a PEM-encoded server private key for HTTPS front-door listeners
-   * (start-alb). Must be set together with `--tls-cert`.
+   * (start-alb). Must be set together with `--tls-cert`. Implies
+   * {@link tls}.
    */
   tlsKey?: string;
   /**
@@ -841,13 +851,24 @@ export async function buildFrontDoor(
     };
   };
 
-  // Resolve TLS materials once, up front, when any HTTPS listener is in the
-  // plan. Kept OUTSIDE the surrounding try/catch so a TLS resolution failure
-  // (e.g. openssl missing, BYO PEM unreadable) surfaces its own actionable
-  // error instead of being re-wrapped in the generic `--lb-port` port-bind
-  // envelope below. A single resolve is shared across every HTTPS listener.
+  // Decide whether HTTPS listeners terminate TLS locally. Opting in requires
+  // either an explicit `--tls`, or supplying `--tls-cert` / `--tls-key`
+  // (passing the cert pair is treated as a strong signal that the user wants
+  // real TLS — they would not have bothered otherwise). The default leaves
+  // cloud-HTTPS listeners on plain HTTP locally; `X-Forwarded-Proto: https`
+  // is preserved further down so upstream apps still see the deployed
+  // listener protocol.
   const hasHttpsListener = plan.listeners.some((l) => l.protocol === 'HTTPS');
-  const tlsMaterials: FrontDoorTlsMaterials | undefined = hasHttpsListener
+  const wantTls =
+    options.tls === true || options.tlsCert !== undefined || options.tlsKey !== undefined;
+  const needsTlsMaterials = hasHttpsListener && wantTls;
+  // Resolve TLS materials once, up front, when any HTTPS listener will
+  // actually terminate TLS locally. Kept OUTSIDE the surrounding try/catch
+  // so a TLS resolution failure (e.g. openssl missing, BYO PEM unreadable)
+  // surfaces its own actionable error instead of being re-wrapped in the
+  // generic `--lb-port` port-bind envelope below. A single resolve is
+  // shared across every HTTPS listener.
+  const tlsMaterials: FrontDoorTlsMaterials | undefined = needsTlsMaterials
     ? await resolveFrontDoorTlsMaterials({
         certPath: options.tlsCert,
         keyPath: options.tlsKey,
@@ -892,13 +913,16 @@ export async function buildFrontDoor(
         sourceIp?: string;
       }): RouteAction | undefined => matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
 
-      const tls = listener.protocol === 'HTTPS' ? tlsMaterials : undefined;
+      const tls = listener.protocol === 'HTTPS' && wantTls ? tlsMaterials : undefined;
+      const forwardedProto: 'http' | 'https' = listener.protocol === 'HTTPS' ? 'https' : 'http';
+      const degradedHttps = listener.protocol === 'HTTPS' && !wantTls;
       const server = await startFrontDoorServer({
         route,
         port: listener.hostPort,
         host: containerHost,
         listenerPort: listener.listenerPort,
         label: `listener port ${listener.listenerPort}`,
+        forwardedProto,
         ...(tls ? { tls } : {}),
       });
       servers.push(server);
@@ -906,6 +930,13 @@ export async function buildFrontDoor(
       logger.info(
         `ALB front-door: ${server.scheme}://${server.host}:${server.port} (listener port ${listener.listenerPort})`
       );
+      if (degradedHttps) {
+        logger.warn(
+          `  WARN: listener port ${listener.listenerPort} is HTTPS in the cloud but serving HTTP ` +
+            'locally (X-Forwarded-Proto: https preserved). Pass --tls to terminate TLS locally ' +
+            'with a self-signed or user-supplied cert.'
+        );
+      }
       if (listener.defaultAction) {
         logger.info(`  default -> ${describeAction(listener.defaultAction)}`);
       }

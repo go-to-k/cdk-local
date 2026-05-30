@@ -1,10 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
+import { Command } from 'commander';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveAlbTarget, parseLbPortOverrides, albStrategy } from '../../../src/cli/commands/local-start-alb.js';
+import {
+  resolveAlbTarget,
+  parseLbPortOverrides,
+  albStrategy,
+  createLocalStartAlbCommand,
+  addAlbSpecificOptions,
+} from '../../../src/cli/commands/local-start-alb.js';
 import { serviceStrategy } from '../../../src/cli/commands/local-start-service.js';
-import { buildFrontDoor } from '../../../src/cli/commands/ecs-service-emulator.js';
+import {
+  buildFrontDoor,
+  addCommonEcsServiceOptions,
+} from '../../../src/cli/commands/ecs-service-emulator.js';
 import { resolveFrontDoorTlsMaterials } from '../../../src/local/front-door-tls.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -660,6 +670,114 @@ describe('buildFrontDoor', () => {
         )
       ).rejects.toThrow(/--tls-cert is set but --tls-key is missing/);
     });
+
+    it('serves a cloud-HTTPS listener over plain HTTP by default (no --tls / --tls-cert)', async () => {
+      // #198: TLS termination is opt-in. With neither --tls nor --tls-cert /
+      // --tls-key the local wire is HTTP — the deployed listener protocol
+      // surfaces as X-Forwarded-Proto: https further down the stack (see
+      // front-door-server.test.ts), but the bound server is a plain HTTP one
+      // so users can curl it without certificate-warning friction.
+      const warns: string[] = [];
+      const logger = {
+        info: () => {},
+        warn: (m: string) => warns.push(m),
+      } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        { containerHost: '127.0.0.1', pull: true } as never, // no --tls anywhere
+        logger
+      );
+      try {
+        expect(servers).toHaveLength(1);
+        expect(servers[0]!.scheme).toBe('http');
+        // The degradation must be logged so it is never silent.
+        expect(
+          warns.some(
+            (m) => m.includes('HTTPS in the cloud') && m.includes('serving HTTP locally')
+          )
+        ).toBe(true);
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('terminates TLS locally on --tls alone (auto self-signed cert, no --tls-cert / --tls-key)', async () => {
+      // The opt-in flag without a BYO cert pair routes through
+      // resolveFrontDoorTlsMaterials' self-signed path. The pre-baked cache
+      // dir (XDG_CACHE_HOME) avoids invoking openssl a second time.
+      const prevXdg = process.env['XDG_CACHE_HOME'];
+      process.env['XDG_CACHE_HOME'] = join(tlsTmpDir, 'xdg');
+      try {
+        const logger = { info: () => {}, warn: () => {} } as never;
+        const { servers } = await buildFrontDoor(
+          {
+            listeners: [
+              {
+                listenerPort: 443,
+                hostPort: 0,
+                protocol: 'HTTPS',
+                defaultAction: { kind: 'fixed-response', statusCode: 204 },
+                rules: [],
+              },
+            ],
+          },
+          { containerHost: '127.0.0.1', pull: true, tls: true } as never,
+          logger
+        );
+        try {
+          expect(servers).toHaveLength(1);
+          expect(servers[0]!.scheme).toBe('https');
+        } finally {
+          await Promise.all(servers.map((s) => s.close()));
+        }
+      } finally {
+        if (prevXdg === undefined) delete process.env['XDG_CACHE_HOME'];
+        else process.env['XDG_CACHE_HOME'] = prevXdg;
+      }
+    });
+
+    it('does not warn about HTTPS-degraded for an HTTP listener (no false positives)', async () => {
+      // Companion guard rail: the degradation warning must fire only when the
+      // cloud-side protocol is HTTPS. A pure HTTP listener is the dominant
+      // path; spurious warnings here would train users to ignore the signal.
+      const warns: string[] = [];
+      const logger = {
+        info: () => {},
+        warn: (m: string) => warns.push(m),
+      } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 80,
+              hostPort: 0,
+              protocol: 'HTTP',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        { containerHost: '127.0.0.1', pull: true } as never,
+        logger
+      );
+      try {
+        expect(servers).toHaveLength(1);
+        expect(servers[0]!.scheme).toBe('http');
+        expect(warns.some((m) => m.includes('HTTPS in the cloud'))).toBe(false);
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
   });
 
   it('stands up a fixed-response-default listener with no backing pool', async () => {
@@ -796,5 +914,53 @@ describe('parseLbPortOverrides', () => {
   it('throws on a malformed value or out-of-range port', () => {
     expect(() => parseLbPortOverrides(['8080'])).toThrow(/Expected <listenerPort>=<hostPort>/);
     expect(() => parseLbPortOverrides(['80=0'])).toThrow(/host port must be 1-65535/);
+  });
+});
+
+/**
+ * Drift guards for the `addCommonEcsServiceOptions` + `addAlbSpecificOptions`
+ * decomposition. The decomposition exists so cdkd (and any other host wrapping
+ * `runEcsServiceEmulator` with the ALB strategy) auto-inherits ALB-only flags
+ * without a duplicate `.addOption(...)` block. These tests fail the moment
+ * someone adds an ALB-specific flag inline in `createLocalStartAlbCommand`
+ * instead of inside `addAlbSpecificOptions` — which would silently break the
+ * inheritance the helper is supposed to guarantee.
+ */
+describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlbSpecificOptions)', () => {
+  function longFlagsOf(cmd: Command): string[] {
+    return cmd.options
+      .map((o) => o.long)
+      .filter((l): l is string => typeof l === 'string')
+      .sort();
+  }
+
+  it('addAlbSpecificOptions registers exactly the known ALB-only flags', () => {
+    // Lock the helper's contract: cdkd imports it expecting THIS set of long
+    // flags. Adding or removing one without updating the list below is a
+    // semver-relevant surface change.
+    const flags = longFlagsOf(addAlbSpecificOptions(new Command()));
+    expect(flags).toEqual([
+      '--bearer-token',
+      '--lb-port',
+      '--no-verify-auth',
+      '--tls',
+      '--tls-cert',
+      '--tls-key',
+    ]);
+  });
+
+  it('createLocalStartAlbCommand surface equals common + alb-specific (no inline drift)', () => {
+    // The full CLI surface MUST be the union of the two helpers — never a
+    // proper superset. A proper superset would mean someone added an option
+    // inline in `createLocalStartAlbCommand`, which a host CLI (cdkd) calling
+    // the helpers directly would silently miss.
+    const full = longFlagsOf(createLocalStartAlbCommand());
+    const expected = Array.from(
+      new Set([
+        ...longFlagsOf(addCommonEcsServiceOptions(new Command())),
+        ...longFlagsOf(addAlbSpecificOptions(new Command())),
+      ])
+    ).sort();
+    expect(full).toEqual(expected);
   });
 });

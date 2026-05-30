@@ -877,6 +877,75 @@ describe('startFrontDoorServer — HTTPS termination', () => {
     await fetchText(front.port);
     expect(upstream.lastHeaders?.['x-forwarded-proto']).toBe('http');
   });
+
+  it('honors an explicit forwardedProto=https override over a plain-HTTP wire', async () => {
+    // Cloud-HTTPS-but-local-HTTP degradation (#198): the wire is HTTP (no
+    // tls materials), but `forwardedProto: 'https'` lets the caller preserve
+    // the deployed listener protocol on `X-Forwarded-Proto`, so the upstream
+    // app still observes `https` and a redirect's `#{protocol}` resolves to
+    // `https` by default.
+    const upstream = await startUpstream('degraded-https');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => forward(pool),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      forwardedProto: 'https',
+    });
+    cleanups.push(() => front.close());
+
+    expect(front.scheme).toBe('http');
+    await fetchText(front.port);
+    expect(upstream.lastHeaders?.['x-forwarded-proto']).toBe('https');
+    expect(upstream.lastHeaders?.['x-forwarded-port']).toBe('443');
+  });
+
+  it('defaults a redirect `#{protocol}` to forwardedProto on a degraded HTTPS listener', async () => {
+    // Companion to the wire-vs-forwarded test above: redirect synthesis must
+    // also follow `forwardedProto`, not the wire scheme, so an HTTPS-in-cloud
+    // listener served over plain HTTP still emits `https://...` Location.
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 301,
+      host: 'new.example.com',
+    };
+    const front = await startFrontDoorServer({
+      route: () => action,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      forwardedProto: 'https',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await new Promise<{ status: number; location?: string }>((resolve, reject) => {
+      const req = get(
+        {
+          host: '127.0.0.1',
+          port: front.port,
+          path: '/',
+          headers: { host: 'old.example.com' },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              ...(typeof res.headers.location === 'string' && { location: res.headers.location }),
+            })
+          );
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(result.status).toBe(301);
+    expect(result.location).toMatch(/^https:\/\/new\.example\.com\//);
+  });
 });
 
 describe('startFrontDoorServer — auth gate', () => {
