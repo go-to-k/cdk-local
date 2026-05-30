@@ -1253,8 +1253,9 @@ Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 | Flag | Default | Behavior |
 | --- | --- | --- |
 | `--lb-port <listenerPort=hostPort>` | — | Bind the front-door on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
-| `--tls-cert <path>` | unset | PEM-encoded server certificate for HTTPS front-door listeners. Must be set together with `--tls-key`. Omit both flags to auto-generate a self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`, defaulting to `~/.cache/cdk-local/alb-https/`); requires `openssl` on PATH. The deployed Listener `Certificates[]` are NOT fetched — ACM private keys are not retrievable by design. |
-| `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Must be set together with `--tls-cert`. |
+| `--tls` | off | Terminate TLS locally for cloud-HTTPS listeners. Default: a cloud-HTTPS listener is served over plain HTTP locally (with `X-Forwarded-Proto: https` preserved so the upstream app still sees the deployed listener protocol). Implied by `--tls-cert` / `--tls-key`. Use this when local-dev cookies need `Secure` / `SameSite=None`, when the upstream app inspects TLS metadata, or for mTLS / SNI testing — otherwise plain HTTP is friendlier (no self-signed cert warnings in `curl` / browser). |
+| `--tls-cert <path>` | unset | PEM-encoded server certificate for HTTPS front-door listeners. Implies `--tls`. Must be set together with `--tls-key`. Pass `--tls` alone (without `--tls-cert` / `--tls-key`) to auto-generate a self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`, defaulting to `~/.cache/cdk-local/alb-https/`); requires `openssl` on PATH. The deployed Listener `Certificates[]` are NOT fetched — ACM private keys are not retrievable by design. |
+| `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Implies `--tls`. Must be set together with `--tls-cert`. |
 | `--no-verify-auth` | (verify enabled) | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the guard passed. Useful for local dev that does not want to mint a Bearer token. |
 | `--bearer-token <jwt>` | unset | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + `iss` + `aud` + `exp`). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also bypasses the guard. |
 
@@ -1263,12 +1264,16 @@ Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 # then: curl http://127.0.0.1:8080/  (round-robins across replicas)
 
-# HTTPS listener on :443 with auto-generated self-signed cert + a
-# non-privileged host port
+# Cloud-HTTPS listener on :443 served over plain HTTP locally (default)
 cdkl start-alb MyStack/WebAlb --lb-port 443=8443
+# then: curl http://127.0.0.1:8443/
+# (the upstream app still sees X-Forwarded-Proto: https)
+
+# Opt in to real TLS termination with an auto-generated self-signed cert
+cdkl start-alb MyStack/WebAlb --lb-port 443=8443 --tls
 # then: curl --insecure https://127.0.0.1:8443/
 
-# HTTPS with a BYO cert (must be set together)
+# Opt in to real TLS with a BYO cert (must be set together; implies --tls)
 cdkl start-alb MyStack/WebAlb --tls-cert ./server.pem --tls-key ./server-key.pem
 
 # Authenticate-cognito: inject a pre-minted JWT as the default Authorization
@@ -1297,15 +1302,26 @@ request — `#{protocol}` defaults to the listener's own scheme), and
 request becomes the ALB `requestContext.elb` event, runs through the Lambda RIE,
 and the response is translated back (a malformed response → 502).
 
-For HTTPS listeners the front-door terminates TLS locally using a user-supplied
-cert (`--tls-cert` + `--tls-key`, set together) or an auto-generated self-signed
-cert cached under `~/.cache/cdk-local/alb-https/`. The deployed Listener's
-`Certificates[]` ACM ARNs are not fetched — ACM private keys are not retrievable
-by design, so the local front-door always uses its own cert and warns once that
-the ACM cert was bypassed. Clients should use `curl --insecure` (or trust the
-generated cert) since the cert is self-signed. The `SslPolicy` cipher policy
-is not enforced; the upstream is dialed over plain HTTP (TLS terminated at the
-front-door, not re-encrypted).
+Cloud-HTTPS listeners are served over plain HTTP locally by default. The
+listener-rule pipeline (path / host / header / method / query / source-ip
+matching, weighted forwards, redirect / fixed-response, `authenticate-*`
+gating, WebSocket upgrades) does not depend on TLS, and the ALB itself owns
+TLS termination at the edge — the container behind it speaks plain HTTP in
+either world. `X-Forwarded-Proto` is stamped as `https` for these listeners
+(and the redirect `#{protocol}` default resolves to `https`) so the upstream
+app still observes the deployed listener protocol. A warning lists each
+cloud-HTTPS listener that is being served as HTTP locally so the degradation
+is never silent.
+
+Pass `--tls` (or `--tls-cert` / `--tls-key`, which imply `--tls`) to opt in to
+real TLS termination locally. Under `--tls` the front-door uses the
+user-supplied cert pair, or an auto-generated self-signed cert cached under
+`~/.cache/cdk-local/alb-https/` when neither is supplied. The deployed
+Listener's `Certificates[]` ACM ARNs are not fetched — ACM private keys are
+not retrievable by design, so the local front-door always uses its own cert.
+Clients should use `curl --insecure` (or trust the generated cert). The
+`SslPolicy` cipher policy is not enforced; the upstream is dialed over plain
+HTTP (TLS terminated at the front-door, not re-encrypted).
 
 `authenticate-cognito` and `authenticate-oidc` actions are enforced locally
 with a Bearer-JWT check — the same `iss` + `aud` + `exp` + signature pipeline

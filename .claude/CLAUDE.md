@@ -31,13 +31,18 @@ AWS managed services.
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
   listener port across the replicas and routes the listener rules across
-  the backing services. HTTP **and HTTPS** listeners are served — HTTPS
-  termination uses a user-supplied (`--tls-cert` + `--tls-key`) or
-  auto-generated self-signed cert (cached under
+  the backing services. HTTP **and HTTPS** listeners are served — a
+  cloud-HTTPS listener is served over plain HTTP locally by default
+  (with `X-Forwarded-Proto: https` preserved + redirect `#{protocol}`
+  resolving to `https`, so the upstream app still sees the deployed
+  listener protocol; the degradation is logged per-listener so it is
+  never silent). `--tls` (or `--tls-cert` / `--tls-key`, which imply
+  `--tls`) opts in to real TLS termination, using the user-supplied
+  PEM pair or an auto-generated self-signed cert (cached under
   `$XDG_CACHE_HOME/cdk-local/alb-https/`, default
-  `~/.cache/cdk-local/alb-https/`; `openssl` invoked once on cache miss);
-  the deployed Listener `Certificates[]` ACM ARNs are not fetched
-  because ACM private keys are not retrievable by design. All six ALB
+  `~/.cache/cdk-local/alb-https/`; `openssl` invoked once on cache
+  miss). The deployed Listener `Certificates[]` ACM ARNs are not
+  fetched because ACM private keys are not retrievable by design. All six ALB
   rule-condition fields are honored (`path-pattern`, `host-header`,
   `http-header`, `http-request-method`, `query-string`, `source-ip`),
   along with weighted forwards and `redirect` / `fixed-response` actions.

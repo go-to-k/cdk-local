@@ -84,6 +84,19 @@ export class LocalStartAlbStack extends cdk.Stack {
       defaultActions: [{ type: 'forward', targetGroupArn: targetGroup.ref }],
     });
 
+    // A second listener whose deployed protocol is HTTPS. Backs the #198 test
+    // matrix: without --tls, cdkl serves this listener over plain HTTP locally
+    // (with X-Forwarded-Proto: https preserved); with --tls cdkl terminates
+    // TLS locally using the auto-generated self-signed cert. ACM Certificates[]
+    // are intentionally omitted — cdk-local can't reproduce ACM private keys
+    // anyway, so the test exercises the auto-self-signed fallback.
+    new elbv2.CfnListener(this, 'WebListenerHttps', {
+      loadBalancerArn: loadBalancer.ref,
+      port: 443,
+      protocol: 'HTTPS',
+      defaultActions: [{ type: 'forward', targetGroupArn: targetGroup.ref }],
+    });
+
     new ecs.CfnService(this, 'WebService', {
       cluster: cluster.ref,
       taskDefinition: taskDef.ref,

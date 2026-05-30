@@ -70,7 +70,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 ### start-service vs start-alb — which one?
 
-`start-service` runs just the ECS service's replicas (workers, queue consumers, Service-Connect-only). `start-alb` boots the ECS service(s) behind an ALB **plus** a host-side front-door on each listener port — HTTP and HTTPS (TLS terminated locally with `--tls-cert` / `--tls-key` or an auto-generated self-signed cert) — so external traffic reaches them the way it does in the cloud. Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
+`start-service` runs just the ECS service's replicas (workers, queue consumers, Service-Connect-only). `start-alb` boots the ECS service(s) behind an ALB **plus** a host-side front-door on each listener port — HTTP, and HTTPS served over plain HTTP locally by default (with `X-Forwarded-Proto: https` preserved so the upstream app still sees `https`); pass `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally — so external traffic reaches them the way it does in the cloud. Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 
 ## Supported resources
 

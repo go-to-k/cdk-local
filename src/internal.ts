@@ -492,3 +492,22 @@ export {
   type ResolvedListenerAction,
   type FrontDoorForwardTarget,
 } from './local/elb-front-door-resolver.js';
+
+/**
+ * `start-alb` ALB-specific option block + strategy entry points. The flags
+ * `addAlbSpecificOptions` registers (`--lb-port`, `--tls`, `--tls-cert`,
+ * `--tls-key`, `--no-verify-auth`, `--bearer-token`) are the ones that only
+ * apply to an ALB-fronted local emulator and sit on top of
+ * {@link addCommonEcsServiceOptions}. Sharing the block keeps host CLIs
+ * (e.g. cdkd's `local start-alb`) auto-inheriting any new ALB-only flag the
+ * upstream cdk-local CLI adds — no manual `.addOption(...)` duplication.
+ * `albStrategy` / `resolveAlbTarget` / `parseLbPortOverrides` are the
+ * matching strategy + target-resolution helpers a host wrapping
+ * `runEcsServiceEmulator` calls directly.
+ */
+export {
+  addAlbSpecificOptions,
+  albStrategy,
+  resolveAlbTarget,
+  parseLbPortOverrides,
+} from './cli/commands/local-start-alb.js';
