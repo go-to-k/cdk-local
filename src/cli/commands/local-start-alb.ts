@@ -294,6 +294,9 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
       };
     },
     lbPortOverrides,
+    // Under `start-alb` every booted service is fronted by the local
+    // front-door — silence the resolver's `no local listener` hint.
+    suppressLoadBalancerWarning: true,
   };
 }
 

@@ -301,6 +301,14 @@ export interface EmulatorStrategy {
     chosenTargets: string[]
   ): { boots: ServiceBoot[]; frontDoor?: FrontDoorPlan; warnings: string[] };
   lbPortOverrides: Record<number, number>;
+  /**
+   * When true, the service resolver does not emit the `LoadBalancers but
+   * no local listener` hint for booted services. `start-alb` sets this:
+   * by construction every service booted under it is fronted by the
+   * local front-door, so the hint is misleading. `start-service` leaves
+   * it falsy.
+   */
+  suppressLoadBalancerWarning?: boolean;
 }
 
 /**
@@ -534,7 +542,8 @@ export async function runEcsServiceEmulator(
         skipPull,
         extraStateProviders,
         profileCredsFile,
-        frontDoorByService.get(pt.boot.target)
+        frontDoorByService.get(pt.boot.target),
+        strategy.suppressLoadBalancerWarning === true
       );
     }
 
@@ -595,7 +604,8 @@ async function bootOneTarget(
   skipPull: boolean,
   extraStateProviders: ExtraStateProviders | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
-  frontDoorPools: FrontDoorServicePools | undefined
+  frontDoorPools: FrontDoorServicePools | undefined,
+  suppressLoadBalancerWarning: boolean
 ): Promise<ServiceController> {
   const parsed = parseEcsTarget(boot.target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
@@ -616,7 +626,8 @@ async function bootOneTarget(
       skipPull,
       stateProvider,
       profileCredsFile,
-      frontDoorPools
+      frontDoorPools,
+      suppressLoadBalancerWarning
     );
   } finally {
     if (stateProvider) stateProvider.dispose();
@@ -632,13 +643,16 @@ async function runOneTarget(
   skipPull: boolean,
   stateProvider: LocalStateProvider | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
-  frontDoorPools: FrontDoorServicePools | undefined
+  frontDoorPools: FrontDoorServicePools | undefined,
+  suppressLoadBalancerWarning: boolean
 ): Promise<ServiceController> {
   const logger = getLogger();
   const target = boot.target;
 
   const imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
-  const service = resolveEcsServiceTarget(target, stacks, imageContext);
+  const service = resolveEcsServiceTarget(target, stacks, imageContext, {
+    suppressLoadBalancerWarning,
+  });
   logger.info(
     `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
       `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +

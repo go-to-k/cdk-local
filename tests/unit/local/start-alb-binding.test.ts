@@ -354,6 +354,16 @@ describe('start-alb / start-service strategy binding', () => {
     expect(strategy.lbPortOverrides).toEqual({});
   });
 
+  it('start-alb opts into suppressLoadBalancerWarning; start-service does not (LB hint relevance)', () => {
+    // The resolver emits a `LoadBalancers declared but no local listener fronts
+    // them` hint by default. Under `start-alb` the local front-door IS the
+    // listener, so the hint is misleading and the strategy opts out. Under
+    // `start-service` it remains relevant (replicas run with no LB in front).
+    // Locks the strategy-flag wiring per `feedback_site_level_binding_test`.
+    expect(albStrategy({} as never).suppressLoadBalancerWarning).toBe(true);
+    expect(serviceStrategy().suppressLoadBalancerWarning).toBeFalsy();
+  });
+
   it('start-alb threads an authenticate-cognito guard from the template into the planned listener', () => {
     const COGNITO_ARN = 'arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_abcDEF';
     const stack = {

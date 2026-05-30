@@ -40,11 +40,14 @@ import { getEmbedConfig } from './embed-config.js';
  * design's §O5 "--no-envoy by default" recommendation.
  *
  * Deferred to follow-up PRs:
- *   - Local load-balancer emulation (LB listener + target-group health
- *     check + round-robin) — separate PR per the issue's PR-split.
  *   - Envoy sidecar for Service Connect L7 routing / retries / circuit
  *     breaking (Cloud Map DNS-only mode ships now).
  *   - Rolling deployment (`--reload` / `--watch`).
+ *
+ * Local load-balancer emulation is now first-class via `start-alb`, which
+ * boots the same replicas behind a local front-door that mirrors the
+ * deployed ALB's listener-rule / forward / redirect / fixed-response /
+ * authenticate-* surface; `start-service` runs the replicas only.
  */
 
 export class EcsServiceRunnerError extends Error {

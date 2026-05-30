@@ -23,10 +23,12 @@ import { getEmbedConfig } from './embed-config.js';
  * so the Cloud Map registry can publish each replica's endpoint for
  * peer discovery via the docker `--add-host` DNS overlay.
  *
- * `LoadBalancers[]` is intentionally NOT surfaced in v1 — local
- * load-balancer emulation is deferred to a follow-up PR per the issue's
- * own PR-split recommendation (see CLAUDE.md "cdkl start-service"
- * bullet for the deferral list).
+ * `LoadBalancers[]` is intentionally NOT surfaced under `start-service`:
+ * the command runs the replicas only, with no local LB in front. The ALB
+ * counterpart `start-alb` boots the same replicas behind a local
+ * front-door, so when `extractServiceProperties` is called via that
+ * path, the LB-deferral warning is suppressed via
+ * `ResolveServiceOptions.suppressLoadBalancerWarning`.
  */
 /**
  * Resolved `AWS::ECS::Service.ServiceConnectConfiguration` (Phase 3 of #262).
@@ -167,10 +169,28 @@ export interface ResolvedEcsService {
  * resources (Tier 2). The CLI builds it lazily when the candidate
  * service's task definition actually needs substitution.
  */
+/**
+ * Caller knobs that are orthogonal to the per-target image-substitution
+ * `EcsImageResolutionContext`. Keeps the image-context narrow while
+ * giving callers a way to tell the resolver "the LB is being fronted
+ * locally; skip the deferred-LB warning" (the `start-alb` path).
+ */
+export interface ResolveServiceOptions {
+  /**
+   * When true, the resolver does not emit the LoadBalancers-not-emulated
+   * warning. `start-alb` sets this because it boots a local front-door
+   * for each ALB listener, so the cloud LB is in fact emulated locally.
+   * `start-service` leaves it false: it runs only the replicas, with
+   * no local LB in front.
+   */
+  suppressLoadBalancerWarning?: boolean;
+}
+
 export function resolveEcsServiceTarget(
   target: string,
   stacks: StackInfo[],
-  context?: EcsImageResolutionContext
+  context?: EcsImageResolutionContext,
+  options?: ResolveServiceOptions
 ): ResolvedEcsService {
   if (stacks.length === 0) {
     throw new EcsTaskResolutionError('No stacks found in the synthesized assembly.');
@@ -220,7 +240,14 @@ export function resolveEcsServiceTarget(
     );
   }
 
-  return extractServiceProperties(stack, serviceLogicalId, serviceResource, stacks, context);
+  return extractServiceProperties(
+    stack,
+    serviceLogicalId,
+    serviceResource,
+    stacks,
+    context,
+    options
+  );
 }
 
 /**
@@ -233,7 +260,8 @@ export function extractServiceProperties(
   serviceLogicalId: string,
   resource: TemplateResource,
   stacks: StackInfo[],
-  context?: EcsImageResolutionContext
+  context?: EcsImageResolutionContext,
+  options?: ResolveServiceOptions
 ): ResolvedEcsService {
   const props = (resource.Properties ?? {}) as Record<string, unknown>;
   const warnings: string[] = [];
@@ -258,13 +286,21 @@ export function extractServiceProperties(
   );
   const serviceName = parseServiceName(props['ServiceName'], serviceLogicalId);
 
-  // Surface deferred-feature warnings so users learn what's NOT
-  // emulated locally without reading source.
-  if (Array.isArray(props['LoadBalancers']) && (props['LoadBalancers'] as unknown[]).length > 0) {
+  // Surface a hint when the service declares LoadBalancers but the
+  // caller did not opt into the local-LB front-door (`start-service`).
+  // `start-alb` sets `suppressLoadBalancerWarning` because it IS the
+  // local LB.
+  if (
+    !options?.suppressLoadBalancerWarning &&
+    Array.isArray(props['LoadBalancers']) &&
+    (props['LoadBalancers'] as unknown[]).length > 0
+  ) {
+    const { cliName } = getEmbedConfig();
     warnings.push(
-      `ECS Service '${serviceLogicalId}' declares LoadBalancers, but local load-balancer ` +
-        'emulation is deferred to a follow-up PR. Containers are NOT registered to a local ' +
-        'listener; reach them via their published ports.'
+      `ECS Service '${serviceLogicalId}' declares LoadBalancers, but \`${cliName} start-service\` ` +
+        'runs the replicas only; no local listener fronts them. Reach the containers via their ' +
+        `published ports, or run \`${cliName} start-alb <Stack>/<Alb>\` to boot the same replicas ` +
+        'behind a local front-door that round-robins the listener rules.'
     );
   }
 
