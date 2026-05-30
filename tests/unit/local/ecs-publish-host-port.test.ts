@@ -202,3 +202,69 @@ describe('buildDockerRunArgs port-publish logging', () => {
     expect(reachLine()).toBeUndefined();
   });
 });
+
+describe('buildDockerRunArgs publishedEndpoints return field', () => {
+  it('records every static host-port publish in publish order', () => {
+    const { publishedEndpoints } = buildDockerRunArgs({
+      ...baseOpts(),
+      container: {
+        ...containerWithPort(),
+        portMappings: [
+          { containerPort: 80, protocol: 'tcp' },
+          { containerPort: 8080, protocol: 'tcp' },
+        ],
+      } as unknown as ResolvedEcsContainer,
+    });
+    expect(publishedEndpoints).toEqual([
+      {
+        containerName: 'app',
+        containerPort: 80,
+        host: '127.0.0.1',
+        hostPort: 80,
+        protocol: 'tcp',
+        overridden: false,
+      },
+      {
+        containerName: 'app',
+        containerPort: 8080,
+        host: '127.0.0.1',
+        hostPort: 8080,
+        protocol: 'tcp',
+        overridden: false,
+      },
+    ]);
+  });
+
+  it('marks overridden=true when --host-port remaps the host port', () => {
+    const { publishedEndpoints } = buildDockerRunArgs({
+      ...baseOpts(),
+      hostPortOverrides: { 80: 8080 },
+    });
+    expect(publishedEndpoints).toEqual([
+      {
+        containerName: 'app',
+        containerPort: 80,
+        host: '127.0.0.1',
+        hostPort: 8080,
+        protocol: 'tcp',
+        overridden: true,
+      },
+    ]);
+  });
+
+  it('returns an empty list when skipHostPortPublish suppresses every publish (multi-replica)', () => {
+    const { publishedEndpoints } = buildDockerRunArgs({
+      ...baseOpts(),
+      skipHostPortPublish: true,
+    });
+    expect(publishedEndpoints).toEqual([]);
+  });
+
+  it('returns an empty list when only ephemeral front-door publishes are emitted', () => {
+    const { publishedEndpoints } = buildDockerRunArgs({
+      ...baseOpts(),
+      ephemeralPublishContainerPorts: [80],
+    });
+    expect(publishedEndpoints).toEqual([]);
+  });
+});
