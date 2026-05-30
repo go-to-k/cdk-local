@@ -5,7 +5,7 @@
 [![CI](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml/badge.svg)](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/npm/l/cdk-local.svg)](./LICENSE)
 
-**Run your CDK app locally — no SAM template, no AWS account. Or bind to your deployed stack and hit its real data.**
+**Run your CDK-built app locally, no deploy needed — standalone, or kept local while it reaches the real AWS resources and data it depends on, with no `.env` or local copies to maintain.**
 A CDK-native alternative to `sam local`, covering Lambda, API Gateway, ECS, ALB-fronted services, and Bedrock AgentCore.
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
@@ -20,9 +20,9 @@ cd your-cdk-app               # the directory holding cdk.json
 cdkl invoke                   # pick a Lambda from the list, then run it locally
 ```
 
-`cdkl` synths your CDK app and runs the selected resource locally in Docker — a Lambda in its real `public.ecr.aws/lambda/*` container (via the Lambda Runtime Interface Emulator), an ECS task / service as a real container, an API on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
+`cdkl` synths your CDK app and runs the selected resource locally in Docker — Lambdas in their real AWS Lambda runtime container, ECS tasks and services as real containers, APIs on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
-**Bind to your real deployed stack** by adding `--from-cfn-stack`: cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so your local handler reads and writes the exact same data the deployed app does — no `.env` to wire up, no test data to seed.
+**Bind to your real deployed stack** by adding `--from-cfn-stack`: cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so your local handler reads and writes the exact same data the deployed app does.
 
 ```bash
 cdkl start-api --from-cfn-stack            # a local API on real AWS data + real Cognito JWT
@@ -31,7 +31,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## Why cdk-local
 
-- **Zero-friction local execution** — no AWS account, no IAM access, no deploy; just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's account.
+- **Zero-friction local execution** — run standalone: no deploy, no IAM access, just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's account.
 - **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` keeps you on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach, instead of paying to seed and anonymize a local emulator.
 - **Picks up where `sam local` leaves off:**
   - **CDK-native** — point at `cdk.json`; no SAM template to maintain.
@@ -58,7 +58,7 @@ cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (one 
 cdkl list                                      # every runnable target, grouped by command (alias: ls)
 ```
 
-![cdkl invoke against a local sample CDK app — no AWS account, no deploy](assets/cdkl-invoke.gif)
+![cdkl invoke against a local sample CDK app — standalone, no deploy](assets/cdkl-invoke.gif)
 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`. Add **`--watch`** to re-synth and hot-reload on CDK source changes ([details](docs/local-emulation.md#hot-reload---watch)).
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host and log `Reach it at 127.0.0.1:<port>` (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS).
