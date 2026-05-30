@@ -1243,3 +1243,106 @@ describe('startFrontDoorServer — WebSocket Upgrade over HTTPS', () => {
     expect(echoed).toBe('tls-ws');
   });
 });
+
+describe('startFrontDoorServer — WebSocket Upgrade resilience', () => {
+  it('does NOT inject HTTP/1.1 502 text into the WS frame stream when the upstream RSTs mid-stream', async () => {
+    // Spin a vanilla `ws` upstream that completes the handshake but then
+    // destroys the TCP socket the instant the client sends a frame. Without
+    // the upstreamConnected guard the front-door would write `HTTP/1.1 502
+    // Bad Gateway...` into the live WS frame channel; the assertion below
+    // sniffs the client-side bytes and fails if that text appears.
+    const { WebSocketServer, WebSocket } = await import('ws');
+    const upstreamHttp = createServer();
+    const wss = new WebSocketServer({ server: upstreamHttp });
+    wss.on('connection', (ws, req) => {
+      // Destroy the underlying socket immediately on any message — emulates
+      // a backend that crashed mid-session.
+      ws.on('message', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (req.socket as unknown as { destroy: () => void }).destroy();
+      });
+    });
+    await new Promise<void>((r) => upstreamHttp.listen(0, '127.0.0.1', r));
+    const upstreamPort = (upstreamHttp.address() as AddressInfo).port;
+    cleanups.push(
+      () => new Promise<void>((r) => wss.close(() => upstreamHttp.close(() => r())))
+    );
+
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstreamPort });
+    const front = await startFrontDoorServer({
+      route: () => ({ kind: 'forward', pools: [{ pool, weight: 1 }] }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    // Sniff the raw bytes received from the front-door after the upgrade.
+    const received: Buffer[] = [];
+    const closed = new Promise<void>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${front.port}/`);
+      ws.on('open', () => {
+        // Hook the underlying socket to capture every byte AFTER the 101.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = (ws as unknown as { _socket: NodeJS.ReadableStream })._socket;
+        raw.on('data', (chunk: Buffer) => received.push(chunk));
+        ws.send('trigger-rst');
+      });
+      ws.on('close', () => resolve());
+      ws.on('error', () => resolve());
+    });
+    await closed;
+
+    const bytes = Buffer.concat(received).toString('utf-8');
+    expect(bytes).not.toContain('HTTP/1.1 502');
+    expect(bytes).not.toContain('Failed to reach replica');
+  });
+
+  it('sanitizes CR / LF in a fixed-response contentType so it cannot inject extra headers', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'fixed-response',
+        statusCode: 200,
+        contentType: 'text/plain\r\nx-injected: yes',
+        messageBody: 'ok',
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    // Hit the upgrade path (which uses the raw socket writer) and capture
+    // the raw response bytes from the front-door.
+    const sock = await new Promise<import('node:net').Socket>((resolve, reject) => {
+      const s = (
+        require('node:net') as typeof import('node:net')
+      ).connect({ port: front.port, host: '127.0.0.1' }, () => resolve(s));
+      s.on('error', reject);
+    });
+    sock.write(
+      [
+        'GET / HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n')
+    );
+    const raw = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = [];
+      sock.on('data', (c: Buffer) => chunks.push(c));
+      sock.on('close', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    });
+
+    expect(raw).toContain('content-type: text/plain  x-injected: yes');
+    // The injection attempt MUST NOT produce a separate header line.
+    expect(raw).not.toMatch(/^x-injected: yes/m);
+  });
+});

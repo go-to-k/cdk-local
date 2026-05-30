@@ -992,8 +992,15 @@ function bridgeWebSocket(
       settled = true;
       resolve();
     };
+    // Tracks whether the upstream `connect` event has fired. Before connect,
+    // an error means the bridge never opened and a synthetic 502 over the
+    // client socket is safe (no WS frames flowed yet). After connect, the
+    // bridge is pipe-streaming bytes either way — injecting a synthetic
+    // `HTTP/1.1 502` block would corrupt the live WebSocket frame channel.
+    let upstreamConnected = false;
 
     upstream.on('connect', () => {
+      upstreamConnected = true;
       const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
       // Do NOT strip hop-by-hop: `Upgrade` / `Connection: Upgrade` are the
       // whole point of this code path. Only stamp the X-Forwarded-* set.
@@ -1021,16 +1028,19 @@ function bridgeWebSocket(
         `WS upstream error (${endpoint.host}:${endpoint.port}): ${err instanceof Error ? err.message : String(err)}`
       );
       if (!clientSocket.destroyed) {
-        // If the client never saw any bytes, surface a 502; otherwise the
-        // headers are already flushed, so just destroy.
-        try {
-          writeRawHttpError(
-            clientSocket,
-            502,
-            `Failed to reach replica ${endpoint.host}:${endpoint.port} behind ${opts.label}.`
-          );
-        } catch {
-          /* socket already partially written / closed */
+        // Only synthesize a 502 BEFORE the bridge pipe started. After
+        // connect the WS frame channel is live, and writing HTTP text
+        // into it would corrupt the WebSocket parser on the client.
+        if (!upstreamConnected) {
+          try {
+            writeRawHttpError(
+              clientSocket,
+              502,
+              `Failed to reach replica ${endpoint.host}:${endpoint.port} behind ${opts.label}.`
+            );
+          } catch {
+            /* socket already partially written / closed */
+          }
         }
         clientSocket.destroy();
       }
@@ -1131,9 +1141,17 @@ function writeRawHttpFixedResponse(socket: Duplex, action: FixedResponseRouteAct
   if (socket.destroyed) return;
   const body = action.messageBody ?? '';
   const statusText = STATUS_TEXT[action.statusCode] ?? '';
+  // CRLF in `contentType` (sourced from a CFn-literal `ContentType` field)
+  // would inject extra response headers when raw-written below. Strip any
+  // control bytes defensively — Node's `res.writeHead` does this on the
+  // regular HTTP path; the raw-socket path mirrors it.
+  const contentType = sanitizeRawHeaderValue(action.contentType ?? 'text/plain; charset=utf-8');
   const lines = [
-    `HTTP/1.1 ${action.statusCode}${statusText ? ` ${statusText}` : ''}`,
-    `content-type: ${action.contentType ?? 'text/plain; charset=utf-8'}`,
+    // RFC 7230 status-line: `HTTP-version SP Status-Code SP Reason-Phrase
+    // CRLF`. The SP after the status-code is required even when the
+    // reason-phrase is empty.
+    `HTTP/1.1 ${action.statusCode} ${statusText}`,
+    `content-type: ${contentType}`,
     `content-length: ${Buffer.byteLength(body)}`,
     'connection: close',
     '',
@@ -1147,9 +1165,16 @@ function writeRawHttpFixedResponse(socket: Duplex, action: FixedResponseRouteAct
   socket.end();
 }
 
+/** Strip CR / LF / NUL from a raw HTTP header value to prevent header injection. */
+function sanitizeRawHeaderValue(value: string): string {
+  // The ` ` literal in the class is the NUL byte; CRLF + NUL are the
+  // three header-injection-relevant control bytes that bypass the header
+  // grammar when raw-written over the upgrade socket.
+  return value.replace(/[\r\n ]/g, ' ');
+}
+
 /** Minimal HTTP/1.1 status text map for the codes the raw writers emit. */
 const STATUS_TEXT: Record<number, string> = {
-  200: 'OK',
   301: 'Moved Permanently',
   302: 'Found',
   401: 'Unauthorized',
