@@ -1,3 +1,10 @@
+## [0.65.3](https://github.com/go-to-k/cdk-local/compare/v0.65.2...v0.65.3) (2026-05-30)
+
+
+### Bug Fixes
+
+* **synth,resolvers:** accept pre-synth assemblies with missing context; surface state-load failure detail; drop hardcoded command names ([#211](https://github.com/go-to-k/cdk-local/issues/211)) ([c9511da](https://github.com/go-to-k/cdk-local/commit/c9511da17381f75ce870aa603d14ee9099f7894c))
+
 ## [0.65.2](https://github.com/go-to-k/cdk-local/compare/v0.65.1...v0.65.2) (2026-05-30)
 
 
