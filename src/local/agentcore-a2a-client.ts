@@ -41,7 +41,11 @@ export interface A2aInvokeOptions {
    * signal). Default 30s.
    */
   readyTimeoutMs?: number;
-  /** Per-request abort timeout once the server is reachable. Default 120s. */
+  /**
+   * Per-attempt abort timeout. Bounds each POST (including the user's real
+   * agent call), so a legitimately slow first response isn't misreported as
+   * "not ready". Default 120s.
+   */
   requestTimeoutMs?: number;
   /** Injected `fetch` for tests. Defaults to the global. */
   fetchImpl?: typeof fetch;
@@ -78,15 +82,13 @@ export async function a2aInvokeOnce(
 /**
  * POST a JSON-RPC message, retrying transient connect failures + reachable-
  * but-non-2xx responses until the container is up. The retry window is
- * `readyTimeoutMs`; the per-attempt abort during the readiness window is 5s
- * (so a stuck POST doesn't blow the whole window). Once the window expires
- * any further failure is fatal.
- *
- * On the first successful 2xx response the body is parsed and returned. A
- * proper request-level timeout (`requestTimeoutMs`) would only matter once
- * one good POST has completed; in v1 we only have a single round-trip per
- * invocation, so the 5s readiness abort is sufficient — the post-ready
- * timeout is unused here but kept for symmetry with the MCP client API.
+ * `readyTimeoutMs`; each attempt is bounded by `requestTimeoutMs` (the
+ * per-attempt abort), which protects the user's real (potentially slow)
+ * agent call without misreporting it as "not ready". Connect failures
+ * (ECONNREFUSED) propagate immediately regardless of the abort timer, so
+ * the retry cadence keeps working during boot. The loop exits once a 2xx
+ * arrives (returning the parsed body) or once `readyTimeoutMs` elapses
+ * (throwing the final "did not become ready" error below).
  */
 async function postWithReadyRetry(
   fetchImpl: typeof fetch,
@@ -100,7 +102,7 @@ async function postWithReadyRetry(
 
   while (Date.now() < deadline) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.min(5_000, requestTimeoutMs));
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       const response = await fetchImpl(url, {
         method: 'POST',
@@ -113,11 +115,21 @@ async function postWithReadyRetry(
       });
       const text = await response.text();
       if (response.status >= 200 && response.status < 300) {
-        return text ? safeJsonParse(text) : undefined;
+        if (!text) return undefined;
+        const parsed = safeJsonParse(text);
+        if (parsed === undefined) {
+          // 2xx but the body isn't valid JSON — a framing error from the
+          // agent, not a transient warmup state. Fail fast with the bytes
+          // we saw rather than silently reporting ok=true / raw="null".
+          throw new Error(
+            `A2A POST at ${url} returned HTTP ${response.status} with a non-JSON body: ${text.slice(0, 200)}`
+          );
+        }
+        return parsed;
       }
       // Reachable-but-non-2xx during the readiness window is treated as
-      // "framework still wiring its / route" (mirroring MCP); after the
-      // window it bubbles out as the final error below.
+      // "framework still wiring its / route" (mirroring MCP); the loop
+      // bails out below with this detail when the window expires.
       lastDetail = `A2A POST returned HTTP ${response.status}`;
     } catch (err) {
       if (!isTransientNetworkError(err)) throw err;

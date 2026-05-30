@@ -32,6 +32,9 @@ function streamAguiEvents(res) {
     clearInterval(timer);
     res.end();
   }, 50);
+  // Host-side abort during the stream: stop firing into a closed socket.
+  res.on('close', () => clearInterval(timer));
+  res.on('error', () => clearInterval(timer));
 }
 
 const server = http.createServer((req, res) => {

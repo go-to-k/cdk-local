@@ -6,12 +6,13 @@ import {
 } from '../../../src/local/agentcore-a2a-client.js';
 
 describe('a2aInvokeOnce', () => {
-  it('POSTs the JSON-RPC request to / and returns the parsed JSON response', async () => {
+  it('POSTs the JSON-RPC request to / with the right Accept + Content-Type headers and returns the parsed JSON response', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe(`http://127.0.0.1:${A2A_CONTAINER_PORT}${A2A_PATH}`);
       expect(init?.method).toBe('POST');
       const headers = init?.headers as Record<string, string>;
       expect(headers['Content-Type']).toBe('application/json');
+      expect(headers['Accept']).toBe('application/json');
       const sent = JSON.parse(String(init?.body));
       expect(sent.jsonrpc).toBe('2.0');
       expect(sent.method).toBe('agent/getCard');
@@ -111,6 +112,37 @@ describe('a2aInvokeOnce', () => {
     );
     expect(result.ok).toBe(true);
     expect(attempt).toBeGreaterThanOrEqual(2);
+  });
+
+  it('throws a clear framing error when the server returns 200 with a non-JSON body', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response('not-json-payload', { status: 200, headers: { 'content-type': 'text/plain' } })
+    );
+    await expect(
+      a2aInvokeOnce(
+        '127.0.0.1',
+        A2A_CONTAINER_PORT,
+        { method: 'agent/getCard' },
+        { fetchImpl }
+      )
+    ).rejects.toThrow(/non-JSON body: not-json-payload/);
+  });
+
+  it('rethrows a non-transient fetch error immediately instead of retrying', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new SyntaxError('unexpected token');
+    });
+    await expect(
+      a2aInvokeOnce(
+        '127.0.0.1',
+        A2A_CONTAINER_PORT,
+        { method: 'agent/getCard' },
+        { fetchImpl, readyTimeoutMs: 5_000 }
+      )
+    ).rejects.toThrow(/unexpected token/);
+    // The non-transient error path bails out immediately, so fetch should
+    // be called exactly once (not retried).
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('omits params from the JSON-RPC body when not supplied', async () => {
