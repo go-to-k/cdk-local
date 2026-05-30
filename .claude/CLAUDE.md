@@ -41,9 +41,16 @@ AWS managed services.
   rule-condition fields are honored (`path-pattern`, `host-header`,
   `http-header`, `http-request-method`, `query-string`, `source-ip`),
   along with weighted forwards and `redirect` / `fixed-response` actions.
-  A `TargetType: lambda` target group is served by invoking the backing
-  Lambda locally (HTTP request -> `requestContext.elb` event -> RIE ->
-  response), so a forward can mix ECS and Lambda targets
+  `authenticate-cognito` / `authenticate-oidc` actions are enforced
+  locally with a Bearer-JWT check (signature + `iss` + `aud` + `exp`
+  against the same JWKS / OIDC discovery URL the deployed ALB would) or
+  an `AWSELBAuthSessionCookie-*` pass-through; `--bearer-token <jwt>`
+  injects a default token, `--no-verify-auth` disables the guard. The
+  full OAuth roundtrip (redirect to the IdP's authorize endpoint +
+  callback + cookie issuance) is NOT reproduced. A `TargetType: lambda`
+  target group is served by invoking the backing Lambda locally (HTTP
+  request -> `requestContext.elb` event -> RIE -> response), so a
+  forward can mix ECS and Lambda targets
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -138,11 +145,16 @@ Gateway).
   (one warm RIE container per Lambda target), front-door-tls (resolves
   TLS materials for HTTPS listeners: `--tls-cert` / `--tls-key` pair or
   an auto-generated self-signed cert cached under XDG cache via openssl),
-  front-door-server (host HTTP / HTTPS reverse proxy that resolves a
-  per-request RouteAction — weighted forward to a replica pool or a
-  Lambda invoke, redirect, or fixed-response — behind the ALB listener
-  port; HTTPS branch flips `X-Forwarded-Proto` and the redirect
-  `#{protocol}` default to `https`), etc.
+  front-door-auth (builds the per-action `AuthCheck` callback for
+  authenticate-cognito / authenticate-oidc — reuses the cognito-jwt
+  verifier for the Bearer-JWT path, plus an `AWSELBAuthSessionCookie-*`
+  pass-through path), front-door-server (host HTTP / HTTPS reverse proxy
+  that resolves a per-request RouteAction — weighted forward to a
+  replica pool or a Lambda invoke, redirect, or fixed-response — behind
+  the ALB listener port; HTTPS branch flips `X-Forwarded-Proto` and the
+  redirect `#{protocol}` default to `https`; an `auth` guard on the
+  action gates serving with a 401 + `WWW-Authenticate: Bearer` on deny),
+  etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

@@ -85,6 +85,9 @@ import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
 } from '../../local/front-door-lambda-runner.js';
+import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
+import { buildAuthCheck } from '../../local/front-door-auth.js';
+import { createJwksCache } from '../../local/cognito-jwt.js';
 
 /**
  * Neutral ECS-service emulator orchestration shared by `cdkl start-service`
@@ -135,6 +138,19 @@ export interface EcsServiceEmulatorOptions {
    * (start-alb). Must be set together with `--tls-cert`.
    */
   tlsKey?: string;
+  /**
+   * Local enforcement of authenticate-* guards (start-alb only). Defaults to
+   * `true`; `--no-verify-auth` flips it to `false` (Commander convention)
+   * which makes every request pass the guard. Useful for local dev that does
+   * not want to mint a Bearer token.
+   */
+  verifyAuth?: boolean;
+  /**
+   * Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the
+   * inbound request has none (start-alb only). Verified against the same
+   * JWKS / OIDC discovery URL the deployed ALB would.
+   */
+  bearerToken?: string;
   platform?: string;
   /** Cap on local replica count regardless of template `DesiredCount`. */
   maxTasks: number;
@@ -230,6 +246,8 @@ export interface PlannedFrontDoorListener {
   protocol: 'HTTP' | 'HTTPS';
   /** Default action (absent for a rules-only listener -> 404 on miss). */
   defaultAction?: PlannedAction;
+  /** Default action's authenticate-* guard (set when DefaultActions[] wrapped one). */
+  defaultAuthGuard?: FrontDoorAuthGuard;
   /** Rules, evaluated by priority (lower first); each carries up to all six ALB condition fields. */
   rules: Array<{
     priority: number;
@@ -240,6 +258,8 @@ export interface PlannedFrontDoorListener {
     queryStringConditions: AlbQueryStringCondition[];
     sourceIpCidrs: string[];
     action: PlannedAction;
+    /** authenticate-* guard wrapping the action (set when Actions[] declared one). */
+    authGuard?: FrontDoorAuthGuard;
   }>;
 }
 
@@ -821,10 +841,25 @@ export async function buildFrontDoor(
       })
     : undefined;
 
+  // Shared JWKS cache + warn-once Set, both at buildFrontDoor scope so two
+  // rules pointing at the same Cognito JWKS URL de-dupe the "JWKS
+  // unreachable -> pass-through" warn line instead of each warning
+  // independently.
+  const jwksCache = createJwksCache();
+  const sharedWarned = new Set<string>();
+  const authForGuard = (guard: FrontDoorAuthGuard): ReturnType<typeof buildAuthCheck> =>
+    buildAuthCheck(guard, jwksCache, {
+      ...(options.verifyAuth === false && { noVerifyAuth: true }),
+      ...(options.bearerToken !== undefined && { bearerToken: options.bearerToken }),
+      warned: sharedWarned,
+    });
+  const attachAuth = (action: RouteAction, guard: FrontDoorAuthGuard | undefined): RouteAction =>
+    guard ? { ...action, auth: authForGuard(guard) } : action;
+
   try {
     for (const listener of plan.listeners) {
       const defaultRoute = listener.defaultAction
-        ? toRouteAction(listener.defaultAction)
+        ? attachAuth(toRouteAction(listener.defaultAction), listener.defaultAuthGuard)
         : undefined;
       const ruleRoutes: AlbPathRule<RouteAction>[] = listener.rules.map((r) => ({
         priority: r.priority,
@@ -834,7 +869,7 @@ export async function buildFrontDoor(
         httpRequestMethods: r.httpRequestMethods,
         queryStringConditions: r.queryStringConditions,
         sourceIpCidrs: r.sourceIpCidrs,
-        target: toRouteAction(r.action),
+        target: attachAuth(toRouteAction(r.action), r.authGuard),
       }));
       const route = (req: {
         path: string;

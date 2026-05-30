@@ -1255,6 +1255,8 @@ Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 | `--lb-port <listenerPort=hostPort>` | — | Bind the front-door on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
 | `--tls-cert <path>` | unset | PEM-encoded server certificate for HTTPS front-door listeners. Must be set together with `--tls-key`. Omit both flags to auto-generate a self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`, defaulting to `~/.cache/cdk-local/alb-https/`); requires `openssl` on PATH. The deployed Listener `Certificates[]` are NOT fetched — ACM private keys are not retrievable by design. |
 | `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Must be set together with `--tls-cert`. |
+| `--no-verify-auth` | (verify enabled) | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the guard passed. Useful for local dev that does not want to mint a Bearer token. |
+| `--bearer-token <jwt>` | unset | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + `iss` + `aud` + `exp`). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also bypasses the guard. |
 
 ```bash
 # ALB listener on :80 -> remap to a non-privileged host port on macOS
@@ -1268,6 +1270,11 @@ cdkl start-alb MyStack/WebAlb --lb-port 443=8443
 
 # HTTPS with a BYO cert (must be set together)
 cdkl start-alb MyStack/WebAlb --tls-cert ./server.pem --tls-key ./server-key.pem
+
+# Authenticate-cognito: inject a pre-minted JWT as the default Authorization
+cdkl start-alb MyStack/WebAlb --bearer-token "$(aws cognito-idp ... | jq -r .AuthenticationResult.IdToken)"
+# or skip the auth check entirely for local dev
+cdkl start-alb MyStack/WebAlb --no-verify-auth
 ```
 
 ### Scope
@@ -1300,14 +1307,37 @@ generated cert) since the cert is self-signed. The `SslPolicy` cipher policy
 is not enforced; the upstream is dialed over plain HTTP (TLS terminated at the
 front-door, not re-encrypted).
 
-Out of scope, skipped with a warning, and tracked in
-[#123](https://github.com/go-to-k/cdk-local/issues/123):
-`authenticate-cognito` / `authenticate-oidc` actions; ALB Mutual TLS
-(`MutualAuthentication.Mode: verify`). The local front-door binds the
-request's `socket.remoteAddress` as the source IP, so a `source-ip` CIDR
-narrower than `127.0.0.0/8` will not match traffic that comes in on
-`127.0.0.1` — exercise such rules from a real remote, or use a permissive
-loopback CIDR for local smoke tests.
+`authenticate-cognito` and `authenticate-oidc` actions are enforced locally
+with a Bearer-JWT check — the same `iss` + `aud` + `exp` + signature pipeline
+`cdkl start-api`'s JWT authorizers use, against either the Cognito direct
+JWKS URL (`AuthenticateCognitoConfig.UserPoolArn` is split into `<region>` +
+`<userPoolId>`) or the OIDC `Issuer`'s discovery URL. Missing / invalid token
+answers `401 Unauthorized` with a `WWW-Authenticate: Bearer realm="..."`
+header. `--bearer-token <jwt>` injects a default token when the inbound
+request has none — handy for `curl` against a `cdkl start-alb` boot. The
+deployed ALB also accepts an already-signed-in browser via the
+`AWSELBAuthSessionCookie-*` cookie; the local front-door treats the presence
+of that cookie as a pass-through (no JWT check) so a browser session that
+authenticated through the cloud ALB keeps working against the local
+front-door. `--no-verify-auth` disables every guard on the listener (every
+request passes). `UserPoolArn` / `Issuer` / `ClientId` MUST be literal
+strings in the synthesized template — a `Ref` / `Fn::GetAtt` / cross-stack
+intrinsic in any of those fields drops the guard with a warning, and the
+terminal action then serves unguarded.
+
+Out of scope:
+
+- The full OAuth roundtrip (redirect to the IdP's authorize endpoint,
+  callback, AWSELBAuthSessionCookie issuance) is NOT reproduced. The local
+  front-door accepts a Bearer JWT or an already-issued session cookie; it
+  does not mint one. To exercise the deployed sign-in flow, hit the
+  deployed ALB once and reuse the cookie locally.
+- ALB Mutual TLS (`MutualAuthentication.Mode: verify`) — tracked separately.
+
+The local front-door binds the request's `socket.remoteAddress` as the
+source IP, so a `source-ip` CIDR narrower than `127.0.0.0/8` will not match
+traffic that comes in on `127.0.0.1` — exercise such rules from a real
+remote, or use a permissive loopback CIDR for local smoke tests.
 
 ### `cdkl start-alb` exit codes
 

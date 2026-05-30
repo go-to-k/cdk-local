@@ -878,3 +878,159 @@ describe('startFrontDoorServer — HTTPS termination', () => {
     expect(upstream.lastHeaders?.['x-forwarded-proto']).toBe('http');
   });
 });
+
+describe('startFrontDoorServer — auth gate', () => {
+  /** Fetch a path and capture status + the `WWW-Authenticate` header. */
+  function fetchWithAuth(
+    port: number,
+    headers: Record<string, string> = {}
+  ): Promise<{ status: number; body: string; wwwAuth?: string }> {
+    return new Promise((resolve, reject) => {
+      const req = get({ host: '127.0.0.1', port, path: '/', headers }, (res) => {
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            body,
+            ...(typeof res.headers['www-authenticate'] === 'string' && {
+              wwwAuth: res.headers['www-authenticate'],
+            }),
+          })
+        );
+      });
+      req.on('error', reject);
+    });
+  }
+
+  it('answers 401 with WWW-Authenticate when the auth check denies', async () => {
+    const upstream = await startUpstream('protected');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'forward',
+        pools: [{ pool, weight: 1 }],
+        auth: {
+          realm: 'authenticate-cognito (UserPool=us-east-1_abcDEF)',
+          check: async () => ({ allow: false, reason: 'Bearer rejected' }),
+        },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port);
+    expect(result.status).toBe(401);
+    expect(result.body).toContain('Bearer rejected');
+    expect(result.wwwAuth).toBe(
+      'Bearer realm="authenticate-cognito (UserPool=us-east-1_abcDEF)"'
+    );
+  });
+
+  it('serves the wrapped action when the auth check allows', async () => {
+    const upstream = await startUpstream('allowed');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'forward',
+        pools: [{ pool, weight: 1 }],
+        auth: { realm: 'r', check: async () => ({ allow: true }) },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port, { authorization: 'Bearer token' });
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('allowed');
+  });
+
+  it('also enforces auth on a redirect action (does not bypass the gate)', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'redirect',
+        statusCode: 302,
+        host: 'somewhere.example.com',
+        auth: { realm: 'r', check: async () => ({ allow: false }) },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port);
+    expect(result.status).toBe(401);
+  });
+
+  it('also enforces auth on a fixed-response action (does not bypass the gate)', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'fixed-response',
+        statusCode: 200,
+        messageBody: 'should not be served',
+        auth: { realm: 'r', check: async () => ({ allow: false }) },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port);
+    expect(result.status).toBe(401);
+    expect(result.body).not.toContain('should not be served');
+  });
+
+  it('answers 401 with `Unauthorized` body when the check denies without a reason', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'forward',
+        pools: [{ pool: new FrontDoorEndpointPool(), weight: 1 }],
+        auth: { realm: 'r', check: async () => ({ allow: false }) },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port);
+    expect(result.status).toBe(401);
+    expect(result.body.trim()).toBe('Unauthorized');
+  });
+
+  it('answers 401 (not 500) when the auth check throws', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'forward',
+        pools: [{ pool: new FrontDoorEndpointPool(), weight: 1 }],
+        auth: {
+          realm: 'r',
+          check: async () => {
+            throw new Error('boom');
+          },
+        },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const result = await fetchWithAuth(front.port);
+    expect(result.status).toBe(401);
+  });
+});
