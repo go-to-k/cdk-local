@@ -12,8 +12,7 @@ Gateway endpoints, ECS tasks/services) locally in Docker, using your
 CDK app as the source of truth. It does NOT emulate AWS managed
 services (DynamoDB, S3, Secrets Manager, SNS, SQS, EventBridge, etc.) —
 your handler code calls those over the public AWS APIs using your IAM
-credentials. If you want offline emulation of managed services, pair
-cdk-local with a service emulator like LocalStack.
+credentials.
 
 ## Subcommands
 

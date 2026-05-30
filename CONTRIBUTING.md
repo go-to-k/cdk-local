@@ -102,11 +102,13 @@ merge to `main`.
 ## Scope reminders for docs / messages
 
 - cdk-local runs your **application compute** locally; it does NOT
-  emulate AWS managed services. Pair it with a service emulator like
-  LocalStack if you need offline DynamoDB / S3 / etc.
+  emulate AWS managed services. Don't recommend third-party emulators
+  or other tools in committed docs.
 - The only sanctioned tool comparison in committed docs is to
-  `sam local` (same compute-locally category). Please don't add side-by-side
-  tables vs other tools.
+  `sam local` (same compute-locally category). Please don't mention
+  or compare against any other product (e.g. `aws-cdk-local` /
+  `cdklocal` / LocalStack) — no side-by-side tables, no "pair with"
+  recommendations.
 
 ## Reporting bugs / requesting features
 

@@ -102,15 +102,15 @@ AWS managed services.
     container
   - `--from-cfn-stack <stack>` to bind to a deployed CloudFormation
     stack and inject its real ARNs / Secret values into Lambda env
-- cdk-local does NOT bundle a managed-service emulator. If you need
-  offline emulation, pair cdk-local with a service emulator like
-  LocalStack — they are complementary, not competing.
+- cdk-local does NOT bundle a managed-service emulator.
 
 When writing committed artifacts (README, docs, commit messages, PR
-bodies, JSDoc), keep to this scope. Do NOT add comparison tables vs
-`aws-cdk-local` or LocalStack. The only public comparison the docs may
-make is to `sam local` (same compute-locally category for Lambda + API
-Gateway).
+bodies, JSDoc), keep to this scope. Do NOT name, recommend, or compare
+against any other product (e.g. `aws-cdk-local` / `cdklocal` /
+LocalStack / similar) — no side-by-side tables, no "pair with" / "use
+alongside" recommendations, no parenthetical mentions. The only
+sanctioned tool comparison is to `sam local` (same compute-locally
+category for Lambda + API Gateway).
 
 ## Architecture
 
@@ -363,11 +363,14 @@ vp run runtime:smoke
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
   `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / list`.
-- Do NOT write comparison tables against `aws-cdk-local` / `cdklocal` /
-  LocalStack in committed artifacts (README, docs, JSDoc). The
-  cdk-local vs LocalStack distinction is the
-  "compute vs managed services" one above; lead with that, not with
-  side-by-side tables.
+- Do NOT name, recommend, or compare against `aws-cdk-local` /
+  `cdklocal` / LocalStack (or any other third-party product) in
+  committed artifacts (README, docs, JSDoc, CONTRIBUTING). No
+  comparison tables, no "pair with" / "use alongside" recommendations,
+  no parenthetical mentions. State cdk-local's scope ("application
+  compute locally; managed services stay real AWS") on its own terms
+  without naming competing or adjacent products. `sam local` is the
+  only sanctioned exception.
 - Do NOT reference cdkd internal implementation (deploy / destroy /
   state schema details / provider system) in cdk-local artifacts — the
   dependency direction is cdkd -> cdk-local, and cdk-local should read

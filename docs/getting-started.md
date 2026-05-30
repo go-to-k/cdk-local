@@ -119,10 +119,8 @@ The picker opens again; pick `HelloHandler` and the payload lands in
   URL + WebSocket + ECS run-task + ECS service + ECS ALB + Bedrock
   AgentCore vs SAM's Lambda + REST v1 only), and works against your
   CDK construct paths instead of CloudFormation logical IDs.
-- **Pair with a managed-service emulator if you need one** — cdk-local
-  does NOT emulate AWS managed services. It runs your **application
-  compute** locally and lets your Lambda code talk to real DynamoDB /
-  S3 / Secrets Manager / Cognito / etc. via your IAM credentials. If
-  you need offline emulation of those managed services too, pair
-  cdk-local with a service emulator like LocalStack — the two are
-  complementary, not competing.
+- **cdk-local does NOT emulate AWS managed services.** It runs your
+  **application compute** locally and lets your Lambda code talk to
+  real DynamoDB / S3 / Secrets Manager / Cognito / etc. via your IAM
+  credentials. For offline emulation of the managed services
+  themselves, reach for a separate emulator alongside cdk-local.
