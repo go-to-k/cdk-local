@@ -40,7 +40,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## What runs locally
 
-cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack). Want those offline too? Pair cdk-local with a service emulator like [LocalStack](https://www.localstack.cloud/) — it does not bundle one.
+cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack).
 
 The locally executable resources are listed under [Supported resources](#supported-resources).
 

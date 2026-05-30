@@ -36,7 +36,7 @@ Check whether documentation is up to date with recent code changes.
    - Missing mentions of new files, features, or options
    - Outdated descriptions that no longer match the code
    - Stale lists that don't match what's in the source
-   - Comparison-table additions that violate the `.claude/CLAUDE.md` "Positioning" rule (no comparisons vs `aws-cdk-local`/`cdklocal`/LocalStack beyond the "compute vs managed services" lead).
+   - Third-party product mentions that violate the `.claude/CLAUDE.md` "Positioning" rule (no naming, recommending, or comparing against `aws-cdk-local`/`cdklocal`/LocalStack or other competing products — `sam local` is the only sanctioned exception).
 
 5. **Report findings** as a checklist:
    - List each discrepancy found with the specific file and section

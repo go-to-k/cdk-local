@@ -120,7 +120,7 @@ The Lambda RIE base image pull is one-time. After the first run on a given Docke
 
 ### `start-service` / `run-task` ECS scale isn't realistic
 
-cdk-local runs ECS tasks as plain Docker containers. There is no autoscaling, no placement strategy, no health-check-based replacement. If you need production-shape ECS behavior, deploy to a real cluster (or pair cdk-local with LocalStack's ECS emulation).
+cdk-local runs ECS tasks as plain Docker containers. There is no autoscaling, no placement strategy, no health-check-based replacement. If you need production-shape ECS behavior, deploy to a real cluster.
 
 ## When to file an issue
 
