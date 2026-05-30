@@ -1,3 +1,10 @@
+# [0.52.0](https://github.com/go-to-k/cdk-local/compare/v0.51.0...v0.52.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** verify customJwtAuthorizer allowedScopes + customClaims ([#166](https://github.com/go-to-k/cdk-local/issues/166)) ([f4bff48](https://github.com/go-to-k/cdk-local/commit/f4bff4800859d32644b7648cfc67e6ad219c5024))
+
 # [0.51.0](https://github.com/go-to-k/cdk-local/compare/v0.50.0...v0.51.0) (2026-05-30)
 
 
