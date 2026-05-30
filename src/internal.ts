@@ -297,6 +297,7 @@ export { EcsTaskResolutionError } from './local/ecs-task-resolver.js';
  */
 export {
   resolveAgentCoreTarget,
+  pickAgentCoreCandidateStack,
   AgentCoreResolutionError,
   AGENTCORE_RUNTIME_TYPE,
   AGENTCORE_HTTP_PROTOCOL,
@@ -426,3 +427,13 @@ export {
 } from './local/file-watcher.js';
 export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
+
+/**
+ * Target picker — interactive `clack`-backed selector for an omitted positional
+ * target. `resolveSingleTarget` returns the user-provided value as-is, prompts
+ * in a TTY when omitted, or calls `onMissing()` (the command's required-arg
+ * error) when no TTY is available. Exposed for hosts that own their command
+ * tree but want cdk-local's picker UX for missing targets — e.g. cdkd's
+ * `local-invoke-agentcore` port.
+ */
+export { resolveSingleTarget } from './local/target-picker.js';
