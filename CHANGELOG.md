@@ -1,3 +1,10 @@
+## [0.65.1](https://github.com/go-to-k/cdk-local/compare/v0.65.0...v0.65.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **start-alb,start-service:** drop stale "deferred to a follow-up PR" LB warning ([#206](https://github.com/go-to-k/cdk-local/issues/206)) ([79309ef](https://github.com/go-to-k/cdk-local/commit/79309ef6bfcb61aa39bf843a77379e1333e9bf8c))
+
 # [0.65.0](https://github.com/go-to-k/cdk-local/compare/v0.64.0...v0.65.0) (2026-05-30)
 
 
