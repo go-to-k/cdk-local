@@ -1,3 +1,10 @@
+# [0.54.0](https://github.com/go-to-k/cdk-local/compare/v0.53.0...v0.54.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** `--timeout <ms>` flag (default 120000) ([#171](https://github.com/go-to-k/cdk-local/issues/171)) ([5ec7f1a](https://github.com/go-to-k/cdk-local/commit/5ec7f1aec59883bcdcd59101c8faa527669e2f7b))
+
 # [0.53.0](https://github.com/go-to-k/cdk-local/compare/v0.52.0...v0.53.0) (2026-05-30)
 
 
