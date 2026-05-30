@@ -543,6 +543,19 @@ export async function runEcsServiceEmulator(
         `Service(s) running: ${frontDoorLambdaRunners.length} Lambda target(s) behind the ALB front-door.`
       );
     }
+    // Surface the consolidated endpoint URLs at the END of the boot stream so
+    // the access URL doesn't get buried between streamed `docker pull` output
+    // and the per-replica boot logs. Two sources:
+    //   - per-service static host-port publishes recorded in
+    //     `state.publishedEndpoints` by the runner (single-replica start-service);
+    //   - per-listener ALB front-door servers (start-alb), echoed here so they
+    //     end up at the bottom too — the buildFrontDoor `ALB front-door: ...`
+    //     line is emitted earlier (and is the load-bearing marker integ tests
+    //     grep for), but it streams BEFORE the docker-pull noise and ends up
+    //     buried, exactly the same problem this banner solves for start-service.
+    // Empty when neither source has anything to show (e.g. multi-replica
+    // start-service with no front-door).
+    logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
     if (perTarget.length > 0) {
@@ -1181,6 +1194,58 @@ function readEnvOverridesFile(
     );
   }
   return parsed as Record<string, Record<string, string | null> | undefined>;
+}
+
+/**
+ * Print a consolidated "Service endpoints:" banner so the access URL ends up
+ * at the BOTTOM of the boot output instead of buried mid-`docker pull`. Two
+ * sources are surfaced:
+ *
+ *  1. Per-service static host-port publishes recorded by the runner in
+ *     `EcsRunState.publishedEndpoints` (single-replica `start-service`).
+ *     Multi-replica services skip the host-port publish and contribute
+ *     nothing here.
+ *  2. Host-side ALB front-door listener URLs (`start-alb`). The
+ *     `buildFrontDoor` step also logs an `ALB front-door: ...` line for each
+ *     listener earlier in the stream (it's the load-bearing marker the integ
+ *     tests grep for), but it streams BEFORE the docker-pull noise. Echoing
+ *     it here re-surfaces the URL at the bottom for the user.
+ *
+ * Silent when neither source has anything to show.
+ */
+export function logEndpointsBanner(
+  perTarget: ReadonlyArray<{ controller?: ServiceController }>,
+  frontDoorServers: ReadonlyArray<StartedFrontDoorServer>,
+  logger: ReturnType<typeof getLogger>
+): void {
+  const lines: string[] = [];
+  for (const pt of perTarget) {
+    const controller = pt.controller;
+    if (!controller) continue;
+    // Static publishes are identical across replicas (only single-replica
+    // services publish; multi-replica skips host-port publish entirely), so
+    // we read the first active replica's record.
+    const activeReplica = controller.runState.replicas.find((r) => !r.shuttingDown);
+    const endpoints = activeReplica?.state.publishedEndpoints ?? [];
+    if (endpoints.length === 0) continue;
+    lines.push(`  ${controller.service.serviceName}`);
+    for (const ep of endpoints) {
+      const scheme = ep.protocol.toLowerCase() === 'udp' ? 'udp' : 'http';
+      const override = ep.overridden ? '  (--host-port override)' : '';
+      lines.push(
+        `    ${ep.containerName} container port ${ep.containerPort}/${ep.protocol} -> ${scheme}://${ep.host}:${ep.hostPort}${override}`
+      );
+    }
+  }
+  if (frontDoorServers.length > 0) {
+    lines.push('  ALB front-door');
+    for (const s of frontDoorServers) {
+      lines.push(`    ${s.scheme}://${s.host}:${s.port}`);
+    }
+  }
+  if (lines.length === 0) return;
+  logger.info('Service endpoints:');
+  for (const l of lines) logger.info(l);
 }
 
 function parsePositiveInt(raw: string, flagName: string): number {

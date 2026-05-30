@@ -233,6 +233,33 @@ export interface EcsRunState {
   startedContainers: { name: string; id: string }[];
   /** Active log streams (stop functions). Drained on teardown. */
   logStoppers: (() => void)[];
+  /**
+   * Per-container host-port publishes recorded as the runner builds the
+   * `docker run -p host:hostPort:containerPort/proto` args, in publish order.
+   * The orchestrator (start-service / run-task) reads this AFTER boot to
+   * print a single consolidated "Endpoints:" banner so users don't have to
+   * scrape it out of the streamed docker-pull output. Empty when
+   * `skipHostPortPublish` (multi-replica) suppresses every publish; for
+   * ALB-fronted single-replica services, only ports OUTSIDE
+   * `ephemeralPublishContainerPorts` are recorded — the front-door owns
+   * its own visibility for the ports it fronts.
+   */
+  publishedEndpoints: PublishedHostEndpoint[];
+}
+
+/**
+ * One static `-p host:hostPort:containerPort/proto` publish that the runner
+ * surfaced for an end-user-facing container port. Used to populate the
+ * post-boot "Endpoints:" banner.
+ */
+export interface PublishedHostEndpoint {
+  containerName: string;
+  containerPort: number;
+  host: string;
+  hostPort: number;
+  protocol: string;
+  /** True when `--host-port <containerPort>=<hostPort>` remapped the host port. */
+  overridden: boolean;
 }
 
 export interface RunEcsTaskResult {
@@ -249,7 +276,13 @@ export interface RunEcsTaskResult {
  * internals.
  */
 export function createEcsRunState(): EcsRunState {
-  return { network: undefined, dockerVolumeNames: [], startedContainers: [], logStoppers: [] };
+  return {
+    network: undefined,
+    dockerVolumeNames: [],
+    startedContainers: [],
+    logStoppers: [],
+    publishedEndpoints: [],
+  };
 }
 
 /**
@@ -399,38 +432,37 @@ export async function runEcsTask(
         `Internal: no resolved image for container '${container.name}'.`
       );
     }
-    dockerCmds.set(
-      container.name,
-      buildDockerRunArgs({
-        task,
-        container,
-        image,
-        network: state.network.networkName,
-        volumeByName,
-        secrets: secretsByContainer.get(container.name) ?? [],
-        envOverrides: options.envOverrides,
-        containerHost: options.containerHost,
-        roleArn: options.taskRoleArn,
-        platformOverride: options.platformOverride,
-        region: options.region,
-        sidecarIp: state.network.sidecarIp,
-        ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
-        ...(options.hostPortOverrides ? { hostPortOverrides: options.hostPortOverrides } : {}),
-        ...(options.ephemeralPublishContainerPorts &&
-        options.ephemeralPublishContainerPorts.length > 0
-          ? { ephemeralPublishContainerPorts: options.ephemeralPublishContainerPorts }
-          : {}),
-        ...(options.addHostFlags && options.addHostFlags.length > 0
-          ? { addHostFlags: options.addHostFlags }
-          : {}),
-        ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
-          ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
-          : {}),
-        ...(options.profileCredentialsFile && {
-          profileCredentialsFile: options.profileCredentialsFile,
-        }),
-      })
-    );
+    const built = buildDockerRunArgs({
+      task,
+      container,
+      image,
+      network: state.network.networkName,
+      volumeByName,
+      secrets: secretsByContainer.get(container.name) ?? [],
+      envOverrides: options.envOverrides,
+      containerHost: options.containerHost,
+      roleArn: options.taskRoleArn,
+      platformOverride: options.platformOverride,
+      region: options.region,
+      sidecarIp: state.network.sidecarIp,
+      ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
+      ...(options.hostPortOverrides ? { hostPortOverrides: options.hostPortOverrides } : {}),
+      ...(options.ephemeralPublishContainerPorts &&
+      options.ephemeralPublishContainerPorts.length > 0
+        ? { ephemeralPublishContainerPorts: options.ephemeralPublishContainerPorts }
+        : {}),
+      ...(options.addHostFlags && options.addHostFlags.length > 0
+        ? { addHostFlags: options.addHostFlags }
+        : {}),
+      ...((options.networkAliasesByContainer?.get(container.name)?.length ?? 0) > 0
+        ? { networkAliases: options.networkAliasesByContainer!.get(container.name)! }
+        : {}),
+      ...(options.profileCredentialsFile && {
+        profileCredentialsFile: options.profileCredentialsFile,
+      }),
+    });
+    dockerCmds.set(container.name, { args: built.args, sensitiveEnv: built.sensitiveEnv });
+    for (const ep of built.publishedEndpoints) state.publishedEndpoints.push(ep);
   }
 
   // Boot containers in dependency order. Each container's `dependsOn`
@@ -984,9 +1016,11 @@ export function parseHostPortOverrides(values: string[] | undefined): Record<num
 export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   args: string[];
   sensitiveEnv: Record<string, string>;
+  publishedEndpoints: PublishedHostEndpoint[];
 } {
   const { task, container, image, network, volumeByName, secrets, containerHost, roleArn } = opts;
   const args: string[] = ['run', '-d'];
+  const publishedEndpoints: PublishedHostEndpoint[] = [];
 
   // Stable name so siblings can reach this container via DNS.
   args.push(
@@ -1049,7 +1083,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       if (ephemeralPorts.has(pm.containerPort)) continue;
       const declaredHostPort = pm.hostPort ?? pm.containerPort;
       const hostPort = opts.hostPortOverrides?.[pm.containerPort] ?? declaredHostPort;
-      const overrideNote = hostPort !== declaredHostPort ? ' (--host-port override)' : '';
+      const overridden = hostPort !== declaredHostPort;
+      const overrideNote = overridden ? ' (--host-port override)' : '';
       getLogger()
         .child('ecs')
         .info(
@@ -1057,6 +1092,14 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
             `${containerHost}:${hostPort}${overrideNote}. Reach it at ${containerHost}:${hostPort}.`
         );
       args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
+      publishedEndpoints.push({
+        containerName: container.name,
+        containerPort: pm.containerPort,
+        host: containerHost,
+        hostPort,
+        protocol: pm.protocol,
+        overridden,
+      });
     }
   }
 
@@ -1192,7 +1235,7 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   }
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
-  return { args, sensitiveEnv };
+  return { args, sensitiveEnv, publishedEndpoints };
 }
 
 function applyOverrideMap(
