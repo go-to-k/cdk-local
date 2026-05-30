@@ -90,11 +90,6 @@ Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Pytho
 
 cdk-local also exports its commands as Commander factories so a host project can embed it into its own CLI, register custom state sources alongside the built-in `--from-cfn-stack`, and rebrand the embedded commands. See [docs/library-mode.md](docs/library-mode.md) for the API and an example.
 
-## Get help / contribute
-
-- **Bugs / feature requests**: file an issue at [github.com/go-to-k/cdk-local/issues](https://github.com/go-to-k/cdk-local/issues). The `bug_report` and `feature_request` templates ask for the smallest reliable repro shape.
-- **Contributing code or docs**: see [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev environment setup, build / test commands, and PR checklist.
-
 ## License
 
 Apache-2.0
