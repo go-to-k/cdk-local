@@ -1551,6 +1551,37 @@ export function createLocalInvokeAgentCoreCommand(
       '[target]',
       'CDK display path or stack-qualified logical ID of the AgentCore Runtime to invoke (omit to pick interactively in a TTY)'
     )
+    .action(
+      withErrorHandling(
+        async (target: string | undefined, options: LocalInvokeAgentCoreOptions) => {
+          await localInvokeAgentCoreCommand(target, options, opts.extraStateProviders);
+        }
+      )
+    );
+
+  addInvokeAgentCoreSpecificOptions(cmd);
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(deprecatedRegionOption);
+  return cmd;
+}
+
+/**
+ * Register the option block that `cdkl invoke-agentcore` adds on top of
+ * the shared common / app / context option helpers. Shared between
+ * `cdkl invoke-agentcore` and any host CLI (e.g. cdkd's
+ * `local invoke-agentcore`) that wraps the single-shot AgentCore Runtime
+ * container runner, so adding or renaming an `invoke-agentcore`-only flag
+ * here propagates to every embedder without duplicate `.addOption(...)`
+ * blocks.
+ *
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then the shared common / app / context
+ * options — host flags / invoke-agentcore flags / common flags grouped
+ * in three `--help` clusters. Chainable: returns `cmd`.
+ */
+export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
+  return cmd
     .addOption(new Option('-e, --event <file>', 'JSON event payload file (default: {})'))
     .addOption(new Option('--event-stdin', 'Read event JSON from stdin').default(false))
     .addOption(
@@ -1668,16 +1699,5 @@ export function createLocalInvokeAgentCoreCommand(
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
       )
-    )
-    .action(
-      withErrorHandling(
-        async (target: string | undefined, options: LocalInvokeAgentCoreOptions) => {
-          await localInvokeAgentCoreCommand(target, options, opts.extraStateProviders);
-        }
-      )
     );
-
-  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
-  return cmd;
 }

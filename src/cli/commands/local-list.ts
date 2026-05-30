@@ -186,19 +186,41 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
         'usually do not need to copy these — just run the command (e.g. `invoke`) with no target in a ' +
         'terminal and pick from the list.'
     )
-    .addOption(
-      new Option(
-        '-l, --long',
-        "Also print each target's stack-qualified logical ID (<Stack>:<LogicalId>) beneath it"
-      ).default(false)
-    )
     .action(
       withErrorHandling(async (options: LocalListOptions) => {
         await localListCommand(options);
       })
     );
 
+  addListSpecificOptions(cmd);
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
   cmd.addOption(deprecatedRegionOption);
   return cmd;
+}
+
+/**
+ * Register the option block that `cdkl list` adds on top of the shared
+ * common / app / context option helpers. Shared between `cdkl list` and any
+ * host CLI (e.g. cdkd's `local list`) that wraps the synthesis-driven
+ * target enumeration, so adding or renaming a `list`-only flag here
+ * propagates to every embedder without duplicate `.addOption(...)` blocks.
+ *
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then the shared common / app / context
+ * options — host flags / list flags / common flags grouped in three
+ * `--help` clusters. Chainable: returns `cmd`.
+ *
+ * Today `cdkl list` only contributes one non-common flag (`-l, --long`),
+ * but the helper is still exposed so the surface-contract test pattern
+ * (helper + common == createLocalListCommand) is uniform across every
+ * `add<Cmd>SpecificOptions` extraction.
+ */
+export function addListSpecificOptions(cmd: Command): Command {
+  return cmd.addOption(
+    new Option(
+      '-l, --long',
+      "Also print each target's stack-qualified logical ID (<Stack>:<LogicalId>) beneath it"
+    ).default(false)
+  );
 }

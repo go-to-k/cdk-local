@@ -289,3 +289,49 @@ ALB target string into a listener-by-listener routing table:
 - `isApplicationLoadBalancer` — type-narrowing predicate that
   disambiguates ApplicationLoadBalancer from NetworkLoadBalancer when
   picking targets.
+
+## Per-command option blocks (host CLIs that wrap a single command)
+
+A host CLI that ports an individual `cdkl` command verbatim (rather than
+re-exporting the factory) can compose the per-command option block on
+its own Commander instance. Each helper registers only that command's
+NON-common flags; the host still owns the shared `commonOptions` /
+`appOptions` / `contextOptions` / `deprecatedRegionOption` block (or
+calls them via its own re-export). Adding or renaming a per-command flag
+in upstream cdk-local propagates to every embedder calling the helper —
+no duplicate `.addOption(...)` block on the host side.
+
+- `addInvokeSpecificOptions(cmd)` — `cdkl invoke` flags
+  (`--event`, `--event-stdin`, `--env-vars`, `--no-pull`, `--no-build`,
+  `--debug-port`, `--container-host`, `--assume-role`, `--layer-role-arn`,
+  `--ecr-role-arn`, `--from-cfn-stack`, `--stack-region`).
+- `addInvokeAgentCoreSpecificOptions(cmd)` — `cdkl invoke-agentcore`
+  flags (`--event`, `--event-stdin`, `--env-vars`, `--session-id`,
+  `--ws`, `--ws-interactive`, `--bearer-token`, `--no-verify-auth`,
+  `--sigv4`, `--platform`, `--no-pull`, `--no-build`, `--container-host`,
+  `--timeout`, `--assume-role`, `--ecr-role-arn`, `--from-cfn-stack`,
+  `--stack-region`).
+- `addStartApiSpecificOptions(cmd)` — `cdkl start-api` flags
+  (`--port`, `--host`, `--stack`, `--all-stacks`, `--warm`,
+  `--per-lambda-concurrency`, `--no-pull`, `--container-host`,
+  `--debug-port-base`, `--env-vars`, `--assume-role`, `--watch`,
+  `--stage`, `--api`, `--layer-role-arn`, `--from-cfn-stack`,
+  `--stack-region`, `--mtls-truststore`, `--mtls-cert`, `--mtls-key`,
+  `--strict-sigv4`).
+- `addRunTaskSpecificOptions(cmd)` — `cdkl run-task` flags
+  (`--cluster`, `--env-vars`, `--container-host`, `--host-port`,
+  `--assume-task-role`, `--no-pull`, `--ecr-role-arn`, `--platform`,
+  `--keep-running`, `--detach`, `--from-cfn-stack`, `--stack-region`).
+  Does NOT compose with `addCommonEcsServiceOptions` — the single-task
+  surface intentionally diverges from the multi-replica service surface
+  (no `--max-tasks` / `--restart-policy`).
+- `addListSpecificOptions(cmd)` — `cdkl list` flag (`-l, --long`).
+  Intentionally minimal so the surface-contract test pattern stays
+  uniform across every per-command helper.
+
+Each helper is chainable (returns `cmd`); the upstream `cdkl` factories
+themselves call the helper to avoid duplicating the option block,
+so the helper and the factory cannot drift apart silently (the
+`tests/unit/cli/option-surface-contracts.test.ts` drift guards fail
+the moment someone adds a flag inline in `create<Cmd>Command` instead
+of inside the matching `add<Cmd>SpecificOptions` helper).

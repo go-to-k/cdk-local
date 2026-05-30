@@ -511,3 +511,25 @@ export {
   resolveAlbTarget,
   parseLbPortOverrides,
 } from './cli/commands/local-start-alb.js';
+
+/**
+ * Per-command "specific" option blocks for the remaining `cdkl` commands —
+ * extracted so host CLIs (e.g. cdkd) that wrap the same factories can
+ * compose `add<Cmd>SpecificOptions(cmd)` and auto-inherit every new
+ * per-command flag the upstream cdk-local CLI adds, without a manual
+ * `.addOption(...)` duplication on the host side. Each helper sits ON TOP
+ * of the shared `commonOptions` / `appOptions` / `contextOptions` /
+ * `deprecatedRegionOption` block (which the matching `create<Cmd>Command`
+ * factory still composes around the helper). Mirrors the shape of
+ * {@link addAlbSpecificOptions}.
+ *
+ * `addListSpecificOptions` is intentionally minimal (only `-l, --long`) so
+ * the surface-contract test pattern (helper + common == factory output)
+ * is uniform across every command, even when the per-command block is a
+ * single flag.
+ */
+export { addListSpecificOptions } from './cli/commands/local-list.js';
+export { addRunTaskSpecificOptions } from './cli/commands/local-run-task.js';
+export { addInvokeSpecificOptions } from './cli/commands/local-invoke.js';
+export { addInvokeAgentCoreSpecificOptions } from './cli/commands/local-invoke-agentcore.js';
+export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';

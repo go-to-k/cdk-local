@@ -3607,6 +3607,37 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
       '[targets...]',
       `Optional API subset filter. Pass one or more identifiers to serve exactly that subset (the union; each on its own port). Each accepts the bare CDK logical id ('MyHttpApi'; single-stack apps only), stack-qualified logical id ('MyStack:MyHttpApi'), full CDK Construct path ('MyStack/MyHttpApi/Resource'), or an ancestor Construct path that prefix-matches ('MyStack/MyHttpApi'). When omitted in a TTY, a multi-select picker opens with every API pre-selected (Enter serves all, deselect to pick a subset); when omitted in a non-TTY (CI / pipe) every discovered API is served. Mirrors \`${getEmbedConfig().cliName} invoke\` / \`${getEmbedConfig().cliName} run-task\` target syntax.`
     )
+    .action(
+      withErrorHandling(async (targets: string[], options: LocalStartApiOptions) => {
+        await localStartApiCommand(targets, options, opts.extraStateProviders);
+      })
+    );
+
+  addStartApiSpecificOptions(startApi);
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
+    startApi.addOption(opt)
+  );
+  startApi.addOption(deprecatedRegionOption);
+
+  return startApi;
+}
+
+/**
+ * Register the option block that `cdkl start-api` adds on top of the shared
+ * common / app / context option helpers. Shared between `cdkl start-api`
+ * and any host CLI (e.g. cdkd's `local start-api`) that wraps the
+ * long-running API-Gateway-fronted local HTTP server, so adding or
+ * renaming a `start-api`-only flag here propagates to every embedder
+ * without duplicate `.addOption(...)` blocks.
+ *
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then the shared common / app / context
+ * options — host flags / start-api flags / common flags grouped in three
+ * `--help` clusters. Chainable: returns `cmd`.
+ */
+export function addStartApiSpecificOptions(cmd: Command): Command {
+  return cmd
     .addOption(
       new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
     )
@@ -3737,17 +3768,5 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
           'principalId so local dev exercises app logic without reproducing an auth boundary it ' +
           'cannot fully emulate. OAC-fronted Function URLs always warn-and-pass regardless.'
       ).default(false)
-    )
-    .action(
-      withErrorHandling(async (targets: string[], options: LocalStartApiOptions) => {
-        await localStartApiCommand(targets, options, opts.extraStateProviders);
-      })
     );
-
-  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
-    startApi.addOption(opt)
-  );
-  startApi.addOption(deprecatedRegionOption);
-
-  return startApi;
 }

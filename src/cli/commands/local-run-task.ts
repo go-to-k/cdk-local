@@ -653,6 +653,41 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
       '[target]',
       'CDK display path or stack-qualified logical ID of the AWS::ECS::TaskDefinition to run (omit to pick interactively in a TTY)'
     )
+    .action(
+      withErrorHandling(async (target: string | undefined, options: LocalRunTaskOptions) => {
+        await localRunTaskCommand(target, options, opts.extraStateProviders);
+      })
+    );
+
+  addRunTaskSpecificOptions(cmd);
+  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(deprecatedRegionOption);
+  return cmd;
+}
+
+/**
+ * Register the option block that `cdkl run-task` adds on top of the shared
+ * common / app / context option helpers. Shared between `cdkl run-task` and
+ * any host CLI (e.g. cdkd's `local run-task`) that wraps the single-task
+ * ECS local runner, so adding or renaming a `run-task`-only flag here
+ * propagates to every embedder without duplicate `.addOption(...)` blocks.
+ *
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then the shared common / app / context
+ * options — host flags / run-task flags / common flags grouped in three
+ * `--help` clusters. Chainable: returns `cmd`.
+ *
+ * NOTE: `run-task` does NOT compose with {@link addCommonEcsServiceOptions}
+ * even though many flags overlap. The two ECS surfaces (single-task vs
+ * multi-replica service) have intentionally divergent defaults
+ * (`run-task` has no `--max-tasks` / `--restart-policy`; `start-service`
+ * / `start-alb` have no `--host-port` / `--keep-running` / `--detach`),
+ * and folding `run-task` into the service common block would mutate the
+ * surface non-trivially. Each command keeps its own helper.
+ */
+export function addRunTaskSpecificOptions(cmd: Command): Command {
+  return cmd
     .addOption(
       new Option(
         '--cluster <name>',
@@ -736,14 +771,5 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
       )
-    )
-    .action(
-      withErrorHandling(async (target: string | undefined, options: LocalRunTaskOptions) => {
-        await localRunTaskCommand(target, options, opts.extraStateProviders);
-      })
     );
-
-  [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
-  return cmd;
 }
