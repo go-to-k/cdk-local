@@ -153,8 +153,30 @@ interface LocalInvokeAgentCoreOptions {
   ecrRoleArn?: string;
   fromCfnStack?: string | boolean;
   stackRegion?: string;
+  /**
+   * Per-request timeout in milliseconds, applied to the HTTP `/invocations`
+   * POST, the MCP `POST /mcp` request, and the `/ws` open-to-close window.
+   * Default 120000 (120s). Raise this for long-running agent calls that
+   * exceed the default — the cloud's AgentCore quota goes well above 120s.
+   */
+  timeout: number;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
+}
+
+/**
+ * Parser for `--timeout <ms>`. Accepts a positive integer; rejects 0,
+ * negatives, fractions, and non-numeric input.
+ */
+export function parseTimeoutMs(raw: string): number {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new CdkLocalError(
+      `--timeout must be a positive integer number of milliseconds (got '${raw}').`,
+      'LOCAL_INVOKE_AGENTCORE_TIMEOUT_INVALID'
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -393,7 +415,9 @@ async function localInvokeAgentCoreCommand(
       // MCP has no /ping: mcpInvokeOnce folds the boot-wait into a retried
       // `initialize`, then runs the session handshake + the one request.
       logger.info(`MCP request: ${mcpRequest.method}`);
-      const mcp = await mcpInvokeOnce(containerHost, hostPort, mcpRequest);
+      const mcp = await mcpInvokeOnce(containerHost, hostPort, mcpRequest, {
+        requestTimeoutMs: options.timeout,
+      });
       // Settle so container logs flush before teardown.
       await new Promise((r) => setTimeout(r, 250));
       emitMcpResult(mcp);
@@ -405,7 +429,7 @@ async function localInvokeAgentCoreCommand(
       logger.info('Opening the agent /ws WebSocket and streaming frames...');
       const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
         sessionId,
-        timeoutMs: 120_000,
+        timeoutMs: options.timeout,
         onMessage: (text) => process.stdout.write(text),
         ...(authorization && { authorization }),
       });
@@ -432,7 +456,7 @@ async function localInvokeAgentCoreCommand(
 
       const result = await invokeAgentCore(containerHost, hostPort, event, {
         sessionId,
-        timeoutMs: 120_000,
+        timeoutMs: options.timeout,
         // Stream a text/event-stream response to stdout as it arrives, so a
         // token-streaming agent shows incrementally rather than all at once.
         onChunk: (text) => process.stdout.write(text),
@@ -1437,6 +1461,15 @@ export function createLocalInvokeAgentCoreCommand(
     )
     .addOption(
       new Option('--container-host <host>', 'Host to bind the agent port to').default('127.0.0.1')
+    )
+    .addOption(
+      new Option(
+        '--timeout <ms>',
+        'Per-request timeout in milliseconds. Applied to POST /invocations, POST /mcp, and the ' +
+          '/ws open-to-close window. Raise this for long-running agent calls that exceed the default.'
+      )
+        .default(120000)
+        .argParser(parseTimeoutMs)
     )
     .addOption(
       new Option(

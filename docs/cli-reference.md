@@ -496,6 +496,7 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--no-pull` | off | Skip `docker pull` (use the cached image). No-op for the local-build path. |
 | `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the agent's published port to. |
+| `--timeout <ms>` | `120000` | Per-request timeout in milliseconds. Applied to `POST /invocations`, `POST /mcp`, and the `/ws` open-to-close window. Raise this for long-running agent calls that exceed the default. |
 | `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN, else resolves it from `--from-cfn-stack` state; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR for cross-account / centralized registries. |
 | `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports, resolve a same-stack `AWS::ECR::Repository` ContainerUri to the deployed image, and resolve `AWS::SSM::Parameter::Value` env values (decrypted `SecureString` values are kept off the `docker run` argv). Bare form uses the resolved stack name. |
@@ -636,6 +637,27 @@ concerns the cloud front door maps to MCP's own `Mcp-Session-Id`, so they are
 not applied to a direct local `/mcp` call (`--bearer-token` / `--session-id`
 are HTTP-protocol options and are ignored for MCP). The `A2A` / `AGUI`
 protocols are not supported yet.
+
+### Per-request timeout (`--timeout`)
+
+The default per-request timeout is 120 seconds. It applies to all three
+transports:
+
+- HTTP `POST /invocations` — the streaming sink keeps writing chunks while
+  the response body arrives, but the open-to-final-byte window is bounded
+  by `--timeout`.
+- MCP `POST /mcp` — applied to both the `notifications/initialized` POST
+  and the one JSON-RPC request POST.
+- `/ws` — bounds the open-to-close window (the agent closes the stream).
+
+Raise it for long-running agents whose response exceeds 120s:
+
+```bash
+cdkl invoke-agentcore MyAgent --event ./long-running.json --timeout 600000
+```
+
+Lower it in a CI smoke test to fail fast. The flag rejects zero, negatives,
+and non-integer values pre-container.
 
 ### `cdkl invoke-agentcore` exit codes
 
