@@ -106,11 +106,11 @@ AWS managed services.
 
 When writing committed artifacts (README, docs, commit messages, PR
 bodies, JSDoc), keep to this scope. Do NOT name, recommend, or compare
-against any other product (e.g. `aws-cdk-local` / `cdklocal` /
-LocalStack / similar) — no side-by-side tables, no "pair with" / "use
-alongside" recommendations, no parenthetical mentions. The only
-sanctioned tool comparison is to `sam local` (same compute-locally
-category for Lambda + API Gateway).
+against any third-party product — no side-by-side tables, no
+"pair with" / "use alongside" recommendations, no parenthetical
+mentions, no examples. State cdk-local's scope on its own terms.
+The only sanctioned tool comparison is to `sam local` (same
+compute-locally category for Lambda + API Gateway).
 
 ## Architecture
 
@@ -363,14 +363,13 @@ vp run runtime:smoke
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
   `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / list`.
-- Do NOT name, recommend, or compare against `aws-cdk-local` /
-  `cdklocal` / LocalStack (or any other third-party product) in
-  committed artifacts (README, docs, JSDoc, CONTRIBUTING). No
+- Do NOT name, recommend, or compare against any third-party product
+  in committed artifacts (README, docs, JSDoc, CONTRIBUTING). No
   comparison tables, no "pair with" / "use alongside" recommendations,
-  no parenthetical mentions. State cdk-local's scope ("application
-  compute locally; managed services stay real AWS") on its own terms
-  without naming competing or adjacent products. `sam local` is the
-  only sanctioned exception.
+  no parenthetical mentions, no examples. State cdk-local's scope
+  ("application compute locally; managed services stay real AWS") on
+  its own terms without naming competing or adjacent products.
+  `sam local` is the only sanctioned exception.
 - Do NOT reference cdkd internal implementation (deploy / destroy /
   state schema details / provider system) in cdk-local artifacts — the
   dependency direction is cdkd -> cdk-local, and cdk-local should read
