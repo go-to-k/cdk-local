@@ -1,3 +1,10 @@
+# [0.50.0](https://github.com/go-to-k/cdk-local/compare/v0.49.0...v0.50.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** resolve intrinsic Code.S3.Bucket for fromS3 under --from-cfn-stack ([#158](https://github.com/go-to-k/cdk-local/issues/158)) ([fb11a01](https://github.com/go-to-k/cdk-local/commit/fb11a01e16dcee7b57bbf2bcd63c37f83ebd41b7))
+
 # [0.49.0](https://github.com/go-to-k/cdk-local/compare/v0.48.0...v0.49.0) (2026-05-29)
 
 
