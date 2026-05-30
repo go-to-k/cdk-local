@@ -47,10 +47,16 @@ AWS managed services.
   an `AWSELBAuthSessionCookie-*` pass-through; `--bearer-token <jwt>`
   injects a default token, `--no-verify-auth` disables the guard. The
   full OAuth roundtrip (redirect to the IdP's authorize endpoint +
-  callback + cookie issuance) is NOT reproduced. A `TargetType: lambda`
-  target group is served by invoking the backing Lambda locally (HTTP
-  request -> `requestContext.elb` event -> RIE -> response), so a
-  forward can mix ECS and Lambda targets
+  callback + cookie issuance) is NOT reproduced. **WebSocket Upgrade**
+  is proxied for ECS forward targets — the upgrade request goes through
+  the same listener-rule matching + auth-gate pipeline as a regular
+  HTTP request, then the client's raw TCP socket is bridged to the
+  picked replica with `Upgrade` / `Sec-WebSocket-*` headers preserved
+  (Lambda target groups refuse the upgrade with a 502, mirroring ALB
+  itself). A `TargetType: lambda` target group is served by invoking
+  the backing Lambda locally (HTTP request -> `requestContext.elb`
+  event -> RIE -> response), so a forward can mix ECS and Lambda
+  targets
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -153,8 +159,10 @@ Gateway).
   replica pool or a Lambda invoke, redirect, or fixed-response — behind
   the ALB listener port; HTTPS branch flips `X-Forwarded-Proto` and the
   redirect `#{protocol}` default to `https`; an `auth` guard on the
-  action gates serving with a 401 + `WWW-Authenticate: Bearer` on deny),
-  etc.
+  action gates serving with a 401 + `WWW-Authenticate: Bearer` on deny;
+  WebSocket `Upgrade` requests run through the same route + auth
+  pipeline, then bridge the raw TCP socket to the picked ECS replica
+  with `Upgrade` / `Sec-WebSocket-*` headers preserved), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

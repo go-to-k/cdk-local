@@ -6,6 +6,8 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
+import { connect as netConnect, type Socket as NetSocket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { getLogger } from '../utils/logger.js';
 import type { FrontDoorEndpointPool } from './front-door-pool.js';
 import {
@@ -52,8 +54,19 @@ import {
  * field. HTTP and HTTPS listeners are both served — HTTPS termination uses
  * the {@link StartFrontDoorServerOptions.tls} materials (a user-supplied or
  * auto-generated self-signed cert/key pair) and switches `X-Forwarded-Proto`
- * + redirect `#{protocol}` to `https`. No health-check-gated draining, no
- * sticky sessions, no websocket `Upgrade` proxying.
+ * + redirect `#{protocol}` to `https`.
+ *
+ * **WebSocket Upgrade** is proxied for ECS forward targets: an inbound
+ * `Connection: Upgrade` request goes through the same `route()` callback
+ * (so listener rules + auth gates apply identically), then the client's
+ * raw TCP socket is bridged to a `net.connect`-opened upstream socket on
+ * the picked replica. `Upgrade` / `Sec-WebSocket-*` headers are forwarded
+ * verbatim (per RFC 6455 they are NOT hop-by-hop in the proxy sense), with
+ * `X-Forwarded-*` injection. Lambda target groups answer 502 on upgrade
+ * (mirrors ALB itself — Lambda TGs do not support WebSocket). Redirect /
+ * fixed-response actions answer with a regular HTTP/1.1 response over the
+ * raw socket (no upgrade). No health-check-gated draining; no sticky
+ * sessions.
  */
 
 /**
@@ -256,6 +269,12 @@ export async function startFrontDoorServer(
     : createServer(requestHandler);
   const scheme: 'http' | 'https' = opts.tls ? 'https' : 'http';
   server.on('connection', (socket) => socket.setNoDelay(true));
+  server.on('upgrade', (req, clientSocket, head) => {
+    handleUpgrade(req, clientSocket, head, opts).catch((err) => {
+      logger.debug(`front-door upgrade error: ${err instanceof Error ? err.message : String(err)}`);
+      if (!clientSocket.destroyed) clientSocket.destroy();
+    });
+  });
 
   const boundPort = await new Promise<number>((resolve, reject) => {
     server.once('error', reject);
@@ -838,3 +857,303 @@ function writeError(res: ServerResponse, statusCode: number, message: string): v
   res.writeHead(statusCode, { 'content-type': 'text/plain; charset=utf-8' });
   res.end(`${message}\n`);
 }
+
+/**
+ * Handle an HTTP `Upgrade` request (WebSocket). Goes through the same
+ * `route()` callback so listener-rule matching + auth gates apply
+ * identically. ECS forward targets get a raw TCP bridge to the picked
+ * replica; Lambda forward targets answer 502 (Lambda TGs do not support
+ * WS); redirect / fixed-response actions synthesize a regular HTTP/1.1
+ * response over the upgrade socket and close. Errors at every stage
+ * destroy the client socket cleanly.
+ */
+function handleUpgrade(
+  req: IncomingMessage,
+  clientSocket: Duplex,
+  head: Buffer,
+  opts: StartFrontDoorServerOptions
+): Promise<void> {
+  // `Duplex` does not declare `setNoDelay`, but the runtime instance under
+  // `http.Server.on('upgrade', ...)` is always a `net.Socket` (or
+  // `tls.TLSSocket` on the HTTPS branch), both of which expose it.
+  const maybeNetSocket = clientSocket as Duplex & { setNoDelay?: (b: boolean) => unknown };
+  maybeNetSocket.setNoDelay?.(true);
+  if (!opts.route) {
+    writeRawHttpError(clientSocket, 404, 'Not Found');
+    return Promise.resolve();
+  }
+  const action = opts.route({
+    path: req.url ?? '/',
+    ...hostHeader(req),
+    headers: req.headers,
+    ...(req.method !== undefined && { method: req.method }),
+    ...(req.socket.remoteAddress !== undefined && { sourceIp: req.socket.remoteAddress }),
+  });
+  if (!action) {
+    writeRawHttpError(clientSocket, 404, 'No listener rule matched the upgrade request.');
+    return Promise.resolve();
+  }
+
+  const proceed = (): Promise<void> => {
+    if (action.kind === 'redirect') {
+      writeRawHttpRedirect(
+        clientSocket,
+        action,
+        req,
+        opts.listenerPort,
+        opts.tls ? 'https' : 'http'
+      );
+      return Promise.resolve();
+    }
+    if (action.kind === 'fixed-response') {
+      writeRawHttpFixedResponse(clientSocket, action);
+      return Promise.resolve();
+    }
+
+    // forward
+    const picked = pickWeightedTarget(action.pools);
+    if (!picked) {
+      writeRawHttpError(
+        clientSocket,
+        502,
+        `No forward target selected behind ${opts.label} (every weighted target has weight 0).`
+      );
+      return Promise.resolve();
+    }
+    if ('lambda' in picked) {
+      // ALB itself does not support WebSocket to Lambda target groups, so
+      // refuse the upgrade with a 502 mirroring the cloud-side behavior.
+      writeRawHttpError(
+        clientSocket,
+        502,
+        `WebSocket upgrade is not supported for Lambda target groups (${picked.lambda.label}).`
+      );
+      return Promise.resolve();
+    }
+    return bridgeWebSocket(req, clientSocket, head, picked.pool, opts);
+  };
+
+  if (action.auth) {
+    const auth = action.auth;
+    return auth
+      .check(req.headers)
+      .then((result) => {
+        if (!result.allow) {
+          writeRawHttpUnauthorized(clientSocket, auth.realm, result.reason);
+          return;
+        }
+        return proceed();
+      })
+      .catch((err) => {
+        getLogger()
+          .child('front-door')
+          .debug(`upgrade auth gate error: ${err instanceof Error ? err.message : String(err)}`);
+        writeRawHttpUnauthorized(clientSocket, auth.realm, 'auth check failed');
+      });
+  }
+  return proceed();
+}
+
+/**
+ * Bridge a WebSocket upgrade onto an ECS replica. Opens a raw TCP socket
+ * to the picked endpoint, replays the upgrade request (with `X-Forwarded-*`
+ * stamped on), forwards any pre-read `head` bytes, then pipes the two
+ * sockets in both directions. `Upgrade` / `Connection: Upgrade` / the
+ * `Sec-WebSocket-*` headers are forwarded verbatim — RFC 7230 marks
+ * `Upgrade` as hop-by-hop, but for the upgrade handshake itself the proxy
+ * MUST preserve them (nginx / haproxy / ALB all do).
+ */
+function bridgeWebSocket(
+  req: IncomingMessage,
+  clientSocket: Duplex,
+  head: Buffer,
+  pool: FrontDoorEndpointPool,
+  opts: StartFrontDoorServerOptions
+): Promise<void> {
+  const logger = getLogger().child('front-door');
+  return new Promise<void>((resolve) => {
+    const endpoint = pool.next();
+    if (!endpoint) {
+      writeRawHttpError(
+        clientSocket,
+        503,
+        `No running replicas behind ${opts.label} for the matched target.`
+      );
+      resolve();
+      return;
+    }
+
+    const upstream: NetSocket = netConnect({ host: endpoint.host, port: endpoint.port });
+    upstream.setNoDelay(true);
+
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    upstream.on('connect', () => {
+      const headers: NodeJS.Dict<string | string[]> = { ...req.headers };
+      // Do NOT strip hop-by-hop: `Upgrade` / `Connection: Upgrade` are the
+      // whole point of this code path. Only stamp the X-Forwarded-* set.
+      appendForwardedHeaders(headers, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+
+      const requestLine = `${req.method ?? 'GET'} ${req.url ?? '/'} HTTP/${req.httpVersion}`;
+      const lines: string[] = [requestLine];
+      for (const [name, value] of Object.entries(headers)) {
+        if (value === undefined) continue;
+        if (Array.isArray(value)) {
+          for (const v of value) lines.push(`${name}: ${v}`);
+        } else {
+          lines.push(`${name}: ${value}`);
+        }
+      }
+      upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
+      if (head.length > 0) upstream.write(head);
+
+      clientSocket.pipe(upstream);
+      upstream.pipe(clientSocket);
+    });
+
+    upstream.on('error', (err) => {
+      logger.debug(
+        `WS upstream error (${endpoint.host}:${endpoint.port}): ${err instanceof Error ? err.message : String(err)}`
+      );
+      if (!clientSocket.destroyed) {
+        // If the client never saw any bytes, surface a 502; otherwise the
+        // headers are already flushed, so just destroy.
+        try {
+          writeRawHttpError(
+            clientSocket,
+            502,
+            `Failed to reach replica ${endpoint.host}:${endpoint.port} behind ${opts.label}.`
+          );
+        } catch {
+          /* socket already partially written / closed */
+        }
+        clientSocket.destroy();
+      }
+      done();
+    });
+
+    upstream.on('close', () => {
+      if (!clientSocket.destroyed) clientSocket.destroy();
+      done();
+    });
+    clientSocket.on('error', () => {
+      if (!upstream.destroyed) upstream.destroy();
+      done();
+    });
+    clientSocket.on('close', () => {
+      if (!upstream.destroyed) upstream.destroy();
+      done();
+    });
+  });
+}
+
+/**
+ * Write a minimal HTTP/1.1 error response over a raw upgrade socket and
+ * close it. Used for the pre-101-Switching-Protocols failure paths
+ * (no rule match, no replica, Lambda target, etc.).
+ */
+function writeRawHttpError(socket: Duplex, statusCode: number, message: string): void {
+  if (socket.destroyed) return;
+  const body = `${message}\n`;
+  const statusText = STATUS_TEXT[statusCode] ?? 'Error';
+  const lines = [
+    `HTTP/1.1 ${statusCode} ${statusText}`,
+    'content-type: text/plain; charset=utf-8',
+    `content-length: ${Buffer.byteLength(body)}`,
+    'connection: close',
+    '',
+    '',
+  ];
+  try {
+    socket.write(lines.join('\r\n') + body);
+  } catch {
+    /* socket may have errored mid-write; the end() below still tries */
+  }
+  socket.end();
+}
+
+/** Write a 401 over a raw upgrade socket with the WS-aware `WWW-Authenticate` header. */
+function writeRawHttpUnauthorized(socket: Duplex, realm: string, reason?: string): void {
+  if (socket.destroyed) return;
+  const body = `${reason && reason !== '' ? reason : 'Unauthorized'}\n`;
+  const lines = [
+    'HTTP/1.1 401 Unauthorized',
+    'content-type: text/plain; charset=utf-8',
+    `content-length: ${Buffer.byteLength(body)}`,
+    `www-authenticate: Bearer realm="${escapeRealmQuotes(realm)}"`,
+    'connection: close',
+    '',
+    '',
+  ];
+  try {
+    socket.write(lines.join('\r\n') + body);
+  } catch {
+    /* see writeRawHttpError */
+  }
+  socket.end();
+}
+
+/** Write an ALB-style 301 / 302 redirect over a raw upgrade socket. */
+function writeRawHttpRedirect(
+  socket: Duplex,
+  action: RedirectRouteAction,
+  req: IncomingMessage,
+  listenerPort: number,
+  scheme: 'http' | 'https'
+): void {
+  if (socket.destroyed) return;
+  const location = buildRedirectLocation(action, req, listenerPort, scheme);
+  const statusText = action.statusCode === 301 ? 'Moved Permanently' : 'Found';
+  const lines = [
+    `HTTP/1.1 ${action.statusCode} ${statusText}`,
+    `location: ${location}`,
+    'content-type: text/plain; charset=utf-8',
+    'content-length: 0',
+    'connection: close',
+    '',
+    '',
+  ];
+  try {
+    socket.write(lines.join('\r\n'));
+  } catch {
+    /* see writeRawHttpError */
+  }
+  socket.end();
+}
+
+/** Write an ALB-style fixed-response over a raw upgrade socket. */
+function writeRawHttpFixedResponse(socket: Duplex, action: FixedResponseRouteAction): void {
+  if (socket.destroyed) return;
+  const body = action.messageBody ?? '';
+  const statusText = STATUS_TEXT[action.statusCode] ?? '';
+  const lines = [
+    `HTTP/1.1 ${action.statusCode}${statusText ? ` ${statusText}` : ''}`,
+    `content-type: ${action.contentType ?? 'text/plain; charset=utf-8'}`,
+    `content-length: ${Buffer.byteLength(body)}`,
+    'connection: close',
+    '',
+    '',
+  ];
+  try {
+    socket.write(lines.join('\r\n') + body);
+  } catch {
+    /* see writeRawHttpError */
+  }
+  socket.end();
+}
+
+/** Minimal HTTP/1.1 status text map for the codes the raw writers emit. */
+const STATUS_TEXT: Record<number, string> = {
+  200: 'OK',
+  301: 'Moved Permanently',
+  302: 'Found',
+  401: 'Unauthorized',
+  404: 'Not Found',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+};
