@@ -11,6 +11,10 @@
 //                        sends one JSON frame echoing the frame + session-id +
 //                        Authorization + GREETING, then a second text frame, then
 //                        closes — exercising `cdkl invoke-agentcore --ws`.
+//                        When the first frame's payload contains {"loop": true},
+//                        instead enters a REPL mode: echoes each subsequent text
+//                        frame as `loop-echo:<payload>` and stays open until the
+//                        client closes — exercising `--ws-interactive`.
 // The WebSocket handshake + framing is implemented over the built-in `http`
 // `upgrade` event so the container needs no npm deps.
 // Startup logs go to stderr so the host's stdout carries only the cdkl
@@ -112,11 +116,11 @@ function handleUpgrade(req, socket) {
   );
 
   let buf = Buffer.alloc(0);
-  let replied = false;
+  let firstFrameSeen = false;
+  let loopMode = false;
   socket.on('data', (chunk) => {
-    if (replied) return;
     // A frame can span TCP reads (or several frames can share one read), so
-    // accumulate and drain complete frames until the first text frame arrives.
+    // accumulate and drain complete frames as they arrive.
     buf = Buffer.concat([buf, chunk]);
     let frame;
     while ((frame = decodeFrame(buf)) !== null) {
@@ -126,25 +130,37 @@ function handleUpgrade(req, socket) {
         return;
       }
       if (frame.opcode !== 0x1) continue; // skip ping/pong/continuation control frames
-      replied = true;
-      let echoed;
-      try {
-        echoed = JSON.parse(frame.payload.toString('utf-8') || '{}');
-      } catch {
-        echoed = frame.payload.toString('utf-8');
+      const payloadText = frame.payload.toString('utf-8');
+      if (!firstFrameSeen) {
+        firstFrameSeen = true;
+        let echoed;
+        try {
+          echoed = JSON.parse(payloadText || '{}');
+        } catch {
+          echoed = payloadText;
+        }
+        const reply = JSON.stringify({
+          ws: true,
+          echoed,
+          sessionId: req.headers[SESSION_HEADER] ?? null,
+          authorization: req.headers['authorization'] ?? null,
+          greeting: process.env.GREETING ?? 'unset',
+        });
+        socket.write(encodeTextFrame(reply));
+        if (echoed && typeof echoed === 'object' && echoed.loop === true) {
+          // REPL mode: echo each subsequent text frame as `loop-echo:<text>`
+          // and stay open until the client sends a close frame.
+          loopMode = true;
+          continue;
+        }
+        socket.write(encodeTextFrame('ws-frame-2'));
+        socket.write(encodeCloseFrame());
+        socket.end();
+        return;
       }
-      const reply = JSON.stringify({
-        ws: true,
-        echoed,
-        sessionId: req.headers[SESSION_HEADER] ?? null,
-        authorization: req.headers['authorization'] ?? null,
-        greeting: process.env.GREETING ?? 'unset',
-      });
-      socket.write(encodeTextFrame(reply));
-      socket.write(encodeTextFrame('ws-frame-2'));
-      socket.write(encodeCloseFrame());
-      socket.end();
-      return;
+      if (loopMode) {
+        socket.write(encodeTextFrame(`loop-echo:${payloadText}`));
+      }
     }
   });
   socket.on('error', () => socket.destroy());

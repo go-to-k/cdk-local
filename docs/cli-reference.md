@@ -489,6 +489,7 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block. `null` clears a key. |
 | `--session-id <id>` | random UUID | Value for the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` request header. |
 | `--ws` | off | Stream over the HTTP-protocol agent's bidirectional `/ws` WebSocket endpoint (on 8080) instead of `POST /invocations`: send `--event` as the first frame and print every received frame to stdout until the agent closes. See [WebSocket transport](#websocket-transport---ws) below. Ignored for an MCP runtime. |
+| `--ws-interactive` | off | REPL mode for `--ws`: after the initial `--event` frame, read additional frames from stdin (one frame per line, trailing newline stripped) and send each as a text frame until stdin EOFs (Ctrl-D) or the agent closes. Only meaningful with `--ws`. See [Interactive REPL (`--ws-interactive`)](#interactive-repl---ws-interactive) below. |
 | `--bearer-token <jwt>` | — | Bearer JWT to present when the runtime declares a `customJwtAuthorizer`. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` (or the `/ws` upgrade) as `Authorization: Bearer <jwt>`. |
 | `--no-verify-auth` | off (verify on) | Skip inbound JWT verification even when the runtime declares a `customJwtAuthorizer` (local-dev escape hatch). A `--bearer-token`, if given, is still forwarded. |
 | `--sigv4` | off | Sign the `/invocations` POST with AWS SigV4 (service `bedrock-agentcore`) using the resolved credentials — the same `Authorization: AWS4-HMAC-SHA256 ...` + `X-Amz-*` headers the cloud receives when the runtime declares no `customJwtAuthorizer`. Opt-in: default unsigned. Mutually exclusive with `--bearer-token`; ignored on a JWT-protected runtime. See [Inbound SigV4 (`--sigv4`)](#inbound-sigv4---sigv4) below. |
@@ -614,6 +615,33 @@ registers it). `--ws` exercises it:
 The over-the-wire framing on `/ws` is agent-defined — AWS pipes bytes
 transparently — so `cdkl` mirrors that and does not interpret the frames.
 `--ws` is HTTP-only; it is ignored (with a warning) for an MCP runtime.
+
+### Interactive REPL (`--ws-interactive`)
+
+The default `--ws` is one-shot: send `--event` as the first frame, stream
+received frames, and exit when the agent closes. For a chat-style agent
+you want to talk back to (send a follow-up message after seeing the
+response), `--ws-interactive` adds a REPL on top of the same connection:
+
+1. send `--event` (default `{}`) as the first frame, just as one-shot mode
+   does,
+2. then read `process.stdin` line-buffered — each line (trailing `\r?\n`
+   stripped) becomes one follow-up text frame,
+3. stop when stdin EOFs (Ctrl-D at a terminal, end-of-pipe for a piped
+   stdin), then gracefully close the WebSocket.
+
+Pipe a script:
+
+```bash
+printf 'what is 2+2\nand 3+3\n' | \
+  cdkl invoke-agentcore MyChatAgent --ws --ws-interactive --event ./open.json
+```
+
+Or run it interactively from a terminal and type replies as the agent
+responds. Server-side close (agent closes the stream) ends the session
+early — the iterator is released and stdin reading stops.
+
+`--ws-interactive` is only meaningful with `--ws`; it is otherwise ignored.
 
 ### MCP protocol
 

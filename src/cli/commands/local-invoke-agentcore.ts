@@ -115,6 +115,13 @@ interface LocalInvokeAgentCoreOptions {
    * first frame and stream received frames to stdout until the agent closes.
    */
   ws?: boolean;
+  /**
+   * `--ws-interactive`: after the initial `--event` frame, read additional
+   * frames from stdin (one frame per line, trailing newline stripped) and
+   * send each as a text frame to the agent until stdin EOFs (Ctrl-D) or the
+   * agent closes the connection. Only meaningful with `--ws`.
+   */
+  wsInteractive?: boolean;
   /** Session id forwarded via the AgentCore session-id header (auto-generated when omitted). */
   sessionId?: string;
   /**
@@ -324,6 +331,9 @@ async function localInvokeAgentCoreCommand(
     if (isMcp && options.ws) {
       logger.warn('--ws applies only to the HTTP protocol; ignoring it for this MCP runtime.');
     }
+    if (options.wsInteractive && !options.ws) {
+      logger.warn('--ws-interactive is meaningful only with --ws; ignoring.');
+    }
     if (options.sigv4 && (isMcp || options.ws)) {
       logger.warn(
         '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
@@ -424,14 +434,23 @@ async function localInvokeAgentCoreCommand(
     } else if (options.ws) {
       // Bidirectional `/ws` (same 8080 container as /invocations): send the
       // event as the first frame, stream every received frame to stdout, then
-      // resolve when the agent closes the stream.
+      // resolve when the agent closes the stream. With `--ws-interactive` we
+      // additionally wire `process.stdin` (line-buffered) as a frame source,
+      // so each typed line becomes a follow-up text frame until EOF / agent
+      // close — a REPL on top of the same connection.
       await waitForAgentCorePing(containerHost, hostPort);
-      logger.info('Opening the agent /ws WebSocket and streaming frames...');
+      const frameSource = options.wsInteractive ? readStdinLines() : undefined;
+      logger.info(
+        options.wsInteractive
+          ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
+          : 'Opening the agent /ws WebSocket and streaming frames...'
+      );
       const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
         sessionId,
         timeoutMs: options.timeout,
         onMessage: (text) => process.stdout.write(text),
         ...(authorization && { authorization }),
+        ...(frameSource && { frameSource }),
       });
       // Settle so container logs flush before teardown.
       await new Promise((r) => setTimeout(r, 250));
@@ -1348,6 +1367,27 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+/**
+ * Read `process.stdin` line-buffered and yield each line as a string (trailing
+ * `\r?\n` stripped). The async iterable completes when stdin EOFs (Ctrl-D /
+ * end-of-pipe), and surrenders the underlying stream when its `return()` is
+ * called — so the WS client can close down the source when the server closes
+ * first without leaving stdin held open.
+ *
+ * Exported so a unit test can drive the iterable shape directly.
+ */
+export async function* readStdinLines(): AsyncIterable<string> {
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      yield line;
+    }
+  } finally {
+    rl.close();
+  }
+}
+
 export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
   if (!filePath) return undefined;
   let raw: string;
@@ -1413,6 +1453,14 @@ export function createLocalInvokeAgentCoreCommand(
         "Stream over the HTTP-protocol agent's bidirectional /ws WebSocket endpoint (on 8080) " +
           'instead of POST /invocations: send --event as the first frame and print every received ' +
           'frame to stdout until the agent closes. Ignored for an MCP runtime.'
+      ).default(false)
+    )
+    .addOption(
+      new Option(
+        '--ws-interactive',
+        'REPL mode for --ws: after the initial --event frame, read additional frames from stdin ' +
+          '(one frame per line, trailing newline stripped) and send each as a text frame until ' +
+          'stdin EOFs (Ctrl-D) or the agent closes. Only meaningful with --ws.'
       ).default(false)
     )
     .addOption(
