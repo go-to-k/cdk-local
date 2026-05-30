@@ -355,10 +355,11 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
  * with the ALB strategy, so adding or renaming an ALB-only flag here
  * propagates to every embedder without duplicate `.addOption(...)` blocks.
  *
- * Call this AFTER any host-specific options and BEFORE
- * {@link addCommonEcsServiceOptions} (Commander's internal state is
- * insertion-order-independent, so the actual order only affects `--help`
- * presentation). Chainable: returns `cmd`.
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then {@link addCommonEcsServiceOptions}
+ * — host flags / ALB flags / common flags grouped in three `--help`
+ * clusters. Chainable: returns `cmd`.
  */
 export function addAlbSpecificOptions(cmd: Command): Command {
   return cmd

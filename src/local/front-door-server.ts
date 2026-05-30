@@ -768,7 +768,7 @@ function handleLambdaRequest(
             forwardHeaders,
             req,
             opts.listenerPort,
-            opts.tls ? 'https' : 'http'
+            resolveForwardedProto(opts)
           );
           const snapshot = snapshotFromIncoming(req, body);
           for (const [name, value] of Object.entries(forwardHeaders)) {
@@ -923,7 +923,7 @@ function handleUpgrade(
         action,
         req,
         opts.listenerPort,
-        opts.tls ? 'https' : 'http'
+        resolveForwardedProto(opts)
       );
       return Promise.resolve();
     }

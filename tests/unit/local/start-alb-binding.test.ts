@@ -746,6 +746,39 @@ describe('buildFrontDoor', () => {
       }
     });
 
+    it('passing --tls-cert / --tls-key (without --tls) implies --tls and terminates TLS locally (#198)', async () => {
+      // The implication is critical for back-compat: a user who already passed
+      // --tls-cert / --tls-key under the old default must keep getting an
+      // HTTPS-wire listener. The earlier "scheme=https when --tls-cert /
+      // --tls-key are set" test accidentally covers this, but is named for
+      // the cert path; this one names the implication explicitly so a
+      // regression of the OR-condition fails an obviously-named test.
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        // Note: `tls: true` is NOT set — only the cert pair. The implication
+        // is what's under test.
+        { containerHost: '127.0.0.1', pull: true, tlsCert: certPath, tlsKey: keyPath } as never,
+        logger
+      );
+      try {
+        expect(servers).toHaveLength(1);
+        expect(servers[0]!.scheme).toBe('https');
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
     it('does not warn about HTTPS-degraded for an HTTP listener (no false positives)', async () => {
       // Companion guard rail: the degradation warning must fire only when the
       // cloud-side protocol is HTTPS. A pure HTTP listener is the dominant

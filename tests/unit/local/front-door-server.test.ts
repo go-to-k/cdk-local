@@ -662,6 +662,41 @@ describe('startFrontDoorServer — Lambda dispatch (#123)', () => {
     const res = await postRequest(front.port, '/nope', '');
     expect(res.status).toBe(404);
   });
+
+  it('stamps X-Forwarded-Proto from forwardedProto on the ALB Lambda event (#198 degraded HTTPS)', async () => {
+    // Companion to the pool / redirect / WS tests below: when a cloud-HTTPS
+    // listener serves over plain HTTP locally (`forwardedProto: 'https'` set
+    // without `tls`), the synthesized ALB Lambda event MUST carry
+    // `x-forwarded-proto: https` so handler logic that inspects it (Secure
+    // cookie flag, OAuth callback URL synthesis) still sees the deployed
+    // listener protocol.
+    let capturedEvent: Record<string, unknown> | undefined;
+    const front = await startFrontDoorServer({
+      selectTarget: () => ({
+        kind: 'lambda',
+        lambda: {
+          targetGroupArn: 'tg',
+          multiValueHeaders: false,
+          label: 'EchoFn',
+          invoke: async (event) => {
+            capturedEvent = event;
+            return { statusCode: 200 };
+          },
+        },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      forwardedProto: 'https',
+    });
+    cleanups.push(() => front.close());
+
+    await postRequest(front.port, '/', '');
+    const headers = capturedEvent!['headers'] as Record<string, string>;
+    expect(headers['x-forwarded-proto']).toBe('https');
+    expect(headers['x-forwarded-port']).toBe('443');
+  });
 });
 
 describe('startFrontDoorServer — weighted forward mixing ECS + Lambda (#123)', () => {
@@ -1257,6 +1292,94 @@ describe('startFrontDoorServer — WebSocket Upgrade', () => {
     }));
     const echoed = await wsEchoRoundtrip(`ws://127.0.0.1:${front.port}/`, 'allowed-ws');
     expect(echoed).toBe('allowed-ws');
+  });
+
+  it('bridges the upgrade with X-Forwarded-Proto: https when forwardedProto is set on a plain-HTTP wire (#198)', async () => {
+    // Cloud-HTTPS WS listener served over plain HTTP locally: the upgrade
+    // request reaching the upstream replica must still carry
+    // `x-forwarded-proto: https` so an app inspecting the header on the
+    // upgrade frame matches its deployed-ALB behavior.
+    const { WebSocketServer } = await import('ws');
+    const httpServer = createServer();
+    const wss = new WebSocketServer({ server: httpServer });
+    let capturedProto: string | string[] | undefined;
+    wss.on('connection', (ws, req) => {
+      capturedProto = req.headers['x-forwarded-proto'];
+      ws.on('message', (data) => ws.send(data));
+    });
+    await new Promise<void>((r) => httpServer.listen(0, '127.0.0.1', r));
+    const upstreamPort = (httpServer.address() as AddressInfo).port;
+    cleanups.push(
+      () =>
+        new Promise<void>((r) => {
+          wss.close(() => httpServer.close(() => r()));
+        })
+    );
+
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstreamPort });
+    const front = await startFrontDoorServer({
+      route: () => ({ kind: 'forward', pools: [{ pool, weight: 1 }] }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      forwardedProto: 'https',
+    });
+    cleanups.push(() => front.close());
+
+    const echoed = await wsEchoRoundtrip(`ws://127.0.0.1:${front.port}/`, 'degraded-ws');
+    expect(echoed).toBe('degraded-ws');
+    expect(capturedProto).toBe('https');
+  });
+
+  it('redirects an upgrade with a https:// Location when forwardedProto is set on a plain-HTTP wire (#198)', async () => {
+    // Companion to the regular-HTTP redirect path: the WS-upgrade branch
+    // synthesizes its own redirect over the raw socket (writeRawHttpRedirect),
+    // and the `#{protocol}` default must follow forwardedProto so a
+    // cloud-HTTPS listener served over plain HTTP still emits `https://...`
+    // in the upgrade-rejection Location header.
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 301,
+      host: 'new.example.com',
+    };
+    const front = await startFrontDoorServer({
+      route: () => action,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      forwardedProto: 'https',
+    });
+    cleanups.push(() => front.close());
+
+    // The upgrade fails (the server answers a 301 instead of 101); read the
+    // synthesized `Location` from the same `unexpected-response` channel
+    // wsExpectReject uses for 404 / 401 / 502 / 503.
+    const { WebSocket } = await import('ws');
+    const result = await new Promise<{ status?: number; location?: string }>(
+      (resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${front.port}/`);
+        ws.on('unexpected-response', (_req, res) => {
+          const loc = res.headers.location;
+          resolve({
+            ...(typeof res.statusCode === 'number' && { status: res.statusCode }),
+            ...(typeof loc === 'string' && { location: loc }),
+          });
+          res.resume();
+        });
+        ws.on('open', () => {
+          ws.close();
+          reject(new Error('expected the front-door to redirect the upgrade'));
+        });
+        ws.on('error', () => {
+          /* swallowed; `unexpected-response` resolves the promise first */
+        });
+      }
+    );
+    expect(result.status).toBe(301);
+    expect(result.location).toMatch(/^https:\/\/new\.example\.com\//);
   });
 });
 
