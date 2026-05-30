@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "local-alb-front-door"
+  ]
+}
