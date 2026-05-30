@@ -437,8 +437,17 @@ export class CfnLocalStateProvider implements LocalStateProvider {
    * text the warn-logger emits so downstream resolvers can embed it
    * verbatim in their error and avoid the misleading "pass
    * --from-cfn-stack" hint when the user already passed it.
+   *
+   * Throws after `dispose()` to keep parity with the other operational
+   * entry points on this class — a post-dispose caller is a programming
+   * bug, and surfacing it loudly is cheaper than silently returning a
+   * stale captured message after the provider's state is conceptually
+   * gone.
    */
   public getLastLoadError(): string | undefined {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
     return this.lastLoadError;
   }
 

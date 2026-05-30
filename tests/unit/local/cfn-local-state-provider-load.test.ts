@@ -93,6 +93,12 @@ describe('CfnLocalStateProvider.load', () => {
     provider.dispose();
   });
 
+  it('throws from getLastLoadError() after dispose() (parity with load() / buildCrossStackResolver())', () => {
+    const provider = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+    provider.dispose();
+    expect(() => provider.getLastLoadError()).toThrow(/used after dispose/);
+  });
+
   it('keeps resources but empties outputs when DescribeStacks returns no stack', async () => {
     sendMock
       .mockResolvedValueOnce({
