@@ -1,3 +1,10 @@
+# [0.61.0](https://github.com/go-to-k/cdk-local/compare/v0.60.0...v0.61.0) (2026-05-30)
+
+
+### Features
+
+* **exports:** expose pickAgentCoreCandidateStack + resolveSingleTarget for shim consumers ([#177](https://github.com/go-to-k/cdk-local/issues/177)) ([b799b78](https://github.com/go-to-k/cdk-local/commit/b799b78a384f8078a37f0a82818d1bd6e8af7a9e))
+
 # [0.60.0](https://github.com/go-to-k/cdk-local/compare/v0.59.0...v0.60.0) (2026-05-30)
 
 
