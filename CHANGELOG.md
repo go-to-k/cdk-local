@@ -1,3 +1,10 @@
+# [0.63.0](https://github.com/go-to-k/cdk-local/compare/v0.62.1...v0.63.0) (2026-05-30)
+
+
+### Features
+
+* **start-service,start-alb:** surface a Service endpoints: banner at end of boot ([#199](https://github.com/go-to-k/cdk-local/issues/199)) ([54c1be6](https://github.com/go-to-k/cdk-local/commit/54c1be62da680ffdfa8c99e51f7882efd85df1f5))
+
 ## [0.62.1](https://github.com/go-to-k/cdk-local/compare/v0.62.0...v0.62.1) (2026-05-30)
 
 
