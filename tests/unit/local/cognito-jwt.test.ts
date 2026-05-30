@@ -993,6 +993,19 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       expect(r.allow).toBe(false);
     });
 
+    it('denies when the scope claim is neither a string nor an array (e.g. a number)', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', scope: 42 });
+      const r = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
     it('accepts a scope claim that is an array (not the canonical space-separated string)', async () => {
       const f = makeJwtFixture();
       const { discoveryFetch, cache } = setup(f);
@@ -1034,6 +1047,69 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       const f = makeJwtFixture();
       const { discoveryFetch, cache } = setup(f);
       const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', department: 'sales' });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('STRING_ARRAY + CONTAINS — denies when the claim array does NOT contain the value', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', groups: ['users', 'guests'] }
+      );
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'groups', valueType: 'STRING_ARRAY', operator: 'CONTAINS', value: 'admins' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('STRING_ARRAY rule denies when the token claim is a (wrong-typed) string', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', groups: 'admins' });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'groups', valueType: 'STRING_ARRAY', operator: 'CONTAINS', value: 'admins' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('STRING rule denies when the token claim is a (wrong-typed) array', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', department: ['eng'] }
+      );
       const r = await verifyJwtViaDiscovery(
         {
           discoveryUrl: DISCOVERY,
