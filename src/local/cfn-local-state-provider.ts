@@ -69,6 +69,10 @@ import {
   ListStackResourcesCommand,
 } from '@aws-sdk/client-cloudformation';
 import { LambdaClient, GetFunctionConfigurationCommand } from '@aws-sdk/client-lambda';
+import {
+  BedrockAgentCoreControlClient,
+  GetAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore-control';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
@@ -131,6 +135,11 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // declare no `AWS::SSM::Parameter::Value` parameters don't open a
   // needless client.
   private ssmClient: SSMClient | undefined;
+  // The Bedrock AgentCore control client is constructed lazily on the
+  // first `resolveAgentCoreRuntimeRoleArn` call so invocations that
+  // never need the deployed-role fallback for an AgentCore Runtime
+  // don't open a needless client.
+  private agentCoreControlClient: BedrockAgentCoreControlClient | undefined;
   private readonly clientOptions: { region: string; profile?: string };
   // Issue #611 NIT 2: `dispose()` is terminal. The lazy `getClient()`
   // path would otherwise resurrect the client on a post-dispose
@@ -178,6 +187,19 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       });
     }
     return this.lambdaClient;
+  }
+
+  private getAgentCoreControlClient(): BedrockAgentCoreControlClient {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    if (!this.agentCoreControlClient) {
+      this.agentCoreControlClient = new BedrockAgentCoreControlClient({
+        region: this.region,
+        ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
+      });
+    }
+    return this.agentCoreControlClient;
   }
 
   private getSsmClient(): SSMClient {
@@ -287,6 +309,41 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     } catch (err) {
       logger.warn(
         `${this.label}: GetFunctionConfiguration(${functionPhysicalId}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err)}. ` +
+          `Pass the ARN explicitly: --assume-role <arn>.`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Read a deployed AgentCore Runtime's execution-role ARN via
+   * `bedrock-agentcore-control:GetAgentRuntime`'s `roleArn` field.
+   * See {@link LocalStateProvider.resolveAgentCoreRuntimeRoleArn}.
+   *
+   * Best-effort: on any expected miss (runtime not found, access
+   * denied, throttling) logs a warn and returns `undefined` so the
+   * caller falls through to the existing "Pass the ARN explicitly:
+   * --assume-role <arn>" path. Never throws.
+   */
+  public async resolveAgentCoreRuntimeRoleArn(
+    runtimePhysicalId: string
+  ): Promise<string | undefined> {
+    if (this.disposed) {
+      throw new Error('CfnLocalStateProvider used after dispose()');
+    }
+    const logger = getLogger();
+    const client = this.getAgentCoreControlClient();
+    try {
+      const resp = await client.send(
+        new GetAgentRuntimeCommand({ agentRuntimeId: runtimePhysicalId })
+      );
+      if (typeof resp.roleArn === 'string' && resp.roleArn.startsWith('arn:')) {
+        return resp.roleArn;
+      }
+      return undefined;
+    } catch (err) {
+      logger.warn(
+        `${this.label}: GetAgentRuntime(${runtimePhysicalId}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err)}. ` +
           `Pass the ARN explicitly: --assume-role <arn>.`
       );
       return undefined;
@@ -444,6 +501,10 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     if (this.ssmClient) {
       this.ssmClient.destroy();
       this.ssmClient = undefined;
+    }
+    if (this.agentCoreControlClient) {
+      this.agentCoreControlClient.destroy();
+      this.agentCoreControlClient = undefined;
     }
   }
 }

@@ -176,6 +176,34 @@ export interface LocalStateProvider {
    */
   resolveLambdaExecutionRoleArn?(functionPhysicalId: string): Promise<string | undefined>;
   /**
+   * Optional: resolve a deployed AgentCore Runtime's execution-role ARN
+   * via `bedrock-agentcore-control:GetAgentRuntime`'s `roleArn` field.
+   *
+   * Closes the bare `--assume-role` auto-resolve gap (issue #187) for
+   * the common case where the Runtime's execution role is a sibling
+   * resource in the same stack (`new bedrock.AgentCoreRuntime(...)` with
+   * the L2's auto-created default execution role). `ListStackResources`
+   * returns the role's NAME (PhysicalResourceId), not the ARN, so the
+   * static state lookup in {@link resolveExecutionRoleArnFromState} (which
+   * reads `attributes.Arn`) returns `undefined`. The runtime's own
+   * deploy-time-resolved configuration is the lowest-cost way to recover
+   * the ARN — same shape as
+   * {@link LocalStateProvider.resolveLambdaExecutionRoleArn}, one extra
+   * `bedrock-agentcore-control:GetAgentRuntime` call.
+   *
+   * `runtimePhysicalId` is the deployed runtime's `agentRuntimeId` (the
+   * `Ref` value `ListStackResources` returns for
+   * `AWS::BedrockAgentCore::Runtime`).
+   * Returns `undefined` on any expected miss (no such runtime, access
+   * denied, throttling) so the caller falls back to the existing
+   * "Pass the ARN explicitly: --assume-role <arn>" warning.
+   *
+   * Implemented only by the CFn provider (`--from-cfn-stack`) — the S3
+   * provider's state already carries deploy-time attributes, so its
+   * `attributes.Arn` resolves statically and no fallback is needed.
+   */
+  resolveAgentCoreRuntimeRoleArn?(runtimePhysicalId: string): Promise<string | undefined>;
+  /**
    * Optional: resolve a synthesized stack template's SSM-backed
    * `Parameters` (`AWS::SSM::Parameter::Value<String>` /
    * `AWS::SSM::Parameter::Value<List<String>>`, what CDK synthesizes for

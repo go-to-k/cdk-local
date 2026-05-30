@@ -650,15 +650,19 @@ describe('resolveAssumeRoleArn — bare --assume-role + state', () => {
       ...over,
     }) as never;
 
-  it('returns the explicit ARN for --assume-role <arn>', () => {
-    expect(resolveAssumeRoleArn({ assumeRole: 'arn:aws:iam::1:role/x' } as never, resolved(), undefined)).toBe(
-      'arn:aws:iam::1:role/x'
-    );
+  it('returns the explicit ARN for --assume-role <arn>', async () => {
+    expect(
+      await resolveAssumeRoleArn(
+        { assumeRole: 'arn:aws:iam::1:role/x' } as never,
+        resolved(),
+        undefined
+      )
+    ).toBe('arn:aws:iam::1:role/x');
   });
 
-  it('uses the literal RoleArn for bare --assume-role when present', () => {
+  it('uses the literal RoleArn for bare --assume-role when present', async () => {
     expect(
-      resolveAssumeRoleArn(
+      await resolveAssumeRoleArn(
         { assumeRole: true } as never,
         resolved({ roleArn: 'arn:aws:iam::1:role/lit' }),
         undefined
@@ -666,24 +670,28 @@ describe('resolveAssumeRoleArn — bare --assume-role + state', () => {
     ).toBe('arn:aws:iam::1:role/lit');
   });
 
-  it('resolves an intrinsic RoleArn from --from-cfn-stack state for bare --assume-role', () => {
+  it('resolves an intrinsic RoleArn from --from-cfn-stack state for bare --assume-role', async () => {
     const loaded = {
       resources: {
         ChatAgent: { properties: { RoleArn: { 'Fn::GetAtt': ['AgentRole', 'Arn'] } } },
         AgentRole: { attributes: { Arn: 'arn:aws:iam::1:role/from-state' } },
       },
     };
-    expect(resolveAssumeRoleArn({ assumeRole: true } as never, resolved(), loaded as never)).toBe(
-      'arn:aws:iam::1:role/from-state'
-    );
+    expect(
+      await resolveAssumeRoleArn({ assumeRole: true } as never, resolved(), loaded as never)
+    ).toBe('arn:aws:iam::1:role/from-state');
   });
 
-  it('returns undefined (warn + dev-creds fallback) when bare --assume-role cannot resolve', () => {
-    expect(resolveAssumeRoleArn({ assumeRole: true } as never, resolved(), undefined)).toBeUndefined();
+  it('returns undefined (warn + dev-creds fallback) when bare --assume-role cannot resolve', async () => {
+    expect(
+      await resolveAssumeRoleArn({ assumeRole: true } as never, resolved(), undefined)
+    ).toBeUndefined();
   });
 
-  it('returns undefined when --assume-role is not set', () => {
-    expect(resolveAssumeRoleArn({} as never, resolved(), undefined)).toBeUndefined();
+  it('returns undefined when --assume-role is not set', async () => {
+    expect(
+      await resolveAssumeRoleArn({} as never, resolved(), undefined)
+    ).toBeUndefined();
   });
 });
 

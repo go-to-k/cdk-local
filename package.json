@@ -62,6 +62,7 @@
     "@aws-cdk/cloud-assembly-api": "^2.2.0",
     "@aws-cdk/toolkit-lib": "^1.26.0",
     "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/client-bedrock-agentcore-control": "^3.1057.0",
     "@aws-sdk/client-cloudformation": "^3.1017.0",
     "@aws-sdk/client-ecr": "^3.1019.0",
     "@aws-sdk/client-eventbridge": "^3.1017.0",
