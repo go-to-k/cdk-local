@@ -1,3 +1,10 @@
+# [0.53.0](https://github.com/go-to-k/cdk-local/compare/v0.52.0...v0.53.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** --sigv4 opt-in inbound SigV4 signing ([#167](https://github.com/go-to-k/cdk-local/issues/167)) ([0e845f1](https://github.com/go-to-k/cdk-local/commit/0e845f15cac4de05f937e6d8f6d1a1c61ca57cb4))
+
 # [0.52.0](https://github.com/go-to-k/cdk-local/compare/v0.51.0...v0.52.0) (2026-05-30)
 
 
