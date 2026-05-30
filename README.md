@@ -5,7 +5,7 @@
 [![CI](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml/badge.svg)](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/npm/l/cdk-local.svg)](./LICENSE)
 
-**Run your CDK-built app locally, no deploy needed. Or connect it to your deployed stack's real AWS resources and data: the app stays local, the data is real — no `.env`, no data to copy locally.**
+**Run your CDK-built app locally, no deploy needed — standalone, or kept local while it reaches the real AWS resources and data it depends on, with no `.env` or local copies to maintain.**
 A CDK-native alternative to `sam local`, covering Lambda, API Gateway, ECS, ALB-fronted services, and Bedrock AgentCore.
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
