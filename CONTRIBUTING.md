@@ -105,10 +105,10 @@ merge to `main`.
   emulate AWS managed services. Don't recommend third-party emulators
   or other tools in committed docs.
 - The only sanctioned tool comparison in committed docs is to
-  `sam local` (same compute-locally category). Please don't mention
-  or compare against any other product (e.g. `aws-cdk-local` /
-  `cdklocal` / LocalStack) — no side-by-side tables, no "pair with"
-  recommendations.
+  `sam local` (same compute-locally category). Don't name, recommend,
+  or compare against any other third-party product — no side-by-side
+  tables, no "pair with" / "use alongside" recommendations, no
+  parenthetical mentions, no examples.
 
 ## Reporting bugs / requesting features
 
