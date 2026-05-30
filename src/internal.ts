@@ -437,3 +437,58 @@ export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js'
  * `local-invoke-agentcore` port.
  */
 export { resolveSingleTarget } from './local/target-picker.js';
+
+/**
+ * `start-service` + `start-alb` shared ECS service emulator engine — the
+ * core orchestrator that boots ECS replicas on docker, attaches the per-stack
+ * Cloud Map / Service Connect overlay, optionally fronts the replicas with
+ * the local ALB front-door HTTP(S) server (`--alb-listener`), and tears
+ * down on SIGINT. `runEcsServiceEmulator` is the entry point both CLI
+ * commands wrap. `addCommonEcsServiceOptions` is the shared option-block
+ * factory both commands compose. `parseMaxTasks` / `parseRestartPolicy`
+ * are the option-parser helpers. `resolveSharedSidecarCredentials` and
+ * `buildEcsImageResolutionContext` are pre-boot helpers exposed for hosts
+ * that wrap the engine for their own test setup. `MAX_TASKS_SUBNET_RANGE_CAP`
+ * documents the per-network replica cap. The `Planned*` / `ServiceBoot`
+ * / `EmulatorStrategy` / `FrontDoorPlan` types describe the engine's
+ * pre-boot plan + strategy hook surface for shim hosts (e.g. cdkd) that
+ * port the CLI commands themselves but reuse the engine. Exposed only as
+ * the consuming host's `import` statements require them.
+ */
+export {
+  addCommonEcsServiceOptions,
+  runEcsServiceEmulator,
+  parseMaxTasks,
+  parseRestartPolicy,
+  resolveSharedSidecarCredentials,
+  buildEcsImageResolutionContext,
+  MAX_TASKS_SUBNET_RANGE_CAP,
+  type EcsServiceEmulatorOptions,
+  type EmulatorStrategy,
+  type ServiceBoot,
+  type FrontDoorPlan,
+  type PlannedAction,
+  type PlannedForwardAction,
+  type PlannedRedirectAction,
+  type PlannedFixedResponseAction,
+  type PlannedForwardTarget,
+  type PlannedEcsForwardTarget,
+  type PlannedLambdaForwardTarget,
+  type PlannedFrontDoorListener,
+} from './cli/commands/ecs-service-emulator.js';
+
+/**
+ * `start-alb` front-door target resolver — maps an ALB target string to a
+ * `ResolvedFrontDoor` (listener-by-listener forwarded targets, listener-rule
+ * conditions, redirect / fixed-response actions, plus `default_action`).
+ * `resolveAlbFrontDoor` is the entry point; `isApplicationLoadBalancer`
+ * is the type-narrowing predicate the resolver uses for ApplicationLoadBalancer
+ * vs NetworkLoadBalancer disambiguation. Exposed only as the consuming
+ * host's `import` statements require them.
+ */
+export {
+  resolveAlbFrontDoor,
+  isApplicationLoadBalancer,
+  type ResolvedListenerAction,
+  type FrontDoorForwardTarget,
+} from './local/elb-front-door-resolver.js';
