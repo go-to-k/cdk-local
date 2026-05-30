@@ -141,9 +141,9 @@ The hooks split into three classes:
 
 ## 3. Markgate-backed gates
 
-The four markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
-`pr-review-gate.sh`, and `integ-gate.sh`) are all
-**cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
+The five markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
+`pr-review-gate.sh`, `integ-gate.sh`, and `cdkd-parity-gate.sh`) are
+all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
 parses leading `cd <path>` and the last `git -C <path>` /
 `gh -C <path>` flag from the command, then `cd`s to that resolved
 target dir before invoking `markgate verify`. This preserves
@@ -257,3 +257,40 @@ today's local code path actually works.
 
 The skill is the ONLY legitimate setter of this marker — never
 call `markgate set integ` directly from a shell.
+
+### cdkd-parity-gate (pre-create)
+
+- **`cdkd-parity-gate.sh`** blocks `gh pr create` (incl.
+  `gh -C <path> pr create` / `cd <path> && gh pr create`) on PRs
+  whose diff vs `origin/main` touches the cdk-local library surface
+  (`src/cli/commands/**`, `src/internal.ts`, `src/index.ts`) when
+  the `cdkd-parity` marker is stale. The marker is set ONLY by
+  `/check-cdkd-parity`, which walks the four host-impacting
+  categories — new subcommand factory, new CLI option, new public
+  helper / type, behavior change — and asks the structured
+  questions a host CLI maintainer (cdkd) would ask before bumping
+  the `cdk-local` version:
+
+  - new subcommand factory → exported from `src/index.ts`? cdkd
+    notified?
+  - new CLI option → added inside `add<Cmd>SpecificOptions` (not
+    inline in `create<Cmd>Command`)? contract test still green?
+  - new public helper / type under `src/local/**` → exported from
+    `src/internal.ts`? JSDoc names the host-side use case?
+  - behavior change → cdkd informed (issue / cross-link)? migration
+    note in PR body?
+
+  Pre-create only — `gh pr merge` is intentionally NOT gated. The
+  parity question is a judgment recorded once at PR-create time;
+  re-blocking on a stale marker for a small follow-up commit would
+  be friction without value. Out-of-scope diffs (internal refactors
+  not touching the gate's paths, docs, tests, infra) pass through
+  silently.
+
+  Fail-open behavior: when `gh` / `markgate` are missing, or
+  `origin/main` is not resolvable, the hook exits 0 silently. The
+  gate is a safety net for the four categories above, not a hard
+  dependency.
+
+  The skill is the ONLY legitimate setter of this marker — never
+  call `markgate set cdkd-parity` directly from a shell.
