@@ -22,7 +22,7 @@ cdkl invoke                   # pick a Lambda from the list, then run it locally
 
 `cdkl` synths your CDK app and runs the selected resource locally in Docker — Lambdas in their real AWS Lambda runtime container, ECS tasks and services as real containers, APIs on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
-**Bind to your real deployed stack** by adding `--from-cfn-stack`: cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so your local handler reads and writes the exact same data the deployed app does.
+**Add `--from-cfn-stack`** to bind to a deployed stack — your local handler then reads and writes the same real data the deployed app does ([how it works](#why-cdk-local)).
 
 ```bash
 cdkl start-api --from-cfn-stack            # a local API on real AWS data + real Cognito JWT
@@ -32,7 +32,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 ## Why cdk-local
 
 - **Zero-friction local execution** — run standalone: no deploy, no IAM access, just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's account.
-- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` keeps you on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach, instead of paying to seed and anonymize a local emulator.
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach — instead of paying to seed and anonymize a local emulator.
 - **Picks up where `sam local` leaves off:**
   - **CDK-native** — point at `cdk.json`; no SAM template to maintain.
   - **Wider coverage** — Lambda, API Gateway, ECS run-task / service / ALB front-door, and Bedrock AgentCore.
