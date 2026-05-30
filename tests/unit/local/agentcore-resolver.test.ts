@@ -106,6 +106,95 @@ describe('resolveAgentCoreTarget — happy path', () => {
     });
     expect(resolved.containerUri).toBe('123456789012.dkr.ecr.us-east-1.amazonaws.com/agent:tag');
   });
+
+  /**
+   * Same-stack `AWS::ECR::Repository` ContainerUri — the shape CDK emits for
+   * `Runtime.fromImageUri(repo.repositoryUriForTag('latest'))`. Resolves
+   * under `--from-cfn-stack` by reading the deployed repo's physical name
+   * from state + synthesizing the URI from the resolved pseudo parameters.
+   * Locks the implicit fix from PR #149 (`deepen --from-cfn-stack`).
+   */
+  it('resolves a same-stack AWS::ECR::Repository Fn::Join (Fn::GetAtt RepositoryUri) under state', () => {
+    const join = {
+      'Fn::Join': ['', [{ 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] }, ':latest']],
+    };
+    const stack = buildStack(
+      'App',
+      {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        ChatAgent: containerRuntime({}, join),
+      },
+      'us-east-1'
+    );
+    const resolved = resolveAgentCoreTarget('ChatAgent', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+      stateResources: {
+        MyRepo: {
+          logicalId: 'MyRepo',
+          physicalId: 'app-myrepo-abc123',
+          resourceType: 'AWS::ECR::Repository',
+        },
+      },
+    });
+    expect(resolved.containerUri).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/app-myrepo-abc123:latest'
+    );
+  });
+
+  /**
+   * Alternative same-stack ECR shape: `Ref: <RepoLogicalId>` (rather than
+   * `Fn::GetAtt: RepositoryUri`) interleaved with the URI components.
+   * `Ref` on an `AWS::ECR::Repository` resolves to its physical name from
+   * state; the surrounding components come from pseudoParameters.
+   */
+  it('resolves a same-stack AWS::ECR::Repository Fn::Join (Ref to the repo) under state', () => {
+    const join = {
+      'Fn::Join': [
+        '',
+        [
+          { Ref: 'AWS::AccountId' },
+          '.dkr.ecr.',
+          { Ref: 'AWS::Region' },
+          '.',
+          { Ref: 'AWS::URLSuffix' },
+          '/',
+          { Ref: 'MyRepo' },
+          ':latest',
+        ],
+      ],
+    };
+    const stack = buildStack(
+      'App',
+      {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        ChatAgent: containerRuntime({}, join),
+      },
+      'us-east-1'
+    );
+    const resolved = resolveAgentCoreTarget('ChatAgent', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+      stateResources: {
+        MyRepo: {
+          logicalId: 'MyRepo',
+          physicalId: 'app-myrepo-xyz789',
+          resourceType: 'AWS::ECR::Repository',
+        },
+      },
+    });
+    expect(resolved.containerUri).toBe(
+      '123456789012.dkr.ecr.us-east-1.amazonaws.com/app-myrepo-xyz789:latest'
+    );
+  });
 });
 
 describe('resolveAgentCoreTarget — unresolvable container URI', () => {
@@ -117,6 +206,31 @@ describe('resolveAgentCoreTarget — unresolvable container URI', () => {
       AgentCoreResolutionError
     );
     expect(() => resolveAgentCoreTarget('App:ChatAgent', [stack])).toThrow(/cannot resolve/);
+  });
+
+  /**
+   * A same-stack ECR Fn::Join without `--from-cfn-stack` (no state) still
+   * errors with the actionable "build the agent as a fromAsset image, or
+   * pin a literal / imported ECR image URI" hint, but the message now
+   * points the user at `--from-cfn-stack` as the resolution path.
+   */
+  it('errors with a --from-cfn-stack hint when a same-stack ECR Fn::Join is invoked without state', () => {
+    const join = {
+      'Fn::Join': ['', [{ 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] }, ':latest']],
+    };
+    const stack = buildStack(
+      'App',
+      {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        ChatAgent: containerRuntime({}, join),
+      },
+      'us-east-1'
+    );
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(AgentCoreResolutionError);
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(
+      /references same-stack ECR repository 'MyRepo'/
+    );
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(/--from-cfn-stack/);
   });
 });
 
