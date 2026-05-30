@@ -1,3 +1,10 @@
+# [0.57.0](https://github.com/go-to-k/cdk-local/compare/v0.56.0...v0.57.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** precise --from-cfn-stack hint for same-stack ECR ContainerUri ([#173](https://github.com/go-to-k/cdk-local/issues/173)) ([0b3269c](https://github.com/go-to-k/cdk-local/commit/0b3269c760ec7cb633e1e064eb3600e9b89c57a6))
+
 # [0.56.0](https://github.com/go-to-k/cdk-local/compare/v0.55.0...v0.56.0) (2026-05-30)
 
 
