@@ -8,11 +8,15 @@
 # "create the bundle bucket alongside the agent" pattern that the literal-bucket
 # path (#144) can't resolve locally.
 #
-# Steps: cdk deploy -> read the deployed bucket name from the stack output ->
-# zip + upload the code-agent bundle to it -> `cdkl invoke-agentcore <target>
-# --from-cfn-stack` resolves the Ref to the physical bucket name and downloads
-# the bundle -> assert response -> cdk destroy (autoDeleteObjects empties the
-# bucket).
+# `AWS::BedrockAgentCore::Runtime` CFn validates the bundle object exists at
+# create time, so the test deploys in TWO PASSES:
+#   1. `cdk deploy -c withRuntime=false` creates just the bucket,
+#   2. verify.sh zips + uploads the code-agent bundle,
+#   3. `cdk deploy -c withRuntime=true` adds the Runtime referencing the
+#      now-populated bucket via `bucket.bucketName` (a same-stack `Ref`).
+#   4. `cdkl invoke-agentcore <target> --from-cfn-stack` resolves the Ref to
+#      the deployed bucket's physical name and downloads the bundle.
+#   5. `cdk destroy` removes everything (autoDeleteObjects empties the bucket).
 #
 # Run via `/run-integ local-invoke-agentcore-froms3-from-cfn` (recommended).
 # Requires Docker, AWS credentials with deploy + S3 permissions, and the global
@@ -71,17 +75,18 @@ if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION
   exit 1
 fi
 
-echo "[verify] step 3: cdk deploy (creates the bundle bucket + the Runtime)"
+echo "[verify] step 3a: cdk deploy (bucket-only, withRuntime=false)"
 WE_CREATED_STACK=1
 cdk deploy "${STACK}" \
+  -c withRuntime=false \
   --require-approval never \
   --no-version-reporting \
   --no-asset-metadata \
   --no-path-metadata \
   --region "${REGION}"
-echo "[verify] step 3 ok: cdk deploy completed"
+echo "[verify] step 3a ok: bucket deployed"
 
-echo "[verify] step 4: read the deployed bucket name from the stack output"
+echo "[verify] step 3b: read the deployed bucket name from the stack output"
 BUCKET=$(aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
   --query "Stacks[0].Outputs[?OutputKey=='BundleBucketName'].OutputValue" --output text)
 if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
@@ -90,14 +95,36 @@ if [ -z "${BUCKET}" ] || [ "${BUCKET}" = "None" ]; then
 fi
 echo "[verify]   bundle bucket: s3://${BUCKET}"
 
-echo "[verify] step 5: zip code-agent/ and upload as the bundle object"
+echo "[verify] step 3c: zip code-agent/ and upload as the bundle object (before Runtime create)"
 rm -f "${TEST_DIR}/bundle.zip"
 (cd "${TEST_DIR}/code-agent" && zip -qr "${TEST_DIR}/bundle.zip" . -x '*.pyc' '__pycache__/*')
 aws s3 cp "${TEST_DIR}/bundle.zip" "s3://${BUCKET}/bundles/agent.zip" --region "${REGION}" >/dev/null
 
+echo "[verify] step 3d: cdk deploy (withRuntime=true) — Runtime validates the bundle exists"
+cdk deploy "${STACK}" \
+  -c withRuntime=true \
+  --require-approval never \
+  --no-version-reporting \
+  --no-asset-metadata \
+  --no-path-metadata \
+  --region "${REGION}"
+echo "[verify] step 3d ok: Runtime deployed"
+
 echo "[verify] step 6: cdkl invoke-agentcore --from-cfn-stack (resolves Ref -> ${BUCKET})"
-RESULT=$(${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack 2>/dev/null | tail -1)
+set +e
+# cdkl runs the same CDK app — pass -c withRuntime=true so the synth includes
+# the Runtime resource the deployed stack also has.
+OUT_STEP6=$(${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack -c withRuntime=true 2>&1)
+RC_STEP6=$?
+set -e
+RESULT=$(echo "${OUT_STEP6}" | tail -1)
+echo "[verify]   exit=${RC_STEP6}"
 echo "[verify]   response: ${RESULT}"
+[[ ${RC_STEP6} -eq 0 ]] || {
+  echo "[verify] FAIL: cdkl invoke-agentcore exited ${RC_STEP6}. Full output:"
+  echo "${OUT_STEP6}" | tail -40
+  exit 1
+}
 echo "${RESULT}" | grep -q '"runtime":"python-froms3-ref"' || {
   echo "[verify] FAIL: expected the fromS3-via-Ref from-source agent to respond, got: ${RESULT}"
   exit 1
@@ -109,7 +136,7 @@ echo "${RESULT}" | grep -q '"greeting":"hello-from-s3-ref"' || {
 
 echo "[verify] step 7: WITHOUT --from-cfn-stack, intrinsic Code.S3.Bucket fails fast"
 set +e
-OUT_NO_STATE=$(${CLI} invoke-agentcore "${TARGET}" 2>&1)
+OUT_NO_STATE=$(${CLI} invoke-agentcore "${TARGET}" -c withRuntime=true 2>&1)
 RC_NO_STATE=$?
 set -e
 [[ ${RC_NO_STATE} -ne 0 ]] || {
@@ -124,7 +151,7 @@ echo "${OUT_NO_STATE}" | grep -q -- "--from-cfn-stack" || {
 echo "[verify] step 8: --event payload echoes through the fromS3-via-Ref agent"
 EVENT_FILE="$(mktemp)"
 echo '{"prompt":"hello froms3 ref"}' > "${EVENT_FILE}"
-RESULT_EVENT=$(${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack --event "${EVENT_FILE}" 2>/dev/null | tail -1)
+RESULT_EVENT=$(${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack -c withRuntime=true --event "${EVENT_FILE}" 2>/dev/null | tail -1)
 echo "[verify]   response: ${RESULT_EVENT}"
 echo "${RESULT_EVENT}" | grep -q '"prompt":"hello froms3 ref"' || {
   echo "[verify] FAIL: expected the echoed event from the fromS3-via-Ref agent, got: ${RESULT_EVENT}"

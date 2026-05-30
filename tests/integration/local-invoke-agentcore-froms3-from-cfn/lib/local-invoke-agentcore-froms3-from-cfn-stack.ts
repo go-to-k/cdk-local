@@ -32,20 +32,29 @@ export class LocalInvokeAgentCoreFromS3FromCfnStack extends cdk.Stack {
       autoDeleteObjects: true,
     });
 
-    new Runtime(this, 'S3Agent', {
-      agentRuntimeArtifact: AgentRuntimeArtifact.fromS3(
-        { bucketName: bundleBucket.bucketName, objectKey: 'bundles/agent.zip' },
-        AgentCoreRuntime.PYTHON_3_12,
-        ['app.py']
-      ),
-      environmentVariables: { GREETING: 'hello-from-s3-ref' },
-    });
-
     // Expose the deployed bucket name so verify.sh can upload the bundle to
     // the same bucket the Ref will resolve to under --from-cfn-stack.
     new cdk.CfnOutput(this, 'BundleBucketName', {
       value: bundleBucket.bucketName,
       description: 'Physical name of the fromS3 bundle bucket (Ref target).',
     });
+
+    // AWS::BedrockAgentCore::Runtime validates the bundle object exists at
+    // create time, so verify.sh deploys in two passes — `withRuntime=false`
+    // creates just the bucket, the bundle is uploaded, then a second deploy
+    // with `withRuntime=true` adds the Runtime. The Code.S3.Bucket reference
+    // (`bundleBucket.bucketName`) is a same-stack `Ref` intrinsic — the
+    // shape #157 resolves against --from-cfn-stack state.
+    const withRuntime = this.node.tryGetContext('withRuntime') === 'true';
+    if (withRuntime) {
+      new Runtime(this, 'S3Agent', {
+        agentRuntimeArtifact: AgentRuntimeArtifact.fromS3(
+          { bucketName: bundleBucket.bucketName, objectKey: 'bundles/agent.zip' },
+          AgentCoreRuntime.PYTHON_3_12,
+          ['app.py']
+        ),
+        environmentVariables: { GREETING: 'hello-from-s3-ref' },
+      });
+    }
   }
 }
