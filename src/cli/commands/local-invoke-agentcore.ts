@@ -1171,6 +1171,13 @@ export async function buildAgentCoreImageContext(
         context.stateSensitiveParameters = ssm.secureStringLogicalIds;
       }
     }
+  } else {
+    // load() returned undefined — capture the provider's failure
+    // detail so the resolver's "needs deployed state" error reports
+    // what AWS actually said instead of telling the user to re-pass
+    // a flag they already passed.
+    const loadError = stateProvider.getLastLoadError?.();
+    if (loadError) context.stateLoadFailureMessage = loadError;
   }
   return { context, loaded: loaded ?? undefined };
 }

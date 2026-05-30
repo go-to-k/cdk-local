@@ -232,6 +232,41 @@ describe('resolveAgentCoreTarget — unresolvable container URI', () => {
     );
     expect(() => resolveAgentCoreTarget('ChatAgent', [stack])).toThrow(/--from-cfn-stack/);
   });
+
+  /**
+   * When the user already passed `--from-cfn-stack` but the
+   * provider's `load()` failed (typical: synth stack name does NOT
+   * match the deployed CFN stack name), the remedy hint must flip
+   * away from "pass --from-cfn-stack" — telling the user to re-pass
+   * a flag they already passed is misleading. The captured failure
+   * message rides in `imageContext.stateLoadFailureMessage`.
+   */
+  it('flips the needs-state remedy when the state-source load failed (failure detail in imageContext)', () => {
+    const join = {
+      'Fn::Join': ['', [{ 'Fn::GetAtt': ['MyRepo', 'RepositoryUri'] }, ':latest']],
+    };
+    const stack = buildStack(
+      'App',
+      {
+        MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        ChatAgent: containerRuntime({}, join),
+      },
+      'us-east-1'
+    );
+    const imageContext = {
+      stateLoadFailureMessage:
+        "ListStackResources(dev-goto-Reco-App) failed: ValidationError HTTP 400: Stack with id dev-goto-Reco-App does not exist (region='ap-northeast-1')",
+    };
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack], imageContext)).toThrow(
+      /the state-source attempt failed: ListStackResources\(dev-goto-Reco-App\) failed:/
+    );
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack], imageContext)).toThrow(
+      /--from-cfn-stack <deployed-name>/
+    );
+    expect(() => resolveAgentCoreTarget('ChatAgent', [stack], imageContext)).not.toThrow(
+      /pass --from-cfn-stack to load/
+    );
+  });
 });
 
 describe('resolveAgentCoreTarget — target matching', () => {

@@ -4,6 +4,7 @@ import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.j
 import { matchStacks } from '../cli/stack-matcher.js';
 import {
   derivePseudoParametersFromRegion,
+  formatStateRemedy,
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
   type ImageResolutionContext,
@@ -702,16 +703,19 @@ function resolveImageUri(
       })();
     const joinResolved = tryResolveImageFnJoin(value, resources, context);
     if (joinResolved.kind === 'resolved') return joinResolved.uri;
-    // Mirror `cdkl run-task`'s shape: when the Fn::Join references a
-    // same-stack AWS::ECR::Repository but no state has been loaded, point the
-    // user at `--from-cfn-stack` rather than the coarse "cannot resolve" we
-    // fall through to for genuinely unsupported intrinsics.
+    // Mirror ECS's shape: when the Fn::Join references a same-stack
+    // AWS::ECR::Repository but no state has been loaded, point the user
+    // at the state-source remedy rather than the coarse "cannot resolve"
+    // we fall through to for genuinely unsupported intrinsics. The
+    // remedy hint flips between "pass --from-cfn-stack" and
+    // "the state-source attempt failed: ..." depending on whether the
+    // context carries a captured load-failure message.
     if (joinResolved.kind === 'needs-state') {
       throw new AgentCoreResolutionError(
         `AgentCore Runtime '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-          `${getEmbedConfig().cliName} invoke-agentcore cannot resolve the repository URI without state — ` +
-          'pass --from-cfn-stack to load the deployed stack state, ' +
-          'build via Runtime.fromAsset, or pin a literal / imported ECR image URI.'
+          `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
+          formatStateRemedy(context) +
+          ', build via Runtime.fromAsset, or pin a literal / imported ECR image URI.'
       );
     }
   }

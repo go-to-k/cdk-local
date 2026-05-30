@@ -513,6 +513,13 @@ export async function buildEcsImageResolutionContext(
     const loaded = await stateProvider.load(candidate.stackName, candidate.region);
     if (loaded) {
       ctx.stateResources = loaded.resources;
+    } else {
+      // load() returned undefined — capture the provider's failure
+      // detail so the resolver's "needs deployed state" error reports
+      // what AWS actually said instead of telling the user to re-pass
+      // a flag they already passed.
+      const loadError = stateProvider.getLastLoadError?.();
+      if (loadError) ctx.stateLoadFailureMessage = loadError;
     }
     // Resolve SSM-backed template parameters
     // (`AWS::SSM::Parameter::Value<String>`) so a `Ref` to such a

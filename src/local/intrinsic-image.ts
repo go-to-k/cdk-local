@@ -76,6 +76,42 @@ export interface ImageResolutionContext {
    * when no SecureString parameter was resolved.
    */
   stateSensitiveParameters?: readonly string[];
+  /**
+   * Single-line detail captured by a state-source provider whose `load()`
+   * was attempted but failed (e.g. `ListStackResources(<wrong-name>)`
+   * returned a ValidationError for a stack name that does not exist).
+   * Used by the resolver layer to flip the "pass --from-cfn-stack"
+   * remedy hint into "the state load was attempted but failed: ...;
+   * verify the stack name + --region / --profile" so the user is not
+   * told to re-supply a flag they already passed. Undefined when no
+   * load was attempted, or when the load succeeded.
+   */
+  stateLoadFailureMessage?: string;
+}
+
+/**
+ * Render the resolver-error remedy string for a "needs deployed state"
+ * failure. When the context records that a state-source provider's
+ * `load()` was attempted but failed ({@link ImageResolutionContext.stateLoadFailureMessage}),
+ * the hint surfaces the underlying failure and points at the
+ * stack-name / region / profile knobs instead of repeating "pass
+ * --from-cfn-stack" — the user already passed it and seeing the same
+ * flag suggested back is misleading. Otherwise the original hint is
+ * emitted verbatim.
+ *
+ * Returned as a clause without a trailing punctuation so callers can
+ * concatenate it with their alternatives (e.g. "..., build via
+ * ContainerImage.fromAsset, or pin a public image.").
+ */
+export function formatStateRemedy(context: ImageResolutionContext | undefined): string {
+  if (context?.stateLoadFailureMessage) {
+    return (
+      `the state-source attempt failed: ${context.stateLoadFailureMessage}; ` +
+      'verify the stack name (try --from-cfn-stack <deployed-name> if it differs ' +
+      'from the synthesized name) and that --region / --profile target the right account'
+    );
+  }
+  return 'pass --from-cfn-stack to load the deployed stack state';
 }
 
 /**

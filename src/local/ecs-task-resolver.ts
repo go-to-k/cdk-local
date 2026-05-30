@@ -5,6 +5,7 @@ import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
 import {
+  formatStateRemedy,
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
   type ImageResolutionContext,
@@ -1051,15 +1052,15 @@ function parseContainerImage(
   if (joinResolved.kind === 'needs-state') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-        `${getEmbedConfig().cliName} run-task cannot resolve the repository URI without state — ` +
-        'pass --from-cfn-stack to load the deployed stack state, ' +
-        'build via ContainerImage.fromAsset, or pin a public image.'
+        `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
+        formatStateRemedy(context) +
+        ', build via ContainerImage.fromAsset, or pin a public image.'
     );
   }
   if (joinResolved.kind === 'unsupported-join') {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unsupported Fn::Join Image shape: ${joinResolved.reason}. ` +
-        `${getEmbedConfig().cliName} run-task recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ` +
+        `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x ContainerImage.fromEcrRepository Fn::Join shape ` +
         '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
     );
   }
@@ -1068,7 +1069,7 @@ function parseContainerImage(
   if (!flat) {
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an unparseable Image property. ` +
-        `${getEmbedConfig().cliName} run-task v1 supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.`
+        `${getEmbedConfig().cliName} supports flat string images, single-key Fn::Sub bodies, and CDK-asset Image references.`
     );
   }
 
@@ -1097,9 +1098,9 @@ function parseContainerImage(
     if (unresolvedRepoRef) {
       throw new EcsTaskResolutionError(
         `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${unresolvedRepoRef}'. ` +
-          `${getEmbedConfig().cliName} run-task v1 cannot resolve the repository URI without state — ` +
-          'pass --from-cfn-stack to load the deployed stack state, ' +
-          'build via ContainerImage.fromAsset, or pin a public image.'
+          `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
+          formatStateRemedy(context) +
+          ', build via ContainerImage.fromAsset, or pin a public image.'
       );
     }
     if (substituted.includes('AWS::')) {
@@ -1115,7 +1116,7 @@ function parseContainerImage(
     // a "public" image.
     throw new EcsTaskResolutionError(
       `Container '${containerName}' in task '${taskLogicalId}' has an Image with unresolved \${...} placeholders (${substituted}). ` +
-        `${getEmbedConfig().cliName} run-task v1 only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.`
+        `${getEmbedConfig().cliName} only resolves AWS pseudo parameters and same-stack AWS::ECR::Repository refs.`
     );
   }
 
@@ -1258,13 +1259,13 @@ function parseVolume(
 
   if (v['EFSVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which ${getEmbedConfig().cliName} run-task cannot proxy locally. ` +
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses EFSVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally. ` +
         `Workaround: bind-mount a local directory at the same containerPath via Host: { SourcePath: '<local-path>' }, or override at runtime via --env-vars semantics for a Phase 2 follow-up.`
     );
   }
   if (v['FSxWindowsFileServerVolumeConfiguration']) {
     throw new EcsTaskResolutionError(
-      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which ${getEmbedConfig().cliName} run-task cannot proxy locally.`
+      `Task '${taskLogicalId}' Volumes[${idx}] '${name}' uses FSxWindowsFileServerVolumeConfiguration, which ${getEmbedConfig().cliName} cannot proxy locally.`
     );
   }
 
