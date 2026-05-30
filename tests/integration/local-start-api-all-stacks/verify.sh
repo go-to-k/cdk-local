@@ -159,10 +159,13 @@ curl_assert "StackA GET /ping" "http://127.0.0.1:${PORT_STACK_A}/ping" '"stack":
 curl_assert "StackB GET /pong" "http://127.0.0.1:${PORT_STACK_B}/pong" '"stack":"b"'
 
 # Cross-check isolation: StackA's port must NOT route to StackB's handler.
+# Treat both "200" AND "empty" as failures — empty means curl could not even
+# reach the listener (connection refused / RIE container crashed), which would
+# otherwise pass silently.
 echo "==> Asserting per-stack isolation (StackA port does NOT serve /pong)"
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT_STACK_A}/pong" || true)
-if [[ "${STATUS}" == "200" ]]; then
-  echo "FAIL: StackA port returned 200 for /pong — listener isolation broken"
+if [[ -z "${STATUS}" || "${STATUS}" == "200" ]]; then
+  echo "FAIL: StackA port for /pong returned \"${STATUS}\" — expected non-200, non-empty"
   exit 1
 fi
 echo "    ok: /pong on StackA port returned ${STATUS} (non-200 expected)"
