@@ -20,7 +20,7 @@ cd your-cdk-app               # the directory holding cdk.json
 cdkl invoke                   # pick a Lambda from the list, then run it locally
 ```
 
-`cdkl` synths your CDK app and runs the selected resource locally in Docker — Lambdas in their real AWS Lambda runtime container, ECS tasks and services as real containers, APIs on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
+`cdkl` synths your CDK app and runs the selected resource locally in Docker. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
 **Add `--from-cfn-stack`** to bind to a deployed stack — your local handler then reads and writes the same real data the deployed app does ([how it works](#why-cdk-local)).
 
