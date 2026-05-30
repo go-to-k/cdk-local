@@ -2,5 +2,6 @@
 # is a build artifact, not a committed source (matches the sibling fixtures).
 pnpm-lock.yaml
 
-# Local build scratch for the zipped bundle verify.sh uploads to S3.
-bundle.zip
+# Local build scratch: verify.sh stages the zipped bundle here for the
+# stack's BucketDeployment asset to upload during `cdk deploy`.
+bundle-source/
