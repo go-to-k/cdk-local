@@ -1,3 +1,10 @@
+# [0.62.0](https://github.com/go-to-k/cdk-local/compare/v0.61.1...v0.62.0) (2026-05-30)
+
+
+### Features
+
+* **exports:** expose ecs-service-emulator + elb-front-door-resolver for shim consumers ([#190](https://github.com/go-to-k/cdk-local/issues/190)) ([ae00db8](https://github.com/go-to-k/cdk-local/commit/ae00db80271ddbbd5996799f627ad6646ba89ca3))
+
 ## [0.61.1](https://github.com/go-to-k/cdk-local/compare/v0.61.0...v0.61.1) (2026-05-30)
 
 
