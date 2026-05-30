@@ -839,6 +839,28 @@ describe('resolveFromS3BucketIntrinsic — fromS3 Code.S3.Bucket intrinsic resol
     expect(crossStackResolver.resolveImport).toHaveBeenCalledWith('SharedBundleBucket');
   });
 
+  it('resolves a Fn::GetStackOutput bucket via the cross-stack resolver', async () => {
+    const r = runtimeWithIntrinsic({
+      'Fn::GetStackOutput': { StackName: 'SharedStack', OutputName: 'BundleBucketName' },
+    });
+    const resolveGetStackOutput = vi.fn().mockResolvedValue('output-bucket-name');
+    const crossStackResolver = {
+      resolveImport: vi.fn(),
+      resolveGetStackOutput,
+    };
+    const stateProvider = {
+      buildCrossStackResolver: vi.fn().mockResolvedValue(crossStackResolver),
+    } as never;
+    const loaded = { stackName: 'App', region: 'us-east-1', resources: {} } as never;
+    await resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined);
+    expect(r.codeArtifact?.s3Source?.bucket).toBe('output-bucket-name');
+    expect(resolveGetStackOutput).toHaveBeenCalledWith(
+      'SharedStack',
+      'us-east-1',
+      'BundleBucketName'
+    );
+  });
+
   it('errors when --from-cfn-stack state is not available', async () => {
     const r = runtimeWithIntrinsic({ Ref: 'BucketX' });
     await expect(
