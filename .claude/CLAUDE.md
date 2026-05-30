@@ -31,13 +31,19 @@ AWS managed services.
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
   listener port across the replicas and routes the listener rules across
-  the backing services. All six ALB rule-condition fields are honored
-  (`path-pattern`, `host-header`, `http-header`, `http-request-method`,
-  `query-string`, `source-ip`), along with weighted forwards and
-  `redirect` / `fixed-response` actions. A `TargetType: lambda` target
-  group is served by invoking the backing Lambda locally (HTTP request
-  -> `requestContext.elb` event -> RIE -> response), so a forward can
-  mix ECS and Lambda targets
+  the backing services. HTTP **and HTTPS** listeners are served — HTTPS
+  termination uses a user-supplied (`--tls-cert` + `--tls-key`) or
+  auto-generated self-signed cert (cached under
+  `$XDG_CACHE_HOME/cdk-local/alb-https/`, default
+  `~/.cache/cdk-local/alb-https/`; `openssl` invoked once on cache miss);
+  the deployed Listener `Certificates[]` ACM ARNs are not fetched
+  because ACM private keys are not retrievable by design. All six ALB
+  rule-condition fields are honored (`path-pattern`, `host-header`,
+  `http-header`, `http-request-method`, `query-string`, `source-ip`),
+  along with weighted forwards and `redirect` / `fixed-response` actions.
+  A `TargetType: lambda` target group is served by invoking the backing
+  Lambda locally (HTTP request -> `requestContext.elb` event -> RIE ->
+  response), so a forward can mix ECS and Lambda targets
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -129,10 +135,14 @@ Gateway).
   priority ordered), alb-lambda-event (HTTP <-> ALB
   `requestContext.elb` Lambda event/response translation), front-door-pool
   (round-robin pool of live replica endpoints), front-door-lambda-runner
-  (one warm RIE container per Lambda target), front-door-server (host HTTP
-  reverse proxy that resolves a per-request RouteAction — weighted forward
-  to a replica pool or a Lambda invoke, redirect, or fixed-response —
-  behind the ALB listener port), etc.
+  (one warm RIE container per Lambda target), front-door-tls (resolves
+  TLS materials for HTTPS listeners: `--tls-cert` / `--tls-key` pair or
+  an auto-generated self-signed cert cached under XDG cache via openssl),
+  front-door-server (host HTTP / HTTPS reverse proxy that resolves a
+  per-request RouteAction — weighted forward to a replica pool or a
+  Lambda invoke, redirect, or fixed-response — behind the ALB listener
+  port; HTTPS branch flips `X-Forwarded-Proto` and the redirect
+  `#{protocol}` default to `https`), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

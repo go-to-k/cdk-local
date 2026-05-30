@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveAlbTarget, parseLbPortOverrides, albStrategy } from '../../../src/cli/commands/local-start-alb.js';
 import { serviceStrategy } from '../../../src/cli/commands/local-start-service.js';
 import { buildFrontDoor } from '../../../src/cli/commands/ecs-service-emulator.js';
+import { resolveFrontDoorTlsMaterials } from '../../../src/local/front-door-tls.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 const ALB = 'WebLB';
@@ -312,6 +316,7 @@ describe('start-alb / start-service strategy binding', () => {
       {
         listenerPort: 80,
         hostPort: 8080, // remapped by --lb-port 80=8080
+        protocol: 'HTTP',
         defaultAction: {
           kind: 'forward',
           targets: [
@@ -373,6 +378,7 @@ describe('buildFrontDoor', () => {
           {
             listenerPort: 80,
             hostPort: 0, // ephemeral: avoid privileged-port binding in the unit test
+            protocol: 'HTTP',
             defaultAction: {
               kind: 'forward',
               targets: [
@@ -435,6 +441,7 @@ describe('buildFrontDoor', () => {
           {
             listenerPort: 80,
             hostPort: 0,
+            protocol: 'HTTP',
             defaultAction: {
               kind: 'forward',
               targets: [
@@ -457,6 +464,145 @@ describe('buildFrontDoor', () => {
     }
   });
 
+  describe('HTTPS listener binding (--tls-cert / --tls-key + auto self-signed)', () => {
+    let tlsTmpDir: string;
+    let certPath: string;
+    let keyPath: string;
+
+    beforeAll(async () => {
+      // Pre-bake a real self-signed cert/key pair so the BYO path executes
+      // inside `buildFrontDoor` -> `resolveFrontDoorTlsMaterials` without
+      // invoking openssl a second time.
+      tlsTmpDir = mkdtempSync(join(tmpdir(), 'cdkl-start-alb-binding-tls-'));
+      const mats = await resolveFrontDoorTlsMaterials({
+        certPath: undefined,
+        keyPath: undefined,
+        cacheDir: tlsTmpDir,
+      });
+      certPath = join(tlsTmpDir, 'byo-cert.pem');
+      keyPath = join(tlsTmpDir, 'byo-key.pem');
+      writeFileSync(certPath, mats.certPem);
+      writeFileSync(keyPath, mats.keyPem);
+    });
+
+    afterAll(() => {
+      rmSync(tlsTmpDir, { recursive: true, force: true });
+    });
+
+    it('threads HTTPS protocol into a server with scheme=https when --tls-cert / --tls-key are set', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        { containerHost: '127.0.0.1', pull: true, tlsCert: certPath, tlsKey: keyPath } as never,
+        logger
+      );
+      try {
+        expect(servers).toHaveLength(1);
+        expect(servers[0]!.scheme).toBe('https');
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('shares one cert across multiple HTTPS listeners (pre-resolved once)', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+            {
+              listenerPort: 8443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        { containerHost: '127.0.0.1', pull: true, tlsCert: certPath, tlsKey: keyPath } as never,
+        logger
+      );
+      try {
+        expect(servers).toHaveLength(2);
+        expect(servers.every((s) => s.scheme === 'https')).toBe(true);
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('mixes HTTP + HTTPS listeners on the same ALB', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      const { servers } = await buildFrontDoor(
+        {
+          listeners: [
+            {
+              listenerPort: 80,
+              hostPort: 0,
+              protocol: 'HTTP',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+            {
+              listenerPort: 443,
+              hostPort: 0,
+              protocol: 'HTTPS',
+              defaultAction: { kind: 'fixed-response', statusCode: 204 },
+              rules: [],
+            },
+          ],
+        },
+        { containerHost: '127.0.0.1', pull: true, tlsCert: certPath, tlsKey: keyPath } as never,
+        logger
+      );
+      try {
+        const schemes = servers.map((s) => s.scheme).sort();
+        expect(schemes).toEqual(['http', 'https']);
+      } finally {
+        await Promise.all(servers.map((s) => s.close()));
+      }
+    });
+
+    it('surfaces a TLS pairing failure cleanly (not wrapped in the --lb-port port-bind envelope)', async () => {
+      const logger = { info: () => {}, warn: () => {} } as never;
+      // Set only --tls-cert (key missing) -> resolveFrontDoorTlsMaterials throws
+      // its own pairing error before any server tries to bind. The buildFrontDoor
+      // try/catch must NOT re-wrap this as a port-bind issue.
+      await expect(
+        buildFrontDoor(
+          {
+            listeners: [
+              {
+                listenerPort: 443,
+                hostPort: 0,
+                protocol: 'HTTPS',
+                defaultAction: { kind: 'fixed-response', statusCode: 204 },
+                rules: [],
+              },
+            ],
+          },
+          { containerHost: '127.0.0.1', pull: true, tlsCert: certPath } as never, // tlsKey omitted
+          logger
+        )
+      ).rejects.toThrow(/--tls-cert is set but --tls-key is missing/);
+    });
+  });
+
   it('stands up a fixed-response-default listener with no backing pool', async () => {
     const logger = { info: () => {}, warn: () => {} } as never;
     const { servers, frontDoorByService } = await buildFrontDoor(
@@ -465,6 +611,7 @@ describe('buildFrontDoor', () => {
           {
             listenerPort: 80,
             hostPort: 0,
+            protocol: 'HTTP',
             defaultAction: { kind: 'fixed-response', statusCode: 404, messageBody: 'nope' },
             rules: [],
           },

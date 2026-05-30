@@ -5,6 +5,7 @@ import {
   type Server,
   type ServerResponse,
 } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { getLogger } from '../utils/logger.js';
 import type { FrontDoorEndpointPool } from './front-door-pool.js';
 import {
@@ -47,9 +48,12 @@ import {
  * {@link StartFrontDoorServerOptions.selectPool} selectors instead of `route`.
  *
  * Scope: per-request round-robin + weighted forward (ECS pools and/or Lambda
- * invokers), redirect / fixed-response synthesis, HTTP only, `path-pattern` +
- * `host-header` rule routing. No health-check-gated draining, no sticky
- * sessions, no websocket `Upgrade` proxying, no TLS termination.
+ * invokers), redirect / fixed-response synthesis, every ALB rule-condition
+ * field. HTTP and HTTPS listeners are both served — HTTPS termination uses
+ * the {@link StartFrontDoorServerOptions.tls} materials (a user-supplied or
+ * auto-generated self-signed cert/key pair) and switches `X-Forwarded-Proto`
+ * + redirect `#{protocol}` to `https`. No health-check-gated draining, no
+ * sticky sessions, no websocket `Upgrade` proxying.
  */
 
 /**
@@ -174,6 +178,13 @@ export interface StartFrontDoorServerOptions {
   /** Human label for log / error lines (e.g. `listener port 80`). */
   label: string;
   /**
+   * When set, the front-door listens over HTTPS using these PEM materials
+   * (server cert + private key). `X-Forwarded-Proto` switches to `https`
+   * and redirect `#{protocol}` placeholders resolve to `https`. Absent =
+   * plain HTTP listener (the default).
+   */
+  tls?: { certPem: Buffer; keyPem: Buffer };
+  /**
    * Per-request upstream timeout (ms). A replica that accepts the connection
    * but never responds (deadlocked app, half-open socket) must not hang the
    * request forever; on timeout the upstream socket is destroyed and the
@@ -190,6 +201,8 @@ export interface StartedFrontDoorServer {
   port: number;
   /** Actual bound host. */
   host: string;
+  /** `'https'` when started with `tls`, otherwise `'http'`. Used by log banners. */
+  scheme: 'http' | 'https';
   /** Underlying server (for diagnostics). */
   server: Server;
   /** Drain + close. Idempotent. */
@@ -202,12 +215,23 @@ export async function startFrontDoorServer(
   const logger = getLogger().child('front-door');
   const host = opts.host ?? '127.0.0.1';
 
-  const server = createServer((req, res) => {
+  const requestHandler = (req: IncomingMessage, res: ServerResponse): void => {
     handleProxyRequest(req, res, opts).catch((err) => {
       logger.debug(`front-door request error: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) writeError(res, 502, 'Bad Gateway');
     });
-  });
+  };
+  // HTTPS branch: `https.createServer` with the supplied PEM materials. The
+  // request handler is the same — TLS only adds the handshake at the socket
+  // layer. `X-Forwarded-Proto` is stamped based on `tls` presence so a
+  // downstream app reads the right scheme.
+  const server: Server = opts.tls
+    ? (createHttpsServer(
+        { cert: opts.tls.certPem, key: opts.tls.keyPem },
+        requestHandler
+      ) as unknown as Server)
+    : createServer(requestHandler);
+  const scheme: 'http' | 'https' = opts.tls ? 'https' : 'http';
   server.on('connection', (socket) => socket.setNoDelay(true));
 
   const boundPort = await new Promise<number>((resolve, reject) => {
@@ -226,6 +250,7 @@ export async function startFrontDoorServer(
   return {
     port: boundPort,
     host,
+    scheme,
     server,
     close: async (): Promise<void> => {
       if (closed) return;
@@ -281,8 +306,11 @@ function handleProxyRequest(
       // method, incl. POST) so an unconsumed body doesn't stall HTTP/1.1
       // keep-alive socket reuse, then synthesize the response with no backend.
       req.resume();
-      if (action.kind === 'redirect') writeRedirect(res, action, req, opts.listenerPort);
-      else writeFixedResponse(res, action);
+      if (action.kind === 'redirect') {
+        writeRedirect(res, action, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+      } else {
+        writeFixedResponse(res, action);
+      }
       return Promise.resolve();
     }
 
@@ -356,7 +384,7 @@ function handlePoolRequest(
 
     const headers = { ...req.headers };
     stripHopByHopHeaders(headers);
-    appendForwardedHeaders(headers, req, opts.listenerPort);
+    appendForwardedHeaders(headers, req, opts.listenerPort, opts.tls ? 'https' : 'http');
 
     const proxyReq = httpRequest(
       {
@@ -477,9 +505,10 @@ function writeRedirect(
   res: ServerResponse,
   action: RedirectRouteAction,
   req: IncomingMessage,
-  listenerPort: number
+  listenerPort: number,
+  scheme: 'http' | 'https'
 ): void {
-  const location = buildRedirectLocation(action, req, listenerPort);
+  const location = buildRedirectLocation(action, req, listenerPort, scheme);
   res.writeHead(action.statusCode, {
     location,
     'content-type': 'text/plain; charset=utf-8',
@@ -488,11 +517,17 @@ function writeRedirect(
   res.end();
 }
 
-/** Build the `Location` URL for a redirect action, resolving ALB `#{...}` placeholders. */
+/**
+ * Build the `Location` URL for a redirect action, resolving ALB `#{...}`
+ * placeholders. `scheme` is the receiving listener's protocol — it sets the
+ * default for `#{protocol}` so an HTTPS listener redirects to `https://...`
+ * by default, matching what a real ALB does.
+ */
 export function buildRedirectLocation(
   action: RedirectRouteAction,
   req: { url?: string | undefined; headers: NodeJS.Dict<string | string[]> },
-  listenerPort: number
+  listenerPort: number,
+  scheme: 'http' | 'https' = 'http'
 ): string {
   const url = req.url ?? '/';
   const qIndex = url.indexOf('?');
@@ -503,7 +538,7 @@ export function buildRedirectLocation(
   const reqHostName = (hostHeaderValue ?? '').split(':')[0] ?? '';
 
   const placeholders: Record<string, string> = {
-    protocol: 'http',
+    protocol: scheme,
     host: reqHostName,
     port: String(listenerPort),
     path: reqPath.replace(/^\//, ''), // ALB's #{path} excludes the leading slash
@@ -615,7 +650,12 @@ function handleLambdaRequest(
           // event's headers match what a real ALB forwards — no connection /
           // transfer-encoding / keep-alive leaking into the handler.
           stripHopByHopHeaders(forwardHeaders);
-          appendForwardedHeaders(forwardHeaders, req, opts.listenerPort);
+          appendForwardedHeaders(
+            forwardHeaders,
+            req,
+            opts.listenerPort,
+            opts.tls ? 'https' : 'http'
+          );
           const snapshot = snapshotFromIncoming(req, body);
           for (const [name, value] of Object.entries(forwardHeaders)) {
             if (value === undefined) continue;
@@ -695,18 +735,20 @@ function stripHopByHopHeaders(headers: NodeJS.Dict<string | string[]>): void {
 /**
  * Inject the ALB-style forwarding headers a downstream app may read. Appends
  * the client IP to any existing `X-Forwarded-For` chain (ALB appends rather
- * than replaces) and stamps the scheme / listener port.
+ * than replaces) and stamps the scheme / listener port. `scheme` follows the
+ * listener's protocol so an HTTPS listener stamps `x-forwarded-proto: https`.
  */
 function appendForwardedHeaders(
   headers: NodeJS.Dict<string | string[]>,
   req: IncomingMessage,
-  listenerPort: number
+  listenerPort: number,
+  scheme: 'http' | 'https'
 ): void {
   const clientIp = req.socket.remoteAddress ?? '';
   const existing = headers['x-forwarded-for'];
   const chain = Array.isArray(existing) ? existing.join(', ') : existing;
   headers['x-forwarded-for'] = chain ? `${chain}, ${clientIp}` : clientIp;
-  headers['x-forwarded-proto'] = 'http';
+  headers['x-forwarded-proto'] = scheme;
   headers['x-forwarded-port'] = String(listenerPort);
 }
 

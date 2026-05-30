@@ -773,7 +773,7 @@ describe('resolveAlbFrontDoor', () => {
     expect(listeners.map((l) => l.listenerPort)).toEqual([80]);
   });
 
-  it('skips + warns on an HTTPS listener (HTTP only)', () => {
+  it('serves an HTTPS listener with listenerProtocol=HTTPS (no warning)', () => {
     const stack = stackWith({
       [LISTENER]: {
         Type: 'AWS::ElasticLoadBalancingV2::Listener',
@@ -786,8 +786,45 @@ describe('resolveAlbFrontDoor', () => {
       },
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]!.listenerProtocol).toBe('HTTPS');
+    expect(listeners[0]!.listenerPort).toBe(443);
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns once when an HTTPS listener declares ACM Certificates (not retrievable locally)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 443,
+          Protocol: 'HTTPS',
+          Certificates: [{ CertificateArn: 'arn:aws:acm:us-east-1:111:certificate/abc' }],
+          DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toHaveLength(1);
+    expect(warnings.join('\n')).toMatch(/ACM Certificates/);
+  });
+
+  it('skips + warns on a non-HTTP/HTTPS listener (TLS / NLB-style)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 443,
+          Protocol: 'TLS',
+          DefaultActions: [{ Type: 'forward', TargetGroupArn: { Ref: TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/HTTPS/);
+    expect(warnings.join('\n')).toMatch(/TLS/);
   });
 
   it('resolves a Lambda target group (default action) to its backing function (#123)', () => {

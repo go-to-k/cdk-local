@@ -1,5 +1,9 @@
-import { describe, it, expect, afterEach } from 'vite-plus/test';
+import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vite-plus/test';
 import { createServer, get, request, type IncomingMessage, type Server } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 import { FrontDoorEndpointPool } from '../../../src/local/front-door-pool.js';
 import {
@@ -11,6 +15,10 @@ import {
   type RedirectRouteAction,
 } from '../../../src/local/front-door-server.js';
 import { matchAlbPathRule, type AlbPathRule } from '../../../src/local/alb-path-matcher.js';
+import {
+  resolveFrontDoorTlsMaterials,
+  type FrontDoorTlsMaterials,
+} from '../../../src/local/front-door-tls.js';
 
 interface Upstream {
   server: Server;
@@ -726,5 +734,147 @@ describe('startFrontDoorServer — weighted forward mixing ECS + Lambda (#123)',
       expect((await fetchText(front.port)).body).toBe('ecs-only');
     }
     expect(lambdaHits).toBe(0);
+  });
+});
+
+describe('startFrontDoorServer — HTTPS termination', () => {
+  let tls: FrontDoorTlsMaterials;
+  let tlsCacheDir: string;
+
+  beforeAll(async () => {
+    tlsCacheDir = mkdtempSync(join(tmpdir(), 'cdkl-front-door-tls-'));
+    tls = await resolveFrontDoorTlsMaterials({
+      certPath: undefined,
+      keyPath: undefined,
+      cacheDir: tlsCacheDir,
+    });
+  });
+
+  afterAll(() => {
+    rmSync(tlsCacheDir, { recursive: true, force: true });
+  });
+
+  function fetchHttpsText(port: number): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = httpsRequest(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/',
+          method: 'GET',
+          rejectUnauthorized: false, // self-signed cert
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('binds an HTTPS server when tls materials are supplied (scheme=https)', async () => {
+    const upstream = await startUpstream('https-upstream');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => forward(pool),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      tls,
+    });
+    cleanups.push(() => front.close());
+
+    expect(front.scheme).toBe('https');
+    const res = await fetchHttpsText(front.port);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('https-upstream');
+  });
+
+  it('stamps X-Forwarded-Proto: https on the upstream request when tls is set', async () => {
+    const upstream = await startUpstream('xfwd-proto');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => forward(pool),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      tls,
+    });
+    cleanups.push(() => front.close());
+
+    await fetchHttpsText(front.port);
+    expect(upstream.lastHeaders?.['x-forwarded-proto']).toBe('https');
+    expect(upstream.lastHeaders?.['x-forwarded-port']).toBe('443');
+  });
+
+  it('defaults a redirect action `#{protocol}` to https when the listener is HTTPS', async () => {
+    const action: RedirectRouteAction = {
+      kind: 'redirect',
+      statusCode: 301,
+      // `#{protocol}` left to default — must resolve to `https` for an HTTPS listener.
+      host: 'new.example.com',
+    };
+    const front = await startFrontDoorServer({
+      route: () => action,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      tls,
+    });
+    cleanups.push(() => front.close());
+
+    const result = await new Promise<{ status: number; location?: string }>((resolve, reject) => {
+      const req = httpsRequest(
+        {
+          host: '127.0.0.1',
+          port: front.port,
+          path: '/',
+          method: 'GET',
+          headers: { host: 'old.example.com' },
+          rejectUnauthorized: false,
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              ...(typeof res.headers.location === 'string' && { location: res.headers.location }),
+            })
+          );
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(result.status).toBe(301);
+    expect(result.location).toMatch(/^https:\/\/new\.example\.com\//);
+  });
+
+  it('falls back to HTTP (scheme=http) and X-Forwarded-Proto: http when tls is omitted', async () => {
+    // Regression for the boolean toggle: an HTTP listener side by side with the
+    // HTTPS one must still stamp `http`.
+    const upstream = await startUpstream('plain-http');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorServer({
+      route: () => forward(pool),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    expect(front.scheme).toBe('http');
+    await fetchText(front.port);
+    expect(upstream.lastHeaders?.['x-forwarded-proto']).toBe('http');
   });
 });

@@ -1110,7 +1110,7 @@ and name the ALB.
 
 `cdkl start-alb <targets...>` is the ALB counterpart of `cdkl start-api`:
 you name the **Application Load Balancer**, and cdk-local discovers the
-ECS service(s) behind its HTTP listeners, boots their replicas
+ECS service(s) behind its HTTP and HTTPS listeners, boots their replicas
 (the same shared docker network + Cloud Map + restart watcher as
 `start-service`), and stands up a host-side **front-door** on each
 listener port that round-robins each request across the running replicas
@@ -1174,38 +1174,61 @@ Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 | Flag | Default | Behavior |
 | --- | --- | --- |
 | `--lb-port <listenerPort=hostPort>` | — | Bind the front-door on a specific host port (e.g. `80=8080`); repeatable. Default: host port == ALB listener port. Remap a privileged listener port (< 1024) to a non-privileged host port on macOS. |
+| `--tls-cert <path>` | unset | PEM-encoded server certificate for HTTPS front-door listeners. Must be set together with `--tls-key`. Omit both flags to auto-generate a self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`, defaulting to `~/.cache/cdk-local/alb-https/`); requires `openssl` on PATH. The deployed Listener `Certificates[]` are NOT fetched — ACM private keys are not retrievable by design. |
+| `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Must be set together with `--tls-cert`. |
 
 ```bash
 # ALB listener on :80 -> remap to a non-privileged host port on macOS
 cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 # then: curl http://127.0.0.1:8080/  (round-robins across replicas)
+
+# HTTPS listener on :443 with auto-generated self-signed cert + a
+# non-privileged host port
+cdkl start-alb MyStack/WebAlb --lb-port 443=8443
+# then: curl --insecure https://127.0.0.1:8443/
+
+# HTTPS with a BYO cert (must be set together)
+cdkl start-alb MyStack/WebAlb --tls-cert ./server.pem --tls-key ./server-key.pem
 ```
 
 ### Scope
 
-**HTTP** listeners with **ECS** and **Lambda** targets, with priority-ordered
-listener rules matching every ALB condition field — `path-pattern` and
-`host-header` (ALB `*` / `?` glob; host case-insensitive, path-only excludes the
-query string), `http-header` (case-insensitive name lookup + case-insensitive
-value glob), `http-request-method` (exact uppercase match, no wildcards),
-`query-string` (`{ Key?, Value }` globs, case-insensitive, percent / `+`
-decoded), and `source-ip` (IPv4 / IPv6 CIDR; IPv4-mapped IPv6 source
-addresses are unmapped before matching). Both default actions and rule
+**HTTP** and **HTTPS** listeners with **ECS** and **Lambda** targets, with
+priority-ordered listener rules matching every ALB condition field —
+`path-pattern` and `host-header` (ALB `*` / `?` glob; host case-insensitive,
+path-only excludes the query string), `http-header` (case-insensitive name
+lookup + case-insensitive value glob), `http-request-method` (exact uppercase
+match, no wildcards), `query-string` (`{ Key?, Value }` globs, case-insensitive,
+percent / `+` decoded), and `source-ip` (IPv4 / IPv6 CIDR; IPv4-mapped IPv6
+source addresses are unmapped before matching). Both default actions and rule
 actions support single-target `forward`, **weighted** (multi-target) `forward`
 (weighted-random selection; weight 0 never selected; a forward may mix ECS
 and Lambda targets), `redirect` (301 / 302 with the
 `#{protocol|host|port|path|query}` placeholders resolved against the
-request), and `fixed-response` (synthesized status / content-type / body). A
+request — `#{protocol}` defaults to the listener's own scheme), and
+`fixed-response` (synthesized status / content-type / body). A
 `TargetType: lambda` target group invokes the backing Lambda locally — the
 request becomes the ALB `requestContext.elb` event, runs through the Lambda RIE,
-and the response is translated back (a malformed response → 502). Out of scope,
-skipped with a warning, and tracked in
+and the response is translated back (a malformed response → 502).
+
+For HTTPS listeners the front-door terminates TLS locally using a user-supplied
+cert (`--tls-cert` + `--tls-key`, set together) or an auto-generated self-signed
+cert cached under `~/.cache/cdk-local/alb-https/`. The deployed Listener's
+`Certificates[]` ACM ARNs are not fetched — ACM private keys are not retrievable
+by design, so the local front-door always uses its own cert and warns once that
+the ACM cert was bypassed. Clients should use `curl --insecure` (or trust the
+generated cert) since the cert is self-signed. The `SslPolicy` cipher policy
+is not enforced; the upstream is dialed over plain HTTP (TLS terminated at the
+front-door, not re-encrypted).
+
+Out of scope, skipped with a warning, and tracked in
 [#123](https://github.com/go-to-k/cdk-local/issues/123):
-`authenticate-cognito` / `authenticate-oidc` actions, and HTTPS / TLS
-termination. The local front-door binds the request's `socket.remoteAddress`
-as the source IP, so a `source-ip` CIDR narrower than `127.0.0.0/8` will not
-match traffic that comes in on `127.0.0.1` — exercise such rules from a real
-remote, or use a permissive loopback CIDR for local smoke tests.
+`authenticate-cognito` / `authenticate-oidc` actions; ALB Mutual TLS
+(`MutualAuthentication.Mode: verify`). The local front-door binds the
+request's `socket.remoteAddress` as the source IP, so a `source-ip` CIDR
+narrower than `127.0.0.0/8` will not match traffic that comes in on
+`127.0.0.1` — exercise such rules from a real remote, or use a permissive
+loopback CIDR for local smoke tests.
 
 ### `cdkl start-alb` exit codes
 
