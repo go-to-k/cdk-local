@@ -51,9 +51,19 @@ import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path
  * mix ECS and Lambda targets. HTTPS listeners are served — local TLS
  * termination uses a user-supplied or auto-generated self-signed cert/key
  * pair (the deployed `Listener.Certificates[]` ACM ARNs are not fetched,
- * because ACM private keys are not retrievable by design). Skipped with a
- * warning: TLS listeners (NLB-style, not ALB) and `authenticate-cognito` /
- * `authenticate-oidc` actions.
+ * because ACM private keys are not retrievable by design).
+ *
+ * `authenticate-cognito` / `authenticate-oidc` actions ARE served — they are
+ * lifted from the `Actions[]` array into an `authGuard` attached to the
+ * terminal action they wrap. The front-door enforces a Bearer-JWT check
+ * locally (signature + `iss` + `exp` + `aud`) using the existing JWKS-cached
+ * verifier; missing / invalid token -> 401 with `WWW-Authenticate: Bearer`.
+ * Out of scope: the full OAuth roundtrip (authorize-endpoint redirect +
+ * callback). The local-dev parity is "I have a JWT, let me through" — the
+ * `--bearer-token <jwt>` flag is the convenience escape hatch; the
+ * `--no-verify-auth` flag disables the guard entirely.
+ *
+ * Skipped with a warning: TLS listeners (NLB-style, not ALB).
  */
 
 const ALB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -159,6 +169,38 @@ export interface FrontDoorForwardAction {
   targets: FrontDoorForwardTarget[];
 }
 
+/**
+ * The local-enforced ALB authenticate-* guard. An `authenticate-cognito` /
+ * `authenticate-oidc` action in `Actions[]` is parsed into one of these and
+ * attached to the terminal action it wraps. The front-door evaluates the
+ * guard before serving the action; the cloud-side OAuth roundtrip is NOT
+ * reproduced (see module jsdoc).
+ *
+ * Cognito vs OIDC are mostly the same shape — both end up checking a Bearer
+ * JWT's `iss` + `aud` + signature. The `kind` is retained for logs / docs and
+ * for the Cognito-direct JWKS optimization (`region` + `userPoolId`).
+ */
+export interface FrontDoorAuthGuard {
+  kind: 'authenticate-cognito' | 'authenticate-oidc';
+  /** Expected JWT `iss` (Cognito issuer URL or the OIDC `Issuer`). */
+  issuer: string;
+  /** Allowed JWT `aud` value (Cognito `UserPoolClientId` or OIDC `ClientId`). */
+  audience: string;
+  /** Cognito-only: enables the direct JWKS URL fast path. */
+  region?: string;
+  /** Cognito-only: enables the direct JWKS URL fast path. */
+  userPoolId?: string;
+  /**
+   * Cookie name prefix that ALB issues on a successful sign-in. The presence
+   * of any cookie matching `<prefix>-N` short-circuits the guard (the user is
+   * acting as if already signed in via the deployed ALB; local-dev parity).
+   * Defaults to `AWSELBAuthSessionCookie` per ALB.
+   */
+  sessionCookieName: string;
+  /** Diagnostic label for log lines + the 401 `WWW-Authenticate` realm. */
+  label: string;
+}
+
 /** Any resolved listener / rule action the local front-door can serve. */
 export type ResolvedListenerAction =
   | FrontDoorForwardAction
@@ -183,6 +225,12 @@ export interface ResolvedListenerRule {
   sourceIpCidrs: string[];
   /** The action this rule performs when its conditions match. */
   action: ResolvedListenerAction;
+  /**
+   * When the rule's `Actions[]` declared an `authenticate-cognito` /
+   * `authenticate-oidc` action before the terminal action, this carries the
+   * resolved guard. The front-door enforces it before serving `action`.
+   */
+  authGuard?: FrontDoorAuthGuard;
 }
 
 /** A resolved listener front-door: one host port, an optional default action + rules. */
@@ -195,11 +243,16 @@ export interface ResolvedListenerFrontDoor {
   listenerLogicalId: string;
   /**
    * Default action. Present when the listener's `DefaultActions` is a resolvable
-   * forward / redirect / fixed-response; absent only when every default action
-   * was skipped (e.g. an authenticate-* default) — unmatched requests then get
-   * a 404 from the front-door.
+   * forward / redirect / fixed-response. Absent only when the default action
+   * was a bare authenticate-* with no terminal action — unmatched requests then
+   * get a 404 from the front-door.
    */
   defaultAction?: ResolvedListenerAction;
+  /**
+   * Auth guard for the default action (when `DefaultActions[]` started with
+   * an `authenticate-cognito` / `authenticate-oidc` entry).
+   */
+  defaultAuthGuard?: FrontDoorAuthGuard;
   /** Rules (unordered here; the matcher evaluates by priority). */
   rules: ResolvedListenerRule[];
 }
@@ -263,7 +316,7 @@ export function resolveAlbFrontDoor(
       );
     }
 
-    const defaultAction = resolveAction(
+    const defaultResolved = resolveAction(
       props['DefaultActions'],
       resources,
       tgToService,
@@ -300,7 +353,7 @@ export function resolveAlbFrontDoor(
         // No supported condition to route on (an empty / catch-all rule).
         continue;
       }
-      const action = resolveAction(
+      const ruleResolved = resolveAction(
         ruleProps['Actions'],
         resources,
         tgToService,
@@ -308,7 +361,7 @@ export function resolveAlbFrontDoor(
         `${ruleLabel} action`,
         warnings
       );
-      if (!action) continue; // resolveAction already warned (or it was an authenticate-* action)
+      if (!ruleResolved) continue; // resolveAction already warned (or it was a bare authenticate-*)
       rules.push({
         priority,
         pathPatterns,
@@ -317,12 +370,13 @@ export function resolveAlbFrontDoor(
         httpRequestMethods,
         queryStringConditions,
         sourceIpCidrs,
-        action,
+        action: ruleResolved.action,
+        ...(ruleResolved.authGuard ? { authGuard: ruleResolved.authGuard } : {}),
       });
     }
 
-    if (!defaultAction && rules.length === 0) {
-      // The listener serves nothing cdk-local can route (e.g. an authenticate-*
+    if (!defaultResolved && rules.length === 0) {
+      // The listener serves nothing cdk-local can route (e.g. a bare authenticate-*
       // default and every rule skipped above).
       continue;
     }
@@ -331,7 +385,8 @@ export function resolveAlbFrontDoor(
       listenerPort: port,
       listenerProtocol: protocol,
       listenerLogicalId,
-      ...(defaultAction ? { defaultAction } : {}),
+      ...(defaultResolved ? { defaultAction: defaultResolved.action } : {}),
+      ...(defaultResolved?.authGuard ? { defaultAuthGuard: defaultResolved.authGuard } : {}),
       rules,
     });
   }
@@ -354,12 +409,12 @@ interface BackingServiceRef {
 }
 
 /**
- * Resolve a listener / rule `Actions` (or `DefaultActions`) array to the single
- * action the local front-door serves, or `undefined` when it is not resolvable
- * (a warning is emitted for the cases worth surfacing). ALB allows exactly one
- * non-authenticate terminal action per action set, optionally preceded by
- * authenticate-* actions (which the local front-door does not enforce — they
- * are skipped with a warning and the terminal action is honored).
+ * Resolve a listener / rule `Actions` (or `DefaultActions`) array. ALB allows
+ * any number of `authenticate-cognito` / `authenticate-oidc` entries followed
+ * by exactly one terminal action (`forward` / `redirect` / `fixed-response`).
+ * The first parseable authenticate-* (last wins if multiple) becomes the
+ * returned `authGuard`; the terminal action becomes `action`. Returns
+ * `undefined` when no terminal action is resolvable.
  */
 function resolveAction(
   actions: unknown,
@@ -368,9 +423,10 @@ function resolveAction(
   stackName: string,
   label: string,
   warnings: string[]
-): ResolvedListenerAction | undefined {
+): { action: ResolvedListenerAction; authGuard?: FrontDoorAuthGuard } | undefined {
   if (!Array.isArray(actions)) return undefined;
 
+  let authGuard: FrontDoorAuthGuard | undefined;
   let sawAuthenticate = false;
   for (const action of actions) {
     if (!action || typeof action !== 'object') continue;
@@ -379,31 +435,31 @@ function resolveAction(
 
     if (type === 'authenticate-cognito' || type === 'authenticate-oidc') {
       sawAuthenticate = true;
+      const parsed = parseAuthenticateAction(a, type, label, warnings);
+      if (parsed) authGuard = parsed;
       continue;
     }
+    let terminal: ResolvedListenerAction | undefined;
     if (type === 'forward') {
-      return resolveForwardAction(a, resources, tgToService, stackName, label, warnings);
-    }
-    if (type === 'redirect') {
-      const redirect = resolveRedirectAction(a, label, warnings);
-      if (redirect) return redirect;
-      continue;
-    }
-    if (type === 'fixed-response') {
-      return resolveFixedResponseAction(a);
-    }
-    if (typeof type === 'string') {
+      terminal = resolveForwardAction(a, resources, tgToService, stackName, label, warnings);
+    } else if (type === 'redirect') {
+      terminal = resolveRedirectAction(a, label, warnings);
+    } else if (type === 'fixed-response') {
+      terminal = resolveFixedResponseAction(a);
+    } else if (typeof type === 'string') {
       warnings.push(
         `${label} uses an unsupported action type '${type}'. The local ALB front-door supports ` +
           'forward / redirect / fixed-response actions only. Skipping it.'
       );
     }
+    if (terminal) {
+      return authGuard ? { action: terminal, authGuard } : { action: terminal };
+    }
   }
 
   if (sawAuthenticate) {
     warnings.push(
-      `${label} is an authenticate-* action with no local-servable terminal action. The local ALB ` +
-        'front-door does not enforce authenticate-cognito / authenticate-oidc; skipping it.'
+      `${label} is an authenticate-* action with no local-servable terminal action; skipping it.`
     );
   }
   return undefined;
@@ -921,4 +977,100 @@ function parsePriority(raw: unknown): number {
   if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
   if (typeof raw === 'string' && /^\d+$/.test(raw)) return parseInt(raw, 10);
   return Number.MAX_SAFE_INTEGER;
+}
+
+/** ALB's default session cookie name prefix (suffixed `-0` / `-1` / ... by ALB). */
+const DEFAULT_ALB_SESSION_COOKIE = 'AWSELBAuthSessionCookie';
+
+/**
+ * Cognito User Pool ARN shape:
+ *   `arn:aws:cognito-idp:<region>:<account>:userpool/<pool-id>`
+ * The pool id itself contains a `_`, but never a `/`, so anchoring on the
+ * `userpool/` segment is robust.
+ */
+const COGNITO_USERPOOL_ARN = /^arn:[^:]+:cognito-idp:([^:]+):[^:]+:userpool\/([^/]+)$/;
+
+/**
+ * Parse an `authenticate-cognito` / `authenticate-oidc` ALB action into a
+ * resolvable {@link FrontDoorAuthGuard}, or `undefined` when the config is
+ * unresolvable (a Ref / intrinsic in a required field, a malformed
+ * UserPoolArn, etc.) — a warning is emitted in that case so the user knows
+ * the guard was dropped (the terminal action will still serve unguarded).
+ */
+function parseAuthenticateAction(
+  action: Record<string, unknown>,
+  type: 'authenticate-cognito' | 'authenticate-oidc',
+  label: string,
+  warnings: string[]
+): FrontDoorAuthGuard | undefined {
+  if (type === 'authenticate-cognito') {
+    const cfg = action['AuthenticateCognitoConfig'];
+    if (!cfg || typeof cfg !== 'object') {
+      warnings.push(
+        `${label}: authenticate-cognito missing AuthenticateCognitoConfig; skipping guard.`
+      );
+      return undefined;
+    }
+    const c = cfg as Record<string, unknown>;
+    const userPoolArn = c['UserPoolArn'];
+    const userPoolClientId = c['UserPoolClientId'];
+    if (typeof userPoolArn !== 'string' || typeof userPoolClientId !== 'string') {
+      warnings.push(
+        `${label}: authenticate-cognito UserPoolArn / UserPoolClientId must be literal strings ` +
+          '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
+      );
+      return undefined;
+    }
+    const match = COGNITO_USERPOOL_ARN.exec(userPoolArn);
+    if (!match) {
+      warnings.push(
+        `${label}: authenticate-cognito UserPoolArn '${userPoolArn}' is not in the expected ` +
+          'arn:...:cognito-idp:<region>:<account>:userpool/<pool-id> shape; skipping guard.'
+      );
+      return undefined;
+    }
+    const region = match[1]!;
+    const userPoolId = match[2]!;
+    const sessionCookieName =
+      typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
+        ? c['SessionCookieName']
+        : DEFAULT_ALB_SESSION_COOKIE;
+    return {
+      kind: 'authenticate-cognito',
+      issuer: `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`,
+      audience: userPoolClientId,
+      region,
+      userPoolId,
+      sessionCookieName,
+      label: `authenticate-cognito (UserPool=${userPoolId})`,
+    };
+  }
+
+  // authenticate-oidc
+  const cfg = action['AuthenticateOidcConfig'];
+  if (!cfg || typeof cfg !== 'object') {
+    warnings.push(`${label}: authenticate-oidc missing AuthenticateOidcConfig; skipping guard.`);
+    return undefined;
+  }
+  const c = cfg as Record<string, unknown>;
+  const issuer = c['Issuer'];
+  const clientId = c['ClientId'];
+  if (typeof issuer !== 'string' || typeof clientId !== 'string') {
+    warnings.push(
+      `${label}: authenticate-oidc Issuer / ClientId must be literal strings ` +
+        '(Ref / intrinsics cannot be resolved by the local front-door); skipping guard.'
+    );
+    return undefined;
+  }
+  const sessionCookieName =
+    typeof c['SessionCookieName'] === 'string' && c['SessionCookieName'] !== ''
+      ? c['SessionCookieName']
+      : DEFAULT_ALB_SESSION_COOKIE;
+  return {
+    kind: 'authenticate-oidc',
+    issuer: issuer.replace(/\/+$/, ''),
+    audience: clientId,
+    sessionCookieName,
+    label: `authenticate-oidc (Issuer=${issuer})`,
+  };
 }

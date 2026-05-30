@@ -344,6 +344,65 @@ describe('start-alb / start-service strategy binding', () => {
     expect(strategy.lbPortOverrides).toEqual({});
   });
 
+  it('start-alb threads an authenticate-cognito guard from the template into the planned listener', () => {
+    const COGNITO_ARN = 'arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_abcDEF';
+    const stack = {
+      stackName: 'AlbStack',
+      template: {
+        Resources: {
+          WebLB: {
+            Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+            Properties: { Type: 'application' },
+          },
+          WebTargetGroup: {
+            Type: 'AWS::ElasticLoadBalancingV2::TargetGroup',
+            Properties: { Port: 80, Protocol: 'HTTP', TargetType: 'ip' },
+          },
+          WebListener: {
+            Type: 'AWS::ElasticLoadBalancingV2::Listener',
+            Properties: {
+              LoadBalancerArn: { Ref: 'WebLB' },
+              Port: 80,
+              Protocol: 'HTTP',
+              DefaultActions: [
+                {
+                  Type: 'authenticate-cognito',
+                  AuthenticateCognitoConfig: {
+                    UserPoolArn: COGNITO_ARN,
+                    UserPoolClientId: 'client-abc',
+                    UserPoolDomain: 'auth.example.com',
+                  },
+                },
+                { Type: 'forward', TargetGroupArn: { Ref: 'WebTargetGroup' } },
+              ],
+            },
+          },
+          WebService: {
+            Type: 'AWS::ECS::Service',
+            Properties: {
+              LoadBalancers: [
+                { ContainerName: 'web', ContainerPort: 80, TargetGroupArn: { Ref: 'WebTargetGroup' } },
+              ],
+            },
+          },
+        },
+      },
+    } as unknown as StackInfo;
+
+    const { frontDoor, warnings } = albStrategy({} as never).resolveBoots([stack], ['AlbStack:WebLB']);
+    expect(warnings).toEqual([]);
+    expect(frontDoor!.listeners).toHaveLength(1);
+    expect(frontDoor!.listeners[0]!.defaultAuthGuard).toEqual({
+      kind: 'authenticate-cognito',
+      issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abcDEF',
+      audience: 'client-abc',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_abcDEF',
+      sessionCookieName: 'AWSELBAuthSessionCookie',
+      label: 'authenticate-cognito (UserPool=us-east-1_abcDEF)',
+    });
+  });
+
   it('start-alb resolves a Lambda target group into a front-door Lambda target with NO ECS boot (#123)', () => {
     const strategy = albStrategy({} as never);
     const { boots, frontDoor, warnings } = strategy.resolveBoots(

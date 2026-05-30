@@ -98,6 +98,23 @@ export interface WeightedLambda {
 export type WeightedForwardTarget = WeightedPool | WeightedLambda;
 
 /**
+ * Optional auth guard the front-door enforces before serving a route action.
+ * An ALB `authenticate-cognito` / `authenticate-oidc` action is resolved into
+ * one of these by `front-door-auth`. Failing the check answers 401 with a
+ * `WWW-Authenticate: Bearer realm="..."` header instead of forwarding.
+ */
+export interface AuthCheck {
+  /** Realm for the `WWW-Authenticate: Bearer realm="..."` header on 401. */
+  realm: string;
+  /**
+   * Verify the request. Resolves `{ allow: true }` to serve the action, or
+   * `{ allow: false, reason? }` to answer 401 (reason becomes the body when
+   * present; otherwise the body is `Unauthorized`).
+   */
+  check: (headers: NodeJS.Dict<string | string[]>) => Promise<{ allow: boolean; reason?: string }>;
+}
+
+/**
  * A resolved forward action: pick a target by weight, then dispatch it (an ECS
  * pool round-robins a replica; a Lambda invoker is invoked locally). A single
  * forward may mix ECS and Lambda targets.
@@ -106,6 +123,8 @@ export interface ForwardRouteAction {
   kind: 'forward';
   /** Weighted targets (length >= 1; a single-target forward is one entry, weight 1). */
   pools: WeightedForwardTarget[];
+  /** Optional auth guard enforced before serving (set when the rule wrapped an authenticate-* action). */
+  auth?: AuthCheck;
 }
 
 /** A resolved redirect action: synthesize a 301 / 302 with a `Location` header. */
@@ -117,6 +136,8 @@ export interface RedirectRouteAction {
   port?: string;
   path?: string;
   query?: string;
+  /** Optional auth guard enforced before serving (see {@link ForwardRouteAction.auth}). */
+  auth?: AuthCheck;
 }
 
 /** A resolved fixed-response action: synthesize the whole response. */
@@ -125,6 +146,8 @@ export interface FixedResponseRouteAction {
   statusCode: number;
   contentType?: string;
   messageBody?: string;
+  /** Optional auth guard enforced before serving (see {@link ForwardRouteAction.auth}). */
+  auth?: AuthCheck;
 }
 
 /** What the front-door does for a request: forward / redirect / fixed-response. */
@@ -301,32 +324,30 @@ function handleProxyRequest(
     });
     if (!action) return reply404(req, res, opts);
 
-    if (action.kind === 'redirect' || action.kind === 'fixed-response') {
-      // Drain any request body (ALB serves redirect / fixed-response for every
-      // method, incl. POST) so an unconsumed body doesn't stall HTTP/1.1
-      // keep-alive socket reuse, then synthesize the response with no backend.
-      req.resume();
-      if (action.kind === 'redirect') {
-        writeRedirect(res, action, req, opts.listenerPort, opts.tls ? 'https' : 'http');
-      } else {
-        writeFixedResponse(res, action);
-      }
-      return Promise.resolve();
+    // Auth gate: when the action wraps an authenticate-* guard, evaluate it
+    // before serving. Failure -> 401 + `WWW-Authenticate: Bearer realm`.
+    // The gate runs BEFORE redirect / fixed-response so a deny-by-default
+    // listener stays locked even for synthesized responses.
+    if (action.auth) {
+      return action.auth
+        .check(req.headers)
+        .then((result) => {
+          if (!result.allow) {
+            req.resume();
+            writeUnauthorized(res, action.auth!.realm, result.reason);
+            return;
+          }
+          return serveAction(req, res, action, opts);
+        })
+        .catch((err) => {
+          getLogger()
+            .child('front-door')
+            .debug(`auth gate error: ${err instanceof Error ? err.message : String(err)}`);
+          req.resume();
+          writeUnauthorized(res, action.auth!.realm, 'auth check failed');
+        });
     }
-
-    const picked = pickWeightedTarget(action.pools);
-    if (!picked) {
-      // Every target has weight 0 (or none) — mirror an ALB whose rule forwards
-      // nowhere usable (502, like a misconfigured forward).
-      writeError(
-        res,
-        502,
-        `No forward target selected behind ${opts.label} (every weighted target has weight 0).`
-      );
-      return Promise.resolve();
-    }
-    if ('lambda' in picked) return handleLambdaRequest(req, res, picked.lambda, opts);
-    return handlePoolRequest(req, res, picked.pool, opts);
+    return serveAction(req, res, action, opts);
   }
 
   const target = resolveDispatchTarget(opts, url);
@@ -335,6 +356,66 @@ function handleProxyRequest(
     return handleLambdaRequest(req, res, target.lambda, opts);
   }
   return handlePoolRequest(req, res, target.pool, opts);
+}
+
+/**
+ * Dispatch a resolved {@link RouteAction} — the path the route resolver
+ * returned (after any auth gate). Splits forward (ECS pool or Lambda invoker)
+ * from redirect / fixed-response, mirroring what the inline logic used to do.
+ */
+function serveAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  action: RouteAction,
+  opts: StartFrontDoorServerOptions
+): Promise<void> {
+  if (action.kind === 'redirect' || action.kind === 'fixed-response') {
+    // Drain any request body (ALB serves redirect / fixed-response for every
+    // method, incl. POST) so an unconsumed body doesn't stall HTTP/1.1
+    // keep-alive socket reuse, then synthesize the response with no backend.
+    req.resume();
+    if (action.kind === 'redirect') {
+      writeRedirect(res, action, req, opts.listenerPort, opts.tls ? 'https' : 'http');
+    } else {
+      writeFixedResponse(res, action);
+    }
+    return Promise.resolve();
+  }
+
+  const picked = pickWeightedTarget(action.pools);
+  if (!picked) {
+    // Every target has weight 0 (or none) — mirror an ALB whose rule forwards
+    // nowhere usable (502, like a misconfigured forward).
+    writeError(
+      res,
+      502,
+      `No forward target selected behind ${opts.label} (every weighted target has weight 0).`
+    );
+    return Promise.resolve();
+  }
+  if ('lambda' in picked) return handleLambdaRequest(req, res, picked.lambda, opts);
+  return handlePoolRequest(req, res, picked.pool, opts);
+}
+
+/**
+ * Write a 401 with `WWW-Authenticate: Bearer realm="..."`. ALB itself would
+ * redirect to the IdP's authorize endpoint; for local dev parity we deny
+ * loudly so the user notices and either supplies `--bearer-token` / passes a
+ * fresh Authorization header / disables the guard with `--no-verify-auth`.
+ */
+function writeUnauthorized(res: ServerResponse, realm: string, reason?: string): void {
+  const body = reason && reason !== '' ? reason : 'Unauthorized';
+  res.writeHead(401, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': String(Buffer.byteLength(`${body}\n`)),
+    'www-authenticate': `Bearer realm="${escapeRealmQuotes(realm)}"`,
+  });
+  res.end(`${body}\n`);
+}
+
+/** Escape `"` in the realm so the `WWW-Authenticate` header parses cleanly. */
+function escapeRealmQuotes(realm: string): string {
+  return realm.replace(/"/g, '\\"');
 }
 
 /** Reply 404 — an ALB listener with no matching rule and no default action. */

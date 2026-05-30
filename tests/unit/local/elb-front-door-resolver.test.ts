@@ -1067,6 +1067,201 @@ describe('resolveAlbFrontDoor', () => {
   });
 });
 
+describe('resolveAlbFrontDoor — authenticate-* guards', () => {
+  const COGNITO_ARN = 'arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_abcDEF123';
+
+  it('attaches a Cognito authGuard to the wrapped forward action', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: {
+                UserPoolArn: COGNITO_ARN,
+                UserPoolClientId: 'client-abc',
+                UserPoolDomain: 'auth.example.com',
+              },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+    expect(listeners[0]!.defaultAuthGuard).toEqual({
+      kind: 'authenticate-cognito',
+      issuer: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abcDEF123',
+      audience: 'client-abc',
+      region: 'us-east-1',
+      userPoolId: 'us-east-1_abcDEF123',
+      sessionCookieName: 'AWSELBAuthSessionCookie',
+      label: 'authenticate-cognito (UserPool=us-east-1_abcDEF123)',
+    });
+  });
+
+  it('attaches an OIDC authGuard to the wrapped fixed-response action', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-oidc',
+              AuthenticateOidcConfig: {
+                Issuer: 'https://idp.example.com/',
+                AuthorizationEndpoint: 'https://idp.example.com/authorize',
+                TokenEndpoint: 'https://idp.example.com/token',
+                ClientId: 'oidc-client-xyz',
+                SessionCookieName: 'MyAuthCookie',
+              },
+            },
+            {
+              Type: 'fixed-response',
+              FixedResponseConfig: { StatusCode: '200', MessageBody: 'ok' },
+            },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.defaultAction?.kind).toBe('fixed-response');
+    expect(listeners[0]!.defaultAuthGuard).toEqual({
+      kind: 'authenticate-oidc',
+      // trailing slash stripped:
+      issuer: 'https://idp.example.com',
+      audience: 'oidc-client-xyz',
+      sessionCookieName: 'MyAuthCookie',
+      label: 'authenticate-oidc (Issuer=https://idp.example.com/)',
+    });
+  });
+
+  it('attaches a Cognito authGuard to a ListenerRule action', () => {
+    const RULE = 'AuthRule';
+    const stack = stackWith({
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'path-pattern', PathPatternConfig: { Values: ['/secure/*'] } },
+          ],
+          Actions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: {
+                UserPoolArn: COGNITO_ARN,
+                UserPoolClientId: 'client-abc',
+                UserPoolDomain: 'auth.example.com',
+              },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toHaveLength(1);
+    expect(listeners[0]!.rules[0]!.authGuard?.kind).toBe('authenticate-cognito');
+    expect(listeners[0]!.rules[0]!.action.kind).toBe('forward');
+  });
+
+  it('warns + skips guard when UserPoolArn is an intrinsic (Ref / GetAtt)', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: {
+                UserPoolArn: { Ref: 'MyPool' }, // intrinsic, not a literal
+                UserPoolClientId: 'client-abc',
+                UserPoolDomain: 'auth.example.com',
+              },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    // The terminal forward still serves, but the guard is dropped + warned.
+    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/UserPoolArn .*literal strings/);
+  });
+
+  it('warns + skips guard when UserPoolArn is not in the expected shape', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: {
+                UserPoolArn: 'arn:aws:s3:::not-a-cognito-arn',
+                UserPoolClientId: 'client-abc',
+                UserPoolDomain: 'auth.example.com',
+              },
+            },
+            { Type: 'forward', TargetGroupArn: { Ref: TG } },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.defaultAction?.kind).toBe('forward');
+    expect(listeners[0]!.defaultAuthGuard).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/not in the expected/);
+  });
+
+  it('warns + skips listener when authenticate-* has no terminal action', () => {
+    const stack = stackWith({
+      [LISTENER]: {
+        Type: 'AWS::ElasticLoadBalancingV2::Listener',
+        Properties: {
+          LoadBalancerArn: { Ref: ALB },
+          Port: 80,
+          Protocol: 'HTTP',
+          DefaultActions: [
+            {
+              Type: 'authenticate-cognito',
+              AuthenticateCognitoConfig: {
+                UserPoolArn: COGNITO_ARN,
+                UserPoolClientId: 'client-abc',
+                UserPoolDomain: 'auth.example.com',
+              },
+            },
+          ],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/no local-servable terminal action/);
+  });
+});
+
 describe('isApplicationLoadBalancer', () => {
   const lb = (props?: Record<string, unknown>): TemplateResource =>
     ({

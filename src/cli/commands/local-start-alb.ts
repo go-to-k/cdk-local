@@ -255,6 +255,7 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
             hostPort,
             protocol: listener.listenerProtocol,
             ...(listener.defaultAction ? { defaultAction: qualify(listener.defaultAction) } : {}),
+            ...(listener.defaultAuthGuard ? { defaultAuthGuard: listener.defaultAuthGuard } : {}),
             rules: listener.rules.map((r) => ({
               priority: r.priority,
               pathPatterns: r.pathPatterns,
@@ -264,6 +265,7 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
               queryStringConditions: r.queryStringConditions,
               sourceIpCidrs: r.sourceIpCidrs,
               action: qualify(r.action),
+              ...(r.authGuard ? { authGuard: r.authGuard } : {}),
             })),
           });
         }
@@ -317,8 +319,11 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
         '(path-pattern / host-header / http-header / http-request-method / query-string / ' +
         'source-ip); forward (single and weighted), redirect, and fixed-response actions; and ' +
         'ECS or Lambda targets (a Lambda target group is invoked locally via the Lambda RIE). ' +
-        'authenticate-cognito / authenticate-oidc actions are skipped with a warning. Omit ' +
-        '<targets> in an interactive terminal to multi-select the load balancers from a list.'
+        'authenticate-cognito / authenticate-oidc actions enforce a local Bearer-JWT check ' +
+        '(or AWSELBAuthSessionCookie pass-through) against the same JWKS / OIDC discovery URL ' +
+        'the deployed ALB would; use --bearer-token <jwt> to inject a default token or ' +
+        '--no-verify-auth to disable the guard. Omit <targets> in an interactive terminal to ' +
+        'multi-select the load balancers from a list.'
     )
     .argument(
       '[targets...]',
@@ -349,6 +354,23 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
       new Option(
         '--tls-key <path>',
         'PEM-encoded server private key matching --tls-cert. Must be set together with --tls-cert.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--no-verify-auth',
+        'Disable local enforcement of authenticate-cognito / authenticate-oidc actions. Every ' +
+          'request is served as if the auth check passed. Useful for local dev where you do not ' +
+          'want to mint a Bearer token at all.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--bearer-token <jwt>',
+        'Default Bearer JWT injected as Authorization: Bearer <jwt> when the inbound request has ' +
+          'none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would ' +
+          '(signature + iss + aud + exp). Local-dev convenience; cookie pass-through ' +
+          '(AWSELBAuthSessionCookie-*) also works.'
       )
     )
     .action(
