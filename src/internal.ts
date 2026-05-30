@@ -343,6 +343,13 @@ export {
   type DownloadS3BundleOptions,
   type ExtractedS3Bundle,
 } from './local/agentcore-s3-bundle.js';
+export {
+  signAgentCoreInvocation,
+  AGENTCORE_SIGV4_SERVICE,
+  type SigV4Credentials,
+  type SignAgentCoreInvocationOptions,
+  type SignedAgentCoreHeaders,
+} from './local/agentcore-sigv4-sign.js';
 
 /**
  * `start-api` REST API v1 `IntegrationResponses[]` selection — picks the

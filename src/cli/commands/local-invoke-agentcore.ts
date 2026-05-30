@@ -40,6 +40,10 @@ import {
 import { buildAgentCoreCodeImage } from '../../local/agentcore-code-build.js';
 import { downloadAndExtractS3Bundle } from '../../local/agentcore-s3-bundle.js';
 import {
+  signAgentCoreInvocation,
+  type SigV4Credentials,
+} from '../../local/agentcore-sigv4-sign.js';
+import {
   invokeAgentCore,
   waitForAgentCorePing,
   type AgentCoreInvokeResult,
@@ -125,6 +129,17 @@ interface LocalInvokeAgentCoreOptions {
    * escape hatch) — the token, if any, is still forwarded.
    */
   verifyAuth: boolean;
+  /**
+   * `--sigv4`: sign the `/invocations` POST with AWS SigV4 (service
+   * `bedrock-agentcore`) using the resolved credentials — matching the
+   * cloud's default IAM-auth behavior when the runtime declares no
+   * `customJwtAuthorizer`. The local agent receives the same `Authorization:
+   * AWS4-HMAC-SHA256 ...` + `X-Amz-Date` / `X-Amz-Content-Sha256` /
+   * `X-Amz-Security-Token` headers it would in the cloud. Opt-in: default
+   * unsigned (preserves existing behavior). Mutually exclusive with
+   * `--bearer-token` and ignored on a JWT-protected runtime.
+   */
+  sigv4?: boolean;
   /**
    * Optional execution role to assume before invoking. Commander's `[arn]`
    * maps to `string | boolean`:
@@ -393,6 +408,21 @@ async function localInvokeAgentCoreCommand(
     } else {
       await waitForAgentCorePing(containerHost, hostPort);
 
+      // `--sigv4` opt-in: sign the request with the resolved host credentials
+      // (service `bedrock-agentcore`) so the agent receives the same
+      // Authorization + X-Amz-* headers it would in the cloud. Mutually
+      // exclusive with `--bearer-token`; ignored when a customJwtAuthorizer is
+      // declared (the JWT path takes precedence).
+      const additionalHeaders = await buildSigV4HeadersIfRequested(
+        options,
+        resolved,
+        loadedState,
+        containerHost,
+        hostPort,
+        event,
+        sessionId
+      );
+
       const result = await invokeAgentCore(containerHost, hostPort, event, {
         sessionId,
         timeoutMs: 120_000,
@@ -400,6 +430,7 @@ async function localInvokeAgentCoreCommand(
         // token-streaming agent shows incrementally rather than all at once.
         onChunk: (text) => process.stdout.write(text),
         ...(authorization && { authorization }),
+        ...(additionalHeaders && { additionalHeaders }),
       });
 
       // Settle so container logs flush before teardown.
@@ -474,6 +505,129 @@ export async function resolveInboundAuthorization(
   }
   logger.info(`Inbound JWT verified against ${authorizer.discoveryUrl}.`);
   return header;
+}
+
+/**
+ * Compute the SigV4 headers for the `/invocations` POST when `--sigv4` is
+ * requested. Returns `undefined` (no header overlay) when:
+ *
+ * - `--sigv4` is not set,
+ * - the runtime declares a `customJwtAuthorizer` (the JWT path wins; warns),
+ *
+ * Throws a {@link CdkLocalError} when `--sigv4` conflicts with
+ * `--bearer-token`, or when no AWS credentials are resolvable for signing.
+ *
+ * Exported so a unit test can drive the gate without the full Docker pipeline.
+ */
+export async function buildSigV4HeadersIfRequested(
+  options: LocalInvokeAgentCoreOptions,
+  resolved: ResolvedAgentCoreRuntime,
+  loaded: LocalStateRecord | undefined,
+  host: string,
+  port: number,
+  event: unknown,
+  sessionId: string
+): Promise<Record<string, string> | undefined> {
+  if (!options.sigv4) return undefined;
+  if (options.bearerToken) {
+    throw new CdkLocalError(
+      `--sigv4 and --bearer-token are mutually exclusive: pick one inbound auth.`,
+      'LOCAL_INVOKE_AGENTCORE_AUTH_CONFLICT'
+    );
+  }
+  if (resolved.jwtAuthorizer) {
+    getLogger().warn(
+      `Runtime '${resolved.logicalId}' declares a customJwtAuthorizer; --sigv4 ignored (JWT path takes precedence).`
+    );
+    return undefined;
+  }
+  const region =
+    options.region ??
+    options.stackRegion ??
+    process.env['AWS_REGION'] ??
+    process.env['AWS_DEFAULT_REGION'] ??
+    resolved.stack.region;
+  if (!region) {
+    throw new CdkLocalError(
+      `--sigv4: no region resolved for the AgentCore signing scope. ` +
+        `Pass --region <region>, set AWS_REGION, or use --from-cfn-stack with a region-bound stack.`,
+      'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_REGION'
+    );
+  }
+  const credentials = await resolveHostCredentialsForSigV4(options, resolved, loaded, region);
+  const signed = await signAgentCoreInvocation({
+    credentials,
+    region,
+    host,
+    port,
+    path: '/invocations',
+    body: JSON.stringify(event ?? {}),
+    sessionId,
+  });
+  const headers: Record<string, string> = {
+    Authorization: signed.authorization,
+    'X-Amz-Date': signed.amzDate,
+    'X-Amz-Content-Sha256': signed.amzContentSha256,
+  };
+  if (signed.amzSecurityToken) headers['X-Amz-Security-Token'] = signed.amzSecurityToken;
+  getLogger().info(`Signed /invocations with SigV4 (region=${region}).`);
+  return headers;
+}
+
+/**
+ * Resolve credentials for host-side SigV4 signing. Precedence:
+ *   1. `--assume-role` → STS temp creds (warn + fall through on STS failure);
+ *   2. `--profile` → profile creds (sessionToken when the profile carries one);
+ *   3. shell env (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / optional
+ *      `AWS_SESSION_TOKEN`).
+ *
+ * Throws a {@link CdkLocalError} when none are available — `--sigv4` cannot
+ * proceed without credentials, unlike the unsigned path.
+ */
+async function resolveHostCredentialsForSigV4(
+  options: LocalInvokeAgentCoreOptions,
+  resolved: ResolvedAgentCoreRuntime,
+  loaded: LocalStateRecord | undefined,
+  region: string
+): Promise<SigV4Credentials> {
+  const logger = getLogger();
+  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
+  if (assumeRoleArn) {
+    try {
+      return await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+    } catch (err) {
+      logger.warn(
+        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for --sigv4 signing: ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
+      );
+    }
+  }
+  if (options.profile) {
+    const creds = await resolveProfileCredentials(options.profile);
+    if (creds?.accessKeyId && creds.secretAccessKey) {
+      return {
+        accessKeyId: creds.accessKeyId,
+        secretAccessKey: creds.secretAccessKey,
+        ...(creds.sessionToken && { sessionToken: creds.sessionToken }),
+      };
+    }
+  }
+  const accessKeyId = process.env['AWS_ACCESS_KEY_ID'];
+  const secretAccessKey = process.env['AWS_SECRET_ACCESS_KEY'];
+  if (accessKeyId && secretAccessKey) {
+    const sessionToken = process.env['AWS_SESSION_TOKEN'];
+    return {
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken && { sessionToken }),
+    };
+  }
+  throw new CdkLocalError(
+    `--sigv4: no AWS credentials available to sign the request. ` +
+      `Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, pass --profile <name>, or pass --assume-role <arn>.`,
+    'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_CREDENTIALS'
+  );
 }
 
 /**
@@ -1245,6 +1399,14 @@ export function createLocalInvokeAgentCoreCommand(
         'Skip inbound JWT verification even when the runtime declares a customJwtAuthorizer ' +
           '(local-dev escape hatch). A --bearer-token, if given, is still forwarded.'
       )
+    )
+    .addOption(
+      new Option(
+        '--sigv4',
+        'Sign the /invocations POST with AWS SigV4 (service bedrock-agentcore) using the resolved ' +
+          'credentials, matching the cloud default when the runtime declares no customJwtAuthorizer. ' +
+          'Opt-in: default unsigned. Mutually exclusive with --bearer-token; ignored on a JWT-protected runtime.'
+      ).default(false)
     )
     .addOption(
       new Option(

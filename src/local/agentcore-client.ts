@@ -144,6 +144,14 @@ export interface InvokeAgentCoreOptions {
    */
   authorization?: string;
   /**
+   * Optional extra headers to forward on the `/invocations` request — used by
+   * the `--sigv4` path to carry the full signed-request header set
+   * (`X-Amz-Date`, `X-Amz-Content-Sha256`, optional `X-Amz-Security-Token`).
+   * Each entry's name is forwarded verbatim; an `Authorization` entry here
+   * overrides {@link authorization}.
+   */
+  additionalHeaders?: Record<string, string>;
+  /**
    * Sink for incremental `text/event-stream` output. When provided AND the
    * response Content-Type is `text/event-stream`, the body is decoded and
    * streamed chunk-by-chunk through this callback as it arrives — matching the
@@ -183,6 +191,7 @@ export async function invokeAgentCore(
         Accept: 'application/json, text/event-stream',
         [AGENTCORE_SESSION_ID_HEADER]: options.sessionId,
         ...(options.authorization && { Authorization: options.authorization }),
+        ...(options.additionalHeaders ?? {}),
       },
       body,
       signal: controller.signal,
