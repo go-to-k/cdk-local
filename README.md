@@ -35,7 +35,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 - **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach — instead of paying to seed and anonymize a local emulator.
 - **Picks up where `sam local` leaves off:**
   - **CDK-native** — point at `cdk.json`; no SAM template to maintain.
-  - **Wider coverage** — Lambda, API Gateway, ECS run-task / service / ALB front-door, and Bedrock AgentCore.
+  - **Wider coverage** — adds ECS, ALB front-doors, and Bedrock AgentCore on top of Lambda + API Gateway.
   - **Real container images** — the Lambda RIE base image; ECS as real Docker. The only dependency is Docker itself.
 
 ## What runs locally
