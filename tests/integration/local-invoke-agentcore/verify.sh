@@ -352,7 +352,7 @@ echo "${OUT_17B}" | grep -q 'positive integer' || {
 # `loop-echo:<line>`, and the client closes the WS when stdin EOFs.
 echo "==> [18/18] EchoAgent --ws --ws-interactive sends two stdin lines as follow-up WS frames"
 LOOP_EVENT_FILE=$(mktemp -t cdkl-ws-loop-event-XXXX.json)
-trap 'rm -f "${LOOP_EVENT_FILE}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${LOOP_EVENT_FILE}"' EXIT
 echo '{"loop":true}' > "${LOOP_EVENT_FILE}"
 RESULT_18=$(printf 'line-A\nline-B\n' | \
   ${CDKL} invoke-agentcore "${TARGET}" --ws --ws-interactive --event "${LOOP_EVENT_FILE}" 2>/dev/null)
@@ -371,8 +371,5 @@ echo "${RESULT_18}" | grep -q 'loop-echo:line-B' || {
   echo "FAIL: expected loop-echo:line-B from the agent, got: ${RESULT_18}"
   exit 1
 }
-rm -f "${LOOP_EVENT_FILE}"
-trap - EXIT
-
 echo ""
 echo "==> All 18 local-invoke-agentcore tests passed"

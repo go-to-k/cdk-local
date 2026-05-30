@@ -331,6 +331,9 @@ async function localInvokeAgentCoreCommand(
     if (isMcp && options.ws) {
       logger.warn('--ws applies only to the HTTP protocol; ignoring it for this MCP runtime.');
     }
+    if (options.wsInteractive && !options.ws) {
+      logger.warn('--ws-interactive is meaningful only with --ws; ignoring.');
+    }
     if (options.sigv4 && (isMcp || options.ws)) {
       logger.warn(
         '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
