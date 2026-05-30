@@ -1,3 +1,11 @@
+# [0.65.0](https://github.com/go-to-k/cdk-local/compare/v0.64.0...v0.65.0) (2026-05-30)
+
+
+### Features
+
+* **cli:** extract `add<Cmd>SpecificOptions` helpers for the remaining 5 commands ([#200](https://github.com/go-to-k/cdk-local/issues/200)) ([#205](https://github.com/go-to-k/cdk-local/issues/205)) ([80699a1](https://github.com/go-to-k/cdk-local/commit/80699a1b5b7fc15b2f469bfce5cb52429c5baabd))
+* **meta:** `/check-cdkd-parity` skill + markgate gate ([#201](https://github.com/go-to-k/cdk-local/issues/201)) ([#204](https://github.com/go-to-k/cdk-local/issues/204)) ([09296b6](https://github.com/go-to-k/cdk-local/commit/09296b67d8da0f9f78cd4fa62027dda38be70edd))
+
 # [0.64.0](https://github.com/go-to-k/cdk-local/compare/v0.63.0...v0.64.0) (2026-05-30)
 
 
