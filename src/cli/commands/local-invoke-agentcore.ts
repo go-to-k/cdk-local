@@ -55,6 +55,7 @@ import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
+  substituteAgainstStateAsync,
   substituteEnvVarsFromStateAsync,
   type SubstitutionContext,
 } from '../../local/state-resolver.js';
@@ -314,6 +315,13 @@ async function localInvokeAgentCoreCommand(
     } else {
       authorization = await resolveInboundAuthorization(resolved, options);
     }
+
+    // If the fromS3 bundle's Code.S3.Bucket is an intrinsic (Ref /
+    // Fn::ImportValue / Fn::GetStackOutput), resolve it against --from-cfn-stack
+    // state BEFORE the image step (which needs a literal bucket for the S3
+    // download). Reuses the same substitution machinery env vars use, so
+    // every cross-stack intrinsic the env path supports is supported here too.
+    await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
 
     const image = await resolveAgentCoreImage(resolved, options, loadedState);
 
@@ -625,6 +633,21 @@ async function resolveAgentCoreCodeImageFromS3(
   loaded: LocalStateRecord | undefined
 ): Promise<string> {
   const logger = getLogger();
+  // The bucket should be a literal string by this point — a template-literal
+  // bucket falls through from the resolver, an intrinsic bucket was resolved by
+  // `resolveFromS3BucketIntrinsic` in the outer command before we got here.
+  if (typeof s3Source.bucket !== 'string' || s3Source.bucket.length === 0) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' fromS3 bundle reached the image step with no literal bucket. ` +
+        `This is a cdk-local bug — please report it.`,
+      'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_UNRESOLVED'
+    );
+  }
+  const location = {
+    bucket: s3Source.bucket,
+    key: s3Source.key,
+    ...(s3Source.versionId !== undefined && { versionId: s3Source.versionId }),
+  };
   const region =
     options.region ??
     options.stackRegion ??
@@ -648,7 +671,7 @@ async function resolveAgentCoreCodeImageFromS3(
     }
   }
 
-  const bundle = await downloadAndExtractS3Bundle(s3Source, {
+  const bundle = await downloadAndExtractS3Bundle(location, {
     ...(region !== undefined && { region }),
     ...(options.profile !== undefined && { profile: options.profile }),
     ...(credentials !== undefined && { credentials }),
@@ -767,6 +790,79 @@ export async function buildContainerEnv(
     }),
   });
   return { env: dockerEnv, sensitiveEnvKeys };
+}
+
+/**
+ * Resolve a fromS3 bundle's intrinsic `Code.S3.Bucket` to a literal bucket
+ * name in place on `resolved.codeArtifact.s3Source.bucket`. Uses the SAME
+ * state-substitution machinery env vars use under `--from-cfn-stack`, so
+ * every cross-stack intrinsic that path supports (`Ref` / `Fn::ImportValue` /
+ * `Fn::GetStackOutput`) is supported transparently here.
+ *
+ * No-op when there is no intrinsic to resolve. Errors when no state is
+ * available, or when the substitution returns a non-string / unresolved value.
+ *
+ * Exported so a unit test can drive the gate without the full Docker pipeline.
+ */
+export async function resolveFromS3BucketIntrinsic(
+  resolved: ResolvedAgentCoreRuntime,
+  stateProvider: LocalStateProvider | undefined,
+  loaded: LocalStateRecord | undefined,
+  imageContext: ImageResolutionContext | undefined
+): Promise<void> {
+  const s3Source = resolved.codeArtifact?.s3Source;
+  if (!s3Source || s3Source.bucketIntrinsic === undefined) return;
+  if (s3Source.bucket !== undefined) return; // already resolved
+
+  if (!stateProvider || !loaded) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' fromS3 bundle's Code.S3.Bucket is an unresolved intrinsic ` +
+        `(${describeIntrinsic(s3Source.bucketIntrinsic)}). ` +
+        `Pass --from-cfn-stack so its physical bucket name can be resolved against the deployed stack state.`,
+      'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_NO_STATE'
+    );
+  }
+
+  const subContext: SubstitutionContext = {
+    resources: imageContext?.stateResources ?? loaded.resources,
+    consumerRegion: loaded.region,
+  };
+  const pseudo = imageContext?.pseudoParameters ?? derivePseudoParametersFromRegion(loaded.region);
+  if (pseudo) subContext.pseudoParameters = pseudo;
+  const crossStackResolver = await stateProvider.buildCrossStackResolver(loaded.region);
+  if (crossStackResolver) subContext.crossStackResolver = crossStackResolver;
+
+  const result = await substituteAgainstStateAsync(s3Source.bucketIntrinsic, subContext);
+  if (result.kind !== 'literal') {
+    throw new CdkLocalError(
+      `Could not resolve AgentCore Runtime '${resolved.logicalId}' fromS3 Code.S3.Bucket intrinsic ` +
+        `(${describeIntrinsic(s3Source.bucketIntrinsic)}) against the --from-cfn-stack state: ${result.reason}. ` +
+        `Confirm the referenced resource / export exists in the deployed stack.`,
+      'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_UNRESOLVED'
+    );
+  }
+  if (typeof result.value !== 'string' || result.value.length === 0) {
+    throw new CdkLocalError(
+      `AgentCore Runtime '${resolved.logicalId}' fromS3 Code.S3.Bucket intrinsic resolved to a ` +
+        `${typeof result.value} value, not a bucket name string. ` +
+        `(${describeIntrinsic(s3Source.bucketIntrinsic)})`,
+      'LOCAL_INVOKE_AGENTCORE_FROMS3_BUCKET_INTRINSIC_NOT_STRING'
+    );
+  }
+  s3Source.bucket = result.value;
+  getLogger().info(
+    `Resolved fromS3 Code.S3.Bucket from state: ${describeIntrinsic(s3Source.bucketIntrinsic)} -> ${result.value}`
+  );
+}
+
+/** Render the intrinsic key for an error / log message (e.g. `Ref:Bucket1`). */
+function describeIntrinsic(value: unknown): string {
+  if (!value || typeof value !== 'object') return String(value);
+  const obj = value as Record<string, unknown>;
+  const key = Object.keys(obj)[0] ?? '?';
+  const arg = obj[key];
+  if (typeof arg === 'string') return `${key}:${arg}`;
+  return key;
 }
 
 /**

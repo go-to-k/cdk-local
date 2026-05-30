@@ -1,0 +1,6 @@
+# The integ runner installs deps fresh via `vp install`, so the lockfile
+# is a build artifact, not a committed source (matches the sibling fixtures).
+pnpm-lock.yaml
+
+# Local build scratch for the zipped bundle verify.sh uploads to S3.
+bundle.zip

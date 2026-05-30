@@ -112,6 +112,7 @@ const {
   platformToArchitecture,
   resolveInboundAuthorization,
   resolveAssumeRoleArn,
+  resolveFromS3BucketIntrinsic,
 } = await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -774,5 +775,85 @@ describe('resolveInboundAuthorization — JWT gate', () => {
     await expect(
       resolveInboundAuthorization(withAuthorizer(), { bearerToken: 'bad', verifyAuth: true })
     ).rejects.toThrow(/rejected by the runtime's customJwtAuthorizer/);
+  });
+});
+
+describe('resolveFromS3BucketIntrinsic — fromS3 Code.S3.Bucket intrinsic resolution', () => {
+  function runtimeWithIntrinsic(intrinsic: unknown): ResolvedAgentCoreRuntime {
+    return {
+      stack: { stackName: 'App', region: 'us-east-1' } as never,
+      logicalId: 'S3Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      environmentVariables: {},
+      protocol: 'HTTP',
+      codeArtifact: {
+        runtime: 'PYTHON_3_12',
+        entryPoint: ['app.py'],
+        codeAssetHash: 'agent',
+        s3Source: { bucketIntrinsic: intrinsic, key: 'agent.zip' },
+      },
+    };
+  }
+
+  it('is a no-op when there is no s3Source / no bucketIntrinsic', async () => {
+    const r: ResolvedAgentCoreRuntime = {
+      stack: { stackName: 'App' } as never,
+      logicalId: 'ChatAgent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      containerUri: 'r:t',
+      environmentVariables: {},
+      protocol: 'HTTP',
+    };
+    await expect(
+      resolveFromS3BucketIntrinsic(r, undefined, undefined, undefined)
+    ).resolves.toBeUndefined();
+  });
+
+  it('resolves a Ref bucket against loaded state', async () => {
+    const r = runtimeWithIntrinsic({ Ref: 'MyBucketABCD' });
+    const stateProvider = {
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+    } as never;
+    const loaded = {
+      stackName: 'App',
+      region: 'us-east-1',
+      resources: {
+        MyBucketABCD: { physicalId: 'my-real-bucket-name', resourceType: 'AWS::S3::Bucket' },
+      },
+    } as never;
+    await resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined);
+    expect(r.codeArtifact?.s3Source?.bucket).toBe('my-real-bucket-name');
+  });
+
+  it('resolves a Fn::ImportValue bucket via the cross-stack resolver', async () => {
+    const r = runtimeWithIntrinsic({ 'Fn::ImportValue': 'SharedBundleBucket' });
+    const crossStackResolver = {
+      resolveImport: vi.fn().mockResolvedValue('imported-bucket-name'),
+    };
+    const stateProvider = {
+      buildCrossStackResolver: vi.fn().mockResolvedValue(crossStackResolver),
+    } as never;
+    const loaded = { stackName: 'App', region: 'us-east-1', resources: {} } as never;
+    await resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined);
+    expect(r.codeArtifact?.s3Source?.bucket).toBe('imported-bucket-name');
+    expect(crossStackResolver.resolveImport).toHaveBeenCalledWith('SharedBundleBucket');
+  });
+
+  it('errors when --from-cfn-stack state is not available', async () => {
+    const r = runtimeWithIntrinsic({ Ref: 'BucketX' });
+    await expect(
+      resolveFromS3BucketIntrinsic(r, undefined, undefined, undefined)
+    ).rejects.toThrow(/Pass --from-cfn-stack/);
+  });
+
+  it('errors when the substitution returns unresolved (e.g. missing resource)', async () => {
+    const r = runtimeWithIntrinsic({ Ref: 'MissingBucket' });
+    const stateProvider = {
+      buildCrossStackResolver: vi.fn().mockResolvedValue(undefined),
+    } as never;
+    const loaded = { stackName: 'App', region: 'us-east-1', resources: {} } as never;
+    await expect(
+      resolveFromS3BucketIntrinsic(r, stateProvider, loaded, undefined)
+    ).rejects.toThrow(/Could not resolve/);
   });
 });

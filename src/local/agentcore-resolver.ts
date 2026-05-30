@@ -113,17 +113,31 @@ export interface AgentCoreJwtAuthorizer {
  * `runtime` the `Runtime` enum.
  *
  * `s3Source` is set for the `fromS3` shape — a bundle whose `Code.S3.Bucket`
- * is a literal string (a pre-existing S3 object, NOT the CDK staging bucket,
- * which renders as an `Fn::Sub` intrinsic for `fromCodeAsset`). The command
- * downloads + extracts it and runs the same from-source build. Undefined when
- * the bucket is an intrinsic (the fromCodeAsset case, or a fromS3 bundle whose
- * bucket is a `Ref` — not resolvable locally yet).
+ * is either a literal string (a pre-existing S3 object — NOT the CDK staging
+ * bucket of a fromCodeAsset, which renders as an `Fn::Sub` intrinsic) or an
+ * unresolved intrinsic the command resolves against `--from-cfn-stack` state
+ * (`Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::Sub` — the same
+ * intrinsics `--from-cfn-stack` env-var substitution already handles).
+ *
+ * - `bucket` is set when the template carries a literal bucket name, OR after
+ *   the command has resolved an intrinsic against state.
+ * - `bucketIntrinsic` is set when the template's `Code.S3.Bucket` is an
+ *   unresolved intrinsic — the command resolves it via the same
+ *   state-substitution machinery env vars use, then populates `bucket`.
+ *
+ * Exactly one of `bucket` / `bucketIntrinsic` is set as returned by the
+ * resolver (the command turns the intrinsic into a `bucket` before download).
  */
 export interface AgentCoreCodeArtifact {
   runtime: string;
   entryPoint: string[];
   codeAssetHash: string;
-  s3Source?: { bucket: string; key: string; versionId?: string };
+  s3Source?: {
+    bucket?: string;
+    bucketIntrinsic?: unknown;
+    key: string;
+    versionId?: string;
+  };
 }
 
 export class AgentCoreResolutionError extends Error {
@@ -441,11 +455,18 @@ function extractArtifact(
  * Extract a `CodeConfiguration` (managed-runtime) artifact. Reads `Runtime`,
  * `EntryPoint`, and the `Code.S3` location. `Code.S3.Prefix` must be a literal
  * string (the object key) — it doubles as the cdk.out file-asset hash for the
- * `fromCodeAsset` shape (`<hash>.zip`). When `Code.S3.Bucket` is ALSO a literal
- * string, this is a `fromS3` bundle (a pre-existing S3 object — the CDK staging
- * bucket of a fromCodeAsset renders as an `Fn::Sub` intrinsic, not a literal),
- * captured in `s3Source` so the command downloads + extracts it. A non-literal
- * `Code.S3.Prefix` (an unresolved intrinsic) hard-errors.
+ * `fromCodeAsset` shape (`<hash>.zip`).
+ *
+ * - `Code.S3.Bucket` literal string → fromS3 bundle, `s3Source.bucket` set.
+ * - `Code.S3.Bucket` intrinsic (`Ref` / `Fn::ImportValue` / `Fn::GetStackOutput`
+ *   / `Fn::Sub`) → fromS3 bundle, `s3Source.bucketIntrinsic` set (the command
+ *   resolves it against `--from-cfn-stack` state via the same machinery env
+ *   vars use).
+ * - `Code.S3.Bucket` missing → fromCodeAsset shape (the staging bucket renders
+ *   as an `Fn::Sub` intrinsic for fromCodeAsset, but the cdk.out lookup
+ *   short-circuits that — no `s3Source` needed).
+ *
+ * A non-literal `Code.S3.Prefix` (an unresolved intrinsic) hard-errors.
  */
 function extractCodeArtifact(
   codeConfig: unknown,
@@ -493,21 +514,37 @@ function extractCodeArtifact(
   // file-asset hash the command looks up to find a fromCodeAsset bundle source.
   const codeAssetHash = prefix.replace(/^.*\//, '').replace(/\.zip$/, '');
 
-  // A literal Bucket means a fromS3 bundle (a pre-existing object). The CDK
-  // staging bucket of a fromCodeAsset renders as an `Fn::Sub` intrinsic, so it
-  // is not a literal string and `s3Source` stays undefined for that case.
+  // A literal Bucket means a fromS3 bundle. An intrinsic Bucket — one of
+  // {Ref, Fn::ImportValue, Fn::GetStackOutput} — is also a fromS3 bundle whose
+  // bucket name we resolve against `--from-cfn-stack` state at command time.
+  // The CDK staging bucket of a fromCodeAsset renders as `{Fn::Sub: "..."}`
+  // and is INTENTIONALLY skipped here so fromCodeAsset still routes through
+  // the cdk.out asset path.
   const bucket = s3Obj['Bucket'];
   const versionId = s3Obj['VersionId'];
-  const s3Source =
-    typeof bucket === 'string' && bucket.length > 0
-      ? {
-          bucket,
-          key: prefix,
-          ...(typeof versionId === 'string' && versionId.length > 0 && { versionId }),
-        }
-      : undefined;
+  const versionIdField = typeof versionId === 'string' && versionId.length > 0 ? { versionId } : {};
+  let s3Source: AgentCoreCodeArtifact['s3Source'] | undefined;
+  if (typeof bucket === 'string' && bucket.length > 0) {
+    s3Source = { bucket, key: prefix, ...versionIdField };
+  } else if (isFromS3BucketIntrinsic(bucket)) {
+    s3Source = { bucketIntrinsic: bucket, key: prefix, ...versionIdField };
+  }
 
   return { runtime, entryPoint, codeAssetHash, ...(s3Source && { s3Source }) };
+}
+
+/**
+ * Whitelist the intrinsic shapes the command can resolve for a fromS3
+ * `Code.S3.Bucket` against `--from-cfn-stack` state — `Ref` (same-stack
+ * resource), `Fn::ImportValue` (CloudFormation export), `Fn::GetStackOutput`
+ * (cdk-local cross-stack output). Crucially excludes `Fn::Sub`, which is the
+ * fromCodeAsset staging-bucket shape: that one stays unmarked so fromCodeAsset
+ * routes through the cdk.out asset path unchanged.
+ */
+function isFromS3BucketIntrinsic(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const obj = value as Record<string, unknown>;
+  return 'Ref' in obj || 'Fn::ImportValue' in obj || 'Fn::GetStackOutput' in obj;
 }
 
 /**
