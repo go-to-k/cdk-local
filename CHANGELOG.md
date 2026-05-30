@@ -1,3 +1,10 @@
+# [0.59.0](https://github.com/go-to-k/cdk-local/compare/v0.58.0...v0.59.0) (2026-05-30)
+
+
+### Features
+
+* **start-alb:** enforce authenticate-cognito / authenticate-oidc locally ([#174](https://github.com/go-to-k/cdk-local/issues/174)) ([e5b8b5b](https://github.com/go-to-k/cdk-local/commit/e5b8b5be119a28b1ec430eb060d9dec5677222cb))
+
 # [0.58.0](https://github.com/go-to-k/cdk-local/compare/v0.57.0...v0.58.0) (2026-05-30)
 
 
