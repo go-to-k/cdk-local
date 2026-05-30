@@ -1,3 +1,10 @@
+## [0.61.1](https://github.com/go-to-k/cdk-local/compare/v0.61.0...v0.61.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **invoke:** resolve bare --assume-role from GetFunctionConfiguration ([#185](https://github.com/go-to-k/cdk-local/issues/185)) ([0623a1a](https://github.com/go-to-k/cdk-local/commit/0623a1ad54554d6c09ffc988d39ffd28ff8f214c))
+
 # [0.61.0](https://github.com/go-to-k/cdk-local/compare/v0.60.0...v0.61.0) (2026-05-30)
 
 
