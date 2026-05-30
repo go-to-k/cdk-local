@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import type { StackState } from '../../../src/types/state.js';
 import type { LocalStateProvider } from '../../../src/local/local-state-provider.js';
 
@@ -41,10 +41,6 @@ function stateWithLambda(opts: {
 }
 
 describe('resolveAssumeRoleArnForLambda', () => {
-  beforeEach(() => {
-    // Quiet the logger so unit-test output stays focused on assertions.
-  });
-
   it('returns the explicit ARN for --assume-role <arn>', async () => {
     const arn = await resolveAssumeRoleArnForLambda(
       'arn:aws:iam::1:role/Explicit',
@@ -159,6 +155,28 @@ describe('resolveAssumeRoleArnForLambda', () => {
 
       expect(arn).toBeUndefined();
       expect(resolveLambdaExecutionRoleArn).not.toHaveBeenCalled();
+    });
+
+    it('propagates rejections from the live fallback so the caller can release the state provider in a finally', async () => {
+      // The CFn provider's contract is best-effort + never-throws, but a host
+      // extension implementing the optional method could violate it. The
+      // helper deliberately does NOT swallow the rejection — the caller wraps
+      // the helper call in a try/finally that always disposes the provider,
+      // so propagating is safe AND surfaces the host bug instead of silently
+      // hiding it behind the warn-and-fall-through path.
+      const state = stateWithLambda({
+        logicalId: 'Echo',
+        physicalId: 'echo-fn-physical',
+        roleProperty: { 'Fn::GetAtt': ['EchoRole', 'Arn'] },
+        roleResource: { logicalId: 'EchoRole' },
+      });
+      const stateProvider = {
+        resolveLambdaExecutionRoleArn: vi.fn().mockRejectedValue(new Error('host bug')),
+      } as unknown as LocalStateProvider;
+
+      await expect(
+        resolveAssumeRoleArnForLambda(true, state, stateProvider, 'Echo')
+      ).rejects.toThrow(/host bug/);
     });
 
     it('warns without calling the live fallback when the state provider does not implement the method', async () => {
