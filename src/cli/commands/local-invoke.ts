@@ -24,6 +24,7 @@ import {
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
 } from './local-state-source.js';
+import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
   getEmbedConfig,
   setEmbedConfig,
@@ -403,8 +404,12 @@ async function localInvokeCommand(
             );
           }
         }
-      } finally {
+      } catch (err) {
+        // Ensure the provider is released if the substitution pass threw.
+        // The success path defers dispose until after the assume-role
+        // resolution below so the issue-#181 fallback can still use it.
         stateProvider.dispose();
+        throw err;
       }
     }
 
@@ -425,31 +430,23 @@ async function localInvokeCommand(
       );
     }
 
-    // Auto-resolve the execution-role ARN from state when the user passed
-    // bare `--assume-role` together with a state source.
+    // Resolve the role ARN to assume (if any). Three forms — explicit
+    // ARN, bare (auto-resolve from state, with a #181 fallback to
+    // GetFunctionConfiguration.Role when state misses), or absent.
+    // The state provider's dispose is deferred until after this call so
+    // the issue-#181 fallback can still use it.
     let resolvedAssumeRoleArn: string | undefined;
-    if (typeof options.assumeRole === 'string') {
-      resolvedAssumeRoleArn = options.assumeRole;
-    } else if (options.assumeRole === true) {
-      if (!stateForRoleHint) {
-        logger.warn(
-          '--assume-role passed without an ARN, but no state was loaded. ' +
-            'Pair it with a state-source flag, or pass the ARN explicitly: --assume-role <arn>. ' +
-            "Falling back to the developer's shell credentials."
-        );
-      } else {
-        const arn = resolveExecutionRoleArnFromState(stateForRoleHint, lambda.logicalId);
-        if (arn) {
-          resolvedAssumeRoleArn = arn;
-          logger.info(`--assume-role: auto-resolved execution role from state: ${arn}`);
-        } else {
-          logger.warn(
-            `--assume-role: could not resolve the execution role ARN from state for '${lambda.logicalId}'. ` +
-              "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
-          );
-        }
-      }
-    } else if (options.assumeRole === undefined && stateForRoleHint) {
+    try {
+      resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
+        options.assumeRole,
+        stateForRoleHint,
+        stateProvider,
+        lambda.logicalId
+      );
+    } finally {
+      stateProvider?.dispose();
+    }
+    if (options.assumeRole === undefined && stateForRoleHint) {
       // Legacy hint path: surface the deployed role ARN so they can re-run
       // with `--assume-role`.
       suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
@@ -1034,6 +1031,73 @@ function suggestAssumeRoleFromState(state: StackState, logicalId: string): void 
         `Re-run with --assume-role to invoke under the deployed function's narrow permissions.`
     );
   }
+}
+
+/**
+ * Resolve the role ARN to assume for a Lambda invoke, honoring the three
+ * `--assume-role` forms:
+ *
+ *   - `--assume-role <arn>` (explicit) → return `<arn>`.
+ *   - `--assume-role` (bare, no value) → resolve from CFn state first;
+ *     if that misses, fall back to
+ *     `stateProvider.resolveLambdaExecutionRoleArn(<physicalId>)`
+ *     (a `lambda:GetFunctionConfiguration` call) so a sibling-stack
+ *     execution role still resolves (issue #181 — `ListStackResources`
+ *     returns the role's name, not its ARN, so `attributes.Arn` is
+ *     empty on the CFn state map and the state-only lookup misses).
+ *   - `--assume-role` absent → return undefined (no assume).
+ *
+ * Logs the resolution path (info on success, warn on miss) so the user
+ * can tell why the container did or did not get assumed-role creds.
+ *
+ * Exported for unit testing.
+ */
+export async function resolveAssumeRoleArnForLambda(
+  assumeRole: string | boolean | undefined,
+  stateForRoleHint: StackState | undefined,
+  stateProvider: Pick<LocalStateProvider, 'resolveLambdaExecutionRoleArn'> | undefined,
+  lambdaLogicalId: string
+): Promise<string | undefined> {
+  const logger = getLogger();
+  if (typeof assumeRole === 'string') {
+    return assumeRole;
+  }
+  if (assumeRole !== true) {
+    return undefined;
+  }
+  // Bare --assume-role from here on.
+  if (!stateForRoleHint) {
+    logger.warn(
+      '--assume-role passed without an ARN, but no state was loaded. ' +
+        'Pair it with a state-source flag, or pass the ARN explicitly: --assume-role <arn>. ' +
+        "Falling back to the developer's shell credentials."
+    );
+    return undefined;
+  }
+  const fromState = resolveExecutionRoleArnFromState(stateForRoleHint, lambdaLogicalId);
+  if (fromState) {
+    logger.info(`--assume-role: auto-resolved execution role from state: ${fromState}`);
+    return fromState;
+  }
+  const fnPhysicalId = stateForRoleHint.resources[lambdaLogicalId]?.physicalId;
+  if (stateProvider?.resolveLambdaExecutionRoleArn && fnPhysicalId) {
+    // Issue #181 fallback: state-only lookup misses for sibling-stack
+    // exec roles because `ListStackResources` returns the role's name,
+    // not its ARN. The function's deploy-time `Configuration.Role`
+    // carries the full ARN.
+    const liveArn = await stateProvider.resolveLambdaExecutionRoleArn(fnPhysicalId);
+    if (liveArn) {
+      logger.info(
+        `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${liveArn}`
+      );
+      return liveArn;
+    }
+  }
+  logger.warn(
+    `--assume-role: could not resolve the execution role ARN for '${lambdaLogicalId}'. ` +
+      "Pass the ARN explicitly: --assume-role <arn>. Falling back to the developer's shell credentials."
+  );
+  return undefined;
 }
 
 export function resolveExecutionRoleArnFromState(
