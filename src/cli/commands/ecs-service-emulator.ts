@@ -76,6 +76,10 @@ import {
   type AlbPathRule,
   type AlbQueryStringCondition,
 } from '../../local/alb-path-matcher.js';
+import {
+  resolveFrontDoorTlsMaterials,
+  type FrontDoorTlsMaterials,
+} from '../../local/front-door-tls.js';
 import type { ResolvedLambda } from '../../local/lambda-resolver.js';
 import {
   createFrontDoorLambdaRunner,
@@ -119,6 +123,18 @@ export interface EcsServiceEmulatorOptions {
   hostPort?: string[];
   /** `--lb-port <listenerPort=hostPort>` front-door overrides (start-alb; repeatable). */
   lbPort?: string[];
+  /**
+   * Path to a PEM-encoded server cert for HTTPS front-door listeners
+   * (start-alb). Must be set together with `--tls-key`. Absent =
+   * auto-generated self-signed cert (cached under
+   * `$XDG_CACHE_HOME/cdk-local/alb-https/`).
+   */
+  tlsCert?: string;
+  /**
+   * Path to a PEM-encoded server private key for HTTPS front-door listeners
+   * (start-alb). Must be set together with `--tls-cert`.
+   */
+  tlsKey?: string;
   platform?: string;
   /** Cap on local replica count regardless of template `DesiredCount`. */
   maxTasks: number;
@@ -210,6 +226,8 @@ export interface PlannedFrontDoorListener {
   listenerPort: number;
   /** Host port to bind (the listener port, or its `--lb-port` override). */
   hostPort: number;
+  /** Listener protocol (`HTTP` or `HTTPS`); drives TLS termination + X-Forwarded-Proto. */
+  protocol: 'HTTP' | 'HTTPS';
   /** Default action (absent for a rules-only listener -> 404 on miss). */
   defaultAction?: PlannedAction;
   /** Rules, evaluated by priority (lower first); each carries up to all six ALB condition fields. */
@@ -790,6 +808,18 @@ export async function buildFrontDoor(
     };
   };
 
+  // Resolve TLS materials lazily — only when an HTTPS listener is in the plan.
+  // Cached after first resolve so multiple HTTPS listeners share one cert.
+  let tlsMaterials: FrontDoorTlsMaterials | undefined;
+  const getTlsMaterials = async (): Promise<FrontDoorTlsMaterials> => {
+    if (tlsMaterials) return tlsMaterials;
+    tlsMaterials = await resolveFrontDoorTlsMaterials({
+      certPath: options.tlsCert,
+      keyPath: options.tlsKey,
+    });
+    return tlsMaterials;
+  };
+
   try {
     for (const listener of plan.listeners) {
       const defaultRoute = listener.defaultAction
@@ -813,17 +843,19 @@ export async function buildFrontDoor(
         sourceIp?: string;
       }): RouteAction | undefined => matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
 
+      const tls = listener.protocol === 'HTTPS' ? await getTlsMaterials() : undefined;
       const server = await startFrontDoorServer({
         route,
         port: listener.hostPort,
         host: containerHost,
         listenerPort: listener.listenerPort,
         label: `listener port ${listener.listenerPort}`,
+        ...(tls ? { tls } : {}),
       });
       servers.push(server);
 
       logger.info(
-        `ALB front-door: http://${server.host}:${server.port} (listener port ${listener.listenerPort})`
+        `ALB front-door: ${server.scheme}://${server.host}:${server.port} (listener port ${listener.listenerPort})`
       );
       if (listener.defaultAction) {
         logger.info(`  default -> ${describeAction(listener.defaultAction)}`);

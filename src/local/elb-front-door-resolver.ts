@@ -48,8 +48,12 @@ import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path
  * functions (`TargetType:"lambda"` target groups — #123: the TG -> backing
  * `AWS::Lambda::Function` is resolved and the front-door invokes it locally per
  * request); `redirect` / `fixed-response` actions. A single weighted forward may
- * mix ECS and Lambda targets. Skipped with a warning: HTTPS/TLS listeners and
- * `authenticate-cognito` / `authenticate-oidc` actions.
+ * mix ECS and Lambda targets. HTTPS listeners are served — local TLS
+ * termination uses a user-supplied or auto-generated self-signed cert/key
+ * pair (the deployed `Listener.Certificates[]` ACM ARNs are not fetched,
+ * because ACM private keys are not retrievable by design). Skipped with a
+ * warning: TLS listeners (NLB-style, not ALB) and `authenticate-cognito` /
+ * `authenticate-oidc` actions.
  */
 
 const ALB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -185,8 +189,8 @@ export interface ResolvedListenerRule {
 export interface ResolvedListenerFrontDoor {
   /** Listener port declared on the ALB (the stable host endpoint port). */
   listenerPort: number;
-  /** Listener protocol — always `HTTP` here (HTTPS is skipped upstream). */
-  listenerProtocol: 'HTTP';
+  /** Listener protocol — `HTTP` or `HTTPS`. */
+  listenerProtocol: 'HTTP' | 'HTTPS';
   /** Logical id of the listener (diagnostics). */
   listenerLogicalId: string;
   /**
@@ -235,12 +239,28 @@ export function resolveAlbFrontDoor(
     const port = parsePort(props['Port']);
     if (port === undefined) continue;
     const protocol = typeof props['Protocol'] === 'string' ? props['Protocol'] : 'HTTP';
-    if (protocol !== 'HTTP') {
+    if (protocol !== 'HTTP' && protocol !== 'HTTPS') {
       warnings.push(
         `Listener '${listenerLogicalId}' on port ${port} uses protocol ${protocol}; the local ` +
-          'ALB front-door supports HTTP listeners only (TLS termination is deferred). Skipping it.'
+          'ALB front-door supports HTTP and HTTPS listeners only (TLS / NLB-style listeners are ' +
+          'not served). Skipping it.'
       );
       continue;
+    }
+    if (
+      protocol === 'HTTPS' &&
+      Array.isArray(props['Certificates']) &&
+      props['Certificates'].length > 0
+    ) {
+      // The deployed Listener's ACM-backed Certificates[] is not fetched: ACM
+      // private keys are not retrievable, by design. The local front-door
+      // terminates TLS with a user-supplied or auto-generated self-signed
+      // cert instead.
+      warnings.push(
+        `Listener '${listenerLogicalId}' on port ${port} declares ACM Certificates which are not ` +
+          'retrievable locally. The front-door terminates TLS with --tls-cert/--tls-key or an ' +
+          'auto-generated self-signed cert.'
+      );
     }
 
     const defaultAction = resolveAction(
@@ -309,7 +329,7 @@ export function resolveAlbFrontDoor(
 
     listeners.push({
       listenerPort: port,
-      listenerProtocol: 'HTTP',
+      listenerProtocol: protocol,
       listenerLogicalId,
       ...(defaultAction ? { defaultAction } : {}),
       rules,

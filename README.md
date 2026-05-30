@@ -69,7 +69,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 ### start-service vs start-alb — which one?
 
-`start-service` runs just the ECS service's replicas (workers, queue consumers, Service-Connect-only). `start-alb` boots the ECS service(s) behind an ALB **plus** a host-side front-door on each listener port, so external traffic reaches them the way it does in the cloud. Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
+`start-service` runs just the ECS service's replicas (workers, queue consumers, Service-Connect-only). `start-alb` boots the ECS service(s) behind an ALB **plus** a host-side front-door on each listener port — HTTP and HTTPS (TLS terminated locally with `--tls-cert` / `--tls-key` or an auto-generated self-signed cert) — so external traffic reaches them the way it does in the cloud. Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 
 ## Supported resources
 
@@ -80,7 +80,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 | ECS task definitions | `run-task` |
 | ECS services | `start-service` |
 | Cloud Map / Service Connect registry | service discovery between local replicas |
-| ALB-fronted ECS / Lambda services | `start-alb` — all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets |
+| ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets |
 | Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP + MCP |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.

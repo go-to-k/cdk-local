@@ -312,6 +312,7 @@ describe('start-alb / start-service strategy binding', () => {
       {
         listenerPort: 80,
         hostPort: 8080, // remapped by --lb-port 80=8080
+        protocol: 'HTTP',
         defaultAction: {
           kind: 'forward',
           targets: [

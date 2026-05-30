@@ -253,6 +253,7 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
           listeners.push({
             listenerPort: listener.listenerPort,
             hostPort,
+            protocol: listener.listenerProtocol,
             ...(listener.defaultAction ? { defaultAction: qualify(listener.defaultAction) } : {}),
             rules: listener.rules.map((r) => ({
               priority: r.priority,
@@ -306,17 +307,18 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
   const cmd = new Command('start-alb')
     .description(
       'Run an Application Load Balancer locally: name the ALB, and cdk-local boots the ECS ' +
-        'service(s) behind its HTTP listeners and stands up a local front-door on each listener ' +
-        'port that round-robins across the running replicas and routes its listener rules across ' +
-        'the backing services — a stable host endpoint, like behind a real load balancer. The ' +
+        'service(s) behind its listeners and stands up a local front-door on each listener port ' +
+        'that round-robins across the running replicas and routes its listener rules across the ' +
+        'backing services — a stable host endpoint, like behind a real load balancer. The ' +
         'symmetric ALB counterpart of `start-api`. Each <target> accepts a CDK display path ' +
         '(MyStack/MyAlb) or stack-qualified logical ID; single-stack apps may omit the stack ' +
-        'prefix. Supports HTTP listeners; path-pattern and host-header rule conditions; forward ' +
-        '(single and weighted), redirect, and fixed-response actions; and ECS or Lambda targets ' +
-        '(a Lambda target group is invoked locally via the Lambda RIE). HTTPS listeners, the ' +
-        'other rule conditions (http-header / query-string / source-ip / http-request-method), ' +
-        'and authenticate-* actions are skipped with a warning. Omit <targets> in an interactive ' +
-        'terminal to multi-select the load balancers from a list.'
+        'prefix. Supports HTTP and HTTPS listeners (TLS terminated locally with --tls-cert/' +
+        '--tls-key or an auto-generated self-signed cert); all six ALB rule-condition fields ' +
+        '(path-pattern / host-header / http-header / http-request-method / query-string / ' +
+        'source-ip); forward (single and weighted), redirect, and fixed-response actions; and ' +
+        'ECS or Lambda targets (a Lambda target group is invoked locally via the Lambda RIE). ' +
+        'authenticate-cognito / authenticate-oidc actions are skipped with a warning. Omit ' +
+        '<targets> in an interactive terminal to multi-select the load balancers from a list.'
     )
     .argument(
       '[targets...]',
@@ -328,6 +330,22 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
         'Bind the local front-door on a specific host port (e.g. 80=8080); repeatable. ' +
           'Default: host port == ALB listener port. Use this on macOS to remap a privileged ' +
           'listener port (< 1024) to a non-privileged host port.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--tls-cert <path>',
+        'PEM-encoded server certificate for HTTPS front-door listeners. Must be set together ' +
+          'with --tls-key. Omit both flags to auto-generate a self-signed cert ' +
+          '(cached under $XDG_CACHE_HOME/cdk-local/alb-https/, default ~/.cache/cdk-local/' +
+          'alb-https/); requires openssl on PATH. The deployed Listener Certificates[] are NOT ' +
+          'fetched (ACM private keys are not retrievable by design).'
+      )
+    )
+    .addOption(
+      new Option(
+        '--tls-key <path>',
+        'PEM-encoded server private key matching --tls-cert. Must be set together with --tls-cert.'
       )
     )
     .action(
