@@ -1,3 +1,10 @@
+# [0.55.0](https://github.com/go-to-k/cdk-local/compare/v0.54.0...v0.55.0) (2026-05-30)
+
+
+### Features
+
+* **start-alb:** terminate HTTPS listeners locally with BYO or auto self-signed cert ([#169](https://github.com/go-to-k/cdk-local/issues/169)) ([4722f6a](https://github.com/go-to-k/cdk-local/commit/4722f6a2f7d423e974e214316eb5104b05261879))
+
 # [0.54.0](https://github.com/go-to-k/cdk-local/compare/v0.53.0...v0.54.0) (2026-05-30)
 
 
