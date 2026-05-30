@@ -1,3 +1,10 @@
+## [0.62.1](https://github.com/go-to-k/cdk-local/compare/v0.62.0...v0.62.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **invoke-agentcore:** resolve bare --assume-role for same-stack Runtime exec roles ([#194](https://github.com/go-to-k/cdk-local/issues/194)) ([75451c9](https://github.com/go-to-k/cdk-local/commit/75451c9c8145f87dc06bcd2b77e0b40bd6ef1a8e))
+
 # [0.62.0](https://github.com/go-to-k/cdk-local/compare/v0.61.1...v0.62.0) (2026-05-30)
 
 
