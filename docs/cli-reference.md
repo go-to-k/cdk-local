@@ -1325,6 +1325,21 @@ strings in the synthesized template — a `Ref` / `Fn::GetAtt` / cross-stack
 intrinsic in any of those fields drops the guard with a warning, and the
 terminal action then serves unguarded.
 
+**WebSocket `Upgrade`** is proxied for ECS forward targets. The inbound
+upgrade request goes through the same `route()` callback as a regular
+HTTP request, so listener rules (path / host / header / method /
+query-string / source-ip) AND auth gates apply identically before the
+upgrade is accepted. After matching, the client's raw TCP socket is
+bridged to the picked replica with `Upgrade` / `Connection: Upgrade` /
+`Sec-WebSocket-*` headers preserved verbatim (RFC 7230 marks `Upgrade`
+as hop-by-hop, but the proxy MUST forward it for the handshake — nginx
+/ haproxy / ALB all do). `X-Forwarded-For` / `X-Forwarded-Proto` /
+`X-Forwarded-Port` are stamped. A Lambda target group answers `502`
+on upgrade (mirrors ALB itself — Lambda TGs do not support WebSocket).
+A `redirect` / `fixed-response` action answers with a regular HTTP/1.1
+response over the raw socket (no upgrade), matching how a browser's WS
+client surfaces such responses.
+
 Out of scope:
 
 - The full OAuth roundtrip (redirect to the IdP's authorize endpoint,
@@ -1333,6 +1348,11 @@ Out of scope:
   does not mint one. To exercise the deployed sign-in flow, hit the
   deployed ALB once and reuse the cookie locally.
 - ALB Mutual TLS (`MutualAuthentication.Mode: verify`) — tracked separately.
+- Sticky sessions (`stickiness.enabled`) — round-robin only.
+- gRPC / HTTP/2 target groups (`ProtocolVersion: GRPC` / `HTTP2`) — the
+  front-door is HTTP/1.1 only.
+- Health-check probes (`HealthCheckPath` / `Matcher`) — the pool is naive
+  and does not gate draining on health.
 
 The local front-door binds the request's `socket.remoteAddress` as the
 source IP, so a `source-ip` CIDR narrower than `127.0.0.0/8` will not match

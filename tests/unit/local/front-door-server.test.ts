@@ -1034,3 +1034,315 @@ describe('startFrontDoorServer — auth gate', () => {
     expect(result.status).toBe(401);
   });
 });
+
+describe('startFrontDoorServer — WebSocket Upgrade', () => {
+  /** Spin a plain-HTTP upstream that runs a `ws` echo server. */
+  async function startWsEchoUpstream(): Promise<{ port: number }> {
+    const { WebSocketServer } = await import('ws');
+    const httpServer = createServer();
+    const wss = new WebSocketServer({ server: httpServer });
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => ws.send(data));
+    });
+    await new Promise<void>((r) => httpServer.listen(0, '127.0.0.1', r));
+    const port = (httpServer.address() as AddressInfo).port;
+    cleanups.push(
+      () =>
+        new Promise<void>((r) => {
+          wss.close(() => httpServer.close(() => r()));
+        })
+    );
+    return { port };
+  }
+
+  async function startFrontDoorRoute(
+    route: NonNullable<Parameters<typeof startFrontDoorServer>[0]['route']>,
+    extra?: { tls?: Parameters<typeof startFrontDoorServer>[0]['tls'] }
+  ): Promise<StartedFrontDoorServer> {
+    const front = await startFrontDoorServer({
+      route,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+      ...(extra?.tls && { tls: extra.tls }),
+    });
+    cleanups.push(() => front.close());
+    return front;
+  }
+
+  /** Connect via `ws`, send one message, await the echoed reply, close. */
+  async function wsEchoRoundtrip(url: string, message: string): Promise<string> {
+    const { WebSocket } = await import('ws');
+    return new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(url, { rejectUnauthorized: false });
+      ws.on('open', () => ws.send(message));
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(data.toString());
+      });
+      ws.on('error', reject);
+    });
+  }
+
+  /** Expect a non-101 response from the front-door (the upgrade is refused). */
+  async function wsExpectReject(
+    url: string
+  ): Promise<{ statusCode?: number; wwwAuth?: string }> {
+    const { WebSocket } = await import('ws');
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url, { rejectUnauthorized: false });
+      ws.on('unexpected-response', (_req, res) => {
+        const wwwAuth = res.headers['www-authenticate'];
+        resolve({
+          ...(typeof res.statusCode === 'number' && { statusCode: res.statusCode }),
+          ...(typeof wwwAuth === 'string' && { wwwAuth }),
+        });
+        res.resume();
+      });
+      ws.on('open', () => {
+        ws.close();
+        reject(new Error('expected the front-door to reject the upgrade, but it succeeded'));
+      });
+      ws.on('error', () => {
+        /* swallowed; `unexpected-response` resolves the promise first */
+      });
+    });
+  }
+
+  it('proxies a WebSocket handshake to an ECS pool and round-trips a message', async () => {
+    const upstream = await startWsEchoUpstream();
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorRoute(() => ({
+      kind: 'forward',
+      pools: [{ pool, weight: 1 }],
+    }));
+
+    const echoed = await wsEchoRoundtrip(`ws://127.0.0.1:${front.port}/`, 'hello-ws');
+    expect(echoed).toBe('hello-ws');
+  });
+
+  it('answers 404 over the raw socket when no rule matches the upgrade', async () => {
+    const front = await startFrontDoorRoute(() => undefined);
+    const result = await wsExpectReject(`ws://127.0.0.1:${front.port}/nope`);
+    expect(result.statusCode).toBe(404);
+  });
+
+  it('answers 503 when the pool has no live replica', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const front = await startFrontDoorRoute(() => ({
+      kind: 'forward',
+      pools: [{ pool, weight: 1 }],
+    }));
+    const result = await wsExpectReject(`ws://127.0.0.1:${front.port}/`);
+    expect(result.statusCode).toBe(503);
+  });
+
+  it('answers 502 when the picked forward target is a Lambda target (Lambda TG does not support WS)', async () => {
+    const front = await startFrontDoorRoute(() => ({
+      kind: 'forward',
+      pools: [
+        {
+          lambda: {
+            targetGroupArn: 'tg',
+            multiValueHeaders: false,
+            label: 'EchoFn',
+            invoke: async () => ({ statusCode: 200 }),
+          },
+          weight: 1,
+        },
+      ],
+    }));
+    const result = await wsExpectReject(`ws://127.0.0.1:${front.port}/`);
+    expect(result.statusCode).toBe(502);
+  });
+
+  it('runs the auth gate before bridging: deny -> 401 with WWW-Authenticate', async () => {
+    const upstream = await startWsEchoUpstream();
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorRoute(() => ({
+      kind: 'forward',
+      pools: [{ pool, weight: 1 }],
+      auth: {
+        realm: 'authenticate-cognito (UserPool=us-east-1_test)',
+        check: async () => ({ allow: false }),
+      },
+    }));
+    const result = await wsExpectReject(`ws://127.0.0.1:${front.port}/`);
+    expect(result.statusCode).toBe(401);
+    expect(result.wwwAuth).toBe(
+      'Bearer realm="authenticate-cognito (UserPool=us-east-1_test)"'
+    );
+  });
+
+  it('runs the auth gate before bridging: allow -> handshake succeeds', async () => {
+    const upstream = await startWsEchoUpstream();
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstream.port });
+    const front = await startFrontDoorRoute(() => ({
+      kind: 'forward',
+      pools: [{ pool, weight: 1 }],
+      auth: { realm: 'r', check: async () => ({ allow: true }) },
+    }));
+    const echoed = await wsEchoRoundtrip(`ws://127.0.0.1:${front.port}/`, 'allowed-ws');
+    expect(echoed).toBe('allowed-ws');
+  });
+});
+
+describe('startFrontDoorServer — WebSocket Upgrade over HTTPS', () => {
+  let tls: FrontDoorTlsMaterials;
+  let tlsCacheDir: string;
+
+  beforeAll(async () => {
+    tlsCacheDir = mkdtempSync(join(tmpdir(), 'cdkl-front-door-ws-tls-'));
+    tls = await resolveFrontDoorTlsMaterials({
+      certPath: undefined,
+      keyPath: undefined,
+      cacheDir: tlsCacheDir,
+    });
+  });
+
+  afterAll(() => {
+    rmSync(tlsCacheDir, { recursive: true, force: true });
+  });
+
+  it('terminates TLS locally and bridges the WS upgrade to a plain HTTP upstream', async () => {
+    const { WebSocketServer, WebSocket } = await import('ws');
+    const upstreamHttp = createServer();
+    const wss = new WebSocketServer({ server: upstreamHttp });
+    wss.on('connection', (ws) => ws.on('message', (m) => ws.send(m)));
+    await new Promise<void>((r) => upstreamHttp.listen(0, '127.0.0.1', r));
+    const upstreamPort = (upstreamHttp.address() as AddressInfo).port;
+    cleanups.push(
+      () => new Promise<void>((r) => wss.close(() => upstreamHttp.close(() => r())))
+    );
+
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstreamPort });
+    const front = await startFrontDoorServer({
+      route: () => ({ kind: 'forward', pools: [{ pool, weight: 1 }] }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      tls,
+    });
+    cleanups.push(() => front.close());
+
+    const echoed = await new Promise<string>((resolve, reject) => {
+      const ws = new WebSocket(`wss://127.0.0.1:${front.port}/`, { rejectUnauthorized: false });
+      ws.on('open', () => ws.send('tls-ws'));
+      ws.on('message', (data) => {
+        ws.close();
+        resolve(data.toString());
+      });
+      ws.on('error', reject);
+    });
+    expect(echoed).toBe('tls-ws');
+  });
+});
+
+describe('startFrontDoorServer — WebSocket Upgrade resilience', () => {
+  it('does NOT inject HTTP/1.1 502 text into the WS frame stream when the upstream RSTs mid-stream', async () => {
+    // Spin a vanilla `ws` upstream that completes the handshake but then
+    // destroys the TCP socket the instant the client sends a frame. Without
+    // the upstreamConnected guard the front-door would write `HTTP/1.1 502
+    // Bad Gateway...` into the live WS frame channel; the assertion below
+    // sniffs the client-side bytes and fails if that text appears.
+    const { WebSocketServer, WebSocket } = await import('ws');
+    const upstreamHttp = createServer();
+    const wss = new WebSocketServer({ server: upstreamHttp });
+    wss.on('connection', (ws, req) => {
+      // Destroy the underlying socket immediately on any message — emulates
+      // a backend that crashed mid-session.
+      ws.on('message', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (req.socket as unknown as { destroy: () => void }).destroy();
+      });
+    });
+    await new Promise<void>((r) => upstreamHttp.listen(0, '127.0.0.1', r));
+    const upstreamPort = (upstreamHttp.address() as AddressInfo).port;
+    cleanups.push(
+      () => new Promise<void>((r) => wss.close(() => upstreamHttp.close(() => r())))
+    );
+
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0', { host: '127.0.0.1', port: upstreamPort });
+    const front = await startFrontDoorServer({
+      route: () => ({ kind: 'forward', pools: [{ pool, weight: 1 }] }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    // Sniff the raw bytes received from the front-door after the upgrade.
+    const received: Buffer[] = [];
+    const closed = new Promise<void>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${front.port}/`);
+      ws.on('open', () => {
+        // Hook the underlying socket to capture every byte AFTER the 101.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = (ws as unknown as { _socket: NodeJS.ReadableStream })._socket;
+        raw.on('data', (chunk: Buffer) => received.push(chunk));
+        ws.send('trigger-rst');
+      });
+      ws.on('close', () => resolve());
+      ws.on('error', () => resolve());
+    });
+    await closed;
+
+    const bytes = Buffer.concat(received).toString('utf-8');
+    expect(bytes).not.toContain('HTTP/1.1 502');
+    expect(bytes).not.toContain('Failed to reach replica');
+  });
+
+  it('sanitizes CR / LF in a fixed-response contentType so it cannot inject extra headers', async () => {
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'fixed-response',
+        statusCode: 200,
+        contentType: 'text/plain\r\nx-injected: yes',
+        messageBody: 'ok',
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    // Hit the upgrade path (which uses the raw socket writer) and capture
+    // the raw response bytes from the front-door.
+    const sock = await new Promise<import('node:net').Socket>((resolve, reject) => {
+      const s = (
+        require('node:net') as typeof import('node:net')
+      ).connect({ port: front.port, host: '127.0.0.1' }, () => resolve(s));
+      s.on('error', reject);
+    });
+    sock.write(
+      [
+        'GET / HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n')
+    );
+    const raw = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = [];
+      sock.on('data', (c: Buffer) => chunks.push(c));
+      sock.on('close', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    });
+
+    expect(raw).toContain('content-type: text/plain  x-injected: yes');
+    // The injection attempt MUST NOT produce a separate header line.
+    expect(raw).not.toMatch(/^x-injected: yes/m);
+  });
+});
