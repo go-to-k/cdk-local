@@ -332,10 +332,14 @@ vp run runtime:smoke
   run is never acceptable.
 
 - **cdkd parity** (host-CLI library-surface drift):
-  `cdkd-parity-gate.sh` blocks `gh pr create` when the diff touches
-  the cdk-local library surface (`src/cli/commands/**`,
-  `src/internal.ts`, `src/index.ts`) and the `cdkd-parity` marker is
-  stale. The marker is set ONLY by `/check-cdkd-parity`, which walks
+  `cdkd-parity-gate.sh` blocks `gh pr create` when the `cdkd-parity`
+  marker is stale AND the diff touches the cdk-local library surface
+  — defined as any change under `src/cli/commands/**` /
+  `src/internal.ts` / `src/index.ts`, OR a NEW `.ts` file added under
+  `src/local/**` (`--diff-filter=A`; the new-file branch catches
+  helpers that may need to be re-exported from `src/internal.ts`,
+  while edits to existing `src/local/**` files are excluded so
+  internal refactors don't trigger noise). The marker is set ONLY by `/check-cdkd-parity`, which walks
   the four host-impacting categories:
   - **New subcommand factory** — exported from `src/index.ts`? cdkd
     notified (issue / cross-link)?

@@ -263,8 +263,18 @@ call `markgate set integ` directly from a shell.
 - **`cdkd-parity-gate.sh`** blocks `gh pr create` (incl.
   `gh -C <path> pr create` / `cd <path> && gh pr create`) on PRs
   whose diff vs `origin/main` touches the cdk-local library surface
-  (`src/cli/commands/**`, `src/internal.ts`, `src/index.ts`) when
-  the `cdkd-parity` marker is stale. The marker is set ONLY by
+  and the `cdkd-parity` marker is stale. Two independent signals
+  trigger the gate:
+
+  - any change under `src/cli/commands/**`, `src/internal.ts`, or
+    `src/index.ts` (the library-surface scope), OR
+  - a NEW `.ts` file added under `src/local/**` (`--diff-filter=A`).
+    Edits to existing `src/local/**` files are intentionally NOT in
+    scope — most touches there are internal refactors that don't
+    change host-CLI surface. A brand-new file is the strongest
+    signal that a host-facing helper may have been introduced
+    without an explicit `src/internal.ts` re-export, which is
+    exactly the `/check-cdkd-parity` category 3 walk-through. The marker is set ONLY by
   `/check-cdkd-parity`, which walks the four host-impacting
   categories — new subcommand factory, new CLI option, new public
   helper / type, behavior change — and asks the structured

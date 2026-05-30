@@ -21,19 +21,33 @@ is stale.
 ## Pre-flight scope check
 
 Determine whether the PR's diff actually touches cdk-local's library
-surface. Run from the worktree:
+surface. Two signals trigger the gate:
+
+1. Any path under `src/cli/commands/**`, `src/internal.ts`, or
+   `src/index.ts` (the library-surface scope).
+2. A NEW `.ts` file added under `src/local/**` (`--diff-filter=A`).
+   Edits to existing `src/local/**` files are deliberately out of
+   scope — internal refactors are noise — but a brand-new file is
+   the strongest signal that a host-facing helper may have been
+   introduced without an explicit `src/internal.ts` re-export.
+
+Run from the worktree:
 
 ```bash
-git diff origin/main...HEAD --name-only \
-  | grep -E '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$' \
+{
+  git diff origin/main...HEAD --name-only \
+    | grep -E '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$'
+  git diff origin/main...HEAD --diff-filter=A --name-only \
+    | grep -E '^src/local/.+\.ts$'
+} | head -1 \
   || echo "out-of-scope"
 ```
 
-If the output is `out-of-scope` (the diff touches none of the gate's
-paths), write one line — "no library-surface touched; cdkd-parity n/a"
-— set the marker (see "Commit-gate marker" below), and stop. Do NOT
-walk the categories below for unrelated edits; the marker is correct
-to set because there is nothing for cdkd to inherit.
+If the output is `out-of-scope` (neither signal fires), write one
+line — "no library-surface touched; cdkd-parity n/a" — set the
+marker (see "Final step" below), and stop. Do NOT walk the
+categories below for unrelated edits; the marker is correct to set
+because there is nothing for cdkd to inherit.
 
 The diff base is `origin/main`, not local `main` (see memory:
 `feedback_diff_base_origin_main`).
@@ -114,6 +128,11 @@ low-level building block. Host CLIs reach these via the
 **Detect**:
 
 ```bash
+# A new file in src/local/** is the strongest signal — it's also the
+# scope trigger that fires the gate independently of internal.ts edits.
+git diff origin/main...HEAD --diff-filter=A --name-only \
+  | grep -E '^src/local/.+\.ts$'
+# And any edits to src/local/** files that may have added exports.
 git diff origin/main...HEAD --name-only -- 'src/local/**'
 ```
 
