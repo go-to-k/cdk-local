@@ -105,6 +105,18 @@ describe('assertSingleReplicaForWatch (Phase 1 of issue #214)', () => {
     ).not.toThrow();
   });
 
+  it('passes when --watch is on AND DesiredCount is 0 (computeReplicaCount floors to 1)', () => {
+    // `computeReplicaCount` returns 1 when `desiredCount <= 0` so a
+    // local dev who scaled their service down to 0 in CDK code still
+    // gets one replica running. The watch gate must reflect the same
+    // floor — locking this prevents an accidental regression that
+    // would otherwise let a DesiredCount=0 service skip the gate's
+    // pass branch via a different code path.
+    expect(() =>
+      assertSingleReplicaForWatch(fakeService(0), baseOptions({ watch: true }))
+    ).not.toThrow();
+  });
+
   it('throws LocalStartServiceError when --watch is on AND effective replica count > 1', () => {
     expect(() =>
       assertSingleReplicaForWatch(fakeService(2), baseOptions({ watch: true }))

@@ -655,7 +655,15 @@ export async function runEcsServiceEmulator(
               logger,
             })
           );
-          reloadChain = next.catch(() => undefined);
+          // Surface any unhandled throw from `reloadAllServices` (e.g. a
+          // future refactor adds a step outside the function's existing
+          // synth + per-target try/catches) instead of swallowing it
+          // silently — otherwise the emulator goes quietly stale.
+          reloadChain = next.catch((err) => {
+            logger.error(
+              `reloadAllServices threw: ${err instanceof Error ? err.message : String(err)}`
+            );
+          });
         },
       });
       logger.info(
@@ -834,12 +842,25 @@ async function reloadAllServices(args: {
         strategy.suppressLoadBalancerWarning === true
       );
     } catch (err) {
-      logger.error(
-        `Reload: re-boot of '${pt.boot.target}' failed ` +
-          `(${err instanceof Error ? err.message : String(err)}). ` +
-          'The previous replica was torn down; save again with a clean boot to re-start it, or ^C ' +
-          'and re-run start-service.'
-      );
+      // A `LocalStartServiceError` thrown by the boot already names the
+      // actionable fix (most often `assertSingleReplicaForWatch` tripping
+      // when the user bumped `DesiredCount` mid-watch). Surface that
+      // message verbatim instead of the generic "save again with a clean
+      // boot" hint, which would otherwise loop the user — saving again
+      // with the same multi-replica template will fail the gate the same
+      // way every time. The generic hint stays for unexpected boot
+      // failures (docker errors, asset-build failures, etc.) where
+      // re-saving plausibly recovers.
+      if (err instanceof LocalStartServiceError) {
+        logger.error(`Reload of '${pt.boot.target}' was rejected: ${err.message}`);
+      } else {
+        logger.error(
+          `Reload: re-boot of '${pt.boot.target}' failed ` +
+            `(${err instanceof Error ? err.message : String(err)}). ` +
+            'The previous replica was torn down; save again with a clean boot to re-start it, or ^C ' +
+            'and re-run start-service.'
+        );
+      }
       // Tear down any partial docker state that the failed boot left in
       // `newRunState.replicas` so cleanup() doesn't observe two states
       // for the same `pt` slot. The `pt.controller` reference is left
