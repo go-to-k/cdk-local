@@ -404,7 +404,7 @@ async function localInvokeAgentCoreCommand(
     // every cross-stack intrinsic the env path supports is supported here too.
     await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
 
-    const image = await resolveAgentCoreImage(resolved, options, loadedState);
+    const image = await resolveAgentCoreImage(resolved, options, loadedState, stateProvider);
 
     const { env: dockerEnv, sensitiveEnvKeys } = await buildContainerEnv(
       resolved,
@@ -511,7 +511,8 @@ async function localInvokeAgentCoreCommand(
         containerHost,
         hostPort,
         event,
-        sessionId
+        sessionId,
+        stateProvider
       );
 
       const result = await invokeAgentCore(containerHost, hostPort, event, {
@@ -617,7 +618,8 @@ export async function buildSigV4HeadersIfRequested(
   host: string,
   port: number,
   event: unknown,
-  sessionId: string
+  sessionId: string,
+  stateProvider?: LocalStateProvider
 ): Promise<Record<string, string> | undefined> {
   if (!options.sigv4) return undefined;
   if (options.bearerToken) {
@@ -645,7 +647,13 @@ export async function buildSigV4HeadersIfRequested(
       'LOCAL_INVOKE_AGENTCORE_SIGV4_NO_REGION'
     );
   }
-  const credentials = await resolveHostCredentialsForSigV4(options, resolved, loaded, region);
+  const credentials = await resolveHostCredentialsForSigV4(
+    options,
+    resolved,
+    loaded,
+    region,
+    stateProvider
+  );
   const signed = await signAgentCoreInvocation({
     credentials,
     region,
@@ -679,10 +687,11 @@ async function resolveHostCredentialsForSigV4(
   options: LocalInvokeAgentCoreOptions,
   resolved: ResolvedAgentCoreRuntime,
   loaded: LocalStateRecord | undefined,
-  region: string
+  region: string,
+  stateProvider: LocalStateProvider | undefined
 ): Promise<SigV4Credentials> {
   const logger = getLogger();
-  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
+  const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   if (assumeRoleArn) {
     try {
       return await assumeAgentCoreExecutionRole(assumeRoleArn, region);
@@ -730,12 +739,15 @@ async function resolveHostCredentialsForSigV4(
  *
  * `loaded` is the `--from-cfn-stack` state record (when available) — threaded
  * through so a bare `--assume-role` can resolve the execution-role ARN from
- * state for the fromS3 download.
+ * state for the fromS3 download. `stateProvider` enables the issue-#187
+ * live-fallback to `bedrock-agentcore-control:GetAgentRuntime` when the
+ * static state lookup misses.
  */
 export async function resolveAgentCoreImage(
   resolved: ResolvedAgentCoreRuntime,
   options: LocalInvokeAgentCoreOptions,
-  loaded?: LocalStateRecord
+  loaded?: LocalStateRecord,
+  stateProvider?: LocalStateProvider
 ): Promise<string> {
   const logger = getLogger();
   const architecture = platformToArchitecture(options.platform);
@@ -746,7 +758,8 @@ export async function resolveAgentCoreImage(
       resolved.codeArtifact,
       options,
       architecture,
-      loaded
+      loaded,
+      stateProvider
     );
   }
 
@@ -802,7 +815,8 @@ async function resolveAgentCoreCodeImage(
   code: AgentCoreCodeArtifact,
   options: LocalInvokeAgentCoreOptions,
   architecture: 'x86_64' | 'arm64',
-  loaded?: LocalStateRecord
+  loaded?: LocalStateRecord,
+  stateProvider?: LocalStateProvider
 ): Promise<string> {
   if (code.s3Source) {
     return resolveAgentCoreCodeImageFromS3(
@@ -811,7 +825,8 @@ async function resolveAgentCoreCodeImage(
       code.s3Source,
       options,
       architecture,
-      loaded
+      loaded,
+      stateProvider
     );
   }
 
@@ -877,7 +892,8 @@ async function resolveAgentCoreCodeImageFromS3(
   s3Source: NonNullable<AgentCoreCodeArtifact['s3Source']>,
   options: LocalInvokeAgentCoreOptions,
   architecture: 'x86_64' | 'arm64',
-  loaded: LocalStateRecord | undefined
+  loaded: LocalStateRecord | undefined,
+  stateProvider: LocalStateProvider | undefined
 ): Promise<string> {
   const logger = getLogger();
   // The bucket should be a literal string by this point — a template-literal
@@ -902,7 +918,7 @@ async function resolveAgentCoreCodeImageFromS3(
     process.env['AWS_DEFAULT_REGION'] ??
     resolved.stack.region;
 
-  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
+  const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   let credentials:
     | { accessKeyId: string; secretAccessKey: string; sessionToken: string }
     | undefined;
@@ -1024,7 +1040,7 @@ export async function buildContainerEnv(
   }
 
   const dockerEnv: Record<string, string> = { ...envResult.resolved };
-  const assumeRoleArn = resolveAssumeRoleArn(options, resolved, loaded);
+  const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
@@ -1226,33 +1242,53 @@ export async function applyAgentCoreCredentialEnv(
  * Resolve the role ARN to assume, honoring the three `--assume-role` forms.
  * Bare `--assume-role` uses the runtime's literal `RoleArn`; when that is an
  * intrinsic (the common L2 case — `Fn::GetAtt` to an auto-created role) it
- * resolves the execution-role ARN from `--from-cfn-stack` state, and only
- * warns + falls back to dev creds when neither is available.
+ * resolves the execution-role ARN from `--from-cfn-stack` state first; when
+ * that misses (issue #187 — `ListStackResources` returns the role's name,
+ * not its ARN, so `attributes.Arn` is empty on the CFn state map) it falls
+ * back to `stateProvider.resolveAgentCoreRuntimeRoleArn(<physicalId>)`
+ * (a `bedrock-agentcore-control:GetAgentRuntime` call) so a same-stack
+ * execution role still resolves. Only warns + falls back to dev creds
+ * when all of those miss.
  */
-export function resolveAssumeRoleArn(
+export async function resolveAssumeRoleArn(
   options: LocalInvokeAgentCoreOptions,
   resolved: ResolvedAgentCoreRuntime,
-  loaded: LocalStateRecord | undefined
-): string | undefined {
+  loaded: LocalStateRecord | undefined,
+  stateProvider?: Pick<LocalStateProvider, 'resolveAgentCoreRuntimeRoleArn'>
+): Promise<string | undefined> {
   if (typeof options.assumeRole === 'string') return options.assumeRole;
-  if (options.assumeRole === true) {
-    if (resolved.roleArn) return resolved.roleArn;
-    if (loaded) {
-      const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
-      if (fromState) {
-        getLogger().debug(`--assume-role: resolved RoleArn from state: ${fromState}`);
-        return fromState;
+  if (options.assumeRole !== true) return undefined;
+  // Bare --assume-role from here on.
+  if (resolved.roleArn) return resolved.roleArn;
+  if (loaded) {
+    const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
+    if (fromState) {
+      getLogger().debug(`--assume-role: resolved RoleArn from state: ${fromState}`);
+      return fromState;
+    }
+    // Issue #187 fallback: state-only lookup misses for sibling-stack
+    // exec roles because `ListStackResources` returns the role's name,
+    // not its ARN. The runtime's deploy-time `roleArn` carries the
+    // full ARN — read it via `bedrock-agentcore-control:GetAgentRuntime`.
+    const runtimePhysicalId = loaded.resources[resolved.logicalId]?.physicalId;
+    if (stateProvider?.resolveAgentCoreRuntimeRoleArn && runtimePhysicalId) {
+      const liveArn = await stateProvider.resolveAgentCoreRuntimeRoleArn(runtimePhysicalId);
+      if (liveArn) {
+        getLogger().info(
+          `--assume-role: auto-resolved execution role from GetAgentRuntime: ${liveArn}`
+        );
+        return liveArn;
       }
     }
-    getLogger().warn(
-      "--assume-role passed without an ARN, but the runtime's RoleArn is not a literal ARN in the template " +
-        (loaded
-          ? 'and could not be resolved from the deployed stack state. '
-          : 'and no --from-cfn-stack state is available to resolve it. ') +
-        'Pass the ARN explicitly: --assume-role <arn>. ' +
-        "Falling back to the developer's shell credentials."
-    );
   }
+  getLogger().warn(
+    "--assume-role passed without an ARN, but the runtime's RoleArn is not a literal ARN in the template " +
+      (loaded
+        ? 'and could not be resolved from the deployed stack state. '
+        : 'and no --from-cfn-stack state is available to resolve it. ') +
+      'Pass the ARN explicitly: --assume-role <arn>. ' +
+      "Falling back to the developer's shell credentials."
+  );
   return undefined;
 }
 
