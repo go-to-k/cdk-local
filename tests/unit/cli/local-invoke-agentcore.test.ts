@@ -1001,4 +1001,52 @@ describe('buildSigV4HeadersIfRequested — --sigv4 gate', () => {
     expect(headers?.['Authorization']).toContain('Credential=AK/');
     expect(headers?.['X-Amz-Security-Token']).toBe('ST');
   });
+
+  it('falls back to env credentials when --assume-role STS assume fails', async () => {
+    stsSendMock.mockRejectedValue(new Error('access denied'));
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDFALLBACK';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const headers = await buildSigV4HeadersIfRequested(
+      opts({ assumeRole: 'arn:aws:iam::1:role/Agent' }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      'sess-fb'
+    );
+    expect(headers?.['Authorization']).toContain('Credential=AKIDFALLBACK/');
+    expect(headers?.['X-Amz-Security-Token']).toBeUndefined();
+  });
+
+  it('errors when no region can be resolved (no --region / env / stack region)', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDREGIONLESS';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const r: ResolvedAgentCoreRuntime = {
+      stack: { stackName: 'App' } as never, // no region on the stack
+      logicalId: 'Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      containerUri: 'r:t',
+      environmentVariables: {},
+      protocol: 'HTTP',
+    };
+    await expect(
+      buildSigV4HeadersIfRequested(opts({ region: undefined }), r, undefined, '127.0.0.1', 9000, {}, 's')
+    ).rejects.toThrow(/no region resolved/);
+  });
+
+  it('prefers --region over --stack-region in the SigV4 credential scope', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDPRIO';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const headers = await buildSigV4HeadersIfRequested(
+      opts({ region: 'ap-northeast-1', stackRegion: 'eu-central-1' }),
+      runtime(),
+      undefined,
+      '127.0.0.1',
+      9000,
+      {},
+      'sess'
+    );
+    expect(headers?.['Authorization']).toContain('/ap-northeast-1/bedrock-agentcore/aws4_request');
+  });
 });

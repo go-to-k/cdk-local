@@ -302,6 +302,13 @@ async function localInvokeAgentCoreCommand(
     if (isMcp && options.ws) {
       logger.warn('--ws applies only to the HTTP protocol; ignoring it for this MCP runtime.');
     }
+    if (options.sigv4 && (isMcp || options.ws)) {
+      logger.warn(
+        '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
+          (isMcp ? 'MCP' : '/ws WebSocket') +
+          ' path.'
+      );
+    }
 
     // Read + validate the event (and resolve the session id) BEFORE any
     // Docker work, so a bad --event / --event-stdin fails fast instead of
