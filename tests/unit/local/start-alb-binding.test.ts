@@ -390,6 +390,10 @@ describe('buildFrontDoor', () => {
                 priority: 10,
                 pathPatterns: ['/api/*'],
                 hostPatterns: [],
+                httpHeaderConditions: [],
+                httpRequestMethods: [],
+                queryStringConditions: [],
+                sourceIpCidrs: [],
                 action: {
                   kind: 'forward',
                   targets: [

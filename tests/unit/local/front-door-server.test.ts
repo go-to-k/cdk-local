@@ -52,7 +52,13 @@ async function startFront(
 }
 
 async function startFrontWith(
-  route: (req: { path: string; host?: string }) => RouteAction | undefined,
+  route: (req: {
+    path: string;
+    host?: string;
+    headers?: NodeJS.Dict<string | string[]>;
+    method?: string;
+    sourceIp?: string;
+  }) => RouteAction | undefined,
   upstreamTimeoutMs?: number
 ): Promise<StartedFrontDoorServer> {
   const front = await startFrontDoorServer({
@@ -256,6 +262,38 @@ describe('startFrontDoorServer', () => {
     // The case-insensitive host comparison still matches.
     expect((await fetchTextWithHost(front.port, '/', 'API.EXAMPLE.COM')).body).toBe('api-host');
     expect((await fetchTextWithHost(front.port, '/', 'other.example.com')).body).toBe('web-host');
+  });
+
+  it('threads method / headers / sourceIp into the route() callback (binding)', async () => {
+    const upstream = await startUpstream('match');
+    const pool = new FrontDoorEndpointPool();
+    pool.register('r0', { host: '127.0.0.1', port: upstream.port });
+
+    const seenReqs: Array<{
+      path: string;
+      host?: string;
+      method?: string;
+      sourceIp?: string;
+      hasHeaders: boolean;
+    }> = [];
+    const front = await startFrontWith((req) => {
+      seenReqs.push({
+        path: req.path,
+        ...(req.host !== undefined && { host: req.host }),
+        ...(req.method !== undefined && { method: req.method }),
+        ...(req.sourceIp !== undefined && { sourceIp: req.sourceIp }),
+        hasHeaders: Object.keys(req.headers ?? {}).length > 0,
+      });
+      return forward(pool);
+    });
+
+    await fetchText(front.port, '/probe');
+    expect(seenReqs).toHaveLength(1);
+    const seen = seenReqs[0]!;
+    expect(seen.path).toBe('/probe');
+    expect(seen.method).toBe('GET');
+    expect(seen.hasHeaders).toBe(true);
+    expect(seen.sourceIp).toMatch(/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/);
   });
 
   it('synthesizes a fixed-response action without an upstream', async () => {

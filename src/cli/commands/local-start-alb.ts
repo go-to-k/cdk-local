@@ -258,6 +258,10 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
               priority: r.priority,
               pathPatterns: r.pathPatterns,
               hostPatterns: r.hostPatterns,
+              httpHeaderConditions: r.httpHeaderConditions,
+              httpRequestMethods: r.httpRequestMethods,
+              queryStringConditions: r.queryStringConditions,
+              sourceIpCidrs: r.sourceIpCidrs,
               action: qualify(r.action),
             })),
           });

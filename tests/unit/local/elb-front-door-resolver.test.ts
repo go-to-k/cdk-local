@@ -161,6 +161,10 @@ describe('resolveAlbFrontDoor', () => {
         priority: 10,
         pathPatterns: ['/api/*'],
         hostPatterns: [],
+        httpHeaderConditions: [],
+        httpRequestMethods: [],
+        queryStringConditions: [],
+        sourceIpCidrs: [],
         action: {
           kind: 'forward',
           targets: [
@@ -457,7 +461,26 @@ describe('resolveAlbFrontDoor', () => {
     expect(listeners[0]!.rules[0]!.pathPatterns).toEqual(['/legacy/*']);
   });
 
-  it('skips + warns on a rule with a still-unsupported condition field (http-header)', () => {
+  it('skips + warns on a rule with an unknown condition field', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'not-a-real-field', Values: ['x'] }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    // The listener still resolves via its default forward; only the rule is dropped.
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/unsupported condition field 'not-a-real-field'/);
+  });
+
+  it('resolves an http-header condition (name + values)', () => {
     const stack = stackWith({
       ...apiServiceResources,
       [RULE]: {
@@ -468,7 +491,7 @@ describe('resolveAlbFrontDoor', () => {
           Conditions: [
             {
               Field: 'http-header',
-              HttpHeaderConfig: { HttpHeaderName: 'X-Custom', Values: ['yes'] },
+              HttpHeaderConfig: { HttpHeaderName: 'X-Tenant', Values: ['acme', 'globex'] },
             },
           ],
           Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
@@ -476,9 +499,196 @@ describe('resolveAlbFrontDoor', () => {
       },
     });
     const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
-    // The listener still resolves via its default forward; only the rule is dropped.
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.httpHeaderConditions).toEqual([
+      { name: 'X-Tenant', values: ['acme', 'globex'] },
+    ]);
+  });
+
+  it('ANDs multiple http-header conditions (different names)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'X-Tenant', Values: ['acme'] } },
+            { Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'X-Env', Values: ['prod'] } },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules[0]!.httpHeaderConditions).toEqual([
+      { name: 'X-Tenant', values: ['acme'] },
+      { name: 'X-Env', values: ['prod'] },
+    ]);
+  });
+
+  it('skips + warns on an http-header condition with no HttpHeaderName / Values', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [{ Field: 'http-header', HttpHeaderConfig: { Values: ['x'] } }],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
     expect(listeners[0]!.rules).toEqual([]);
-    expect(warnings.join('\n')).toMatch(/unsupported condition\(s\): http-header/);
+    expect(warnings.join('\n')).toMatch(/http-header condition with no HttpHeaderName/);
+  });
+
+  it('resolves an http-request-method condition (OR-matched values)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            {
+              Field: 'http-request-method',
+              HttpRequestMethodConfig: { Values: ['POST', 'PUT'] },
+            },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules[0]!.httpRequestMethods).toEqual(['POST', 'PUT']);
+  });
+
+  it('resolves a query-string condition (Key+Value and bare-Value entries)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            {
+              Field: 'query-string',
+              QueryStringConfig: {
+                Values: [{ Key: 'version', Value: '2' }, { Value: '*beta*' }],
+              },
+            },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules[0]!.queryStringConditions).toEqual([
+      { key: 'version', value: '2' },
+      { value: '*beta*' },
+    ]);
+  });
+
+  it('skips + warns on a query-string condition whose entries are all malformed', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            {
+              Field: 'query-string',
+              // Non-string `Value` on the only entry -> 0 parseable entries.
+              QueryStringConfig: { Values: [{ Key: 'v', Value: 42 }] },
+            },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/query-string condition has no parseable/);
+  });
+
+  it('resolves a source-ip condition (IPv4 + IPv6 CIDRs)', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            {
+              Field: 'source-ip',
+              SourceIpConfig: { Values: ['10.0.0.0/8', '2001:db8::/32'] },
+            },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    expect(listeners[0]!.rules[0]!.sourceIpCidrs).toEqual(['10.0.0.0/8', '2001:db8::/32']);
+  });
+
+  it('skips + warns on a source-ip condition with an unparseable CIDR', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 10,
+          Conditions: [
+            { Field: 'source-ip', SourceIpConfig: { Values: ['not-a-cidr', '10.0.0.0/8'] } },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(listeners[0]!.rules).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/unparseable CIDR\(s\): not-a-cidr/);
+  });
+
+  it('ANDs path-pattern + http-header + http-request-method + query-string + source-ip on one rule', () => {
+    const stack = stackWith({
+      ...apiServiceResources,
+      [RULE]: {
+        Type: 'AWS::ElasticLoadBalancingV2::ListenerRule',
+        Properties: {
+          ListenerArn: { Ref: LISTENER },
+          Priority: 5,
+          Conditions: [
+            { Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } },
+            { Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'X-API', Values: ['v2'] } },
+            { Field: 'http-request-method', HttpRequestMethodConfig: { Values: ['POST'] } },
+            { Field: 'query-string', QueryStringConfig: { Values: [{ Key: 'v', Value: '1' }] } },
+            { Field: 'source-ip', SourceIpConfig: { Values: ['10.0.0.0/8'] } },
+          ],
+          Actions: [{ Type: 'forward', TargetGroupArn: { Ref: API_TG } }],
+        },
+      },
+    });
+    const { listeners, warnings } = resolveAlbFrontDoor(stack, ALB);
+    expect(warnings).toEqual([]);
+    const rule = listeners[0]!.rules[0]!;
+    expect(rule.pathPatterns).toEqual(['/api/*']);
+    expect(rule.httpHeaderConditions).toEqual([{ name: 'X-API', values: ['v2'] }]);
+    expect(rule.httpRequestMethods).toEqual(['POST']);
+    expect(rule.queryStringConditions).toEqual([{ key: 'v', value: '1' }]);
+    expect(rule.sourceIpCidrs).toEqual(['10.0.0.0/8']);
   });
 
   it('drops only the unsupported target group inside a weighted forward (others kept)', () => {
