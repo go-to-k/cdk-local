@@ -70,7 +70,12 @@ import {
   type RouteAction,
   type WeightedForwardTarget,
 } from '../../local/front-door-server.js';
-import { matchAlbPathRule, type AlbPathRule } from '../../local/alb-path-matcher.js';
+import {
+  matchAlbPathRule,
+  type AlbHttpHeaderCondition,
+  type AlbPathRule,
+  type AlbQueryStringCondition,
+} from '../../local/alb-path-matcher.js';
 import type { ResolvedLambda } from '../../local/lambda-resolver.js';
 import {
   createFrontDoorLambdaRunner,
@@ -207,11 +212,15 @@ export interface PlannedFrontDoorListener {
   hostPort: number;
   /** Default action (absent for a rules-only listener -> 404 on miss). */
   defaultAction?: PlannedAction;
-  /** Rules, evaluated by priority (lower first); each carries path + host conditions. */
+  /** Rules, evaluated by priority (lower first); each carries up to all six ALB condition fields. */
   rules: Array<{
     priority: number;
     pathPatterns: string[];
     hostPatterns: string[];
+    httpHeaderConditions: AlbHttpHeaderCondition[];
+    httpRequestMethods: string[];
+    queryStringConditions: AlbQueryStringCondition[];
+    sourceIpCidrs: string[];
     action: PlannedAction;
   }>;
 }
@@ -790,10 +799,19 @@ export async function buildFrontDoor(
         priority: r.priority,
         pathPatterns: r.pathPatterns,
         hostPatterns: r.hostPatterns,
+        httpHeaderConditions: r.httpHeaderConditions,
+        httpRequestMethods: r.httpRequestMethods,
+        queryStringConditions: r.queryStringConditions,
+        sourceIpCidrs: r.sourceIpCidrs,
         target: toRouteAction(r.action),
       }));
-      const route = (req: { path: string; host?: string }): RouteAction | undefined =>
-        matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
+      const route = (req: {
+        path: string;
+        host?: string;
+        headers?: NodeJS.Dict<string | string[]>;
+        method?: string;
+        sourceIp?: string;
+      }): RouteAction | undefined => matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
 
       const server = await startFrontDoorServer({
         route,
@@ -851,12 +869,33 @@ export async function buildFrontDoor(
   return { servers, frontDoorByService, lambdaRunners: [...lambdaRegistry.values()] };
 }
 
-/** Human-readable summary of a planned rule's path / host conditions (for the boot banner). */
-function describeConditions(rule: { pathPatterns: string[]; hostPatterns: string[] }): string {
+/** Human-readable summary of a planned rule's six ALB condition fields (for the boot banner). */
+function describeConditions(rule: {
+  pathPatterns: string[];
+  hostPatterns: string[];
+  httpHeaderConditions: AlbHttpHeaderCondition[];
+  httpRequestMethods: string[];
+  queryStringConditions: AlbQueryStringCondition[];
+  sourceIpCidrs: string[];
+}): string {
   const parts: string[] = [];
   if (rule.pathPatterns.length > 0) parts.push(`path ${rule.pathPatterns.join(', ')}`);
   if (rule.hostPatterns.length > 0) parts.push(`host ${rule.hostPatterns.join(', ')}`);
+  for (const h of rule.httpHeaderConditions) {
+    parts.push(`header ${h.name}: ${h.values.join(', ')}`);
+  }
+  if (rule.httpRequestMethods.length > 0) {
+    parts.push(`method ${rule.httpRequestMethods.join(', ')}`);
+  }
+  if (rule.queryStringConditions.length > 0) {
+    parts.push(`query ${rule.queryStringConditions.map(describeQueryStringCondition).join(', ')}`);
+  }
+  if (rule.sourceIpCidrs.length > 0) parts.push(`source-ip ${rule.sourceIpCidrs.join(', ')}`);
   return parts.join(' AND ') || '(no condition)';
+}
+
+function describeQueryStringCondition(c: AlbQueryStringCondition): string {
+  return c.key !== undefined ? `${c.key}=${c.value}` : c.value;
 }
 
 /** Human-readable summary of a planned action (for the boot banner). */

@@ -126,12 +126,22 @@ export interface FixedResponseRouteAction {
 /** What the front-door does for a request: forward / redirect / fixed-response. */
 export type RouteAction = ForwardRouteAction | RedirectRouteAction | FixedResponseRouteAction;
 
-/** The request facts the route resolver is handed (path + Host header). */
+/**
+ * The request facts the route resolver is handed (path + Host header + all
+ * other ALB-condition-relevant fields). The matcher strips the query for
+ * path-pattern matching but uses it for query-string conditions.
+ */
 export interface FrontDoorRouteRequest {
   /** Request URL (path + query); the matcher strips the query for path-pattern. */
   path: string;
   /** Request `Host` header (for host-header rule matching). */
   host?: string;
+  /** Raw incoming request headers (for http-header rule matching). */
+  headers?: NodeJS.Dict<string | string[]>;
+  /** Request method (e.g. `GET`) for http-request-method rule matching. */
+  method?: string;
+  /** Connection source IP for source-ip rule matching. */
+  sourceIp?: string;
 }
 
 export interface StartFrontDoorServerOptions {
@@ -257,7 +267,13 @@ function handleProxyRequest(
   // fixed-response) takes precedence. The single-target selectors are a
   // convenience for callers that never weight / redirect.
   if (opts.route) {
-    const action = opts.route({ path: url, ...hostHeader(req) });
+    const action = opts.route({
+      path: url,
+      ...hostHeader(req),
+      headers: req.headers,
+      ...(req.method !== undefined && { method: req.method }),
+      ...(req.socket.remoteAddress !== undefined && { sourceIp: req.socket.remoteAddress }),
+    });
     if (!action) return reply404(req, res, opts);
 
     if (action.kind === 'redirect' || action.kind === 'fixed-response') {

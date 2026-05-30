@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
-  albPathPatternMatches,
+  albCidrMatches,
   albHostPatternMatches,
+  albPathPatternMatches,
+  httpHeaderConditionMatches,
   matchAlbPathRule,
+  queryStringConditionMatches,
   type AlbPathRule,
 } from '../../../src/local/alb-path-matcher.js';
 
@@ -145,5 +148,244 @@ describe('matchAlbPathRule with host-header conditions', () => {
 
   it('matches the Host header case-insensitively and ignores the :port', () => {
     expect(matchAlbPathRule({ path: '/', host: 'API.EXAMPLE.COM:8080' }, rules)).toBe('api-host');
+  });
+});
+
+describe('httpHeaderConditionMatches', () => {
+  it('looks up the header case-insensitively', () => {
+    expect(
+      httpHeaderConditionMatches({ name: 'X-Tenant', values: ['acme'] }, { 'x-tenant': 'acme' })
+    ).toBe(true);
+    expect(
+      httpHeaderConditionMatches({ name: 'X-TENANT', values: ['acme'] }, { 'X-Tenant': 'acme' })
+    ).toBe(true);
+  });
+
+  it('OR-matches the value globs (case-insensitive value comparison)', () => {
+    const cond = { name: 'X-Plan', values: ['ENTERPRISE', 'team*'] };
+    expect(httpHeaderConditionMatches(cond, { 'x-plan': 'enterprise' })).toBe(true);
+    expect(httpHeaderConditionMatches(cond, { 'x-plan': 'TEAM-LITE' })).toBe(true);
+    expect(httpHeaderConditionMatches(cond, { 'x-plan': 'free' })).toBe(false);
+  });
+
+  it('matches when ANY value of a multi-valued header satisfies the glob', () => {
+    const cond = { name: 'Accept', values: ['application/json'] };
+    expect(httpHeaderConditionMatches(cond, { accept: ['text/html', 'application/json'] })).toBe(
+      true
+    );
+    expect(httpHeaderConditionMatches(cond, { accept: ['text/html'] })).toBe(false);
+  });
+
+  it('returns false when the header is missing or the headers dict is undefined', () => {
+    expect(httpHeaderConditionMatches({ name: 'X-Tenant', values: ['*'] }, undefined)).toBe(false);
+    expect(httpHeaderConditionMatches({ name: 'X-Tenant', values: ['*'] }, {})).toBe(false);
+  });
+});
+
+describe('queryStringConditionMatches', () => {
+  it('matches a Key+Value pair (case-insensitive)', () => {
+    expect(
+      queryStringConditionMatches({ key: 'Version', value: '2' }, [{ key: 'version', value: '2' }])
+    ).toBe(true);
+    expect(
+      queryStringConditionMatches({ key: 'version', value: 'V2' }, [{ key: 'version', value: 'v2' }])
+    ).toBe(true);
+  });
+
+  it('honors * / ? wildcards in both Key and Value', () => {
+    expect(
+      queryStringConditionMatches({ key: 'tag-*', value: 'beta*' }, [
+        { key: 'tag-rollout', value: 'beta-3' },
+      ])
+    ).toBe(true);
+    expect(
+      queryStringConditionMatches({ key: 'tag-?', value: '?' }, [{ key: 'tag-x', value: 'b' }])
+    ).toBe(true);
+  });
+
+  it('matches ANY key when Key is omitted', () => {
+    const cond = { value: 'beta' };
+    expect(queryStringConditionMatches(cond, [{ key: 'flag', value: 'beta' }])).toBe(true);
+    expect(queryStringConditionMatches(cond, [{ key: 'other', value: 'beta' }])).toBe(true);
+    expect(queryStringConditionMatches(cond, [{ key: 'flag', value: 'alpha' }])).toBe(false);
+  });
+
+  it('returns false when no parameter matches', () => {
+    expect(
+      queryStringConditionMatches({ key: 'v', value: '1' }, [{ key: 'v', value: '2' }])
+    ).toBe(false);
+    expect(queryStringConditionMatches({ key: 'v', value: '1' }, [])).toBe(false);
+  });
+});
+
+describe('albCidrMatches', () => {
+  it('matches an IPv4 address inside a /24', () => {
+    expect(albCidrMatches('192.0.2.0/24', '192.0.2.42')).toBe(true);
+    expect(albCidrMatches('192.0.2.0/24', '192.0.3.1')).toBe(false);
+  });
+
+  it('matches an exact IPv4 with /32', () => {
+    expect(albCidrMatches('192.0.2.42/32', '192.0.2.42')).toBe(true);
+    expect(albCidrMatches('192.0.2.42/32', '192.0.2.43')).toBe(false);
+  });
+
+  it('matches the full IPv4 range with /0', () => {
+    expect(albCidrMatches('0.0.0.0/0', '8.8.8.8')).toBe(true);
+  });
+
+  it('matches an IPv6 address inside a /32', () => {
+    expect(albCidrMatches('2001:db8::/32', '2001:db8:1234::1')).toBe(true);
+    expect(albCidrMatches('2001:db8::/32', '2001:db9::1')).toBe(false);
+  });
+
+  it('matches an IPv6 ::1 inside ::/0', () => {
+    expect(albCidrMatches('::/0', '::1')).toBe(true);
+  });
+
+  it('does not cross-match IPv4 against IPv6 or vice versa', () => {
+    expect(albCidrMatches('192.0.2.0/24', '::1')).toBe(false);
+    expect(albCidrMatches('2001:db8::/32', '192.0.2.1')).toBe(false);
+  });
+
+  it('returns false for unparseable input', () => {
+    expect(albCidrMatches('not-a-cidr', '192.0.2.1')).toBe(false);
+    expect(albCidrMatches('192.0.2.0/33', '192.0.2.1')).toBe(false);
+    expect(albCidrMatches('192.0.2.0/24', 'not-an-ip')).toBe(false);
+  });
+});
+
+describe('matchAlbPathRule with new condition fields', () => {
+  it('honors an http-header condition (one rule, OR-matched values)', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: [],
+        httpHeaderConditions: [{ name: 'X-Tenant', values: ['acme'] }],
+        target: 'tenant-acme',
+      },
+    ];
+    expect(matchAlbPathRule({ path: '/', headers: { 'x-tenant': 'acme' } }, rules)).toBe(
+      'tenant-acme'
+    );
+    expect(matchAlbPathRule({ path: '/', headers: { 'x-tenant': 'other' } }, rules)).toBeUndefined();
+    expect(matchAlbPathRule({ path: '/' }, rules)).toBeUndefined();
+  });
+
+  it('ANDs multiple http-header conditions on one rule', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: [],
+        httpHeaderConditions: [
+          { name: 'X-Tenant', values: ['acme'] },
+          { name: 'X-Env', values: ['prod'] },
+        ],
+        target: 'acme-prod',
+      },
+    ];
+    expect(
+      matchAlbPathRule({ path: '/', headers: { 'x-tenant': 'acme', 'x-env': 'prod' } }, rules)
+    ).toBe('acme-prod');
+    expect(
+      matchAlbPathRule({ path: '/', headers: { 'x-tenant': 'acme', 'x-env': 'dev' } }, rules)
+    ).toBeUndefined();
+  });
+
+  it('honors an http-request-method condition (OR-matched, exact, case-sensitive)', () => {
+    const rules: AlbPathRule<string>[] = [
+      { priority: 5, pathPatterns: [], httpRequestMethods: ['POST', 'PUT'], target: 'writes' },
+    ];
+    expect(matchAlbPathRule({ path: '/', method: 'POST' }, rules)).toBe('writes');
+    expect(matchAlbPathRule({ path: '/', method: 'PUT' }, rules)).toBe('writes');
+    expect(matchAlbPathRule({ path: '/', method: 'GET' }, rules)).toBeUndefined();
+    // ALB is case-sensitive uppercase; lower-case is NOT auto-matched.
+    expect(matchAlbPathRule({ path: '/', method: 'post' }, rules)).toBeUndefined();
+  });
+
+  it('honors a query-string condition (OR-matched Key+Value entries)', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: [],
+        queryStringConditions: [{ key: 'v', value: '2' }, { value: '*beta*' }],
+        target: 'q-match',
+      },
+    ];
+    expect(matchAlbPathRule({ path: '/?v=2' }, rules)).toBe('q-match');
+    expect(matchAlbPathRule({ path: '/?flag=mybeta1' }, rules)).toBe('q-match');
+    expect(matchAlbPathRule({ path: '/?v=1' }, rules)).toBeUndefined();
+    expect(matchAlbPathRule({ path: '/' }, rules)).toBeUndefined();
+  });
+
+  it('decodes percent-encoded query parameters before matching', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: [],
+        queryStringConditions: [{ key: 'name', value: 'a b' }],
+        target: 'q-decoded',
+      },
+    ];
+    expect(matchAlbPathRule({ path: '/?name=a%20b' }, rules)).toBe('q-decoded');
+    expect(matchAlbPathRule({ path: '/?name=a+b' }, rules)).toBe('q-decoded');
+  });
+
+  it('honors a source-ip condition (OR-matched CIDRs, IPv4 + IPv6)', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: [],
+        sourceIpCidrs: ['10.0.0.0/8', '2001:db8::/32'],
+        target: 'internal',
+      },
+    ];
+    expect(matchAlbPathRule({ path: '/', sourceIp: '10.1.2.3' }, rules)).toBe('internal');
+    expect(matchAlbPathRule({ path: '/', sourceIp: '2001:db8:42::1' }, rules)).toBe('internal');
+    expect(matchAlbPathRule({ path: '/', sourceIp: '8.8.8.8' }, rules)).toBeUndefined();
+    expect(matchAlbPathRule({ path: '/' }, rules)).toBeUndefined();
+  });
+
+  it('unmaps an IPv4-mapped IPv6 source IP (::ffff:127.0.0.1) for IPv4 CIDR matching', () => {
+    const rules: AlbPathRule<string>[] = [
+      { priority: 5, pathPatterns: [], sourceIpCidrs: ['127.0.0.0/8'], target: 'loopback' },
+    ];
+    expect(matchAlbPathRule({ path: '/', sourceIp: '::ffff:127.0.0.1' }, rules)).toBe('loopback');
+  });
+
+  it('ANDs path-pattern + http-header + http-request-method + query-string + source-ip on one rule', () => {
+    const rules: AlbPathRule<string>[] = [
+      {
+        priority: 5,
+        pathPatterns: ['/api/*'],
+        httpHeaderConditions: [{ name: 'X-API', values: ['v2'] }],
+        httpRequestMethods: ['POST'],
+        queryStringConditions: [{ key: 'v', value: '1' }],
+        sourceIpCidrs: ['10.0.0.0/8'],
+        target: 'full-match',
+      },
+    ];
+    expect(
+      matchAlbPathRule(
+        {
+          path: '/api/x?v=1',
+          method: 'POST',
+          headers: { 'x-api': 'v2' },
+          sourceIp: '10.1.2.3',
+        },
+        rules
+      )
+    ).toBe('full-match');
+    // Drop just the method -> the rule no longer matches.
+    expect(
+      matchAlbPathRule(
+        {
+          path: '/api/x?v=1',
+          method: 'GET',
+          headers: { 'x-api': 'v2' },
+          sourceIp: '10.1.2.3',
+        },
+        rules
+      )
+    ).toBeUndefined();
   });
 });

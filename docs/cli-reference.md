@@ -1044,10 +1044,13 @@ ECS service(s) behind its HTTP listeners, boots their replicas
 `start-service`), and stands up a host-side **front-door** on each
 listener port that round-robins each request across the running replicas
 — one stable host endpoint, like behind a real load balancer. The
-front-door applies the listener's **`path-pattern` and `host-header`
-rules**, so one host port can route across several backing services (e.g.
-`/api/*` or `api.example.com` to one service, the default to another) the
-way the deployed ALB does — including **weighted** forwards and
+front-door applies the listener's rules across all six ALB condition
+fields — **`path-pattern`**, **`host-header`**, **`http-header`**,
+**`http-request-method`**, **`query-string`**, and **`source-ip`** — so
+one host port can route across several backing services (e.g. `/api/*`
+or `api.example.com` or `X-Tenant: acme` or `POST` writes or `?version=2`
+or a `10.0.0.0/8` source range to one service, the default to another)
+the way the deployed ALB does — including **weighted** forwards and
 **`redirect` / `fixed-response`** actions.
 
 `start-service` vs `start-alb` mirrors `invoke` / `run-task` (the compute
@@ -1062,19 +1065,21 @@ service you want to reach the way external traffic does.
 `start-alb` resolves the ALB you name → its
 `AWS::ElasticLoadBalancingV2::Listener`s (matched by `LoadBalancerArn`) →
 each listener's default action **and** its
-`AWS::ElasticLoadBalancingV2::ListenerRule`s with a `path-pattern` and/or
-`host-header` condition → each `forward` action's
-`AWS::ElasticLoadBalancingV2::TargetGroup`(s) → either the
+`AWS::ElasticLoadBalancingV2::ListenerRule`s (any of the six ALB condition
+fields: `path-pattern`, `host-header`, `http-header`,
+`http-request-method`, `query-string`, `source-ip`) → each `forward`
+action's `AWS::ElasticLoadBalancingV2::TargetGroup`(s) → either the
 `AWS::ECS::Service` whose `LoadBalancers[]` references that target group (a
 reverse scan — there is no direct TG → service pointer) or, for a
 `TargetType: lambda` group, the backing `AWS::Lambda::Function` it targets.
-The front-door for a listener
-port holds a routing table: each request is matched against the rules in
-`Priority` order (lower number first; ALB `*` / `?` glob, path-only +
-case-insensitive host), falling back to the default action; an unmatched
-request with no default action returns 404. A `redirect` / `fixed-response`
-action is synthesized directly; a weighted `forward` picks a target group
-by weight. Each booted
+The front-door for a listener port holds a routing table: each request is
+matched against the rules in `Priority` order (lower number first; ALB
+`*` / `?` glob for path / host / header / query-string conditions; exact
+case-sensitive uppercase match for `http-request-method`; CIDR match for
+`source-ip`), falling back to the default action; an unmatched request
+with no default action returns 404. A `redirect` / `fixed-response` action
+is synthesized directly; a weighted `forward` picks a target group by
+weight. Each booted
 replica publishes its target container port on an **ephemeral** host port
 (so N replicas never collide), and the front-door forwards to those —
 cross-platform, since traffic goes through published ports rather than
@@ -1108,21 +1113,28 @@ cdkl start-alb MyStack/WebAlb --lb-port 80=8080
 ### Scope
 
 **HTTP** listeners with **ECS** and **Lambda** targets, with priority-ordered
-listener rules matching `path-pattern` and `host-header` conditions (ALB `*` /
-`?` glob; host is matched case-insensitively, path-only excludes the query
-string). Both default actions and rule actions support single-target `forward`,
-**weighted** (multi-target) `forward` (weighted-random selection; weight 0 never
-selected; a forward may mix ECS and Lambda targets), `redirect` (301 / 302 with
-the `#{protocol|host|port|path|query}` placeholders resolved against the
+listener rules matching every ALB condition field — `path-pattern` and
+`host-header` (ALB `*` / `?` glob; host case-insensitive, path-only excludes the
+query string), `http-header` (case-insensitive name lookup + case-insensitive
+value glob), `http-request-method` (exact uppercase match, no wildcards),
+`query-string` (`{ Key?, Value }` globs, case-insensitive, percent / `+`
+decoded), and `source-ip` (IPv4 / IPv6 CIDR; IPv4-mapped IPv6 source
+addresses are unmapped before matching). Both default actions and rule
+actions support single-target `forward`, **weighted** (multi-target) `forward`
+(weighted-random selection; weight 0 never selected; a forward may mix ECS
+and Lambda targets), `redirect` (301 / 302 with the
+`#{protocol|host|port|path|query}` placeholders resolved against the
 request), and `fixed-response` (synthesized status / content-type / body). A
 `TargetType: lambda` target group invokes the backing Lambda locally — the
 request becomes the ALB `requestContext.elb` event, runs through the Lambda RIE,
 and the response is translated back (a malformed response → 502). Out of scope,
 skipped with a warning, and tracked in
-[#123](https://github.com/go-to-k/cdk-local/issues/123): the other rule
-conditions (`http-header` / `http-request-method` / `query-string` /
-`source-ip`), `authenticate-cognito` / `authenticate-oidc` actions, and HTTPS /
-TLS termination.
+[#123](https://github.com/go-to-k/cdk-local/issues/123):
+`authenticate-cognito` / `authenticate-oidc` actions, and HTTPS / TLS
+termination. The local front-door binds the request's `socket.remoteAddress`
+as the source IP, so a `source-ip` CIDR narrower than `127.0.0.0/8` will not
+match traffic that comes in on `127.0.0.1` — exercise such rules from a real
+remote, or use a permissive loopback CIDR for local smoke tests.
 
 ### `cdkl start-alb` exit codes
 

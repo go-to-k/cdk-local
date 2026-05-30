@@ -1,5 +1,6 @@
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
+import type { AlbHttpHeaderCondition, AlbQueryStringCondition } from './alb-path-matcher.js';
 
 /**
  * Resolve an `AWS::ElasticLoadBalancingV2::LoadBalancer` (an ALB) into the
@@ -17,7 +18,11 @@ import type { TemplateResource } from '../types/resource.js';
  *     DefaultActions:[ <action> ] }
  * ElasticLoadBalancingV2::ListenerRule  : { ListenerArn:{Ref:<Listener>}, Priority,
  *     Conditions:[{ Field:"path-pattern", PathPatternConfig:{ Values:["/api/*"] } },
- *                 { Field:"host-header",  HostHeaderConfig:{ Values:["api.example.com"] } }],
+ *                 { Field:"host-header",  HostHeaderConfig:{ Values:["api.example.com"] } },
+ *                 { Field:"http-header",  HttpHeaderConfig:{ HttpHeaderName:"X-API", Values:["*"] } },
+ *                 { Field:"http-request-method", HttpRequestMethodConfig:{ Values:["POST"] } },
+ *                 { Field:"query-string", QueryStringConfig:{ Values:[{ Key:"v", Value:"1" }] } },
+ *                 { Field:"source-ip",    SourceIpConfig:{ Values:["10.0.0.0/8"] } }],
  *     Actions:[ <action> ] }
  * ElasticLoadBalancingV2::TargetGroup   : { Port, Protocol, TargetType:"ip" }
  * ECS::Service.LoadBalancers[]          -> { ContainerName, ContainerPort, TargetGroupArn:{Ref:<TG>} }
@@ -35,16 +40,16 @@ import type { TemplateResource } from '../types/resource.js';
  * `LoadBalancers[]` references each target group (a reverse scan; there is no
  * direct TG -> service pointer). Output is a per-listener routing table: a
  * default action plus the ordered rules, each carrying its resolved action and
- * its path / host conditions.
+ * its full set of routing conditions.
  *
- * Scope: HTTP listeners; `path-pattern` + `host-header` conditions; `forward`
- * (single or weighted) to ECS services AND/OR Lambda functions
- * (`TargetType:"lambda"` target groups — #123: the TG -> backing
+ * Scope: HTTP listeners; all six ALB rule-condition fields (`path-pattern`,
+ * `host-header`, `http-header`, `http-request-method`, `query-string`,
+ * `source-ip`); `forward` (single or weighted) to ECS services AND/OR Lambda
+ * functions (`TargetType:"lambda"` target groups — #123: the TG -> backing
  * `AWS::Lambda::Function` is resolved and the front-door invokes it locally per
  * request); `redirect` / `fixed-response` actions. A single weighted forward may
- * mix ECS and Lambda targets. Skipped with a warning: HTTPS/TLS listeners, the
- * other condition fields (http-header / http-request-method / query-string /
- * source-ip), and `authenticate-cognito` / `authenticate-oidc` actions.
+ * mix ECS and Lambda targets. Skipped with a warning: HTTPS/TLS listeners and
+ * `authenticate-cognito` / `authenticate-oidc` actions.
  */
 
 const ALB_TYPE = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -156,7 +161,7 @@ export type ResolvedListenerAction =
   | FrontDoorRedirectAction
   | FrontDoorFixedResponseAction;
 
-/** One resolved routing rule on a listener (path / host conditions + an action). */
+/** One resolved routing rule on a listener — all six ALB condition fields + an action. */
 export interface ResolvedListenerRule {
   /** ALB rule priority (lower = evaluated first). */
   priority: number;
@@ -164,6 +169,14 @@ export interface ResolvedListenerRule {
   pathPatterns: string[];
   /** The rule's `host-header` condition values (OR-matched; empty = no host constraint). */
   hostPatterns: string[];
+  /** The rule's `http-header` conditions (each AND'd; values within OR; empty = no header constraint). */
+  httpHeaderConditions: AlbHttpHeaderCondition[];
+  /** The rule's `http-request-method` values (OR-matched, exact; empty = no method constraint). */
+  httpRequestMethods: string[];
+  /** The rule's `query-string` `{ Key?, Value }` pairs (OR-matched; empty = no query-string constraint). */
+  queryStringConditions: AlbQueryStringCondition[];
+  /** The rule's `source-ip` CIDR values (OR-matched; empty = no source-IP constraint). */
+  sourceIpCidrs: string[];
   /** The action this rule performs when its conditions match. */
   action: ResolvedListenerAction;
 }
@@ -243,18 +256,27 @@ export function resolveAlbFrontDoor(
     for (const { ruleLogicalId, ruleProps } of rulesByListener.get(listenerLogicalId) ?? []) {
       const priority = parsePriority(ruleProps['Priority']);
       const ruleLabel = `Listener rule '${ruleLogicalId}' (priority ${priority})`;
-      const { pathPatterns, hostPatterns, unsupported } = parseRuleConditions(
-        ruleProps['Conditions']
-      );
-      if (unsupported.length > 0) {
-        warnings.push(
-          `${ruleLabel} uses unsupported condition(s): ${unsupported.join(', ')}. The local ALB ` +
-            'front-door supports path-pattern and host-header conditions only (http-header / ' +
-            'query-string / http-request-method / source-ip deferred). Skipping it.'
-        );
+      const parsed = parseRuleConditions(ruleProps['Conditions'], ruleLabel, warnings);
+      if (!parsed) {
+        // parseRuleConditions warned about an unsupported / malformed condition.
         continue;
       }
-      if (pathPatterns.length === 0 && hostPatterns.length === 0) {
+      const {
+        pathPatterns,
+        hostPatterns,
+        httpHeaderConditions,
+        httpRequestMethods,
+        queryStringConditions,
+        sourceIpCidrs,
+      } = parsed;
+      const hasAnyCondition =
+        pathPatterns.length > 0 ||
+        hostPatterns.length > 0 ||
+        httpHeaderConditions.length > 0 ||
+        httpRequestMethods.length > 0 ||
+        queryStringConditions.length > 0 ||
+        sourceIpCidrs.length > 0;
+      if (!hasAnyCondition) {
         // No supported condition to route on (an empty / catch-all rule).
         continue;
       }
@@ -267,7 +289,16 @@ export function resolveAlbFrontDoor(
         warnings
       );
       if (!action) continue; // resolveAction already warned (or it was an authenticate-* action)
-      rules.push({ priority, pathPatterns, hostPatterns, action });
+      rules.push({
+        priority,
+        pathPatterns,
+        hostPatterns,
+        httpHeaderConditions,
+        httpRequestMethods,
+        queryStringConditions,
+        sourceIpCidrs,
+        action,
+      });
     }
 
     if (!defaultAction && rules.length === 0) {
@@ -590,35 +621,155 @@ function indexRulesByListener(
   return index;
 }
 
-/**
- * Parse a ListenerRule's `Conditions` into its supported `path-pattern` and
- * `host-header` values plus the field names of any unsupported conditions
- * (which make the rule unsupported). ALB ANDs conditions of different fields,
- * so a rule with an unsupported field cannot be honored locally. Multiple
- * conditions of the same field merge their values (each field OR-matches).
- */
-function parseRuleConditions(conditions: unknown): {
+interface ParsedRuleConditions {
   pathPatterns: string[];
   hostPatterns: string[];
-  unsupported: string[];
-} {
-  const pathPatterns: string[] = [];
-  const hostPatterns: string[] = [];
-  const unsupported: string[] = [];
-  if (!Array.isArray(conditions)) return { pathPatterns, hostPatterns, unsupported };
+  httpHeaderConditions: AlbHttpHeaderCondition[];
+  httpRequestMethods: string[];
+  queryStringConditions: AlbQueryStringCondition[];
+  sourceIpCidrs: string[];
+}
+
+/**
+ * Parse a ListenerRule's `Conditions` into the six supported fields. Returns
+ * `undefined` when an unknown field is encountered or a known field is
+ * malformed enough that honoring the rule would silently drop a constraint
+ * — both surface a warning and skip the whole rule (ALB ANDs conditions of
+ * different fields, so dropping any condition would route requests it should
+ * not).
+ *
+ * Multiple `http-header` conditions on different names are kept (they AND).
+ * Multiple `path-pattern` / `host-header` / `http-request-method` /
+ * `query-string` / `source-ip` conditions on the same field merge their
+ * values (each field OR-matches). A `source-ip` value that does not parse as
+ * a CIDR makes the whole rule unsupported (the rule's authoring intent was
+ * specific; dropping the invalid range would silently widen the allow list).
+ */
+function parseRuleConditions(
+  conditions: unknown,
+  ruleLabel: string,
+  warnings: string[]
+): ParsedRuleConditions | undefined {
+  const out: ParsedRuleConditions = {
+    pathPatterns: [],
+    hostPatterns: [],
+    httpHeaderConditions: [],
+    httpRequestMethods: [],
+    queryStringConditions: [],
+    sourceIpCidrs: [],
+  };
+  if (!Array.isArray(conditions)) return out;
   for (const cond of conditions) {
     if (!cond || typeof cond !== 'object') continue;
     const c = cond as Record<string, unknown>;
     const field = typeof c['Field'] === 'string' ? c['Field'] : '(unknown)';
     if (field === 'path-pattern') {
-      pathPatterns.push(...conditionValues(c, 'PathPatternConfig'));
+      out.pathPatterns.push(...conditionValues(c, 'PathPatternConfig'));
     } else if (field === 'host-header') {
-      hostPatterns.push(...conditionValues(c, 'HostHeaderConfig'));
+      out.hostPatterns.push(...conditionValues(c, 'HostHeaderConfig'));
+    } else if (field === 'http-header') {
+      const parsed = parseHttpHeaderCondition(c);
+      if (!parsed) {
+        warnings.push(
+          `${ruleLabel} has an http-header condition with no HttpHeaderName / Values; skipping ` +
+            'the rule.'
+        );
+        return undefined;
+      }
+      out.httpHeaderConditions.push(parsed);
+    } else if (field === 'http-request-method') {
+      out.httpRequestMethods.push(...conditionValues(c, 'HttpRequestMethodConfig'));
+    } else if (field === 'query-string') {
+      out.queryStringConditions.push(...parseQueryStringConditionValues(c));
+    } else if (field === 'source-ip') {
+      const values = conditionValues(c, 'SourceIpConfig');
+      const invalid = values.filter((v) => !isValidCidr(v));
+      if (invalid.length > 0) {
+        warnings.push(
+          `${ruleLabel} source-ip condition has unparseable CIDR(s): ${invalid.join(', ')}. ` +
+            'The local ALB front-door requires valid IPv4 / IPv6 CIDRs; skipping the rule.'
+        );
+        return undefined;
+      }
+      out.sourceIpCidrs.push(...values);
     } else {
-      unsupported.push(field);
+      warnings.push(`${ruleLabel} uses unsupported condition field '${field}'. Skipping the rule.`);
+      return undefined;
     }
   }
-  return { pathPatterns, hostPatterns, unsupported };
+  return out;
+}
+
+/**
+ * Parse an `http-header` condition into its `{ name, values }` form. Returns
+ * `undefined` when `HttpHeaderName` is missing / non-string or `Values` is
+ * empty (either makes the rule's authoring intent unrecoverable).
+ */
+function parseHttpHeaderCondition(
+  cond: Record<string, unknown>
+): AlbHttpHeaderCondition | undefined {
+  const cfg = cond['HttpHeaderConfig'];
+  if (!cfg || typeof cfg !== 'object') return undefined;
+  const c = cfg as Record<string, unknown>;
+  const name = c['HttpHeaderName'];
+  if (typeof name !== 'string' || name.length === 0) return undefined;
+  const rawValues = Array.isArray(c['Values']) ? (c['Values'] as unknown[]) : [];
+  const values = rawValues.filter((v): v is string => typeof v === 'string');
+  if (values.length === 0) return undefined;
+  return { name, values };
+}
+
+/**
+ * Parse a `query-string` condition's `Values` into `{ key?, value }` pairs.
+ * ALB accepts either object entries (`{ Key?, Value }`) or bare strings
+ * (legacy v1 shape: a string is treated as `{ value }`). Non-string `Key` /
+ * `Value` fields are dropped; an entry with no `Value` is dropped.
+ */
+function parseQueryStringConditionValues(cond: Record<string, unknown>): AlbQueryStringCondition[] {
+  const cfg = cond['QueryStringConfig'];
+  const rawValues =
+    cfg && typeof cfg === 'object' && Array.isArray((cfg as Record<string, unknown>)['Values'])
+      ? ((cfg as Record<string, unknown>)['Values'] as unknown[])
+      : Array.isArray(cond['Values'])
+        ? (cond['Values'] as unknown[])
+        : [];
+  const out: AlbQueryStringCondition[] = [];
+  for (const v of rawValues) {
+    if (typeof v === 'string') {
+      out.push({ value: v });
+    } else if (v && typeof v === 'object') {
+      const e = v as Record<string, unknown>;
+      const value = e['Value'];
+      if (typeof value !== 'string') continue;
+      const key = e['Key'];
+      out.push(typeof key === 'string' ? { key, value } : { value });
+    }
+  }
+  return out;
+}
+
+/**
+ * Cheap CIDR validity check used at parse time. Mirrors the more permissive
+ * matcher (`albCidrMatches`) but only confirms shape; we do not need to
+ * remember the parsed bytes here.
+ */
+function isValidCidr(value: string): boolean {
+  const slash = value.indexOf('/');
+  if (slash === -1) return false;
+  const addr = value.slice(0, slash);
+  const prefix = value.slice(slash + 1);
+  if (!/^\d+$/.test(prefix)) return false;
+  const prefixLen = parseInt(prefix, 10);
+  if (addr.includes('.') && !addr.includes(':')) {
+    const parts = addr.split('.');
+    if (parts.length !== 4) return false;
+    if (!parts.every((p) => /^\d+$/.test(p) && parseInt(p, 10) <= 255)) return false;
+    return prefixLen >= 0 && prefixLen <= 32;
+  }
+  if (addr.includes(':')) {
+    return prefixLen >= 0 && prefixLen <= 128;
+  }
+  return false;
 }
 
 /**

@@ -30,13 +30,14 @@ AWS managed services.
   replicas only (pure compute, no load balancer). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
-  listener port across the replicas and routes the listener's
-  `path-pattern` + `host-header` rules across the backing services,
-  honoring weighted forwards and `redirect` / `fixed-response` actions.
-  A `TargetType: lambda` target group is served by invoking the backing
-  Lambda locally (HTTP request -> `requestContext.elb` event -> RIE ->
-  response), so a forward can mix ECS and Lambda targets (`http-header`
-  / `query-string` / `source-ip` conditions — deferred to #123)
+  listener port across the replicas and routes the listener rules across
+  the backing services. All six ALB rule-condition fields are honored
+  (`path-pattern`, `host-header`, `http-header`, `http-request-method`,
+  `query-string`, `source-ip`), along with weighted forwards and
+  `redirect` / `fixed-response` actions. A `TargetType: lambda` target
+  group is served by invoking the backing Lambda locally (HTTP request
+  -> `requestContext.elb` event -> RIE -> response), so a forward can
+  mix ECS and Lambda targets
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -114,11 +115,14 @@ Gateway).
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver
   (resolves `AWS::SSM::Parameter::Value` template parameters via SSM under
   `--from-cfn-stack`), elb-front-door-resolver (resolves an ALB ->
-  Listeners + `path-pattern`/`host-header` ListenerRules -> forward /
-  weighted-forward / redirect / fixed-response actions -> backing ECS
-  Services or Lambda functions, into a per-listener routing table; the
-  `start-alb` entry), alb-path-matcher (ALB `*` / `?` glob matcher for
-  path + host rules, priority ordered), alb-lambda-event (HTTP <-> ALB
+  Listeners + ListenerRules across all six ALB condition fields
+  (`path-pattern` / `host-header` / `http-header` / `http-request-method`
+  / `query-string` / `source-ip`) -> forward / weighted-forward /
+  redirect / fixed-response actions -> backing ECS Services or Lambda
+  functions, into a per-listener routing table; the `start-alb` entry),
+  alb-path-matcher (ALB `*` / `?` glob matcher for path / host / header /
+  query-string rules + exact http-request-method + CIDR source-ip,
+  priority ordered), alb-lambda-event (HTTP <-> ALB
   `requestContext.elb` Lambda event/response translation), front-door-pool
   (round-robin pool of live replica endpoints), front-door-lambda-runner
   (one warm RIE container per Lambda target), front-door-server (host HTTP
