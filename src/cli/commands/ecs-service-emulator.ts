@@ -15,9 +15,10 @@ import { resolveMultiTarget } from '../../local/target-picker.js';
 import type { TargetEntry } from '../../local/target-lister.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { resolveApp } from '../config-loader.js';
+import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
-import { resolveProfileCredentials } from './local-start-api.js';
+import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -32,6 +33,7 @@ import {
 } from '../../local/ecs-task-resolver.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import {
+  computeReplicaCount,
   createServiceRunState,
   startEcsService,
   type ServiceController,
@@ -172,6 +174,14 @@ export interface EcsServiceEmulatorOptions {
    */
   fromCfnStack?: string | boolean;
   stackRegion?: string;
+  /**
+   * Issue #214 Phase 1 — `cdkl start-service --watch`. Re-synth and replace
+   * each booted service's single replica when the CDK app source changes.
+   * Wired only via the `start-service` command (the flag is declared in
+   * `addStartServiceSpecificOptions`); the start-alb path leaves this
+   * undefined.
+   */
+  watch?: boolean;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -309,6 +319,17 @@ export interface EmulatorStrategy {
    * it falsy.
    */
   suppressLoadBalancerWarning?: boolean;
+  /**
+   * Phase 1 of issue #214 — opt this strategy into the emulator's
+   * `--watch` reload pathway. `serviceStrategy()` sets this true so a
+   * `cdkl start-service --watch` re-synths + re-replaces each booted
+   * service's single replica on source change. `start-alb`'s strategy
+   * leaves this falsy (Phase 3 will turn it on once the front-door pool
+   * supports atomic swap) — the gate prevents a host CLI that wires
+   * `start-alb` through this engine from accidentally exposing watch
+   * via the shared options block.
+   */
+  supportsWatch?: boolean;
 }
 
 /**
@@ -353,9 +374,31 @@ export async function runEcsServiceEmulator(
   // down alongside the front-door servers so no request is dispatched to a
   // vanished container.
   let frontDoorLambdaRunners: FrontDoorLambdaRunner[] = [];
+  // Phase 1 of issue #214 — `cdkl start-service --watch` file watcher + the
+  // chain promise that serializes reload events. Set when the watcher is wired
+  // (only when `options.watch && strategy.supportsWatch`); the cleanup path
+  // closes the watcher AND awaits the in-flight reload before tearing down
+  // services so a reload never races shutdown.
+  let watcher: FileWatcher | undefined;
+  let reloadChain: Promise<unknown> = Promise.resolve();
 
   const cleanup = singleFlight(
     async (): Promise<void> => {
+      // Phase 1 of issue #214 — close the watcher BEFORE awaiting the
+      // existing reload-chain so no new reload is queued after shutdown
+      // started, then drain the in-flight reload so cleanup doesn't race
+      // a partial `pt.controller` swap.
+      if (watcher) {
+        try {
+          await watcher.close();
+        } catch (err) {
+          getLogger().warn(
+            `watcher.close() failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        watcher = undefined;
+      }
+      await reloadChain.catch(() => undefined);
       await Promise.allSettled(
         perTarget.map(async (pt) => {
           if (pt.controller) {
@@ -577,15 +620,65 @@ export async function runEcsServiceEmulator(
     logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
-    if (perTarget.length > 0) {
-      await Promise.all(perTarget.map((pt) => pt.controller!.waitForShutdown()));
-    } else {
-      // Block on a SIGINT/SIGTERM that resolves via the cleanup -> process.exit
-      // path. The front-door + Lambda containers keep serving until then.
-      await new Promise<void>(() => {
-        /* resolved only by the SIGINT/SIGTERM handler's process.exit */
+    // Phase 1 of issue #214 — `cdkl start-service --watch` source-tree watcher.
+    // Only the service strategy opts in (start-alb's strategy intentionally
+    // leaves `supportsWatch` falsy; Phase 3 turns it on). The watcher reuses
+    // the start-api debounced file-watcher and predicate composition verbatim
+    // so cdk.json `watch.include` / `watch.exclude` semantics are identical.
+    if (options.watch === true && strategy.supportsWatch === true) {
+      const watchRoot = process.cwd();
+      const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+        watchRoot,
+        output: options.output,
+        watchConfig: resolveWatchConfig(),
       });
+      watcher = createFileWatcher({
+        paths: [watchRoot],
+        ignored,
+        shouldTrigger,
+        onChange: () => {
+          logger.info('Detected source change; reloading service(s)...');
+          const next = reloadChain.then(() =>
+            reloadAllServices({
+              perTarget,
+              synthesizer,
+              synthOpts,
+              strategy,
+              resolvedTargets,
+              cloudMapIndexByStack,
+              options,
+              discovery,
+              skipPull,
+              extraStateProviders,
+              profileCredsFile,
+              frontDoorByService,
+              logger,
+            })
+          );
+          reloadChain = next.catch(() => undefined);
+        },
+      });
+      logger.info(
+        `Watching ${watchRoot} for source changes (excluding ${excludePatterns.join(', ')}).`
+      );
     }
+
+    // Block on a SIGINT/SIGTERM that resolves via the cleanup -> process.exit
+    // path. The replicas + front-door + Lambda containers keep serving until
+    // then. The pre-#214 shape used
+    // `Promise.all(perTarget.map(pt => pt.controller!.waitForShutdown()))` —
+    // equivalent in non-watch mode because `controller.shutdown()` is only
+    // invoked from the SIGINT handler / cleanup() pass — but the `--watch`
+    // reload pathway calls `oldController.shutdown()` mid-run to swap a
+    // replica, which would resolve the OLD controller's `waitForShutdown`
+    // and unblock the main loop prematurely. Block on a forever-promise
+    // instead and let `cleanup() -> process.exit` be the only termination
+    // path; degraded replicas mark themselves shutting-down but never
+    // resolve the controller's promise, so this matches the pre-#214
+    // behavior for the watch-off case.
+    await new Promise<void>(() => {
+      /* resolved only by the SIGINT/SIGTERM handler's process.exit */
+    });
   } finally {
     if (sigintHandler) {
       process.off('SIGINT', sigintHandler);
@@ -593,6 +686,178 @@ export async function runEcsServiceEmulator(
     }
     await cleanup();
   }
+}
+
+/**
+ * Phase 1 of issue #214 — refuse a `--watch` run when the resolved service's
+ * effective replica count (`min(template DesiredCount, --max-tasks)`) is > 1.
+ * The Phase 1 reload pathway tears the single replica down before booting the
+ * new one; multi-replica services would therefore drop multiple connections at
+ * once and lose any in-memory state. Multi-replica rolling reload is Phase 2
+ * of issue #214. Exposed for the unit test that locks the gating logic
+ * (the integ test only covers the single-replica happy path).
+ *
+ * @internal
+ */
+export function assertSingleReplicaForWatch(
+  service: { serviceName: string; desiredCount: number },
+  options: Pick<EcsServiceEmulatorOptions, 'watch' | 'maxTasks'>
+): void {
+  if (options.watch !== true) return;
+  const effective = computeReplicaCount(service.desiredCount, options.maxTasks);
+  if (effective > 1) {
+    throw new LocalStartServiceError(
+      `--watch is single-replica only in v1; service '${service.serviceName}' resolves to ` +
+        `${effective} replica(s) (template DesiredCount=${service.desiredCount}, ` +
+        `--max-tasks=${options.maxTasks}). Lower --max-tasks to 1, drop the DesiredCount in your ` +
+        'CDK code, or drop --watch. Multi-replica rolling reload is Phase 2 of issue #214.'
+    );
+  }
+}
+
+/**
+ * Phase 1 of issue #214 — single-replica rebuild-on-change reload cycle.
+ * Mirrors start-api's `reloadAllServers` shape but per-ECS-service:
+ *
+ *   1. Re-runs `synthesizer.synthesize(synthOpts)` once (failure → warn +
+ *      keep every replica serving).
+ *   2. Re-runs `strategy.resolveBoots(stacks, resolvedTargets)` so a
+ *      target that disappears from the CDK code is detected (warn + keep
+ *      previous).
+ *   3. Refreshes `cloudMapIndexByStack` from the new stacks so a peer
+ *      service's namespace / discovery-name rename is picked up by the
+ *      next replica's Cloud Map publish.
+ *   4. Per-target: tear the existing controller down, boot a fresh one
+ *      against the new stacks. A per-target boot failure logs warn and
+ *      leaves that target dark until the next save with a clean boot.
+ *
+ * Phase 1 trade-off: each target's replica briefly stops (between old
+ * `controller.shutdown()` and new `bootOneTarget()` finishing). Phase 2 of
+ * #214 swaps that for a rolling deploy across multiple replicas.
+ */
+async function reloadAllServices(args: {
+  perTarget: Array<{
+    boot: ServiceBoot;
+    runState: ServiceRunState;
+    controller?: ServiceController;
+  }>;
+  synthesizer: Synthesizer;
+  synthOpts: SynthesisOptions;
+  strategy: EmulatorStrategy;
+  resolvedTargets: string[];
+  cloudMapIndexByStack: Map<string, CloudMapIndex>;
+  options: EcsServiceEmulatorOptions;
+  discovery: ServiceDiscoveryContext;
+  skipPull: boolean;
+  extraStateProviders: ExtraStateProviders | undefined;
+  profileCredsFile: ProfileCredentialsFile | undefined;
+  frontDoorByService: Map<string, FrontDoorServicePools>;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<void> {
+  const {
+    perTarget,
+    synthesizer,
+    synthOpts,
+    strategy,
+    resolvedTargets,
+    cloudMapIndexByStack,
+    options,
+    discovery,
+    skipPull,
+    extraStateProviders,
+    profileCredsFile,
+    frontDoorByService,
+    logger,
+  } = args;
+
+  let stacks: StackInfo[];
+  try {
+    ({ stacks } = await synthesizer.synthesize(synthOpts));
+  } catch (err) {
+    logger.warn(
+      `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
+    );
+    return;
+  }
+
+  const { boots: newBoots, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
+  for (const w of warnings) logger.warn(w);
+  const newBootByTarget = new Map(newBoots.map((b) => [b.target, b] as const));
+
+  // Refresh the per-stack Cloud Map index in place so the bootReplica
+  // publish path reads the new namespace / discovery-name shape on
+  // reload (the discovery object holds the same map reference).
+  cloudMapIndexByStack.clear();
+  for (const stack of stacks) {
+    const index = buildCloudMapIndex(stack);
+    cloudMapIndexByStack.set(stack.stackName, index);
+    for (const w of index.warnings) logger.warn(w);
+  }
+
+  // Per-target sequential reload — keep docker churn predictable.
+  for (const pt of perTarget) {
+    const newBoot = newBootByTarget.get(pt.boot.target);
+    if (!newBoot) {
+      logger.warn(
+        `Reload: target '${pt.boot.target}' no longer resolves to a service in the synthesized ` +
+          'app; keeping the previous replica serving.'
+      );
+      continue;
+    }
+    const oldController = pt.controller;
+    try {
+      // Tear the previous replica down BEFORE booting the new one so the
+      // single-replica `--host-port` publish does not collide on the
+      // host port. Brief downtime per target is the Phase 1 trade-off;
+      // Phase 2 of #214 will overlap via rolling deploy across multiple
+      // replicas.
+      if (oldController) await oldController.shutdown();
+    } catch (err) {
+      logger.warn(
+        `Reload: shutdown of previous '${pt.boot.target}' controller failed ` +
+          `(${err instanceof Error ? err.message : String(err)}); attempting re-boot anyway.`
+      );
+    }
+    const newRunState = createServiceRunState();
+    let newController: ServiceController;
+    try {
+      newController = await bootOneTarget(
+        newBoot,
+        newRunState,
+        stacks,
+        options,
+        discovery,
+        skipPull,
+        extraStateProviders,
+        profileCredsFile,
+        frontDoorByService.get(newBoot.target),
+        strategy.suppressLoadBalancerWarning === true
+      );
+    } catch (err) {
+      logger.error(
+        `Reload: re-boot of '${pt.boot.target}' failed ` +
+          `(${err instanceof Error ? err.message : String(err)}). ` +
+          'The previous replica was torn down; save again with a clean boot to re-start it, or ^C ' +
+          'and re-run start-service.'
+      );
+      // Tear down any partial docker state that the failed boot left in
+      // `newRunState.replicas` so cleanup() doesn't observe two states
+      // for the same `pt` slot. The `pt.controller` reference is left
+      // pointing at the (already-shutdown) old controller; its
+      // `shutdown()` is idempotent, so the eventual cleanup pass safely
+      // re-invokes it without resurrecting any docker resources.
+      await Promise.allSettled(
+        newRunState.replicas.map((r) =>
+          cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
+        )
+      );
+      continue;
+    }
+    pt.runState = newRunState;
+    pt.controller = newController;
+  }
+
+  logger.info('Reload complete.');
 }
 
 async function bootOneTarget(
@@ -658,6 +923,7 @@ async function runOneTarget(
       `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
       `task=${service.task.taskDefinitionLogicalId})`
   );
+  assertSingleReplicaForWatch(service, options);
   if (service.serviceConnect) {
     logger.info(
       `Service Connect: namespace='${service.serviceConnect.namespaceName}', ` +

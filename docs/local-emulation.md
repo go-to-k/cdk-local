@@ -1386,6 +1386,42 @@ error.
 | `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
+| `--watch` | off | Hot reload: re-synth + re-resolve every booted service and replace its single replica when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. **Single-replica services only in v1** — a service whose effective replica count (`min(template DesiredCount, --max-tasks)`) exceeds 1 errors out (multi-replica rolling reload is Phase 2 of issue #214). Synth failures keep the previous replica serving (warn-and-continue, never crashes the emulator). Per-target trade-off: the old replica is torn down before the new one boots, so there is a brief downtime window per save; Phase 2 will overlap via rolling deploy. |
+
+### `start-service --watch` (hot reload)
+
+When `--watch` is set, `cdkl start-service` installs the same
+debounced [chokidar](https://github.com/paulmillr/chokidar)-backed
+file watcher that `cdkl start-api --watch` uses, rooted at the synth
+working directory (where `cdk.json` lives). On a debounced firing
+(500ms after the last save) the emulator re-synths, re-resolves every
+booted service against the new stacks, and per-target tears the old
+replica down before booting a new one from the new task definition.
+No second terminal running `cdk watch` / `cdk synth` is needed; an
+edit to a container handler or task definition flows through to the
+next request without `^C` / re-launch.
+
+The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
+globs the same way `start-api --watch` does — see the
+[Hot reload (`--watch`)](#hot-reload---watch) section above for the
+exact include / exclude / synth-failure semantics; they are
+identical here.
+
+Phase 1 trade-offs (issue #214):
+
+- **Single-replica only.** A service whose effective replica count
+  (`min(template DesiredCount, --max-tasks)`) is > 1 errors out with
+  an actionable hint — lower `--max-tasks` to 1, drop the
+  `DesiredCount`, or drop `--watch`. Phase 2 of #214 adds the
+  multi-replica rolling deploy.
+- **Brief downtime per save.** The Phase 1 reload tears the old
+  replica down before booting the new one (single-replica services
+  have no second replica to forward to). Phase 2 will overlap via
+  rolling deploy across multiple replicas.
+- **No bind-mount fast path.** Every reload rebuilds the image (the
+  same path the initial boot takes). Phase 4 of #214 adds an opt-in
+  bind-mount source mode that skips the rebuild for source-only
+  changes.
 
 ### `start-service` lifecycle
 

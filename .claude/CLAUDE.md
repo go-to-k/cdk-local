@@ -27,7 +27,11 @@ AWS managed services.
   served by a local HTTP server
 - ECS tasks and services — real Docker containers with awsvpc /
   Service Connect / Cloud Map registry. `start-service` runs a service's
-  replicas only (pure compute, no load balancer). `start-alb` is the ALB
+  replicas only (pure compute, no load balancer). `start-service --watch`
+  re-synths + per-target tears the old replica down before booting a new
+  one when the CDK source changes (Phase 1 of issue #214 — single-replica
+  only; multi-replica rolling reload + `start-alb --watch` are later
+  phases). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
   listener port across the replicas and routes the listener rules across
