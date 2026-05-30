@@ -1,3 +1,10 @@
+## [0.65.2](https://github.com/go-to-k/cdk-local/compare/v0.65.1...v0.65.2) (2026-05-30)
+
+
+### Bug Fixes
+
+* **cdkd-parity-gate:** also trigger on new `.ts` files under `src/local/**` ([#208](https://github.com/go-to-k/cdk-local/issues/208)) ([1536f8d](https://github.com/go-to-k/cdk-local/commit/1536f8d22126a12d4dac46f2f6966f5e5212d220))
+
 ## [0.65.1](https://github.com/go-to-k/cdk-local/compare/v0.65.0...v0.65.1) (2026-05-30)
 
 
