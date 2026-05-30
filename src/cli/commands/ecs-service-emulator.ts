@@ -808,17 +808,18 @@ export async function buildFrontDoor(
     };
   };
 
-  // Resolve TLS materials lazily — only when an HTTPS listener is in the plan.
-  // Cached after first resolve so multiple HTTPS listeners share one cert.
-  let tlsMaterials: FrontDoorTlsMaterials | undefined;
-  const getTlsMaterials = async (): Promise<FrontDoorTlsMaterials> => {
-    if (tlsMaterials) return tlsMaterials;
-    tlsMaterials = await resolveFrontDoorTlsMaterials({
-      certPath: options.tlsCert,
-      keyPath: options.tlsKey,
-    });
-    return tlsMaterials;
-  };
+  // Resolve TLS materials once, up front, when any HTTPS listener is in the
+  // plan. Kept OUTSIDE the surrounding try/catch so a TLS resolution failure
+  // (e.g. openssl missing, BYO PEM unreadable) surfaces its own actionable
+  // error instead of being re-wrapped in the generic `--lb-port` port-bind
+  // envelope below. A single resolve is shared across every HTTPS listener.
+  const hasHttpsListener = plan.listeners.some((l) => l.protocol === 'HTTPS');
+  const tlsMaterials: FrontDoorTlsMaterials | undefined = hasHttpsListener
+    ? await resolveFrontDoorTlsMaterials({
+        certPath: options.tlsCert,
+        keyPath: options.tlsKey,
+      })
+    : undefined;
 
   try {
     for (const listener of plan.listeners) {
@@ -843,7 +844,7 @@ export async function buildFrontDoor(
         sourceIp?: string;
       }): RouteAction | undefined => matchAlbPathRule(req, ruleRoutes) ?? defaultRoute;
 
-      const tls = listener.protocol === 'HTTPS' ? await getTlsMaterials() : undefined;
+      const tls = listener.protocol === 'HTTPS' ? tlsMaterials : undefined;
       const server = await startFrontDoorServer({
         route,
         port: listener.hostPort,

@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getLogger } from '../utils/logger.js';
 
@@ -96,6 +96,21 @@ async function ensureSelfSignedCert(opts: SelfSignedOptions): Promise<FrontDoorT
   }
 
   mkdirSync(opts.cacheDir, { recursive: true });
+  // Defensive: if a previous run left a half-written cert / key (e.g. openssl
+  // crashed mid-write), `openssl req -x509 ...` will overwrite them, but a
+  // residual non-cert file could keep failing the X509Certificate parse on
+  // the next cachedPairIsFresh check and trigger a regen loop. Remove them
+  // up front so a failed regen does not poison subsequent reads.
+  try {
+    unlinkSync(certPath);
+  } catch {
+    /* missing is fine */
+  }
+  try {
+    unlinkSync(keyPath);
+  } catch {
+    /* missing is fine */
+  }
   try {
     await runOpenssl([
       'req',
@@ -177,24 +192,4 @@ function readPemOrThrow(path: string, flagName: string): Buffer {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`${flagName}: cannot read PEM file at '${path}': ${msg}`);
   }
-}
-
-/**
- * Write a freshly generated cert/key pair to disk under `dir` and return
- * the paths. Used by tests so the helper code path stays the same as the
- * runtime path.
- */
-export function _writeSelfSignedForTest(
-  dir: string,
-  materials: FrontDoorTlsMaterials
-): {
-  certPath: string;
-  keyPath: string;
-} {
-  mkdirSync(dirname(join(dir, CERT_FILENAME)), { recursive: true });
-  const certPath = join(dir, CERT_FILENAME);
-  const keyPath = join(dir, KEY_FILENAME);
-  writeFileSync(certPath, materials.certPem);
-  writeFileSync(keyPath, materials.keyPem);
-  return { certPath, keyPath };
 }

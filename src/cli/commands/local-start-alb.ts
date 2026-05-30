@@ -339,7 +339,10 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
           'with --tls-key. Omit both flags to auto-generate a self-signed cert ' +
           '(cached under $XDG_CACHE_HOME/cdk-local/alb-https/, default ~/.cache/cdk-local/' +
           'alb-https/); requires openssl on PATH. The deployed Listener Certificates[] are NOT ' +
-          'fetched (ACM private keys are not retrievable by design).'
+          'fetched (ACM private keys are not retrievable by design). The auto-generated cert ' +
+          'lists DNS:localhost,IP:127.0.0.1 as SubjectAltName, so a client validating a ' +
+          'non-loopback --container-host will fail the SAN check — pass --tls-cert / --tls-key ' +
+          'with a SAN covering that host instead.'
       )
     )
     .addOption(
