@@ -1,6 +1,6 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Five gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
+# Six gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
 # cdk-local does NOT deploy to AWS (no destroy path, no schema migration,
 # no broad real-AWS integ matrix), so the destroy / broad / schema-migration
 # gates from cdkd are not needed.
@@ -27,6 +27,11 @@
 #                    chokidar / network behavior, dockerd semantics drift
 #                    over time, so a marker that's been clean for two
 #                    weeks no longer proves today's local code path works.
+#   cdkd-parity    — Host-CLI (cdkd) parity review for library-surface
+#                    changes (new subcommand factory / new CLI option /
+#                    new public helper / behavior change). Set ONLY by
+#                    /check-cdkd-parity. Scope is the public library
+#                    surface; out-of-scope diffs don't invalidate it.
 
 gates:
   check:
@@ -70,3 +75,15 @@ gates:
     include:
       - "src/**"
       - "tests/integration/**"
+
+  cdkd-parity:
+    hash: files
+    # Scope is the public library surface that cdkd (and any other host
+    # CLI) embeds: the CLI command factories, the unstable internal
+    # subpath, and the stable index export list. Edits anywhere else
+    # in `src/**` don't invalidate this marker — they don't affect
+    # what a host CLI sees.
+    include:
+      - "src/cli/commands/**"
+      - "src/internal.ts"
+      - "src/index.ts"

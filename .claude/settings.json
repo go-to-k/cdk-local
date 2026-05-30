@@ -101,6 +101,13 @@
             "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*) or Bash(git merge*) or Bash(git -C * merge*) or Bash(cd * && git merge*)",
             "timeout": 15,
             "statusMessage": "Verifying integ markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/cdkd-parity-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
+            "timeout": 15,
+            "statusMessage": "Verifying cdkd-parity markgate marker..."
           }
         ]
       }

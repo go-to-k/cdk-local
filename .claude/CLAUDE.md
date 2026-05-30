@@ -331,6 +331,27 @@ vp run runtime:smoke
   cloudformation` calls — leaving orphan resources after an integ
   run is never acceptable.
 
+- **cdkd parity** (host-CLI library-surface drift):
+  `cdkd-parity-gate.sh` blocks `gh pr create` when the diff touches
+  the cdk-local library surface (`src/cli/commands/**`,
+  `src/internal.ts`, `src/index.ts`) and the `cdkd-parity` marker is
+  stale. The marker is set ONLY by `/check-cdkd-parity`, which walks
+  the four host-impacting categories:
+  - **New subcommand factory** — exported from `src/index.ts`? cdkd
+    notified (issue / cross-link)?
+  - **New CLI option** — added inside the relevant
+    `add<Cmd>SpecificOptions` helper (not inline in
+    `create<Cmd>Command`)? contract test still green?
+  - **New public helper / type in `src/local/**`** — exported from
+    `src/internal.ts`? JSDoc names the host-side use case?
+  - **Behavior change** — cdkd informed? migration note in PR body?
+
+  Out-of-scope diffs (internal refactors, docs, tests) pass through
+  silently. `gh pr merge` is intentionally NOT gated — the parity
+  question is a pre-create judgment.
+  Details: [.claude/rules/hooks.md](.claude/rules/hooks.md) +
+  [.claude/skills/check-cdkd-parity/SKILL.md](.claude/skills/check-cdkd-parity/SKILL.md).
+
 ## Positioning when communicating
 
 - `cdkl` is the **binary** name (the command users type).

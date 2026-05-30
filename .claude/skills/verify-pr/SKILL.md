@@ -43,7 +43,21 @@ Run each check and report pass/fail:
    - Invoke `/check-docs` skill logic: verify docs match code changes.
    - Check for stale references to removed code.
 
-6. **Docker + integ verification** (for src/** or tests/integration/** touches)
+6. **cdkd parity reviewed** (for src/cli/commands/** or src/internal.ts or src/index.ts touches)
+
+   The `cdkd-parity` markgate gate physically blocks `gh pr create` when its marker is stale AND the PR's diff touches the cdk-local library surface that cdkd (and any other host CLI) embeds. The pre-create gate covers the open path; checking the marker here closes the merge-time path structurally:
+
+   ```bash
+   # Only check when the PR diff actually touches the gate scope.
+   if git diff origin/main...HEAD --name-only \
+       | grep -qE '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$'; then
+     mise exec -- markgate verify cdkd-parity
+   fi
+   ```
+
+   If this exits non-zero (digest differs OR marker never set), run `/check-cdkd-parity` to walk the four host-impacting categories — new subcommand factory / new CLI option / new public helper / behavior change — and set the marker. See `.claude/skills/check-cdkd-parity/SKILL.md` and `.claude/rules/hooks.md` "cdkd-parity-gate (pre-create)".
+
+7. **Docker + integ verification** (for src/** or tests/integration/** touches)
 
    The `integ` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-gate.sh` once shipped). The merge-time gate has a known blind spot: it reads the **local working tree** digest, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, the digest matches the old content and the gate passes silently — so an unverified change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
 
@@ -58,11 +72,11 @@ Run each check and report pass/fail:
 
    For `*-from-cfn-stack` integ tests only: verify no orphan CloudFormation stack remains (`aws cloudformation describe-stacks --stack-name <FixtureStackName>` should return `Stack does not exist`).
 
-7. **No stale references**
+8. **No stale references**
    - Grep for removed imports, old module names, or deprecated references in source files.
    - Check `src/index.ts` exports are consistent.
 
-8. **Code review**
+9. **Code review**
    - **First, run `/review-pr <N>`** to get a size-appropriate review plan. The skill outputs one of:
      - **inline spot-check** (small PR, < 300 LOC OR < 5 files, no security-sensitive paths) — read the diff yourself in this step; no sub-agent dispatch.
      - **1 reviewer** (medium PR, 300-1000 LOC) — dispatch a single `pr-code-reviewer` agent (the skill emits a ready-to-paste Agent call).
@@ -80,7 +94,7 @@ Run each check and report pass/fail:
    - Verify type definitions are consistent with implementation.
    - **Shared-utility regression check**: if any file under `src/utils/**` (or another widely-imported module) changed, list every importer (`grep -rl "from '\.\./.*utils/<file>'" src tests`) and walk through each one to confirm the new behavior is correct for them. A change to a shared helper is only "done" when every caller has been considered.
 
-9. **Live-test changed behavior**
+10. **Live-test changed behavior**
    - Unit tests verify code correctness; this step verifies *feature* correctness against the runtime the user actually sees.
    - Build the latest source: `vp run build`.
    - For each user-visible change in the diff (CLI command, output format, flag, error message, runtime container behavior), run the actual command path against a real or fixture input and confirm the output matches the spec / sam-local parity claim:
@@ -91,7 +105,7 @@ Run each check and report pass/fail:
      - PreToolUse hook change (`.claude/hooks/*.sh`) → exercise it end-to-end: build a throwaway git repo (simulate the base ref via `git update-ref refs/remotes/origin/main <sha>` + `git symbolic-ref refs/remotes/origin/HEAD`), commit an offending case AND a clean case, then pipe a synthesized payload (`jq -nc '{tool_input:{command:"<gated cmd>"},cwd:"<repo>"}'`) into the hook and assert it blocks the offender (exit 2) and passes the clean case + a non-matching command (exit 0). Shell hooks have no unit-test harness, so this end-to-end run is the ONLY correctness check — a hook that silently fail-opens (e.g. an unsupported `gh` flag) looks installed but never fires.
    - "Tests passed" is not "feature works." Always run the actual command before declaring done. If you cannot live-test (no Docker daemon, no fixture available), say so explicitly rather than skip silently — the gate exits non-zero so a reviewer can decide whether to accept the trade-off.
 
-10. **Retrospective + rules update**
+11. **Retrospective + rules update**
     - Walk back over the session that produced this PR. For each surprise, friction, or correction the user had to make, ask: "is this a one-off, or a pattern that will recur?"
     - For each pattern, propose where it should be reflected so it doesn't recur:
       - **Hook** — pattern can be detected mechanically (e.g. fragile shell pattern, deprecated tool, marker-gated step). Strongest enforcement.
@@ -100,7 +114,7 @@ Run each check and report pass/fail:
     - Surface the proposals out loud (in chat, or in this PR's body) before merging. If the user agrees, write them in the same PR for code/skill/hook artifacts; memory entries are local to `~/.claude/projects/.../memory/` so they land regardless of PR boundaries.
     - The retrospective is itself one of the items the `verify-pr` marker covers — skipping this step means the marker is set on incomplete work.
 
-11. **Residual review-nit sweep**
+12. **Residual review-nit sweep**
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
     - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker:
       - (a) **Addressed in this PR** — point at the fix commit / file:line that resolves the nit.
@@ -109,7 +123,7 @@ Run each check and report pass/fail:
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
     - **Auto-close audit**: read the PR body (`gh pr view <PR> --json body -q .body`). For every `(#N)` parens-form reference, check whether it's adjacent to a close keyword (`closes` / `fixes` / `resolves`, case-insensitive). If yes: the merge will NOT auto-close the target issue. Either rewrite to parens-free `Closes #N` (auto-close fires), OR add a manual `gh issue close <N>` step to the merge sequence and note it in the PR body. The `closes-paren-form-gate.sh` hook ALREADY blocks `gh pr merge` for the `Closes (#N)` pattern — this skill step is the human-readable backup that catches the issue BEFORE the merge attempt.
 
-12. **PR title + body freshness** (skip if no PR exists yet)
+13. **PR title + body freshness** (skip if no PR exists yet)
     - When a PR has follow-up commits after creation, both the title and body authored at PR-create time often go stale: the title was scoped to the first commit's intent only, and the body may mention reverted features, removed checks, or wrong rationale.
     - **Title check**: read `gh pr view <PR> --json title -q .title` and confirm it still describes the union of commits on the branch. Update via `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."` (NOT `gh pr edit --title`, which fails silently due to GraphQL Projects-classic deprecation — see hook `gh-pr-edit-deprecation-gate.sh`).
     - **Body freshness commands**:
@@ -147,6 +161,7 @@ Present results as a table:
 | CI | pass/fail |
 | working tree | clean/dirty |
 | docs consistency | pass/fail |
+| cdkd-parity marker (src/cli/commands/** or src/internal.ts or src/index.ts touches) | fresh/stale/n-a |
 | integ marker (src/** or tests/integration/** touches) | fresh/stale/n-a |
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
