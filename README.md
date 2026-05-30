@@ -5,7 +5,7 @@
 [![CI](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml/badge.svg)](https://github.com/go-to-k/cdk-local/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/npm/l/cdk-local.svg)](./LICENSE)
 
-**Run the app you built with CDK locally, no deploy needed. Or connect it to your deployed stack's real AWS resources and data: the app stays local, the data is real — no `.env`, no data to copy locally.**
+**Run your CDK-built app locally, no deploy needed. Or connect it to your deployed stack's real AWS resources and data: the app stays local, the data is real — no `.env`, no data to copy locally.**
 A CDK-native alternative to `sam local`, covering Lambda, API Gateway, ECS, ALB-fronted services, and Bedrock AgentCore.
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
@@ -20,9 +20,9 @@ cd your-cdk-app               # the directory holding cdk.json
 cdkl invoke                   # pick a Lambda from the list, then run it locally
 ```
 
-`cdkl` synths your CDK app and runs the selected resource locally in Docker — a Lambda in its real `public.ecr.aws/lambda/*` container (via the Lambda Runtime Interface Emulator), an ECS task / service as a real container, an API on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
+`cdkl` synths your CDK app and runs the selected resource locally in Docker — Lambdas in their real AWS Lambda runtime container, ECS tasks and services as real containers, APIs on a local HTTP server. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
-**Bind to your real deployed stack** by adding `--from-cfn-stack`: cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so your local handler reads and writes the exact same data the deployed app does — no `.env` to wire up, no test data to seed.
+**Bind to your real deployed stack** by adding `--from-cfn-stack`: cdk-local reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container, so your local handler reads and writes the exact same data the deployed app does.
 
 ```bash
 cdkl start-api --from-cfn-stack            # a local API on real AWS data + real Cognito JWT
