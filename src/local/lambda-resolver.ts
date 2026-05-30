@@ -332,7 +332,7 @@ export function resolveLambdaTarget(target: string, stacks: StackInfo[]): Resolv
     }
     throw new LocalInvokeResolutionError(
       `Resource '${logicalId}' in ${stack.stackName} is ${resource.Type}, not a Lambda function. ` +
-        `${getEmbedConfig().cliName} invoke only works on AWS::Lambda::Function resources in v1.`
+        `${getEmbedConfig().cliName} only invokes AWS::Lambda::Function resources.`
     );
   }
 
@@ -583,7 +583,7 @@ function extractImageUri(
       if (joinResolved.kind === 'needs-state') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-            `${getEmbedConfig().cliName} invoke cannot resolve the repository URI without state — ` +
+            `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
             `deploy the stack first (so ${getEmbedConfig().productName} records the repository physical id), ` +
             'rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
@@ -591,7 +591,7 @@ function extractImageUri(
       if (joinResolved.kind === 'unsupported-join') {
         throw new LocalInvokeResolutionError(
           `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
-            `${getEmbedConfig().cliName} invoke recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
+            `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
@@ -603,7 +603,7 @@ function extractImageUri(
         ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().productName} cannot derive without --from-state or STS)`
         : ` (${getEmbedConfig().productName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} invoke cannot resolve${accountIdHint}. ` +
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with --from-state, or pin a fully-literal public image URI.'
       );
     }
@@ -656,7 +656,7 @@ function extractImageLambdaProperties(args: {
     else {
       throw new LocalInvokeResolutionError(
         `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          `${getEmbedConfig().cliName} invoke supports x86_64 and arm64.`
+          `${getEmbedConfig().cliName} supports x86_64 and arm64.`
       );
     }
   }

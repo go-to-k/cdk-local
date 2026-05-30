@@ -2579,14 +2579,14 @@ function extractImageUri(
       if (joinResolved.kind === 'needs-state') {
         throw new Error(
           `Lambda '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
-            `${getEmbedConfig().cliName} start-api cannot resolve the repository URI without state — ` +
+            `${getEmbedConfig().cliName} cannot resolve the repository URI without state — ` +
             'deploy the stack first, rebuild via lambda.DockerImageCode.fromImageAsset, or pin a public image.'
         );
       }
       if (joinResolved.kind === 'unsupported-join') {
         throw new Error(
           `Lambda '${logicalId}' in ${stackName} has an unsupported Fn::Join Code.ImageUri shape: ${joinResolved.reason}. ` +
-            `${getEmbedConfig().cliName} start-api recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
+            `${getEmbedConfig().cliName} recognizes the canonical CDK 2.x lambda.DockerImageCode.fromEcr Fn::Join shape ` +
             '(delimiter "" with nested Fn::Select/Fn::Split over an ECR Repository Arn GetAtt + Ref to the repo).'
         );
       }
@@ -2601,7 +2601,7 @@ function extractImageUri(
         ? ` (likely \${AWS::AccountId}, which ${getEmbedConfig().binaryName} cannot derive without a state source or STS)`
         : ` (${getEmbedConfig().binaryName} could not derive AWS pseudo parameters because stack.region was undefined)`;
       throw new Error(
-        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} start-api cannot resolve${accountIdHint}. ` +
+        `Lambda '${logicalId}' in ${stackName} has an Fn::Join Code.ImageUri that ${getEmbedConfig().cliName} cannot resolve${accountIdHint}. ` +
           'Workarounds: deploy first and run with a state-source flag (e.g. --from-cfn-stack or a host-provided extension), or pin a fully-literal public image URI.'
       );
     }

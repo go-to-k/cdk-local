@@ -232,6 +232,23 @@ export interface LocalStateProvider {
    */
   resolveTemplateSsmParameters?(template: CloudFormationTemplate): Promise<ResolvedSsmParameters>;
   /**
+   * Optional: return a single-line description of the most recent
+   * `load()` failure (if any), suitable for embedding verbatim in a
+   * downstream resolver error. Used by image / env / secret resolvers
+   * to flip the "pass --from-cfn-stack" hint into a more accurate
+   * "the state-source attempt failed: ..." remedy — the user who
+   * already passed `--from-cfn-stack` should see what AWS actually
+   * returned, not a suggestion to pass the flag again.
+   *
+   * Implementations that do not track failure detail may omit this
+   * method; callers gracefully fall back to the original generic
+   * remedy when the return is `undefined` or the method is missing.
+   * Implementations that DO track failure detail should reset their
+   * recorded message when a subsequent `load()` succeeds, so the
+   * getter only returns the message tied to the latest call.
+   */
+  getLastLoadError?(): string | undefined;
+  /**
    * Release any AWS clients the provider owns. Always called by the
    * CLI layer in the outer `finally`. Idempotent.
    */

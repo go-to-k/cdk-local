@@ -54,9 +54,14 @@ export class Synthesizer {
     // synth — `Toolkit.fromCdkApp()` would otherwise try to exec the
     // directory as a shell command and fail with "is a directory".
     // (Mirrors aws-cdk's `exec.ts`: "bypass 'synth' if app points to a
-    // cloud assembly".) Context / profile / region overrides do not apply
-    // to an already-synthesized assembly, so they are intentionally ignored
-    // on this path.
+    // cloud assembly".)
+    //
+    // `--profile` / `--region` / `-c` are NOT threaded into the reader
+    // here — there is no synth subprocess and no toolkit-lib context
+    // lookup to feed them to. Downstream code paths (`--from-cfn-stack`
+    // CFN / SSM / STS / ECR clients, the container credentials sidecar)
+    // still consume `options.profile` / `options.region` from their own
+    // option fields, so this no-op only scopes synthesis.
     const appPath = resolve(opts.app);
     if (existsSync(appPath) && statSync(appPath).isDirectory()) {
       getLogger().debug(`Using pre-synthesized cloud assembly at ${appPath}`);

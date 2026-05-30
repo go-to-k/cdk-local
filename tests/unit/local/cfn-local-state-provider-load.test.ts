@@ -49,6 +49,50 @@ describe('CfnLocalStateProvider.load', () => {
     provider.dispose();
   });
 
+  it('records the ListStackResources failure detail in getLastLoadError() for downstream remedies', async () => {
+    sendMock.mockRejectedValueOnce(
+      Object.assign(new Error('Stack with id Wrong does not exist'), {
+        name: 'ValidationError',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+    const provider = new CfnLocalStateProvider({ cfnStackName: 'Wrong', region: 'ap-northeast-1' });
+    expect(await provider.load('Wrong', undefined)).toBeUndefined();
+    const detail = provider.getLastLoadError();
+    expect(detail).toBeDefined();
+    expect(detail).toContain('ListStackResources(Wrong) failed:');
+    expect(detail).toContain('ValidationError HTTP 400: Stack with id Wrong does not exist');
+    expect(detail).toContain("region='ap-northeast-1'");
+    // Should NOT include the `--from-cfn-stack:` label prefix the
+    // warn-logger adds — the downstream resolver wraps it in its own framing.
+    expect(detail).not.toMatch(/^--from-cfn-stack:/);
+    provider.dispose();
+  });
+
+  it('clears getLastLoadError() on a subsequent successful load', async () => {
+    sendMock
+      .mockRejectedValueOnce(new Error('first-fail'))
+      .mockResolvedValueOnce({
+        StackResourceSummaries: [
+          { LogicalResourceId: 'X', PhysicalResourceId: 'x', ResourceType: 'AWS::SNS::Topic' },
+        ],
+      })
+      .mockResolvedValueOnce({ Stacks: [{ Outputs: [] }] });
+    const provider = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+    expect(await provider.load('S', undefined)).toBeUndefined();
+    expect(provider.getLastLoadError()).toContain('ListStackResources(S) failed:');
+    const second = await provider.load('S', undefined);
+    expect(second).toBeDefined();
+    expect(provider.getLastLoadError()).toBeUndefined();
+    provider.dispose();
+  });
+
+  it('returns undefined from getLastLoadError() before any load() call', () => {
+    const provider = new CfnLocalStateProvider({ cfnStackName: 'S', region: 'us-east-1' });
+    expect(provider.getLastLoadError()).toBeUndefined();
+    provider.dispose();
+  });
+
   it('keeps resources but empties outputs when DescribeStacks returns no stack', async () => {
     sendMock
       .mockResolvedValueOnce({

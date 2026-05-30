@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   derivePseudoParametersFromRegion,
+  formatStateRemedy,
   substituteImagePlaceholders,
   tryResolveImageFnJoin,
   type ImageResolutionContext,
@@ -345,5 +346,30 @@ describe('derivePseudoParametersFromRegion (issue #637)', () => {
   it('returns undefined for empty / falsy region', () => {
     expect(derivePseudoParametersFromRegion(undefined)).toBeUndefined();
     expect(derivePseudoParametersFromRegion('')).toBeUndefined();
+  });
+});
+
+describe('formatStateRemedy', () => {
+  it('returns the generic --from-cfn-stack hint when no failure detail is recorded', () => {
+    expect(formatStateRemedy(undefined)).toBe(
+      'pass --from-cfn-stack to load the deployed stack state'
+    );
+    expect(formatStateRemedy({})).toBe(
+      'pass --from-cfn-stack to load the deployed stack state'
+    );
+  });
+
+  it('flips to the state-source-failed remedy when stateLoadFailureMessage is recorded', () => {
+    const out = formatStateRemedy({
+      stateLoadFailureMessage:
+        "ListStackResources(dev-goto-Reco-App) failed: ValidationError HTTP 400: Stack with id dev-goto-Reco-App does not exist (region='ap-northeast-1')",
+    });
+    expect(out).toContain('the state-source attempt failed: ');
+    expect(out).toContain('ListStackResources(dev-goto-Reco-App) failed:');
+    // Avoid the misleading "pass --from-cfn-stack" hint when the user
+    // already passed it; nudge at stack-name / region / profile instead.
+    expect(out).not.toContain('pass --from-cfn-stack to load');
+    expect(out).toContain('--from-cfn-stack <deployed-name>');
+    expect(out).toContain('--region / --profile');
   });
 });

@@ -149,6 +149,15 @@ export class CfnLocalStateProvider implements LocalStateProvider {
   // Flip the flag in `dispose()` and throw on any operational entry
   // point so the bug surfaces loudly.
   private disposed = false;
+  // Single-line failure message captured by the most recent failed
+  // `load()` call, exposed via `getLastLoadError()` so downstream
+  // resolvers can flip the "pass --from-cfn-stack" hint into a precise
+  // "the state-source attempt failed: ..." remedy. Reset to undefined
+  // on a successful `load()` so a stale failure from a previous call
+  // is never reported. The recorded text intentionally excludes the
+  // `--from-cfn-stack:` label prefix the warn-logger adds; the resolver
+  // wraps it in its own framing.
+  private lastLoadError: string | undefined;
 
   constructor(opts: CfnLocalStateProviderOptions) {
     this.cfnStackName = opts.cfnStackName;
@@ -371,12 +380,22 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     }
     const logger = getLogger();
     const client = this.getClient();
+    // Clear any stale failure detail from a previous call so
+    // `getLastLoadError()` only reflects this invocation's outcome.
+    this.lastLoadError = undefined;
 
     let resourceMap: Record<string, ResourceState>;
     try {
       const summaries = await fetchAllStackResources(client, this.cfnStackName);
       resourceMap = buildResourceStateMap(summaries);
     } catch (err) {
+      // Capture the same failure detail the warn emits so resolvers
+      // downstream can surface it verbatim in their error. The recorded
+      // text excludes the `--from-cfn-stack:` label prefix; the
+      // resolver wraps it in its own framing.
+      this.lastLoadError =
+        `ListStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)} ` +
+        `(region='${this.region}')`;
       logger.warn(
         `${this.label}: ListStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
           `Was the stack deployed in region '${this.region}'? Falling back.`
@@ -409,6 +428,18 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       outputs,
       region: this.region,
     };
+  }
+
+  /**
+   * Return the failure detail captured by the most recent failed
+   * `load()` call, or `undefined` when the latest call succeeded /
+   * was never made. Surfaces the same `ListStackResources(<name>) failed: ...`
+   * text the warn-logger emits so downstream resolvers can embed it
+   * verbatim in their error and avoid the misleading "pass
+   * --from-cfn-stack" hint when the user already passed it.
+   */
+  public getLastLoadError(): string | undefined {
+    return this.lastLoadError;
   }
 
   /**

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 const {
   MockToolkit,
   mockFromCdkApp,
+  mockFromAssemblyDirectory,
   mockSynth,
   mockDispose,
   mockAwsCliCompatible,
@@ -17,14 +18,17 @@ const {
     dispose: mockDispose,
   });
   const mockFromCdkApp = vi.fn().mockResolvedValue({ __source: true });
+  const mockFromAssemblyDirectory = vi.fn().mockResolvedValue({ __source: 'dir' });
   const MockToolkit = vi.fn().mockImplementation(() => ({
     fromCdkApp: mockFromCdkApp,
+    fromAssemblyDirectory: mockFromAssemblyDirectory,
     synth: mockSynth,
   }));
   const MockCdkAppMultiContext = vi.fn();
   return {
     MockToolkit,
     mockFromCdkApp,
+    mockFromAssemblyDirectory,
     mockSynth,
     mockDispose,
     mockAwsCliCompatible,
@@ -102,6 +106,32 @@ describe('AssemblyReader.read — toolkit SDK credential wiring', () => {
 
     expect(mockFromCdkApp).toHaveBeenCalledTimes(1);
     expect(mockFromCdkApp.mock.calls[0][0]).toBe('node app.ts');
+    expect(mockSynth).toHaveBeenCalledTimes(1);
+    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(stacks).toEqual([]);
+  });
+});
+
+describe('AssemblyReader.readFromDirectory — pre-synth assembly', () => {
+  beforeEach(() => {
+    MockToolkit.mockClear();
+    mockFromAssemblyDirectory.mockClear();
+    mockSynth.mockClear();
+    mockDispose.mockClear();
+  });
+
+  it('passes failOnMissingContext: false so an assembly with unresolved context lookups is accepted', async () => {
+    await new AssemblyReader().readFromDirectory('/path/to/cdk.out');
+
+    expect(mockFromAssemblyDirectory).toHaveBeenCalledTimes(1);
+    expect(mockFromAssemblyDirectory).toHaveBeenCalledWith('/path/to/cdk.out', {
+      failOnMissingContext: false,
+    });
+  });
+
+  it('drives fromAssemblyDirectory + synth + dispose for the happy path', async () => {
+    const stacks = await new AssemblyReader().readFromDirectory('/path/to/cdk.out');
+
     expect(mockSynth).toHaveBeenCalledTimes(1);
     expect(mockDispose).toHaveBeenCalledTimes(1);
     expect(stacks).toEqual([]);

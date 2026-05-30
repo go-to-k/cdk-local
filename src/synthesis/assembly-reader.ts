@@ -165,10 +165,29 @@ export class AssemblyReader {
 
   /**
    * Read a pre-synthesized Cloud Assembly directory (no subprocess).
+   *
+   * `failOnMissingContext: false` matches CDK CLI's own behavior for
+   * `cdk deploy --app cdk.out`. CDK CLI's `cxapp/exec.js` bypasses
+   * `Toolkit.fromAssemblyDirectory()` entirely on this path and builds
+   * the assembly via `@aws-cdk/cloud-assembly-api`'s `CloudAssembly`
+   * directly, which does NOT enforce a missing-context check; then
+   * `cxapp/cloud-executable.js` attempts a single context-provider
+   * resolve, and if no progress is made it returns the assembly as-is
+   * with `manifest.missing` still populated. The strict default that
+   * `fromAssemblyDirectory()` carries is a toolkit-lib decision aimed
+   * at programmatic deploy callers, not parity with CDK CLI semantics.
+   *
+   * cdk-local's needs are looser still: we only read the synthesized
+   * template, and under `--from-cfn-stack` runtime values come from
+   * the deployed CFN stack anyway. Refusing here just makes the
+   * pre-synth flow unusable for any app that relies on context
+   * lookups (SSM / VPC / AMI / etc.), without any safety benefit.
    */
   async readFromDirectory(assemblyDir: string): Promise<StackInfo[]> {
     const toolkit = new Toolkit({ ioHost: new CdklIoHost() });
-    const source = await toolkit.fromAssemblyDirectory(assemblyDir);
+    const source = await toolkit.fromAssemblyDirectory(assemblyDir, {
+      failOnMissingContext: false,
+    });
     const cached = await toolkit.synth(source);
     try {
       return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
