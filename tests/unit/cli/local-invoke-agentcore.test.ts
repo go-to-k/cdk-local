@@ -114,6 +114,7 @@ const {
   resolveAssumeRoleArn,
   resolveFromS3BucketIntrinsic,
   buildSigV4HeadersIfRequested,
+  parseTimeoutMs,
 } = await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1048,5 +1049,43 @@ describe('buildSigV4HeadersIfRequested — --sigv4 gate', () => {
       'sess'
     );
     expect(headers?.['Authorization']).toContain('/ap-northeast-1/bedrock-agentcore/aws4_request');
+  });
+});
+
+describe('parseTimeoutMs', () => {
+  it('accepts a positive integer string', () => {
+    expect(parseTimeoutMs('1')).toBe(1);
+    expect(parseTimeoutMs('120000')).toBe(120000);
+    expect(parseTimeoutMs('600000')).toBe(600000);
+  });
+
+  it('rejects zero', () => {
+    expect(() => parseTimeoutMs('0')).toThrowError(
+      /--timeout must be a positive integer/
+    );
+  });
+
+  it('rejects a negative integer', () => {
+    expect(() => parseTimeoutMs('-1')).toThrowError(
+      /--timeout must be a positive integer/
+    );
+  });
+
+  it('rejects a non-integer numeric', () => {
+    expect(() => parseTimeoutMs('1.5')).toThrowError(
+      /--timeout must be a positive integer/
+    );
+  });
+
+  it('rejects a non-numeric string', () => {
+    expect(() => parseTimeoutMs('abc')).toThrowError(
+      /--timeout must be a positive integer/
+    );
+  });
+
+  it('rejects an empty string', () => {
+    expect(() => parseTimeoutMs('')).toThrowError(
+      /--timeout must be a positive integer/
+    );
   });
 });
