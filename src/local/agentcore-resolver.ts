@@ -542,6 +542,8 @@ function extractArtifact(
 
   const uri = resolveImageUri(
     (container as Record<string, unknown>)['ContainerUri'],
+    logicalId,
+    stackName,
     resources,
     region,
     imageContext
@@ -549,8 +551,8 @@ function extractArtifact(
   if (uri === undefined) {
     throw new AgentCoreResolutionError(
       `AgentCore Runtime '${logicalId}' in ${stackName} has a ContainerConfiguration.ContainerUri that ${getEmbedConfig().cliName} invoke-agentcore cannot resolve. ` +
-        `v1 resolves a literal image URI, an Fn::Sub asset URI (the fromAsset / Dockerfile path), and an imported-ECR Fn::Join. ` +
-        `A same-stack AWS::ECR::Repository reference is not supported — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
+        `v1 resolves a literal image URI, an Fn::Sub asset URI (the fromAsset / Dockerfile path), an imported-ECR Fn::Join, ` +
+        `and a same-stack AWS::ECR::Repository Fn::Join under --from-cfn-stack — build the agent as a fromAsset image, or pin a literal / imported ECR image URI.`
     );
   }
   return { kind: 'container', containerUri: uri };
@@ -657,10 +659,15 @@ function isFromS3BucketIntrinsic(value: unknown): value is Record<string, unknow
  * an `Fn::Sub` (the template returned verbatim — `${AWS::*}` placeholders
  * are kept for asset-hash matching / later ECR substitution), and the
  * canonical CDK `Fn::Join` ECR shape via the shared {@link intrinsic-image}
- * resolver. Returns undefined when none apply.
+ * resolver. A same-stack `AWS::ECR::Repository` Fn::Join without
+ * `--from-cfn-stack` throws an `AgentCoreResolutionError` pointing the user
+ * at the right flag (mirroring `cdkl run-task`'s shape). Returns undefined
+ * when none of the supported shapes apply.
  */
 function resolveImageUri(
   value: unknown,
+  logicalId: string,
+  stackName: string,
   resources: Record<string, TemplateResource>,
   region: string | undefined,
   imageContext: ImageResolutionContext | undefined
@@ -687,6 +694,18 @@ function resolveImageUri(
       })();
     const joinResolved = tryResolveImageFnJoin(value, resources, context);
     if (joinResolved.kind === 'resolved') return joinResolved.uri;
+    // Mirror `cdkl run-task`'s shape: when the Fn::Join references a
+    // same-stack AWS::ECR::Repository but no state has been loaded, point the
+    // user at `--from-cfn-stack` rather than the coarse "cannot resolve" we
+    // fall through to for genuinely unsupported intrinsics.
+    if (joinResolved.kind === 'needs-state') {
+      throw new AgentCoreResolutionError(
+        `AgentCore Runtime '${logicalId}' in ${stackName} references same-stack ECR repository '${joinResolved.repoLogicalId}' via Fn::Join. ` +
+          `${getEmbedConfig().cliName} invoke-agentcore cannot resolve the repository URI without state — ` +
+          'pass --from-cfn-stack to load the deployed stack state, ' +
+          'build via Runtime.fromAsset, or pin a literal / imported ECR image URI.'
+      );
+    }
   }
 
   return undefined;
