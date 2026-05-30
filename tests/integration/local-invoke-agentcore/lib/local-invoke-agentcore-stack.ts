@@ -106,5 +106,29 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
       }),
       environmentVariables: { GREETING: 'hello-from-code' },
     });
+
+    // An A2A-protocol runtime (ProtocolConfiguration = A2A). The container
+    // serves the Agent2Agent JSON-RPC 2.0 contract on 9000 at POST / (no
+    // /ping). `cdkl invoke-agentcore` POSTs one JSON-RPC request — defaults
+    // to `agent/getCard` (the agent's discovery card), or the method/params
+    // from --event.
+    new Runtime(this, 'A2aAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../a2a-agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      protocolConfiguration: ProtocolType.A2A,
+    });
+
+    // An AGUI-protocol runtime (ProtocolConfiguration = AGUI). The container
+    // serves the AG-UI HTTP-compatible contract on 8080 (GET /ping + POST
+    // /invocations); /invocations returns a text/event-stream of AG-UI events
+    // (RUN_STARTED, MESSAGE_CONTENT, RUN_FINISHED). The HTTP-path SSE handler
+    // streams these incrementally — AGUI reuses the HTTP routing transparently.
+    new Runtime(this, 'AguiAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agui-agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      protocolConfiguration: ProtocolType.AGUI,
+    });
   }
 }

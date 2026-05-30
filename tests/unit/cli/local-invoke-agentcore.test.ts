@@ -115,6 +115,8 @@ const {
   resolveFromS3BucketIntrinsic,
   buildSigV4HeadersIfRequested,
   parseTimeoutMs,
+  buildA2aRequest,
+  emitA2aResult,
 } = await import('../../../src/cli/commands/local-invoke-agentcore.js');
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -510,6 +512,63 @@ describe('emitMcpResult — exit codes', () => {
 
   it('sets exit code 1 (but still prints) on a JSON-RPC error', () => {
     emitMcpResult({ ok: false, raw: '{"error":{"message":"nope"}}' });
+    expect(writeSpy).toHaveBeenCalledWith('{"error":{"message":"nope"}}\n');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('buildA2aRequest', () => {
+  it('defaults to agent/getCard when no --event was given (empty object)', () => {
+    expect(buildA2aRequest({})).toEqual({ method: 'agent/getCard', params: {} });
+  });
+
+  it('defaults to agent/getCard for an absent event (undefined / null)', () => {
+    expect(buildA2aRequest(undefined)).toEqual({ method: 'agent/getCard', params: {} });
+    expect(buildA2aRequest(null)).toEqual({ method: 'agent/getCard', params: {} });
+  });
+
+  it('passes a method + params through verbatim', () => {
+    expect(
+      buildA2aRequest({ method: 'tasks/send', params: { id: 't1', message: { text: 'hi' } } })
+    ).toEqual({ method: 'tasks/send', params: { id: 't1', message: { text: 'hi' } } });
+  });
+
+  it('omits params when the event has only a method', () => {
+    expect(buildA2aRequest({ method: 'agent/getCard' })).toEqual({ method: 'agent/getCard' });
+  });
+
+  it('rejects a non-object event', () => {
+    expect(() => buildA2aRequest('plain')).toThrow(/JSON object/);
+    expect(() => buildA2aRequest([1, 2])).toThrow(/JSON object/);
+  });
+
+  it('rejects an object that has keys but no string method', () => {
+    expect(() => buildA2aRequest({ params: {} })).toThrow(/string "method"/);
+  });
+});
+
+describe('emitA2aResult — exit codes', () => {
+  let writeSpy: ReturnType<typeof vi.spyOn>;
+  const savedExitCode = process.exitCode;
+
+  beforeEach(() => {
+    process.exitCode = undefined;
+    writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    writeSpy.mockRestore();
+    process.exitCode = savedExitCode;
+  });
+
+  it('prints the JSON-RPC response and leaves exit code unset when ok', () => {
+    emitA2aResult({ ok: true, raw: '{"result":{"name":"my-agent"}}' });
+    expect(writeSpy).toHaveBeenCalledWith('{"result":{"name":"my-agent"}}\n');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('sets exit code 1 (but still prints) on a JSON-RPC error', () => {
+    emitA2aResult({ ok: false, raw: '{"error":{"message":"nope"}}' });
     expect(writeSpy).toHaveBeenCalledWith('{"error":{"message":"nope"}}\n');
     expect(process.exitCode).toBe(1);
   });

@@ -31,6 +31,8 @@ import {
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
 import {
+  AGENTCORE_A2A_PROTOCOL,
+  AGENTCORE_AGUI_PROTOCOL,
   AGENTCORE_MCP_PROTOCOL,
   pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
@@ -55,6 +57,13 @@ import {
   type McpInvokeResult,
   type McpJsonRpcRequest,
 } from '../../local/agentcore-mcp-client.js';
+import {
+  a2aInvokeOnce,
+  A2A_CONTAINER_PORT,
+  A2A_PATH,
+  type A2aInvokeResult,
+  type A2aJsonRpcRequest,
+} from '../../local/agentcore-a2a-client.js';
 import { invokeAgentCoreWs, type AgentCoreWsResult } from '../../local/agentcore-ws-client.js';
 import { createJwksCache, verifyJwtViaDiscovery } from '../../local/cognito-jwt.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
@@ -328,16 +337,30 @@ async function localInvokeAgentCoreCommand(
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
-    if (isMcp && options.ws) {
-      logger.warn('--ws applies only to the HTTP protocol; ignoring it for this MCP runtime.');
+    const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;
+    const isAgui = resolved.protocol === AGENTCORE_AGUI_PROTOCOL;
+    if (isAgui) {
+      // AG-UI's wire shape is HTTP-compatible: SSE on `POST /invocations` and a
+      // bidirectional WebSocket on `/ws`, both on port 8080. So an AG-UI
+      // runtime routes through the same client path as HTTP — the existing
+      // SSE / WS handlers stream bytes transparently. Surface this in the
+      // log so users aren't surprised the AGUI runtime "becomes" HTTP.
+      logger.info(
+        'AGUI runtime: routing through the HTTP /invocations + /ws path (AG-UI wire is SSE / WebSocket on port 8080).'
+      );
+    }
+    if ((isMcp || isA2a) && options.ws) {
+      logger.warn(
+        `--ws applies only to the HTTP / AGUI protocols; ignoring it for this ${resolved.protocol} runtime.`
+      );
     }
     if (options.wsInteractive && !options.ws) {
       logger.warn('--ws-interactive is meaningful only with --ws; ignoring.');
     }
-    if (options.sigv4 && (isMcp || options.ws)) {
+    if (options.sigv4 && (isMcp || isA2a || options.ws)) {
       logger.warn(
         '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
-          (isMcp ? 'MCP' : '/ws WebSocket') +
+          (isMcp ? 'MCP' : isA2a ? 'A2A' : '/ws WebSocket') +
           ' path.'
       );
     }
@@ -350,19 +373,23 @@ async function localInvokeAgentCoreCommand(
     // For MCP, parse the event into a JSON-RPC request up front so a malformed
     // one fails fast too (default: tools/list).
     const mcpRequest = isMcp ? buildMcpRequest(event) : undefined;
+    // A2A is JSON-RPC 2.0 too: parse the event up front into a method/params
+    // (default: agent/getCard — the agent's discovery card).
+    const a2aRequest = isA2a ? buildA2aRequest(event) : undefined;
 
     // Inbound JWT auth: when the runtime declares a customJwtAuthorizer,
     // verify the supplied bearer token against its OIDC discovery URL BEFORE
     // any Docker work — rejecting a missing / invalid token the way AgentCore
     // does. Returns the `Authorization` header to forward to the container.
-    // MCP talks vanilla MCP directly to the container; its bearer / session is
-    // an AgentCore managed-plane concern the front door maps to Mcp-Session-Id,
-    // so it is not applied to a direct local /mcp call.
+    // MCP / A2A talk vanilla JSON-RPC directly to the container; their
+    // bearer / session is an AgentCore managed-plane concern the front door
+    // layers on top, so it is not applied to a direct local POST.
     let authorization: string | undefined;
-    if (isMcp) {
+    if (isMcp || isA2a) {
       if (resolved.jwtAuthorizer || options.bearerToken) {
+        const pathLabel = isMcp ? MCP_PATH : A2A_PATH;
         logger.info(
-          `MCP runtime: invoking the local container's ${MCP_PATH} directly (vanilla MCP). ` +
+          `${resolved.protocol} runtime: invoking the local container's ${pathLabel} directly (vanilla ${resolved.protocol}). ` +
             `An inbound JWT / --bearer-token is an AgentCore managed-plane concern and is not applied locally.`
         );
       }
@@ -396,7 +423,12 @@ async function localInvokeAgentCoreCommand(
     // if the process is killed before teardown — unlike a one-shot Lambda
     // invoke, the agent container runs a long-lived HTTP server.
     const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    const containerPortLabel = isMcp ? `${MCP_CONTAINER_PORT}${MCP_PATH}` : '8080';
+    const containerPort = isMcp ? MCP_CONTAINER_PORT : isA2a ? A2A_CONTAINER_PORT : undefined;
+    const containerPortLabel = isMcp
+      ? `${MCP_CONTAINER_PORT}${MCP_PATH}`
+      : isA2a
+        ? `${A2A_CONTAINER_PORT}${A2A_PATH}`
+        : '8080';
     logger.info(
       `Starting agent container (image=${image}, port=${hostPort} -> ${containerPortLabel})...`
     );
@@ -409,7 +441,7 @@ async function localInvokeAgentCoreCommand(
       host: containerHost,
       platform: options.platform,
       name: containerName,
-      ...(isMcp && { containerPort: MCP_CONTAINER_PORT }),
+      ...(containerPort !== undefined && { containerPort }),
       // Keep decrypted SecureString SSM env values off the `docker run` argv.
       ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
     });
@@ -431,6 +463,15 @@ async function localInvokeAgentCoreCommand(
       // Settle so container logs flush before teardown.
       await new Promise((r) => setTimeout(r, 250));
       emitMcpResult(mcp);
+    } else if (isA2a && a2aRequest) {
+      // A2A has no /ping either: a2aInvokeOnce folds the boot-wait into a
+      // retried POST. One JSON-RPC round-trip — vanilla A2A.
+      logger.info(`A2A request: ${a2aRequest.method}`);
+      const a2a = await a2aInvokeOnce(containerHost, hostPort, a2aRequest, {
+        requestTimeoutMs: options.timeout,
+      });
+      await new Promise((r) => setTimeout(r, 250));
+      emitA2aResult(a2a);
     } else if (options.ws) {
       // Bidirectional `/ws` (same 8080 container as /invocations): send the
       // event as the first frame, stream every received frame to stdout, then
@@ -1276,6 +1317,47 @@ export function buildMcpRequest(event: unknown): McpJsonRpcRequest {
 export function emitMcpResult(result: McpInvokeResult): void {
   if (!result.ok) {
     getLogger().warn('MCP server returned a JSON-RPC error.');
+    process.exitCode = 1;
+  }
+  process.stdout.write(`${result.raw}\n`);
+}
+
+/**
+ * Build the JSON-RPC request to send to an A2A runtime from `--event`:
+ *   - no `--event` (empty object) → `agent/getCard` (discover the agent's card),
+ *   - an object with a string `method` → that method + its `params`,
+ *   - anything else → a fail-fast error.
+ *
+ * Exported for unit testing.
+ */
+export function buildA2aRequest(event: unknown): A2aJsonRpcRequest {
+  if (event === undefined || event === null) return { method: 'agent/getCard', params: {} };
+  if (typeof event !== 'object' || Array.isArray(event)) {
+    throw new CdkLocalError(
+      'A2A --event must be a JSON object describing a JSON-RPC request ' +
+        '(e.g. {"method":"tasks/send","params":{"id":"...","message":{...}}}).',
+      'LOCAL_INVOKE_AGENTCORE_A2A_EVENT_INVALID'
+    );
+  }
+  const obj = event as Record<string, unknown>;
+  if (Object.keys(obj).length === 0) return { method: 'agent/getCard', params: {} };
+  if (typeof obj['method'] !== 'string') {
+    throw new CdkLocalError(
+      'A2A --event must include a string "method" (a JSON-RPC method such as ' +
+        `"agent/getCard" or "tasks/send"). Got keys: ${Object.keys(obj).join(', ')}.`,
+      'LOCAL_INVOKE_AGENTCORE_A2A_EVENT_INVALID'
+    );
+  }
+  return {
+    method: obj['method'],
+    ...(obj['params'] !== undefined && { params: obj['params'] }),
+  };
+}
+
+/** Print the A2A JSON-RPC response; exit 1 when it carried a JSON-RPC error. */
+export function emitA2aResult(result: A2aInvokeResult): void {
+  if (!result.ok) {
+    getLogger().warn('A2A server returned a JSON-RPC error.');
     process.exitCode = 1;
   }
   process.stdout.write(`${result.raw}\n`);
