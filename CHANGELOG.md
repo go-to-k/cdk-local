@@ -1,3 +1,10 @@
+# [0.56.0](https://github.com/go-to-k/cdk-local/compare/v0.55.0...v0.56.0) (2026-05-30)
+
+
+### Features
+
+* **invoke-agentcore:** `--ws-interactive` REPL mode for --ws ([#172](https://github.com/go-to-k/cdk-local/issues/172)) ([444ae0b](https://github.com/go-to-k/cdk-local/commit/444ae0bd12eb3006bc2b8edafaafb5224bf7762e))
+
 # [0.55.0](https://github.com/go-to-k/cdk-local/compare/v0.54.0...v0.55.0) (2026-05-30)
 
 
