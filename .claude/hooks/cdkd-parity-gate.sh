@@ -4,8 +4,15 @@
 # PreToolUse hook. Blocks `gh pr create` (and the
 # `cd <path> && gh pr create` / `gh -C <path> pr create` worktree forms)
 # when ALL of the following hold:
-#   1. The PR's diff vs origin/main touches the cdkd-parity gate's scope
-#      (`src/cli/commands/**`, `src/internal.ts`, `src/index.ts`).
+#   1. The PR's diff vs origin/main touches the cdkd-parity gate's scope:
+#      - any change under `src/cli/commands/**`, `src/internal.ts`, or
+#        `src/index.ts` (the library-surface scope), OR
+#      - a NEW `.ts` file added under `src/local/**`
+#        (`--diff-filter=A`). Edits to existing `src/local/**` files
+#        are intentionally NOT in scope, since most touches there are
+#        internal refactors that don't change host-CLI surface — but a
+#        brand-new file is the strongest signal that a host-facing
+#        helper may need to be exported from `src/internal.ts`.
 #   2. The `cdkd-parity` markgate marker is stale (digest differs / never set).
 #
 # When either condition is false (out-of-scope diff, or marker fresh), the
@@ -99,10 +106,24 @@ fi
 
 # Compute the diff scope. If nothing in the gate's scope changed, the PR
 # can't drift the cdkd parity surface — pass through.
+#
+# Two independent signals trigger the gate:
+#   - Any path under `src/cli/commands/**`, `src/internal.ts`, or
+#     `src/index.ts` (the library-surface scope).
+#   - A NEW `.ts` file added under `src/local/**`
+#     (`--diff-filter=A`). A new file there is the strongest signal
+#     that a host-facing helper may have been introduced without an
+#     explicit `src/internal.ts` re-export — exactly the case
+#     `/check-cdkd-parity`'s category 3 walk-through is meant to catch.
+#     Edits to EXISTING `src/local/**` files (`M` / `D`) are excluded
+#     so internal refactors don't fire the gate.
 scope_touched=$(git diff origin/main...HEAD --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$' \
   | head -1)
-if [ -z "$scope_touched" ]; then
+new_local_file=$(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+  | grep -E '^src/local/.+\.ts$' \
+  | head -1)
+if [ -z "$scope_touched" ] && [ -z "$new_local_file" ]; then
   exit 0
 fi
 
@@ -129,15 +150,15 @@ fi
 reason=$("${markgate[@]}" status cdkd-parity 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
-if [ -n "$reason" ]; then
-  printf "Blocked by cdkd-parity-gate: this PR touches cdk-local's library surface (src/cli/commands/** | src/internal.ts | src/index.ts) and the \`cdkd-parity\` marker is stale %s.\n\n" "$reason" >&2
-else
-  cat >&2 <<'EOF_HEAD'
-Blocked by cdkd-parity-gate: this PR touches cdk-local's library
-surface (src/cli/commands/** | src/internal.ts | src/index.ts) and
-the `cdkd-parity` marker is stale.
+trigger_desc="cdk-local's library surface (src/cli/commands/** | src/internal.ts | src/index.ts)"
+if [ -z "$scope_touched" ] && [ -n "$new_local_file" ]; then
+  trigger_desc="a NEW file under src/local/** (potential host-facing helper)"
+fi
 
-EOF_HEAD
+if [ -n "$reason" ]; then
+  printf "Blocked by cdkd-parity-gate: this PR touches %s and the \`cdkd-parity\` marker is stale %s.\n\n" "$trigger_desc" "$reason" >&2
+else
+  printf "Blocked by cdkd-parity-gate: this PR touches %s and\nthe \`cdkd-parity\` marker is stale.\n\n" "$trigger_desc" >&2
 fi
 
 cat >&2 <<'EOF'
