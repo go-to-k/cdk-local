@@ -949,4 +949,225 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
     );
     expect(r.allow).toBe(true);
   });
+
+  describe('allowedScopes', () => {
+    it('allows a token whose space-separated scope claim includes every required scope', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', scope: 'read write admin' }
+      );
+      const r = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read', 'write'] },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(true);
+    });
+
+    it('denies when a required scope is missing from the scope claim', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', scope: 'read' });
+      const r = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read', 'write'] },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('denies when the scope claim is missing entirely', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+      const r = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('accepts a scope claim that is an array (not the canonical space-separated string)', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', scope: ['read', 'write'] }
+      );
+      const r = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(true);
+    });
+  });
+
+  describe('customClaims', () => {
+    it('STRING + EQUALS — allows when the claim equals the expected value', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', department: 'eng' });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(true);
+    });
+
+    it('STRING + EQUALS — denies on mismatch', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', department: 'sales' });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('STRING_ARRAY + CONTAINS — allows when the claim array contains the value', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', groups: ['users', 'admins'] }
+      );
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'groups', valueType: 'STRING_ARRAY', operator: 'CONTAINS', value: 'admins' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(true);
+    });
+
+    it('STRING_ARRAY + CONTAINS_ANY — allows when the claim array intersects the allowlist', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        { iss: ISSUER, exp: future(), aud: 'aud-1', roles: ['maintainer'] }
+      );
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            {
+              name: 'roles',
+              valueType: 'STRING_ARRAY',
+              operator: 'CONTAINS_ANY',
+              value: ['admin', 'maintainer'],
+            },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(true);
+    });
+
+    it('STRING_ARRAY + CONTAINS_ANY — denies on empty intersection', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1', roles: ['guest'] });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            {
+              name: 'roles',
+              valueType: 'STRING_ARRAY',
+              operator: 'CONTAINS_ANY',
+              value: ['admin', 'maintainer'],
+            },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('denies when the referenced claim is missing entirely', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign({}, { iss: ISSUER, exp: future(), aud: 'aud-1' });
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+
+    it('denies when ANY rule fails (all must pass)', async () => {
+      const f = makeJwtFixture();
+      const { discoveryFetch, cache } = setup(f);
+      const token = f.sign(
+        {},
+        {
+          iss: ISSUER,
+          exp: future(),
+          aud: 'aud-1',
+          department: 'eng',
+          groups: ['users'], // missing 'admins'
+        }
+      );
+      const r = await verifyJwtViaDiscovery(
+        {
+          discoveryUrl: DISCOVERY,
+          allowedAudience: ['aud-1'],
+          customClaims: [
+            { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+            { name: 'groups', valueType: 'STRING_ARRAY', operator: 'CONTAINS', value: 'admins' },
+          ],
+        },
+        `Bearer ${token}`,
+        cache,
+        { fetchImpl: discoveryFetch, warned: new Set() }
+      );
+      expect(r.allow).toBe(false);
+    });
+  });
 });

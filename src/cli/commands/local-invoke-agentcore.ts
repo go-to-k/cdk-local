@@ -458,6 +458,8 @@ export async function resolveInboundAuthorization(
       discoveryUrl: authorizer.discoveryUrl,
       ...(authorizer.allowedAudience && { allowedAudience: authorizer.allowedAudience }),
       ...(authorizer.allowedClients && { allowedClients: authorizer.allowedClients }),
+      ...(authorizer.allowedScopes && { allowedScopes: authorizer.allowedScopes }),
+      ...(authorizer.customClaims && { customClaims: authorizer.customClaims }),
     },
     header,
     createJwksCache(),

@@ -400,6 +400,140 @@ describe('resolveAgentCoreTarget — JWT authorizer extraction', () => {
     });
     expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer).toBeUndefined();
   });
+
+  it('extracts AllowedScopes', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            AllowedScopes: ['read', 'write'],
+          },
+        },
+      }),
+    });
+    const resolved = resolveAgentCoreTarget('App:ChatAgent', [stack]);
+    expect(resolved.jwtAuthorizer?.allowedScopes).toEqual(['read', 'write']);
+  });
+
+  it('extracts CustomClaims (STRING + EQUALS)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            CustomClaims: [
+              {
+                InboundTokenClaimName: 'department',
+                InboundTokenClaimValueType: 'STRING',
+                AuthorizingClaimMatchValue: {
+                  ClaimMatchOperator: 'EQUALS',
+                  ClaimMatchValue: { MatchValueString: 'engineering' },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer?.customClaims).toEqual([
+      {
+        name: 'department',
+        valueType: 'STRING',
+        operator: 'EQUALS',
+        value: 'engineering',
+      },
+    ]);
+  });
+
+  it('extracts CustomClaims (STRING_ARRAY + CONTAINS)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            CustomClaims: [
+              {
+                InboundTokenClaimName: 'groups',
+                InboundTokenClaimValueType: 'STRING_ARRAY',
+                AuthorizingClaimMatchValue: {
+                  ClaimMatchOperator: 'CONTAINS',
+                  ClaimMatchValue: { MatchValueString: 'admins' },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer?.customClaims).toEqual([
+      { name: 'groups', valueType: 'STRING_ARRAY', operator: 'CONTAINS', value: 'admins' },
+    ]);
+  });
+
+  it('extracts CustomClaims (STRING_ARRAY + CONTAINS_ANY uses MatchValueStringList)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            CustomClaims: [
+              {
+                InboundTokenClaimName: 'roles',
+                InboundTokenClaimValueType: 'STRING_ARRAY',
+                AuthorizingClaimMatchValue: {
+                  ClaimMatchOperator: 'CONTAINS_ANY',
+                  ClaimMatchValue: { MatchValueStringList: ['admin', 'maintainer'] },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    expect(resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer?.customClaims).toEqual([
+      {
+        name: 'roles',
+        valueType: 'STRING_ARRAY',
+        operator: 'CONTAINS_ANY',
+        value: ['admin', 'maintainer'],
+      },
+    ]);
+  });
+
+  it('skips a CustomClaims entry with an unknown operator / value type (warn-and-keep-rest)', () => {
+    const stack = buildStack('App', {
+      ChatAgent: containerRuntime({
+        AuthorizerConfiguration: {
+          CustomJWTAuthorizer: {
+            DiscoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
+            CustomClaims: [
+              {
+                InboundTokenClaimName: 'unknown-op',
+                InboundTokenClaimValueType: 'STRING',
+                AuthorizingClaimMatchValue: {
+                  ClaimMatchOperator: 'NOT_A_REAL_OP',
+                  ClaimMatchValue: { MatchValueString: 'x' },
+                },
+              },
+              {
+                InboundTokenClaimName: 'department',
+                InboundTokenClaimValueType: 'STRING',
+                AuthorizingClaimMatchValue: {
+                  ClaimMatchOperator: 'EQUALS',
+                  ClaimMatchValue: { MatchValueString: 'eng' },
+                },
+              },
+            ],
+          },
+        },
+      }),
+    });
+    const claims = resolveAgentCoreTarget('App:ChatAgent', [stack]).jwtAuthorizer?.customClaims;
+    expect(claims).toEqual([
+      { name: 'department', valueType: 'STRING', operator: 'EQUALS', value: 'eng' },
+    ]);
+  });
 });
 
 describe('pickAgentCoreCandidateStack', () => {

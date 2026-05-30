@@ -81,6 +81,7 @@ export {
   verifyJwtViaDiscovery,
   type JwksCache,
   type DiscoveryJwtAuthorizer,
+  type JwtCustomClaim,
 } from './local/cognito-jwt.js';
 export {
   buildMethodArn,
@@ -302,6 +303,7 @@ export {
   AGENTCORE_MCP_PROTOCOL,
   type ResolvedAgentCoreRuntime,
   type AgentCoreJwtAuthorizer,
+  type AgentCoreCustomClaim,
   type AgentCoreCodeArtifact,
 } from './local/agentcore-resolver.js';
 export {

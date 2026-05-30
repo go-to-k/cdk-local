@@ -277,7 +277,17 @@ export async function verifyCognitoJwt(
   // single configured pool).
   const jwksUrl = buildCognitoJwksUrl(selectedPool.region, selectedPool.userPoolId);
   const expectedIssuer = buildCognitoIssuer(selectedPool.region, selectedPool.userPoolId);
-  return verifyAndShape(token, jwksUrl, expectedIssuer, undefined, jwksCache, opts.warned, now);
+  return verifyAndShape(
+    token,
+    jwksUrl,
+    expectedIssuer,
+    undefined,
+    undefined,
+    undefined,
+    jwksCache,
+    opts.warned,
+    now
+  );
 }
 
 /**
@@ -305,6 +315,8 @@ export async function verifyJwtAuthorizer(
     jwksUrl,
     authorizer.issuer.replace(/\/+$/, ''),
     authorizer.audience,
+    undefined,
+    undefined,
     jwksCache,
     opts.warned,
     now
@@ -323,6 +335,26 @@ export interface DiscoveryJwtAuthorizer {
   allowedAudience?: readonly string[];
   /** Allowed `client_id` values. */
   allowedClients?: readonly string[];
+  /**
+   * OAuth scopes the token's `scope` claim must include (space-separated
+   * scope strings; the token must carry every entry in this allowlist).
+   */
+  allowedScopes?: readonly string[];
+  /** Per-claim equality / membership rules the token must satisfy. */
+  customClaims?: readonly JwtCustomClaim[];
+}
+
+/**
+ * A single `CustomJWTAuthorizer.CustomClaims[]` rule the verifier evaluates
+ * against the token's claims. Mirrors {@link AgentCoreCustomClaim} in the
+ * resolver — kept structurally identical so the resolver -> verifier hand-off
+ * is a direct field copy.
+ */
+export interface JwtCustomClaim {
+  name: string;
+  valueType: 'STRING' | 'STRING_ARRAY';
+  operator: 'EQUALS' | 'CONTAINS' | 'CONTAINS_ANY';
+  value: string | string[];
 }
 
 /**
@@ -398,6 +430,8 @@ export async function verifyJwtViaDiscovery(
     jwksUri,
     issuer.replace(/\/+$/, ''),
     allowlist.length > 0 ? allowlist : undefined,
+    authorizer.allowedScopes,
+    authorizer.customClaims,
     jwksCache,
     opts.warned,
     now
@@ -409,6 +443,8 @@ async function verifyAndShape(
   jwksUrl: string,
   expectedIssuer: string,
   expectedAudience: ReadonlyArray<string> | undefined,
+  requiredScopes: ReadonlyArray<string> | undefined,
+  customClaims: ReadonlyArray<JwtCustomClaim> | undefined,
   jwksCache: JwksCache,
   warned: Set<string> | undefined,
   now: () => number
@@ -489,7 +525,70 @@ async function verifyAndShape(
     }
   }
 
+  // Validate `scope`. AgentCore's `AllowedScopes` is a required-scope
+  // allowlist: the token's `scope` claim (OAuth space-separated) must include
+  // every entry. A token with no `scope` claim fails when scopes are required.
+  if (requiredScopes && requiredScopes.length > 0) {
+    if (!verifyRequiredScopes(claims['scope'], requiredScopes)) {
+      return { allow: false, identityHash, ttlSeconds: 0 };
+    }
+  }
+
+  // Validate custom claims. Every rule must hold against the token's
+  // matching claim value; a token missing a referenced claim fails.
+  if (customClaims && customClaims.length > 0) {
+    for (const rule of customClaims) {
+      if (!verifyCustomClaim(claims[rule.name], rule)) {
+        return { allow: false, identityHash, ttlSeconds: 0 };
+      }
+    }
+  }
+
   return shapeAllowResult(parsed, identityHash, now);
+}
+
+/**
+ * The OAuth `scope` claim is a space-separated string. The token is allowed
+ * iff every required scope is present (allowlist as REQUIRED, not OR).
+ */
+function verifyRequiredScopes(scopeClaim: unknown, requiredScopes: ReadonlyArray<string>): boolean {
+  const tokenScopes =
+    typeof scopeClaim === 'string'
+      ? scopeClaim.split(/\s+/).filter((s) => s.length > 0)
+      : Array.isArray(scopeClaim)
+        ? scopeClaim.filter((s): s is string => typeof s === 'string')
+        : [];
+  return requiredScopes.every((s) => tokenScopes.includes(s));
+}
+
+/**
+ * Verify a single `CustomJWTAuthorizer.CustomClaims` rule against the token's
+ * claim value:
+ *
+ * - `STRING` + `EQUALS` — claim is a string equal to `value`.
+ * - `STRING_ARRAY` + `CONTAINS` — claim is an array containing `value`.
+ * - `STRING_ARRAY` + `CONTAINS_ANY` — claim is an array sharing at least one
+ *   entry with `value` (an array of allowed strings).
+ *
+ * A missing or wrong-typed claim fails the rule.
+ */
+function verifyCustomClaim(claimValue: unknown, rule: JwtCustomClaim): boolean {
+  if (rule.valueType === 'STRING') {
+    if (rule.operator !== 'EQUALS' || typeof rule.value !== 'string') return false;
+    return typeof claimValue === 'string' && claimValue === rule.value;
+  }
+  // STRING_ARRAY
+  if (!Array.isArray(claimValue)) return false;
+  const tokenValues = claimValue.filter((v): v is string => typeof v === 'string');
+  if (rule.operator === 'CONTAINS') {
+    if (typeof rule.value !== 'string') return false;
+    return tokenValues.includes(rule.value);
+  }
+  if (rule.operator === 'CONTAINS_ANY') {
+    if (!Array.isArray(rule.value)) return false;
+    return rule.value.some((v) => tokenValues.includes(v));
+  }
+  return false;
 }
 
 /**
