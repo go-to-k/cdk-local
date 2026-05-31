@@ -55,6 +55,12 @@ STRICT_SERVER_PID=""
 # separately so cleanup tears down all three.
 SUBSET_LOG_FILE="$(mktemp)"
 SUBSET_SERVER_PID=""
+# A fourth server is started under `env -i` with no AWS credentials
+# reachable — proves the standalone path (README L34-37: "no AWS account
+# or credentials needed") actually serves L35 (API Gateway routing) +
+# L36 (Lambda authorizers in real containers) + L37 (pure handler logic).
+OFFLINE_LOG_FILE="$(mktemp)"
+OFFLINE_SERVER_PID=""
 
 term_server() {
   # $1 = pid, $2 = human label
@@ -77,6 +83,7 @@ cleanup() {
   term_server "${SERVER_PID:-}" "server"
   term_server "${STRICT_SERVER_PID:-}" "strict server"
   term_server "${SUBSET_SERVER_PID:-}" "subset server"
+  term_server "${OFFLINE_SERVER_PID:-}" "offline server"
   # Defense-in-depth: kill every cdkl-* container regardless of
   # how the server cleaned up. This catches the case where the server
   # crashed before its dispose() ran.
@@ -85,7 +92,7 @@ cleanup() {
     echo "==> Cleaning up orphan containers"
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
-  rm -f "${LOG_FILE}" "${STRICT_LOG_FILE}" "${SUBSET_LOG_FILE}"
+  rm -f "${LOG_FILE}" "${STRICT_LOG_FILE}" "${SUBSET_LOG_FILE}" "${OFFLINE_LOG_FILE}"
 }
 trap cleanup EXIT INT TERM
 
@@ -800,6 +807,127 @@ echo "    [subset: bogus id ignored with warn] OK"
 
 term_server "${SUBSET_SERVER_PID:-}" "subset server"
 SUBSET_SERVER_PID=""
+
+# Standalone / offline mode: prove README L34-37 ("no AWS account or
+# credentials needed") is actually enforced by the start-api code path.
+# The whole previous test run inherits the developer's shell env, which
+# typically has AWS_PROFILE + ~/.aws/credentials reachable — so it would
+# silently pass even if start-api regressed into calling AWS for region
+# detection, an SDK client instantiation, or a stray STS call. Here we
+# strip the env with `env -i` and re-enter the SDK credential provider
+# chain with everything pointing at /dev/null:
+#   - AWS_PROFILE      = a bogus profile name nothing matches
+#   - AWS_*_FILE       = /dev/null so no creds / config can be read
+#   - AWS_EC2_METADATA_DISABLED = true so IMDS cannot be queried
+# Only PATH + HOME + DOCKER_HOST are passed through (node + docker
+# need them). If start-api ever silently adds an AWS dependency to the
+# default path, this section breaks before the README claim ships.
+OFFLINE_PORT=$((PORT + 300))
+echo "==> Starting cdkl start-api in OFFLINE mode (no AWS creds reachable) on port ${OFFLINE_PORT}"
+env -i \
+  PATH="${PATH}" \
+  HOME="${HOME}" \
+  ${DOCKER_HOST:+DOCKER_HOST="${DOCKER_HOST}"} \
+  AWS_PROFILE=__cdkl_offline_integ_bogus__ \
+  AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+  AWS_CONFIG_FILE=/dev/null \
+  AWS_EC2_METADATA_DISABLED=true \
+  ${CDKL} start-api \
+    --port "${OFFLINE_PORT}" \
+    --container-host "${CONTAINER_HOST}" \
+    --no-pull \
+    >"${OFFLINE_LOG_FILE}" 2>&1 &
+OFFLINE_SERVER_PID=$!
+
+echo "==> Waiting for all offline servers (${EXPECTED_SERVERS} expected) to come up"
+OFFLINE_READY=0
+for i in $(seq 1 60); do
+  count=$(grep -c "Server listening" "${OFFLINE_LOG_FILE}" 2>/dev/null) || count=0
+  if [[ "${count}" -ge "${EXPECTED_SERVERS}" ]]; then
+    OFFLINE_READY=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "${OFFLINE_READY}" -eq 0 ]]; then
+  echo "FAIL: offline server: only ${count}/${EXPECTED_SERVERS} servers came up. Log:"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+
+# Extract the HTTP v2 + REST v1 ports from the offline server's banner.
+# The port assignment order is fixed by route-discovery.ts but mirroring
+# the same extraction the primary server uses keeps this resilient.
+OFFLINE_PORT_HTTP=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*HTTP API v2\)' "${OFFLINE_LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+OFFLINE_PORT_REST=$(grep -E 'Server listening on http://[^[:space:]]+\s+\(.*REST API v1\)' "${OFFLINE_LOG_FILE}" | sed -E 's|.*://[^:]+:([0-9]+).*|\1|' | head -1)
+if [[ -z "${OFFLINE_PORT_HTTP}" || -z "${OFFLINE_PORT_REST}" ]]; then
+  echo "FAIL: offline server: could not resolve HTTP v2 (${OFFLINE_PORT_HTTP}) / REST v1 (${OFFLINE_PORT_REST}) ports. Log:"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+
+# L35 + L37: HTTP v2 routing dispatches to the items handler, which
+# echoes the captured `{id}`.
+echo "==> [offline] Asserting GET /items/42 (L35 routing + L37 handler logic)"
+OFFLINE_BODY=$(curl -s --max-time 30 "http://127.0.0.1:${OFFLINE_PORT_HTTP}/items/42")
+if [[ "${OFFLINE_BODY}" != *'"id":"42"'* ]]; then
+  echo "FAIL: offline GET /items/42 body did not contain '\"id\":\"42\"'; got: ${OFFLINE_BODY}"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+echo "    [offline GET /items/42] OK"
+
+# L37: POST body echo proves the handler container ran the request body
+# transform path with no AWS dependency.
+echo "==> [offline] Asserting POST /items echoes the body (L37 handler logic)"
+OFFLINE_POST_BODY=$(curl -s --max-time 30 -X POST -H 'content-type: application/json' \
+  --data '{"hello":"offline"}' \
+  "http://127.0.0.1:${OFFLINE_PORT_HTTP}/items")
+if [[ "${OFFLINE_POST_BODY}" != *'"hello\":\"offline\"'* ]]; then
+  echo "FAIL: offline POST /items did not echo the body; got: ${OFFLINE_POST_BODY}"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+echo "    [offline POST /items echo] OK"
+
+# L36: deny path — Lambda authorizer container fires, returns Deny, the
+# http-server translates to 401. No bearer token => unauthorized.
+echo "==> [offline] Asserting GET /protected without bearer -> 401 (L36 authorizer deny)"
+OFFLINE_DENY=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+  "http://127.0.0.1:${OFFLINE_PORT_HTTP}/protected")
+if [[ "${OFFLINE_DENY}" != "401" ]]; then
+  echo "FAIL: offline GET /protected (no auth) expected 401, got ${OFFLINE_DENY}"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+echo "    [offline GET /protected (deny)] OK (status=401)"
+
+# L36: allow path — authorizer container returns Allow, request reaches
+# the protected handler container.
+echo "==> [offline] Asserting GET /protected with valid bearer -> 200 (L36 authorizer allow + handler container)"
+OFFLINE_ALLOW=$(curl -s --max-time 30 \
+  -H 'Authorization: Bearer let-me-in' \
+  "http://127.0.0.1:${OFFLINE_PORT_HTTP}/protected")
+if [[ "${OFFLINE_ALLOW}" != *'"protected":true'* ]]; then
+  echo "FAIL: offline GET /protected (allow) body did not contain '\"protected\":true'; got: ${OFFLINE_ALLOW}"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+echo "    [offline GET /protected (allow)] OK"
+
+# L35: REST v1 routing is a distinct dispatcher from HTTP v2; probe it
+# too so the standalone claim covers both API kinds.
+echo "==> [offline] Asserting REST v1 GET /v1/anything (L35 routing)"
+OFFLINE_REST_BODY=$(curl -s --max-time 30 "http://127.0.0.1:${OFFLINE_PORT_REST}/v1/anything")
+if [[ "${OFFLINE_REST_BODY}" != *'"routedVia":"rest-v1"'* ]]; then
+  echo "FAIL: offline REST v1 GET /v1/anything body did not contain '\"routedVia\":\"rest-v1\"'; got: ${OFFLINE_REST_BODY}"
+  cat "${OFFLINE_LOG_FILE}"
+  exit 1
+fi
+echo "    [offline REST v1 GET /v1/anything] OK"
+
+term_server "${OFFLINE_SERVER_PID:-}" "offline server"
+OFFLINE_SERVER_PID=""
 
 echo ""
 echo "==> All local-start-api smoke tests passed"
