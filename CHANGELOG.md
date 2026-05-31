@@ -1,3 +1,10 @@
+# [0.70.0](https://github.com/go-to-k/cdk-local/compare/v0.69.0...v0.70.0) (2026-05-31)
+
+
+### Features
+
+* **start-alb:** explain which fields were evaluated in the no-rule-matched 404 ([#229](https://github.com/go-to-k/cdk-local/issues/229)) ([54d5505](https://github.com/go-to-k/cdk-local/commit/54d55055f36103303a38c1ec686a5a54f7a9602d))
+
 # [0.69.0](https://github.com/go-to-k/cdk-local/compare/v0.68.0...v0.69.0) (2026-05-31)
 
 
