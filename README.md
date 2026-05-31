@@ -72,6 +72,8 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 `cdkl start-api --watch` re-synths your CDK app and reloads routes when the source changes, so editing a handler is reflected on the next request without restarting the server. Synth failures keep the previous version serving (warn-and-continue). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
 
+`cdkl start-service --watch` brings the same edit-and-go loop to ECS services: re-synth + per-target tear down the old replica + boot a fresh one on save. Single-replica services only in v1 (multi-replica rolling reload is a follow-up); the previous replica keeps serving when synth fails mid-reload.
+
 Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
 ### start-service vs start-alb — which one?

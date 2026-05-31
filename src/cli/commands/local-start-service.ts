@@ -35,6 +35,11 @@ export interface CreateLocalStartServiceCommandOptions {
  * `AWS::ECS::Service` targets and boots each with NO front-door (the ALB
  * front-door is its own command, `cdkl start-alb`). This keeps `start-service`
  * a leaf compute runner, symmetric with `invoke` / `run-task`.
+ *
+ * `supportsWatch: true` opts this strategy into the emulator's `--watch`
+ * reload pathway (Phase 1 of issue #214 — single-replica rebuild-on-change).
+ * `start-alb`'s strategy intentionally does NOT set this so a `--watch` flag
+ * never leaks into the ALB-front-door path (Phase 3).
  */
 export function serviceStrategy(): EmulatorStrategy {
   return {
@@ -52,6 +57,7 @@ export function serviceStrategy(): EmulatorStrategy {
       warnings: [],
     }),
     lbPortOverrides: {},
+    supportsWatch: true,
   };
 }
 
@@ -84,6 +90,39 @@ export function createLocalStartServiceCommand(
       '[targets...]',
       'One or more CDK display paths or stack-qualified logical IDs of the AWS::ECS::Service resources to run (omit to multi-select interactively in a TTY)'
     )
+    .action(
+      withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
+        await runEcsServiceEmulator(targets, options, serviceStrategy(), opts.extraStateProviders);
+      })
+    );
+
+  addStartServiceSpecificOptions(cmd);
+  return addCommonEcsServiceOptions(cmd);
+}
+
+/**
+ * Register the option block that `cdkl start-service` adds on top of the
+ * shared {@link addCommonEcsServiceOptions} ECS-service common block — the
+ * flags that only make sense for a pure-compute service emulator (no front
+ * door). Shared between `cdkl start-service` and any host CLI (e.g. cdkd's
+ * `local start-service`) that wraps {@link runEcsServiceEmulator} with the
+ * {@link serviceStrategy}, so adding or renaming a `start-service`-only flag
+ * here propagates to every embedder without duplicate `.addOption(...)`
+ * blocks.
+ *
+ * Calling order only affects `--help` presentation (Commander parses
+ * insertion-order-independent). The host-CLI convention is host-specific
+ * options first, then this helper, then {@link addCommonEcsServiceOptions}
+ * — host flags / start-service flags / common flags grouped in three
+ * `--help` clusters. Chainable: returns `cmd`.
+ *
+ * `--watch` is intentionally NOT in the shared
+ * {@link addCommonEcsServiceOptions} block: `start-alb --watch` is not yet
+ * implemented (Phase 3 of issue #214), and the shared block must not
+ * advertise a flag one of its consumers does not honor.
+ */
+export function addStartServiceSpecificOptions(cmd: Command): Command {
+  return cmd
     .addOption(
       new Option(
         '--host-port <containerPort=hostPort...>',
@@ -94,11 +133,15 @@ export function createLocalStartServiceCommand(
           'services do not publish host ports.)'
       )
     )
-    .action(
-      withErrorHandling(async (targets: string[], options: EcsServiceEmulatorOptions) => {
-        await runEcsServiceEmulator(targets, options, serviceStrategy(), opts.extraStateProviders);
-      })
+    .addOption(
+      new Option(
+        '--watch',
+        'Hot-reload: re-synth + re-resolve every booted service and replace its single replica ' +
+          "when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, " +
+          'node_modules, .git are always excluded). Single-replica services only in v1 — a service ' +
+          'with effective replica count > 1 errors out (multi-replica rolling deploy is Phase 2 of ' +
+          'issue #214). Off by default; the previous replica keeps serving when synth fails ' +
+          'mid-reload.'
+      ).default(false)
     );
-
-  return addCommonEcsServiceOptions(cmd);
 }

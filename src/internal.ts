@@ -534,3 +534,7 @@ export { addRunTaskSpecificOptions } from './cli/commands/local-run-task.js';
 export { addInvokeSpecificOptions } from './cli/commands/local-invoke.js';
 export { addInvokeAgentCoreSpecificOptions } from './cli/commands/local-invoke-agentcore.js';
 export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';
+export {
+  addStartServiceSpecificOptions,
+  serviceStrategy,
+} from './cli/commands/local-start-service.js';

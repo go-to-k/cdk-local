@@ -1153,6 +1153,7 @@ error.
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
+| `--watch` | off | Hot reload: re-synth + re-resolve every booted service and replace its single replica when the CDK app's source changes (mirrors `cdkl start-api --watch` semantics; honors `cdk.json` `watch.include` / `watch.exclude`). **Single-replica services only in v1** — an effective replica count > 1 errors out (multi-replica rolling reload is Phase 2 of issue #214). Synth failures keep the previous replica serving (warn-and-continue). Per-target trade-off: the old replica is torn down before the new one boots, so there is a brief downtime window per save. Off by default. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `-c/--context`, `--profile`, `--role-arn`, `--verbose`, `-y/--yes`.
@@ -1248,7 +1249,10 @@ Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 `--restart-policy`, `--env-vars`, `--container-host`, `--assume-task-role`,
 `--ecr-role-arn`, `--platform`, `--no-pull`, `--from-cfn-stack`,
 `--stack-region`, plus the [common flags](#common-flags)), except
-`--host-port` is replaced by:
+`--host-port` is replaced by the front-door flags below. `--watch` is
+NOT exposed here in v1 — `cdkl start-alb --watch` is Phase 3 of
+issue #214 (needs the front-door pool's atomic-swap support); use
+`cdkl start-service --watch` for the pure-compute reload loop today.
 
 | Flag | Default | Behavior |
 | --- | --- | --- |
