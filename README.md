@@ -97,7 +97,7 @@ cdkl start-alb MyStack/MyAlb --env-vars ./env.json
 ```json
 {
   "Parameters": { "LOG_LEVEL": "debug" },
-  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000" },
+  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000", "PROD_FEATURE_FLAG": null },
   "AppContainer": { "DB_HOST": "host.docker.internal", "DB_PORT": "13306" }
 }
 ```
@@ -109,9 +109,11 @@ Each top-level JSON key picks which target to overlay:
 | Every target | `Parameters` | Reserved literal; applied first to every container |
 | Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | From `Metadata['aws:cdk:path']` of the resource; prefix-matched (`MyStack/Fn` also catches `MyStack/Fn/Resource`) |
 | Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Top-level resource key in the synthesized template; exact match |
-| ECS container | Container Name (e.g. `AppContainer`) | The `containerName` set in CDK (= `ContainerDefinitions[].Name`). The TaskDefinition's CDK path / logical ID is NOT accepted as a key — it would identify the TaskDef but not which container's env block to overlay |
+| ECS container | Container Name (e.g. `AppContainer`) | `ContainerDefinitions[].Name` in the synthesized TaskDefinition — explicitly set via the `containerName` option of `taskDef.addContainer(id, { containerName, ... })`, or defaults to the construct id (first arg of `addContainer`) when omitted. The TaskDefinition's CDK path / logical ID is NOT accepted as a key — it would identify the TaskDef but not which container's env block to overlay |
 
-Precedence is template literals < ECS `Secrets` < `Parameters` < target-specific, so a value sourced from Secrets Manager / SSM via a TaskDefinition `Secrets[]` entry is overridable here (the secret is still fetched first, then replaced). A `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
+`--env-vars` overlays the env block after the template's literals and any resolved ECS `Secrets[]` have been applied. A per-target key (from the table above) wins over `Parameters`. A `null` value clears the key — use the JSON literal `null`, not the string `"null"`.
+
+`--env-vars` can be combined with `--from-cfn-stack`: the latter resolves intrinsics (`Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` / `Fn::GetAtt`) against the deployed stack first, then `--env-vars` overlays your overrides on top. Running standalone (no `--from-cfn-stack`), env vars whose template value is an intrinsic can't be resolved and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
 
 When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.
 
