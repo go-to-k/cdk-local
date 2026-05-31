@@ -49,6 +49,7 @@ function fakeService(): any {
     stack: { stackName: 'AlbStack' },
     serviceLogicalId: 'Svc',
     serviceName: 'Svc',
+    serviceDisplayName: 'Svc',
     desiredCount: 1,
     healthCheckGracePeriodSeconds: 30,
     task: {

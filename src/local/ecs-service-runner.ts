@@ -786,8 +786,15 @@ async function bootReplica(
   // so the same streamer keeps tailing the new PID-1 (no re-attach
   // needed).
   if (options.streamLogs !== false) {
+    // Issue #227 review fix — use the resolver's `serviceDisplayName`
+    // (NOT `serviceName`), which prefers an explicit CFn ServiceName,
+    // then the cdk-path-derived construct id with CDK-internal
+    // suffixes stripped, then the logicalId fallback. Without this an
+    // L2 (FargateService / ApplicationLoadBalancedFargateService) with
+    // no explicit `serviceName` would surface the hash-suffixed
+    // logical id (e.g. `BackendApi5F9D8C32`) in every foreground line.
     for (const started of instance.state.startedContainers) {
-      const prefix = `[svc=${service.serviceName} r=${instance.index} c=${started.name}] `;
+      const prefix = `[svc=${service.serviceDisplayName} r=${instance.index} c=${started.name}] `;
       instance.state.logStoppers.push(attachContainerLogStreamer(prefix, started.id));
     }
   }

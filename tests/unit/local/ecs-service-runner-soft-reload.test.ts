@@ -106,6 +106,7 @@ function fakeService(): any {
     stack: { stackName: 'AppStack' },
     serviceLogicalId: 'Svc',
     serviceName: 'Svc',
+    serviceDisplayName: 'Svc',
     desiredCount: 2,
     healthCheckGracePeriodSeconds: 30,
     task: {
