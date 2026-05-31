@@ -31,7 +31,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## Why cdk-local
 
-- **Zero-friction local execution** — run standalone: no deploy, no IAM access, just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's account.
+- **Zero-friction local execution** — run standalone: no deploy, just Docker and your CDK app. Onboard new engineers, or review a PR by actually running its code.
 - **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
   - dumping production data into a local DB
   - mirroring Secret values into local Secrets Manager
