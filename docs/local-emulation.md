@@ -1482,12 +1482,32 @@ and routes the firing through one of two per-replica primitives:
   retire-old. The reload-log line surfaces the verdict as
   `verdict=rebuild (...)` naming the trigger.
 
-The classifier defaults to `rebuild` on ANY ambiguity (target image
-isn't a CDK docker-image asset, asset manifest can't be loaded,
-unrecognized change). A slow-but-correct reload is strictly better
-than a fast-but-stale one — a missed Dockerfile / dependency edit
-would leave the running container on the previous image while the
-source files said otherwise.
+The classifier defaults to `rebuild` on ANY ambiguity (asset manifest
+can't be loaded, unrecognized change). A slow-but-correct reload is
+strictly better than a fast-but-stale one — a missed Dockerfile /
+dependency edit would leave the running container on the previous
+image while the source files said otherwise.
+
+The one ambiguity-default the reload pathway pre-empts is "target
+image is not a CDK docker-image asset" (typical under
+`--from-cfn-stack` against a service whose CDK source uses
+`ContainerImage.fromEcrRepository(repo, tag)`, or a hand-pinned
+public-registry image): the rolling primitive would re-pull
+byte-identical content from the deployed registry on every save and
+surface `Reload complete.` even though nothing in the running
+container changed — a silent no-op disguised as success. To avoid
+that footgun (issue #234), the reload SKIPS the roll for such
+targets with a `Reload skipped for '<target>' (no-op): image pinned
+to deployed registry; no local rebuild possible.` log on each
+firing, and the same configuration triggers a loud boot-time WARN
+per affected target naming the pinned image URI so the user knows
+local source edits will not take effect before they spend time
+saving files. To iterate on local source for an ECR-pinned service,
+drop `--from-cfn-stack` and switch the CDK app to
+`ContainerImage.fromAsset(...)`. Env / Secrets diff propagation
+under `--from-cfn-stack` (a watcher firing legitimately picking up
+a flipped deployed env value for an ECR-pinned target) is a
+follow-up — today the skip is total.
 
 Known fast-path limitations (Phase 4 trade-offs):
 

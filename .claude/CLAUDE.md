@@ -61,9 +61,19 @@ AWS managed services.
   port observes zero connection refusals across the reload (Phase 1 +
   Phase 2 + Phase 3 of issue #214; the soft-reload path is similarly
   per-replica sequenced). The classifier defaults to rebuild on
-  any ambiguity (target isn't a CDK docker-image asset, asset manifest
-  unreadable, unrecognized change) — slow-but-correct beats
-  fast-but-stale. The host front-door (TLS materials, JWKS cache,
+  any ambiguity (asset manifest unreadable, unrecognized change) —
+  slow-but-correct beats fast-but-stale. The one ambiguity-default
+  the reload pathway pre-empts is "target image is not a CDK docker-
+  image asset" (deployed-registry pin under `--from-cfn-stack`
+  against `ContainerImage.fromEcrRepository(...)`, or a public-
+  registry pin): the rolling primitive would re-pull byte-identical
+  content and surface `Reload complete.` as a silent no-op, so the
+  reload SKIPS the roll for that target with a `Reload skipped for
+  '<target>' (no-op): image pinned to deployed registry; no local
+  rebuild possible.` log, and the same configuration triggers a
+  loud boot-time WARN per affected target so the user knows local
+  source edits will not take effect before they spend time saving
+  files (issue #234). The host front-door (TLS materials, JWKS cache,
   Lambda-target RIE containers, listener sockets) is built once at
   boot and is NOT recreated on reload — only the per-service replica
   pool entries rotate. Lambda target groups behind the ALB are a
@@ -207,7 +217,12 @@ compute-locally category for Lambda + API Gateway).
   rebuild on ambiguity, requires the asset hash to actually flip
   before returning soft-reload so a CDK construct edit that changed
   the task spec doesn't get silently soft-reloaded with the OLD
-  spec), front-door-server (host HTTP / HTTPS reverse proxy
+  spec), image-pin-detector (issue #234 — classifies a booted ECS
+  service's representative image as local CDK asset vs deployed-
+  registry pin so the `--watch` emulator can WARN at boot and SKIP
+  the no-op rolling primitive on each reload firing instead of
+  re-pulling byte-identical content and surfacing `Reload complete.`
+  as a silent no-op), front-door-server (host HTTP / HTTPS reverse proxy
   that resolves a per-request RouteAction — weighted forward to a
   replica pool or a Lambda invoke, redirect, or fixed-response — behind
   the ALB listener port; HTTPS branch flips `X-Forwarded-Proto` and the

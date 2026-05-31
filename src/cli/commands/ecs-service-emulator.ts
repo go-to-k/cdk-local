@@ -101,6 +101,7 @@ import {
 import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache } from '../../local/cognito-jwt.js';
+import { describePinnedImageUri, isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
 
 /**
  * Neutral ECS-service emulator orchestration shared by `cdkl start-service`
@@ -655,6 +656,42 @@ export async function runEcsServiceEmulator(
     logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
+    // Issue #234 — when `--watch` is set, warn per booted target whose
+    // representative container image is NOT a local CDK docker-image
+    // asset. Such targets resolve to a deployed-registry pin (ECR via
+    // `--from-cfn-stack` against `ContainerImage.fromEcrRepository(...)`,
+    // or a public-registry pin like `ContainerImage.fromRegistry(...)`).
+    // The rolling primitive would re-pull byte-identical content on
+    // each save and report `Reload complete.` even though nothing in
+    // the running container changed — a silent no-op disguised as
+    // success. Warn UP-FRONT (per target) so the user knows local
+    // source edits will not take effect before they spend time saving
+    // files. The reload pathway also skips the no-op roll (see
+    // `reloadAllServices`); this boot-time warn is the proactive half.
+    //
+    // The `--watch` gate (`options.watch === true && strategy.supportsWatch
+    // === true`) is hoisted into a single const so the boot-time WARN
+    // block + the watcher-wiring block downstream can never drift out of
+    // sync, and so #238's planned "broaden the WARN to fire regardless of
+    // `--watch`" follow-up is a one-line delta against the predicate
+    // instead of two.
+    const watchActive = options.watch === true && strategy.supportsWatch === true;
+    if (watchActive) {
+      for (const pt of perTarget) {
+        const service = pt.controller?.service;
+        if (!service) continue;
+        if (isLocalCdkAssetImage(service)) continue;
+        const pinnedUri = describePinnedImageUri(service);
+        const uriDisplay = pinnedUri ? `\`${pinnedUri}\`` : 'a deployed registry';
+        logger.warn(
+          `'${pt.boot.target}': \`--watch\` will not pick up local source changes — ` +
+            `running image is pinned to a deployed registry (${uriDisplay}). ` +
+            'To iterate on local source, drop `--from-cfn-stack` and switch the ' +
+            'CDK app to `ContainerImage.fromAsset(...)`.'
+        );
+      }
+    }
+
     // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
     // (Phases 1-2) and `cdkl start-alb --watch` (Phase 3) source-tree
     // watcher. Both `serviceStrategy()` and `albStrategy()` opt in via
@@ -662,7 +699,7 @@ export async function runEcsServiceEmulator(
     // this engine from getting `--watch` implicitly. The watcher reuses the
     // start-api debounced file-watcher and predicate composition verbatim so
     // cdk.json `watch.include` / `watch.exclude` semantics are identical.
-    if (options.watch === true && strategy.supportsWatch === true) {
+    if (watchActive) {
       const watchRoot = process.cwd();
       const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
         watchRoot,
@@ -923,6 +960,48 @@ async function reloadAllServices(args: {
         kind: 'rebuild',
         reason: 'classifier context unavailable; falling back to rebuild',
       };
+    }
+    // Issue #234 — when the classifier returns `rebuild` with the
+    // "target image is not a CDK docker-image asset" reason, the
+    // rolling primitive would re-pull a byte-identical deployed
+    // image (ECR pin / public-registry pin — typical under
+    // `--from-cfn-stack` against `ContainerImage.fromEcrRepository
+    // (...)`). The roll docker-pulls the same bytes, swaps, retires
+    // the old replica — a no-op disguised as `Reload complete.`.
+    // Skip the roll for THIS target; the boot-time WARN already
+    // told the user this `--watch` configuration can't pick up
+    // local source changes. The rest of the per-target loop still
+    // rolls peer targets whose images ARE local CDK assets.
+    //
+    // Follow-up (out of scope for #234): env / Secrets diff under
+    // `--from-cfn-stack` is the one signal a reload could
+    // legitimately propagate here (deployed stack flipped a
+    // SecureString / env value); plumb a fast-path env-only reload
+    // for ECR-pinned targets so a watcher firing can still apply
+    // such changes without booting a shadow container.
+    //
+    // Narrow the skip to the actual "image is a deployed-registry
+    // pin" case. `loadAssetContextForTarget` returns `undefined` (and
+    // the classifier defaults to `rebuild` with the reason below) for
+    // SEVEN distinct conditions — only one of which is "image is not a
+    // CDK asset". The other six (no candidate stack, resolver throw,
+    // no containers in the synthed task, manifest unreadable, asset
+    // hash drift, executable-mode asset) are degradation / race paths
+    // where the rolling primitive should still try to run and surface
+    // the underlying failure to the user. We use the booted
+    // controller's resolved service as the ground truth for "the
+    // currently-running image is a pin", because that's what the
+    // skip-rationale ("re-pulling byte-identical content") rests on.
+    if (
+      verdict.kind === 'rebuild' &&
+      verdict.reason === 'target image is not a CDK docker-image asset' &&
+      !isLocalCdkAssetImage(controller.service)
+    ) {
+      logger.info(
+        `Reload skipped for '${newBoot.target}' (no-op): image pinned to deployed ` +
+          'registry; no local rebuild possible.'
+      );
+      continue;
     }
     await rollOneTarget({
       controller,
