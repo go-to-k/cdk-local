@@ -133,7 +133,20 @@ Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watc
 
 ### start-service vs start-alb — which one?
 
-`start-service` runs just the ECS service's replicas (workers, queue consumers, Service-Connect-only). `start-alb` boots the ECS service(s) behind an ALB **plus** a host-side front-door on each listener port — HTTP, and HTTPS served over plain HTTP locally by default (with `X-Forwarded-Proto: https` preserved so the upstream app still sees `https`); pass `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally — so external traffic reaches them the way it does in the cloud. Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
+Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each layer separately so you can target the slice you care about:
+
+| Goal | Command | How to reach |
+|---|---|---|
+| App logic / DB / response shape — hit the handler directly | `cdkl start-service --max-tasks 1 --host-port 80=8080` | `curl http://127.0.0.1:8080/...` |
+| ALB routing — listener rules, host-header / path / method, default actions, redirects, fixed-response, weighted forwards, authenticate-cognito / authenticate-oidc | `cdkl start-alb --lb-port 443=8443` | `curl -H 'Host: api.example.com' http://127.0.0.1:8443/...` |
+| Multi-replica rolling-reload + Cloud Map service discovery | `cdkl start-service` (multi-replica default) | Sibling container on the `cdkl-svc-` network |
+
+**Why the extra flags on the simple case?** The template's `DesiredCount` (typically 3 in production) is honored locally by default, but N replicas can't all bind the same host port — so `start-service` skips host publishing for multi-replica runs and the app is reachable only from inside the `cdkl-svc-` docker network. To get the simple `curl http://127.0.0.1:...` access path:
+
+- `--max-tasks 1` clamps the local replica count to 1 without touching your CDK code.
+- `--host-port <containerPort>=<hostPort>` remaps the container port to a non-privileged host port (macOS Docker Desktop needs `sudo` for ports < 1024).
+
+`start-alb` uses the symmetric `--lb-port <listenerPort>=<hostPort>` for privileged listener ports like 80 / 443, and `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally instead of serving the HTTPS listener over plain HTTP (the default). Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 
 ## Supported resources
 
