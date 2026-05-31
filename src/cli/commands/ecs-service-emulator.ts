@@ -77,6 +77,8 @@ import { FrontDoorEndpointPool } from '../../local/front-door-pool.js';
 import {
   startFrontDoorServer,
   type FrontDoorDispatchTarget,
+  type FrontDoorRuleConditionSummary,
+  type FrontDoorRuleSummary,
   type StartedFrontDoorServer,
   type RouteAction,
   type WeightedForwardTarget,
@@ -1609,6 +1611,10 @@ export async function buildFrontDoor(
       const tls = listener.protocol === 'HTTPS' && wantTls ? tlsMaterials : undefined;
       const forwardedProto: 'http' | 'https' = listener.protocol === 'HTTPS' ? 'https' : 'http';
       const degradedHttps = listener.protocol === 'HTTPS' && !wantTls;
+      // Per-listener rule summary surfaced in the no-rule-matched 404 body so a
+      // user whose request missed on (say) the Host header sees every rule's
+      // condition + action target, not just the request path (issue #228).
+      const rulesSummary: FrontDoorRuleSummary[] = listener.rules.map(buildRuleSummary);
       const server = await startFrontDoorServer({
         route,
         port: listener.hostPort,
@@ -1616,6 +1622,7 @@ export async function buildFrontDoor(
         listenerPort: listener.listenerPort,
         label: `listener port ${listener.listenerPort}`,
         forwardedProto,
+        rulesSummary,
         ...(tls ? { tls } : {}),
       });
       servers.push(server);
@@ -1729,6 +1736,80 @@ function describeTarget(t: PlannedForwardTarget): string {
 /** One forward target, described compactly (for a weighted-forward banner). */
 function describeTargetShort(t: PlannedForwardTarget): string {
   return t.kind === 'lambda' ? `Lambda ${t.lambda.logicalId}` : t.serviceTarget;
+}
+
+/**
+ * Build the per-rule summary the front-door surfaces in its no-rule-matched
+ * 404 body (issue #228). One condition row per constrained ALB field, plus a
+ * pre-formatted action target. Distinct from {@link describeConditions} /
+ * {@link describeAction} (which produce a single-line boot-banner string) —
+ * the 404 body needs the rule decomposed into its constituent fields so the
+ * formatter can render `field in [values]` rows.
+ */
+function buildRuleSummary(rule: {
+  priority: number;
+  pathPatterns: string[];
+  hostPatterns: string[];
+  httpHeaderConditions: AlbHttpHeaderCondition[];
+  httpRequestMethods: string[];
+  queryStringConditions: AlbQueryStringCondition[];
+  sourceIpCidrs: string[];
+  action: PlannedAction;
+}): FrontDoorRuleSummary {
+  const conditions: FrontDoorRuleConditionSummary[] = [];
+  if (rule.pathPatterns.length > 0) {
+    conditions.push({ field: 'path-pattern', values: rule.pathPatterns });
+  }
+  if (rule.hostPatterns.length > 0) {
+    conditions.push({ field: 'host-header', values: rule.hostPatterns });
+  }
+  for (const h of rule.httpHeaderConditions) {
+    conditions.push({ field: 'http-header', values: [`${h.name}: ${h.values.join(', ')}`] });
+  }
+  if (rule.httpRequestMethods.length > 0) {
+    conditions.push({ field: 'http-request-method', values: rule.httpRequestMethods });
+  }
+  if (rule.queryStringConditions.length > 0) {
+    conditions.push({
+      field: 'query-string',
+      values: rule.queryStringConditions.map(describeQueryStringCondition),
+    });
+  }
+  if (rule.sourceIpCidrs.length > 0) {
+    conditions.push({ field: 'source-ip', values: rule.sourceIpCidrs });
+  }
+  return {
+    priority: rule.priority,
+    conditions,
+    action: describeRuleActionForSummary(rule.action),
+  };
+}
+
+/**
+ * Describe a planned action for the no-rule-matched 404 body (issue #228).
+ * Uses the `<ECS: ...>` / `<Lambda: ...>` shape the issue body proposes so a
+ * user can read each rule's target at a glance.
+ */
+function describeRuleActionForSummary(action: PlannedAction): string {
+  if (action.kind === 'redirect') return `redirect ${action.statusCode}`;
+  if (action.kind === 'fixed-response') return `fixed-response ${action.statusCode}`;
+  if (action.targets.length === 1) {
+    return `forward to ${describeForwardTargetForSummary(action.targets[0]!)}`;
+  }
+  const weights = action.targets
+    .map((t) => `${describeForwardTargetForSummary(t)}@${t.weight}`)
+    .join(', ');
+  return `forward weighted [${weights}]`;
+}
+
+/**
+ * One forward target named the way the 404 body shows it: `<ECS: Service>` or
+ * `<Lambda: LogicalId>` — distinct from the boot-banner format (which also
+ * prints the container / port / round-robin hint) so the 404 body stays
+ * scannable.
+ */
+function describeForwardTargetForSummary(t: PlannedForwardTarget): string {
+  return t.kind === 'lambda' ? `<Lambda: ${t.lambda.logicalId}>` : `<ECS: ${t.serviceTarget}>`;
 }
 
 async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
