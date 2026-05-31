@@ -39,9 +39,9 @@ export interface CreateLocalStartServiceCommandOptions {
  * `supportsWatch: true` opts this strategy into the emulator's `--watch`
  * reload pathway (Phase 1 + Phase 2 of issue #214 — per-replica rolling
  * deploy: shadow boot under a bumped generation suffix, TCP-ready probe,
- * atomic Cloud Map / front-door swap, retire old). `start-alb`'s strategy
- * intentionally does NOT set this so a `--watch` flag never leaks into
- * the ALB-front-door path (Phase 3).
+ * atomic Cloud Map / front-door swap, retire old). The ALB strategy
+ * (`albStrategy()`) opts in symmetrically via Phase 3 of the same issue;
+ * the same rolling primitive serves both paths.
  */
 export function serviceStrategy(): EmulatorStrategy {
   return {
@@ -119,9 +119,12 @@ export function createLocalStartServiceCommand(
  * `--help` clusters. Chainable: returns `cmd`.
  *
  * `--watch` is intentionally NOT in the shared
- * {@link addCommonEcsServiceOptions} block: `start-alb --watch` is not yet
- * implemented (Phase 3 of issue #214), and the shared block must not
- * advertise a flag one of its consumers does not honor.
+ * {@link addCommonEcsServiceOptions} block even though both consumers
+ * (`start-service`, `start-alb`) now honor it (Phase 1-3 of issue
+ * #214): each command's `--watch` help string describes its own
+ * rolling-deploy contract (Service Connect / Cloud Map swap vs ALB
+ * front-door pool swap), and the per-command block is the right place
+ * for that contract to live.
  */
 export function addStartServiceSpecificOptions(cmd: Command): Command {
   return cmd

@@ -28,16 +28,22 @@ AWS managed services.
 - ECS tasks and services — real Docker containers with awsvpc /
   Service Connect / Cloud Map registry. `start-service` runs a service's
   replicas only (pure compute, no load balancer). `start-service --watch`
-  re-synths + per-replica rolls when the CDK source changes — boots a
-  shadow replica under a bumped generation suffix, atomically swaps
-  Cloud Map / front-door registrations off the dying replica (after a
-  pre-swap TCP-ready probe on the shadow's container port confirms
-  it's accepting), then retires the old container. Single replica =>
-  start one, swap, stop one; multi-replica => sequential per-replica
-  roll so the service stays available across the reload (Phase 1 +
-  Phase 2 of issue #214 — `start-alb --watch` is Phase 3, currently
-  gated by `EmulatorStrategy.supportsWatch` which `start-alb` leaves
-  falsy). `start-alb` is the ALB
+  and `start-alb --watch` re-synth + per-replica roll every booted ECS
+  service when the CDK source changes — boot a shadow replica under a
+  bumped generation suffix, atomically swap Cloud Map / front-door pool
+  registrations off the dying replica (after a pre-swap TCP-ready probe
+  on the shadow's container port confirms it's accepting), then retire
+  the old container. Single replica => start one, swap, stop one;
+  multi-replica => sequential per-replica roll so the service stays
+  available across the reload, and an external request stream against
+  the ALB listener port observes zero connection refusals across the
+  reload (Phase 1 + Phase 2 + Phase 3 of issue #214). The host
+  front-door (TLS materials, JWKS cache, Lambda-target RIE containers,
+  listener sockets) is built once at boot and is NOT recreated on
+  reload — only the per-service replica pool entries rotate. Lambda
+  target groups behind the ALB are a no-op on `--watch` reload (the
+  warm RIE container keeps its boot-time image; Lambda hot-reload is
+  the start-api path's concern). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
   listener port across the replicas and routes the listener rules across

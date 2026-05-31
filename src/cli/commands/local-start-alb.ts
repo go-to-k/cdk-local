@@ -297,6 +297,20 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
     // Under `start-alb` every booted service is fronted by the local
     // front-door — silence the resolver's `no local listener` hint.
     suppressLoadBalancerWarning: true,
+    // Phase 3 of issue #214 — opt the ALB strategy into the emulator's
+    // `--watch` reload pathway. The per-replica rolling primitive
+    // already updates the front-door pool atomically: each ECS replica
+    // is rolled by booting a shadow that registers a new pool entry
+    // under a bumped generation suffix, then dropping the old entry —
+    // synchronous Map mutations on the FrontDoorEndpointPool that JS's
+    // single-threaded read in `next()` cannot observe mid-mutation,
+    // so a continuous external request stream never sees an empty
+    // pool. TLS materials, JWKS cache + warned-set, Lambda-target
+    // RIE containers, and the host front-door servers are all built
+    // once in `buildFrontDoor` BEFORE the watcher is installed, so
+    // they are NOT recreated on reload (no re-issued cert, no re-
+    // fetched JWKS, no Lambda-target restart).
+    supportsWatch: true,
   };
 }
 
@@ -421,5 +435,21 @@ export function addAlbSpecificOptions(cmd: Command): Command {
           '(signature + iss + aud + exp). Local-dev convenience; cookie pass-through ' +
           '(AWSELBAuthSessionCookie-*) also works.'
       )
+    )
+    .addOption(
+      new Option(
+        '--watch',
+        'Hot-reload: re-synth + per-replica rolling deploy of every ECS service behind the ALB ' +
+          'when the CDK source changes (honors cdk.json watch.include/exclude; cdk.out, ' +
+          'node_modules, .git are always excluded). Each replica is rolled one at a time — boot a ' +
+          'shadow under a bumped generation suffix, wait for its container port to accept a TCP ' +
+          'connection, atomically register it in the front-door pool, then drop the old entry and ' +
+          'retire the old container — so a continuous external request stream against the listener ' +
+          'port sees zero connection refusals across the reload. The host front-door (TLS, JWKS ' +
+          'cache, Lambda-target containers, listener sockets) stays up across the reload. Lambda ' +
+          'target groups behind the ALB are a no-op on reload (the warm RIE container keeps its ' +
+          'boot-time image). Off by default; existing replica(s) keep serving when synth fails ' +
+          'mid-reload.'
+      ).default(false)
     );
 }

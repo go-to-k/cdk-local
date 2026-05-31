@@ -1248,11 +1248,8 @@ docker-network IPs the host can't reach on macOS Docker Desktop.
 Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 `--restart-policy`, `--env-vars`, `--container-host`, `--assume-task-role`,
 `--ecr-role-arn`, `--platform`, `--no-pull`, `--from-cfn-stack`,
-`--stack-region`, plus the [common flags](#common-flags)), except
-`--host-port` is replaced by the front-door flags below. `--watch` is
-NOT exposed here in v1 — `cdkl start-alb --watch` is Phase 3 of
-issue #214 (needs the front-door pool's atomic-swap support); use
-`cdkl start-service --watch` for the pure-compute reload loop today.
+`--stack-region`, `--watch`, plus the [common flags](#common-flags)),
+except `--host-port` is replaced by the front-door flags below.
 
 | Flag | Default | Behavior |
 | --- | --- | --- |
@@ -1262,6 +1259,7 @@ issue #214 (needs the front-door pool's atomic-swap support); use
 | `--tls-key <path>` | unset | PEM-encoded server private key matching `--tls-cert`. Implies `--tls`. Must be set together with `--tls-cert`. |
 | `--no-verify-auth` | (verify enabled) | Disable local enforcement of `authenticate-cognito` / `authenticate-oidc` actions. Every request is served as if the guard passed. Useful for local dev that does not want to mint a Bearer token. |
 | `--bearer-token <jwt>` | unset | Default Bearer JWT injected as `Authorization: Bearer <jwt>` when the inbound request has none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would (signature + `iss` + `aud` + `exp`). Cookie pass-through (`AWSELBAuthSessionCookie-*`) also bypasses the guard. |
+| `--watch` | off | Hot reload: re-synth + per-replica rolling deploy of every ECS service behind the ALB when the CDK app's source changes (mirrors `cdkl start-service --watch` semantics; honors `cdk.json` `watch.include` / `watch.exclude`). Each replica is rolled one at a time — boot a shadow under a bumped generation suffix, wait for a TCP-ready probe on the container port, atomically register it in the front-door pool, then drop the old entry and retire the old container — so a continuous external request stream against the listener port sees zero connection refusals across the reload. The host front-door (TLS materials, JWKS cache, Lambda-target containers, listener sockets) stays up across the reload; only the per-replica pool entries rotate. Lambda target groups behind the ALB are a no-op on reload (the warm RIE container keeps its boot-time image). Synth failures keep the previous replica(s) serving (warn-and-continue). Off by default. |
 
 ```bash
 # ALB listener on :80 -> remap to a non-privileged host port on macOS
