@@ -31,7 +31,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## Why cdk-local
 
-- **Zero-friction local execution** — run standalone with just Docker and your CDK app, no AWS account needed. Onboard a new engineer or review a PR by actually running its code, exercising the parts that don't touch AWS:
+- **Zero-friction local execution** — run standalone with just Docker and your CDK app, no AWS account or deploy needed. Verify the parts of your app that don't touch AWS in seconds — handy as a zero-setup first run, or in CI where no credentials are available:
   - API Gateway routing and request shaping
   - Lambda authorizers, running in real local containers
   - pure handler logic — validation, transforms, branching
