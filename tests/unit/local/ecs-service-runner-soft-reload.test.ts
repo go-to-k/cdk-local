@@ -304,6 +304,123 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
     // watcher's defer-loop is wedged forever and restart-on-exit is
     // dead for the rest of the replica's life.
     expect(r0.softReloadInProgress).toBe(false);
+    // Drain ran before the cp failure; the replica's Cloud Map +
+    // front-door pool entry are intentionally NOT re-published on
+    // an aborted soft-reload (the container is in an inconsistent
+    // state — new bytes on disk, but PID 1 never restarted). Peers
+    // + the front-door stop routing here until the next save.
+    expect(r0.cloudMapHandles.length).toBe(0);
+    expect(pool.size()).toBe(1); // only the SURVIVING r1 entry remains
+
+    await controller.shutdown();
+  });
+
+  it('clears softReloadInProgress + leaves replica drained on docker inspect failure', async () => {
+    __setDockerInspectWorkdirImpl(async () => {
+      throw new Error('synthetic inspect failure');
+    });
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+
+    await expect(
+      softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      })
+    ).rejects.toThrow(/docker inspect/);
+
+    // Inspect ran first inside the for loop — but never cp / restart.
+    expect(hoisted.cpCalls).toEqual([]);
+    expect(hoisted.restartCalls).toEqual([]);
+    expect(r0.softReloadInProgress).toBe(false);
+    // Drain ran before the for loop (per the primitive's zero-refusal
+    // contract); the replica stays drained because the soft-reload
+    // never reached re-publish.
+    expect(r0.cloudMapHandles.length).toBe(0);
+    expect(pool.size()).toBe(1);
+
+    await controller.shutdown();
+  });
+
+  it('clears softReloadInProgress + leaves replica drained on docker restart failure (cp landed but restart did not)', async () => {
+    __setDockerRestartImpl(async () => {
+      throw new Error('synthetic restart failure');
+    });
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+
+    await expect(
+      softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService: fakeService(),
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      })
+    ).rejects.toThrow(/docker restart/);
+
+    // cp succeeded, restart failed — partial-success state.
+    expect(hoisted.cpCalls.length).toBe(1);
+    // The override impl threw before recording into hoisted.restartCalls,
+    // so the counter stays at 0 — what matters is that the throw
+    // surfaced as the rejected promise above.
+    expect(hoisted.restartCalls.length).toBe(0);
+    expect(r0.softReloadInProgress).toBe(false);
+    // The replica is drained AND its PID 1 was never restarted — the
+    // container has new source on disk but the old process is still
+    // running it. Re-publish is intentionally NOT done; peers stop
+    // routing here until a clean save recovers.
+    expect(r0.cloudMapHandles.length).toBe(0);
+    expect(pool.size()).toBe(1);
+
+    await controller.shutdown();
+  });
+
+  it('cycles every essential container in a multi-essential task (one inspect + cp + restart per essential)', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+
+    // Cook a "new" service with TWO essential containers, both
+    // already present in the replica's started-set (the runner mock
+    // populates 'web' at startEcsService time; we extend the started
+    // set with a synthetic second container for this test).
+    const r0 = controller.runState.replicas[0]!;
+    r0.state.startedContainers.push({ name: 'sidecar', id: `${r0.state.startedContainers[0]!.id}-sidecar` });
+    const newSvc = fakeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (newSvc as any).task.containers.push({
+      name: 'sidecar',
+      essential: true,
+      portMappings: [],
+    });
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: newSvc,
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+
+    // One inspect + cp + restart PER essential.
+    expect(hoisted.inspectCalls.length).toBe(2);
+    expect(hoisted.cpCalls.length).toBe(2);
+    expect(hoisted.restartCalls.length).toBe(2);
+    expect(r0.softReloadInProgress).toBe(false);
 
     await controller.shutdown();
   });

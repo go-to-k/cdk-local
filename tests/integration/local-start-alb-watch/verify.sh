@@ -131,7 +131,8 @@ rolling_swap_count() {
   #   - Phase 2/3 rebuild path: "Rolling replica r<i> (gen <g>): swap
   #     complete; old retired" / "...single-replica reload complete".
   #   - Phase 4 soft-reload path: "Soft-reloaded replica r<i> (gen <g>):
-  #     restart + TCP-ready probe complete; registrations unchanged."
+  #     restart + TCP-ready probe complete; Cloud Map + front-door
+  #     re-published."
   # The fixture asserts the same per-replica completion count for either
   # path so a future heuristic flip doesn't false-fail.
   local n

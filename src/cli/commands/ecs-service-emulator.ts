@@ -1009,7 +1009,12 @@ async function loadAssetContextForTarget(args: {
     ...(oldAssetHash !== undefined && { oldAssetHash }),
     newAssetHash,
     newAssetSourceDir,
-    dockerFile: newDockerImage.source.dockerFile ?? 'Dockerfile',
+    // Normalize to basename so a custom `source.dockerFile` value that
+    // includes a relative path (e.g. `dockerfiles/Prod.Dockerfile`)
+    // still matches the classifier's per-changed-path basename
+    // comparison — otherwise an edit to such a file would silently
+    // route to soft-reload and leave the running image stale.
+    dockerFile: path.basename(newDockerImage.source.dockerFile ?? 'Dockerfile'),
   };
 }
 

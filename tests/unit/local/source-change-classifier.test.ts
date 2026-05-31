@@ -125,17 +125,33 @@ describe('classifySourceChange', () => {
     expect(v.reason).toContain(basename);
   });
 
+  // Locks the FULL `COMPILED_LANGUAGE_EXTENSIONS` set the classifier
+  // declares; a row-per-extension keeps the spec rigid so a future
+  // refactor that drops one of these extensions trips a test instead
+  // of silently flipping the verdict for that language.
   it.each([
     'main.go',
     'lib.rs',
     'App.java',
+    'Build.kts',
     'App.kt',
     'main.scala',
     'Program.cs',
     'main.swift',
+    'main.fs',
+    'main.fsx',
     'main.c',
+    'main.cc',
     'main.cpp',
+    'main.cxx',
+    'app.h',
+    'app.hpp',
     'main.zig',
+    'main.ml',
+    'main.mli',
+    'Main.elm',
+    'Main.hs',
+    'main.dart',
   ])(
     'returns rebuild for compiled-language source: %s (soft-reload would leave the binary stale)',
     (basename) => {
@@ -144,6 +160,22 @@ describe('classifySourceChange', () => {
       expect(v.reason).toContain('compiled-language');
     }
   );
+
+  it('handles a custom Dockerfile basename that includes a subdirectory in the asset manifest (loader-side normalization)', () => {
+    // Verifies the boundary contract: the classifier compares its
+    // `ctx.dockerFile` field against `path.basename(changedPath)`.
+    // Callers (the emulator's `loadAssetContextForTarget`) MUST
+    // normalize `source.dockerFile` to a basename before populating
+    // ctx — otherwise an edit to `dockerfiles/Prod.Dockerfile` would
+    // silently route to soft-reload. This test row locks that
+    // contract: when `ctx.dockerFile` is already a basename
+    // (post-normalization), an edit to the same basename triggers
+    // rebuild.
+    const ctx: ReloadAssetContext = { ...baseCtx, dockerFile: 'Prod.Dockerfile' };
+    const v = classifySourceChange(['/repo/dockerfiles/Prod.Dockerfile'], ctx);
+    expect(v.kind).toBe('rebuild');
+    expect(v.reason).toContain('Prod.Dockerfile');
+  });
 
   it.each(['.sh', '.js', '.mjs', '.cjs', '.ts', '.py', '.rb'])(
     'returns soft-reload for an interpreted-language source: handler%s',

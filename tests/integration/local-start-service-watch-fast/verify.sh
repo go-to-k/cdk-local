@@ -10,8 +10,9 @@
 #      routes through the Phase 4 fast path: the classifier logs
 #      `verdict=soft-reload`, the runner emits the
 #      "Soft-reloaded replica r0 ... restart + TCP-ready probe complete;
-#      registrations unchanged" line, and the served response transitions
-#      from v1 to v2 WITHOUT a `docker build` or shadow boot.
+#      Cloud Map + front-door re-published." line, and the served
+#      response transitions from v1 to v2 WITHOUT a `docker build` or
+#      shadow boot.
 #   2. Editing the asset's Dockerfile routes through the rebuild fallback:
 #      the classifier logs `verdict=rebuild (Dockerfile edit (Dockerfile))`,
 #      the runner emits the Phase 1-3 "Rolling replica ... single-replica

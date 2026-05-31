@@ -1462,7 +1462,9 @@ export async function softReloadReplica(args: {
       } catch (err) {
         throw new EcsServiceRunnerError(
           `softReloadReplica: docker inspect of container '${target.name}' (${target.id}) ` +
-            `failed: ${err instanceof Error ? err.message : String(err)}`
+            `failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            'This replica is unregistered from Cloud Map + the front-door pool until the ' +
+            'next save triggers another reload.'
         );
       }
       // Trailing `/.` on the source: copies CONTENTS, not the dir
@@ -1477,7 +1479,9 @@ export async function softReloadReplica(args: {
       } catch (err) {
         throw new EcsServiceRunnerError(
           `softReloadReplica: docker cp into '${target.name}' (${target.id}:${workdir}) ` +
-            `failed: ${err instanceof Error ? err.message : String(err)}`
+            `failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            'This replica is unregistered from Cloud Map + the front-door pool until the ' +
+            'next save triggers another reload.'
         );
       }
       try {
@@ -1485,7 +1489,9 @@ export async function softReloadReplica(args: {
       } catch (err) {
         throw new EcsServiceRunnerError(
           `softReloadReplica: docker restart of '${target.name}' (${target.id}) ` +
-            `failed: ${err instanceof Error ? err.message : String(err)}`
+            `failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            'This replica is unregistered from Cloud Map + the front-door pool until the ' +
+            'next save triggers another reload.'
         );
       }
     }
