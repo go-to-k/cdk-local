@@ -150,6 +150,11 @@ function fakeOptions(pool: FrontDoorEndpointPool, registry: CloudMapRegistry) {
     },
     discovery: { registry, cloudMapIndexByStack: new Map() },
     frontDoor: { pools: [{ pool, targetContainerName: 'web', targetContainerPort: 80 }] },
+    // Issue #227 — opt this soft-reload unit out of `docker logs -f`
+    // spawning. The streamer's child-process side-effects leak across
+    // vitest's parallel workers otherwise. The streamer wiring itself
+    // is covered by `ecs-service-runner-stream-logs.test.ts`.
+    streamLogs: false,
   };
 }
 
