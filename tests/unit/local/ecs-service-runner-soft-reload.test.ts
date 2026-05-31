@@ -97,6 +97,7 @@ const {
   __setDockerInspectWorkdirImpl,
   __setDockerCpImpl,
   __setDockerRestartImpl,
+  SOFT_RELOAD_COMPLETION_LOG_SUFFIX,
 } = await import('../../../src/local/ecs-service-runner.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -497,6 +498,271 @@ describe('softReloadReplica (Phase 4 of issue #214)', () => {
 
     // No docker work ran — we failed before flipping the flag.
     expect(hoisted.inspectCalls).toEqual([]);
+
+    await controller.shutdown();
+  });
+
+  // Phase 4 follow-up (#218 test reviewer S3, S4) — branches inside
+  // the `containersToCycle` resolution that the existing test rows
+  // don't reach.
+
+  it('falls back to the first container when no container is flagged essential (mirrors the watcher picker)', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+
+    // Cook a "new" service whose ONLY container is NOT flagged
+    // essential. The primitive should fall back to the first
+    // container in template order — same heuristic the watcher's
+    // `pickEssentialContainerId` uses.
+    const newService = fakeService();
+    newService.task.containers[0].essential = false;
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService,
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+
+    // The single non-essential container is the one cycled.
+    expect(hoisted.inspectCalls.length).toBe(1);
+    expect(hoisted.cpCalls.length).toBe(1);
+    expect(hoisted.restartCalls.length).toBe(1);
+
+    await controller.shutdown();
+  });
+
+  it('throws "no containers to cycle" when the new service has zero containers', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+
+    // Cook a "new" service descriptor with an EMPTY containers
+    // array. Should never happen in practice (the resolver guards
+    // earlier) but the defensive guard inside softReloadReplica
+    // needs to be locked so a future refactor doesn't drop it.
+    const newService = fakeService();
+    newService.task.containers = [];
+
+    await expect(
+      softReloadReplica({
+        controller,
+        oldReplicaIndex: 0,
+        newService,
+        sourceDirToCopy: '/tmp/cdk.out/asset.h',
+      })
+    ).rejects.toThrow(/no containers to cycle/);
+
+    // Failed BEFORE the flag flip and BEFORE the docker hooks fired.
+    expect(hoisted.inspectCalls).toEqual([]);
+    expect(hoisted.cpCalls).toEqual([]);
+    expect(hoisted.restartCalls).toEqual([]);
+
+    await controller.shutdown();
+  });
+
+  // Phase 4 follow-up (#218 test reviewer S5) — locks the watcher
+  // defer behavior at the unit level. The integ multi-replica
+  // fixture (2721 samples / FAIL=0) covers the end-to-end zero-
+  // refusal contract; this row makes the per-replica state machine
+  // verifiable without docker.
+  // Phase 4 follow-up (#218 code reviewer Nit #2) — the runner
+  // stamps `lastDeployedAssetHash` on the instance after a
+  // successful boot AND after a successful soft-reload re-publish.
+  // The emulator's classifier-context loader reads this stamp as
+  // the `oldAssetHash` baseline so the next reload sees the CURRENT
+  // image's hash, not the boot-time descriptor's.
+  // Phase 4 follow-up (#218 code reviewer Nit #4) — under docker
+  // daemon backpressure, `docker wait` can lag past the soft-
+  // reload's flag clear. The `softReloadGeneration` counter catches
+  // that case: the watcher snapshots it before waitForExitImpl and
+  // detects any mismatch on resume, treating it as a controlled
+  // restart even when the flag is already false.
+  it('bumps softReloadGeneration once per soft-reload entry (watcher race protection)', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+
+    // Boot default: counter is undefined OR 0.
+    expect(r0.softReloadGeneration ?? 0).toBe(0);
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeService(),
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+    expect(r0.softReloadGeneration).toBe(1);
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeService(),
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+    expect(r0.softReloadGeneration).toBe(2);
+
+    await controller.shutdown();
+  });
+
+  it('stamps lastDeployedAssetHash after a successful soft-reload (closes the chatty oldHash loop)', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    // Pre-test: the fakeService() helper declares the essential
+    // image as `image: undefined` (no asset metadata) — bootReplica
+    // stamps undefined. Cook a service whose container carries a
+    // hash so we can prove the stamp lands after a soft-reload.
+    const svc = fakeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc.task.containers[0] as any).image = {
+      kind: 'cdk-asset',
+      assetHash: 'boothash',
+    };
+    const controller = await startEcsService(svc, opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+    // Boot stamp lands.
+    expect(r0.lastDeployedAssetHash).toBe('boothash');
+
+    const newSvc = fakeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (newSvc.task.containers[0] as any).image = {
+      kind: 'cdk-asset',
+      assetHash: 'newhash-after-reload',
+    };
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: newSvc,
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+
+    // Post-soft-reload stamp updated.
+    expect(r0.lastDeployedAssetHash).toBe('newhash-after-reload');
+
+    await controller.shutdown();
+  });
+
+  it('stamps lastDeployedAssetHash = undefined when the new image is not a CDK asset', async () => {
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const svc = fakeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (svc.task.containers[0] as any).image = {
+      kind: 'cdk-asset',
+      assetHash: 'boothash',
+    };
+    const controller = await startEcsService(svc, opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+    expect(r0.lastDeployedAssetHash).toBe('boothash');
+
+    const newSvc = fakeService();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (newSvc.task.containers[0] as any).image = {
+      kind: 'ecr',
+      uri: 'public.ecr.aws/foo:bar',
+    };
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: newSvc,
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+
+    // Non-CDK-asset image → stamp cleared to undefined; the loader
+    // will fall back to the boot-time descriptor (and the
+    // classifier will route subsequent reloads to rebuild because
+    // there's no asset to soft-reload anyway).
+    expect(r0.lastDeployedAssetHash).toBeUndefined();
+
+    await controller.shutdown();
+  });
+
+  // Phase 4 follow-up (#218 test reviewer N4) — exported constant
+  // for the integ scripts' grep target. The runner's emit MUST stay
+  // bound to this constant; the constant itself MUST stay bound to
+  // the grep regex in `tests/integration/local-start-service-watch-fast/verify.sh`
+  // and the path-agnostic regex in the watch-multi / alb-watch
+  // fixtures. A wording change in the runner that doesn't update the
+  // constant trips this row.
+  it('exposes SOFT_RELOAD_COMPLETION_LOG_SUFFIX matching the integ-script grep contract', () => {
+    expect(SOFT_RELOAD_COMPLETION_LOG_SUFFIX).toBe(
+      'restart + TCP-ready probe complete; Cloud Map + front-door re-published.'
+    );
+    // The integ scripts grep for this fragment as a regex
+    // (`Soft-reloaded replica .*restart \+ TCP-ready probe complete`);
+    // confirm the constant CONTAINS that fragment so a future tweak
+    // to the constant (e.g. dropping the semicolon) doesn't silently
+    // break the integ regex.
+    expect(SOFT_RELOAD_COMPLETION_LOG_SUFFIX).toMatch(
+      /^restart \+ TCP-ready probe complete/
+    );
+  });
+
+  it('sets softReloadInProgress BEFORE docker cp and clears it AFTER the re-publish (watcher-defer contract)', async () => {
+    const observed: Array<{
+      step: 'inspect' | 'cp' | 'restart';
+      flag: boolean;
+    }> = [];
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = fakeOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeService(), opts, runState);
+    const r0 = controller.runState.replicas[0]!;
+
+    // Re-install spies that capture the flag value at each step.
+    __setDockerInspectWorkdirImpl(async () => {
+      observed.push({ step: 'inspect', flag: !!r0.softReloadInProgress });
+      return '/app';
+    });
+    __setDockerCpImpl(async () => {
+      observed.push({ step: 'cp', flag: !!r0.softReloadInProgress });
+    });
+    __setDockerRestartImpl(async () => {
+      observed.push({ step: 'restart', flag: !!r0.softReloadInProgress });
+    });
+
+    expect(r0.softReloadInProgress).toBeFalsy(); // initial state
+
+    await softReloadReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeService(),
+      sourceDirToCopy: '/tmp/cdk.out/asset.h',
+    });
+
+    // The watcher's defer-loop polls this flag every 100ms. It MUST
+    // be true throughout the cp + restart window — otherwise a SIGTERM
+    // unblocking `docker wait` mid-window would fall through to the
+    // restart-on-exit branch and race against the in-flight restart.
+    expect(observed).toEqual([
+      { step: 'inspect', flag: true },
+      { step: 'cp', flag: true },
+      { step: 'restart', flag: true },
+    ]);
+    // And cleared on completion so the watcher's NEXT iteration can
+    // re-arm waitForExitImpl on the restarted container.
+    expect(r0.softReloadInProgress).toBe(false);
 
     await controller.shutdown();
   });

@@ -58,6 +58,24 @@ export class EcsServiceRunnerError extends Error {
   }
 }
 
+/**
+ * Phase 4 (#214) — completion-log suffix the soft-reload primitive
+ * emits AFTER `Soft-reloaded replica r<i> (gen <g>): ` to confirm
+ * the docker restart + TCP-ready probe + Cloud Map / front-door
+ * re-publish round trip is done.
+ *
+ * Exported so integ fixtures + unit tests can grep against the
+ * canonical text instead of hand-copying the wording — a future
+ * refactor that rewords this line stays detectable via the symbol
+ * import instead of silently breaking every test's regex.
+ *
+ * Per-repo memory (#218 / test reviewer N4): log-line text is part
+ * of the public contract for `--watch` integ scripts, so it earns a
+ * constant.
+ */
+export const SOFT_RELOAD_COMPLETION_LOG_SUFFIX =
+  'restart + TCP-ready probe complete; Cloud Map + front-door re-published.';
+
 export interface ServiceRunnerOptions {
   /**
    * Hard cap on local replica count. Even when the service's
@@ -232,6 +250,50 @@ export interface ServiceReplicaInstance {
    * is never wedged).
    */
   softReloadInProgress?: boolean;
+  /**
+   * Phase 4 follow-up (#218 code reviewer Nit #4) — monotonic
+   * counter incremented at the START of each {@link softReloadReplica}
+   * cycle. The watcher snapshots this BEFORE `waitForExitImpl` and
+   * compares on resume; any mismatch means a soft-reload happened
+   * mid-wait (even if it has since completed and cleared
+   * {@link softReloadInProgress}), so the watcher treats the
+   * waitForExit return as a controlled restart and re-arms instead
+   * of falling into the restart-policy branch.
+   *
+   * Closes the race the Phase 4 PR's review surfaced: under docker
+   * daemon backpressure, `docker wait` can lag the actual
+   * SIGTERM-to-restart-complete cycle by ~10s+. If the lag exceeds
+   * the soft-reload's runtime (sub-second typical), the flag has
+   * cleared by the time `waitForExitImpl` resolves and the
+   * `softReloadInProgress` check alone is not sufficient.
+   *
+   * Defaults to 0 at boot; bumped once per soft-reload entry.
+   * Numbers are not load-bearing; only the change-vs-snapshot
+   * comparison matters.
+   */
+  softReloadGeneration?: number;
+  /**
+   * Phase 4 follow-up (#218) — CDK asset hash of the image this
+   * replica is currently running. Updated AFTER each successful
+   * boot ({@link bootReplica}) and AFTER each successful soft-reload
+   * ({@link softReloadReplica}'s re-publish step). Consulted by the
+   * emulator's `loadAssetContextForTarget` as the `oldAssetHash`
+   * baseline so the classifier's hash-unchanged guard reads the
+   * LIVE replica's hash, not the boot-time descriptor.
+   *
+   * Pre-Phase-4 the loader read from `controller.service` (the
+   * boot-time `ResolvedEcsService`), which was never updated when a
+   * rolling reload swapped the replica to a new image. The stale
+   * baseline caused soft-reload to fire on reload #2-after-rebuild
+   * even when the synth produced identical content — wasteful but
+   * correct (`docker cp` of identical bytes + `docker restart`). The
+   * per-replica field closes that gap.
+   *
+   * `undefined` when the image isn't a CDK asset (ECR / public pin)
+   * — the classifier already routes those to rebuild via the no-ctx
+   * branch.
+   */
+  lastDeployedAssetHash?: string | undefined;
   /**
    * Last error from a failed run, if any. Surfaced in the shutdown
    * summary so users know why a degraded service ended up degraded.
@@ -711,6 +773,39 @@ async function bootReplica(
       ownerKeyPrefix
     );
   }
+
+  // Phase 4 follow-up (#218) — stamp the live CDK asset hash on the
+  // instance AFTER a successful boot. The emulator's
+  // `loadAssetContextForTarget` reads this as the `oldAssetHash`
+  // baseline so the classifier's hash-unchanged guard sees the LIVE
+  // replica's hash, not the boot-time descriptor (which never
+  // updates across rolling reloads). Undefined when the image isn't
+  // a CDK asset — the classifier already routes those to rebuild.
+  instance.lastDeployedAssetHash = pickEssentialAssetHash(service);
+}
+
+/**
+ * Phase 4 follow-up (#218) — extract the CDK asset hash from a
+ * resolved service's first essential container (with the same
+ * fallback the watcher uses: first essential, else first container).
+ * Returns `undefined` when the image isn't a CDK asset OR carries
+ * no hash. Pure helper so the boot + rolling + soft-reload paths
+ * share one source of truth for "what's running right now".
+ *
+ * Exported for unit tests; not part of the semver-covered public
+ * surface.
+ *
+ * @internal
+ */
+export function pickEssentialAssetHash(service: ResolvedEcsService): string | undefined {
+  const essential = service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+  if (!essential) return undefined;
+  // Defensive: existing test fixtures + hand-built run states may
+  // omit `image` entirely (the runtime contract requires it, but
+  // the stamp is best-effort + non-functional for those paths).
+  const image = essential.image as { kind?: string; assetHash?: string } | undefined;
+  if (image?.kind !== 'cdk-asset') return undefined;
+  return image.assetHash;
 }
 
 /**
@@ -1443,6 +1538,14 @@ export async function softReloadReplica(args: {
   unregisterReplicaFromFrontDoor(instance, controllerOptions.frontDoor);
 
   instance.softReloadInProgress = true;
+  // Phase 4 follow-up (#218 code reviewer Nit #4) — bump the
+  // soft-reload generation so the watcher's pre-`waitForExitImpl`
+  // snapshot catches any soft-reload that runs to completion
+  // during the wait (docker daemon backpressure can lag
+  // `docker wait` past restart completion + flag clear). The
+  // comparison runs in the watcher loop; the value itself is not
+  // load-bearing.
+  instance.softReloadGeneration = (instance.softReloadGeneration ?? 0) + 1;
   try {
     logger.info(
       `Soft-reloading replica r${instance.index} (gen ${instance.generation}): ` +
@@ -1536,9 +1639,13 @@ export async function softReloadReplica(args: {
         ownerKeyPrefix
       );
     }
+    // Phase 4 follow-up (#218) — stamp the post-soft-reload asset
+    // hash on the instance so the next reload's classifier reads the
+    // CURRENT image's hash, not the boot-time descriptor's. Closes
+    // the chatty-soft-reload-after-rebuild loop.
+    instance.lastDeployedAssetHash = pickEssentialAssetHash(newService);
     logger.info(
-      `Soft-reloaded replica r${instance.index} (gen ${instance.generation}): restart + ` +
-        'TCP-ready probe complete; Cloud Map + front-door re-published.'
+      `Soft-reloaded replica r${instance.index} (gen ${instance.generation}): ${SOFT_RELOAD_COMPLETION_LOG_SUFFIX}`
     );
   } finally {
     // Always clear the flag — the watcher's defer-loop polls this
@@ -1891,6 +1998,15 @@ async function watchReplica(
       await sleep(500);
       continue;
     }
+    // Phase 4 follow-up (#218 code reviewer Nit #4) — snapshot the
+    // soft-reload generation BEFORE the (potentially long) docker
+    // wait so we can detect a soft-reload that ran end-to-end during
+    // the wait. The `softReloadInProgress` check alone is not
+    // sufficient: under docker daemon backpressure, `docker wait`
+    // can lag past the soft-reload's flag clear (~10s+), leaving
+    // the watcher to enter the restart-policy branch against a
+    // healthy, just-re-registered container.
+    const softReloadGenBeforeWait = instance.softReloadGeneration ?? 0;
     let exitCode: number;
     try {
       exitCode = await waitForExitImpl(essentialId);
@@ -1908,14 +2024,22 @@ async function watchReplica(
 
     // Phase 4 of issue #214 — soft-reload pathway: `docker restart`
     // fires SIGTERM at PID 1, which resolves `waitForExitImpl` here
-    // even though the container is being intentionally cycled. If
-    // `softReloadReplica` is mid-flight, wait until it clears the
-    // flag (after its own post-restart TCP-ready probe), then loop
-    // back to re-arm `docker wait` on the (same-id) restarted
-    // container. A real crash that lands DURING a soft-reload still
-    // gets handled by the soft-reload's own error path; the watcher
+    // even though the container is being intentionally cycled.
+    //
+    // Two paths to defer:
+    //   1. `softReloadInProgress` is still set — soft-reload is
+    //      mid-flight. Wait until it clears, then re-arm.
+    //   2. `softReloadGeneration` changed during the wait — a
+    //      complete soft-reload happened between waitForExit's
+    //      arming and its return (the daemon-lag race). Same outcome:
+    //      treat as a controlled restart, re-arm.
+    //
+    // A real crash that lands DURING a soft-reload still gets
+    // handled by the soft-reload's own error path; the watcher
     // doesn't need to second-guess it here.
-    if (instance.softReloadInProgress) {
+    const softReloadHappenedMidWait =
+      (instance.softReloadGeneration ?? 0) !== softReloadGenBeforeWait;
+    if (instance.softReloadInProgress || softReloadHappenedMidWait) {
       while (instance.softReloadInProgress && !instance.shuttingDown && !runState.shuttingDown) {
         await sleep(100);
       }
