@@ -259,9 +259,17 @@ TaskDefinition, not at the resource level):
 | Every target | `Parameters` | Reserved literal; applied first to every container before any per-target overlay |
 | Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | Compared against the resource's `Metadata['aws:cdk:path']`; prefix-matched so `MyStack/Fn` also catches the synthesized `MyStack/Fn/Resource` |
 | Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Compared against the synthesized top-level resource key in the template; exact match |
-| ECS container | Container Name (e.g. `AppContainer`) | Compared against `ContainerDefinitions[].Name` (= the `containerName` set in CDK); exact match. The TaskDefinition's own CDK path / logical ID is NOT accepted — it would identify the TaskDef but not which container's env block to overlay |
+| ECS container | Container Name (e.g. `AppContainer`) | Compared against `ContainerDefinitions[].Name` in the synthesized TaskDefinition (= the `containerName` option of `taskDef.addContainer(id, { containerName, ... })`, or the construct id (first arg of `addContainer`) when omitted); exact match. The TaskDefinition's own CDK path / logical ID is NOT accepted — it would identify the TaskDef but not which container's env block to overlay |
 
-A `null` value clears a key (across every shape above).
+`--env-vars` overlays the env block after the template's literals and
+any resolved ECS `Secrets[]` have been applied. A per-target key wins
+over `Parameters`. A `null` value clears the key (across every shape
+above) — use the JSON literal `null`, not the string `"null"`.
+
+`--env-vars` is composable with `--from-cfn-stack`: the latter resolves
+intrinsics (`Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` /
+`Fn::GetAtt`) against the deployed stack first, then `--env-vars`
+overlays your overrides on top.
 
 ### CloudFormation-driven env recovery (`--from-cfn-stack`)
 
