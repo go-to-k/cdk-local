@@ -944,7 +944,14 @@ async function reloadAllServices(args: {
  * {@link AssetManifestLoader}) so the caller can fall back to rebuild
  * with a warn line that explains why the classifier couldn't run.
  */
-async function loadAssetContextForTarget(args: {
+/**
+ * @internal — exported for unit tests of the fall-through branches
+ * (the 6 `return undefined` paths + the catch arm on
+ * `resolveEcsServiceTarget` throw). Not part of the semver-covered
+ * public surface; the only legitimate caller is `reloadAllServices`
+ * inside this file.
+ */
+export async function loadAssetContextForTarget(args: {
   target: string;
   controller: ServiceController;
   stacks: StackInfo[];
@@ -996,14 +1003,27 @@ async function loadAssetContextForTarget(args: {
     return undefined;
   }
   const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
-  // OLD hash is purely diagnostic; pull from the controller's
-  // captured-at-boot service descriptor when available.
+  // Phase 4 follow-up (#218) — read the OLD asset hash from the
+  // LIVE replica's `lastDeployedAssetHash` stamp, not from
+  // `controller.service` (the boot-time descriptor, which never
+  // updates across rolling reloads). The first non-shutting-down
+  // replica is the source of truth for "what's running right now"
+  // because the rolling primitive sequences swaps one replica at a
+  // time; in steady state every replica carries the same hash. Falls
+  // back to the boot-time descriptor for replicas whose stamp is
+  // missing (defensive — e.g. when a host CLI hand-builds the run
+  // state and skips the stamp).
   let oldAssetHash: string | undefined;
-  const oldEssential =
-    controller.service.task.containers.find((c) => c.essential) ??
-    controller.service.task.containers[0];
-  if (oldEssential?.image.kind === 'cdk-asset') {
-    oldAssetHash = oldEssential.image.assetHash;
+  const liveReplica = controller.runState.replicas.find((r) => !r.shuttingDown);
+  if (liveReplica?.lastDeployedAssetHash !== undefined) {
+    oldAssetHash = liveReplica.lastDeployedAssetHash;
+  } else {
+    const oldEssential =
+      controller.service.task.containers.find((c) => c.essential) ??
+      controller.service.task.containers[0];
+    if (oldEssential?.image.kind === 'cdk-asset') {
+      oldAssetHash = oldEssential.image.assetHash;
+    }
   }
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),

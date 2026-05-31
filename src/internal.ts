@@ -445,6 +445,17 @@ export {
   type ReloadAssetContext,
   type ReloadVerdict,
 } from './local/source-change-classifier.js';
+
+/**
+ * Phase 4 of issue #214 — completion-log suffix the soft-reload
+ * primitive emits after the per-replica `Soft-reloaded replica r<i>
+ * (gen <g>): ` prefix. Exposed so host CLIs (cdkd) that wrap
+ * `runEcsServiceEmulator` and own their own integ scripts can grep
+ * against the canonical constant instead of hand-copying the
+ * wording. A future re-wording of the runner's emit stays detectable
+ * via the symbol import.
+ */
+export { SOFT_RELOAD_COMPLETION_LOG_SUFFIX } from './local/ecs-service-runner.js';
 export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
 
