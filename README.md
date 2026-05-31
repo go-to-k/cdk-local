@@ -102,7 +102,16 @@ cdkl start-alb MyStack/MyAlb --env-vars ./env.json
 }
 ```
 
-`Parameters` applies to every target; a per-target key matches a Lambda's CDK path / logical ID, or an ECS container's `ContainerDefinitions[].Name`. Precedence is template literals < ECS `Secrets` < `Parameters` < target-specific, so a value sourced from Secrets Manager / SSM via a TaskDefinition `Secrets[]` entry is overridable here (the secret is still fetched first, then replaced). A `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
+Each top-level JSON key picks which target to overlay:
+
+| Target | Key shape | Notes |
+| --- | --- | --- |
+| Every target | `Parameters` | Reserved literal; applied first to every container |
+| Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | From `Metadata['aws:cdk:path']` of the resource; prefix-matched (`MyStack/Fn` also catches `MyStack/Fn/Resource`) |
+| Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Top-level resource key in the synthesized template; exact match |
+| ECS container | Container Name (e.g. `AppContainer`) | The `containerName` set in CDK (= `ContainerDefinitions[].Name`). The TaskDefinition's CDK path / logical ID is NOT accepted as a key — it would identify the TaskDef but not which container's env block to overlay |
+
+Precedence is template literals < ECS `Secrets` < `Parameters` < target-specific, so a value sourced from Secrets Manager / SSM via a TaskDefinition `Secrets[]` entry is overridable here (the secret is still fetched first, then replaced). A `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
 
 When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.
 
