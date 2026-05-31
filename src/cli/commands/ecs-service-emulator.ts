@@ -33,14 +33,15 @@ import {
 } from '../../local/ecs-task-resolver.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import {
-  computeReplicaCount,
   createServiceRunState,
+  rollServiceReplica,
   startEcsService,
   type ServiceController,
   type ServiceDiscoveryContext,
   type ServiceRunnerOptions,
   type ServiceRunState,
 } from '../../local/ecs-service-runner.js';
+import type { ResolvedEcsService } from '../../local/ecs-service-resolver.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   cleanupEcsRun,
@@ -175,11 +176,16 @@ export interface EcsServiceEmulatorOptions {
   fromCfnStack?: string | boolean;
   stackRegion?: string;
   /**
-   * Issue #214 Phase 1 — `cdkl start-service --watch`. Re-synth and replace
-   * each booted service's single replica when the CDK app source changes.
-   * Wired only via the `start-service` command (the flag is declared in
+   * Issue #214 — `cdkl start-service --watch`. Re-synth and per-replica
+   * roll each booted service when the CDK app source changes (Phase 1 +
+   * Phase 2 of #214: shadow boot under bumped generation suffix → TCP-
+   * ready probe → atomic Cloud Map / front-door registration swap →
+   * retire old container, sequenced one replica at a time so peer
+   * services see zero connection refusals across the reload). Wired
+   * only via the `start-service` command (the flag is declared in
    * `addStartServiceSpecificOptions`); the start-alb path leaves this
-   * undefined.
+   * undefined (Phase 3 of #214 turns it on once the front-door pool
+   * supports atomic swap).
    */
   watch?: boolean;
   /** Host-injected extra state-source flag fields. */
@@ -320,10 +326,10 @@ export interface EmulatorStrategy {
    */
   suppressLoadBalancerWarning?: boolean;
   /**
-   * Phase 1 of issue #214 — opt this strategy into the emulator's
-   * `--watch` reload pathway. `serviceStrategy()` sets this true so a
-   * `cdkl start-service --watch` re-synths + re-replaces each booted
-   * service's single replica on source change. `start-alb`'s strategy
+   * Issue #214 (Phase 1 + Phase 2) — opt this strategy into the
+   * emulator's `--watch` reload pathway. `serviceStrategy()` sets this
+   * true so a `cdkl start-service --watch` re-synths + per-replica
+   * rolls each booted service on source change. `start-alb`'s strategy
    * leaves this falsy (Phase 3 will turn it on once the front-door pool
    * supports atomic swap) — the gate prevents a host CLI that wires
    * `start-alb` through this engine from accidentally exposing watch
@@ -697,51 +703,43 @@ export async function runEcsServiceEmulator(
 }
 
 /**
- * Phase 1 of issue #214 — refuse a `--watch` run when the resolved service's
- * effective replica count (`min(template DesiredCount, --max-tasks)`) is > 1.
- * The Phase 1 reload pathway tears the single replica down before booting the
- * new one; multi-replica services would therefore drop multiple connections at
- * once and lose any in-memory state. Multi-replica rolling reload is Phase 2
- * of issue #214. Exposed for the unit test that locks the gating logic
- * (the integ test only covers the single-replica happy path).
+ * Phase 2 of issue #214 — multi-replica rolling reload cycle for
+ * `cdkl start-service --watch`. Mirrors start-api's `reloadAllServers`
+ * shape but per-ECS-service, replacing Phase 1's "tear single replica
+ * down, boot fresh" sequence with a per-replica rolling loop so the
+ * service stays available end-to-end:
  *
- * @internal
- */
-export function assertSingleReplicaForWatch(
-  service: { serviceName: string; desiredCount: number },
-  options: Pick<EcsServiceEmulatorOptions, 'watch' | 'maxTasks'>
-): void {
-  if (options.watch !== true) return;
-  const effective = computeReplicaCount(service.desiredCount, options.maxTasks);
-  if (effective > 1) {
-    throw new LocalStartServiceError(
-      `--watch is single-replica only in v1; service '${service.serviceName}' resolves to ` +
-        `${effective} replica(s) (template DesiredCount=${service.desiredCount}, ` +
-        `--max-tasks=${options.maxTasks}). Lower --max-tasks to 1, drop the DesiredCount in your ` +
-        'CDK code, or drop --watch. Multi-replica rolling reload is Phase 2 of issue #214.'
-    );
-  }
-}
-
-/**
- * Phase 1 of issue #214 — single-replica rebuild-on-change reload cycle.
- * Mirrors start-api's `reloadAllServers` shape but per-ECS-service:
- *
- *   1. Re-runs `synthesizer.synthesize(synthOpts)` once (failure → warn +
- *      keep every replica serving).
+ *   1. Re-runs `synthesizer.synthesize(synthOpts)` once (failure → warn
+ *      + keep every replica serving).
  *   2. Re-runs `strategy.resolveBoots(stacks, resolvedTargets)` so a
- *      target that disappears from the CDK code is detected (warn + keep
- *      previous).
+ *      target that disappears from the CDK code is detected (warn +
+ *      keep previous).
  *   3. Refreshes `cloudMapIndexByStack` from the new stacks so a peer
  *      service's namespace / discovery-name rename is picked up by the
- *      next replica's Cloud Map publish.
- *   4. Per-target: tear the existing controller down, boot a fresh one
- *      against the new stacks. A per-target boot failure logs warn and
- *      leaves that target dark until the next save with a clean boot.
+ *      next shadow replica's Cloud Map publish.
+ *   4. Per-target:
+ *      a. Resolves the new (service, runnerOpts) pair against the new
+ *         stacks (cross-stack env / assume-task-role / `--env-vars`
+ *         all re-resolved fresh).
+ *      b. For each existing replica `i` in 0..min(old, new) - 1:
+ *         {@link rollServiceReplica} boots a shadow replica with the
+ *         new image under a bumped generation suffix, atomically swaps
+ *         Cloud Map / front-door registrations, then stops + cleans up
+ *         the old replica. Sequential — only one replica is mid-swap
+ *         at a time, so peer services + the front-door pool always
+ *         have at least N-1 live endpoints during a roll.
  *
- * Phase 1 trade-off: each target's replica briefly stops (between old
- * `controller.shutdown()` and new `bootOneTarget()` finishing). Phase 2 of
- * #214 swaps that for a rolling deploy across multiple replicas.
+ * Phase 2 trade-off: when the effective replica count changes mid-roll
+ * (the user bumped `DesiredCount` or `--max-tasks` flips a clamp),
+ * the rolling pathway keeps the existing replicas on the new image
+ * but does not scale up / down to match the new count. A warn surfaces
+ * so the user can `^C` + re-launch to scale; a richer "scale + roll"
+ * mode is left to a follow-up under #214.
+ *
+ * Per-replica boot failure during the roll: the OLD replica stays
+ * live (the shadow was torn down by `rollServiceReplica`), the
+ * remaining replicas are still rolled, and the failure is surfaced
+ * via the logger so the user can fix the source + save again.
  */
 async function reloadAllServices(args: {
   perTarget: Array<{
@@ -792,9 +790,10 @@ async function reloadAllServices(args: {
   for (const w of warnings) logger.warn(w);
   const newBootByTarget = new Map(newBoots.map((b) => [b.target, b] as const));
 
-  // Refresh the per-stack Cloud Map index in place so the bootReplica
-  // publish path reads the new namespace / discovery-name shape on
-  // reload (the discovery object holds the same map reference).
+  // Refresh the per-stack Cloud Map index in place so the rolling
+  // primitive's shadow-boot publish path reads the new namespace /
+  // discovery-name shape (the discovery object holds the same map
+  // reference, so the runner observes the update without a re-wire).
   cloudMapIndexByStack.clear();
   for (const stack of stacks) {
     const index = buildCloudMapIndex(stack);
@@ -808,77 +807,181 @@ async function reloadAllServices(args: {
     if (!newBoot) {
       logger.warn(
         `Reload: target '${pt.boot.target}' no longer resolves to a service in the synthesized ` +
-          'app; keeping the previous replica serving.'
+          'app; keeping the previous replica(s) serving.'
       );
       continue;
     }
-    const oldController = pt.controller;
-    try {
-      // Tear the previous replica down BEFORE booting the new one so the
-      // single-replica `--host-port` publish does not collide on the
-      // host port. Brief downtime per target is the Phase 1 trade-off;
-      // Phase 2 of #214 will overlap via rolling deploy across multiple
-      // replicas.
-      if (oldController) await oldController.shutdown();
-    } catch (err) {
+    const controller = pt.controller;
+    if (!controller) {
       logger.warn(
-        `Reload: shutdown of previous '${pt.boot.target}' controller failed ` +
-          `(${err instanceof Error ? err.message : String(err)}); attempting re-boot anyway.`
+        `Reload: target '${pt.boot.target}' has no live controller (previous boot likely ` +
+          'failed); skipping roll. `^C` and re-run start-service to recover.'
       );
+      continue;
     }
-    const newRunState = createServiceRunState();
-    let newController: ServiceController;
+    await rollOneTarget({
+      controller,
+      newBoot,
+      stacks,
+      options,
+      discovery,
+      skipPull,
+      extraStateProviders,
+      profileCredsFile,
+      frontDoorPools: frontDoorByService.get(newBoot.target),
+      suppressLoadBalancerWarning: strategy.suppressLoadBalancerWarning === true,
+      logger,
+    });
+  }
+
+  logger.info('Reload complete.');
+}
+
+/**
+ * Phase 2 of issue #214 — roll every replica of one target through the
+ * new task descriptor sequentially. Extracted from {@link reloadAllServices}
+ * so the per-target try/catch logic (synth-failure / resolve-failure /
+ * per-replica boot-failure) stays uniform and readable.
+ *
+ * State-provider lifetime mirrors {@link bootOneTarget}: a fresh
+ * `LocalStateProvider` is created at the top, disposed in `finally`,
+ * even when the resolve / roll throws.
+ */
+async function rollOneTarget(args: {
+  controller: ServiceController;
+  newBoot: ServiceBoot;
+  stacks: StackInfo[];
+  options: EcsServiceEmulatorOptions;
+  discovery: ServiceDiscoveryContext;
+  skipPull: boolean;
+  extraStateProviders: ExtraStateProviders | undefined;
+  profileCredsFile: ProfileCredentialsFile | undefined;
+  frontDoorPools: FrontDoorServicePools | undefined;
+  suppressLoadBalancerWarning: boolean;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<void> {
+  const {
+    controller,
+    newBoot,
+    stacks,
+    options,
+    discovery,
+    skipPull,
+    extraStateProviders,
+    profileCredsFile,
+    frontDoorPools,
+    suppressLoadBalancerWarning,
+    logger,
+  } = args;
+
+  const parsed = parseEcsTarget(newBoot.target);
+  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  const stateProvider = createLocalStateProvider(
+    options,
+    candidate?.stackName ?? '',
+    await resolveCfnFallbackRegion(options, candidate?.region),
+    extraStateProviders
+  );
+
+  try {
+    let resolved: { service: ResolvedEcsService; runnerOpts: ServiceRunnerOptions };
     try {
-      newController = await bootOneTarget(
+      resolved = await resolveServiceAndRunnerOpts(
         newBoot,
-        newRunState,
         stacks,
         options,
         discovery,
         skipPull,
-        extraStateProviders,
+        stateProvider,
         profileCredsFile,
-        frontDoorByService.get(newBoot.target),
-        strategy.suppressLoadBalancerWarning === true
+        frontDoorPools,
+        suppressLoadBalancerWarning,
+        { quiet: true }
       );
     } catch (err) {
-      // A `LocalStartServiceError` thrown by the boot already names the
-      // actionable fix (most often `assertSingleReplicaForWatch` tripping
-      // when the user bumped `DesiredCount` mid-watch). Surface that
-      // message verbatim instead of the generic "save again with a clean
-      // boot" hint, which would otherwise loop the user — saving again
-      // with the same multi-replica template will fail the gate the same
-      // way every time. The generic hint stays for unexpected boot
-      // failures (docker errors, asset-build failures, etc.) where
-      // re-saving plausibly recovers.
-      if (err instanceof LocalStartServiceError) {
-        logger.error(`Reload of '${pt.boot.target}' was rejected: ${err.message}`);
-      } else {
+      // Resolution failure is recoverable on the next save (e.g. the
+      // user added a Service Connect block referencing an undeclared
+      // namespace and is mid-edit). Keep every existing replica
+      // serving and tell the user what tripped.
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.error(
+        `Reload of '${newBoot.target}' was rejected: ${reason}. Existing replica(s) keep serving.`
+      );
+      return;
+    }
+    const { service: newService, runnerOpts: newRunnerOpts } = resolved;
+
+    // Snapshot the active replicas (non-shutting-down) BEFORE the roll
+    // so subsequent `controller.runState.replicas.push(shadow)` doesn't
+    // appear in the iteration set. Snapshot by reference identity so
+    // each iteration finds its replica by index in runState.replicas
+    // regardless of intra-iteration mutations.
+    const oldReplicas = controller.runState.replicas.filter((r) => !r.shuttingDown);
+    if (oldReplicas.length === 0) {
+      logger.warn(
+        `Reload of '${newBoot.target}': no live replicas to roll (all shutting down). ` +
+          '`^C` and re-run start-service to recover.'
+      );
+      return;
+    }
+
+    // Effective new replica count (clamped by --max-tasks). When it
+    // differs from the LIVE replica count (the snapshot of non-
+    // shutting-down replicas), the rolling pathway still rolls
+    // min(old, new) replicas through the new task definition but does
+    // not add / remove the difference — scale-during-watch is left to
+    // a follow-up under #214. Compare against `oldReplicas.length`
+    // (the live count, refreshed every save) rather than
+    // `controller.service.desiredCount` (the original boot's value,
+    // never updated across rolls) so a user who saves once at
+    // `DesiredCount: 2`, then saves again at the same value, does not
+    // see the warn twice.
+    if (newService.desiredCount !== oldReplicas.length) {
+      logger.warn(
+        `Reload of '${newBoot.target}': service DesiredCount=${newService.desiredCount} ` +
+          `does not match the ${oldReplicas.length} live replica(s); rolling existing replicas ` +
+          'only — scale changes during --watch are not yet supported. `^C` and re-run ' +
+          'start-service to apply the new replica count.'
+      );
+    }
+
+    logger.info(
+      `Reload of '${newBoot.target}': rolling ${oldReplicas.length} replica(s) ` +
+        'one at a time (start new shadow → swap registrations → stop old).'
+    );
+
+    for (const oldInstance of oldReplicas) {
+      const idx = controller.runState.replicas.indexOf(oldInstance);
+      if (idx === -1) {
+        // The watcher tore this replica down between snapshot + roll.
+        // Skip; the next save can pick up the gap.
+        logger.warn(
+          `Reload of '${newBoot.target}': replica r${oldInstance.index} ` +
+            `(gen ${oldInstance.generation}) vanished before its roll; skipping.`
+        );
+        continue;
+      }
+      try {
+        await rollServiceReplica({
+          controller,
+          oldReplicaIndex: idx,
+          newService,
+          newOptions: newRunnerOpts,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
         logger.error(
-          `Reload: re-boot of '${pt.boot.target}' failed ` +
-            `(${err instanceof Error ? err.message : String(err)}). ` +
-            'The previous replica was torn down; save again with a clean boot to re-start it, or ^C ' +
-            'and re-run start-service.'
+          `Reload of '${newBoot.target}' replica r${oldInstance.index}: ` +
+            `${reason}. The old replica keeps serving; remaining replicas will still be rolled.`
         );
       }
-      // Tear down any partial docker state that the failed boot left in
-      // `newRunState.replicas` so cleanup() doesn't observe two states
-      // for the same `pt` slot. The `pt.controller` reference is left
-      // pointing at the (already-shutdown) old controller; its
-      // `shutdown()` is idempotent, so the eventual cleanup pass safely
-      // re-invokes it without resurrecting any docker resources.
-      await Promise.allSettled(
-        newRunState.replicas.map((r) =>
-          cleanupEcsRun(r.state, { keepRunning: false }).catch(() => undefined)
-        )
-      );
-      continue;
     }
-    pt.runState = newRunState;
-    pt.controller = newController;
+    // `pt.runState` and `pt.controller` are unchanged across a Phase 2
+    // roll — the controller is preserved and the replicas it tracks
+    // were swapped in place by `rollServiceReplica`.
+  } finally {
+    if (stateProvider) stateProvider.dispose();
   }
-
-  logger.info('Reload complete.');
 }
 
 async function bootOneTarget(
@@ -932,26 +1035,77 @@ async function runOneTarget(
   frontDoorPools: FrontDoorServicePools | undefined,
   suppressLoadBalancerWarning: boolean
 ): Promise<ServiceController> {
+  const { service, runnerOpts } = await resolveServiceAndRunnerOpts(
+    boot,
+    stacks,
+    options,
+    discovery,
+    skipPull,
+    stateProvider,
+    profileCredsFile,
+    frontDoorPools,
+    suppressLoadBalancerWarning
+  );
+  return startEcsService(service, runnerOpts, runState);
+}
+
+/**
+ * Resolve a {@link ServiceBoot} to its `(ResolvedEcsService, ServiceRunnerOptions)`
+ * pair. Shared by the initial boot path (`runOneTarget`) and the
+ * Phase 2 of issue #214 rolling-reload pathway (`reloadAllServices`).
+ *
+ * Walks the same steps the original `runOneTarget` body did:
+ *   1. Build the per-target image-resolution context (resolves
+ *      asset / `Fn::Sub` / `--from-cfn-stack` overlays for image URIs).
+ *   2. Resolve the ECS service target into a {@link ResolvedEcsService}.
+ *   3. Apply the cross-stack env / secret resolver when the task
+ *      references `Fn::ImportValue` / `Fn::GetStackOutput` across
+ *      stacks.
+ *   4. Resolve task-role credentials when `--assume-task-role` is set.
+ *   5. Resolve `--env-vars` overrides.
+ *   6. Compose {@link ServiceRunnerOptions} (including the shared
+ *      `discovery` + per-service `frontDoor` pools the rolling
+ *      reload depends on for atomic registry swaps).
+ *
+ * Side effects: logs the target descriptor + Service Connect /
+ * ServiceRegistries banners ONLY on the initial boot. The reload
+ * pathway calls this on every save; the banners would otherwise
+ * spam the console once per save. Pass `quiet: true` to skip them.
+ */
+async function resolveServiceAndRunnerOpts(
+  boot: ServiceBoot,
+  stacks: StackInfo[],
+  options: EcsServiceEmulatorOptions,
+  discovery: ServiceDiscoveryContext,
+  skipPull: boolean,
+  stateProvider: LocalStateProvider | undefined,
+  profileCredsFile: ProfileCredentialsFile | undefined,
+  frontDoorPools: FrontDoorServicePools | undefined,
+  suppressLoadBalancerWarning: boolean,
+  opts: { quiet?: boolean } = {}
+): Promise<{ service: ResolvedEcsService; runnerOpts: ServiceRunnerOptions }> {
   const logger = getLogger();
   const target = boot.target;
+  const quiet = opts.quiet === true;
 
   const imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
   const service = resolveEcsServiceTarget(target, stacks, imageContext, {
     suppressLoadBalancerWarning,
   });
-  logger.info(
-    `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
-      `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
-      `task=${service.task.taskDefinitionLogicalId})`
-  );
-  assertSingleReplicaForWatch(service, options);
-  if (service.serviceConnect) {
+  if (!quiet) {
+    logger.info(
+      `Target: ${service.stack.stackName}/${service.serviceLogicalId} ` +
+        `(service=${service.serviceName}, desiredCount=${service.desiredCount}, ` +
+        `task=${service.task.taskDefinitionLogicalId})`
+    );
+  }
+  if (!quiet && service.serviceConnect) {
     logger.info(
       `Service Connect: namespace='${service.serviceConnect.namespaceName}', ` +
         `${service.serviceConnect.services.length} service(s) registered for peer discovery.`
     );
   }
-  if (service.serviceRegistries.length > 0) {
+  if (!quiet && service.serviceRegistries.length > 0) {
     logger.info(`Cloud Map: ${service.serviceRegistries.length} ServiceRegistry binding(s).`);
   }
 
@@ -1047,7 +1201,7 @@ async function runOneTarget(
       : {}),
   };
 
-  return startEcsService(service, runnerOpts, runState);
+  return { service, runnerOpts };
 }
 
 /**

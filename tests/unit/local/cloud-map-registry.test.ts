@@ -96,6 +96,61 @@ describe('CloudMapRegistry', () => {
     });
   });
 
+  describe('rolling-reload register+unregister sequence (Phase 2 of issue #214)', () => {
+    it('atomic swap window: register-new then unregister-old never observes a missing endpoint', () => {
+      // The rolling reload's atomic swap is implemented as the pair
+      // (1) register new under a bumped owner-key suffix, then
+      // (2) unregister old. The intermediate state where BOTH are
+      // present is observable but transient: a peer that rebuilds its
+      // `--add-host` list during the swap sees `register` already
+      // landed (so resolution succeeds), then `unregister` lands and
+      // only the new endpoint survives.
+      //
+      // This test locks the registry's behavior across the sequence:
+      // never observe ZERO endpoints for the fqdn between the two
+      // mutations; ALWAYS see at least the OLD endpoint until the
+      // unregister; ALWAYS see only the NEW endpoint after.
+      const r = new CloudMapRegistry();
+      const oldHandle = r.register('ns.local', 'svc', {
+        ip: '1.1.1.1',
+        port: 80,
+        ownerKey: 'Svc:r0',
+      });
+      // Step 1: register new under a bumped owner-key suffix.
+      const newHandle = r.register('ns.local', 'svc', {
+        ip: '2.2.2.2',
+        port: 80,
+        ownerKey: 'Svc:r0:g1',
+      });
+      // Intermediate observation: BOTH endpoints reachable.
+      const mid = r.lookup('ns.local', 'svc');
+      expect(mid?.length).toBe(2);
+      // Step 2: unregister old.
+      expect(r.unregister(oldHandle)).toBe(true);
+      // Final observation: only the new endpoint survives.
+      const after = r.lookup('ns.local', 'svc');
+      expect(after?.length).toBe(1);
+      expect(after?.[0]?.ip).toBe('2.2.2.2');
+      expect(newHandle.ownerKey).toBe('Svc:r0:g1');
+    });
+
+    it('keeps every OTHER replica registered under the same fqdn untouched across the swap', () => {
+      // A 2-replica service rolling replica 0: replica 1's registration
+      // must survive untouched so consumers always have at least one
+      // live endpoint during the swap window.
+      const r = new CloudMapRegistry();
+      const r0 = r.register('ns.local', 'svc', { ip: '1.1.1.1', port: 80, ownerKey: 'Svc:r0' });
+      r.register('ns.local', 'svc', { ip: '2.2.2.2', port: 80, ownerKey: 'Svc:r1' });
+      // Register new (gen 1) under a bumped key, then drop old.
+      r.register('ns.local', 'svc', { ip: '3.3.3.3', port: 80, ownerKey: 'Svc:r0:g1' });
+      r.unregister(r0);
+      const left = r.lookup('ns.local', 'svc');
+      expect(left?.length).toBe(2);
+      const ownerKeys = (left ?? []).map((e) => e.ownerKey).sort();
+      expect(ownerKeys).toEqual(['Svc:r0:g1', 'Svc:r1']);
+    });
+  });
+
   describe('registerAlias / lookupAlias', () => {
     it('maps a bare alias to the target fqdn', () => {
       const r = new CloudMapRegistry();

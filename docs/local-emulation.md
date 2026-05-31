@@ -1386,7 +1386,7 @@ error.
 | `--no-pull` | off | Skip `docker pull` on every container image and the metadata sidecar. |
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
-| `--watch` | off | Hot reload: re-synth + re-resolve every booted service and replace its single replica when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. **Single-replica services only in v1** — a service whose effective replica count (`min(template DesiredCount, --max-tasks)`) exceeds 1 errors out (multi-replica rolling reload is Phase 2 of issue #214). Synth failures keep the previous replica serving (warn-and-continue, never crashes the emulator). Per-target trade-off: the old replica is torn down before the new one boots, so there is a brief downtime window per save; Phase 2 will overlap via rolling deploy. |
+| `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes. Honors `cdk.json` `watch.include` / `watch.exclude` (mirrors `cdk watch`); `cdk.out/`, `node_modules`, and `.git` are always excluded so the reload's own re-synth writes never re-trigger it. 500ms debounce. Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port, atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue, never crashes the emulator). |
 
 ### `start-service --watch` (hot reload)
 
@@ -1395,11 +1395,48 @@ debounced [chokidar](https://github.com/paulmillr/chokidar)-backed
 file watcher that `cdkl start-api --watch` uses, rooted at the synth
 working directory (where `cdk.json` lives). On a debounced firing
 (500ms after the last save) the emulator re-synths, re-resolves every
-booted service against the new stacks, and per-target tears the old
-replica down before booting a new one from the new task definition.
-No second terminal running `cdk watch` / `cdk synth` is needed; an
-edit to a container handler or task definition flows through to the
-next request without `^C` / re-launch.
+booted service against the new stacks, and per-target rolls each
+replica through the new task definition one at a time. No second
+terminal running `cdk watch` / `cdk synth` is needed; an edit to a
+container handler or task definition flows through to the next
+request without `^C` / re-launch.
+
+Per-replica rolling deploy (Phase 2 of issue #214):
+
+For each replica `i` in the old set:
+
+1. **Boot the shadow.** A fresh "shadow" replica is started with the
+   new image under a bumped generation suffix
+   (`<service>-svc-<svcLogical>-r<i>-g<gen>` docker network /
+   `<service>:r<i>:g<gen>` Cloud Map ownerKey), so the shadow's
+   docker / registry names don't collide with the dying old replica's.
+2. **TCP-ready probe.** The shadow's first essential-container port
+   is probed via TCP-connect on the shadow's docker network IP, polled
+   every 100ms up to 10s. Without this gate, the swap could land
+   before the app inside the new image binds its listener, causing
+   peer requests routed to the shadow to see ECONNREFUSED for the
+   first few hundred ms after the roll. A timeout warns + swaps anyway
+   (the dying old replica's image is about to be torn down — the
+   shadow's new image is the user's intent).
+3. **Atomic registry swap.** The shadow is already registered in
+   Cloud Map / Service Connect under a fresh ownerKey (the runner's
+   normal publish path). The old replica's registrations are dropped
+   in one synchronous Map mutation — consumers rebuilding their
+   `--add-host` set during the swap window still see at least one
+   live endpoint per fqdn.
+4. **Retire the old.** The old replica's docker container + network
+   are torn down via the same `cleanupEcsRun` path SIGINT uses.
+
+A continuous external probe (e.g. a sidecar curl loop against the
+Service Connect DNS alias) observes zero connection refusals across
+the roll: at every instant in the swap window at least one live
+replica carries the alias.
+
+Synth-failure semantics mirror `start-api --watch`: a failed re-synth
+warns and leaves every existing replica on the previous image. A
+per-replica boot failure during the roll keeps the OLD replica
+serving and surfaces the error so the remaining replicas can still
+be rolled.
 
 The watch set honors `cdk.json`'s `watch.include` / `watch.exclude`
 globs the same way `start-api --watch` does — see the
@@ -1407,17 +1444,13 @@ globs the same way `start-api --watch` does — see the
 exact include / exclude / synth-failure semantics; they are
 identical here.
 
-Phase 1 trade-offs (issue #214):
+Trade-offs (issue #214 follow-ups):
 
-- **Single-replica only.** A service whose effective replica count
-  (`min(template DesiredCount, --max-tasks)`) is > 1 errors out with
-  an actionable hint — lower `--max-tasks` to 1, drop the
-  `DesiredCount`, or drop `--watch`. Phase 2 of #214 adds the
-  multi-replica rolling deploy.
-- **Brief downtime per save.** The Phase 1 reload tears the old
-  replica down before booting the new one (single-replica services
-  have no second replica to forward to). Phase 2 will overlap via
-  rolling deploy across multiple replicas.
+- **No scale-during-watch.** Bumping the service's `DesiredCount`
+  (or flipping `--max-tasks`) mid-watch rolls every EXISTING replica
+  through the new task definition but does NOT add / remove replicas
+  to match the new count. A warn surfaces so the user can `^C` and
+  re-launch to apply the new replica count.
 - **No bind-mount fast path.** Every reload rebuilds the image (the
   same path the initial boot takes). Phase 4 of #214 adds an opt-in
   bind-mount source mode that skips the rebuild for source-only
