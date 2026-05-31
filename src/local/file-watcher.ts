@@ -30,8 +30,17 @@ export interface FileWatcher {
 export interface FileWatcherOptions {
   /** Initial set of paths to watch. */
   paths: readonly string[];
-  /** Callback fired (debounced) when any watched path changes. */
-  onChange: () => void;
+  /**
+   * Callback fired (debounced) when any watched path changes. The set
+   * of paths that triggered the firing in this debounce window is
+   * passed in (de-duplicated, raw chokidar paths — typically absolute
+   * when the watched root was absolute, otherwise relative to the
+   * cwd). The callback may ignore the argument; the array is provided
+   * for callers that need to classify what changed (Phase 4 of issue
+   * #214 — the ECS service emulator's `--watch` reload pathway routes
+   * source-only edits through a fast path that skips `docker build`).
+   */
+  onChange: (changedPaths: readonly string[]) => void;
   /** Debounce window in ms. Default 500ms (issue brief). */
   debounceMs?: number;
   /**
@@ -92,6 +101,11 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   });
 
   let timer: NodeJS.Timeout | null = null;
+  // Per-debounce-window accumulator. Reset to a fresh Set at the start
+  // of each new window (= when `fire()` arms the timer with the
+  // accumulator empty). Each qualifying chokidar event adds its path.
+  // The callback receives the de-duplicated path array on flush.
+  let pending = new Set<string>();
   // `closed` is checked in BOTH `fire()` (so a chokidar event arriving
   // mid-`close()` doesn't schedule a fresh debounce timer) AND inside
   // the timer callback (so a timer already armed before `close()` was
@@ -101,14 +115,17 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   // chokidar event arriving DURING that await would arm a fresh timer
   // whose callback then ran `onChange()` against a now-closed server.
   let closed = false;
-  const fire = (): void => {
+  const fire = (path: string): void => {
     if (closed) return;
+    pending.add(path);
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
       if (closed) return;
+      const changed = Array.from(pending);
+      pending = new Set<string>();
       try {
-        options.onChange();
+        options.onChange(changed);
       } catch (err) {
         logger.warn(`onChange callback threw: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -121,7 +138,7 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   // qualifying event still reloads.
   const onEvent = (path: string): void => {
     if (options.shouldTrigger && !options.shouldTrigger(path)) return;
-    fire();
+    fire(path);
   };
 
   // Subscribe to every file-changing event chokidar emits. We

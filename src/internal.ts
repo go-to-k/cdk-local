@@ -426,6 +426,25 @@ export {
   type FileWatcher,
   type FileWatcherOptions,
 } from './local/file-watcher.js';
+
+/**
+ * Phase 4 of issue #214 — `cdkl start-service --watch` / `cdkl start-alb
+ * --watch` source-change classifier. Takes the chokidar-reported set of
+ * paths that fired in one debounce window plus a per-target asset
+ * context (post-synth asset hash + staged source directory + Dockerfile
+ * basename) and returns a verdict the rolling-reload pathway dispatches
+ * on: `'rebuild'` runs the Phase 2/3 shadow-boot rolling primitive,
+ * `'soft-reload'` runs the Phase 4 `docker cp` + `docker restart`
+ * bind-mount fast path. Defaults to `'rebuild'` on any ambiguity —
+ * slow-but-correct is strictly better than fast-but-stale. Pure +
+ * synchronous; exposed so a consuming host that wraps the engine can
+ * re-use the same classification rules instead of re-implementing them.
+ */
+export {
+  classifySourceChange,
+  type ReloadAssetContext,
+  type ReloadVerdict,
+} from './local/source-change-classifier.js';
 export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
 

@@ -35,6 +35,7 @@ import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import {
   createServiceRunState,
   rollServiceReplica,
+  softReloadReplica,
   startEcsService,
   type ServiceController,
   type ServiceDiscoveryContext,
@@ -42,6 +43,13 @@ import {
   type ServiceRunState,
 } from '../../local/ecs-service-runner.js';
 import type { ResolvedEcsService } from '../../local/ecs-service-resolver.js';
+import {
+  classifySourceChange,
+  type ReloadAssetContext,
+  type ReloadVerdict,
+} from '../../local/source-change-classifier.js';
+import { AssetManifestLoader } from '../../assets/asset-manifest-loader.js';
+import path from 'node:path';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   cleanupEcsRun,
@@ -648,8 +656,10 @@ export async function runEcsServiceEmulator(
         paths: [watchRoot],
         ignored,
         shouldTrigger,
-        onChange: () => {
-          logger.info('Detected source change; reloading service(s)...');
+        onChange: (changedPaths) => {
+          logger.info(
+            `Detected source change (${changedPaths.length} path(s)); reloading service(s)...`
+          );
           const next = reloadChain.then(() =>
             reloadAllServices({
               perTarget,
@@ -664,6 +674,7 @@ export async function runEcsServiceEmulator(
               extraStateProviders,
               profileCredsFile,
               frontDoorByService,
+              changedPaths,
               logger,
             })
           );
@@ -709,11 +720,22 @@ export async function runEcsServiceEmulator(
 }
 
 /**
- * Phase 2 of issue #214 — multi-replica rolling reload cycle for
- * `cdkl start-service --watch`. Mirrors start-api's `reloadAllServers`
- * shape but per-ECS-service, replacing Phase 1's "tear single replica
- * down, boot fresh" sequence with a per-replica rolling loop so the
- * service stays available end-to-end:
+ * Phase 2 + Phase 4 of issue #214 — multi-replica reload cycle for
+ * `cdkl start-service --watch` (Phase 2) and `cdkl start-alb --watch`
+ * (Phase 3 wires the same loop). Mirrors start-api's `reloadAllServers`
+ * shape but per-ECS-service. Per-target verdict from
+ * {@link classifySourceChange} (Phase 4) picks the per-replica action:
+ *
+ *   - `'soft-reload'` → {@link softReloadReplica} runs `docker cp`
+ *     + `docker restart` against the live replica. No `docker build`,
+ *     no shadow boot, no Cloud Map / front-door pool swap — the
+ *     container's IP + host port are preserved across the restart, so
+ *     existing registrations stay valid. Fast path (~sub-second per
+ *     replica for typical interpreted-language handlers).
+ *   - `'rebuild'` → {@link rollServiceReplica}, the Phase 1-3 path,
+ *     replacing Phase 1's "tear single replica down, boot fresh"
+ *     sequence with a per-replica rolling loop so the service stays
+ *     available end-to-end:
  *
  *   1. Re-runs `synthesizer.synthesize(synthOpts)` once (failure → warn
  *      + keep every replica serving).
@@ -764,6 +786,14 @@ async function reloadAllServices(args: {
   extraStateProviders: ExtraStateProviders | undefined;
   profileCredsFile: ProfileCredentialsFile | undefined;
   frontDoorByService: Map<string, FrontDoorServicePools>;
+  /**
+   * Phase 4 of issue #214 — the set of chokidar-reported paths that
+   * triggered this reload. The classifier (run per target, after the
+   * fresh synth has updated the asset manifests) decides whether each
+   * target rolls via the Phase 2/3 rebuild primitive or the Phase 4
+   * bind-mount fast path based on this set.
+   */
+  changedPaths: readonly string[];
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
   const {
@@ -779,6 +809,7 @@ async function reloadAllServices(args: {
     extraStateProviders,
     profileCredsFile,
     frontDoorByService,
+    changedPaths,
     logger,
   } = args;
 
@@ -818,6 +849,17 @@ async function reloadAllServices(args: {
     for (const w of index.warnings) logger.warn(w);
   }
 
+  // Phase 4 of issue #214 — pre-resolve a per-target asset context the
+  // classifier consumes. `loadAssetContextForTarget` parses the freshly-
+  // synthed `<stackName>.assets.json` (idempotent, cheap), pulls out the
+  // target's docker-image asset hash + staged source directory, and
+  // returns undefined when the target's image isn't a CDK docker-image
+  // asset (ECR / public pin — the fast path has no source to copy
+  // anyway). Loaded once per reload + target so the classifier stays
+  // pure; `cdkOutDir` is `options.output` (the --output CLI flag).
+  const cdkOutDir = options.output;
+  const assetLoader = new AssetManifestLoader();
+
   // Per-target sequential reload — keep docker churn predictable.
   for (const pt of perTarget) {
     const newBoot = newBootByTarget.get(pt.boot.target);
@@ -836,6 +878,35 @@ async function reloadAllServices(args: {
       );
       continue;
     }
+    // Phase 4 — classify this firing for THIS target. The classifier
+    // is pure + synchronous; the only async work is the asset
+    // manifest load which we do once per target per reload.
+    let verdict: ReloadVerdict = { kind: 'rebuild', reason: 'classifier not consulted' };
+    try {
+      const assetCtx = await loadAssetContextForTarget({
+        target: newBoot.target,
+        controller,
+        stacks,
+        cdkOutDir,
+        assetLoader,
+        logger,
+      });
+      verdict = classifySourceChange(changedPaths, assetCtx);
+      logger.info(`Reload of '${newBoot.target}': verdict=${verdict.kind} (${verdict.reason}).`);
+    } catch (err) {
+      // A classifier-context build failure (e.g. asset manifest
+      // malformed, asset hash mismatch) is non-fatal: fall back to
+      // the Phase 1-3 rebuild path which carries no asset-context
+      // dependency.
+      logger.warn(
+        `Reload of '${newBoot.target}': classifier context unavailable ` +
+          `(${err instanceof Error ? err.message : String(err)}); falling back to rebuild.`
+      );
+      verdict = {
+        kind: 'rebuild',
+        reason: 'classifier context unavailable; falling back to rebuild',
+      };
+    }
     await rollOneTarget({
       controller,
       newBoot,
@@ -847,11 +918,104 @@ async function reloadAllServices(args: {
       profileCredsFile,
       frontDoorPools: frontDoorByService.get(newBoot.target),
       suppressLoadBalancerWarning: strategy.suppressLoadBalancerWarning === true,
+      verdict,
       logger,
     });
   }
 
   logger.info('Reload complete.');
+}
+
+/**
+ * Phase 4 of issue #214 — load the per-target asset context the
+ * source-change classifier consumes. Resolves the target's docker-image
+ * asset hash via the freshly-synthed `<stackName>.assets.json` and
+ * derives the staged source directory + Dockerfile basename.
+ *
+ * Returns `undefined` (and logs at debug) when:
+ *   - The target's image isn't a CDK docker-image asset (ECR / public
+ *     registry pin). The classifier treats `undefined` as `rebuild`
+ *     because there's no local source tree to copy.
+ *   - The asset manifest can't be loaded (stack not synthed yet, file
+ *     missing). Same treatment — defensive default to `rebuild`.
+ *   - The asset hash isn't in the manifest's `dockerImages`. Same.
+ *
+ * Throws on a malformed manifest (parse failure surfaced via
+ * {@link AssetManifestLoader}) so the caller can fall back to rebuild
+ * with a warn line that explains why the classifier couldn't run.
+ */
+async function loadAssetContextForTarget(args: {
+  target: string;
+  controller: ServiceController;
+  stacks: StackInfo[];
+  cdkOutDir: string;
+  assetLoader: AssetManifestLoader;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<ReloadAssetContext | undefined> {
+  const { target, controller, stacks, cdkOutDir, assetLoader, logger } = args;
+  // Resolve the new task descriptor's image asset. We reuse the
+  // ALREADY-resolved `controller.service` for the OLD hash diagnostic
+  // (still on Phase 1-3 boot's image), and re-run the resolver on the
+  // fresh stacks to discover the NEW hash. Both lookups skip when the
+  // image isn't a CDK asset.
+  const parsed = parseEcsTarget(target);
+  const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+  if (!candidate) return undefined;
+  let newService: ResolvedEcsService;
+  try {
+    newService = resolveEcsServiceTarget(target, stacks, undefined, {
+      suppressLoadBalancerWarning: true,
+    });
+  } catch (err) {
+    logger.debug(
+      `loadAssetContextForTarget: target '${target}' could not be re-resolved against ` +
+        `the new stacks: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Classifier will see no asset context (rebuild).'
+    );
+    return undefined;
+  }
+  // Pick the FIRST essential container's image — same heuristic the
+  // soft-reload primitive uses to decide which container(s) to cycle.
+  // A multi-essential task with mixed image kinds (one CDK asset +
+  // one ECR pin) is rare; we treat the first essential's image as
+  // representative.
+  const essential =
+    newService.task.containers.find((c) => c.essential) ?? newService.task.containers[0];
+  if (!essential) return undefined;
+  if (essential.image.kind !== 'cdk-asset' || !essential.image.assetHash) {
+    return undefined;
+  }
+  const newAssetHash = essential.image.assetHash;
+  const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
+  if (!manifest) return undefined;
+  const newDockerImage = manifest.dockerImages?.[newAssetHash];
+  if (!newDockerImage) return undefined;
+  if (!newDockerImage.source.directory) {
+    // `executable`-mode docker asset (custom build script). No staged
+    // source directory to copy from.
+    return undefined;
+  }
+  const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
+  // OLD hash is purely diagnostic; pull from the controller's
+  // captured-at-boot service descriptor when available.
+  let oldAssetHash: string | undefined;
+  const oldEssential =
+    controller.service.task.containers.find((c) => c.essential) ??
+    controller.service.task.containers[0];
+  if (oldEssential?.image.kind === 'cdk-asset') {
+    oldAssetHash = oldEssential.image.assetHash;
+  }
+  return {
+    ...(oldAssetHash !== undefined && { oldAssetHash }),
+    newAssetHash,
+    newAssetSourceDir,
+    // Normalize to basename so a custom `source.dockerFile` value that
+    // includes a relative path (e.g. `dockerfiles/Prod.Dockerfile`)
+    // still matches the classifier's per-changed-path basename
+    // comparison — otherwise an edit to such a file would silently
+    // route to soft-reload and leave the running image stale.
+    dockerFile: path.basename(newDockerImage.source.dockerFile ?? 'Dockerfile'),
+  };
 }
 
 /**
@@ -875,6 +1039,15 @@ async function rollOneTarget(args: {
   profileCredsFile: ProfileCredentialsFile | undefined;
   frontDoorPools: FrontDoorServicePools | undefined;
   suppressLoadBalancerWarning: boolean;
+  /**
+   * Phase 4 of issue #214 — per-target classifier verdict produced by
+   * {@link classifySourceChange}. `'soft-reload'` skips the rebuild
+   * primitive and invokes {@link softReloadReplica} for each replica
+   * (`docker cp` + `docker restart`, no shadow boot, no atomic Cloud
+   * Map / front-door swap because the registrations don't change).
+   * `'rebuild'` falls through to the Phase 2/3 rolling primitive.
+   */
+  verdict: ReloadVerdict;
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
   const {
@@ -888,6 +1061,7 @@ async function rollOneTarget(args: {
     profileCredsFile,
     frontDoorPools,
     suppressLoadBalancerWarning,
+    verdict,
     logger,
   } = args;
 
@@ -962,10 +1136,26 @@ async function rollOneTarget(args: {
       );
     }
 
-    logger.info(
-      `Reload of '${newBoot.target}': rolling ${oldReplicas.length} replica(s) ` +
-        'one at a time (start new shadow → swap registrations → stop old).'
-    );
+    // Phase 4 of issue #214 — the verdict picks the per-replica
+    // action. `'soft-reload'` uses {@link softReloadReplica} (`docker
+    // cp` + `docker restart`, no shadow boot, no atomic Cloud Map /
+    // front-door swap because the registrations don't change);
+    // `'rebuild'` uses {@link rollServiceReplica} verbatim — the
+    // existing Phase 2/3 rolling primitive. The same per-replica
+    // sequential loop wraps both: external traffic still sees a roll
+    // that touches one replica at a time, and a per-replica failure
+    // is logged + the loop continues.
+    if (verdict.kind === 'soft-reload') {
+      logger.info(
+        `Reload of '${newBoot.target}': soft-reloading ${oldReplicas.length} replica(s) ` +
+          'one at a time (docker cp source → docker restart → TCP-ready probe; no rebuild).'
+      );
+    } else {
+      logger.info(
+        `Reload of '${newBoot.target}': rolling ${oldReplicas.length} replica(s) ` +
+          'one at a time (start new shadow → swap registrations → stop old).'
+      );
+    }
 
     for (const oldInstance of oldReplicas) {
       const idx = controller.runState.replicas.indexOf(oldInstance);
@@ -979,12 +1169,21 @@ async function rollOneTarget(args: {
         continue;
       }
       try {
-        await rollServiceReplica({
-          controller,
-          oldReplicaIndex: idx,
-          newService,
-          newOptions: newRunnerOpts,
-        });
+        if (verdict.kind === 'soft-reload') {
+          await softReloadReplica({
+            controller,
+            oldReplicaIndex: idx,
+            newService,
+            sourceDirToCopy: verdict.newAssetSourceDir,
+          });
+        } else {
+          await rollServiceReplica({
+            controller,
+            oldReplicaIndex: idx,
+            newService,
+            newOptions: newRunnerOpts,
+          });
+        }
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logger.error(
@@ -993,9 +1192,11 @@ async function rollOneTarget(args: {
         );
       }
     }
-    // `pt.runState` and `pt.controller` are unchanged across a Phase 2
-    // roll — the controller is preserved and the replicas it tracks
-    // were swapped in place by `rollServiceReplica`.
+    // `pt.runState` and `pt.controller` are unchanged across either a
+    // Phase 2 rolling reload or a Phase 4 soft-reload — the controller
+    // is preserved; rebuild swaps replicas in place via
+    // `rollServiceReplica`, soft-reload restarts them in place via
+    // `softReloadReplica`.
   } finally {
     if (stateProvider) stateProvider.dispose();
   }
