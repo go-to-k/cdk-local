@@ -246,6 +246,23 @@ Standard Lambda runtime env vars are always set:
 `AWS_LAMBDA_LOG_GROUP_NAME`, `AWS_LAMBDA_LOG_STREAM_NAME`. The
 handler's `context.*` fields look real.
 
+### `--env-vars` override keys
+
+Each top-level JSON key in an `--env-vars` file picks which target to
+overlay. The matching rules differ between Lambda / AgentCore (whose
+construct path and logical ID both identify a single env block) and
+ECS (whose env block lives inside a container element of the
+TaskDefinition, not at the resource level):
+
+| Target | Key shape | Match rule |
+| --- | --- | --- |
+| Every target | `Parameters` | Reserved literal; applied first to every container before any per-target overlay |
+| Lambda / AgentCore Runtime | CDK construct path (e.g. `MyStack/Fn`) | Compared against the resource's `Metadata['aws:cdk:path']`; prefix-matched so `MyStack/Fn` also catches the synthesized `MyStack/Fn/Resource` |
+| Lambda / AgentCore Runtime | CloudFormation logical ID (e.g. `MyStackFn1A2B3C`) | Compared against the synthesized top-level resource key in the template; exact match |
+| ECS container | Container Name (e.g. `AppContainer`) | Compared against `ContainerDefinitions[].Name` (= the `containerName` set in CDK); exact match. The TaskDefinition's own CDK path / logical ID is NOT accepted — it would identify the TaskDef but not which container's env block to overlay |
+
+A `null` value clears a key (across every shape above).
+
 ### CloudFormation-driven env recovery (`--from-cfn-stack`)
 
 For CDK apps deployed via the upstream CDK CLI (`cdk deploy` →
