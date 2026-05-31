@@ -150,11 +150,22 @@ const REBUILD_TRIGGER_BASENAMES: ReadonlySet<string> = new Set([
  * `mvn package` etc.). A copy of the source alone would leave the
  * running binary stale, so the user's intent must be a rebuild.
  *
- * Interpreted-language runtimes (Node — `.js` / `.mjs` / `.cjs` /
- * `.ts` when transpiled at runtime, Python — `.py`, Ruby — `.rb`,
- * shell — `.sh`) read source at process start, so a `docker cp` +
- * `docker restart` cycle picks them up. Those extensions are
- * NOT in this set.
+ * TypeScript source (`.ts` / `.tsx` / `.mts` / `.cts`) is treated as
+ * compiled because the dominant production-container pattern is to
+ * pre-compile the source via a Dockerfile `RUN tsc` / `RUN yarn build`
+ * step, with the runtime executing the emitted `dist/*.js`. Soft-reload
+ * would `docker cp` the new `.ts` into the container's WORKDIR while
+ * the running process keeps reading the OLD `dist/` — a silent
+ * stale-code failure that violates the file's "slow-but-correct beats
+ * fast-but-stale" default policy (lines 14-22). Setups that transpile
+ * at runtime lose the soft-reload fast path under this default; an
+ * opt-in flag to restore it is a possible follow-up but is not in
+ * scope here.
+ *
+ * Interpreted-language runtimes (Node — `.js` / `.mjs` / `.cjs`,
+ * Python — `.py`, Ruby — `.rb`, shell — `.sh`) read source at process
+ * start, so a `docker cp` + `docker restart` cycle picks them up.
+ * Those extensions are NOT in this set.
  */
 const COMPILED_LANGUAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.go',
@@ -179,6 +190,12 @@ const COMPILED_LANGUAGE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.elm',
   '.hs',
   '.dart',
+  // TypeScript — pre-compiled to `dist/*.js` inside `docker build`
+  // by the dominant production pattern; see the JSDoc above.
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
 ]);
 
 /**

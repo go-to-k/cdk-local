@@ -152,6 +152,19 @@ describe('classifySourceChange', () => {
     'Main.elm',
     'Main.hs',
     'main.dart',
+    // TypeScript — treated as compiled because the dominant
+    // production-container pattern is to pre-compile to `dist/*.js`
+    // inside a Dockerfile `RUN tsc` / `RUN yarn build` step. A
+    // `docker cp` of the new `.ts` would leave the running process
+    // reading the OLD `dist/` — a silent stale-code failure (issue
+    // #235). The 4 variants (`.ts` / `.tsx` / `.mts` / `.cts`)
+    // are all enumerated below so a future refactor that drops one
+    // trips a test instead of silently re-introducing the bug for
+    // that variant.
+    'app.ts',
+    'App.tsx',
+    'app.mts',
+    'app.cts',
   ])(
     'returns rebuild for compiled-language source: %s (soft-reload would leave the binary stale)',
     (basename) => {
@@ -177,7 +190,7 @@ describe('classifySourceChange', () => {
     expect(v.reason).toContain('Prod.Dockerfile');
   });
 
-  it.each(['.sh', '.js', '.mjs', '.cjs', '.ts', '.py', '.rb'])(
+  it.each(['.sh', '.js', '.mjs', '.cjs', '.py', '.rb'])(
     'returns soft-reload for an interpreted-language source: handler%s',
     (ext) => {
       const v = classifySourceChange([`/repo/webapp/handler${ext}`], baseCtx);
