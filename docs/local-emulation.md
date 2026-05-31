@@ -1502,12 +1502,83 @@ to deployed registry; no local rebuild possible.` log on each
 firing, and the same configuration triggers a loud boot-time WARN
 per affected target naming the pinned image URI so the user knows
 local source edits will not take effect before they spend time
-saving files. To iterate on local source for an ECR-pinned service,
-drop `--from-cfn-stack` and switch the CDK app to
-`ContainerImage.fromAsset(...)`. Env / Secrets diff propagation
-under `--from-cfn-stack` (a watcher firing legitimately picking up
-a flipped deployed env value for an ECR-pinned target) is a
-follow-up — today the skip is total.
+saving files. The boot-time WARN fires on any cold start when an
+ECR pin is detected (broadened from `--watch` only in issue #238) —
+the user has already signalled they want to run this service
+locally, so the hint that the running image is the deployed bytes
+is useful regardless. To iterate on local source for an ECR-pinned
+service, either pass `--image-override` (see below) to substitute a
+local Dockerfile build, or drop `--from-cfn-stack` and switch the
+CDK app to `ContainerImage.fromAsset(...)`. Env / Secrets diff
+propagation under `--from-cfn-stack` (a watcher firing legitimately
+picking up a flipped deployed env value for an ECR-pinned target
+without an override) is a follow-up — today the skip is total for
+uncovered pinned targets.
+
+**Override an ECR pin with a local Dockerfile build (`--image-override`, issue #238).**
+`cdkl start-service` and `cdkl start-alb` accept a flag family that
+maps a pinned service target to a local `docker build` of a
+supplied Dockerfile, so `--from-cfn-stack` keeps wiring real
+DynamoDB / Secrets / SSM into the container while the application
+image is locally iterable. Under `--watch`, an overridden target
+goes through the rebuild rolling primitive on each save — the new
+local Dockerfile build is picked up automatically (the reload-skip
+above only fires for targets that remain UNCOVERED by the override
+map). Six flags compose:
+
+- `--image-override <svc>=<dockerfile>` (explicit) or
+  `<dockerfile>` (picker-form) — repeatable. The picker-form opens
+  a `@clack/prompts` multi-select against the still-uncovered
+  pinned targets; mix explicit + picker forms freely.
+- `--image-build-arg KEY=VAL` — global, repeatable. Forwarded to
+  every overridden target's `docker build --build-arg`.
+- `--image-build-secret id=src` — global, repeatable. Forwarded to
+  `docker build --secret id=<id>,src=<src>`; the canonical recipe
+  for a Dockerfile that uses
+  `RUN --mount=type=secret,id=<id>` (private npm registries / token
+  fetches during build).
+- `--image-target <stage>` — global. Forwarded to
+  `docker build --target=<stage>` for multi-stage builds.
+- `--no-interactive-overrides` — suppress the boot prompt + the
+  picker-form multi-select. The override map is whatever the
+  explicit `--image-override <svc>=<dockerfile>` flags resolved to.
+  Useful for CI / scripted invocations.
+- `--strict-overrides` — fail fast at boot when any pinned target
+  remains uncovered after `--image-override` + the boot prompt
+  resolve. Off by default; the per-target WARN still fires
+  regardless.
+
+When `--no-interactive-overrides` is unset AND the session is a
+TTY, the engine walks each still-uncovered pinned target with a
+prompt:
+
+```
+? Detected pinned image on 'AppService' (123…/repo:4.5.1).
+  Override with a local build? [path / N]:
+```
+
+Enter a Dockerfile path to override the target. An empty answer,
+`n`, or `no` (any case) skips the target — the boot WARN above
+still fires for it.
+
+`--image-build-secret id=<src>` resolves a relative `<src>` against
+the directory you ran `cdkl` from (not the Dockerfile's parent), so
+`./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless
+of where the Dockerfile lives in the tree.
+
+The override engine builds each covered Dockerfile once at boot,
+tagging the resulting image with a deterministic local-only tag
+(`cdkl-override-<svcSlug>-<hash>:local` — the `:local` suffix means
+a `docker pull` against the tag fails fast, by design). The boot
+loop then mutates the resolved task's representative essential
+container's image to that tag before `docker run`. Sibling
+containers in a multi-container task are unaffected — they go
+through the normal CDK-asset / ECR / public-registry resolution.
+
+Out of scope for v1 (deferred to issue #240): per-service variants
+of `--image-build-arg` / `--image-build-secret` / `--image-target`
+(today these flags are global). Custom build-context directories
+distinct from the Dockerfile's parent dir are also deferred.
 
 Known fast-path limitations (Phase 4 trade-offs):
 

@@ -141,6 +141,17 @@ export interface RunEcsTaskOptions {
    */
   imagePlanByContainer?: Map<string, string>;
   /**
+   * Issue #238 — per-container `--image-override` tag map (set by the
+   * `start-service` / `start-alb` boot path when an override engine
+   * resolved a local Dockerfile build for this task's representative
+   * container). When a container's name is in this map, the runner
+   * uses the override tag verbatim and skips `prepareOneImage`'s
+   * pull / build path for that container. Sibling containers without
+   * an entry still go through their normal resolution. Distinct from
+   * {@link imagePlanByContainer} (a full short-circuit used by tests).
+   */
+  imageOverrideByContainer?: ReadonlyMap<string, string>;
+  /**
    * Optional second-from-last octet of the link-local /24 subnet for this
    * task's docker network (1..254). Default 170 (AWS-documented). `cdkl start-service` walks this per replica so concurrent replicas
    * don't collide on the same /24. See `buildEndpointSubnet` in
@@ -705,7 +716,14 @@ function sleep(ms: number): Promise<void> {
  * populated in parallel up to the asset-manifest bound (single
  * `docker build` for shared assets is left to docker's own cache).
  */
-async function prepareImages(
+// Exported for unit testing — the `imageOverrideByContainer`
+// short-circuit (issue #238) is the load-bearing contract for
+// `--image-override` end-to-end, but `runEcsTask` is too heavy to drive
+// for a single short-circuit branch (network + secrets + docker run /
+// log stream / exit propagation). Exposing `prepareImages` lets us
+// behaviourally cover the override branch without booting the full
+// task runner.
+export async function prepareImages(
   task: ResolvedEcsTask,
   out: Map<string, string>,
   options: RunEcsTaskOptions
@@ -714,6 +732,17 @@ async function prepareImages(
   // Sequential is fine — most tasks have 1–3 containers and each
   // `docker build` / pull would saturate IO anyway.
   for (const container of task.containers) {
+    // Issue #238 — per-container --image-override tag short-circuit.
+    // The override engine already built + tagged this image locally;
+    // skip the pull / build path entirely so we never `docker pull`
+    // a deterministic local-only tag (which doesn't exist in any
+    // registry).
+    const overrideTag = options.imageOverrideByContainer?.get(container.name);
+    if (overrideTag !== undefined) {
+      out.set(container.name, overrideTag);
+      logger.debug(`Container '${container.name}' image=${overrideTag} (--image-override)`);
+      continue;
+    }
     const image = await prepareOneImage(task, container, options);
     out.set(container.name, image);
     logger.debug(`Container '${container.name}' image=${image}`);

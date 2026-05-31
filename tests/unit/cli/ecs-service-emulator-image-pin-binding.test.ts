@@ -61,6 +61,33 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     expect(bootWarnLoop, 'boot-time WARN loop missing').toBeTruthy();
   });
 
+  it('boot-time WARN is NOT gated on --watch (broadened by issue #238)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // After #238, the boot WARN fires on any cold start (not just under
+    // `--watch`). Specifically, the WARN loop must NOT be wrapped inside
+    // an `if (watchActive)` block. A regression that re-introduces such
+    // a gate would silently swallow the WARN for non-watch runs, which
+    // is precisely what #238 explicitly broadens.
+    //
+    // Anchor on the intrinsic "Warn UP-FRONT" rationale comment + the
+    // helper call site (`isLocalCdkAssetImage` / `describePinnedImageUri`
+    // / `logger.warn`) that the WARN block uniquely uses. Avoid keying
+    // on incidental landmarks like `Phase 1 + Phase 2` (which a future
+    // section-comment rewrite would silently invalidate). Take the
+    // 4-KiB window starting at "Warn UP-FRONT" — large enough to
+    // contain the entire loop, small enough that an unrelated future
+    // copy of the helpers downstream won't accidentally bleed in.
+    const warnUpFrontIdx = source.indexOf('Warn UP-FRONT');
+    expect(warnUpFrontIdx).toBeGreaterThan(-1);
+    const bootWarnRegion = source.slice(warnUpFrontIdx, warnUpFrontIdx + 4096);
+    expect(bootWarnRegion).toMatch(/isLocalCdkAssetImage/);
+    expect(bootWarnRegion).toMatch(/describePinnedImageUri/);
+    expect(bootWarnRegion).toMatch(/logger\.warn\(/);
+    // The region preceding the per-target loop must not open a watch gate.
+    const preLoop = bootWarnRegion.split('for (const pt of perTarget)')[0]!;
+    expect(preLoop).not.toMatch(/if \(watchActive\)/);
+  });
+
   it('reload-time skip guard AND-s `verdict.reason` with `isLocalCdkAssetImage(controller.service)` BEFORE `rollOneTarget`', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     // The skip guard MUST live between the classifier's verdict assignment

@@ -131,6 +131,53 @@ cdkl start-alb --watch        # roll ALB-fronted ECS replicas on save
 
 Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
+### Local build override — `--image-override`
+
+`cdkl start-service` / `cdkl start-alb` against an ECS service whose CDK source uses `ContainerImage.fromEcrRepository(...)` (typical under `--from-cfn-stack`) runs the deployed image bytes locally — local source edits don't take effect, even with `--watch`. `--image-override` swaps in a local `docker build` of a supplied Dockerfile per service target so iteration still works while real DynamoDB / Secrets / SSM stay wired in.
+
+Lead form — boot in a TTY and the command walks each detected pinned target:
+
+```bash
+cdkl start-alb --from-cfn-stack    # interactive boot prompt for each pinned target
+```
+
+```
+? Detected pinned image on 'AppService' (123…/repo:4.5.1).
+  Override with a local build? [path / N]:
+> ./services/app/Dockerfile
+```
+
+Enter a Dockerfile path to override, or `N` (any case) / blank to skip the target.
+
+Or name them up-front (CI / scripted setups):
+
+```bash
+cdkl start-alb --from-cfn-stack \
+  --image-override AppService=./services/app/Dockerfile \
+  --image-override AuthService=./services/auth/Dockerfile
+```
+
+A bare `--image-override <dockerfile>` (no `=`) opens a multi-select picker against the pinned targets — useful when one Dockerfile is shared across several services. Mix freely with explicit forms in one invocation.
+
+Pass build inputs through to every override:
+
+```bash
+cdkl start-alb --from-cfn-stack \
+  --image-override AppService=./Dockerfile \
+  --image-build-arg NODE_ENV=production \
+  --image-build-secret npmrc=./.npmrc \
+  --image-target builder
+```
+
+`--image-build-secret npmrc=./.npmrc` wires a private-registry token into a Dockerfile that uses `RUN --mount=type=secret,id=npmrc` — the canonical recipe for installing private packages during the local build. The `src=` path resolves against the directory you ran `cdkl` from (not the Dockerfile's parent), so `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless of where the Dockerfile lives in the tree.
+
+Opt-outs:
+
+- `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
+- `--strict-overrides` fails fast at boot if any pinned target remains uncovered. Off by default; the per-target WARN (which now fires on any cold start when an ECR pin is detected, not just under `--watch`) still surfaces regardless.
+
+Under `--watch`, overridden targets go through the rebuild rolling primitive on each save — the new local Dockerfile build is picked up automatically.
+
 ### start-service vs start-alb — which one?
 
 Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each layer separately so you can target the slice you care about:

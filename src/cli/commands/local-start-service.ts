@@ -9,6 +9,7 @@ import {
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
   addCommonEcsServiceOptions,
+  addImageOverrideOptions,
   runEcsServiceEmulator,
   type EcsServiceEmulatorOptions,
   type EmulatorStrategy,
@@ -127,6 +128,7 @@ export function createLocalStartServiceCommand(
  * for that contract to live.
  */
 export function addStartServiceSpecificOptions(cmd: Command): Command {
+  addImageOverrideOptions(cmd);
   return cmd
     .addOption(
       new Option(

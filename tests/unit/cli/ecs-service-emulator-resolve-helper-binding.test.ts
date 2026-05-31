@@ -58,8 +58,12 @@ describe('ecs-service-emulator resolveServiceAndRunnerOpts binding (Phase 2 of i
     // this would make `--watch` noisy in a noticeable but easy-to-miss
     // way (every save reprints the boot banner).
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // After #238 the reload call also threads an optional
+    // `imageOverrideTag` into the opts object alongside `quiet: true`;
+    // the regex anchors on `quiet: true` followed (in whatever bracket
+    // shape) by the end of the same call.
     expect(source).toMatch(
-      /async\s+function\s+rollOneTarget[\s\S]*?resolveServiceAndRunnerOpts\([\s\S]*?\{\s*quiet:\s*true\s*\}/
+      /async\s+function\s+rollOneTarget[\s\S]*?resolveServiceAndRunnerOpts\([\s\S]*?quiet:\s*true/
     );
   });
 });

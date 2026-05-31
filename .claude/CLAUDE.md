@@ -73,7 +73,21 @@ AWS managed services.
   rebuild possible.` log, and the same configuration triggers a
   loud boot-time WARN per affected target so the user knows local
   source edits will not take effect before they spend time saving
-  files (issue #234). The host front-door (TLS materials, JWKS cache,
+  files (issue #234; #238 broadened the WARN to fire on any cold
+  start when an ECR pin is detected, not just under `--watch`).
+  Issue #238 also added the `--image-override` flag family to
+  `cdkl start-service` / `cdkl start-alb` (`--image-override
+  <svc>=<dockerfile>` or bare `<dockerfile>` for picker form,
+  `--image-build-arg` / `--image-build-secret` / `--image-target`
+  as global build-input pass-throughs, `--no-interactive-overrides`
+  to suppress the TTY boot prompt + multi-select picker, and
+  `--strict-overrides` to fail fast when any pinned target remains
+  uncovered): a covered pinned target is rebuilt locally from the
+  supplied Dockerfile (deterministic local-only tag
+  `cdkl-override-<svc>-<hash>:local`) and threaded through the
+  rebuild rolling primitive on `--watch` reload — the engine module
+  lives in `src/local/image-override-engine.ts`.
+  The host front-door (TLS materials, JWKS cache,
   Lambda-target RIE containers, listener sockets) is built once at
   boot and is NOT recreated on reload — only the per-service replica
   pool entries rotate. Lambda target groups behind the ALB are a
@@ -222,7 +236,14 @@ compute-locally category for Lambda + API Gateway).
   registry pin so the `--watch` emulator can WARN at boot and SKIP
   the no-op rolling primitive on each reload firing instead of
   re-pulling byte-identical content and surfacing `Reload complete.`
-  as a silent no-op), front-door-server (host HTTP / HTTPS reverse proxy
+  as a silent no-op), image-override-engine (issue #238 — parses
+  the `--image-override` / `--image-build-arg` /
+  `--image-build-secret` / `--image-target` flag family, fires the
+  `@clack/prompts` multi-select picker for picker-form Dockerfile
+  paths + the TTY boot prompt against still-uncovered pinned targets,
+  and runs `docker build` once per covered target producing the
+  deterministic local-only tag the boot path threads into each
+  runner's `imageOverrideByContainer`), front-door-server (host HTTP / HTTPS reverse proxy
   that resolves a per-request RouteAction — weighted forward to a
   replica pool or a Lambda invoke, redirect, or fixed-response — behind
   the ALB listener port; HTTPS branch flips `X-Forwarded-Proto` and the

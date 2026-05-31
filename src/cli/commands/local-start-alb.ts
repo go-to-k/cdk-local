@@ -20,6 +20,7 @@ import {
 import type { ExtraStateProviders } from './local-state-source.js';
 import {
   addCommonEcsServiceOptions,
+  addImageOverrideOptions,
   runEcsServiceEmulator,
   type EcsServiceEmulatorOptions,
   type EmulatorStrategy,
@@ -379,6 +380,7 @@ export function createLocalStartAlbCommand(opts: CreateLocalStartAlbCommandOptio
  * clusters. Chainable: returns `cmd`.
  */
 export function addAlbSpecificOptions(cmd: Command): Command {
+  addImageOverrideOptions(cmd);
   return cmd
     .addOption(
       new Option(

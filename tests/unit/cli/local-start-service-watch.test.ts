@@ -34,7 +34,19 @@ describe('start-service option surface contract (addStartServiceSpecificOptions)
     // flags. Adding or removing one without updating the list below is a
     // semver-relevant surface change.
     const flags = longFlagsOf(addStartServiceSpecificOptions(new Command()));
-    expect(flags).toEqual(['--host-port', '--watch']);
+    expect(flags).toEqual([
+      '--host-port',
+      // Issue #238 — `--image-override` family shared with start-alb
+      // via `addImageOverrideOptions`. A semver-relevant surface
+      // addition.
+      '--image-build-arg',
+      '--image-build-secret',
+      '--image-override',
+      '--image-target',
+      '--no-interactive-overrides',
+      '--strict-overrides',
+      '--watch',
+    ]);
   });
 
   it('createLocalStartServiceCommand surface equals common + start-service-specific (no inline drift)', () => {

@@ -501,6 +501,7 @@ export { resolveSingleTarget } from './local/target-picker.js';
  */
 export {
   addCommonEcsServiceOptions,
+  addImageOverrideOptions,
   runEcsServiceEmulator,
   parseMaxTasks,
   parseRestartPolicy,
@@ -520,6 +521,30 @@ export {
   type PlannedLambdaForwardTarget,
   type PlannedFrontDoorListener,
 } from './cli/commands/ecs-service-emulator.js';
+
+/**
+ * Issue #238 — `cdkl start-service` / `cdkl start-alb`
+ * `--image-override` family engine. `parseImageOverrideFlags` is the
+ * pure flag parser; `resolveImageOverrides` walks the picker + boot
+ * prompt against the pinned target set; `runImageOverrideBuilds`
+ * runs the `docker build` pass per covered Dockerfile and returns
+ * the deterministic local tag per target. `buildImageOverrideTag` is
+ * exposed so a host CLI can reproduce the same tag-naming convention
+ * if it wraps the engine for a custom build orchestration. Re-exported
+ * via `cdk-local/internal` so host CLIs (e.g. cdkd) inherit the same
+ * override pipeline without a byte-identical copy.
+ */
+export {
+  parseImageOverrideFlags,
+  resolveImageOverrides,
+  runImageOverrideBuilds,
+  buildImageOverrideTag,
+  ImageOverrideError,
+  type ImageOverrideEntry,
+  type ImageOverrideMap,
+  type ImageOverrideGlobals,
+  type RawImageOverrideFlags,
+} from './local/image-override-engine.js';
 
 /**
  * `start-alb` front-door target resolver — maps an ALB target string to a
