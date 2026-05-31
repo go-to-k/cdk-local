@@ -1,3 +1,10 @@
+# [0.71.0](https://github.com/go-to-k/cdk-local/compare/v0.70.0...v0.71.0) (2026-05-31)
+
+
+### Features
+
+* **start-service / start-alb:** stream replica container stdout/stderr live to host terminal ([#231](https://github.com/go-to-k/cdk-local/issues/231)) ([3d581d2](https://github.com/go-to-k/cdk-local/commit/3d581d210c86903a8836d7f736b64794f0ba5390))
+
 # [0.70.0](https://github.com/go-to-k/cdk-local/compare/v0.69.0...v0.70.0) (2026-05-31)
 
 
