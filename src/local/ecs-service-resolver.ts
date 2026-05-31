@@ -108,6 +108,21 @@ export interface ResolvedEcsService {
    * load-bearing — used only in log lines).
    */
   serviceName: string;
+  /**
+   * Issue #227 review fix — clean display name for the per-replica
+   * `[svc=<name> r=<i> c=<container>] ` log prefix. Prefers (in
+   * order): explicit `ServiceName` property → last meaningful
+   * `aws:cdk:path` segment with CDK-internal suffixes stripped
+   * (`/Service`, `/Resource`, `/Default`) → `serviceLogicalId`.
+   * Distinct from {@link serviceName} so other call sites that need
+   * the AWS-side name (or its hash-suffixed fallback) keep their
+   * existing behavior.
+   *
+   * Use this ONLY for human-facing display surfaces (log prefix,
+   * banner). For correctness paths (docker network names, Cloud Map
+   * owner keys, discovery) stick with `serviceLogicalId`.
+   */
+  serviceDisplayName: string;
   /** DesiredCount from the template; defaults to 1 when absent. */
   desiredCount: number;
   /**
@@ -285,6 +300,11 @@ export function extractServiceProperties(
     serviceLogicalId
   );
   const serviceName = parseServiceName(props['ServiceName'], serviceLogicalId);
+  const serviceDisplayName = deriveServiceDisplayName(
+    props['ServiceName'],
+    serviceLogicalId,
+    resource.Metadata as Record<string, unknown> | undefined
+  );
 
   // Surface a hint when the service declares LoadBalancers but the
   // caller did not opt into the local-LB front-door (`start-service`).
@@ -319,6 +339,7 @@ export function extractServiceProperties(
     serviceLogicalId,
     resource,
     serviceName,
+    serviceDisplayName,
     desiredCount,
     healthCheckGracePeriodSeconds,
     task,
@@ -576,6 +597,62 @@ function parseHealthCheckGrace(raw: unknown, _serviceLogicalId: string): number 
 
 function parseServiceName(raw: unknown, serviceLogicalId: string): string {
   if (typeof raw === 'string' && raw.length > 0) return raw;
+  return serviceLogicalId;
+}
+
+/**
+ * Issue #227 review fix — derive a CLEAN display name for the per-replica
+ * `[svc=<name> r=<i> c=<container>] ` log prefix. L2 constructs
+ * (`FargateService`, `ApplicationLoadBalancedFargateService`) do NOT set
+ * `ServiceName` explicitly, so the synthesized template's `ServiceName`
+ * is absent and {@link parseServiceName} falls back to the
+ * hash-suffixed logical id (e.g. `BackendApi5F9D8C32`). That ends up in
+ * the foreground prefix as `[svc=BackendApi5F9D8C32 ...]` — noisy +
+ * not what Issue #227's spec example showed.
+ *
+ * Resolution order (display ONLY — does NOT change `service.serviceName`):
+ *   1. The explicit CFn `ServiceName` property, if the user set one.
+ *   2. The last meaningful segment of the resource's `aws:cdk:path`
+ *      Metadata. For a typical L2, this is the construct id the user
+ *      wrote in CDK source (e.g. `AppStack/BackendApi/Service` →
+ *      `BackendApi`). Trailing CDK-internal segments (`/Service`,
+ *      `/Resource`, `/Default`) are stripped so the result matches the
+ *      construct id the user typed, not the per-resource CFn segment.
+ *   3. The `serviceLogicalId` as today's fallback when neither is
+ *      available (synthetic / hand-rolled CFn).
+ *
+ * Pure helper — keep narrowly scoped to the log-prefix use case so
+ * other call sites that rely on `service.serviceName` for awsvpc /
+ * Cloud Map / discovery semantics keep their existing fallback
+ * behavior.
+ */
+export function deriveServiceDisplayName(
+  rawServiceName: unknown,
+  serviceLogicalId: string,
+  metadata: Record<string, unknown> | undefined
+): string {
+  // 1. Explicit CFn ServiceName wins.
+  if (typeof rawServiceName === 'string' && rawServiceName.length > 0) {
+    return rawServiceName;
+  }
+  // 2. cdk-path Metadata. Walk back through trailing CDK-internal
+  // segments (`/Service`, `/Resource`, `/Default`) so the result is the
+  // user-authored construct id, not the per-resource CFn leaf.
+  const cdkPath = typeof metadata?.['aws:cdk:path'] === 'string' ? metadata['aws:cdk:path'] : '';
+  if (cdkPath.length > 0) {
+    const segments = cdkPath.split('/');
+    while (segments.length > 1) {
+      const tail = segments[segments.length - 1];
+      if (tail === 'Service' || tail === 'Resource' || tail === 'Default') {
+        segments.pop();
+        continue;
+      }
+      break;
+    }
+    const tail = segments[segments.length - 1];
+    if (typeof tail === 'string' && tail.length > 0) return tail;
+  }
+  // 3. Last-resort fallback.
   return serviceLogicalId;
 }
 

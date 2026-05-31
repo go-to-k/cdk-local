@@ -1179,6 +1179,7 @@ error.
 | `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Use for CDK apps deployed via the upstream CDK CLI. Bare form uses the CDK stack name (per target when multiple `<targets...>` are supplied). `Fn::GetAtt` is warn-and-dropped in v1. Same shape as `cdkl run-task --from-cfn-stack`. |
 | `--stack-region <region>` | — | Region of the state record to read. Drives the CFn client region for `--from-cfn-stack`. |
 | `--watch` | off | Hot reload: re-synth + per-replica rolling deploy when the CDK app's source changes (mirrors `cdkl start-api --watch` semantics; honors `cdk.json` `watch.include` / `watch.exclude`). Each replica is rolled one at a time — boot a shadow replica with the new image under a bumped generation suffix, wait for a TCP-ready probe on the container port, atomically swap Service-Connect / Cloud Map registrations, then retire the old container — so peer services see zero connection refusals across the reload even on multi-replica services. Synth failures keep the previous replica(s) serving (warn-and-continue). Off by default. |
+| `--no-logs` | off | Disable foreground streaming of each replica container stdout/stderr. By default every booted replica streams its docker logs to the host terminal with a `[svc=<service> r=<replica-index> c=<container>]` prefix, matching `cdkl run-task`'s log surface (so application `console.log` calls are visible without a side `docker logs -f`). Pass `--no-logs` for multi-replica / multi-service runs whose interleaved log volume is unreadable; `docker logs -f <id>` in a separate terminal stays available. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `-c/--context`, `--profile`, `--role-arn`, `--verbose`, `-y/--yes`.
@@ -1272,7 +1273,7 @@ docker-network IPs the host can't reach on macOS Docker Desktop.
 
 Same option set as `cdkl start-service` (`--cluster`, `--max-tasks`,
 `--restart-policy`, `--env-vars`, `--container-host`, `--assume-task-role`,
-`--ecr-role-arn`, `--platform`, `--no-pull`, `--from-cfn-stack`,
+`--ecr-role-arn`, `--platform`, `--no-pull`, `--no-logs`, `--from-cfn-stack`,
 `--stack-region`, `--watch`, plus the [common flags](#common-flags)),
 except `--host-port` is replaced by the front-door flags below.
 

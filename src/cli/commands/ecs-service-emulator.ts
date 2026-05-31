@@ -198,6 +198,21 @@ export interface EcsServiceEmulatorOptions {
    * strategy decides whether to honor it via `supportsWatch`.
    */
   watch?: boolean;
+  /**
+   * Issue #227 — stream each replica's container stdout / stderr to the
+   * host terminal with a `[svc=<serviceName> r=<i> c=<container>] ` prefix
+   * (matching `cdkl run-task`'s log surface). Defaults to `true`;
+   * `--no-logs` flips it to `false` for runs whose multi-replica /
+   * multi-service interleaved log volume makes the foreground
+   * unreadable. `docker logs -f <id>` in a separate terminal stays
+   * available either way.
+   *
+   * Commander's `--no-logs` form populates `logs: false` (the negation
+   * convention). When neither flag is supplied, `logs` is `undefined` →
+   * the emulator treats this as opt-in default-on for parity with
+   * `cdkl run-task`.
+   */
+  logs?: boolean;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -1439,6 +1454,10 @@ async function resolveServiceAndRunnerOpts(
     ...(frontDoorPools && frontDoorPools.length > 0
       ? { frontDoor: { pools: frontDoorPools } }
       : {}),
+    // Issue #227 — Commander's `--no-logs` populates `options.logs =
+    // false`. Default ON when neither flag is supplied (`options.logs ===
+    // undefined`) for parity with `cdkl run-task`.
+    streamLogs: options.logs !== false,
   };
 
   return { service, runnerOpts };
@@ -2189,6 +2208,16 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
       new Option(
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--no-logs',
+        'Disable foreground streaming of each replica container stdout/stderr. By default every ' +
+          'booted replica streams its docker logs to the host terminal with a ' +
+          '[svc=<service> r=<replica-index> c=<container>] prefix (parity with `run-task`). ' +
+          'Pass --no-logs for multi-replica / multi-service runs whose interleaved log volume ' +
+          'is unreadable; `docker logs -f <id>` in a separate terminal stays available.'
       )
     );
 

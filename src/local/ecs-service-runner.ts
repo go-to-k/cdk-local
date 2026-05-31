@@ -14,6 +14,7 @@ import type { FrontDoorEndpointPool } from './front-door-pool.js';
 import { getContainerNetworkIp, getPublishedHostPort } from './docker-inspect.js';
 import { SHARED_SVC_SUBNET_OCTET, type TaskNetwork } from './ecs-network.js';
 import { getEmbedConfig } from './embed-config.js';
+import { attachContainerLogStreamer } from './container-log-streamer.js';
 
 /**
  * Phase 2 of #262 — long-running ECS Service emulator. Wraps the existing
@@ -122,6 +123,29 @@ export interface ServiceRunnerOptions {
    * Undefined for services with no resolvable load-balancer listener.
    */
   frontDoor?: FrontDoorRunnerContext;
+  /**
+   * Issue #227 — when `true` (default), every booted replica's
+   * container stdout / stderr is streamed to the host terminal with a
+   * `[svc=<serviceName> r=<replicaIndex> c=<containerName>] ` prefix,
+   * matching `cdkl run-task`'s log surface. Flipped to `false` by
+   * `cdkl start-service --no-logs` / `cdkl start-alb --no-logs` for
+   * multi-replica / multi-service runs whose interleaved log volume
+   * makes the foreground unreadable; `docker logs -f <id>` in a
+   * separate terminal stays available either way.
+   *
+   * Each per-replica streamer is attached AFTER the underlying
+   * `runEcsTask` call returns (so the replica's `EcsRunState` has its
+   * `startedContainers` populated) and is appended into
+   * `state.logStoppers` so `cleanupEcsRun` drains + kills the streamer
+   * process on shutdown / rebuild rolling reload. The soft-reload
+   * pathway (`docker restart` preserves the container ID) is handled
+   * inside {@link attachContainerLogStreamer} itself: the docker daemon
+   * terminates `docker logs -f` on the container's PID-1 exit, so the
+   * streamer auto-re-spawns `docker logs -f --since 0s` against the
+   * SAME container ID to capture the post-restart PID-1's output
+   * without re-emitting the pre-restart prelude.
+   */
+  streamLogs?: boolean;
 }
 
 /**
@@ -751,6 +775,29 @@ async function bootReplica(
   };
   logger.info(`Booting replica ${instance.index} (${perReplicaCluster})`);
   await runEcsTask(service.task, perReplicaTaskOptions, instance.state);
+
+  // Issue #227 — attach a per-container `docker logs -f` streamer so the
+  // replica's application stdout / stderr surfaces in the foreground.
+  // Default ON; flipped off by `--no-logs`. Attached AFTER `runEcsTask`
+  // returns so `state.startedContainers` is fully populated. Pushed into
+  // `state.logStoppers` so `cleanupEcsRun` drains + kills the streamer
+  // on shutdown / restart-on-exit / rebuild rolling reload. The
+  // soft-reload pathway preserves container IDs across `docker restart`,
+  // so the same streamer keeps tailing the new PID-1 (no re-attach
+  // needed).
+  if (options.streamLogs !== false) {
+    // Issue #227 review fix — use the resolver's `serviceDisplayName`
+    // (NOT `serviceName`), which prefers an explicit CFn ServiceName,
+    // then the cdk-path-derived construct id with CDK-internal
+    // suffixes stripped, then the logicalId fallback. Without this an
+    // L2 (FargateService / ApplicationLoadBalancedFargateService) with
+    // no explicit `serviceName` would surface the hash-suffixed
+    // logical id (e.g. `BackendApi5F9D8C32`) in every foreground line.
+    for (const started of instance.state.startedContainers) {
+      const prefix = `[svc=${service.serviceDisplayName} r=${instance.index} c=${started.name}] `;
+      instance.state.logStoppers.push(attachContainerLogStreamer(prefix, started.id));
+    }
+  }
 
   // Cloud Map / Service Connect publish (Issue #460). Runs AFTER the
   // task boot so we know docker has assigned an IP. Best-effort: a

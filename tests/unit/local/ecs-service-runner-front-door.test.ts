@@ -49,6 +49,7 @@ function fakeService(): any {
     stack: { stackName: 'AlbStack' },
     serviceLogicalId: 'Svc',
     serviceName: 'Svc',
+    serviceDisplayName: 'Svc',
     desiredCount: 1,
     healthCheckGracePeriodSeconds: 30,
     task: {
@@ -75,6 +76,11 @@ function frontDoorOptions(pool: FrontDoorEndpointPool) {
       detach: true,
     },
     frontDoor: { pools: [{ pool, targetContainerName: 'web', targetContainerPort: 80 }] },
+    // Issue #227 — opt this front-door unit out of `docker logs -f`
+    // spawning. The streamer's child-process side-effects leak across
+    // vitest's parallel workers otherwise. The streamer wiring itself
+    // is covered by `ecs-service-runner-stream-logs.test.ts`.
+    streamLogs: false,
   };
 }
 

@@ -100,6 +100,7 @@ function fakeServiceConnectService(): any {
     stack: { stackName: 'AppStack' },
     serviceLogicalId: 'Svc',
     serviceName: 'Svc',
+    serviceDisplayName: 'Svc',
     desiredCount: 2,
     healthCheckGracePeriodSeconds: 30,
     task: {
@@ -144,6 +145,12 @@ function frontDoorOptions(pool: FrontDoorEndpointPool, registry: CloudMapRegistr
     },
     discovery: { registry, cloudMapIndexByStack: new Map() },
     frontDoor: { pools: [{ pool, targetContainerName: 'web', targetContainerPort: 80 }] },
+    // Issue #227 — opt this rolling unit out of `docker logs -f` spawning.
+    // The streamer's child-process side-effects (spawned `docker logs`
+    // bound to the fake `cid-*` IDs) leak across vitest's parallel
+    // workers otherwise. The streamer wiring itself is covered by
+    // `ecs-service-runner-stream-logs.test.ts`.
+    streamLogs: false,
   };
 }
 

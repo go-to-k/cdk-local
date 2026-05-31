@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import { promisify } from 'node:util';
@@ -13,6 +13,7 @@ import {
   execEnvForSecrets,
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
+import { attachContainerLogStreamer } from './container-log-streamer.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
@@ -496,7 +497,7 @@ export async function runEcsTask(
     startedByName.set(container.name, { id, container });
 
     if (!options.detach) {
-      state.logStoppers.push(streamContainerLogs(container.name, id));
+      state.logStoppers.push(attachContainerLogStreamer(`[${container.name}] `, id));
     }
   }
 
@@ -696,42 +697,6 @@ async function stopContainer(containerId: string, graceSeconds: number): Promise
 
 function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
-}
-
-/**
- * Stream `docker logs -f <id>` with `[<container-name>]` prefixes on
- * every line. Returns a stop function for the caller's `finally`.
- */
-function streamContainerLogs(containerName: string, containerId: string): () => void {
-  const proc = spawn(getDockerCmd(), ['logs', '-f', containerId], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const prefix = `[${containerName}] `;
-  let stdoutBuf = '';
-  let stderrBuf = '';
-  proc.stdout?.on('data', (chunk: Buffer) => {
-    stdoutBuf = writePrefixed(prefix, stdoutBuf + chunk.toString('utf-8'), process.stdout);
-  });
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    stderrBuf = writePrefixed(prefix, stderrBuf + chunk.toString('utf-8'), process.stderr);
-  });
-  proc.on('error', () => {
-    /* surfaced through the parent's docker-wait result */
-  });
-  return () => {
-    if (stdoutBuf) process.stdout.write(prefix + stdoutBuf + '\n');
-    if (stderrBuf) process.stderr.write(prefix + stderrBuf + '\n');
-    if (!proc.killed) proc.kill('SIGTERM');
-  };
-}
-
-function writePrefixed(prefix: string, buffer: string, out: NodeJS.WritableStream): string {
-  const lines = buffer.split('\n');
-  const remainder = lines.pop() ?? '';
-  for (const line of lines) {
-    out.write(prefix + line + '\n');
-  }
-  return remainder;
 }
 
 /**

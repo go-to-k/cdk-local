@@ -559,6 +559,17 @@ export {
  * is uniform across every command, even when the per-command block is a
  * single flag.
  */
+/**
+ * `run-task` / `start-service` / `start-alb` per-container `docker logs
+ * -f` streamer — pipes a docker container's stdout / stderr to the host
+ * `process.stdout` / `process.stderr` with a caller-supplied line prefix
+ * and returns a stop function for the caller's `finally`. Exposed for
+ * host CLIs (e.g. cdkd) whose still-local task / service runners attach
+ * the same foreground log surface — they import this helper instead of
+ * carrying a byte-identical copy.
+ */
+export { attachContainerLogStreamer } from './local/container-log-streamer.js';
+
 export { addListSpecificOptions } from './cli/commands/local-list.js';
 export { addRunTaskSpecificOptions } from './cli/commands/local-run-task.js';
 export { addInvokeSpecificOptions } from './cli/commands/local-invoke.js';
