@@ -71,6 +71,19 @@ cdkl list                                      # every runnable target, grouped 
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
 
+### Deployed stack binding — `--from-cfn-stack`
+
+`--from-cfn-stack` binds to the deployed CloudFormation stack whose name matches your CDK stack. The bare form resolves the stack name from the target; pass an explicit name only when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden):
+
+```bash
+cdkl invoke MyStack/Fn --from-cfn-stack                              # bare: uses resolved stack name
+cdkl invoke MyStack/Fn --from-cfn-stack MyExplicitCfnName            # explicit when names differ
+cdkl invoke MyStack/Fn --from-cfn-stack --stack-region eu-west-1     # cross-region CFn client
+cdkl invoke MyStack/Fn --from-cfn-stack --assume-role                # auto-assume deployed execution role
+```
+
+Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
+
 ### Environment variables — `--env-vars`
 
 Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a handler at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
