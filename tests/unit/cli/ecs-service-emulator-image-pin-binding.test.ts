@@ -45,35 +45,39 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     expect(source).toMatch(/describePinnedImageUri/);
   });
 
-  it('boot-time WARN fires `isLocalCdkAssetImage` AND `describePinnedImageUri` inside the `--watch` gate', () => {
+  it('boot-time WARN loop calls `isLocalCdkAssetImage` + `describePinnedImageUri` + `logger.warn` together', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
-    // The boot-time WARN block is bracketed by the `--watch` gate
-    // (`options.watch === true && strategy.supportsWatch === true`)
-    // and BOTH helpers MUST appear before the `Phase 1 + Phase 2 +
-    // Phase 3` watcher-wiring comment. A refactor that drops either
-    // call would silently ship the no-op-disguised-as-success bug
-    // back into the boot stream.
-    const bootWarnRegion = source.match(
-      /options\.watch === true && strategy\.supportsWatch === true\)\s*\{[\s\S]*?Phase 1 \+ Phase 2 \+ Phase 3/
+    // Anchor on the unique boot-WARN rationale comment ("Warn UP-FRONT")
+    // and verify the per-target loop downstream of it calls both
+    // helpers AND surfaces the warning via `logger.warn`. The outer
+    // gate (a hoisted `watchActive` const today; could be inlined back
+    // or renamed by a future refactor) intentionally isn't pinned here
+    // — what matters for issue #234 is that the loop body has the
+    // right shape. A refactor that drops either call would silently
+    // ship the no-op-disguised-as-success bug back into the boot stream.
+    const bootWarnLoop = source.match(
+      /Warn UP-FRONT[\s\S]*?for \(const pt of perTarget\) \{[\s\S]*?isLocalCdkAssetImage[\s\S]*?describePinnedImageUri[\s\S]*?logger\.warn\(/
     );
-    expect(bootWarnRegion, 'boot-time WARN region missing').toBeTruthy();
-    expect(bootWarnRegion![0]).toMatch(/isLocalCdkAssetImage\s*\(/);
-    expect(bootWarnRegion![0]).toMatch(/describePinnedImageUri\s*\(/);
-    expect(bootWarnRegion![0]).toMatch(/logger\.warn\(/);
+    expect(bootWarnLoop, 'boot-time WARN loop missing').toBeTruthy();
   });
 
-  it('reload-time skip guard checks `verdict.reason` BEFORE the `rollOneTarget` call site', () => {
+  it('reload-time skip guard AND-s `verdict.reason` with `isLocalCdkAssetImage(controller.service)` BEFORE `rollOneTarget`', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     // The skip guard MUST live between the classifier's verdict assignment
-    // and the `await rollOneTarget(...)` call in `reloadAllServices`.
-    // The "Reload skipped" log line is the user-facing surface; the
-    // `continue` keyword is the load-bearing semantic.
+    // and the `await rollOneTarget(...)` call in `reloadAllServices`. As
+    // refined by the #237 review (PR feedback), the guard ANDs the
+    // verdict reason with `!isLocalCdkAssetImage(controller.service)` so
+    // degradation / race cases where the classifier defaults to
+    // `rebuild` but the booted controller's image IS a CDK asset
+    // (manifest race, missing asset hash, executable-mode asset, etc.)
+    // do NOT trip a misleading "image pinned to deployed registry" skip.
     const reloadRegion = source.match(
       /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
     );
     expect(reloadRegion, 'reloadAllServices body missing').toBeTruthy();
     const body = reloadRegion![0];
     expect(body).toMatch(/target image is not a CDK docker-image asset/);
+    expect(body).toMatch(/!isLocalCdkAssetImage\(controller\.service\)/);
     expect(body).toMatch(/Reload skipped for '\$\{newBoot\.target\}'/);
     // Ordering: the skip log + `continue` MUST appear before the
     // `rollOneTarget` call so the no-op pre-empts the rolling primitive.

@@ -668,7 +668,15 @@ export async function runEcsServiceEmulator(
     // source edits will not take effect before they spend time saving
     // files. The reload pathway also skips the no-op roll (see
     // `reloadAllServices`); this boot-time warn is the proactive half.
-    if (options.watch === true && strategy.supportsWatch === true) {
+    //
+    // The `--watch` gate (`options.watch === true && strategy.supportsWatch
+    // === true`) is hoisted into a single const so the boot-time WARN
+    // block + the watcher-wiring block downstream can never drift out of
+    // sync, and so #238's planned "broaden the WARN to fire regardless of
+    // `--watch`" follow-up is a one-line delta against the predicate
+    // instead of two.
+    const watchActive = options.watch === true && strategy.supportsWatch === true;
+    if (watchActive) {
       for (const pt of perTarget) {
         const service = pt.controller?.service;
         if (!service) continue;
@@ -691,7 +699,7 @@ export async function runEcsServiceEmulator(
     // this engine from getting `--watch` implicitly. The watcher reuses the
     // start-api debounced file-watcher and predicate composition verbatim so
     // cdk.json `watch.include` / `watch.exclude` semantics are identical.
-    if (options.watch === true && strategy.supportsWatch === true) {
+    if (watchActive) {
       const watchRoot = process.cwd();
       const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
         watchRoot,
@@ -971,9 +979,23 @@ async function reloadAllServices(args: {
     // SecureString / env value); plumb a fast-path env-only reload
     // for ECR-pinned targets so a watcher firing can still apply
     // such changes without booting a shadow container.
+    //
+    // Narrow the skip to the actual "image is a deployed-registry
+    // pin" case. `loadAssetContextForTarget` returns `undefined` (and
+    // the classifier defaults to `rebuild` with the reason below) for
+    // SEVEN distinct conditions — only one of which is "image is not a
+    // CDK asset". The other six (no candidate stack, resolver throw,
+    // no containers in the synthed task, manifest unreadable, asset
+    // hash drift, executable-mode asset) are degradation / race paths
+    // where the rolling primitive should still try to run and surface
+    // the underlying failure to the user. We use the booted
+    // controller's resolved service as the ground truth for "the
+    // currently-running image is a pin", because that's what the
+    // skip-rationale ("re-pulling byte-identical content") rests on.
     if (
       verdict.kind === 'rebuild' &&
-      verdict.reason === 'target image is not a CDK docker-image asset'
+      verdict.reason === 'target image is not a CDK docker-image asset' &&
+      !isLocalCdkAssetImage(controller.service)
     ) {
       logger.info(
         `Reload skipped for '${newBoot.target}' (no-op): image pinned to deployed ` +
