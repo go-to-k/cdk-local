@@ -1,3 +1,10 @@
+# [0.66.0](https://github.com/go-to-k/cdk-local/compare/v0.65.3...v0.66.0) (2026-05-31)
+
+
+### Features
+
+* **start-service:** add `--watch` hot reload (Phase 1 of [#214](https://github.com/go-to-k/cdk-local/issues/214)) ([#215](https://github.com/go-to-k/cdk-local/issues/215)) ([619feca](https://github.com/go-to-k/cdk-local/commit/619feca304d3950d46c05242f2df3cab5e2a1cdb))
+
 ## [0.65.3](https://github.com/go-to-k/cdk-local/compare/v0.65.2...v0.65.3) (2026-05-30)
 
 
