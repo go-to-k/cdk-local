@@ -31,7 +31,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## Why cdk-local
 
-- **Zero-friction local execution** — run standalone: no deploy, no IAM access, just Docker and your CDK app. Onboard new engineers, review a PR by actually running its code, or work on an OSS CDK sample without owning the maintainer's account.
+- **Zero-friction local execution** — run standalone: no deploy, just Docker and your CDK app. Onboard new engineers, or review a PR by actually running its code.
 - **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
   - dumping production data into a local DB
   - mirroring Secret values into local Secrets Manager
@@ -70,9 +70,15 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 ### Hot reload — `--watch`
 
+```bash
+cdkl start-api --watch        # reload API routes on save
+cdkl start-service --watch    # roll ECS replicas on save
+cdkl start-alb --watch        # roll ALB-fronted ECS replicas on save
+```
+
 `cdkl start-api --watch` re-synths your CDK app and reloads routes when the source changes, so editing a handler is reflected on the next request without restarting the server. Synth failures keep the previous version serving (warn-and-continue). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
 
-`cdkl start-service --watch` and `cdkl start-alb --watch` bring the same edit-and-go loop to ECS services: re-synth + per-replica reload on save. A per-firing classifier picks the per-replica primitive — a source-only edit on an interpreted-language handler (Node / Python / Ruby / shell) takes a bind-mount FAST PATH (`docker cp` the new source into each replica's WORKDIR + `docker restart`; no `docker build`, no shadow boot, sub-second), while a Dockerfile / dependency manifest / compiled-language source edit falls through to the rebuild rolling primitive (boot a shadow replica with the new image, wait for it to accept TCP, atomically swap Service-Connect / Cloud Map / ALB front-door pool pointers, then retire the old container). Either path rolls one replica at a time, so peer services AND an external request stream against the ALB listener port see zero connection refusals across the reload even on multi-replica services. The host front-door (TLS materials, JWKS cache, Lambda-target containers, listener sockets) stays up across the reload; only the per-replica pool entries rotate. The previous replica(s) keep serving when synth fails mid-reload.
+`cdkl start-service --watch` and `cdkl start-alb --watch` bring the same edit-and-go loop to ECS services. A source-only edit on an interpreted-language handler (Node / Python / Ruby / shell) takes a sub-second fast path; a Dockerfile / dependency / compiled-source change triggers a rolling rebuild. Either way replicas roll one at a time, so the service stays available — an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services. Synth failures keep the previous replica(s) serving.
 
 Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
