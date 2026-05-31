@@ -86,20 +86,25 @@ Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with th
 
 ### Environment variables — `--env-vars`
 
-Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a handler at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
 cdkl invoke MyStack/Fn --env-vars ./env.json
+cdkl start-service MyStack/MyService --env-vars ./env.json
+cdkl start-alb MyStack/MyAlb --env-vars ./env.json
 ```
 
 ```json
 {
   "Parameters": { "LOG_LEVEL": "debug" },
-  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000" }
+  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000" },
+  "AppContainer": { "DB_HOST": "host.docker.internal", "DB_PORT": "13306" }
 }
 ```
 
-`Parameters` applies to every function; a key matching a function's CDK path or CloudFormation logical ID overrides just that one. Precedence is template literals < `Parameters` < function-specific, and a `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
+`Parameters` applies to every target; a per-target key matches a Lambda's CDK path / logical ID, or an ECS container's `ContainerDefinitions[].Name`. Precedence is template literals < ECS `Secrets` < `Parameters` < target-specific, so a value sourced from Secrets Manager / SSM via a TaskDefinition `Secrets[]` entry is overridable here (the secret is still fetched first, then replaced). A `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
+
+When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.
 
 ### Hot reload — `--watch`
 
