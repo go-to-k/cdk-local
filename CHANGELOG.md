@@ -1,3 +1,10 @@
+## [0.71.2](https://github.com/go-to-k/cdk-local/compare/v0.71.1...v0.71.2) (2026-05-31)
+
+
+### Bug Fixes
+
+* **start-service,start-alb:** warn + skip noop --watch when image is pinned to a deployed registry ([#237](https://github.com/go-to-k/cdk-local/issues/237)) ([ac500c4](https://github.com/go-to-k/cdk-local/commit/ac500c4a9c34e1cee6ccebb91929b949c0d481d6))
+
 ## [0.71.1](https://github.com/go-to-k/cdk-local/compare/v0.71.0...v0.71.1) (2026-05-31)
 
 
