@@ -31,7 +31,10 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## Why cdk-local
 
-- **Zero-friction local execution** — run standalone: no deploy, just Docker and your CDK app. Onboard new engineers, or review a PR by actually running its code.
+- **Zero-friction local execution** — run standalone with just Docker and your CDK app, no AWS account needed. Onboard a new engineer or review a PR by actually running its code, exercising the parts that don't touch AWS:
+  - API Gateway routing and request shaping
+  - Lambda authorizers, running in real local containers
+  - pure handler logic — validation, transforms, branching
 - **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
   - dumping production data into a local DB
   - mirroring Secret values into local Secrets Manager
@@ -67,6 +70,23 @@ cdkl list                                      # every runnable target, grouped 
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
+
+### Environment variables — `--env-vars`
+
+Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a handler at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+
+```bash
+cdkl invoke MyStack/Fn --env-vars ./env.json
+```
+
+```json
+{
+  "Parameters": { "LOG_LEVEL": "debug" },
+  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000" }
+}
+```
+
+`Parameters` applies to every function; a key matching a function's CDK path or CloudFormation logical ID overrides just that one. Precedence is template literals < `Parameters` < function-specific, and a `null` value clears a variable. Running standalone, env vars whose template value is an intrinsic (`Ref` / `Fn::GetAtt`) can't be resolved without a deployed stack and are dropped with a warning — `--env-vars` is how you supply a concrete value for them.
 
 ### Hot reload — `--watch`
 
