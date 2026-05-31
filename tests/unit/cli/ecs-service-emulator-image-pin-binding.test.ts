@@ -61,6 +61,22 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     expect(bootWarnLoop, 'boot-time WARN loop missing').toBeTruthy();
   });
 
+  it('boot-time WARN is NOT gated on --watch (broadened by issue #238)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // After #238, the boot WARN fires on any cold start (not just under
+    // `--watch`). Specifically, the WARN loop must NOT be wrapped inside
+    // an `if (watchActive)` block. A regression that re-introduces such
+    // a gate would silently swallow the WARN for non-watch runs, which
+    // is precisely what #238 explicitly broadens.
+    const bootWarnRegion = source.match(
+      /Warn UP-FRONT[\s\S]*?for \(const pt of perTarget\) \{[\s\S]*?logger\.warn\([\s\S]*?\}[\s\S]*?(?=Phase 1 \+ Phase 2|\Z)/
+    );
+    expect(bootWarnRegion, 'boot-time WARN region missing').toBeTruthy();
+    // The region preceding the per-target loop must not open a watch gate.
+    const preLoop = bootWarnRegion![0].split('for (const pt of perTarget)')[0]!;
+    expect(preLoop).not.toMatch(/if \(watchActive\)/);
+  });
+
   it('reload-time skip guard AND-s `verdict.reason` with `isLocalCdkAssetImage(controller.service)` BEFORE `rollOneTarget`', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     // The skip guard MUST live between the classifier's verdict assignment

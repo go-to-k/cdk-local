@@ -984,8 +984,16 @@ describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlb
     const flags = longFlagsOf(addAlbSpecificOptions(new Command()));
     expect(flags).toEqual([
       '--bearer-token',
+      // Issue #238 — `--image-override` family shared with start-service
+      // via `addImageOverrideOptions`. A semver-relevant surface addition.
+      '--image-build-arg',
+      '--image-build-secret',
+      '--image-override',
+      '--image-target',
       '--lb-port',
+      '--no-interactive-overrides',
       '--no-verify-auth',
+      '--strict-overrides',
       '--tls',
       '--tls-cert',
       '--tls-key',

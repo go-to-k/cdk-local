@@ -102,6 +102,11 @@ import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js'
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache } from '../../local/cognito-jwt.js';
 import { describePinnedImageUri, isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
+import {
+  parseImageOverrideFlags,
+  resolveImageOverrides,
+  runImageOverrideBuilds,
+} from '../../local/image-override-engine.js';
 
 /**
  * Neutral ECS-service emulator orchestration shared by `cdkl start-service`
@@ -214,6 +219,52 @@ export interface EcsServiceEmulatorOptions {
    * `cdkl run-task`.
    */
   logs?: boolean;
+  /**
+   * Issue #238 — `--image-override <service>=<dockerfile>` or
+   * `<dockerfile>` (picker form), repeatable. Maps a pinned-image
+   * service target to a local Dockerfile build so iteration on local
+   * source still works under `--from-cfn-stack` against a
+   * `ContainerImage.fromEcrRepository(...)` service. Picker-form
+   * paths fire a multi-select against the still-uncovered pinned
+   * targets at boot. Explicit + picker forms mix freely in one
+   * invocation.
+   */
+  imageOverride?: string[];
+  /**
+   * Issue #238 — `--image-build-arg KEY=VAL` pairs, repeatable. Global
+   * (apply to every overridden target's `docker build --build-arg`).
+   * Per-service variants are intentionally out of scope for v1
+   * (tracked separately in #240).
+   */
+  imageBuildArg?: string[];
+  /**
+   * Issue #238 — `--image-build-secret id=src`, repeatable. Global.
+   * Forwarded to `docker build --secret id=<id>,src=<src>` for every
+   * overridden target so `RUN --mount=type=secret,id=<id>` works
+   * locally (the private-registry / npm-token recipe).
+   */
+  imageBuildSecret?: string[];
+  /**
+   * Issue #238 — `--image-target <stage>`. Global. Forwarded to
+   * `docker build --target=<stage>` for every overridden target.
+   */
+  imageTarget?: string;
+  /**
+   * Issue #238 — `--no-interactive-overrides`. Suppresses the boot
+   * prompt + the picker-form prompt; the override map is whatever
+   * the explicit `--image-override <svc>=<dockerfile>` flags resolve
+   * to. Commander's `--no-...` negation form: undefined when not
+   * supplied; the engine treats `interactiveOverrides === false` as
+   * "suppress every prompt".
+   */
+  interactiveOverrides?: boolean;
+  /**
+   * Issue #238 — `--strict-overrides`. After the override engine
+   * resolves, if any pinned target remains uncovered, the emulator
+   * fails fast with a {@link LocalStartServiceError} naming the
+   * still-uncovered targets. Default off: warn-and-run.
+   */
+  strictOverrides?: boolean;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -609,6 +660,30 @@ export async function runEcsServiceEmulator(
     process.on('SIGINT', sigintHandler);
     process.on('SIGTERM', sigintHandler);
 
+    // Issue #238 — resolve `--image-override` (+ the boot prompt for
+    // any still-uncovered pinned target in a TTY) BEFORE the boot loop
+    // so docker build budget for the override is spent up-front, and
+    // the boot path can inject the locally-built tag into the runner.
+    // Walks four stages:
+    //   1. Peek every target's resolved image to identify pinned ones
+    //      (representative essential container — same anchor the
+    //      boot WARN + reload-skip use).
+    //   2. Parse `--image-override` / `--image-build-arg` /
+    //      `--image-build-secret` / `--image-target` flag values.
+    //   3. Resolve explicit + picker-form mappings + boot prompt
+    //      against the pinned target set.
+    //   4. Build every covered Dockerfile via `docker build` and
+    //      record the resulting local-only tags.
+    // Throws on a malformed flag / missing Dockerfile / build failure
+    // — the emulator's outer try/finally tears down what was set up.
+    const imageOverrideTags = await resolveAndBuildImageOverrides({
+      perTarget: perTarget.map((pt) => pt.boot.target),
+      stacks,
+      options,
+      extraStateProviders,
+      logger,
+    });
+
     // Boot every target SEQUENTIALLY so a first-target failure surfaces before
     // we burn docker budget on the rest.
     for (const pt of perTarget) {
@@ -622,7 +697,8 @@ export async function runEcsServiceEmulator(
         extraStateProviders,
         profileCredsFile,
         frontDoorByService.get(pt.boot.target),
-        strategy.suppressLoadBalancerWarning === true
+        strategy.suppressLoadBalancerWarning === true,
+        imageOverrideTags.get(pt.boot.target)
       );
     }
 
@@ -656,40 +732,59 @@ export async function runEcsServiceEmulator(
     logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
-    // Issue #234 — when `--watch` is set, warn per booted target whose
+    // Issue #234 (broadened by #238) — warn per booted target whose
     // representative container image is NOT a local CDK docker-image
-    // asset. Such targets resolve to a deployed-registry pin (ECR via
-    // `--from-cfn-stack` against `ContainerImage.fromEcrRepository(...)`,
-    // or a public-registry pin like `ContainerImage.fromRegistry(...)`).
-    // The rolling primitive would re-pull byte-identical content on
-    // each save and report `Reload complete.` even though nothing in
-    // the running container changed — a silent no-op disguised as
-    // success. Warn UP-FRONT (per target) so the user knows local
-    // source edits will not take effect before they spend time saving
-    // files. The reload pathway also skips the no-op roll (see
-    // `reloadAllServices`); this boot-time warn is the proactive half.
+    // asset AND was NOT covered by `--image-override`. Such targets
+    // resolve to a deployed-registry pin (ECR via `--from-cfn-stack`
+    // against `ContainerImage.fromEcrRepository(...)`, or a public-
+    // registry pin like `ContainerImage.fromRegistry(...)`). The
+    // rolling primitive would re-pull byte-identical content on each
+    // save and report `Reload complete.` even though nothing in the
+    // running container changed — a silent no-op disguised as success.
+    // Warn UP-FRONT (per target) so the user knows local source edits
+    // will not take effect before they spend time saving files. The
+    // reload pathway also skips the no-op roll (see `reloadAllServices`);
+    // this boot-time warn is the proactive half.
     //
-    // The `--watch` gate (`options.watch === true && strategy.supportsWatch
-    // === true`) is hoisted into a single const so the boot-time WARN
-    // block + the watcher-wiring block downstream can never drift out of
-    // sync, and so #238's planned "broaden the WARN to fire regardless of
-    // `--watch`" follow-up is a one-line delta against the predicate
-    // instead of two.
-    const watchActive = options.watch === true && strategy.supportsWatch === true;
-    if (watchActive) {
-      for (const pt of perTarget) {
-        const service = pt.controller?.service;
-        if (!service) continue;
-        if (isLocalCdkAssetImage(service)) continue;
-        const pinnedUri = describePinnedImageUri(service);
-        const uriDisplay = pinnedUri ? `\`${pinnedUri}\`` : 'a deployed registry';
-        logger.warn(
-          `'${pt.boot.target}': \`--watch\` will not pick up local source changes — ` +
-            `running image is pinned to a deployed registry (${uriDisplay}). ` +
-            'To iterate on local source, drop `--from-cfn-stack` and switch the ' +
-            'CDK app to `ContainerImage.fromAsset(...)`.'
-        );
-      }
+    // #238 broadens the WARN to fire on ANY cold start (not gated on
+    // `--watch`). Even without `--watch`, the user has signalled they
+    // want to run this service locally; surfacing "running image is
+    // pinned to a deployed registry" up-front is the right hint
+    // regardless of whether they'd save a file later. The watch
+    // wiring stays gated separately (the watcher only fires under
+    // `--watch && supportsWatch`).
+    const uncoveredPinnedTargets: string[] = [];
+    for (const pt of perTarget) {
+      const service = pt.controller?.service;
+      if (!service) continue;
+      if (isLocalCdkAssetImage(service)) continue;
+      if (imageOverrideTags.has(pt.boot.target)) continue;
+      const pinnedUri = describePinnedImageUri(service);
+      const uriDisplay = pinnedUri ? `\`${pinnedUri}\`` : 'a deployed registry';
+      logger.warn(
+        `'${pt.boot.target}': running image is pinned to a deployed registry ` +
+          `(${uriDisplay}). To iterate on local source, either pass ` +
+          '`--image-override <dockerfile>` (or `<service>=<dockerfile>`) to substitute ' +
+          'a local build, or drop `--from-cfn-stack` and switch the CDK app to ' +
+          '`ContainerImage.fromAsset(...)`.'
+      );
+      uncoveredPinnedTargets.push(pt.boot.target);
+    }
+
+    // Issue #238 — `--strict-overrides` fail-fast guard. After the
+    // override engine has resolved + built every covered Dockerfile,
+    // if any pinned target remains uncovered, refuse to run (the
+    // user opted in to "fail when local source iteration is
+    // impossible for any target", typically in CI / scripted setups).
+    // Boot WARN already fired above for the same set; this throws on
+    // top of it so the user sees both diagnostics before exiting.
+    if (options.strictOverrides === true && uncoveredPinnedTargets.length > 0) {
+      throw new LocalStartServiceError(
+        `--strict-overrides set, but ${uncoveredPinnedTargets.length} pinned target(s) ` +
+          `remain uncovered: ${uncoveredPinnedTargets.join(', ')}. Pass --image-override ` +
+          '<service>=<dockerfile> for each, drop --strict-overrides, or drop ' +
+          '--from-cfn-stack to iterate on local CDK assets.'
+      );
     }
 
     // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
@@ -699,6 +794,11 @@ export async function runEcsServiceEmulator(
     // this engine from getting `--watch` implicitly. The watcher reuses the
     // start-api debounced file-watcher and predicate composition verbatim so
     // cdk.json `watch.include` / `watch.exclude` semantics are identical.
+    //
+    // Issue #238 dropped the same `watchActive` const that gated the boot
+    // WARN (now broadened to fire on any cold start). The watcher itself
+    // still needs the same predicate — only the WARN was broadened.
+    const watchActive = options.watch === true && strategy.supportsWatch === true;
     if (watchActive) {
       const watchRoot = process.cwd();
       const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
@@ -729,6 +829,7 @@ export async function runEcsServiceEmulator(
               profileCredsFile,
               frontDoorByService,
               changedPaths,
+              imageOverrideTags,
               logger,
             })
           );
@@ -848,6 +949,15 @@ async function reloadAllServices(args: {
    * bind-mount fast path based on this set.
    */
   changedPaths: readonly string[];
+  /**
+   * Issue #238 — boot-time resolved `--image-override` map
+   * (`serviceTarget -> localImageTag`). The rolling primitive
+   * threads each entry into the new replica's runner so the
+   * shadow boot uses the locally-built image, not the deployed
+   * pin. Empty / absent entry => normal CDK-asset / ECR / public
+   * image resolution.
+   */
+  imageOverrideTags: ReadonlyMap<string, string>;
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
   const {
@@ -864,6 +974,7 @@ async function reloadAllServices(args: {
     profileCredsFile,
     frontDoorByService,
     changedPaths,
+    imageOverrideTags,
     logger,
   } = args;
 
@@ -1015,6 +1126,9 @@ async function reloadAllServices(args: {
       frontDoorPools: frontDoorByService.get(newBoot.target),
       suppressLoadBalancerWarning: strategy.suppressLoadBalancerWarning === true,
       verdict,
+      ...(imageOverrideTags.get(newBoot.target) !== undefined && {
+        imageOverrideTag: imageOverrideTags.get(newBoot.target) as string,
+      }),
       logger,
     });
   }
@@ -1164,6 +1278,14 @@ async function rollOneTarget(args: {
    * `'rebuild'` falls through to the Phase 2/3 rolling primitive.
    */
   verdict: ReloadVerdict;
+  /**
+   * Issue #238 — boot-time-resolved local Dockerfile build tag for
+   * this service target (if any). Threaded into the new replica's
+   * `resolveServiceAndRunnerOpts` call so the shadow boot uses the
+   * locally-built image instead of the deployed pin. Undefined when
+   * the target is not under `--image-override`.
+   */
+  imageOverrideTag?: string;
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
   const {
@@ -1178,6 +1300,7 @@ async function rollOneTarget(args: {
     frontDoorPools,
     suppressLoadBalancerWarning,
     verdict,
+    imageOverrideTag,
     logger,
   } = args;
 
@@ -1203,7 +1326,7 @@ async function rollOneTarget(args: {
         profileCredsFile,
         frontDoorPools,
         suppressLoadBalancerWarning,
-        { quiet: true }
+        { quiet: true, ...(imageOverrideTag !== undefined && { imageOverrideTag }) }
       );
     } catch (err) {
       // Resolution failure is recoverable on the next save (e.g. the
@@ -1328,7 +1451,8 @@ async function bootOneTarget(
   extraStateProviders: ExtraStateProviders | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
   frontDoorPools: FrontDoorServicePools | undefined,
-  suppressLoadBalancerWarning: boolean
+  suppressLoadBalancerWarning: boolean,
+  imageOverrideTag: string | undefined
 ): Promise<ServiceController> {
   const parsed = parseEcsTarget(boot.target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
@@ -1350,7 +1474,8 @@ async function bootOneTarget(
       stateProvider,
       profileCredsFile,
       frontDoorPools,
-      suppressLoadBalancerWarning
+      suppressLoadBalancerWarning,
+      imageOverrideTag
     );
   } finally {
     if (stateProvider) stateProvider.dispose();
@@ -1367,7 +1492,8 @@ async function runOneTarget(
   stateProvider: LocalStateProvider | undefined,
   profileCredsFile: ProfileCredentialsFile | undefined,
   frontDoorPools: FrontDoorServicePools | undefined,
-  suppressLoadBalancerWarning: boolean
+  suppressLoadBalancerWarning: boolean,
+  imageOverrideTag: string | undefined
 ): Promise<ServiceController> {
   const { service, runnerOpts } = await resolveServiceAndRunnerOpts(
     boot,
@@ -1378,7 +1504,8 @@ async function runOneTarget(
     stateProvider,
     profileCredsFile,
     frontDoorPools,
-    suppressLoadBalancerWarning
+    suppressLoadBalancerWarning,
+    imageOverrideTag !== undefined ? { imageOverrideTag } : {}
   );
   return startEcsService(service, runnerOpts, runState);
 }
@@ -1416,7 +1543,7 @@ async function resolveServiceAndRunnerOpts(
   profileCredsFile: ProfileCredentialsFile | undefined,
   frontDoorPools: FrontDoorServicePools | undefined,
   suppressLoadBalancerWarning: boolean,
-  opts: { quiet?: boolean } = {}
+  opts: { quiet?: boolean; imageOverrideTag?: string } = {}
 ): Promise<{ service: ResolvedEcsService; runnerOpts: ServiceRunnerOptions }> {
   const logger = getLogger();
   const target = boot.target;
@@ -1519,6 +1646,29 @@ async function resolveServiceAndRunnerOpts(
       containerPath: profileCredsFile.containerPath,
       profileName: profileCredsFile.profileName,
     };
+  }
+
+  // Issue #238 — when an --image-override resolved a local Dockerfile
+  // build for this service target, inject the pre-built local tag
+  // into the runner's per-container override map keyed on the
+  // representative essential container's name (mirrors the same
+  // first-essential anchor `isLocalCdkAssetImage` and
+  // `loadAssetContextForTarget` use, so override + classifier verdict
+  // / pin detector all agree on which container drives the verdict).
+  // Sibling containers without an override entry still go through
+  // their normal pull / build path.
+  if (opts.imageOverrideTag !== undefined) {
+    const essential =
+      service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+    if (essential) {
+      taskOpts.imageOverrideByContainer = new Map([[essential.name, opts.imageOverrideTag]]);
+      // Skip docker pull on the override tag — it's a deterministic
+      // local-only tag the engine just built, NOT something present
+      // in any registry. The runner's prepareImages short-circuit
+      // already bypasses prepareOneImage for this container, so the
+      // global --no-pull semantics for sibling containers are
+      // unaffected.
+    }
   }
 
   // Front-door pools for THIS service (built once at the emulator level and
@@ -2205,6 +2355,114 @@ export async function resolveSharedSidecarCredentials(options: {
 }
 
 /**
+ * Issue #238 — boot-time `--image-override` resolution + build pass.
+ * Walks every booted service target's representative container image
+ * to identify the pinned set (ECR / public-registry pin — the same
+ * anchor `isLocalCdkAssetImage` uses), feeds the pinned set + raw
+ * `--image-override` / `--image-build-arg` / `--image-build-secret` /
+ * `--image-target` / `--no-interactive-overrides` flag values into
+ * the engine ({@link resolveImageOverrides}), then `docker build`s
+ * every covered Dockerfile via {@link runImageOverrideBuilds} and
+ * returns the per-target local-tag map the boot path threads into
+ * each runner.
+ *
+ * Sequential by design — most overrides share a base image, and the
+ * engine's deterministic tag plus BuildKit's layer cache make
+ * sequential builds nearly as fast as a parallel fan-out while
+ * keeping the build log readable. Throws on a parser / picker /
+ * build failure; the outer try/finally tears down what was set up.
+ *
+ * The boot prompt is fired only when STDIN+STDOUT are TTYs AND
+ * `--no-interactive-overrides` is unset; non-TTY contexts silently
+ * skip the prompt and rely on whatever the explicit flags resolved.
+ */
+async function resolveAndBuildImageOverrides(args: {
+  perTarget: string[];
+  stacks: StackInfo[];
+  options: EcsServiceEmulatorOptions;
+  extraStateProviders: ExtraStateProviders | undefined;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<Map<string, string>> {
+  const { perTarget, stacks, options, extraStateProviders, logger } = args;
+
+  // Identify pinned targets via the same representative-essential anchor
+  // the boot WARN + reload-skip use. Each target is re-resolved with its
+  // own image-resolution context (so `--from-cfn-stack` substitutions
+  // are applied) — necessary to distinguish a CDK asset, an ECR pin,
+  // and a public-registry pin in the resolved template.
+  const pinnedTargets: string[] = [];
+  const pinnedLabels = new Map<string, string>();
+  for (const target of perTarget) {
+    const parsed = parseEcsTarget(target);
+    const candidate = pickCandidateStack(parsed.stackPattern, stacks);
+    const stateProvider = createLocalStateProvider(
+      options,
+      candidate?.stackName ?? '',
+      await resolveCfnFallbackRegion(options, candidate?.region),
+      extraStateProviders
+    );
+    let imageContext: EcsImageResolutionContext | undefined;
+    let service: ResolvedEcsService | undefined;
+    try {
+      imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
+      service = resolveEcsServiceTarget(target, stacks, imageContext, {
+        suppressLoadBalancerWarning: true,
+      });
+    } catch (err) {
+      logger.debug(
+        `--image-override peek failed for '${target}': ${err instanceof Error ? err.message : String(err)}.`
+      );
+      continue;
+    } finally {
+      if (stateProvider) stateProvider.dispose();
+    }
+    if (!service) continue;
+    if (isLocalCdkAssetImage(service)) continue;
+    pinnedTargets.push(target);
+    const uri = describePinnedImageUri(service);
+    if (uri) pinnedLabels.set(target, uri);
+  }
+
+  // Parse the raw flags. A parser error is reported as a clean
+  // user-error (no override is possible if the flag is malformed).
+  const rawFlags = parseImageOverrideFlags({
+    ...(options.imageOverride && { imageOverride: options.imageOverride }),
+    ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
+    ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
+    ...(options.imageTarget && { imageTarget: options.imageTarget }),
+  });
+
+  // Short-circuit: nothing to do when no override flag was passed AND
+  // no pinned target exists to prompt about. Saves a no-op pass on the
+  // common case (local CDK assets, no flags).
+  if (
+    pinnedTargets.length === 0 &&
+    rawFlags.explicit.size === 0 &&
+    rawFlags.pickerPaths.length === 0
+  ) {
+    return new Map();
+  }
+
+  // Resolve overrides — picker prompts + boot prompt fire here when in
+  // a TTY and `--no-interactive-overrides` is unset.
+  const noInteractive = options.interactiveOverrides === false;
+  const overrides = await resolveImageOverrides({
+    rawFlags,
+    pinnedTargets,
+    pinnedLabels,
+    interactiveBootPrompt: true,
+    noInteractive,
+  });
+
+  if (overrides.size === 0) return new Map();
+
+  // Build every covered Dockerfile. Per-build progress goes to stdout
+  // via the docker-runner's streamLive path; the per-target
+  // "Building override image..." line surfaces ahead of each build.
+  return runImageOverrideBuilds(overrides);
+}
+
+/**
  * Add the CLI options shared by both ECS-service commands (`start-service` and
  * `start-alb`) to a command. The command-specific argument / description and
  * the one unique option (`--host-port` vs `--lb-port`) are added by each
@@ -2303,4 +2561,74 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
   cmd.addOption(deprecatedRegionOption);
   return cmd;
+}
+
+/**
+ * Issue #238 — register the `--image-override` flag family shared by
+ * `cdkl start-service` and `cdkl start-alb`. Both commands accept the
+ * same six flags; this helper keeps the wording in one place so a
+ * future copy edit lands in both surfaces simultaneously.
+ *
+ * `--image-override` is repeatable (accumulator); `--image-build-arg`
+ * and `--image-build-secret` are repeatable too; `--image-target` is a
+ * single string (the global multi-stage target); `--no-interactive-overrides`
+ * and `--strict-overrides` are booleans. The engine in
+ * {@link runEcsServiceEmulator}'s boot path consumes them.
+ *
+ * Shared between `cdkl start-service` and `cdkl start-alb` and exposed
+ * via `cdk-local/internal` so host CLIs (e.g. cdkd) that wrap the same
+ * factories inherit the flag set without duplication.
+ */
+export function addImageOverrideOptions(cmd: Command): Command {
+  return cmd
+    .addOption(
+      new Option(
+        '--image-override <service=dockerfile or dockerfile...>',
+        "Replace a service target's deployed-registry image with a local `docker build` of the " +
+          'supplied Dockerfile (repeatable). Two forms: <service>=<dockerfile> binds the service ' +
+          'explicitly; a bare <dockerfile> opens a multi-select picker against the still-uncovered ' +
+          'pinned targets (one Dockerfile across N services). Mix freely. Lets `--from-cfn-stack` ' +
+          'still reach real AWS state while you iterate locally on the application container.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--image-build-arg <KEY=VAL...>',
+        'Global `docker build --build-arg KEY=VAL` pair applied to every --image-override build ' +
+          '(repeatable). Lets a CDK Dockerfile that branches on an ARG (env target, base image tag, ' +
+          'package mirror) honor that ARG locally without editing the Dockerfile.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--image-build-secret <id=src...>',
+        'Global `docker build --secret id=<id>,src=<src>` entry applied to every --image-override ' +
+          'build (repeatable). Enables `RUN --mount=type=secret,id=<id>` in the Dockerfile — the ' +
+          'standard private-registry / npm-token recipe (e.g. ' +
+          '`--image-build-secret npmrc=./.npmrc`).'
+      )
+    )
+    .addOption(
+      new Option(
+        '--image-target <stage>',
+        'Global `docker build --target=<stage>` forwarded to every --image-override build. Useful ' +
+          'when the Dockerfile is multi-stage and you want to stop at a specific intermediate stage.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--no-interactive-overrides',
+        'Suppress the interactive boot prompt that walks each pinned target asking for a Dockerfile ' +
+          'path, and the multi-select prompt fired by `--image-override <dockerfile>` (picker form). ' +
+          'Useful for CI / scripted invocations.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--strict-overrides',
+        'Fail fast at boot when any pinned target remains uncovered after `--image-override` + the ' +
+          'boot prompt resolve. Off by default; the boot WARN per uncovered pinned target still ' +
+          'fires regardless.'
+      ).default(false)
+    );
 }
