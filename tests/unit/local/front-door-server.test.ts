@@ -13,6 +13,7 @@ import {
   type StartedFrontDoorServer,
   type RouteAction,
   type RedirectRouteAction,
+  type FrontDoorRuleSummary,
 } from '../../../src/local/front-door-server.js';
 import { matchAlbPathRule, type AlbPathRule } from '../../../src/local/alb-path-matcher.js';
 import {
@@ -231,6 +232,136 @@ describe('startFrontDoorServer', () => {
     const res = await fetchText(front.port, '/nope');
     expect(res.status).toBe(404);
     expect(res.body).toMatch(/No listener rule matched/);
+  });
+
+  it('404 body spells out evaluated fields + every rule when rulesSummary is supplied (issue #228)', async () => {
+    // The trap this fixes: a curl from 127.0.0.1:<port> hits a listener whose
+    // only rule gates on host-header. Without the rule summary the 404 body
+    // names only the path, so the user spends time debugging path patterns
+    // that don't exist. With rulesSummary, the body lists method/host/path
+    // AND every rule's [priority] field-in-[values] -> action target.
+    const rulesSummary: FrontDoorRuleSummary[] = [
+      {
+        priority: 1,
+        conditions: [{ field: 'host-header', values: ['api.example.com'] }],
+        action: 'forward to <ECS: BackendApi>',
+      },
+      {
+        priority: 2,
+        conditions: [
+          { field: 'path-pattern', values: ['/admin/*'] },
+          { field: 'http-request-method', values: ['POST'] },
+        ],
+        action: 'redirect 301',
+      },
+    ];
+    const front = await startFrontDoorServer({
+      route: () => undefined,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 443,
+      label: 'listener port 443',
+      rulesSummary,
+    });
+    cleanups.push(() => front.close());
+
+    const res = await fetchTextWithHost(front.port, '/graphql', '127.0.0.1:8443');
+    expect(res.status).toBe(404);
+    // Evaluated section: every value the route resolver was handed.
+    expect(res.body).toMatch(/Evaluated:/);
+    expect(res.body).toMatch(/Method:\s+GET/);
+    expect(res.body).toMatch(/Host:\s+127\.0\.0\.1:8443/);
+    expect(res.body).toMatch(/Path:\s+\/graphql/);
+    // Per-rule summary: priority + condition rows (every constrained ALB
+    // field) + the action target.
+    expect(res.body).toMatch(/Listener has 2 rule\(s\):/);
+    expect(res.body).toMatch(
+      /\[priority=1\] host-header in \[api\.example\.com\]\s+-> forward to <ECS: BackendApi>/
+    );
+    expect(res.body).toMatch(
+      /\[priority=2\] path-pattern in \[\/admin\/\*\] AND http-request-method in \[POST\]\s+-> redirect 301/
+    );
+  });
+
+  it('404 body falls back to the path-only shape when rulesSummary is omitted', async () => {
+    // Direct callers wiring the proxy with just a selectPool / selectTarget
+    // (no rulesSummary) keep the original behavior — the enriched body opts
+    // in via the new field, so this is a binding test for the fallback.
+    const front = await startFrontDoorServer({
+      route: () => undefined,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+      // no rulesSummary
+    });
+    cleanups.push(() => front.close());
+
+    const res = await fetchText(front.port, '/anywhere');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatch(/No listener rule matched '\/anywhere' on listener port 80/);
+    // The enriched sections are absent.
+    expect(res.body).not.toMatch(/Evaluated:/);
+    expect(res.body).not.toMatch(/Listener has/);
+  });
+
+  it('404 body sorts rules by priority + handles an empty-rules listener', async () => {
+    // Empty rulesSummary still drops the path-only shape — the user gets the
+    // evaluated-fields section and a "Listener has 0 rule(s)." line, which is
+    // a clearer diagnosis than "no path matched".
+    const front = await startFrontDoorServer({
+      route: () => undefined,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+      rulesSummary: [],
+    });
+    cleanups.push(() => front.close());
+
+    const res = await fetchText(front.port);
+    expect(res.status).toBe(404);
+    expect(res.body).toMatch(/Evaluated:/);
+    expect(res.body).toMatch(/Listener has 0 rule\(s\)\./);
+  });
+
+  it('404 body orders rules by priority regardless of input order', async () => {
+    // The summary may arrive in any order; the body must render lowest
+    // priority first so the user reads them in evaluation order.
+    const rulesSummary: FrontDoorRuleSummary[] = [
+      {
+        priority: 30,
+        conditions: [{ field: 'path-pattern', values: ['/c/*'] }],
+        action: 'forward to <ECS: C>',
+      },
+      {
+        priority: 10,
+        conditions: [{ field: 'path-pattern', values: ['/a/*'] }],
+        action: 'forward to <ECS: A>',
+      },
+      {
+        priority: 20,
+        conditions: [{ field: 'path-pattern', values: ['/b/*'] }],
+        action: 'forward to <ECS: B>',
+      },
+    ];
+    const front = await startFrontDoorServer({
+      route: () => undefined,
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+      rulesSummary,
+    });
+    cleanups.push(() => front.close());
+
+    const res = await fetchText(front.port);
+    const aIdx = res.body.indexOf('priority=10');
+    const bIdx = res.body.indexOf('priority=20');
+    const cIdx = res.body.indexOf('priority=30');
+    expect(aIdx).toBeGreaterThan(-1);
+    expect(bIdx).toBeGreaterThan(aIdx);
+    expect(cIdx).toBeGreaterThan(bIdx);
   });
 
   it('routes through the real matchAlbPathRule honoring rule priority (no default -> 404)', async () => {

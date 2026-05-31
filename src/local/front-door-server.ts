@@ -188,6 +188,47 @@ export interface FrontDoorRouteRequest {
   sourceIp?: string;
 }
 
+/**
+ * One condition row of a {@link FrontDoorRuleSummary}, surfaced in the
+ * no-rule-matched 404 body so the user can see at a glance what each rule
+ * expects on every ALB condition field. `field` names the ALB condition
+ * field; `values` are the human-readable match values for it (the call site
+ * pre-formats them — e.g. `["X-API: v1, v2"]` for an `http-header` row,
+ * `["k=v"]` for a `query-string` row).
+ */
+export interface FrontDoorRuleConditionSummary {
+  /** The ALB condition field this row describes. */
+  field:
+    | 'path-pattern'
+    | 'host-header'
+    | 'http-header'
+    | 'http-request-method'
+    | 'query-string'
+    | 'source-ip';
+  /** Pre-formatted match values for the field (length >= 1). */
+  values: string[];
+}
+
+/**
+ * A summary of one listener rule, surfaced in the no-rule-matched 404 body so
+ * the user can spot at a glance which rule they were close to matching and on
+ * which ALB condition field. The call site fills this in once at server start;
+ * the front-door reads it at 404 time. Diagnostics-only — the matcher itself
+ * does not consume this.
+ */
+export interface FrontDoorRuleSummary {
+  /** Rule priority (lower = evaluated first). */
+  priority: number;
+  /** One entry per ALB condition field the rule constrains (empty = catch-all). */
+  conditions: FrontDoorRuleConditionSummary[];
+  /**
+   * Pre-formatted action target (e.g. `forward to <ECS: BackendApi>`,
+   * `redirect 301`, `fixed-response 404`). The call site produces this so the
+   * front-door does not need to know the planner's target-naming convention.
+   */
+  action: string;
+}
+
 export interface StartFrontDoorServerOptions {
   /**
    * Resolve the action to serve a request, given its path + Host header.
@@ -237,6 +278,16 @@ export interface StartFrontDoorServerOptions {
    * client gets a 504. Defaults to {@link DEFAULT_UPSTREAM_TIMEOUT_MS}.
    */
   upstreamTimeoutMs?: number;
+  /**
+   * Per-listener rule summary, surfaced in the no-rule-matched 404 body so the
+   * 404 body spells out which fields were evaluated (method, host, path) AND
+   * every rule's priority + conditions + action target. Without this the body
+   * only names the request path, which misleads a debugging user when the
+   * actual non-matching condition was the Host header, an HTTP method, a query
+   * string, or a source IP (see issue #228). Optional — when absent, the 404
+   * body falls back to the original path-only shape.
+   */
+  rulesSummary?: FrontDoorRuleSummary[];
 }
 
 /** Default per-request upstream timeout — a hung replica yields a 504, not a hang. */
@@ -457,13 +508,71 @@ function reply404(
   res: ServerResponse,
   opts: StartFrontDoorServerOptions
 ): Promise<void> {
-  writeError(
-    res,
-    404,
-    `No listener rule matched '${req.url ?? '/'}' on ${opts.label}, and the listener has no ` +
+  writeError(res, 404, buildNoRuleMatched404Body(req, opts));
+  return Promise.resolve();
+}
+
+/**
+ * Build the no-rule-matched 404 body. When the call site supplied a
+ * {@link StartFrontDoorServerOptions.rulesSummary}, the body lists every
+ * ALB condition field that WAS evaluated (method, host, path) plus every
+ * configured rule's priority + conditions + action target — so a user
+ * whose request missed on, say, the Host header can spot the mismatch
+ * without inspecting the synthesized template. Header conditions are
+ * NOT spelled out in the evaluated section (too noisy) but ARE listed
+ * in each rule's condition row when the rule constrains them. Without a
+ * summary the body falls back to the original path-only shape (preserves
+ * the behavior for direct callers that wire the proxy with just a
+ * `selectPool` / `selectTarget`).
+ */
+function buildNoRuleMatched404Body(
+  req: IncomingMessage,
+  opts: StartFrontDoorServerOptions
+): string {
+  const requestPath = req.url ?? '/';
+  const summary = opts.rulesSummary;
+  if (!summary) {
+    return (
+      `No listener rule matched '${requestPath}' on ${opts.label}, and the listener has no ` +
+      'default action forwarding to a local target.'
+    );
+  }
+
+  const rawHost = req.headers.host;
+  const hostValue = Array.isArray(rawHost) ? rawHost[0] : rawHost;
+  const lines: string[] = [];
+  lines.push(
+    `No listener rule matched the request on ${opts.label}, and the listener has no ` +
       'default action forwarding to a local target.'
   );
-  return Promise.resolve();
+  lines.push('');
+  lines.push('  Evaluated:');
+  lines.push(`    Method:  ${req.method ?? '(unknown)'}`);
+  lines.push(`    Host:    ${hostValue ?? '(no Host header)'}`);
+  lines.push(`    Path:    ${requestPath}`);
+  lines.push('');
+
+  if (summary.length === 0) {
+    lines.push('  Listener has 0 rule(s).');
+  } else {
+    lines.push(`  Listener has ${summary.length} rule(s):`);
+    // Display by priority order so the user reads them in evaluation order;
+    // ties keep the supplied order (stable sort).
+    const ordered = [...summary].sort((a, b) => a.priority - b.priority);
+    for (const rule of ordered) {
+      const conditions =
+        rule.conditions.length === 0
+          ? '(no condition)'
+          : rule.conditions.map(formatRuleConditionSummary).join(' AND ');
+      lines.push(`    [priority=${rule.priority}] ${conditions}  -> ${rule.action}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Format one condition row of a {@link FrontDoorRuleSummary} for the 404 body. */
+function formatRuleConditionSummary(c: FrontDoorRuleConditionSummary): string {
+  return `${c.field} in [${c.values.join(', ')}]`;
 }
 
 function handlePoolRequest(
