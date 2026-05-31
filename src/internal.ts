@@ -457,6 +457,19 @@ export {
  */
 export { SOFT_RELOAD_COMPLETION_LOG_SUFFIX } from './local/ecs-service-runner.js';
 export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
+
+/**
+ * Issue #234 — per-target image-kind classifier the
+ * `cdkl start-service --watch` / `cdkl start-alb --watch` reload
+ * pathway consults to detect "the deployed image is pinned to a
+ * registry, so a local source edit can't possibly take effect"
+ * upfront (boot-time WARN) and to skip a no-op rolling primitive on
+ * each reload firing. Host CLIs (cdkd) that wrap
+ * `runEcsServiceEmulator` reuse the same helpers so their `--watch`
+ * UX matches cdk-local's instead of silently inheriting the
+ * "Reload complete." disguised-no-op symptom.
+ */
+export { isLocalCdkAssetImage, describePinnedImageUri } from './local/image-pin-detector.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
 
 /**
