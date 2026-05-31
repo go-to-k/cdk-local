@@ -36,13 +36,18 @@ AWS managed services.
   handler — Node / Python / Ruby / shell — no Dockerfile, no
   dependency manifest, no compiled-language source) `docker cp` the
   freshly-synthed asset directory's contents into each replica's
-  WORKDIR + `docker restart`: no `docker build`, no shadow boot, no
-  Cloud Map / front-door pool swap (the container's docker network IP
-  and host port are preserved across the restart). Reload log
-  surfaces `verdict=soft-reload (...)` and per-replica
-  `Soft-reloaded replica ... restart + TCP-ready probe complete;
-  registrations unchanged`. Typical end-to-end latency well under a
-  second. Dockerfile / dependency manifest / compiled-language source
+  WORKDIR + `docker restart`: no `docker build`, no shadow boot. The
+  container's docker network IP and host port are preserved across
+  the restart, so the pre-restart drain of Cloud Map handles + the
+  front-door pool entry and the post-TCP-ready re-publish under the
+  SAME per-replica owner key are a no-op at the end-state contract
+  level — but the drain-then-republish round trip is what preserves
+  the multi-replica zero-connection-refusal guarantee while the
+  SIGTERM'd container is restarting. Reload log surfaces
+  `verdict=soft-reload (...)` and per-replica `Soft-reloaded replica
+  ... restart + TCP-ready probe complete; Cloud Map + front-door
+  re-published`. Typical end-to-end latency well under a second.
+  Dockerfile / dependency manifest / compiled-language source
   / ambiguous edits fall through to the rebuild path — boot a shadow
   replica under a bumped generation suffix, atomically swap Cloud Map
   / front-door pool registrations off the dying replica (after a
