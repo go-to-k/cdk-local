@@ -439,17 +439,23 @@ export function addAlbSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--watch',
-        'Hot-reload: re-synth + per-replica rolling deploy of every ECS service behind the ALB ' +
-          'when the CDK source changes (honors cdk.json watch.include/exclude; cdk.out, ' +
-          'node_modules, .git are always excluded). Each replica is rolled one at a time — boot a ' +
-          'shadow under a bumped generation suffix, wait for its container port to accept a TCP ' +
-          'connection, atomically register it in the front-door pool, then drop the old entry and ' +
-          'retire the old container — so a continuous external request stream against the listener ' +
-          'port sees zero connection refusals across the reload. The host front-door (TLS, JWKS ' +
-          'cache, Lambda-target containers, listener sockets) stays up across the reload. Lambda ' +
-          'target groups behind the ALB are a no-op on reload (the warm RIE container keeps its ' +
-          'boot-time image). Off by default; existing replica(s) keep serving when synth fails ' +
-          'mid-reload.'
+        'Hot-reload: re-synth + per-replica reload of every ECS service behind the ALB when ' +
+          'the CDK source changes (honors cdk.json watch.include/exclude; cdk.out, ' +
+          'node_modules, .git are always excluded). A per-firing classifier picks the ' +
+          'per-replica primitive: source-only edits on interpreted-language handlers ' +
+          '(Node/Python/Ruby/shell) take a bind-mount FAST PATH (`docker cp` the new source ' +
+          'into each replica + `docker restart`; no rebuild, front-door pool entry unchanged ' +
+          'since the IP/port are preserved). Dockerfile / dependency manifest / ' +
+          'compiled-language source / ambiguous edits fall through to the rebuild rolling ' +
+          'primitive — boot a shadow under a bumped generation suffix, wait for its ' +
+          'container port to accept a TCP connection, atomically register it in the ' +
+          'front-door pool, then drop the old entry and retire the old container. Either ' +
+          'path rolls one replica at a time, so a continuous external request stream against ' +
+          'the listener port sees zero connection refusals across the reload. The host ' +
+          'front-door (TLS, JWKS cache, Lambda-target containers, listener sockets) stays ' +
+          'up across the reload. Lambda target groups behind the ALB are a no-op on reload ' +
+          '(the warm RIE container keeps its boot-time image). Off by default; existing ' +
+          'replica(s) keep serving when synth fails mid-reload.'
       ).default(false)
     );
 }

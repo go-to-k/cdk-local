@@ -1451,10 +1451,61 @@ Trade-offs (issue #214 follow-ups):
   through the new task definition but does NOT add / remove replicas
   to match the new count. A warn surfaces so the user can `^C` and
   re-launch to apply the new replica count.
-- **No bind-mount fast path.** Every reload rebuilds the image (the
-  same path the initial boot takes). Phase 4 of #214 adds an opt-in
-  bind-mount source mode that skips the rebuild for source-only
-  changes.
+
+**Source-only edits use the bind-mount fast path (Phase 4 of issue #214).**
+On a `--watch` reload, the classifier inspects the set of changed paths
+and routes the firing through one of two per-replica primitives:
+
+- **Soft-reload (fast path).** When every changed path is a plain
+  interpreted-language source file (no Dockerfile, no
+  dependency-manifest, no compiled-language source), the runner
+  `docker cp`s the freshly-synthed asset directory's contents into
+  each replica's WORKDIR and `docker restart`s the container. No
+  `docker build`, no shadow boot, no Cloud Map / front-door pool
+  swap — the container's docker network IP and host port are
+  preserved across the restart, so peer services and the front-door
+  pool keep their existing registrations. Typical end-to-end latency
+  is well under a second for an interpreted handler (Node / Python /
+  Ruby / shell). The reload-log line surfaces the verdict as
+  `verdict=soft-reload (...)` and per-replica completion as
+  `Soft-reloaded replica r<i> ... restart + TCP-ready probe complete;
+  registrations unchanged.`
+- **Rebuild (fallback).** When ANY changed path matches the asset's
+  Dockerfile, a recognized dependency manifest
+  (`package.json` / `pnpm-lock.yaml` / `requirements.txt` /
+  `pyproject.toml` / `go.mod` / `Cargo.toml` / etc.), or a
+  compiled-language source (`.go` / `.rs` / `.java` / `.kt` /
+  `.scala` / `.cs` / `.swift` / `.c` / `.cpp` / `.zig` / etc.), the
+  runner falls through to the Phase 1-3 rolling primitive — `docker
+  build` + shadow boot + atomic Cloud Map / front-door pool swap +
+  retire-old. The reload-log line surfaces the verdict as
+  `verdict=rebuild (...)` naming the trigger.
+
+The classifier defaults to `rebuild` on ANY ambiguity (target image
+isn't a CDK docker-image asset, asset manifest can't be loaded,
+unrecognized change). A slow-but-correct reload is strictly better
+than a fast-but-stale one — a missed Dockerfile / dependency edit
+would leave the running container on the previous image while the
+source files said otherwise.
+
+Known fast-path limitations (Phase 4 trade-offs):
+
+- The fast path applies to interpreted-language handlers only. A
+  compiled-language source edit always falls through to rebuild
+  (copying `main.go` without a recompile inside the container would
+  leave the running binary unchanged).
+- The runner `docker cp`s into the image's declared `WORKDIR`. A
+  Dockerfile that does `COPY . /opt/app/` while leaving `WORKDIR /`
+  is not handled correctly — the user-side workaround is to set
+  `WORKDIR` to the COPY target. Documented as a known limitation;
+  a future opt-out flag may surface if it bites.
+- Task-spec changes (env vars, memory limits, mounts, added
+  sidecars) declared in CDK construct code that don't touch the
+  asset source flip the asset hash to the same value across the
+  synth. The classifier detects this and forces the rebuild path so
+  the rolling primitive's fresh `docker create` picks up the new
+  spec — soft-reload would `docker cp` identical files and `docker
+  restart` with the OLD spec, silently dropping the user's intent.
 
 `cdkl start-alb --watch` (Phase 3 of issue #214) reuses this same
 per-replica rolling primitive — every ECS service behind the named
@@ -1468,7 +1519,10 @@ sockets) is built once at boot and is NOT recreated on reload — only
 the per-replica pool entries rotate. Lambda target groups behind the
 ALB are a no-op on `--watch` reload (the warm RIE container keeps
 its boot-time image; Lambda hot-reload is the `start-api` path's
-concern).
+concern). The Phase 4 bind-mount fast path also applies under
+`start-alb --watch` for the ECS replicas; the front-door pool entries
+need no swap on the soft-reload path because the container's docker
+network IP and host port are preserved across `docker restart`.
 
 ### `start-service` lifecycle
 

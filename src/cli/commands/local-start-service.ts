@@ -141,14 +141,18 @@ export function addStartServiceSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--watch',
-        'Hot-reload: re-synth + per-replica rolling deploy when the CDK source changes ' +
-          '(honors cdk.json watch.include/exclude; cdk.out, node_modules, .git are always ' +
-          'excluded). Each replica is rolled one at a time — boot a shadow under a bumped ' +
+        'Hot-reload: re-synth + per-replica reload when the CDK source changes (honors ' +
+          'cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). ' +
+          'A per-firing classifier picks the per-replica primitive: source-only edits on ' +
+          'interpreted-language handlers (Node/Python/Ruby/shell) take a bind-mount FAST PATH ' +
+          '(`docker cp` the new source into each replica + `docker restart`; no rebuild). ' +
+          'Dockerfile / dependency manifest / compiled-language source / ambiguous edits fall ' +
+          'through to the rebuild rolling primitive — boot a shadow under a bumped ' +
           'generation suffix, wait for its container port to accept a TCP connection, ' +
           'atomically swap Service-Connect / Cloud Map registrations, then retire the old ' +
-          'container — so peer services see zero connection refusals across the reload even ' +
-          'on multi-replica services. Off by default; existing replica(s) keep serving when ' +
-          'synth fails mid-reload.'
+          'container. Either path rolls one replica at a time, so peer services see zero ' +
+          'connection refusals across the reload even on multi-replica services. Off by ' +
+          'default; existing replica(s) keep serving when synth fails mid-reload.'
       ).default(false)
     );
 }

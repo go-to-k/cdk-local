@@ -213,6 +213,26 @@ export interface ServiceReplicaInstance {
    */
   inFlightBoot: Promise<void> | undefined;
   /**
+   * Phase 4 of issue #214 — set by {@link softReloadReplica} while a
+   * `docker cp` + `docker restart` cycle is mid-flight against this
+   * replica. The watcher loop's `await waitForExitImpl(id)` resolves
+   * when `docker restart`'s stop phase fires SIGTERM, and the post-
+   * exit branch would otherwise enter the restart-policy logic
+   * (cleanup + bootReplica from scratch) and race the in-flight
+   * `docker restart`. Checking the flag right after `waitForExitImpl`
+   * returns + waiting until it clears keeps the watcher's
+   * restart-on-exit semantics intact: a real crash still goes through
+   * the restart branch, but a soft-reload-driven exit is treated as a
+   * controlled restart and the watcher re-arms `docker wait` on the
+   * (same-id) restarted container.
+   *
+   * `undefined` in steady state. Cleared by `softReloadReplica` after
+   * the post-restart TCP-ready probe completes (success OR timeout —
+   * the probe is best-effort, but the flag must clear so the watcher
+   * is never wedged).
+   */
+  softReloadInProgress?: boolean;
+  /**
    * Last error from a failed run, if any. Surfaced in the shutdown
    * summary so users know why a degraded service ended up degraded.
    */
@@ -1237,6 +1257,406 @@ export async function rollServiceReplica(args: {
 }
 
 /**
+ * Phase 4 of issue #214 — bind-mount source fast path. `docker cp` the
+ * post-synth asset source directory into each essential container of
+ * the live replica, then `docker restart` it. Skips `docker build`,
+ * skips a shadow boot, and keeps the container's network IP / Cloud
+ * Map / front-door pool registrations intact (the registrations key
+ * off the docker-assigned IP and the published host port; `docker
+ * restart` preserves both via the container's stable network
+ * namespace), so NO registry swap is needed.
+ *
+ * Sequence (per replica, sequenced by the rolling loop one at a time
+ * so peer services + the ALB front-door always have at least N-1 live
+ * endpoints across the reload — same zero-connection-refusal guarantee
+ * the Phase 2/3 rebuild pathway makes):
+ *   1. Locate the live replica by {@link oldReplicaIndex}; reject when
+ *      shutting down (the next save can roll a clean boot instead).
+ *   2. Pre-restart DRAIN: drop the replica's Cloud Map handles + every
+ *      front-door pool entry under its owner key. Both registries are
+ *      synchronous Map mutations; once these complete, peer wget +
+ *      front-door `next()` calls route to the surviving replicas. The
+ *      handle / owner-key snapshots are kept on `instance.*` so the
+ *      symmetric re-register step can pick them up (Cloud Map handles
+ *      are rebuilt fresh via `publishReplicaToCloudMap`; the docker
+ *      network IP is preserved across `docker restart` so the new
+ *      handles point at the SAME endpoint).
+ *   3. Set {@link ServiceReplicaInstance.softReloadInProgress} = true
+ *      so the watcher's `waitForExitImpl` post-exit branch defers to
+ *      the in-flight restart instead of re-bootstrapping the replica
+ *      from scratch.
+ *   4. For each essential container in the replica's started set:
+ *      a. Resolve the container's image WORKDIR via `docker inspect`
+ *         (default `/` when unset — matches Docker's runtime default
+ *         for a Dockerfile with no `WORKDIR`).
+ *      b. `docker cp <sourceDirToCopy>/. <containerId>:<workdir>/`
+ *         — copy the synthesized asset directory's contents into the
+ *         container at the WORKDIR. Trailing `/.` is critical: it
+ *         copies the SOURCE DIRECTORY'S CONTENTS, not the directory
+ *         itself, mirroring `cp -r src/. dst/`.
+ *      c. `docker restart <containerId>` — cycle PID 1. Image,
+ *         network namespace, and host-port publish are preserved.
+ *   5. {@link waitForReplicaTcpReady} confirms the essential
+ *      container's first port accepts a TCP connection.
+ *   6. Post-TCP-ready RE-REGISTER: re-publish Cloud Map handles +
+ *      front-door pool entry under the SAME per-replica owner key
+ *      prefix used at initial boot, so the registrations remain
+ *      idempotent across multiple `--watch` reloads. After this
+ *      step, peers + the front-door route to the replica again.
+ *   7. Clear `softReloadInProgress` in a `finally` so the watcher
+ *      always exits its defer-loop, even on a docker error.
+ *
+ * Failure modes:
+ *   - `docker inspect` / `docker cp` / `docker restart` errors:
+ *     surfaced to the caller via a throw. The replica may be in an
+ *     inconsistent state (drained from registries + partial cp + a
+ *     possibly-crashed PID 1). The caller (`reloadAllServices`) logs
+ *     the failure and continues with the remaining replicas; the
+ *     drained state is intentionally NOT re-registered on error so
+ *     peers + the front-door stop routing to a broken replica until
+ *     the next clean save (or `^C` and re-run).
+ *   - TCP probe timeout: best-effort warn (mirrors
+ *     {@link rollServiceReplica}); the registrations are re-published
+ *     anyway because the container IS up — just slow to bind. The
+ *     dying-old-handles-AND-fresh-app-not-yet-listening worst case
+ *     would otherwise leave the replica drained forever.
+ *
+ * Out of scope for the v1 primitive (deferred follow-ups):
+ *   - Per-container WORKDIR caching across multiple essential
+ *     containers in the same task. The `docker inspect` call is
+ *     ~10ms; not worth the cache invalidation surface for a path
+ *     fired ~once per save.
+ *   - SIGHUP / `docker exec`-driven in-process reload. Image-specific
+ *     (uvicorn / nodemon / etc.). `docker restart` is the universal
+ *     primitive; signal-based reload is a future opt-in if the
+ *     per-restart latency proves prohibitive.
+ *
+ * @internal — wired only by the emulator's reload pathway.
+ */
+export async function softReloadReplica(args: {
+  /** Controller whose `runState.replicas[oldReplicaIndex]` is soft-reloaded. */
+  controller: ServiceController;
+  /**
+   * Index INTO `controller.runState.replicas`. The replica's
+   * docker network IP / Cloud Map / front-door pool registrations
+   * survive the soft-reload unchanged.
+   */
+  oldReplicaIndex: number;
+  /**
+   * Resolved task descriptor for the post-reload generation. Used
+   * only to identify essential containers + their TCP-ready port; the
+   * image / env / mounts are NOT applied (those require a rebuild —
+   * `docker restart` cycles PID 1 but does not re-create the
+   * container with new spec).
+   */
+  newService: ResolvedEcsService;
+  /**
+   * Absolute path of the synthesized asset source directory (the
+   * post-synth `<cdkout>/asset.<newHash>/`). `docker cp <dir>/.
+   * <id>:<workdir>/` lands the contents of THIS directory into the
+   * container's WORKDIR. The caller (the emulator's reload pathway)
+   * derives this from the asset manifest of the freshly-synthed
+   * stacks.
+   */
+  sourceDirToCopy: string;
+}): Promise<void> {
+  const { controller, oldReplicaIndex, newService, sourceDirToCopy } = args;
+  const logger = getLogger().child('ecs-service');
+  const instance = controller.runState.replicas[oldReplicaIndex];
+  if (!instance) {
+    throw new EcsServiceRunnerError(
+      `softReloadReplica: no replica at index ${oldReplicaIndex} ` +
+        `(replicas=${controller.runState.replicas.length}).`
+    );
+  }
+  if (instance.shuttingDown) {
+    logger.warn(
+      `Soft-reload of replica r${instance.index} (gen ${instance.generation}): retired by its ` +
+        'own watcher mid-reload. Skipping; save again to re-boot it from scratch.'
+    );
+    return;
+  }
+
+  // Resolve every essential container's started-container record so we
+  // know which docker IDs to cp/restart. Mirror the picker the watcher
+  // uses (first essential in template order; fall back to first
+  // container when none flagged) and accept multi-essential tasks by
+  // applying the fast path to every essential. Sidecars / non-
+  // essential containers stay running through the cycle — they read
+  // their inputs once at boot and `docker cp` of the source layer
+  // doesn't affect them.
+  const essentialContainers = newService.task.containers.filter((c) => c.essential);
+  const containersToCycle =
+    essentialContainers.length > 0
+      ? essentialContainers
+      : newService.task.containers.length > 0
+        ? [newService.task.containers[0]!]
+        : [];
+  if (containersToCycle.length === 0) {
+    throw new EcsServiceRunnerError(
+      `softReloadReplica: service '${newService.serviceLogicalId}' has no containers to cycle.`
+    );
+  }
+
+  const startedById = new Map(instance.state.startedContainers.map((c) => [c.name, c.id] as const));
+
+  // Snapshot the live docker IDs before flipping the watcher-defer
+  // flag so a missing essential container fails fast without leaving
+  // the flag set.
+  const targets: Array<{ name: string; id: string }> = [];
+  for (const container of containersToCycle) {
+    const id = startedById.get(container.name);
+    if (!id) {
+      throw new EcsServiceRunnerError(
+        `softReloadReplica: replica r${instance.index} has no started container named ` +
+          `'${container.name}' (started: ${[...startedById.keys()].join(', ') || 'none'}).`
+      );
+    }
+    targets.push({ name: container.name, id });
+  }
+
+  // Phase 4 zero-refusal guarantee — drain BEFORE the docker restart.
+  // The container's docker network IP and published host port are
+  // preserved across `docker restart`, so the registrations could in
+  // principle stay in place — BUT during the SIGTERM → restart window
+  // (~1-2s on a typical interpreted handler), the container's app is
+  // not accepting connections. Without a drain, the front-door pool's
+  // round-robin would still pick this replica's endpoint and a host-
+  // side request would observe ECONNREFUSED until the new PID 1 binds.
+  // Mirror the watcher's restart-on-exit drain shape: drop Cloud Map
+  // handles + the front-door pool entry now, re-publish after
+  // {@link waitForReplicaTcpReady} confirms the new app is binding.
+  // Single-replica services have no peer to route to either way — the
+  // brief unavailability is identical to Phase 1's stop-old-first
+  // single-replica behavior, so the drain is a no-op shape there.
+  const controllerOptions = controller.options;
+  if (controllerOptions.discovery) {
+    for (const handle of instance.cloudMapHandles) {
+      try {
+        controllerOptions.discovery.registry.unregister(handle);
+      } catch {
+        /* sync best-effort */
+      }
+    }
+    instance.cloudMapHandles = [];
+  }
+  unregisterReplicaFromFrontDoor(instance, controllerOptions.frontDoor);
+
+  instance.softReloadInProgress = true;
+  try {
+    logger.info(
+      `Soft-reloading replica r${instance.index} (gen ${instance.generation}): ` +
+        `docker cp ${sourceDirToCopy} -> ${targets.length} essential container(s); restart.`
+    );
+    for (const target of targets) {
+      // Resolve WORKDIR from the running container's image config.
+      // Docker's runtime default when WORKDIR is unset is `/`, so an
+      // empty inspect result maps to `/`. Most Dockerfiles set
+      // WORKDIR to the same directory they COPY into; the user-side
+      // workaround for a non-conforming Dockerfile (COPY into
+      // `/opt/app` while WORKDIR is `/`) is to set WORKDIR to the
+      // COPY target — documented as a known Phase 4 limitation.
+      let workdir: string;
+      try {
+        workdir = (await dockerInspectWorkdirImpl(target.id)) || '/';
+      } catch (err) {
+        throw new EcsServiceRunnerError(
+          `softReloadReplica: docker inspect of container '${target.name}' (${target.id}) ` +
+            `failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      // Trailing `/.` on the source: copies CONTENTS, not the dir
+      // itself. Trailing `/` on the dest: ensures the dest is
+      // interpreted as a directory (else docker cp would rename the
+      // source to that path when it doesn't exist yet). Normalize so
+      // a workdir that already ends in `/` (e.g. the empty-WORKDIR
+      // fallback to `/`) doesn't produce `cid://`.
+      const workdirDest = workdir.endsWith('/') ? workdir : `${workdir}/`;
+      try {
+        await dockerCpImpl(`${sourceDirToCopy}/.`, `${target.id}:${workdirDest}`);
+      } catch (err) {
+        throw new EcsServiceRunnerError(
+          `softReloadReplica: docker cp into '${target.name}' (${target.id}:${workdir}) ` +
+            `failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      try {
+        await dockerRestartImpl(target.id);
+      } catch (err) {
+        throw new EcsServiceRunnerError(
+          `softReloadReplica: docker restart of '${target.name}' (${target.id}) ` +
+            `failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    // The TCP-ready probe re-uses the rolling pathway's helper —
+    // identical semantics (poll the essential container's first port
+    // on the docker network IP). The instance object's `state.network`
+    // and `state.startedContainers` are unchanged by `docker restart`,
+    // so the probe targets the same address it would in steady state.
+    await waitForReplicaTcpReady(newService, instance, {
+      timeoutMs: shadowReadyTimeoutMs,
+      intervalMs: shadowReadyIntervalMs,
+      label: `Soft-reloaded replica r${instance.index} (gen ${instance.generation})`,
+    });
+    // Re-register Cloud Map + front-door pool entries under the SAME
+    // per-replica owner-key prefix used at initial boot. Generation
+    // does not bump on a soft-reload (no shadow container, no new
+    // logical slot), so the prefix is `<svc>:r<i>` (steady-state
+    // shape) or `<svc>:r<i>:g<gen>` when a previous reload already
+    // bumped the generation — same formula `bootReplica` computes.
+    // Best-effort: a re-publish failure logs at warn (the publish
+    // helpers already do) and leaves the replica drained until the
+    // next save; the container is still serving locally on its
+    // docker IP, just not reachable via Cloud Map / front-door until
+    // re-published. We re-publish AFTER the TCP-ready probe so peers
+    // never resolve a non-listening endpoint.
+    const ownerKeyGenSuffix = instance.generation > 0 ? `:g${instance.generation}` : '';
+    const ownerKeyPrefix = `${newService.serviceLogicalId}:r${instance.index}${ownerKeyGenSuffix}`;
+    if (controllerOptions.discovery) {
+      await publishReplicaToCloudMap(
+        newService,
+        instance,
+        controllerOptions.discovery,
+        ownerKeyPrefix
+      );
+    }
+    if (controllerOptions.frontDoor) {
+      await publishReplicaToFrontDoor(
+        newService,
+        instance,
+        controllerOptions.frontDoor,
+        controllerOptions.taskOptions.containerHost,
+        ownerKeyPrefix
+      );
+    }
+    logger.info(
+      `Soft-reloaded replica r${instance.index} (gen ${instance.generation}): restart + ` +
+        'TCP-ready probe complete; Cloud Map + front-door re-published.'
+    );
+  } finally {
+    // Always clear the flag — the watcher's defer-loop polls this
+    // every 100ms and a wedged flag would keep restart-on-exit dead
+    // for the rest of the replica's life.
+    instance.softReloadInProgress = false;
+  }
+}
+
+/**
+ * Production `docker inspect --format {{.Config.WorkingDir}} <id>`
+ * impl. Returns the container's runtime WORKDIR; empty string when
+ * the Dockerfile didn't set one (caller treats empty as `/`, matching
+ * Docker's runtime default).
+ *
+ * Extracted as a test-overridable function so the soft-reload
+ * primitive's unit tests can assert the WORKDIR resolution branch
+ * without standing up a real container.
+ */
+const defaultDockerInspectWorkdirImpl = async (containerId: string): Promise<string> => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { getDockerCmd } = await import('../utils/docker-cmd.js');
+  const execFileAsync = promisify(execFile);
+  const { stdout } = await execFileAsync(getDockerCmd(), [
+    'inspect',
+    '--format',
+    '{{.Config.WorkingDir}}',
+    containerId,
+  ]);
+  return stdout.trim();
+};
+
+let dockerInspectWorkdirImpl: (containerId: string) => Promise<string> =
+  defaultDockerInspectWorkdirImpl;
+
+/**
+ * Test-only hook to substitute the `docker inspect` step the
+ * soft-reload primitive runs before `docker cp`. Pass `undefined`
+ * to restore the production `execFile`-backed impl.
+ *
+ * @internal
+ */
+export function __setDockerInspectWorkdirImpl(
+  impl: ((containerId: string) => Promise<string>) | undefined
+): void {
+  if (impl === undefined) {
+    dockerInspectWorkdirImpl = defaultDockerInspectWorkdirImpl;
+    return;
+  }
+  dockerInspectWorkdirImpl = impl;
+}
+
+/**
+ * Production `docker cp <src> <containerId>:<dst>` impl. The source
+ * path's trailing `/.` ensures CONTENTS of the directory are copied
+ * (not the directory itself); the caller is responsible for that
+ * convention.
+ */
+const defaultDockerCpImpl = async (src: string, dst: string): Promise<void> => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { getDockerCmd } = await import('../utils/docker-cmd.js');
+  const execFileAsync = promisify(execFile);
+  await execFileAsync(getDockerCmd(), ['cp', src, dst], {
+    // Asset trees can be large (a Node project's bundled JS + assets
+    // easily exceeds the default 1MB buffer); raise to 64MB so docker
+    // cp's stdout summary doesn't truncate. cp itself streams via the
+    // docker daemon, not stdout, so the buffer cap is only for status.
+    maxBuffer: 64 * 1024 * 1024,
+  });
+};
+
+let dockerCpImpl: (src: string, dst: string) => Promise<void> = defaultDockerCpImpl;
+
+/**
+ * Test-only hook to substitute the `docker cp` step the soft-reload
+ * primitive runs. Pass `undefined` to restore the production
+ * `execFile`-backed impl.
+ *
+ * @internal
+ */
+export function __setDockerCpImpl(
+  impl: ((src: string, dst: string) => Promise<void>) | undefined
+): void {
+  if (impl === undefined) {
+    dockerCpImpl = defaultDockerCpImpl;
+    return;
+  }
+  dockerCpImpl = impl;
+}
+
+/**
+ * Production `docker restart <id>` impl. Synchronous in docker's
+ * sense — blocks until the container is up again (or fails).
+ */
+const defaultDockerRestartImpl = async (containerId: string): Promise<void> => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { getDockerCmd } = await import('../utils/docker-cmd.js');
+  const execFileAsync = promisify(execFile);
+  await execFileAsync(getDockerCmd(), ['restart', containerId]);
+};
+
+let dockerRestartImpl: (containerId: string) => Promise<void> = defaultDockerRestartImpl;
+
+/**
+ * Test-only hook to substitute the `docker restart` step the
+ * soft-reload primitive runs. Pass `undefined` to restore the
+ * production `execFile`-backed impl.
+ *
+ * @internal
+ */
+export function __setDockerRestartImpl(
+  impl: ((containerId: string) => Promise<void>) | undefined
+): void {
+  if (impl === undefined) {
+    dockerRestartImpl = defaultDockerRestartImpl;
+    return;
+  }
+  dockerRestartImpl = impl;
+}
+
+/**
  * Phase 2 of issue #214 — disconnect every container of the dying
  * replica from the shared service network BEFORE `cleanupEcsRun`'s
  * `docker stop → docker rm` sequence. Docker's embedded DNS strips an
@@ -1346,11 +1766,16 @@ export function __setDockerNetworkDisconnectImpl(
  */
 async function waitForReplicaTcpReady(
   service: ResolvedEcsService,
-  shadow: ServiceReplicaInstance,
-  opts: { timeoutMs: number; intervalMs: number }
+  replica: ServiceReplicaInstance,
+  opts: { timeoutMs: number; intervalMs: number; label?: string }
 ): Promise<void> {
   const logger = getLogger().child('ecs-service');
-  const networkName = shadow.state.network?.networkName;
+  // Phase 4 of issue #214 — `label` distinguishes the rolling pathway's
+  // "shadow replica" prose from the soft-reload pathway's "replica" prose
+  // in the warn / debug log lines. Defaults to the shadow phrasing so
+  // existing callers (Phase 2 rolling primitive) are unchanged.
+  const label = opts.label ?? `Shadow replica r${replica.index} (gen ${replica.generation})`;
+  const networkName = replica.state.network?.networkName;
   if (!networkName) return; // boot didn't get far enough; the caller's catch handles it
 
   const essential = service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
@@ -1360,7 +1785,7 @@ async function waitForReplicaTcpReady(
     // expects to drive externally.
     return;
   }
-  const started = shadow.state.startedContainers.find((c) => c.name === essential.name);
+  const started = replica.state.startedContainers.find((c) => c.name === essential.name);
   if (!started) return;
 
   let ip: string;
@@ -1370,9 +1795,8 @@ async function waitForReplicaTcpReady(
     ip = resolved;
   } catch (err) {
     logger.warn(
-      `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP-ready probe ` +
-        `could not resolve docker IP: ${err instanceof Error ? err.message : String(err)}. ` +
-        'Proceeding with swap.'
+      `${label}: TCP-ready probe could not resolve docker IP: ` +
+        `${err instanceof Error ? err.message : String(err)}. Proceeding.`
     );
     return;
   }
@@ -1383,10 +1807,7 @@ async function waitForReplicaTcpReady(
   while (Date.now() < deadline) {
     try {
       await tcpProbeImpl(ip, port);
-      logger.debug(
-        `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP probe ` +
-          `${ip}:${port} accepted; proceeding with swap.`
-      );
+      logger.debug(`${label}: TCP probe ${ip}:${port} accepted.`);
       return;
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
@@ -1394,10 +1815,9 @@ async function waitForReplicaTcpReady(
     await sleep(opts.intervalMs);
   }
   logger.warn(
-    `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP probe ${ip}:${port} ` +
-      `did not accept within ${opts.timeoutMs}ms (last: ${lastErr ?? 'n/a'}). Swapping ` +
-      'anyway — the new image is the user intent. Initial requests after the swap may ' +
-      '502 until the app finishes binding.'
+    `${label}: TCP probe ${ip}:${port} did not accept within ${opts.timeoutMs}ms ` +
+      `(last: ${lastErr ?? 'n/a'}). Proceeding anyway — the new source is the user ` +
+      'intent. Initial requests may 502 until the app finishes binding.'
   );
 }
 
@@ -1479,6 +1899,23 @@ async function watchReplica(
       exitCode = -1;
     }
     if (instance.shuttingDown || runState.shuttingDown) return;
+
+    // Phase 4 of issue #214 — soft-reload pathway: `docker restart`
+    // fires SIGTERM at PID 1, which resolves `waitForExitImpl` here
+    // even though the container is being intentionally cycled. If
+    // `softReloadReplica` is mid-flight, wait until it clears the
+    // flag (after its own post-restart TCP-ready probe), then loop
+    // back to re-arm `docker wait` on the (same-id) restarted
+    // container. A real crash that lands DURING a soft-reload still
+    // gets handled by the soft-reload's own error path; the watcher
+    // doesn't need to second-guess it here.
+    if (instance.softReloadInProgress) {
+      while (instance.softReloadInProgress && !instance.shuttingDown && !runState.shuttingDown) {
+        await sleep(100);
+      }
+      if (instance.shuttingDown || runState.shuttingDown) return;
+      continue;
+    }
 
     logger.warn(
       `Replica ${instance.index} essential container exited with code ${exitCode} ` +

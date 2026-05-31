@@ -117,14 +117,23 @@ reload_complete_count() {
   echo "${n}"
 }
 rolling_swap_count() {
-  # Match the rolling primitive's per-replica completion log line. The
-  # exact wording ("swap complete; old retired" for multi-replica;
-  # "single-replica reload complete" for the degenerate path) is
-  # subject to change — anchor on the stable "Rolling replica" prefix
-  # + a completion marker so a wording refactor doesn't false-fail
-  # this assertion.
+  # Match the per-replica reload completion log line. Two paths under
+  # `--watch` write this line, both proving the rolling sequencer
+  # touched each replica one at a time:
+  #   - Phase 2/3 rebuild path: "Rolling replica r<i> (gen <g>): swap
+  #     complete; old retired" (multi-replica) or
+  #     "Rolling replica r<i> (gen <g>): single-replica reload complete"
+  #     (single-replica degenerate path).
+  #   - Phase 4 soft-reload path: "Soft-reloaded replica r<i> (gen <g>):
+  #     restart + TCP-ready probe complete; registrations unchanged."
+  #     Source-only edits route through this branch (no `docker build`).
+  # The fixture asserts the same per-replica completion count for either
+  # path so a future heuristic flip from rebuild → soft-reload (or the
+  # other way around) for the `webapp/server.sh` edit doesn't false-fail.
   local n
-  n=$(grep -cE "Rolling replica .*(swap complete|single-replica reload complete)" "${LOG_FILE}" 2>/dev/null) || n=0
+  n=$(grep -cE \
+    "Rolling replica .*(swap complete|single-replica reload complete)|Soft-reloaded replica .*restart \+ TCP-ready probe complete" \
+    "${LOG_FILE}" 2>/dev/null) || n=0
   echo "${n}"
 }
 

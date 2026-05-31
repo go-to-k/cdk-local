@@ -29,21 +29,42 @@ AWS managed services.
   Service Connect / Cloud Map registry. `start-service` runs a service's
   replicas only (pure compute, no load balancer). `start-service --watch`
   and `start-alb --watch` re-synth + per-replica roll every booted ECS
-  service when the CDK source changes — boot a shadow replica under a
-  bumped generation suffix, atomically swap Cloud Map / front-door pool
-  registrations off the dying replica (after a pre-swap TCP-ready probe
-  on the shadow's container port confirms it's accepting), then retire
-  the old container. Single replica => start one, swap, stop one;
-  multi-replica => sequential per-replica roll so the service stays
-  available across the reload, and an external request stream against
-  the ALB listener port observes zero connection refusals across the
-  reload (Phase 1 + Phase 2 + Phase 3 of issue #214). The host
-  front-door (TLS materials, JWKS cache, Lambda-target RIE containers,
-  listener sockets) is built once at boot and is NOT recreated on
-  reload — only the per-service replica pool entries rotate. Lambda
-  target groups behind the ALB are a no-op on `--watch` reload (the
-  warm RIE container keeps its boot-time image; Lambda hot-reload is
-  the start-api path's concern). `start-alb` is the ALB
+  service when the CDK source changes. A per-firing classifier picks
+  the per-replica primitive — Phase 4 of issue #214 added a bind-mount
+  source FAST PATH for source-only edits, on top of the Phase 1-3
+  rebuild rolling primitive. Source-only edits (interpreted-language
+  handler — Node / Python / Ruby / shell — no Dockerfile, no
+  dependency manifest, no compiled-language source) `docker cp` the
+  freshly-synthed asset directory's contents into each replica's
+  WORKDIR + `docker restart`: no `docker build`, no shadow boot, no
+  Cloud Map / front-door pool swap (the container's docker network IP
+  and host port are preserved across the restart). Reload log
+  surfaces `verdict=soft-reload (...)` and per-replica
+  `Soft-reloaded replica ... restart + TCP-ready probe complete;
+  registrations unchanged`. Typical end-to-end latency well under a
+  second. Dockerfile / dependency manifest / compiled-language source
+  / ambiguous edits fall through to the rebuild path — boot a shadow
+  replica under a bumped generation suffix, atomically swap Cloud Map
+  / front-door pool registrations off the dying replica (after a
+  pre-swap TCP-ready probe on the shadow's container port confirms
+  it's accepting), then retire the old container. Reload log surfaces
+  `verdict=rebuild (...)` naming the trigger.
+  Single replica => start one, swap or restart, stop one (rebuild
+  path) or restart-in-place (soft-reload path); multi-replica =>
+  sequential per-replica roll so the service stays available across
+  the reload, and an external request stream against the ALB listener
+  port observes zero connection refusals across the reload (Phase 1 +
+  Phase 2 + Phase 3 of issue #214; the soft-reload path is similarly
+  per-replica sequenced). The classifier defaults to rebuild on
+  any ambiguity (target isn't a CDK docker-image asset, asset manifest
+  unreadable, unrecognized change) — slow-but-correct beats
+  fast-but-stale. The host front-door (TLS materials, JWKS cache,
+  Lambda-target RIE containers, listener sockets) is built once at
+  boot and is NOT recreated on reload — only the per-service replica
+  pool entries rotate. Lambda target groups behind the ALB are a
+  no-op on `--watch` reload (the warm RIE container keeps its
+  boot-time image; Lambda hot-reload is the start-api path's
+  concern). `start-alb` is the ALB
   counterpart of `start-api`: name the ALB, and it boots the ECS
   service(s) behind it plus a local front-door that round-robins each
   listener port across the replicas and routes the listener rules across
@@ -175,7 +196,13 @@ compute-locally category for Lambda + API Gateway).
   front-door-auth (builds the per-action `AuthCheck` callback for
   authenticate-cognito / authenticate-oidc — reuses the cognito-jwt
   verifier for the Bearer-JWT path, plus an `AWSELBAuthSessionCookie-*`
-  pass-through path), front-door-server (host HTTP / HTTPS reverse proxy
+  pass-through path), source-change-classifier (Phase 4 of #214 —
+  pure per-firing classifier the `--watch` reload pathway calls per
+  target to decide `'rebuild'` vs `'soft-reload'`; defaults to
+  rebuild on ambiguity, requires the asset hash to actually flip
+  before returning soft-reload so a CDK construct edit that changed
+  the task spec doesn't get silently soft-reloaded with the OLD
+  spec), front-door-server (host HTTP / HTTPS reverse proxy
   that resolves a per-request RouteAction — weighted forward to a
   replica pool or a Lambda invoke, redirect, or fixed-response — behind
   the ALB listener port; HTTPS branch flips `X-Forwarded-Proto` and the

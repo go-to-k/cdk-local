@@ -111,4 +111,47 @@ describe('createFileWatcher', () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(fake.close).toHaveBeenCalled();
   });
+
+  // Phase 4 of issue #214 — the source-change classifier needs the
+  // SET of paths that fired in the debounce window. Locks the
+  // de-dup + ordering contract the classifier depends on.
+  it('passes the de-duplicated set of changed paths to onChange', () => {
+    const onChange = vi.fn();
+    createFileWatcher({ paths: ['/root'], onChange, debounceMs: 10 });
+    fake.emit('add', '/root/a.ts');
+    fake.emit('change', '/root/b.ts');
+    fake.emit('change', '/root/a.ts'); // duplicate of the first add
+    fake.emit('unlink', '/root/c.ts');
+    vi.advanceTimersByTime(10);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const paths = onChange.mock.calls[0]![0] as readonly string[];
+    expect([...paths].sort()).toEqual(['/root/a.ts', '/root/b.ts', '/root/c.ts']);
+  });
+
+  it('starts a fresh pending set on the next debounce window', () => {
+    const onChange = vi.fn();
+    createFileWatcher({ paths: ['/root'], onChange, debounceMs: 10 });
+    fake.emit('change', '/root/a.ts');
+    vi.advanceTimersByTime(10);
+    fake.emit('change', '/root/b.ts');
+    vi.advanceTimersByTime(10);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange.mock.calls[0]![0]).toEqual(['/root/a.ts']);
+    expect(onChange.mock.calls[1]![0]).toEqual(['/root/b.ts']);
+  });
+
+  it('drops shouldTrigger-rejected paths from the changed-set the callback sees', () => {
+    const onChange = vi.fn();
+    createFileWatcher({
+      paths: ['/root'],
+      onChange,
+      debounceMs: 10,
+      shouldTrigger: (p) => !p.endsWith('.md'),
+    });
+    fake.emit('change', '/root/README.md');
+    fake.emit('change', '/root/handler.ts');
+    vi.advanceTimersByTime(10);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]![0]).toEqual(['/root/handler.ts']);
+  });
 });
