@@ -68,12 +68,23 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     // an `if (watchActive)` block. A regression that re-introduces such
     // a gate would silently swallow the WARN for non-watch runs, which
     // is precisely what #238 explicitly broadens.
-    const bootWarnRegion = source.match(
-      /Warn UP-FRONT[\s\S]*?for \(const pt of perTarget\) \{[\s\S]*?logger\.warn\([\s\S]*?\}[\s\S]*?(?=Phase 1 \+ Phase 2|\Z)/
-    );
-    expect(bootWarnRegion, 'boot-time WARN region missing').toBeTruthy();
+    //
+    // Anchor on the intrinsic "Warn UP-FRONT" rationale comment + the
+    // helper call site (`isLocalCdkAssetImage` / `describePinnedImageUri`
+    // / `logger.warn`) that the WARN block uniquely uses. Avoid keying
+    // on incidental landmarks like `Phase 1 + Phase 2` (which a future
+    // section-comment rewrite would silently invalidate). Take the
+    // 4-KiB window starting at "Warn UP-FRONT" — large enough to
+    // contain the entire loop, small enough that an unrelated future
+    // copy of the helpers downstream won't accidentally bleed in.
+    const warnUpFrontIdx = source.indexOf('Warn UP-FRONT');
+    expect(warnUpFrontIdx).toBeGreaterThan(-1);
+    const bootWarnRegion = source.slice(warnUpFrontIdx, warnUpFrontIdx + 4096);
+    expect(bootWarnRegion).toMatch(/isLocalCdkAssetImage/);
+    expect(bootWarnRegion).toMatch(/describePinnedImageUri/);
+    expect(bootWarnRegion).toMatch(/logger\.warn\(/);
     // The region preceding the per-target loop must not open a watch gate.
-    const preLoop = bootWarnRegion![0].split('for (const pt of perTarget)')[0]!;
+    const preLoop = bootWarnRegion.split('for (const pt of perTarget)')[0]!;
     expect(preLoop).not.toMatch(/if \(watchActive\)/);
   });
 

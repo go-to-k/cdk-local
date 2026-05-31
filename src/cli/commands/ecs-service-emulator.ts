@@ -778,14 +778,7 @@ export async function runEcsServiceEmulator(
     // impossible for any target", typically in CI / scripted setups).
     // Boot WARN already fired above for the same set; this throws on
     // top of it so the user sees both diagnostics before exiting.
-    if (options.strictOverrides === true && uncoveredPinnedTargets.length > 0) {
-      throw new LocalStartServiceError(
-        `--strict-overrides set, but ${uncoveredPinnedTargets.length} pinned target(s) ` +
-          `remain uncovered: ${uncoveredPinnedTargets.join(', ')}. Pass --image-override ` +
-          '<service>=<dockerfile> for each, drop --strict-overrides, or drop ' +
-          '--from-cfn-stack to iterate on local CDK assets.'
-      );
-    }
+    enforceStrictOverrides(options.strictOverrides === true, uncoveredPinnedTargets);
 
     // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
     // (Phases 1-2) and `cdkl start-alb --watch` (Phase 3) source-tree
@@ -1103,10 +1096,21 @@ async function reloadAllServices(args: {
     // controller's resolved service as the ground truth for "the
     // currently-running image is a pin", because that's what the
     // skip-rationale ("re-pulling byte-identical content") rests on.
+    //
+    // Issue #238 carve-out: when `--image-override` covers this target,
+    // the running container is a LOCAL `docker build` of the supplied
+    // Dockerfile (`cdkl-override-<svc>-<hash>:local`), NOT a deployed
+    // registry pin — even though `controller.service` still holds the
+    // resolved-from-template ECR pin (the override is injected at
+    // runner level via `imageOverrideByContainer`, never by mutating
+    // the resolved service). Re-rolling IS meaningful for these
+    // targets (a Dockerfile / dependency-manifest edit would otherwise
+    // get silently skipped), so let the rolling primitive run.
     if (
       verdict.kind === 'rebuild' &&
       verdict.reason === 'target image is not a CDK docker-image asset' &&
-      !isLocalCdkAssetImage(controller.service)
+      !isLocalCdkAssetImage(controller.service) &&
+      !imageOverrideTags.has(newBoot.target)
     ) {
       logger.info(
         `Reload skipped for '${newBoot.target}' (no-op): image pinned to deployed ` +
@@ -2460,6 +2464,28 @@ async function resolveAndBuildImageOverrides(args: {
   // via the docker-runner's streamLive path; the per-target
   // "Building override image..." line surfaces ahead of each build.
   return runImageOverrideBuilds(overrides);
+}
+
+/**
+ * Issue #238 — `--strict-overrides` guard. Extracted so the boot path's
+ * fail-fast behavior can be exercised under a unit test without booting
+ * the full emulator. Throws {@link LocalStartServiceError} when `strict`
+ * is true AND at least one pinned target remains uncovered; otherwise a
+ * no-op. The error message names every uncovered target so the user can
+ * pass the corresponding `--image-override` mapping.
+ */
+export function enforceStrictOverrides(
+  strict: boolean,
+  uncoveredPinnedTargets: readonly string[]
+): void {
+  if (!strict) return;
+  if (uncoveredPinnedTargets.length === 0) return;
+  throw new LocalStartServiceError(
+    `--strict-overrides set, but ${uncoveredPinnedTargets.length} pinned target(s) ` +
+      `remain uncovered: ${uncoveredPinnedTargets.join(', ')}. Pass --image-override ` +
+      '<service>=<dockerfile> for each, drop --strict-overrides, or drop ' +
+      '--from-cfn-stack to iterate on local CDK assets.'
+  );
 }
 
 /**

@@ -1554,12 +1554,17 @@ prompt:
 
 ```
 ? Detected pinned image on 'AppService' (123…/repo:4.5.1).
-  Override with a local build? Enter a Dockerfile path, or leave
-  blank to skip.
+  Override with a local build? [path / N]:
 ```
 
-An empty answer (or `N`) skips the target — the boot WARN above
+Enter a Dockerfile path to override the target. An empty answer,
+`n`, or `no` (any case) skips the target — the boot WARN above
 still fires for it.
+
+`--image-build-secret id=<src>` resolves a relative `<src>` against
+the directory you ran `cdkl` from (not the Dockerfile's parent), so
+`./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless
+of where the Dockerfile lives in the tree.
 
 The override engine builds each covered Dockerfile once at boot,
 tagging the resulting image with a deterministic local-only tag

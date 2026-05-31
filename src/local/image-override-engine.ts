@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { isCancel, multiselect, text } from '@clack/prompts';
 import { CdkLocalError } from '../utils/error-handler.js';
@@ -204,7 +204,16 @@ export function parseImageOverrideFlags(input: {
         `Invalid --image-build-secret value "${raw}": id and src must both be non-empty.`
       );
     }
-    buildSecrets.set(id, src);
+    // Resolve `src` against `process.cwd()` (not the build context
+    // dir = Dockerfile parent, which is where `docker build`
+    // resolves a relative `--secret src=...` against). Users type
+    // these from the repo root (e.g. `--image-build-secret
+    // npmrc=./.npmrc`), expecting the path to mean what every other
+    // CLI flag means — relative to where they ran the command.
+    // Mirrors the absolute-resolution behavior of
+    // `--image-override <path>` in {@link makeEntryFromPath}.
+    const absSrc = isAbsolute(src) ? src : resolvePath(process.cwd(), src);
+    buildSecrets.set(id, absSrc);
   }
 
   const globals: ImageOverrideGlobals = { buildArgs, buildSecrets };
@@ -353,7 +362,7 @@ export async function resolveImageOverrides(args: {
       const message =
         `Detected pinned image on '${target}'` +
         (label ? ` (${label})` : '') +
-        '. Override with a local build? Enter a Dockerfile path, or leave blank to skip.';
+        '. Override with a local build? [path / N]:';
       const answer = await text({
         message,
         placeholder: '',
@@ -364,7 +373,12 @@ export async function resolveImageOverrides(args: {
         );
       }
       const value = ((answer as string | undefined) ?? '').trim();
-      if (!value || value.toUpperCase() === 'N') continue;
+      // Accept any case variant of `n` / `no` as a skip sentinel
+      // (matches the `[path / N]` hint shown to the user). Empty
+      // input also skips.
+      if (!value) continue;
+      const lower = value.toLowerCase();
+      if (lower === 'n' || lower === 'no') continue;
       out.set(target, makeEntryFromPath(value, rawFlags.globals, cwd));
     }
   }
@@ -408,17 +422,37 @@ function makeEntryFromPath(
 
 /**
  * Deterministic local-only image tag for one override entry. Fingerprints
- * the Dockerfile path + service target + build args / secrets / stage so
- * a re-run with the same inputs hits docker's layer cache.
+ * the Dockerfile path + its CONTENTS (sha256 of the bytes) + service
+ * target + build args / secrets / stage. Including the Dockerfile bytes
+ * means an edit to the Dockerfile flips the tag — the rebuild rolling
+ * primitive then boots a new container under the bumped tag instead of
+ * reusing the old build's cached layers under a stale tag. Two
+ * back-to-back runs against an unchanged Dockerfile + flags still hit
+ * the same tag so docker's layer cache works.
  *
  * Tag shape: `<resourceNamePrefix>-override-<svcSlug>-<hash>:local`.
  * `:local` is intentionally NOT `:latest` so a `docker pull` on it fails
  * fast (these images are local-build-only by design).
+ *
+ * Throws on a missing Dockerfile — the caller has already asserted
+ * existence in {@link makeEntryFromPath}, so a throw here is a
+ * programming error (or the Dockerfile vanished between resolve and
+ * build, which is a race the user wants to know about).
  */
 export function buildImageOverrideTag(serviceTarget: string, entry: ImageOverrideEntry): string {
   const hash = createHash('sha256');
   hash.update('dockerfile=');
   hash.update(entry.dockerfile);
+  hash.update('\0dockerfile-bytes-sha256=');
+  // Hash the Dockerfile contents so an edit to the file flips the tag.
+  // sha256 the file (small text, sync read is fine) and feed the digest
+  // into the outer hash. existsSync was already asserted up-front by
+  // `makeEntryFromPath`; a vanished-since-resolve race surfaces here
+  // as an exception with a clear path in the message.
+  const dockerfileBytesDigest = createHash('sha256')
+    .update(readFileSync(entry.dockerfile))
+    .digest('hex');
+  hash.update(dockerfileBytesDigest);
   hash.update('\0target=');
   hash.update(serviceTarget);
   hash.update('\0stage=');

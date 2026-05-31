@@ -716,7 +716,14 @@ function sleep(ms: number): Promise<void> {
  * populated in parallel up to the asset-manifest bound (single
  * `docker build` for shared assets is left to docker's own cache).
  */
-async function prepareImages(
+// Exported for unit testing — the `imageOverrideByContainer`
+// short-circuit (issue #238) is the load-bearing contract for
+// `--image-override` end-to-end, but `runEcsTask` is too heavy to drive
+// for a single short-circuit branch (network + secrets + docker run /
+// log stream / exit propagation). Exposing `prepareImages` lets us
+// behaviourally cover the override branch without booting the full
+// task runner.
+export async function prepareImages(
   task: ResolvedEcsTask,
   out: Map<string, string>,
   options: RunEcsTaskOptions

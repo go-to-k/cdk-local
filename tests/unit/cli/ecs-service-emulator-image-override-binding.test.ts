@@ -48,22 +48,26 @@ describe('ecs-service-emulator image-override engine binding (issue #238)', () =
     expect(source).toMatch(/runImageOverrideBuilds/);
   });
 
-  it('boot path calls `resolveAndBuildImageOverrides` BEFORE the bootOneTarget loop', () => {
+  it('boot path calls `resolveAndBuildImageOverrides` before threading per-target tags into `bootOneTarget`', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
-    // Anchor on the boot-time block's rationale comment + the resolver
-    // helper call + the boot loop downstream of it.
-    const bootRegion = source.match(
-      /resolveAndBuildImageOverrides\([\s\S]*?for \(const pt of perTarget\) \{[\s\S]*?await bootOneTarget\(/
-    );
-    expect(bootRegion, 'boot path missing the engine call').toBeTruthy();
-  });
-
-  it('bootOneTarget receives the per-target override tag', () => {
-    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
-    const bootCall = source.match(
-      /await bootOneTarget\([\s\S]*?imageOverrideTags\.get\(pt\.boot\.target\)[\s\S]*?\);/
-    );
-    expect(bootCall, 'bootOneTarget call missing the imageOverrideTags.get(...) thread').toBeTruthy();
+    // Anchor on (a) the boot-time helper call site and (b) the
+    // bootOneTarget invocation downstream of it that consumes the
+    // per-target tag. The text between them isn't pinned (avoids the
+    // brittle `for (const pt of perTarget)` literal that recurs four
+    // times in the source); ordering is the load-bearing constraint —
+    // the tags must be resolved BEFORE the first runner boot so a
+    // covered target's representative container starts with the
+    // local-built image, not the deployed pin.
+    const resolveIdx = source.indexOf('resolveAndBuildImageOverrides(');
+    const bootCallIdx = source.indexOf('imageOverrideTags.get(pt.boot.target)');
+    expect(resolveIdx, 'resolveAndBuildImageOverrides call missing').toBeGreaterThan(-1);
+    expect(bootCallIdx, 'bootOneTarget thread of imageOverrideTags missing').toBeGreaterThan(-1);
+    expect(resolveIdx).toBeLessThan(bootCallIdx);
+    // The downstream consumer must be the `bootOneTarget` call, not
+    // some other use of the tag map.
+    expect(
+      source.slice(resolveIdx, bootCallIdx + 'imageOverrideTags.get(pt.boot.target)'.length)
+    ).toMatch(/await bootOneTarget\(/);
   });
 
   it('reloadAllServices accepts and threads `imageOverrideTags` into rollOneTarget', () => {
@@ -80,6 +84,30 @@ describe('ecs-service-emulator image-override engine binding (issue #238)', () =
     expect(body).toMatch(/imageOverrideTags\.get\(newBoot\.target\)/);
   });
 
+  it('reload-skip guard carves out overridden targets (regression: #241-B1)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The reload-skip guard that pre-empts the rolling primitive for
+    // deployed-registry pins MUST also bypass-skip overridden targets,
+    // because the override is injected at runner level and
+    // controller.service still holds the deployed pin. Without the
+    // carve-out, every overridden target gets silently skipped on
+    // every reload and the feature is broken for its main use case.
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    // The guard's three load-bearing clauses must all be present AND
+    // co-located inside the same if-condition with the carve-out.
+    const guardRegion = body.match(
+      /if \(\s*verdict\.kind === 'rebuild'[\s\S]*?!isLocalCdkAssetImage\(controller\.service\)[\s\S]*?!imageOverrideTags\.has\(newBoot\.target\)[\s\S]*?\) \{[\s\S]*?Reload skipped/
+    );
+    expect(
+      guardRegion,
+      'reload-skip guard missing the !imageOverrideTags.has(newBoot.target) carve-out'
+    ).toBeTruthy();
+  });
+
   it('watcher onChange forwards `imageOverrideTags` to reloadAllServices', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     // The watcher block lives downstream of the boot WARN loop; it
@@ -91,15 +119,67 @@ describe('ecs-service-emulator image-override engine binding (issue #238)', () =
     );
     expect(watcherCall, 'watcher onChange missing the imageOverrideTags thread').toBeTruthy();
   });
+});
 
-  it('strict-overrides guard fails fast when uncovered pinned targets remain', () => {
+describe('enforceStrictOverrides (issue #238 strict-overrides guard, behavioral)', () => {
+  // Behavioral test for the strict-overrides guard. Pulled out of the
+  // boot path into a small pure helper so we don't need to mock the
+  // entire emulator (synth + resolvers + docker) just to exercise the
+  // one if-statement. The boot path's call site is locked via the
+  // source-grep test below.
+  it('throws LocalStartServiceError naming every uncovered target when strict=true', async () => {
+    const { enforceStrictOverrides } = await import(
+      '../../../src/cli/commands/ecs-service-emulator.js'
+    );
+    const { LocalStartServiceError } = await import('../../../src/utils/error-handler.js');
+    expect(() => enforceStrictOverrides(true, ['AppService', 'AuthService'])).toThrow(
+      LocalStartServiceError
+    );
+    try {
+      enforceStrictOverrides(true, ['AppService', 'AuthService']);
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(LocalStartServiceError);
+      const msg = (err as Error).message;
+      expect(msg).toContain('AppService');
+      expect(msg).toContain('AuthService');
+      expect(msg).toMatch(/2 pinned target\(s\)/);
+      expect(msg).toMatch(/--image-override/);
+    }
+  });
+
+  it('is a no-op when strict=false (even with uncovered targets)', async () => {
+    const { enforceStrictOverrides } = await import(
+      '../../../src/cli/commands/ecs-service-emulator.js'
+    );
+    expect(() => enforceStrictOverrides(false, ['AppService'])).not.toThrow();
+  });
+
+  it('is a no-op when strict=true but no targets are uncovered', async () => {
+    const { enforceStrictOverrides } = await import(
+      '../../../src/cli/commands/ecs-service-emulator.js'
+    );
+    expect(() => enforceStrictOverrides(true, [])).not.toThrow();
+  });
+
+  it('boot path calls enforceStrictOverrides AFTER the per-target uncovered scan', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
-    // The guard sits in the boot path after the per-target WARN loop;
-    // it MUST consult `options.strictOverrides` + `uncoveredPinnedTargets`
-    // and throw `LocalStartServiceError` so the user sees a clear exit
-    // code rather than a half-booted emulator.
-    expect(source).toMatch(/options\.strictOverrides === true/);
-    expect(source).toMatch(/uncoveredPinnedTargets/);
+    // The boot path's strict-overrides binding: the per-target scan
+    // builds up `uncoveredPinnedTargets`, then the helper is invoked
+    // with `options.strictOverrides === true` + the populated array.
+    // Pin both ends so an inlining refactor or a reordering that
+    // would fire the guard before the scan populates the array
+    // surfaces here.
+    const scanIdx = source.indexOf('uncoveredPinnedTargets.push');
+    const enforceIdx = source.indexOf('enforceStrictOverrides(');
+    expect(scanIdx, 'uncoveredPinnedTargets.push missing').toBeGreaterThan(-1);
+    expect(enforceIdx, 'enforceStrictOverrides call missing').toBeGreaterThan(-1);
+    expect(scanIdx).toBeLessThan(enforceIdx);
+    // The call site MUST forward options.strictOverrides AND the
+    // populated array — anything else is a wiring bug.
+    expect(source).toMatch(
+      /enforceStrictOverrides\(\s*options\.strictOverrides === true\s*,\s*uncoveredPinnedTargets\s*\)/
+    );
   });
 });
 
