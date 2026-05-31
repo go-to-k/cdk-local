@@ -630,11 +630,13 @@ export async function runEcsServiceEmulator(
     logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
-    // Phase 1 of issue #214 — `cdkl start-service --watch` source-tree watcher.
-    // Only the service strategy opts in (start-alb's strategy intentionally
-    // leaves `supportsWatch` falsy; Phase 3 turns it on). The watcher reuses
-    // the start-api debounced file-watcher and predicate composition verbatim
-    // so cdk.json `watch.include` / `watch.exclude` semantics are identical.
+    // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
+    // (Phases 1-2) and `cdkl start-alb --watch` (Phase 3) source-tree
+    // watcher. Both `serviceStrategy()` and `albStrategy()` opt in via
+    // `supportsWatch: true`; the gate keeps a future strategy added through
+    // this engine from getting `--watch` implicitly. The watcher reuses the
+    // start-api debounced file-watcher and predicate composition verbatim so
+    // cdk.json `watch.include` / `watch.exclude` semantics are identical.
     if (options.watch === true && strategy.supportsWatch === true) {
       const watchRoot = process.cwd();
       const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
@@ -790,6 +792,17 @@ async function reloadAllServices(args: {
     return;
   }
 
+  // The new `frontDoor` plan is intentionally discarded: `reloadAllServices`
+  // only rolls EXISTING service replicas through the new task definition.
+  // For `start-alb --watch`, mid-watch edits to listener rules (path /
+  // host / header / method / query-string / source-ip conditions),
+  // weighted-forward weights, redirect / fixed-response actions, Lambda
+  // target groups, listener `Certificates[]`, or auth-* guards are NOT
+  // applied across a reload — the boot-time `frontDoorByService` +
+  // `frontDoorServers` lock in those decisions. To pick up listener-side
+  // CDK edits the user needs to `^C` and re-launch. Tracked under
+  // issue #214 (see PR body's "Out-of-scope" section) for a future
+  // follow-up.
   const { boots: newBoots, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
   for (const w of warnings) logger.warn(w);
   const newBootByTarget = new Map(newBoots.map((b) => [b.target, b] as const));

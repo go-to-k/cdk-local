@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import {
   addAlbSpecificOptions,
   albStrategy,
+  createLocalStartAlbCommand,
 } from '../../../src/cli/commands/local-start-alb.js';
 import { type EcsServiceEmulatorOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
 
@@ -50,6 +51,34 @@ describe('start-alb --watch (Phase 3 of #214)', () => {
     // the Phase 2 rolling primitive — no additional pool wiring is
     // required.
     expect(albStrategy(emptyOptions()).supportsWatch).toBe(true);
+  });
+
+  it('parses `--watch` from argv via createLocalStartAlbCommand (site-level binding)', () => {
+    // Phase 3 site-level binding test (test-reviewer's TEST-1): the
+    // gate at `runEcsServiceEmulator` reads
+    // `options.watch === true && strategy.supportsWatch === true`. A
+    // surface-only lock proves the option is REGISTERED, but a future
+    // refactor renaming the Commander long form, dropping
+    // `.default(false)`, or splitting the option into a positional
+    // argument would leave the gate's `=== true` check falsy and
+    // silently disable `--watch` for start-alb. Drive the parse
+    // end-to-end so any drift trips this test.
+    const cmd = createLocalStartAlbCommand();
+    // Disable Commander's default exit + output so a parse misstep
+    // throws into the test rather than calling process.exit(1).
+    cmd.exitOverride();
+    cmd.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    cmd.parse(['node', 'cdkl', 'start-alb', 'MyStack:WebLB', '--watch'], { from: 'user' });
+    expect(cmd.opts().watch).toBe(true);
+
+    // Default value: a parse WITHOUT `--watch` must leave `opts().watch`
+    // falsy so the gate's `=== true` check rejects it (and the watcher
+    // is never installed).
+    const cmd2 = createLocalStartAlbCommand();
+    cmd2.exitOverride();
+    cmd2.configureOutput({ writeOut: () => {}, writeErr: () => {} });
+    cmd2.parse(['node', 'cdkl', 'start-alb', 'MyStack:WebLB'], { from: 'user' });
+    expect(cmd2.opts().watch).toBe(false);
   });
 });
 

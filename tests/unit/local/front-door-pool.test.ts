@@ -93,20 +93,25 @@ describe('FrontDoorEndpointPool', () => {
     expect(after).toEqual([{ host: '127.0.0.1', port: 5002 }]);
   });
 
-  it('next() never observes a torn write across a swap (single-replica pool)', () => {
-    // A continuous `next()` call across the swap window must hit one of
-    // the two endpoints — never `undefined`. `register` and `unregister`
-    // each commit via a single `this.entries = next` assignment on a
-    // single JS thread, so a `next()` read snapshots either the pre-
-    // register array or the post-register array, never an in-between
-    // empty state. Locks the invariant that makes the front-door pool
-    // safe to swap without a mutex.
+  it('next() returns a live endpoint at every step of the register-new-then-unregister-old sequence (single-replica swap)', () => {
+    // Phase 3 ordering lock for the rolling-reload swap path. The
+    // rolling primitive (`rollServiceReplica`) calls
+    // `target.pool.register(newOwnerKey, ...)` BEFORE
+    // `target.pool.unregister(oldOwnerKey)`. This test sequences
+    // `next() / register / next() / unregister / next()` and asserts
+    // every read returns one of the two endpoints — there is no
+    // intermediate state with an empty pool. JS's single-threaded
+    // execution makes each `this.entries = next` commit atomic
+    // relative to a `next()` read on the same VM (this test cannot
+    // observe a torn-write window because none exists); the bug this
+    // test locks against is a future refactor that reverses the order
+    // to "unregister old first, then register new" — that ordering
+    // would empty a single-replica pool for the gap window and
+    // `next()` would return `undefined` (the front-door server then
+    // replies 503).
     const pool = new FrontDoorEndpointPool();
     pool.register('svc:r0:g0', { host: '127.0.0.1', port: 5001 });
 
-    // Interleave reads with each write step of the swap. Every read
-    // must return an endpoint (the pool is never empty after the
-    // initial register).
     const r1 = pool.next();
     pool.register('svc:r0:g1', { host: '127.0.0.1', port: 5002 });
     const r2 = pool.next();
