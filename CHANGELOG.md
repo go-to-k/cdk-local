@@ -1,3 +1,10 @@
+# [0.69.0](https://github.com/go-to-k/cdk-local/compare/v0.68.0...v0.69.0) (2026-05-31)
+
+
+### Features
+
+* **start-service, start-alb:** bind-mount source fast path for `--watch` (Phase 4 of [#214](https://github.com/go-to-k/cdk-local/issues/214)) ([#219](https://github.com/go-to-k/cdk-local/issues/219)) ([1222c13](https://github.com/go-to-k/cdk-local/commit/1222c13406925471c61714ab4783a3b8b5b50553))
+
 # [0.68.0](https://github.com/go-to-k/cdk-local/compare/v0.67.0...v0.68.0) (2026-05-31)
 
 
