@@ -1,3 +1,10 @@
+# [0.72.0](https://github.com/go-to-k/cdk-local/compare/v0.71.2...v0.72.0) (2026-05-31)
+
+
+### Features
+
+* **start-service,start-alb:** --image-override family + TTY boot prompt for pinned images ([#241](https://github.com/go-to-k/cdk-local/issues/241)) ([b45af54](https://github.com/go-to-k/cdk-local/commit/b45af543b751a242f7e79d5197fe223dc5b36e73))
+
 ## [0.71.2](https://github.com/go-to-k/cdk-local/compare/v0.71.1...v0.71.2) (2026-05-31)
 
 
