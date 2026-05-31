@@ -5,18 +5,20 @@ import {
   createLocalStartServiceCommand,
   serviceStrategy,
 } from '../../../src/cli/commands/local-start-service.js';
-import {
-  addCommonEcsServiceOptions,
-  assertSingleReplicaForWatch,
-  type EcsServiceEmulatorOptions,
-} from '../../../src/cli/commands/ecs-service-emulator.js';
-import { LocalStartServiceError } from '../../../src/utils/error-handler.js';
+import { addCommonEcsServiceOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
 
 /**
- * Phase 1 of issue #214 — locks the `cdkl start-service --watch` wiring.
- * The integ fixture (`tests/integration/local-start-service-watch/`) covers
- * the live reload behavior end-to-end; these unit tests just guard the
- * option-surface contract + the synchronous single-replica gate.
+ * Phase 1 + Phase 2 of issue #214 — locks the `cdkl start-service --watch`
+ * wiring at the option-surface level. The behavioral coverage lives in:
+ *
+ *   - `tests/unit/local/ecs-service-runner-rolling.test.ts` (Phase 2
+ *     `rollServiceReplica` primitive — generation suffix, atomic swap
+ *     ordering, shadow-boot failure path).
+ *   - `tests/integration/local-start-service-watch/` (Phase 1 single-
+ *     replica reload, kept as a Phase 2 regression test).
+ *   - `tests/integration/local-start-service-watch-multi/` (Phase 2
+ *     multi-replica rolling deploy — zero connection refusal across a
+ *     roll under continuous curl load).
  */
 
 function longFlagsOf(cmd: Command): string[] {
@@ -67,84 +69,5 @@ describe('serviceStrategy', () => {
     // `serviceStrategy()` would silently disable `cdkl start-service --watch`
     // — the emulator's watcher install is gated on this exact field.
     expect(serviceStrategy().supportsWatch).toBe(true);
-  });
-});
-
-describe('assertSingleReplicaForWatch (Phase 1 of issue #214)', () => {
-  // The synthetic shape only needs the two fields the helper reads — the
-  // resolver's full `ResolvedEcsService` is much larger but irrelevant for
-  // this gate's logic.
-  function fakeService(
-    desiredCount: number,
-    serviceName = 'WebSvc'
-  ): { serviceName: string; desiredCount: number } {
-    return { serviceName, desiredCount };
-  }
-
-  function baseOptions(
-    over: Partial<Pick<EcsServiceEmulatorOptions, 'watch' | 'maxTasks'>> = {}
-  ): Pick<EcsServiceEmulatorOptions, 'watch' | 'maxTasks'> {
-    return { maxTasks: 3, ...over };
-  }
-
-  it('passes when --watch is off (multi-replica + no watch is fine)', () => {
-    expect(() => assertSingleReplicaForWatch(fakeService(2), baseOptions())).not.toThrow();
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(10), baseOptions({ watch: false }))
-    ).not.toThrow();
-  });
-
-  it('passes when --watch is on AND the effective replica count is 1', () => {
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(1), baseOptions({ watch: true }))
-    ).not.toThrow();
-    // Effective count is clamped by --max-tasks; a DesiredCount=5 capped to
-    // --max-tasks=1 also resolves to 1 → pass.
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(5), baseOptions({ watch: true, maxTasks: 1 }))
-    ).not.toThrow();
-  });
-
-  it('passes when --watch is on AND DesiredCount is 0 (computeReplicaCount floors to 1)', () => {
-    // `computeReplicaCount` returns 1 when `desiredCount <= 0` so a
-    // local dev who scaled their service down to 0 in CDK code still
-    // gets one replica running. The watch gate must reflect the same
-    // floor — locking this prevents an accidental regression that
-    // would otherwise let a DesiredCount=0 service skip the gate's
-    // pass branch via a different code path.
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(0), baseOptions({ watch: true }))
-    ).not.toThrow();
-  });
-
-  it('throws LocalStartServiceError when --watch is on AND effective replica count > 1', () => {
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(2), baseOptions({ watch: true }))
-    ).toThrow(LocalStartServiceError);
-    expect(() =>
-      assertSingleReplicaForWatch(fakeService(2), baseOptions({ watch: true }))
-    ).toThrow(/single-replica only/);
-  });
-
-  it('the thrown error names the service + counts + points to Phase 2 of issue #214', () => {
-    // The error message is part of the user-facing contract — a developer
-    // hitting it needs to know WHICH service tripped the gate, the effective
-    // count, AND where the multi-replica story is going (Phase 2). Locking
-    // the message prevents an accidental message regression that strips the
-    // actionable hint.
-    try {
-      assertSingleReplicaForWatch(
-        fakeService(4, 'OrdersSvc'),
-        baseOptions({ watch: true, maxTasks: 3 })
-      );
-      throw new Error('expected assertSingleReplicaForWatch to throw');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      expect(msg).toMatch(/OrdersSvc/);
-      expect(msg).toMatch(/3 replica\(s\)/);
-      expect(msg).toMatch(/DesiredCount=4/);
-      expect(msg).toMatch(/--max-tasks=3/);
-      expect(msg).toMatch(/Phase 2 of issue #214/);
-    }
   });
 });

@@ -37,9 +37,11 @@ export interface CreateLocalStartServiceCommandOptions {
  * a leaf compute runner, symmetric with `invoke` / `run-task`.
  *
  * `supportsWatch: true` opts this strategy into the emulator's `--watch`
- * reload pathway (Phase 1 of issue #214 — single-replica rebuild-on-change).
- * `start-alb`'s strategy intentionally does NOT set this so a `--watch` flag
- * never leaks into the ALB-front-door path (Phase 3).
+ * reload pathway (Phase 1 + Phase 2 of issue #214 — per-replica rolling
+ * deploy: shadow boot under a bumped generation suffix, TCP-ready probe,
+ * atomic Cloud Map / front-door swap, retire old). `start-alb`'s strategy
+ * intentionally does NOT set this so a `--watch` flag never leaks into
+ * the ALB-front-door path (Phase 3).
  */
 export function serviceStrategy(): EmulatorStrategy {
   return {
@@ -136,12 +138,14 @@ export function addStartServiceSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--watch',
-        'Hot-reload: re-synth + re-resolve every booted service and replace its single replica ' +
-          "when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, " +
-          'node_modules, .git are always excluded). Single-replica services only in v1 — a service ' +
-          'with effective replica count > 1 errors out (multi-replica rolling deploy is Phase 2 of ' +
-          'issue #214). Off by default; the previous replica keeps serving when synth fails ' +
-          'mid-reload.'
+        'Hot-reload: re-synth + per-replica rolling deploy when the CDK source changes ' +
+          '(honors cdk.json watch.include/exclude; cdk.out, node_modules, .git are always ' +
+          'excluded). Each replica is rolled one at a time — boot a shadow under a bumped ' +
+          'generation suffix, wait for its container port to accept a TCP connection, ' +
+          'atomically swap Service-Connect / Cloud Map registrations, then retire the old ' +
+          'container — so peer services see zero connection refusals across the reload even ' +
+          'on multi-replica services. Off by default; existing replica(s) keep serving when ' +
+          'synth fails mid-reload.'
       ).default(false)
     );
 }

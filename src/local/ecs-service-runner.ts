@@ -161,6 +161,18 @@ export interface ServiceDiscoveryContext {
 export interface ServiceReplicaInstance {
   /** Replica index 0..desiredCount-1; load-bearing for per-instance docker network names. */
   index: number;
+  /**
+   * Phase 2 of issue #214 — `--watch` rolling-reload generation for this
+   * replica's logical slot. Bumped each time {@link rollServiceReplica}
+   * lands a shadow boot for index `i`. Steady-state replicas (initial
+   * boot, restart-on-exit) carry generation `0` and the docker network /
+   * Cloud Map / front-door owner-key names match Phase 1's wire format
+   * exactly. Generation `> 0` appends a `-g<gen>` suffix to the
+   * per-replica cluster name and a `:g<gen>` suffix to the ownerKey
+   * prefix so a shadow replica can coexist with the dying old one for
+   * the brief swap window without colliding on docker / registry keys.
+   */
+  generation: number;
   state: EcsRunState;
   /** Number of restarts since service boot. Drives the backoff schedule. */
   restartCount: number;
@@ -339,6 +351,7 @@ export async function startEcsService(
   for (let i = 0; i < replicaCount; i++) {
     const instance: ServiceReplicaInstance = {
       index: i,
+      generation: 0,
       state: createEcsRunState(),
       restartCount: 0,
       shuttingDown: false,
@@ -580,8 +593,19 @@ async function bootReplica(
   // random suffix, but using a stable replica index in the cluster
   // prefix makes per-replica logs easier to scan and prevents
   // accidental collisions if two replicas start on the same ms.
-  const perReplicaCluster = `${options.taskOptions.cluster}-svc-${service.serviceLogicalId.toLowerCase()}-r${instance.index}`;
-  const ownerKeyPrefix = `${service.serviceLogicalId}:r${instance.index}`;
+  // Phase 2 of issue #214 — the `--watch` rolling reload bumps
+  // `instance.generation` per shadow boot so the new replica's docker
+  // network name and Cloud Map / front-door ownerKey prefix don't
+  // collide with the dying old replica's during the swap window.
+  // Generation 0 (initial boot / restart-on-exit) keeps Phase 1's wire
+  // format verbatim — no `-g` / `:g` suffix — so existing integ
+  // assertions and the front-door pool's owner-key matching are
+  // unchanged for non-watch runs.
+  const gen = instance.generation;
+  const genSuffix = gen > 0 ? `-g${gen}` : '';
+  const ownerKeyGenSuffix = gen > 0 ? `:g${gen}` : '';
+  const perReplicaCluster = `${options.taskOptions.cluster}-svc-${service.serviceLogicalId.toLowerCase()}-r${instance.index}${genSuffix}`;
+  const ownerKeyPrefix = `${service.serviceLogicalId}:r${instance.index}${ownerKeyGenSuffix}`;
   // Build per-boot `--add-host` flags from the registry's current
   // snapshot — every peer service that booted BEFORE this replica is
   // resolvable as `<discoveryName>.<namespace>` and via any bare
@@ -890,6 +914,533 @@ function unregisterReplicaFromFrontDoor(
     target.pool.unregister(instance.frontDoorOwnerKey);
   }
   instance.frontDoorOwnerKey = undefined;
+}
+
+/**
+ * Phase 2 of issue #214 — shadow-replica readiness probe budget. Tested
+ * with busybox httpd's ~50ms listen window and a non-trivial Node
+ * Express startup (~1-3s) — 10s caps the rare slow-start app without
+ * blocking the roll for typo'd configurations that will never listen.
+ *
+ * Mutable so unit tests can shrink the timeout window without
+ * standing up a real clock; production callers leave the defaults.
+ * Exposed via {@link __setShadowReadyConfig} below.
+ */
+let shadowReadyTimeoutMs = 10_000;
+let shadowReadyIntervalMs = 100;
+
+/**
+ * Test-only hook to shrink the shadow-replica TCP-ready probe's
+ * timeout / poll interval so a `rollServiceReplica` unit test can
+ * exercise the timeout branch without burning real seconds. Pass
+ * `undefined` to restore the production defaults.
+ *
+ * @internal
+ */
+export function __setShadowReadyConfig(
+  config: { timeoutMs: number; intervalMs: number } | undefined
+): void {
+  if (config === undefined) {
+    shadowReadyTimeoutMs = 10_000;
+    shadowReadyIntervalMs = 100;
+    return;
+  }
+  shadowReadyTimeoutMs = config.timeoutMs;
+  shadowReadyIntervalMs = config.intervalMs;
+}
+
+/**
+ * Phase 2 of issue #214 — per-replica rolling reload primitive used by
+ * `cdkl start-service --watch`. Boots one fresh "shadow" replica under a
+ * bumped generation suffix, atomically swaps Cloud Map / front-door
+ * registrations off the old replica, then stops and cleans up the old
+ * container.
+ *
+ * Sequence:
+ *   1. Locate the old replica by `oldReplicaIndex` (rejects when it's
+ *      already shutting down or missing — the reloader must not race
+ *      itself across overlapping firings, which the emulator's
+ *      `reloadChain` serializer guarantees externally).
+ *   2. Allocate a shadow {@link ServiceReplicaInstance} with the same
+ *      logical `index` and `generation = old.generation + 1`. Appended
+ *      to `runState.replicas` so a SIGTERM mid-roll tears it down too.
+ *   3. `bootReplica(newService, newOptions, shadow)` boots the new
+ *      container, publishes Cloud Map handles under the bumped
+ *      generation suffix, and registers the shadow in the front-door
+ *      pool. The OLD replica's handles + pool entry stay live during
+ *      this window so consumers never see a gap.
+ *   4. Atomically swap: unregister old's Cloud Map handles, drop its
+ *      front-door pool entry, mark `oldInstance.shuttingDown = true`
+ *      so the watcher exits. The shadow is already serving by this
+ *      point.
+ *   5. `cleanupEcsRun(oldInstance.state)` tears the old container +
+ *      network down. The shadow remains in `runState.replicas`.
+ *   6. Start the shadow's watcher so restart-on-exit is wired the
+ *      same as Phase 1's boot loop.
+ *
+ * Failure modes:
+ *   - `bootReplica` fails: keep the old replica serving. Best-effort
+ *     teardown of partial shadow state. Re-throws so the reloader can
+ *     log and continue with the remaining replicas.
+ *   - Old shutdown fails: surfaced via the logger; the shadow is
+ *     already live so the service stays available.
+ *
+ * @internal — wired only by the emulator's reload pathway.
+ */
+export async function rollServiceReplica(args: {
+  /** Controller whose `runState.replicas[oldReplicaIndex]` is rolled. */
+  controller: ServiceController;
+  /**
+   * Index INTO `controller.runState.replicas` (NOT the logical
+   * replica index) of the old replica to retire. The shadow carries
+   * the same `instance.index` as the old replica for log consistency.
+   */
+  oldReplicaIndex: number;
+  /** Resolved task descriptor for the post-reload generation. */
+  newService: ResolvedEcsService;
+  /**
+   * Runner options for the post-reload generation. Must share the
+   * same `discovery.registry` + `frontDoor.pools` object identity as
+   * the controller's original options so the shared Cloud Map /
+   * front-door state stays consistent across the swap.
+   */
+  newOptions: ServiceRunnerOptions;
+}): Promise<void> {
+  const { controller, oldReplicaIndex, newService, newOptions } = args;
+  const logger = getLogger().child('ecs-service');
+  const oldInstance = controller.runState.replicas[oldReplicaIndex];
+  if (!oldInstance) {
+    throw new EcsServiceRunnerError(
+      `rollServiceReplica: no replica at index ${oldReplicaIndex} ` +
+        `(replicas=${controller.runState.replicas.length}).`
+    );
+  }
+  if (oldInstance.shuttingDown) {
+    // Common case: the watcher retired this replica between the
+    // reloader's snapshot and this iteration (e.g. essential container
+    // crashed with `restartPolicy=none`, watcher flipped
+    // `instance.shuttingDown = true`). Don't crash the whole reload —
+    // log + skip and let the next save start a fresh boot from a
+    // clean state. The "concurrent roll" pathology the original guard
+    // protected against is already prevented externally by the
+    // emulator's `reloadChain` serializer.
+    logger.warn(
+      `Rolling replica r${oldInstance.index} (gen ${oldInstance.generation}): retired by its ` +
+        'own watcher mid-roll (essential container exited). Skipping this slot; save again to ' +
+        're-boot it.'
+    );
+    return;
+  }
+
+  // Single-replica host-port-publish carve-out: when the runner is
+  // booting just ONE replica AND publishing a host port (the runner
+  // emits `-p hostPort:containerPort`), both the old and a freshly-
+  // booted shadow would try to bind the same host port. Docker rejects
+  // the shadow's bind with `port is already allocated`, so the shadow
+  // boot fails before its TCP-ready probe even runs. Mirror the
+  // runner's `skipHostPortPublish = replicaCount > 1` criterion: when
+  // the effective replica count is exactly 1, fall back to
+  // stop-old-first → boot-new, accepting Phase 1's brief downtime
+  // window per save (single-replica services have no second replica
+  // to forward to anyway, so there's no continuity to preserve).
+  // Multi-replica services boot the shadow first (host port is NOT
+  // published, no collision) and atomically swap — the Phase 2 rolling
+  // path.
+  const effectiveReplicaCount = computeReplicaCount(newService.desiredCount, newOptions.maxTasks);
+  const teardownOldFirst = effectiveReplicaCount === 1;
+
+  const shadow: ServiceReplicaInstance = {
+    index: oldInstance.index,
+    generation: oldInstance.generation + 1,
+    state: createEcsRunState(),
+    restartCount: 0,
+    shuttingDown: false,
+    inFlightBoot: undefined,
+    cloudMapHandles: [],
+    frontDoorOwnerKey: undefined,
+  };
+  // Append BEFORE the boot so a SIGTERM mid-boot tears the partial
+  // shadow state down too (same contract as the initial boot loop and
+  // the watcher's restart branch — see the controller's `doShutdown`
+  // which awaits every `inFlightBoot` before iterating for cleanup).
+  controller.runState.replicas.push(shadow);
+
+  if (teardownOldFirst) {
+    // Single-replica path — Phase 1 behavior preserved: stop old then
+    // boot new, accepting the brief per-save downtime.
+    logger.info(
+      `Rolling replica ${shadow.index} (gen ${shadow.generation}): single-replica + ` +
+        'host-port publish — tearing old down before shadow boot to avoid host-port collision.'
+    );
+    if (newOptions.discovery) {
+      for (const handle of oldInstance.cloudMapHandles) {
+        try {
+          newOptions.discovery.registry.unregister(handle);
+        } catch {
+          /* sync best-effort */
+        }
+      }
+      oldInstance.cloudMapHandles = [];
+    }
+    unregisterReplicaFromFrontDoor(oldInstance, newOptions.frontDoor);
+    oldInstance.shuttingDown = true;
+    try {
+      await cleanupEcsRun(oldInstance.state, {
+        keepRunning: newOptions.taskOptions.keepRunning,
+      });
+    } catch (err) {
+      logger.warn(
+        `Rolling replica ${oldInstance.index}: cleanup of old (gen ${oldInstance.generation}) ` +
+          `failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          'Attempting shadow boot anyway.'
+      );
+    }
+    const oldIdx = controller.runState.replicas.indexOf(oldInstance);
+    if (oldIdx !== -1) controller.runState.replicas.splice(oldIdx, 1);
+  } else {
+    logger.info(
+      `Rolling replica ${shadow.index} (gen ${shadow.generation}): booting shadow before retiring old.`
+    );
+  }
+
+  const bootPromise = (async (): Promise<void> => {
+    await bootReplica(newService, newOptions, shadow);
+    // After bootReplica returns, the shadow's docker container is
+    // running and its Cloud Map / front-door registrations are
+    // published — but the app inside the container may still be in
+    // its startup window (TCP socket not yet bound). If we swapped
+    // immediately, peer requests routed to the shadow during that
+    // window would see ECONNREFUSED. Wait for the essential
+    // container's first port to accept a TCP connection before
+    // letting the swap proceed; failure is best-effort (warn + swap
+    // anyway — the shadow's new image is the user's intent, and the
+    // dying old replica's already-bound port is the WORSE
+    // alternative once we tear it down).
+    await waitForReplicaTcpReady(newService, shadow, {
+      timeoutMs: shadowReadyTimeoutMs,
+      intervalMs: shadowReadyIntervalMs,
+    });
+  })();
+  shadow.inFlightBoot = bootPromise;
+  try {
+    await bootPromise;
+  } catch (err) {
+    // Shadow boot failed: the OLD replica still serves on the
+    // multi-replica path. Tear down the shadow's partial state (likely
+    // a half-created docker network + sidecar) so cleanup() doesn't
+    // leak it.
+    const shadowIdx = controller.runState.replicas.indexOf(shadow);
+    if (shadowIdx !== -1) controller.runState.replicas.splice(shadowIdx, 1);
+    try {
+      await cleanupEcsRun(shadow.state, { keepRunning: false });
+    } catch {
+      /* best-effort */
+    }
+    if (teardownOldFirst) {
+      // Single-replica path: old is already gone. Log a hint so the
+      // user knows they're now dark and can save again with a clean
+      // boot to recover.
+      logger.error(
+        `Rolling replica ${shadow.index}: shadow boot failed and the old replica was ` +
+          'already torn down for the single-replica path. Save again with a clean boot to ' +
+          're-start the service.'
+      );
+    }
+    throw err;
+  } finally {
+    shadow.inFlightBoot = undefined;
+  }
+
+  if (teardownOldFirst) {
+    // Single-replica path: old is already retired and shadow is up.
+    // Wire the shadow's watcher and we're done.
+    void watchReplica(newService, newOptions, shadow, controller.runState);
+    logger.info(
+      `Rolling replica ${shadow.index} (gen ${shadow.generation}): single-replica reload complete.`
+    );
+    return;
+  }
+
+  // Atomic swap — drop the OLD replica's Cloud Map handles + front-door
+  // pool entries. Both are synchronous Map mutations after the shadow
+  // already registered its own (under the bumped generation owner-key
+  // suffix), so consumers never see a registration gap: during the
+  // window between shadow register and old unregister, BOTH endpoints
+  // are reachable.
+  if (newOptions.discovery) {
+    for (const handle of oldInstance.cloudMapHandles) {
+      try {
+        newOptions.discovery.registry.unregister(handle);
+      } catch {
+        /* sync best-effort */
+      }
+    }
+    oldInstance.cloudMapHandles = [];
+  }
+  unregisterReplicaFromFrontDoor(oldInstance, newOptions.frontDoor);
+
+  // BEFORE the docker-stop step, disconnect the old replica's
+  // containers from the SHARED service network. Docker's embedded DNS
+  // strips an alias the instant a container is disconnected, so a peer
+  // resolving `srv` immediately after this step never picks the
+  // about-to-be-stopped IP — closing the race window where
+  // cleanupEcsRun's `docker stop → docker rm` leaves the container on
+  // the network (DNS still resolving to it) while its app is already
+  // gone (ECONNREFUSED). The shadow + every other live replica still
+  // carry the alias on the shared network, so wget round-robin
+  // trivially picks one of them. This step is only meaningful for the
+  // rolling pathway — SIGINT-driven cleanup tears down the whole
+  // network anyway.
+  await disconnectOldFromSharedNetwork(oldInstance).catch((err) => {
+    logger.debug(
+      `Rolling replica ${oldInstance.index}: shared-network disconnect of old ` +
+        `(gen ${oldInstance.generation}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Proceeding with cleanup (the docker-rm step still tears it down).'
+    );
+  });
+
+  // Stop the old replica's watcher loop + tear its container down. The
+  // watcher's `while (!instance.shuttingDown && !runState.shuttingDown)`
+  // observes this flag at the top of its next iteration (or while
+  // sleeping); the in-flight `waitForExitImpl` returns when `docker
+  // wait` resolves on container removal. cleanupEcsRun also stops the
+  // container so the wait resolves promptly.
+  oldInstance.shuttingDown = true;
+  try {
+    await cleanupEcsRun(oldInstance.state, {
+      keepRunning: newOptions.taskOptions.keepRunning,
+    });
+  } catch (err) {
+    logger.warn(
+      `Rolling replica ${oldInstance.index}: cleanup of old (gen ${oldInstance.generation}) ` +
+        `failed: ${err instanceof Error ? err.message : String(err)}. The shadow is live; ` +
+        'the stale container may need a manual `docker rm`.'
+    );
+  }
+
+  // Remove old from runState.replicas. The shadow keeps the logical
+  // index slot. We DO NOT splice oldInstance via its previous
+  // oldReplicaIndex value because the shadow.push above shifted the
+  // array; re-resolve via reference identity.
+  const oldIdx = controller.runState.replicas.indexOf(oldInstance);
+  if (oldIdx !== -1) controller.runState.replicas.splice(oldIdx, 1);
+
+  // Wire the shadow's exit watcher so restart-on-exit is the same as
+  // Phase 1's initial boot loop. Fire-and-forget; the watcher
+  // returns when `shadow.shuttingDown` or `runState.shuttingDown`
+  // flips.
+  void watchReplica(newService, newOptions, shadow, controller.runState);
+
+  logger.info(
+    `Rolling replica ${shadow.index} (gen ${shadow.generation}): swap complete; old retired.`
+  );
+}
+
+/**
+ * Phase 2 of issue #214 — disconnect every container of the dying
+ * replica from the shared service network BEFORE `cleanupEcsRun`'s
+ * `docker stop → docker rm` sequence. Docker's embedded DNS strips an
+ * alias the instant a container is disconnected, so a peer resolving
+ * the service's Service Connect / Cloud Map alias right after this
+ * step never picks the dying container's IP — closing the race window
+ * where the alias points at an IP whose app is already gone. Best-
+ * effort: a disconnect failure logs at debug and `cleanupEcsRun`'s
+ * `docker rm -f` will still tear the network membership down.
+ *
+ * No-op for replicas that aren't on a shared network (the defensive
+ * "per-replica /24" fallback path); the per-replica network is
+ * destroyed by `cleanupEcsRun` directly.
+ */
+async function disconnectOldFromSharedNetwork(oldInstance: ServiceReplicaInstance): Promise<void> {
+  const network = oldInstance.state.network;
+  if (!network || !network.ownedByCaller) return;
+  const networkName = network.networkName;
+  // Sidecar is owned by the run-state too but lives in its own
+  // network namespace inside the SAME shared net. Disconnect it AND
+  // every started container so wget's Docker DNS lookup misses the
+  // dying replica entirely after this point.
+  const targets: string[] = [];
+  if (network.sidecarContainerId) targets.push(network.sidecarContainerId);
+  for (const c of oldInstance.state.startedContainers) targets.push(c.id);
+  for (const id of targets) {
+    try {
+      // `--force` so a stop-then-disconnect race (rare; cleanupEcsRun
+      // calls stop AFTER this point in production, but a SIGTERM
+      // landing mid-roll could overlap) doesn't error out the rest
+      // of the disconnect loop.
+      await dockerNetworkDisconnectImpl(networkName, id);
+    } catch (err) {
+      // Caller logs at debug — emit nothing here so the noise
+      // budget stays low when the container is already gone (docker
+      // exits non-zero with "not connected"-style errors which are
+      // benign for our purposes).
+      void err;
+    }
+  }
+}
+
+/**
+ * Production `docker network disconnect --force <network> <id>` impl,
+ * extracted as a test-overridable function so the rolling-primitive
+ * unit test can assert this step actually ran (the reviewer flagged
+ * that the test mock previously took the `!ownedByCaller` early-return
+ * path and silently never entered the disconnect branch).
+ */
+const defaultDockerNetworkDisconnectImpl = async (
+  networkName: string,
+  containerId: string
+): Promise<void> => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { getDockerCmd } = await import('../utils/docker-cmd.js');
+  const execFileAsync = promisify(execFile);
+  await execFileAsync(getDockerCmd(), [
+    'network',
+    'disconnect',
+    '--force',
+    networkName,
+    containerId,
+  ]);
+};
+
+let dockerNetworkDisconnectImpl: (networkName: string, containerId: string) => Promise<void> =
+  defaultDockerNetworkDisconnectImpl;
+
+/**
+ * Test-only hook to substitute / spy on the `docker network disconnect`
+ * step the rolling primitive runs before tearing the old replica down.
+ * Pass `undefined` to restore the production `execFile`-backed impl.
+ *
+ * @internal
+ */
+export function __setDockerNetworkDisconnectImpl(
+  impl: ((networkName: string, containerId: string) => Promise<void>) | undefined
+): void {
+  if (impl === undefined) {
+    dockerNetworkDisconnectImpl = defaultDockerNetworkDisconnectImpl;
+    return;
+  }
+  dockerNetworkDisconnectImpl = impl;
+}
+
+/**
+ * Phase 2 of issue #214 — shadow-replica TCP readiness probe used by
+ * {@link rollServiceReplica} before the atomic registry swap. Polls the
+ * essential container's first port mapping (the one Cloud Map / Service
+ * Connect publishes) via TCP-connect on the shadow's docker network IP,
+ * retrying every `intervalMs` until either the connect succeeds or the
+ * timeout elapses.
+ *
+ * The probe is best-effort: a timeout logs a warn but DOES NOT throw.
+ * Swapping anyway is the lesser evil — the dying old replica's image
+ * is about to be torn down, and the shadow's new image is the user's
+ * intent. A timed-out probe usually means the app inside the new image
+ * has a startup bug; the user will see the connection failures on
+ * their probe / curl and fix the app, then save again. Failing the
+ * roll here would leave the OLD replica running on stale code with no
+ * recovery path other than `^C`.
+ *
+ * Exposed for the unit test pattern: the probe's `connect` impl is
+ * injectable via {@link __setTcpProbeImpl} so the rolling-primitive
+ * unit test can avoid any real TCP socket.
+ */
+async function waitForReplicaTcpReady(
+  service: ResolvedEcsService,
+  shadow: ServiceReplicaInstance,
+  opts: { timeoutMs: number; intervalMs: number }
+): Promise<void> {
+  const logger = getLogger().child('ecs-service');
+  const networkName = shadow.state.network?.networkName;
+  if (!networkName) return; // boot didn't get far enough; the caller's catch handles it
+
+  const essential = service.task.containers.find((c) => c.essential) ?? service.task.containers[0];
+  if (!essential || essential.portMappings.length === 0) {
+    // No essential container or no port to probe — nothing to wait
+    // on. Common for sidecar-only services or tasks that the user
+    // expects to drive externally.
+    return;
+  }
+  const started = shadow.state.startedContainers.find((c) => c.name === essential.name);
+  if (!started) return;
+
+  let ip: string;
+  try {
+    const resolved = await getContainerNetworkIp(started.id, networkName);
+    if (!resolved) return;
+    ip = resolved;
+  } catch (err) {
+    logger.warn(
+      `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP-ready probe ` +
+        `could not resolve docker IP: ${err instanceof Error ? err.message : String(err)}. ` +
+        'Proceeding with swap.'
+    );
+    return;
+  }
+
+  const port = essential.portMappings[0]!.containerPort;
+  const deadline = Date.now() + opts.timeoutMs;
+  let lastErr: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      await tcpProbeImpl(ip, port);
+      logger.debug(
+        `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP probe ` +
+          `${ip}:${port} accepted; proceeding with swap.`
+      );
+      return;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+    }
+    await sleep(opts.intervalMs);
+  }
+  logger.warn(
+    `Shadow replica r${shadow.index} (gen ${shadow.generation}): TCP probe ${ip}:${port} ` +
+      `did not accept within ${opts.timeoutMs}ms (last: ${lastErr ?? 'n/a'}). Swapping ` +
+      'anyway — the new image is the user intent. Initial requests after the swap may ' +
+      '502 until the app finishes binding.'
+  );
+}
+
+/**
+ * Default TCP-connect probe used by {@link waitForReplicaTcpReady}.
+ * Opens a socket to `host:port` and resolves on `connect`; rejects on
+ * any error. The socket is destroyed immediately on connect — we don't
+ * want to keep a connection open or send any bytes.
+ */
+const defaultTcpProbeImpl = async (host: string, port: number): Promise<void> => {
+  const { createConnection } = await import('node:net');
+  await new Promise<void>((resolve, reject) => {
+    const socket = createConnection({ host, port });
+    const onError = (err: Error): void => {
+      socket.destroy();
+      reject(err);
+    };
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve();
+    });
+    socket.once('error', onError);
+  });
+};
+
+let tcpProbeImpl: (host: string, port: number) => Promise<void> = defaultTcpProbeImpl;
+
+/**
+ * Test-only hook to short-circuit the TCP-connect probe in unit tests
+ * (the runner's rolling primitive's pre-swap readiness gate). Pass
+ * `undefined` to restore the production `node:net` `createConnection`
+ * implementation.
+ *
+ * @internal
+ */
+export function __setTcpProbeImpl(
+  impl: ((host: string, port: number) => Promise<void>) | undefined
+): void {
+  if (impl === undefined) {
+    tcpProbeImpl = defaultTcpProbeImpl;
+    return;
+  }
+  tcpProbeImpl = impl;
 }
 
 /**

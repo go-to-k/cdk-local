@@ -6,6 +6,7 @@
 # Dependencies
 node_modules/
 package-lock.json
+pnpm-lock.yaml
 
 # CDK output
 cdk.out/
