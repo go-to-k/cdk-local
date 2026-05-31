@@ -989,6 +989,7 @@ describe('start-alb option surface contract (addCommonEcsServiceOptions + addAlb
       '--tls',
       '--tls-cert',
       '--tls-key',
+      '--watch',
     ]);
   });
 

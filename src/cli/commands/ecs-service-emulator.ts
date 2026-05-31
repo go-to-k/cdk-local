@@ -176,16 +176,16 @@ export interface EcsServiceEmulatorOptions {
   fromCfnStack?: string | boolean;
   stackRegion?: string;
   /**
-   * Issue #214 — `cdkl start-service --watch`. Re-synth and per-replica
-   * roll each booted service when the CDK app source changes (Phase 1 +
-   * Phase 2 of #214: shadow boot under bumped generation suffix → TCP-
-   * ready probe → atomic Cloud Map / front-door registration swap →
-   * retire old container, sequenced one replica at a time so peer
-   * services see zero connection refusals across the reload). Wired
-   * only via the `start-service` command (the flag is declared in
-   * `addStartServiceSpecificOptions`); the start-alb path leaves this
-   * undefined (Phase 3 of #214 turns it on once the front-door pool
-   * supports atomic swap).
+   * Issue #214 — `cdkl start-service --watch` (Phase 1 + Phase 2) and
+   * `cdkl start-alb --watch` (Phase 3). Re-synth and per-replica roll
+   * each booted ECS service when the CDK app source changes (shadow
+   * boot under bumped generation suffix → TCP-ready probe → atomic
+   * Cloud Map + front-door pool registration swap → retire old
+   * container, sequenced one replica at a time so peer services + the
+   * ALB front-door's continuous request stream see zero connection
+   * refusals across the reload). Wired per command via
+   * `addStartServiceSpecificOptions` / `addAlbSpecificOptions`; each
+   * strategy decides whether to honor it via `supportsWatch`.
    */
   watch?: boolean;
   /** Host-injected extra state-source flag fields. */
@@ -326,14 +326,18 @@ export interface EmulatorStrategy {
    */
   suppressLoadBalancerWarning?: boolean;
   /**
-   * Issue #214 (Phase 1 + Phase 2) — opt this strategy into the
-   * emulator's `--watch` reload pathway. `serviceStrategy()` sets this
-   * true so a `cdkl start-service --watch` re-synths + per-replica
-   * rolls each booted service on source change. `start-alb`'s strategy
-   * leaves this falsy (Phase 3 will turn it on once the front-door pool
-   * supports atomic swap) — the gate prevents a host CLI that wires
-   * `start-alb` through this engine from accidentally exposing watch
-   * via the shared options block.
+   * Issue #214 (Phase 1 + Phase 2 + Phase 3) — opt this strategy into
+   * the emulator's `--watch` reload pathway. Both `serviceStrategy()`
+   * (start-service) and `albStrategy()` (start-alb) set this true; a
+   * source change triggers the same per-replica rolling primitive
+   * (`rollServiceReplica`) for every booted ECS service. The ALB
+   * front-door pool already swaps atomically as part of that primitive
+   * — its `register` / `unregister` are single-assignment Map mutations
+   * and `next()` reads happen on a single JS thread, so a continuous
+   * external request stream against the listener port never observes
+   * a partial swap. The gate is kept as a strategy field rather than a
+   * runtime guard so a future strategy added through the engine (host
+   * CLIs that wrap `runEcsServiceEmulator`) does not get watch implicitly.
    */
   supportsWatch?: boolean;
 }
@@ -626,11 +630,13 @@ export async function runEcsServiceEmulator(
     logEndpointsBanner(perTarget, frontDoorServers, logger);
     logger.info('Press ^C to shut down.');
 
-    // Phase 1 of issue #214 — `cdkl start-service --watch` source-tree watcher.
-    // Only the service strategy opts in (start-alb's strategy intentionally
-    // leaves `supportsWatch` falsy; Phase 3 turns it on). The watcher reuses
-    // the start-api debounced file-watcher and predicate composition verbatim
-    // so cdk.json `watch.include` / `watch.exclude` semantics are identical.
+    // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
+    // (Phases 1-2) and `cdkl start-alb --watch` (Phase 3) source-tree
+    // watcher. Both `serviceStrategy()` and `albStrategy()` opt in via
+    // `supportsWatch: true`; the gate keeps a future strategy added through
+    // this engine from getting `--watch` implicitly. The watcher reuses the
+    // start-api debounced file-watcher and predicate composition verbatim so
+    // cdk.json `watch.include` / `watch.exclude` semantics are identical.
     if (options.watch === true && strategy.supportsWatch === true) {
       const watchRoot = process.cwd();
       const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
@@ -786,6 +792,17 @@ async function reloadAllServices(args: {
     return;
   }
 
+  // The new `frontDoor` plan is intentionally discarded: `reloadAllServices`
+  // only rolls EXISTING service replicas through the new task definition.
+  // For `start-alb --watch`, mid-watch edits to listener rules (path /
+  // host / header / method / query-string / source-ip conditions),
+  // weighted-forward weights, redirect / fixed-response actions, Lambda
+  // target groups, listener `Certificates[]`, or auth-* guards are NOT
+  // applied across a reload — the boot-time `frontDoorByService` +
+  // `frontDoorServers` lock in those decisions. To pick up listener-side
+  // CDK edits the user needs to `^C` and re-launch. Tracked under
+  // issue #214 (see PR body's "Out-of-scope" section) for a future
+  // follow-up.
   const { boots: newBoots, warnings } = strategy.resolveBoots(stacks, resolvedTargets);
   for (const w of warnings) logger.warn(w);
   const newBootByTarget = new Map(newBoots.map((b) => [b.target, b] as const));

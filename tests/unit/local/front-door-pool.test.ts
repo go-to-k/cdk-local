@@ -61,4 +61,69 @@ describe('FrontDoorEndpointPool', () => {
     const snapshot = pool.list();
     expect(snapshot).toEqual([{ host: '127.0.0.1', port: 5001 }]);
   });
+
+  it('register-new-before-unregister-old is observable as zero-gap swap (Phase 3 of #214)', () => {
+    // Phase 3 atomic-swap contract the ALB front-door's rolling reload
+    // depends on. `rollServiceReplica` registers a shadow under a
+    // bumped owner key BEFORE unregistering the dying replica's old
+    // key; the front-door server's `next()` is called once per
+    // request, so any observer interleaved between the two writes
+    // sees BOTH endpoints during the swap window — never an empty
+    // pool. A regression that reversed the order (unregister-old-
+    // first, then register-new) would briefly empty a single-replica
+    // pool and the host front-door would return 503 for every request
+    // hitting the gap. This test pins the contract end-to-end.
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0:g0', { host: '127.0.0.1', port: 5001 });
+    expect(pool.size()).toBe(1);
+    const before = pool.list();
+    expect(before).toEqual([{ host: '127.0.0.1', port: 5001 }]);
+
+    // Roll mid-stride: register shadow under bumped generation, then
+    // unregister the old. Take a snapshot between the two writes to
+    // prove BOTH endpoints are present in the swap window.
+    pool.register('svc:r0:g1', { host: '127.0.0.1', port: 5002 });
+    const midSwap = pool.list();
+    expect(pool.size()).toBe(2);
+    expect(new Set(midSwap.map((e) => e.port))).toEqual(new Set([5001, 5002]));
+
+    pool.unregister('svc:r0:g0');
+    expect(pool.size()).toBe(1);
+    const after = pool.list();
+    expect(after).toEqual([{ host: '127.0.0.1', port: 5002 }]);
+  });
+
+  it('next() returns a live endpoint at every step of the register-new-then-unregister-old sequence (single-replica swap)', () => {
+    // Phase 3 ordering lock for the rolling-reload swap path. The
+    // rolling primitive (`rollServiceReplica`) calls
+    // `target.pool.register(newOwnerKey, ...)` BEFORE
+    // `target.pool.unregister(oldOwnerKey)`. This test sequences
+    // `next() / register / next() / unregister / next()` and asserts
+    // every read returns one of the two endpoints — there is no
+    // intermediate state with an empty pool. JS's single-threaded
+    // execution makes each `this.entries = next` commit atomic
+    // relative to a `next()` read on the same VM (this test cannot
+    // observe a torn-write window because none exists); the bug this
+    // test locks against is a future refactor that reverses the order
+    // to "unregister old first, then register new" — that ordering
+    // would empty a single-replica pool for the gap window and
+    // `next()` would return `undefined` (the front-door server then
+    // replies 503).
+    const pool = new FrontDoorEndpointPool();
+    pool.register('svc:r0:g0', { host: '127.0.0.1', port: 5001 });
+
+    const r1 = pool.next();
+    pool.register('svc:r0:g1', { host: '127.0.0.1', port: 5002 });
+    const r2 = pool.next();
+    pool.unregister('svc:r0:g0');
+    const r3 = pool.next();
+
+    for (const r of [r1, r2, r3]) {
+      expect(r).toBeDefined();
+      expect([5001, 5002]).toContain(r!.port);
+    }
+    // Post-swap, every subsequent `next()` lands on the shadow.
+    expect(pool.next()?.port).toBe(5002);
+    expect(pool.next()?.port).toBe(5002);
+  });
 });

@@ -1456,6 +1456,20 @@ Trade-offs (issue #214 follow-ups):
   bind-mount source mode that skips the rebuild for source-only
   changes.
 
+`cdkl start-alb --watch` (Phase 3 of issue #214) reuses this same
+per-replica rolling primitive — every ECS service behind the named
+ALB is rolled identically, and the ALB front-door pool entry for the
+rolled replica is swapped atomically as part of the same step
+(register-new-before-unregister-old, single-assignment Map mutation
+on a single JS thread; a continuous external request stream against
+the listener port never observes an empty pool). The host front-door
+(TLS materials, JWKS cache, Lambda-target RIE containers, listener
+sockets) is built once at boot and is NOT recreated on reload — only
+the per-replica pool entries rotate. Lambda target groups behind the
+ALB are a no-op on `--watch` reload (the warm RIE container keeps
+its boot-time image; Lambda hot-reload is the `start-api` path's
+concern).
+
 ### `start-service` lifecycle
 
 `^C` (SIGINT) and SIGTERM trigger a graceful shutdown across every
@@ -1469,7 +1483,6 @@ immediately so users have an escape hatch when docker hangs.
 | Deferred | Tracked in / Why |
 | --- | --- |
 | Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach a single-replica service via its published container ports, or any replica via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). |
-| `--watch` / `--reload` (rolling deployment on file change) | Follow-up PR — mirrors `cdkl start-api --watch` semantics; needs container-pool-style hot reload across replicas. |
 | Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
 | Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
 | `HealthCheckGracePeriodSeconds` runtime semantics | Field is parsed and surfaced on `ResolvedEcsService` but not yet acted on. Becomes load-bearing when the LB emulator ships (today's restart policy fires on essential-container exit code, not health-check failure). |
