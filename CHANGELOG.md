@@ -1,3 +1,10 @@
+## [0.71.1](https://github.com/go-to-k/cdk-local/compare/v0.71.0...v0.71.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* **source-change-classifier:** default TypeScript edits to rebuild (precompile setups left stale by soft-reload) ([#236](https://github.com/go-to-k/cdk-local/issues/236)) ([40144df](https://github.com/go-to-k/cdk-local/commit/40144df94baec147b0a294b31d78598f2910c6f6))
+
 # [0.71.0](https://github.com/go-to-k/cdk-local/compare/v0.70.0...v0.71.0) (2026-05-31)
 
 
