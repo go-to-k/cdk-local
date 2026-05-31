@@ -1,3 +1,10 @@
+# [0.67.0](https://github.com/go-to-k/cdk-local/compare/v0.66.0...v0.67.0) (2026-05-31)
+
+
+### Features
+
+* **start-service:** multi-replica rolling deploy for `--watch` (Phase 2 of [#214](https://github.com/go-to-k/cdk-local/issues/214)) ([#216](https://github.com/go-to-k/cdk-local/issues/216)) ([196afd6](https://github.com/go-to-k/cdk-local/commit/196afd662e0f7402a5fd958bab6a2d47a95dbe6e))
+
 # [0.66.0](https://github.com/go-to-k/cdk-local/compare/v0.65.3...v0.66.0) (2026-05-31)
 
 
