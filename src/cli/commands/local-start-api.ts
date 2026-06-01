@@ -156,10 +156,34 @@ interface LocalStartApiOptions {
   perLambdaConcurrency: string;
   /** Skip docker pull for images. */
   pull: boolean;
+  /**
+   * Issue #249 / C8 — `--no-build` parity with `cdkl invoke`. Commander
+   * maps `--no-build` to `build: boolean` (default `true`). When the
+   * user passes `--no-build` the value flips to `false` and the
+   * container-Lambda local-asset build is skipped (requires the
+   * deterministic tag to already be in the local registry; errors with
+   * an actionable message when missing). No-op for ZIP Lambdas and the
+   * ECR-pull fallback.
+   */
+  build: boolean;
+  /**
+   * Issue #249 / C7 — `--ecr-role-arn` parity with `cdkl invoke`.
+   * Optional role ARN forwarded to `pullEcrImage` on the
+   * container-Lambda ECR-pull fallback for cross-account / centralized
+   * registry pulls. Same-account / same-region pulls do not need this.
+   */
+  ecrRoleArn?: string;
   /** IP the host uses to bind/probe the RIE port (default 127.0.0.1). */
   containerHost: string;
   /** First Node.js inspector port; allocated contiguously per Lambda when set. */
   debugPortBase?: string;
+  /**
+   * Issue #249 / C14 — `--debug-port` alias for `--debug-port-base`
+   * matching `cdkl invoke`'s flag name. When both are passed,
+   * `--debug-port-base` (the canonical name) wins; otherwise this value
+   * is used as the contiguous-range base.
+   */
+  debugPort?: string;
   envVars?: string;
   /** D8.2: bare ARN (global) and/or `<LogicalId>=<arn>` (per-Lambda). */
   assumeRole?: AssumeRoleOption;
@@ -346,7 +370,11 @@ async function localStartApiCommand(
   }
 
   const overrides = readEnvOverridesFile(options.envVars);
-  const debugPortBase = options.debugPortBase ? parseDebugPort(options.debugPortBase) : undefined;
+  // Issue #249 / C14 — `--debug-port` is a non-breaking alias of
+  // `--debug-port-base`. Canonical (`--debug-port-base`) wins when both
+  // are passed.
+  const debugPortRaw = options.debugPortBase ?? options.debugPort;
+  const debugPortBase = debugPortRaw ? parseDebugPort(debugPortRaw) : undefined;
   const perLambdaConcurrency = parsePerLambdaConcurrency(options.perLambdaConcurrency);
   // Track every tmpdir created by `materializeInlineCode` so the
   // graceful-shutdown path removes them. Long-running servers (this
@@ -696,7 +724,9 @@ async function localStartApiCommand(
         layerTmpDirs,
         stateByStack,
         skipPull: options.pull === false,
+        skipBuild: options.build === false,
         ...(options.profile !== undefined && { profile: options.profile }),
+        ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
         ...(options.layerRoleArn !== undefined && { layerRoleArn: options.layerRoleArn }),
         ...(profileCredentials && { profileCredentials }),
         ...(profileCredsFile && { profileCredsFile }),
@@ -1876,6 +1906,19 @@ async function buildContainerSpec(args: {
    */
   skipPull: boolean;
   /**
+   * Issue #249 / C8 — `--no-build` flag, threaded to the IMAGE
+   * branch's local-asset build path. ZIP branch ignores. Short-circuits
+   * `docker build` when the deterministic content-addressed tag is
+   * already in the local registry; errors when missing.
+   */
+  skipBuild?: boolean;
+  /**
+   * Issue #249 / C7 — `--ecr-role-arn` flag, threaded to the IMAGE
+   * branch's ECR-pull fallback for cross-account / centralized
+   * registry pulls. Undefined when the flag is unset.
+   */
+  ecrRoleArn?: string;
+  /**
    * The CLI's `--profile`, forwarded to the IMAGE branch's ECR-pull
    * fallback so `ecr:GetAuthorizationToken` authenticates as the
    * profile's account (matching the ECS path). Undefined when
@@ -1987,9 +2030,15 @@ async function buildContainerSpec(args: {
   } else {
     // IMAGE branch (closes #453): build locally from cdk.out asset
     // manifest, OR pull from ECR when no matching asset is found.
-    // Same-account/region only on the ECR-pull path — cross-account /
-    // cross-region is deferred to a sibling PR (W2-1).
-    const built = await resolveContainerImageForStartApi(lambda, skipPull, args.profile);
+    // Issue #249 / C7 + C8 — `--no-build` and `--ecr-role-arn` are
+    // threaded through `resolveContainerImageForStartApi` so the
+    // local-asset build path can short-circuit and the ECR-pull
+    // fallback can assume a cross-account role.
+    const built = await resolveContainerImageForStartApi(lambda, skipPull, args.profile, {
+      ...(args.skipBuild !== undefined && { noBuild: args.skipBuild }),
+      ...(args.ecrRoleArn !== undefined && { ecrRoleArn: args.ecrRoleArn }),
+      ...(args.stsRegion !== undefined && { region: args.stsRegion }),
+    });
     imageRef = built.imageRef;
     platform = architectureToPlatform(lambda.architecture);
   }
@@ -2232,24 +2281,28 @@ async function buildContainerSpec(args: {
  * Resolve a container Lambda's local docker image — local build from
  * `cdk.out` asset manifest first, ECR-pull fallback when the asset
  * manifest has no matching entry. Mirrors `cdkl invoke`'s
- * `resolveContainerImagePlan` shape; the start-api server doesn't
- * need the no-build flag (deterministic-tag cache reuse is automatic
- * across reloads because the per-Lambda tag is content-addressed).
+ * `resolveContainerImagePlan` shape.
  *
- * Same-account / same-region only on the ECR-pull path (matches the
- * `cdkl invoke` PR 5 of #224 boundary). Cross-account /
- * cross-region ECR pull is the W2-1 deferred follow-up.
+ * Issue #249 / C7 + C8 — `noBuild` and `ecrRoleArn` are accepted for
+ * parity with `cdkl invoke` / `cdkl run-task`. `noBuild` short-circuits
+ * the local-asset build path (the deterministic content-addressed tag
+ * must already be in the local registry). `ecrRoleArn` lets the
+ * ECR-pull fallback authenticate against cross-account / centralized
+ * registries via STS AssumeRole — same-account / same-region pulls do
+ * not need it.
  */
 export async function resolveContainerImageForStartApi(
   lambda: ResolvedStartApiImageLambda,
   skipPull: boolean,
-  profile?: string
+  profile?: string,
+  options?: { noBuild?: boolean; ecrRoleArn?: string; region?: string }
 ): Promise<{ imageRef: string }> {
   const logger = getLogger();
   const localBuild = await resolveLocalBuildPlan(lambda);
   if (localBuild) {
     const imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
       architecture: lambda.architecture,
+      ...(options?.noBuild !== undefined && { noBuild: options.noBuild }),
     });
     return { imageRef };
   }
@@ -2260,12 +2313,12 @@ export async function resolveContainerImageForStartApi(
         'Re-synthesize the CDK app (so cdk.out includes the build context) or deploy the image to ECR first.'
     );
   }
-  logger.info(
-    `No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull (same-acct/region only)...`
-  );
+  logger.info(`No matching cdk.out asset for ${lambda.imageUri}; falling back to ECR pull...`);
   const imageRef = await pullEcrImage(lambda.imageUri, {
     skipPull,
     ...(profile !== undefined && { profile }),
+    ...(options?.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
+    ...(options?.region !== undefined && { region: options.region }),
   });
   return { imageRef };
 }
@@ -3580,136 +3633,171 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
  * `--help` clusters. Chainable: returns `cmd`.
  */
 export function addStartApiSpecificOptions(cmd: Command): Command {
-  return cmd
-    .addOption(
-      new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
-    )
-    .addOption(new Option('--host <host>', 'Bind address').default('127.0.0.1'))
-    .addOption(new Option('--stack <name>', 'Stack to start (single-stack apps auto-detect)'))
-    .addOption(
-      new Option(
-        '--all-stacks',
-        "Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out. Mutually exclusive with a positional target subset, --stack, and an explicit --from-cfn-stack <name>; the bare --from-cfn-stack flag stays compatible (binds each routed stack to its own CFn stack)."
-      ).default(false)
-    )
-    .addOption(
-      new Option('--warm', 'Pre-start one container per Lambda at server boot').default(false)
-    )
-    .addOption(
-      new Option(
-        '--per-lambda-concurrency <n>',
-        'Pool size cap per Lambda (default 2, max 4)'
-      ).default('2')
-    )
-    .addOption(new Option('--no-pull', 'Skip docker pull (cached image)'))
-    .addOption(
-      new Option(
-        '--container-host <host>',
-        'IP the host uses to bind/probe the RIE port (must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames). Defaults to 127.0.0.1.'
-      ).default('127.0.0.1')
-    )
-    .addOption(
-      new Option(
-        '--debug-port-base <port>',
-        'Reserve a contiguous --debug-port range (one per Lambda)'
+  return (
+    cmd
+      .addOption(
+        new Option('--port <port>', 'HTTP server port (default: auto-allocate)').default('0')
       )
-    )
-    .addOption(
-      new Option(
-        '--env-vars <file>',
-        'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}, "Parameters": {...}})'
+      .addOption(new Option('--host <host>', 'Bind address').default('127.0.0.1'))
+      .addOption(new Option('--stack <name>', 'Stack to start (single-stack apps auto-detect)'))
+      .addOption(
+        new Option(
+          '--all-stacks',
+          "Serve every stack's API in a multi-stack app (each API on its own port) instead of erroring out. Mutually exclusive with a positional target subset, --stack, and an explicit --from-cfn-stack <name>; the bare --from-cfn-stack flag stays compatible (binds each routed stack to its own CFn stack)."
+        ).default(false)
       )
-    )
-    .addOption(
-      new Option(
-        '--assume-role <arn-or-pair>',
-        "Assume the Lambda's execution role and forward STS-issued temp creds. Bare <arn> = global default; <LogicalId>=<arn> = per-Lambda override (repeatable). Per-Lambda > global > unset (developer creds passed through)."
-      ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
-    )
-    .addOption(
-      new Option(
-        '--watch',
-        "Hot-reload: re-synth + re-discover routes when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). Off by default; the server keeps the previous version serving when synth fails mid-reload."
-      ).default(false)
-    )
-    .addOption(
-      new Option(
-        '--stage <name>',
-        "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives event.stageVariables for both REST v1 and HTTP API v2. NOTE: For HTTP API v2 routes, requestContext.stage is always '$default' regardless of this flag (AWS-side limitation — HTTP API only exposes one stage to the integration event); only event.stageVariables is affected for v2 routes. For REST v1 routes the selected StageName is also threaded into requestContext.stage."
+      .addOption(
+        new Option('--warm', 'Pre-start one container per Lambda at server boot').default(false)
       )
-    )
-    .addOption(
-      new Option(
-        '--api <id>',
-        'DEPRECATED — use the positional <targets...> argument instead. Accepts a SINGLE identifier; for a subset pass multiple positional targets. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
+      .addOption(
+        new Option(
+          '--per-lambda-concurrency <n>',
+          'Pool size cap per Lambda (default 2, max 4)'
+        ).default('2')
       )
-    )
-    .addOption(
-      new Option(
-        '--layer-role-arn <arn>',
-        'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
-          'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
-          'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
-          'Lambda Powertools) are readable from every account and need no role.'
+      .addOption(new Option('--no-pull', 'Skip docker pull (cached image)'))
+      .addOption(
+        new Option(
+          '--no-build',
+          'Skip docker build on every container Lambda local-asset build (use the previously-built tag). ' +
+            'Requires the deterministic tag to already be in the local registry; errors with an ' +
+            'actionable message when missing. No-op for ZIP Lambdas and the IMAGE ECR-pull path. ' +
+            'Compatible with --no-pull.'
+        )
       )
-    )
-    .addOption(
-      new Option(
-        '--from-cfn-stack [cfn-stack-name]',
-        'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
-          'in Lambda env vars with the deployed physical IDs / exports. ' +
-          'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
-          'Bare form uses the resolved stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. ' +
-          'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
+      .addOption(
+        new Option(
+          '--container-host <host>',
+          'IP the host uses to bind/probe the RIE port (must be a numeric IP — `docker run -p <ip>:<port>:8080` rejects hostnames). Defaults to 127.0.0.1.'
+        ).default('127.0.0.1')
       )
-    )
-    .addOption(
-      new Option(
-        '--stack-region <region>',
-        'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
+      .addOption(
+        new Option(
+          '--debug-port-base <port>',
+          'Reserve a contiguous --debug-port range (one per Lambda)'
+        )
       )
-    )
-    .addOption(
-      new Option(
-        '--mtls-truststore <path>',
-        'PEM-encoded CA bundle for client-certificate verification (mutual TLS). ' +
-          'When set, the local server switches from HTTP to HTTPS and the TLS handshake rejects ' +
-          "clients whose certificate doesn't chain to one of these CAs. Verified certs are surfaced " +
-          'on the Lambda event under requestContext.identity.clientCert (REST v1) / ' +
-          'requestContext.authentication.clientCert (HTTP API v2). Must be set together with ' +
-          '--mtls-cert + --mtls-key; partial flag sets are rejected. ' +
-          'Generate a CA + server + client cert for local dev: ' +
-          `openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -subj "/CN=${getEmbedConfig().resourceNamePrefix}-ca" -days 365; ` +
-          'openssl req -newkey rsa:2048 -nodes -keyout server-key.pem -out server-csr.pem -subj "/CN=localhost"; ' +
-          'openssl x509 -req -in server-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out server-cert.pem -days 365; ' +
-          'openssl req -newkey rsa:2048 -nodes -keyout client-key.pem -out client-csr.pem -subj "/CN=client"; ' +
-          'openssl x509 -req -in client-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out client-cert.pem -days 365; ' +
-          'curl --cacert ca.pem --cert client-cert.pem --key client-key.pem https://localhost:<port>/...'
+      // Issue #249 / C14 — `--debug-port` alias matching `cdkl invoke`'s
+      // flag name. Both forms accepted; `--debug-port-base` stays the
+      // canonical name (its meaning — RESERVE A CONTIGUOUS RANGE rather
+      // than a single port — is what differs from `cdkl invoke`). When
+      // both are passed Commander stores the later one; we coalesce in
+      // `localStartApiCommand`.
+      .addOption(
+        new Option(
+          '--debug-port <port>',
+          'Alias of --debug-port-base for parity with `cdkl invoke --debug-port`. ' +
+            'Reserves a contiguous --debug-port range (one per Lambda) starting at <port>.'
+        )
       )
-    )
-    .addOption(
-      new Option(
-        '--mtls-cert <path>',
-        'PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. ' +
-          'Must be set together with --mtls-truststore + --mtls-key.'
+      .addOption(
+        new Option(
+          '--ecr-role-arn <arn>',
+          'Role ARN to assume before authenticating against ECR for cross-account / centralized ' +
+            'registries on the container-Lambda ECR-pull fallback. Issues sts:AssumeRole via the ' +
+            'default credential chain and uses the temporary credentials for ' +
+            'ecr:GetAuthorizationToken + docker pull. Required when the caller does not have direct ' +
+            'cross-account access to the target repository. Same-account / same-region pulls do not ' +
+            'need this flag.'
+        )
       )
-    )
-    .addOption(
-      new Option(
-        '--mtls-key <path>',
-        'PEM-encoded server private key matching --mtls-cert. ' +
-          'Must be set together with --mtls-truststore + --mtls-cert.'
+      .addOption(
+        new Option(
+          '--env-vars <file>',
+          'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}, "Parameters": {...}})'
+        )
       )
-    )
-    .addOption(
-      new Option(
-        '--strict-sigv4',
-        'Opt-in: DENY AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
-          '(foreign access-key-id — e.g. a federated / Cognito Identity Pool / cross-account ' +
-          'signer — OR no local AWS credentials configured) instead of the default warn-and-pass. ' +
-          'DEFAULT off: cdk-local warn-and-passes unverifiable IAM requests with a placeholder ' +
-          'principalId so local dev exercises app logic without reproducing an auth boundary it ' +
-          'cannot fully emulate. OAC-fronted Function URLs always warn-and-pass regardless.'
-      ).default(false)
-    );
+      .addOption(
+        new Option(
+          '--assume-role <arn-or-pair>',
+          "Assume the Lambda's execution role and forward STS-issued temp creds. Bare <arn> = global default; <LogicalId>=<arn> = per-Lambda override (repeatable). Per-Lambda > global > unset (developer creds passed through)."
+        ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+      )
+      .addOption(
+        new Option(
+          '--watch',
+          "Hot-reload: re-synth + re-discover routes when the CDK app's source changes (honors cdk.json watch.include/exclude; cdk.out, node_modules, .git are always excluded). Off by default; the server keeps the previous version serving when synth fails mid-reload."
+        ).default(false)
+      )
+      .addOption(
+        new Option(
+          '--stage <name>',
+          "Select an API Gateway Stage by its 'StageName'. Default: the first Stage attached to each API. Drives event.stageVariables for both REST v1 and HTTP API v2. NOTE: For HTTP API v2 routes, requestContext.stage is always '$default' regardless of this flag (AWS-side limitation — HTTP API only exposes one stage to the integration event); only event.stageVariables is affected for v2 routes. For REST v1 routes the selected StageName is also threaded into requestContext.stage."
+        )
+      )
+      .addOption(
+        new Option(
+          '--api <id>',
+          'DEPRECATED — use the positional <targets...> argument instead. Accepts a SINGLE identifier; for a subset pass multiple positional targets. Same accepted forms (bare logical id, stack-qualified, Construct path, ancestor prefix). Will be removed in a future major release.'
+        )
+      )
+      .addOption(
+        new Option(
+          '--layer-role-arn <arn>',
+          'Role to sts:AssumeRole before calling lambda:GetLayerVersion on every literal-ARN ' +
+            'entry in Properties.Layers (issue #448). Use only when the dev credentials cannot ' +
+            'read the layer — typically cross-account layers. AWS-published public layers (e.g. ' +
+            'Lambda Powertools) are readable from every account and need no role.'
+        )
+      )
+      .addOption(
+        new Option(
+          '--from-cfn-stack [cfn-stack-name]',
+          'Read a deployed CloudFormation stack via ListStackResources and substitute Ref / Fn::ImportValue ' +
+            'in Lambda env vars with the deployed physical IDs / exports. ' +
+            'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
+            'Bare form uses the resolved stack name per routed stack; pass an explicit value when a single CFn stack should serve every routed stack. ' +
+            'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
+        )
+      )
+      .addOption(
+        new Option(
+          '--stack-region <region>',
+          'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
+        )
+      )
+      .addOption(
+        new Option(
+          '--mtls-truststore <path>',
+          'PEM-encoded CA bundle for client-certificate verification (mutual TLS). ' +
+            'When set, the local server switches from HTTP to HTTPS and the TLS handshake rejects ' +
+            "clients whose certificate doesn't chain to one of these CAs. Verified certs are surfaced " +
+            'on the Lambda event under requestContext.identity.clientCert (REST v1) / ' +
+            'requestContext.authentication.clientCert (HTTP API v2). Must be set together with ' +
+            '--mtls-cert + --mtls-key; partial flag sets are rejected. ' +
+            'Generate a CA + server + client cert for local dev: ' +
+            `openssl req -x509 -newkey rsa:2048 -nodes -keyout ca-key.pem -out ca.pem -subj "/CN=${getEmbedConfig().resourceNamePrefix}-ca" -days 365; ` +
+            'openssl req -newkey rsa:2048 -nodes -keyout server-key.pem -out server-csr.pem -subj "/CN=localhost"; ' +
+            'openssl x509 -req -in server-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out server-cert.pem -days 365; ' +
+            'openssl req -newkey rsa:2048 -nodes -keyout client-key.pem -out client-csr.pem -subj "/CN=client"; ' +
+            'openssl x509 -req -in client-csr.pem -CA ca.pem -CAkey ca-key.pem -CAcreateserial -out client-cert.pem -days 365; ' +
+            'curl --cacert ca.pem --cert client-cert.pem --key client-key.pem https://localhost:<port>/...'
+        )
+      )
+      .addOption(
+        new Option(
+          '--mtls-cert <path>',
+          'PEM-encoded server certificate for mutual TLS. Self-signed is fine for local dev. ' +
+            'Must be set together with --mtls-truststore + --mtls-key.'
+        )
+      )
+      .addOption(
+        new Option(
+          '--mtls-key <path>',
+          'PEM-encoded server private key matching --mtls-cert. ' +
+            'Must be set together with --mtls-truststore + --mtls-cert.'
+        )
+      )
+      .addOption(
+        new Option(
+          '--strict-sigv4',
+          'Opt-in: DENY AWS_IAM SigV4 requests that cannot be cryptographically verified ' +
+            '(foreign access-key-id — e.g. a federated / Cognito Identity Pool / cross-account ' +
+            'signer — OR no local AWS credentials configured) instead of the default warn-and-pass. ' +
+            'DEFAULT off: cdk-local warn-and-passes unverifiable IAM requests with a placeholder ' +
+            'principalId so local dev exercises app logic without reproducing an auth boundary it ' +
+            'cannot fully emulate. OAC-fronted Function URLs always warn-and-pass regardless.'
+        ).default(false)
+      )
+  );
 }

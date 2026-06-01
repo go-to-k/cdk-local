@@ -1182,7 +1182,7 @@ export function addInvokeSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--env-vars <file>',
-        'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}})'
+        'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}, "Parameters": {...}})'
       )
     )
     .addOption(
@@ -1206,7 +1206,10 @@ export function addInvokeSpecificOptions(cmd: Command): Command {
     )
     .addOption(new Option('--debug-port <port>', 'Node --inspect-brk port (default: off)'))
     .addOption(
-      new Option('--container-host <host>', 'Host to bind the RIE port to').default('127.0.0.1')
+      new Option(
+        '--container-host <host>',
+        'Host IP the host uses to bind the RIE port to. Must be a numeric IP (Docker rejects hostnames here). Defaults to 127.0.0.1.'
+      ).default('127.0.0.1')
     )
     .addOption(
       new Option(

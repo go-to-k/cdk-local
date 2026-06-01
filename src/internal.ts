@@ -523,6 +523,14 @@ export { resolveSingleTarget } from './local/target-picker.js';
 export {
   addCommonEcsServiceOptions,
   addImageOverrideOptions,
+  // Issue #249 — shared ECS option-helpers exposed so host CLIs (cdkd
+  // etc.) that compose flag sets from cdk-local inherit the
+  // `--cluster` default-once dedupe (C12) and the
+  // `--assume-task-role` / `--assume-role` non-breaking alias pair
+  // (C6) without reproducing them inline.
+  ecsClusterOption,
+  addEcsAssumeRoleOptions,
+  resolveEcsAssumeRoleOption,
   runEcsServiceEmulator,
   parseMaxTasks,
   parseRestartPolicy,

@@ -143,7 +143,25 @@ export interface EcsServiceEmulatorOptions {
   containerHost: string;
   /** See `local-run-task.ts` for the same flag's three-state grammar. */
   assumeTaskRole?: string | boolean;
+  /**
+   * Issue #249 / C6 — non-breaking cross-command alias of
+   * {@link assumeTaskRole}. Same three-state grammar. When BOTH are
+   * passed `--assume-role` wins. {@link resolveEcsAssumeRoleOption}
+   * collapses the two into a single effective value and fires a
+   * one-time deprecation warn when only the legacy
+   * `--assume-task-role` is set.
+   */
+  assumeRole?: string | boolean;
   pull: boolean;
+  /**
+   * Issue #249 / C8 — `--no-build` parity with `cdkl invoke`.
+   * Commander maps `--no-build` to `build: boolean` (default `true`).
+   * When the user passes `--no-build` the value flips to `false` and
+   * the runner skips `docker build` on every CDK-asset container's
+   * local-build path, requiring the deterministic tag to already be in
+   * the local docker registry.
+   */
+  build: boolean;
   ecrRoleArn?: string;
   /** `--host-port <containerPort=hostPort>` overrides (start-service; repeatable). */
   hostPort?: string[];
@@ -1745,13 +1763,17 @@ async function resolveServiceAndRunnerOpts(
   }
 
   // Per-service task-role credentials.
+  // Issue #249 / C6 — collapse `--assume-task-role` (legacy) and
+  // `--assume-role` (cross-command alias) into the same effective
+  // value before branching.
+  const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);
   let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
   let resolvedRoleArn: string | undefined;
-  if (options.assumeTaskRole === true) {
+  if (effectiveAssumeRole === true) {
     if (!service.task.taskRoleArn) {
       throw new LocalStartServiceError(
-        `--assume-task-role passed without an ARN but service '${service.serviceLogicalId}' ` +
-          `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-task-role <arn>`
+        `--assume-role passed without an ARN but service '${service.serviceLogicalId}' ` +
+          `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-role <arn>`
       );
     }
     resolvedRoleArn = await resolvePlaceholderAccount(
@@ -1760,8 +1782,8 @@ async function resolveServiceAndRunnerOpts(
       options.profile
     );
     assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
-  } else if (typeof options.assumeTaskRole === 'string') {
-    resolvedRoleArn = options.assumeTaskRole;
+  } else if (typeof effectiveAssumeRole === 'string') {
+    resolvedRoleArn = effectiveAssumeRole;
     assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
   }
 
@@ -1771,6 +1793,7 @@ async function resolveServiceAndRunnerOpts(
     cluster: options.cluster,
     containerHost: options.containerHost,
     skipPull,
+    skipBuild: options.build === false,
     keepRunning: false,
     detach: true,
   };
@@ -2730,6 +2753,106 @@ export function enforceStrictOverrides(
 }
 
 /**
+ * Build the canonical `--cluster <name>` Option for every ECS surface.
+ *
+ * Shared between `cdkl run-task` and the `start-service` / `start-alb`
+ * pair so the default (the active embed config's `resourceNamePrefix`)
+ * is defined exactly once — issue #249 / C12. Building it as a fresh
+ * Option per call (not a module-level const) is load-bearing: the
+ * embed config is host-installed at command-factory time, and a
+ * module-level Option would freeze the host-default prefix at
+ * import time.
+ */
+export function ecsClusterOption(): Option {
+  return new Option(
+    '--cluster <name>',
+    'Cluster name surfaced to ECS_CONTAINER_METADATA_URI_V4 and used as the docker network prefix'
+  ).default(getEmbedConfig().resourceNamePrefix);
+}
+
+/**
+ * Add the `--assume-task-role` flag plus its `--assume-role` alias to
+ * an ECS command. Issue #249 / C6 — every non-ECS command calls the
+ * same concept `--assume-role`, so the ECS surface accepts the
+ * cross-command name as a NON-BREAKING alias. Precedence when both
+ * are passed: `--assume-role` (new) wins. {@link resolveEcsAssumeRoleOption}
+ * computes the effective value and fires a one-time deprecation warn
+ * when only the legacy `--assume-task-role` is set.
+ *
+ * Breaking unification of all three parsers (`invoke`, `start-api`,
+ * ECS) is tracked separately under issue #256.
+ */
+export function addEcsAssumeRoleOptions(cmd: Command): Command {
+  return cmd
+    .addOption(
+      new Option(
+        '--assume-task-role [arn]',
+        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
+          'credentials via the metadata sidecar so containers run with the deployed task role. ' +
+          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. " +
+          'DEPRECATED alias of `--assume-role`; both forms work, but `--assume-role` is the ' +
+          'cross-command name and will become the only form in a future release.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--assume-role [arn]',
+        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
+          'credentials via the metadata sidecar so containers run with the deployed task role. ' +
+          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override. " +
+          'Cross-command alias matching the same flag on `invoke` / `invoke-agentcore` / ' +
+          '`start-api`; supersedes the older `--assume-task-role` (which still works).'
+      )
+    );
+}
+
+/**
+ * Module-level latch for the `--assume-task-role` deprecation warn.
+ * Per-process single-fire, so a `--watch` reload that re-enters the
+ * resolver on every source-change firing does not spam the user.
+ *
+ * Test-only `__resetAssumeTaskRoleDeprecationLatch` lets the unit suite
+ * drive the latch through repeated invocations.
+ */
+let assumeTaskRoleDeprecationWarned = false;
+
+/** @internal — test-only. */
+export function __resetAssumeTaskRoleDeprecationLatch(): void {
+  assumeTaskRoleDeprecationWarned = false;
+}
+
+/**
+ * Collapse `--assume-task-role` (legacy) and `--assume-role` (new) into
+ * a single effective value. When BOTH are set, `--assume-role` wins
+ * (matches Commander's "later wins" default for repeatable flags, and
+ * gives the cross-command name priority). When ONLY `--assume-task-role`
+ * is set, fires a **per-process one-time** deprecation warn naming the
+ * replacement — the latch above prevents `--watch` reloads from
+ * re-emitting the warn on every source-change firing.
+ *
+ * Issue #249 / C6.
+ */
+export function resolveEcsAssumeRoleOption(options: {
+  assumeTaskRole?: string | boolean;
+  assumeRole?: string | boolean;
+}): string | boolean | undefined {
+  if (options.assumeRole !== undefined) {
+    return options.assumeRole;
+  }
+  if (options.assumeTaskRole !== undefined) {
+    if (!assumeTaskRoleDeprecationWarned) {
+      assumeTaskRoleDeprecationWarned = true;
+      getLogger().warn(
+        '--assume-task-role is deprecated; use --assume-role instead. ' +
+          'Both forms continue to work, but --assume-role is the cross-command name.'
+      );
+    }
+    return options.assumeTaskRole;
+  }
+  return undefined;
+}
+
+/**
  * Add the CLI options shared by both ECS-service commands (`start-service` and
  * `start-alb`) to a command. The command-specific argument / description and
  * the one unique option (`--host-port` vs `--lb-port`) are added by each
@@ -2737,12 +2860,7 @@ export function enforceStrictOverrides(
  */
 export function addCommonEcsServiceOptions(cmd: Command): Command {
   cmd
-    .addOption(
-      new Option(
-        '--cluster <name>',
-        'Cluster name surfaced to ECS_CONTAINER_METADATA_URI_V4 and used as the docker network prefix'
-      ).default(getEmbedConfig().resourceNamePrefix)
-    )
+    .addOption(ecsClusterOption())
     .addOption(
       new Option(
         '--env-vars <file>',
@@ -2754,17 +2872,20 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
         '--container-host <ip>',
         'Host IP to bind published container ports to. Must be a numeric IP (Docker rejects hostnames here)'
       ).default('127.0.0.1')
+    );
+  addEcsAssumeRoleOptions(cmd);
+  cmd
+    .addOption(
+      new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
     )
     .addOption(
       new Option(
-        '--assume-task-role [arn]',
-        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
-          'credentials via the metadata sidecar so containers run with the deployed task role. ' +
-          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override."
+        '--no-build',
+        'Skip docker build on the local CDK-asset path for every container (use the previously-built tag). ' +
+          'Requires the deterministic tag to already be in the local registry; errors with an actionable ' +
+          'message when missing. No-op for ECR-pull / public-registry images. Per-container --image-override ' +
+          'mappings take precedence (the override tag is used as-is, --no-build does not apply). Compatible with --no-pull.'
       )
-    )
-    .addOption(
-      new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
     )
     .addOption(
       new Option(

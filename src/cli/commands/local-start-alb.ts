@@ -432,10 +432,15 @@ export function addAlbSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--bearer-token <jwt>',
-        'Default Bearer JWT injected as Authorization: Bearer <jwt> when the inbound request has ' +
-          'none. Verified against the same JWKS / OIDC discovery URL the deployed ALB would ' +
-          '(signature + iss + aud + exp). Local-dev convenience; cookie pass-through ' +
-          '(AWSELBAuthSessionCookie-*) also works.'
+        'Default Bearer JWT this command INJECTS only when an inbound request has none ' +
+          '(the default-when-missing role) — `cdkl start-alb` is the local ALB front-door ' +
+          'RECEIVING outside-in requests, so this token is the fallback the front-door slots ' +
+          'in as Authorization: Bearer <jwt> if the caller did not already supply one. ' +
+          'Verified against the same JWKS / OIDC discovery URL the deployed ALB would ' +
+          '(signature + iss + aud + exp). Cookie pass-through (AWSELBAuthSessionCookie-*) ' +
+          'also bypasses the guard. ' +
+          'Contrast with `cdkl invoke-agentcore --bearer-token`, where the role is reversed — ' +
+          'that command is the outbound client and ALWAYS presents this token (the supplier).'
       )
     )
     .addOption(
