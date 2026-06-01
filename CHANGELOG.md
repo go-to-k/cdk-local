@@ -1,3 +1,10 @@
+## [0.73.1](https://github.com/go-to-k/cdk-local/compare/v0.73.0...v0.73.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **auth:** per-time-window dedup for "discovery unreachable -> token accepted" warns (was: silent accept for the rest of the session) ([#252](https://github.com/go-to-k/cdk-local/issues/252)) ([3d137fd](https://github.com/go-to-k/cdk-local/commit/3d137fdf500ace49a27b1008983b07252e2be30d))
+
 # [0.73.0](https://github.com/go-to-k/cdk-local/compare/v0.72.0...v0.73.0) (2026-06-01)
 
 
