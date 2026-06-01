@@ -4,6 +4,7 @@ import {
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
+  normalizeStartApiAssumeRole,
   regionOption,
   type AssumeRoleOption,
 } from '../../../src/cli/options.js';
@@ -138,6 +139,97 @@ describe('parseAssumeRoleToken', () => {
       const next = parseAssumeRoleToken(`MyFn=${VALID_ARN_2}`, accWithoutPerLambda);
       expect(next.perLambda).toEqual({ MyFn: VALID_ARN_2 });
     });
+  });
+
+  describe('bare flag (Commander accumulator state) — issue #256 Option 1', () => {
+    it('previous=true (bare flag came first) preserves bareAutoResolve on the accumulator', () => {
+      // Simulates `--assume-role --assume-role MyFn=<arn>`. Commander
+      // stores `true` for the bare flag, then the argParser is called
+      // with the value-form token and the previous `true`.
+      const next = parseAssumeRoleToken(`MyFn=${VALID_ARN}`, true);
+      expect(next).toEqual({
+        bareAutoResolve: true,
+        perLambda: { MyFn: VALID_ARN },
+      });
+    });
+
+    it('previous=true (bare flag came first) preserves bareAutoResolve when a per-Lambda override is then added', () => {
+      // Bare first, then per-Lambda override.
+      const next = parseAssumeRoleToken(`MyFn=${VALID_ARN}`, true);
+      expect(next.bareAutoResolve).toBe(true);
+      expect(next.perLambda).toEqual({ MyFn: VALID_ARN });
+      expect(next.globalArn).toBeUndefined();
+    });
+
+    it('previous=false (--no-assume-role came first) is reset to a fresh accumulator (last wins)', () => {
+      // `--no-assume-role --assume-role <arn>` should set the global ARN
+      // (the later --assume-role wins over the prior opt-out).
+      const next = parseAssumeRoleToken(VALID_ARN, false);
+      expect(next).toEqual({ globalArn: VALID_ARN, perLambda: {} });
+      expect(next.bareAutoResolve).toBeUndefined();
+    });
+  });
+});
+
+describe('normalizeStartApiAssumeRole', () => {
+  it('undefined (flag absent) -> undefined', () => {
+    expect(normalizeStartApiAssumeRole(undefined)).toBeUndefined();
+  });
+
+  it('false (--no-assume-role) -> undefined (explicit opt-out is the same shape as flag-absent for downstream)', () => {
+    expect(normalizeStartApiAssumeRole(false)).toBeUndefined();
+  });
+
+  it('true (bare --assume-role) -> { perLambda: {}, bareAutoResolve: true }', () => {
+    expect(normalizeStartApiAssumeRole(true)).toEqual({
+      perLambda: {},
+      bareAutoResolve: true,
+    });
+  });
+
+  it('AssumeRoleOption with only globalArn -> returned as-is', () => {
+    const opt: AssumeRoleOption = { globalArn: VALID_ARN, perLambda: {} };
+    expect(normalizeStartApiAssumeRole(opt)).toBe(opt);
+  });
+
+  it('AssumeRoleOption with only perLambda -> returned as-is', () => {
+    const opt: AssumeRoleOption = { perLambda: { MyFn: VALID_ARN } };
+    expect(normalizeStartApiAssumeRole(opt)).toBe(opt);
+  });
+
+  it('AssumeRoleOption with bareAutoResolve + perLambda -> returned as-is (valid mix)', () => {
+    const opt: AssumeRoleOption = {
+      perLambda: { MyFn: VALID_ARN },
+      bareAutoResolve: true,
+    };
+    expect(normalizeStartApiAssumeRole(opt)).toBe(opt);
+  });
+
+  it('bareAutoResolve + globalArn rejected with actionable error (mutual exclusion on the global slot)', () => {
+    const opt: AssumeRoleOption = {
+      globalArn: VALID_ARN_2,
+      perLambda: {},
+      bareAutoResolve: true,
+    };
+    expect(() => normalizeStartApiAssumeRole(opt)).toThrow(/mutually exclusive/i);
+  });
+
+  it('rejection message names both forms so the user knows which to drop', () => {
+    const opt: AssumeRoleOption = {
+      globalArn: VALID_ARN_2,
+      perLambda: {},
+      bareAutoResolve: true,
+    };
+    expect(() => normalizeStartApiAssumeRole(opt)).toThrow(/bare.*global|global.*bare/i);
+  });
+
+  it('rejection message preserves the per-Lambda map carve-out hint', () => {
+    const opt: AssumeRoleOption = {
+      globalArn: VALID_ARN_2,
+      perLambda: {},
+      bareAutoResolve: true,
+    };
+    expect(() => normalizeStartApiAssumeRole(opt)).toThrow(/Per-Lambda.*compatible/i);
   });
 });
 
