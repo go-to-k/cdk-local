@@ -1079,17 +1079,64 @@ function unregisterReplicaFromFrontDoor(
 }
 
 /**
- * Phase 2 of issue #214 — shadow-replica readiness probe budget. Tested
- * with busybox httpd's ~50ms listen window and a non-trivial Node
- * Express startup (~1-3s) — 10s caps the rare slow-start app without
- * blocking the roll for typo'd configurations that will never listen.
+ * Phase 2 of issue #214 — shadow-replica readiness probe budget.
+ * Issue #265 bumped the default from 10s to 60s after multiple
+ * production-shaped Node apps (TS->JS compile, full `node_modules`
+ * graph, framework cold-start, DB pool init) tripped the 10s ceiling
+ * on every save under `--watch`, breaking the rolling primitive's
+ * zero-connection-refusal guarantee. 60s covers the realistic
+ * 3-15s prod-shaped cold-start range plus outliers (heavy ORM /
+ * Spring-style boot, debug `--inspect-brk` attach pause) without
+ * tuning. Users with edge cases override via the per-command
+ * `--shadow-ready-timeout <ms>` flag or the `${envPrefix}_SHADOW_READY_TIMEOUT_MS`
+ * env var (e.g. `CDKL_SHADOW_READY_TIMEOUT_MS=120000`); the
+ * `start-service` / `start-alb` boot path calls
+ * {@link setShadowReadyTimeoutMs} once it has resolved the flag /
+ * env / default precedence.
+ *
+ * The cost of an extra wait for a truly-broken container is bounded:
+ * a crashed container surfaces via the runner's container-exit path
+ * immediately — the TCP timeout branch only fires for "container UP
+ * but not yet binding". A genuinely slow-binding app then gets a
+ * clean swap.
  *
  * Mutable so unit tests can shrink the timeout window without
  * standing up a real clock; production callers leave the defaults.
- * Exposed via {@link __setShadowReadyConfig} below.
+ * Exposed via {@link __setShadowReadyConfig} (test-only) and
+ * {@link setShadowReadyTimeoutMs} (boot path).
  */
-let shadowReadyTimeoutMs = 10_000;
+let shadowReadyTimeoutMs = 60_000;
 let shadowReadyIntervalMs = 100;
+
+/**
+ * Default shadow-replica TCP-ready probe budget when no
+ * `--shadow-ready-timeout` flag and no `${envPrefix}_SHADOW_READY_TIMEOUT_MS`
+ * env var are set. Mirrored in JSDoc above {@link shadowReadyTimeoutMs}.
+ */
+export const DEFAULT_SHADOW_READY_TIMEOUT_MS = 60_000;
+
+/**
+ * Boot-path setter for the shadow-replica TCP-ready probe budget.
+ * Called once from `runEcsServiceEmulator` after resolving the
+ * `--shadow-ready-timeout <ms>` flag and the
+ * `${envPrefix}_SHADOW_READY_TIMEOUT_MS` env var (flag wins over env,
+ * env wins over the {@link DEFAULT_SHADOW_READY_TIMEOUT_MS} default).
+ *
+ * Re-exported from `cdk-local/internal` so host CLIs (cdkd) that
+ * wrap `runEcsServiceEmulator` can adopt the same flag / env
+ * surface.
+ *
+ * @param timeoutMs Positive integer milliseconds; values <= 0 are
+ * rejected by the CLI parser before reaching here.
+ */
+export function setShadowReadyTimeoutMs(timeoutMs: number): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `setShadowReadyTimeoutMs: timeoutMs must be a positive finite number; got ${timeoutMs}.`
+    );
+  }
+  shadowReadyTimeoutMs = timeoutMs;
+}
 
 /**
  * Test-only hook to shrink the shadow-replica TCP-ready probe's
@@ -1103,7 +1150,7 @@ export function __setShadowReadyConfig(
   config: { timeoutMs: number; intervalMs: number } | undefined
 ): void {
   if (config === undefined) {
-    shadowReadyTimeoutMs = 10_000;
+    shadowReadyTimeoutMs = 60_000;
     shadowReadyIntervalMs = 100;
     return;
   }
@@ -1962,12 +2009,18 @@ async function waitForReplicaTcpReady(
   }
 
   const port = essential.portMappings[0]!.containerPort;
-  const deadline = Date.now() + opts.timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + opts.timeoutMs;
   let lastErr: string | undefined;
   while (Date.now() < deadline) {
     try {
       await tcpProbeImpl(ip, port);
-      logger.debug(`${label}: TCP probe ${ip}:${port} accepted.`);
+      // Issue #265 — surface the elapsed-ms on success so users
+      // tuning `--shadow-ready-timeout` (or
+      // `${envPrefix}_SHADOW_READY_TIMEOUT_MS`) know what budget to
+      // set. Kept at debug level so it only shows under verbose.
+      const elapsedMs = Date.now() - startedAt;
+      logger.debug(`${label}: TCP probe ${ip}:${port} accepted in ${elapsedMs}ms.`);
       return;
     } catch (err) {
       lastErr = err instanceof Error ? err.message : String(err);
