@@ -128,82 +128,31 @@ cdkl start-alb --watch                       # roll ALB-fronted ECS replicas on 
 cdkl invoke-agentcore --ws --watch           # reload an open /ws agent session
 ```
 
-`cdkl start-api --watch` re-synths your CDK app and reloads routes when the source changes, so editing a handler is reflected on the next request without restarting the server. Synth failures keep the previous version serving (warn-and-continue). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
+Edit a handler and the next request hits the new code — no server restart. ECS reloads roll replicas one at a time so the service stays available across the reload (an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services). Synth failures keep the previous replica(s) serving. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
 
-`cdkl start-service --watch` and `cdkl start-alb --watch` bring the same edit-and-go loop to ECS services. A source-only edit on an interpreted-language handler (Node / Python / Ruby / shell) takes a sub-second fast path; a Dockerfile / dependency / compiled-source change triggers a rolling rebuild. Either way replicas roll one at a time, so the service stays available — an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services. Synth failures keep the previous replica(s) serving.
-
-`cdkl invoke-agentcore --watch` is wired for the long-running `--ws` session path. `--ws` adapts to its stdin: in a TTY it auto-attaches a multi-turn REPL (each typed line becomes one follow-up WS frame), in CI / piped input it stays one-shot. On a source change the same classifier picks the per-firing primitive (`docker cp` + `docker restart` for interpreted-language source edits; rebuild for Dockerfile / dependency / compiled-source / ambiguous edits). The active `/ws` socket is closed cleanly on every reload firing (AgentCore has no protocol-defined mid-session container handoff) so the next session connects to the rebuilt container. `--watch` on the single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A `POST /` paths logs a one-line WARN and proceeds single-shot.
-
-The rebuild path waits for the freshly-built shadow replica's first essential-container port to accept a TCP connection before swapping registrations. The default budget is 60s, which covers realistic prod-shaped Node app cold-starts (TS->JS compile, full `node_modules` graph, framework boot, DB pool init). If the reload log surfaces `TCP probe <ip>:<port> did not accept within <N>ms`, bump it via `--shadow-ready-timeout 120000` (or set `CDKL_SHADOW_READY_TIMEOUT_MS=120000`) — typical for Java / heavy ORM init / `--inspect-brk` attach pauses.
-
-Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
+Reload classifier (interpreted-language fast path vs Dockerfile rebuild), shadow-replica TCP-probe timeout (`--shadow-ready-timeout`), and per-runtime caveats: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
 ### Local build override — `--image-override`
 
-`cdkl start-service` / `cdkl start-alb` against an ECS service whose CDK source uses `ContainerImage.fromEcrRepository(...)` (typical under `--from-cfn-stack`) runs the deployed image bytes locally — local source edits don't take effect, even with `--watch`. `--image-override` swaps in a local `docker build` of a supplied Dockerfile per service target so iteration still works while real DynamoDB / Secrets / SSM stay wired in.
+`cdkl start-service` / `cdkl start-alb` against a service whose CDK source uses `ContainerImage.fromEcrRepository(...)` (typical under `--from-cfn-stack`) runs the deployed image bytes locally — local source edits don't take effect, even with `--watch`. `--image-override` swaps in a local `docker build` so iteration still works while real DynamoDB / Secrets / SSM stay wired in.
 
-Lead form — boot in a TTY and the command walks each detected pinned target:
+Boot in a TTY and the command walks each detected pinned target with an interactive Dockerfile picker:
 
 ```bash
 cdkl start-alb --from-cfn-stack    # interactive boot prompt for each pinned target
 ```
 
-```
-? Detected pinned image on 'AppService' (123…/repo:4.5.1).
-  Override with a local build?
-    >  ./Dockerfile
-       ./services/app/Dockerfile
-       ./services/auth/Dockerfile
-       (Enter custom path)
-       (Skip — use ECR pin)
-```
-
-When cdk-local finds at least one `Dockerfile` / `Dockerfile.*` under your cwd (top 10 by mtime, excluding `node_modules` / `.git` / `cdk.out` / `dist` / `.next` / `.cache` / `build` / `coverage` / `.turbo` / `.vite`), it offers them as a picker. Otherwise the prompt falls back to free-text — type a Dockerfile path, or `N` (any case) / blank to skip the target. The intro line explaining what the prompt does + the `--no-interactive-overrides` opt-out surfaces once per session.
-
-Or name them up-front (CI / scripted setups):
+Or name them up-front (CI / scripted setups), with build inputs:
 
 ```bash
 cdkl start-alb --from-cfn-stack \
   --image-override AppService=./services/app/Dockerfile \
-  --image-override AuthService=./services/auth/Dockerfile
-```
-
-A bare `--image-override <dockerfile>` (no `=`) opens a multi-select picker against the pinned targets — useful when one Dockerfile is shared across several services. Mix freely with explicit forms in one invocation.
-
-Pass build inputs through to every override:
-
-```bash
-cdkl start-alb --from-cfn-stack \
-  --image-override AppService=./Dockerfile \
   --image-build-arg NODE_ENV=production \
   --image-build-secret npmrc=./.npmrc \
   --image-target builder
 ```
 
-`--image-build-secret npmrc=./.npmrc` wires a private-registry token into a Dockerfile that uses `RUN --mount=type=secret,id=npmrc` — the canonical recipe for installing private packages during the local build. The `src=` path resolves against the directory you ran `cdkl` from (not the Dockerfile's parent), so `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless of where the Dockerfile lives in the tree. A leading `~` / `~/` is expanded to your home directory so `--image-build-secret npmrc=~/.npmrc` (the POSIX-canonical npm credentials path) works the same way whether the shell pre-expanded it or not. The same expansion applies to `--image-override <svc>=~/path/Dockerfile`. Named-user tildes (`~user/foo`) are passed through literally — Node has no built-in for that shape.
-
-`--image-build-arg KEY=` (empty value) is accepted and forwarded verbatim to `docker build --build-arg KEY=` — the canonical way to unset a Dockerfile `ARG`'s default. Empty KEY (e.g. `--image-build-arg =val`) is rejected.
-
-**Per-service build inputs (monorepo case).** When two overridden services need different build args, secrets, or target stages, prefix the value with the service name. The per-service form wins over the global on the same target:
-
-```bash
-cdkl start-alb --from-cfn-stack \
-  --image-override AppService=./services/app/Dockerfile \
-  --image-override Reporting=./services/reporting/Dockerfile \
-  --image-build-secret AppService:npmrc=./.npmrc-private \
-  --image-build-secret Reporting:npmrc=./.npmrc-public \
-  --image-target AppService=builder \
-  --image-target Reporting=runtime
-```
-
-Syntax convention: flags whose payload already contains `=` (`--image-build-arg`, `--image-build-secret`) use `:` to separate the service prefix from the `<key>=<value>` payload — `<service>:<key>=<value>`. Flags whose payload is a single token (`--image-target`) use `=` — `<service>=<stage>` (matches the `--image-override <service>=<dockerfile>` convention). A per-service flag whose service name has no matching `--image-override` mapping (and no boot-prompt-injected mapping) is a boot error so a typo can't silently get ignored.
-
-Opt-outs:
-
-- `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
-- `--strict-overrides` fails fast at boot if any pinned target remains uncovered. Off by default; the per-target WARN (which fires on any cold start when an ECR pin is detected, not just under `--watch`) still surfaces regardless.
-
-Under `--watch`, every reload re-runs `docker build` for each covered Dockerfile, then rolls the replicas through the rebuild primitive — so a source edit picked up by the Dockerfile's `COPY` flips the content-addressed tag and the new image bytes serve immediately. The Stage 1 picker / Stage 3 boot prompt are NOT re-fired on reload (resolved once at boot); a per-target rebuild failure logs a warn and keeps the old replica serving while sibling targets continue rolling.
+Per-service build inputs (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for target), monorepo recipes, private-registry npmrc threading, `--no-interactive-overrides` / `--strict-overrides`, and the `--watch` rebuild loop: [docs/local-emulation.md#local-build-override---image-override](docs/local-emulation.md#local-build-override---image-override).
 
 ### start-service vs start-alb — which one?
 
