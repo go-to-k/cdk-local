@@ -102,16 +102,43 @@ export const contextOptions = [
 
 /**
  * Per-Lambda + global `--assume-role` parser used by `cdkl start-api`.
- * Each invocation is either a bare ARN (sets / overwrites the global
- * default) or `<LogicalId>=<arn>` (per-Lambda override). Per-Lambda
- * always wins over global; global is the fallback when no per-Lambda
- * entry exists.
+ *
+ * Each invocation is one of:
+ *   - bare ARN — sets / overwrites the global default
+ *   - `<LogicalId>=<arn>` — per-Lambda override (repeatable)
+ *
+ * Issue #256 Option 1's per-routed-Lambda auto-resolve mode is
+ * surfaced as a SEPARATE boolean flag (`--assume-role-auto`) rather
+ * than the `[arn]` optional-value shape — Commander's optional-value
+ * handling silently overwrites a value-form accumulator with `true`
+ * when the bare form is parsed AFTER value forms, dropping the
+ * per-Lambda map. The separate flag eliminates the ordering quirk;
+ * the two surfaces are then composed at boot via
+ * {@link normalizeStartApiAssumeRole}, which still enforces the
+ * mutually-exclusive global slot (auto-resolve + global ARN is
+ * rejected).
+ *
+ * Resolution precedence (`effectiveAssumeRoleArn`): per-Lambda map
+ * entry > global ARN > unset. Bare-auto-resolve is orthogonal — it
+ * fires for any routed Lambda the map does NOT name, and is mutually
+ * exclusive with the global ARN on the global slot (the boot-time
+ * guard rejects bare + global together).
  */
 export interface AssumeRoleOption {
   /** Global ARN — last bare-arn token wins. */
   globalArn?: string;
   /** Per-Lambda override map (`LogicalId` -> ARN). */
   perLambda: Record<string, string>;
+  /**
+   * Issue #256 Option 1 — non-breaking: `--assume-role-auto` means
+   * "auto-resolve EACH routed Lambda's own execution role per-Lambda".
+   * Mutually exclusive with `globalArn`; the per-Lambda map still
+   * wins for the named Lambda. Set by
+   * {@link normalizeStartApiAssumeRole} from the separate
+   * `--assume-role-auto` boolean flag — never set directly by
+   * {@link parseAssumeRoleToken}.
+   */
+  bareAutoResolve?: boolean;
 }
 
 const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
@@ -148,6 +175,46 @@ export function parseAssumeRoleToken(
   }
   acc.perLambda[logicalId] = arn;
   return acc;
+}
+
+/**
+ * Compose `--assume-role` (value-form accumulator) and the separate
+ * `--assume-role-auto` boolean flag into the in-process
+ * representation `localStartApiCommand` consumes downstream.
+ *
+ *   - both unset -> `undefined` (pass dev creds through)
+ *   - only `--assume-role-auto` -> `{ perLambda: {}, bareAutoResolve: true }`
+ *     (per-Lambda auto-resolve for every routed Lambda)
+ *   - only `--assume-role` -> the value-form accumulator (global ARN
+ *     and/or per-Lambda map) as-is
+ *   - both -> accumulator with `bareAutoResolve = true` overlaid;
+ *     the per-Lambda map still wins for named Lambdas, auto-resolve
+ *     fills in for every Lambda the map does NOT name
+ *
+ * Enforces the mutual-exclusion guard: `--assume-role-auto` and a
+ * global ARN (`--assume-role <arn>`) both occupy the "default for
+ * every other Lambda" slot, so the combination is ambiguous and
+ * rejected at boot with a clear error. The per-Lambda map IS
+ * compatible with either side.
+ */
+export function normalizeStartApiAssumeRole(
+  raw: AssumeRoleOption | undefined,
+  autoResolve: boolean
+): AssumeRoleOption | undefined {
+  if (raw === undefined) {
+    return autoResolve ? { perLambda: {}, bareAutoResolve: true } : undefined;
+  }
+  if (autoResolve && raw.globalArn) {
+    throw new Error(
+      `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
+        `but --assume-role ${raw.globalArn} also names a single global default. ` +
+        `These are mutually exclusive on the global slot. Either drop the global ARN ` +
+        `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
+        `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
+    );
+  }
+  if (autoResolve) raw.bareAutoResolve = true;
+  return raw;
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
+  normalizeStartApiAssumeRole,
   regionOption,
   type AssumeRoleOption,
 } from '../../../src/cli/options.js';
@@ -138,6 +139,61 @@ describe('parseAssumeRoleToken', () => {
       const next = parseAssumeRoleToken(`MyFn=${VALID_ARN_2}`, accWithoutPerLambda);
       expect(next.perLambda).toEqual({ MyFn: VALID_ARN_2 });
     });
+  });
+
+  // Issue #256 Option 1: `parseAssumeRoleToken`'s `previous` arg is
+  // strictly `AssumeRoleOption | undefined` — the bare-auto-resolve
+  // mode is surfaced via a separate `--assume-role-auto` boolean flag
+  // (not the `[arn]` optional-value shape), so Commander never passes
+  // `true` / `false` into the value-form accumulator.
+});
+
+describe('normalizeStartApiAssumeRole', () => {
+  it('(undefined, false) -> undefined (both flags absent; dev creds passed through)', () => {
+    expect(normalizeStartApiAssumeRole(undefined, false)).toBeUndefined();
+  });
+
+  it('(undefined, true) -> { perLambda: {}, bareAutoResolve: true } (only --assume-role-auto)', () => {
+    expect(normalizeStartApiAssumeRole(undefined, true)).toEqual({
+      perLambda: {},
+      bareAutoResolve: true,
+    });
+  });
+
+  it('(AssumeRoleOption with only globalArn, false) -> returned as-is', () => {
+    const opt: AssumeRoleOption = { globalArn: VALID_ARN, perLambda: {} };
+    expect(normalizeStartApiAssumeRole(opt, false)).toBe(opt);
+  });
+
+  it('(AssumeRoleOption with only perLambda, false) -> returned as-is', () => {
+    const opt: AssumeRoleOption = { perLambda: { MyFn: VALID_ARN } };
+    expect(normalizeStartApiAssumeRole(opt, false)).toBe(opt);
+  });
+
+  it('(AssumeRoleOption with only perLambda, true) -> overlays bareAutoResolve (valid mix)', () => {
+    const opt: AssumeRoleOption = { perLambda: { MyFn: VALID_ARN } };
+    const result = normalizeStartApiAssumeRole(opt, true);
+    expect(result).toEqual({
+      perLambda: { MyFn: VALID_ARN },
+      bareAutoResolve: true,
+    });
+  });
+
+  it('(AssumeRoleOption with globalArn, true) rejected with actionable error (mutual exclusion on the global slot)', () => {
+    const opt: AssumeRoleOption = { globalArn: VALID_ARN_2, perLambda: {} };
+    expect(() => normalizeStartApiAssumeRole(opt, true)).toThrow(/mutually exclusive/i);
+  });
+
+  it('rejection message names both forms so the user knows which to drop', () => {
+    const opt: AssumeRoleOption = { globalArn: VALID_ARN_2, perLambda: {} };
+    expect(() => normalizeStartApiAssumeRole(opt, true)).toThrow(
+      /assume-role-auto.*global|global.*assume-role-auto/i
+    );
+  });
+
+  it('rejection message preserves the per-Lambda map carve-out hint', () => {
+    const opt: AssumeRoleOption = { globalArn: VALID_ARN_2, perLambda: {} };
+    expect(() => normalizeStartApiAssumeRole(opt, true)).toThrow(/Per-Lambda.*compatible/i);
   });
 });
 
