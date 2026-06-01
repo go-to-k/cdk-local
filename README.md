@@ -25,7 +25,7 @@ cdkl invoke                   # pick a Lambda from the list, then run it locally
 **Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real DynamoDB / S3 / Secrets the deployed app uses (see [Why cdk-local](#why-cdk-local) below).
 
 ```bash
-cdkl start-api --from-cfn-stack            # a local API on real AWS data + real Cognito JWT
+cdkl start-api --from-cfn-stack            # local API on real AWS data; JWT verified against the real Cognito User Pool
 cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / S3 / Secrets
 ```
 
@@ -49,15 +49,17 @@ The locally executable resources are listed under [Supported resources](#support
 
 ## Commands
 
+Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
+
 Run any command with no target for an arrow-key picker (`invoke` / `run-task` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ```bash
-cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP / container image / Function URL)
+cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
 cdkl run-task MyStack/Task                     # ECS task, run once
 cdkl start-service MyStack/Worker              # ECS service replicas (no load balancer)
 cdkl start-alb MyStack/WebAlb                  # ECS behind an ALB (front-door per listener)
 cdkl start-api MyStack/Api                     # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
-cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (one POST /invocations)
+cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
 cdkl list                                      # every runnable target, grouped by command (alias: ls)
 ```
 
@@ -66,7 +68,7 @@ cdkl list                                      # every runnable target, grouped 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
-- **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP / MCP / A2A / AGUI; SSE and WebSocket are HTTP wire-shape variants on the same port 8080), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
+- **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
@@ -199,7 +201,7 @@ Syntax convention: flags whose payload already contains `=` (`--image-build-arg`
 Opt-outs:
 
 - `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
-- `--strict-overrides` fails fast at boot if any pinned target remains uncovered. Off by default; the per-target WARN (which now fires on any cold start when an ECR pin is detected, not just under `--watch`) still surfaces regardless.
+- `--strict-overrides` fails fast at boot if any pinned target remains uncovered. Off by default; the per-target WARN (which fires on any cold start when an ECR pin is detected, not just under `--watch`) still surfaces regardless.
 
 Under `--watch`, every reload re-runs `docker build` for each covered Dockerfile, then rolls the replicas through the rebuild primitive — so a source edit picked up by the Dockerfile's `COPY` flips the content-addressed tag and the new image bytes serve immediately. The Stage 1 picker / Stage 3 boot prompt are NOT re-fired on reload (resolved once at boot); a per-target rebuild failure logs a warn and keeps the old replica serving while sibling targets continue rolling.
 
@@ -230,7 +232,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | ECS services | `start-service` |
 | Cloud Map / Service Connect registry | service discovery between local replicas |
 | ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets, authenticate-cognito / authenticate-oidc (local Bearer-JWT enforcement), WebSocket Upgrade |
-| Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP + MCP |
+| Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP / MCP / A2A / AGUI |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 

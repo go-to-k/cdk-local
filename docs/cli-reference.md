@@ -13,7 +13,7 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | --- | --- | --- |
 | `cdkl list` (alias `cdkl ls`) | Lists the app's runnable targets (no execution) | Synthesis only — no Docker |
 | `cdkl invoke <target>` | One-shot Lambda invoke | AWS Lambda Runtime Interface Emulator (RIE) container |
-| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent (container or fromCodeAsset / fromS3 managed-runtime) on its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080) or MCP (`POST /mcp` on 8000) |
+| `cdkl invoke-agentcore <target>` | One-shot Bedrock AgentCore Runtime invoke | Agent (container or fromCodeAsset / fromS3 managed-runtime) on its protocol contract — HTTP (`POST /invocations` + `GET /ping` on 8080), MCP (`POST /mcp` on 8000), A2A (`POST /` on 9000), or AGUI (SSE + `/ws` WebSocket on 8080) |
 | `cdkl start-api` | Long-running HTTP server — API Gateway (REST v1 / HTTP API / WebSocket) + Lambda Function URL | RIE container pool + `node:http` listener (one server per discovered API) |
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
