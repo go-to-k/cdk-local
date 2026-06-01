@@ -1575,10 +1575,42 @@ container's image to that tag before `docker run`. Sibling
 containers in a multi-container task are unaffected — they go
 through the normal CDK-asset / ECR / public-registry resolution.
 
-Out of scope for v1 (deferred to issue #240): per-service variants
-of `--image-build-arg` / `--image-build-secret` / `--image-target`
-(today these flags are global). Custom build-context directories
-distinct from the Dockerfile's parent dir are also deferred.
+**Per-service variants (issue #240).** A monorepo whose overridden
+services need different build inputs (private vs public npm tokens,
+different multi-stage stages, env-specific ARGs) can prefix each
+build-input flag with the service name. The per-service form
+overrides the global on the same target; the global still applies
+to every OTHER overridden target:
+
+- `--image-build-arg <service>:KEY=VAL` — per-service build arg.
+  Syntax uses `:` to separate the service prefix from the
+  `<key>=<value>` payload (the payload already contains `=`).
+- `--image-build-secret <service>:id=src` — per-service build
+  secret. Same `<service>:<rest>` convention; the `src` resolves
+  to an absolute path against `process.cwd()` as it does for the
+  global form.
+- `--image-target <service>=<stage>` — per-service target stage.
+  Single-token payload, so uses `=` (matches
+  `--image-override <service>=<dockerfile>`).
+
+A per-service flag whose service name is NOT covered by
+`--image-override` (or the boot prompt's in-memory injection)
+fails the boot with a `LocalStartServiceError` naming the
+offending flag(s) — surfacing typo'd service names up-front
+instead of silently dropping the value.
+
+```bash
+cdkl start-alb --from-cfn-stack \
+  --image-override AppService=./services/app/Dockerfile \
+  --image-override Reporting=./services/reporting/Dockerfile \
+  --image-build-secret AppService:npmrc=./.npmrc-private \
+  --image-build-secret Reporting:npmrc=./.npmrc-public \
+  --image-target AppService=builder \
+  --image-target Reporting=runtime
+```
+
+Custom build-context directories distinct from the Dockerfile's
+parent dir are still deferred (also tracked under #240's siblings).
 
 Known fast-path limitations (Phase 4 trade-offs):
 

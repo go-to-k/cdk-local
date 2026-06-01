@@ -79,14 +79,21 @@ AWS managed services.
   `cdkl start-service` / `cdkl start-alb` (`--image-override
   <svc>=<dockerfile>` or bare `<dockerfile>` for picker form,
   `--image-build-arg` / `--image-build-secret` / `--image-target`
-  as global build-input pass-throughs, `--no-interactive-overrides`
+  as build-input pass-throughs, `--no-interactive-overrides`
   to suppress the TTY boot prompt + multi-select picker, and
   `--strict-overrides` to fail fast when any pinned target remains
   uncovered): a covered pinned target is rebuilt locally from the
   supplied Dockerfile (deterministic local-only tag
   `cdkl-override-<svc>-<hash>:local`) and threaded through the
   rebuild rolling primitive on `--watch` reload — the engine module
-  lives in `src/local/image-override-engine.ts`.
+  lives in `src/local/image-override-engine.ts`. Issue #240 added
+  per-service variants of the three build-input flags
+  (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for
+  target); the per-service form overrides the global per-key on the
+  named target, and an orphan validator
+  (`enforceImageOverrideOrphans`) fails the boot when a per-service
+  flag names a service the resolved override map does NOT cover
+  (typo / forgotten `--image-override` mapping).
   The host front-door (TLS materials, JWKS cache,
   Lambda-target RIE containers, listener sockets) is built once at
   boot and is NOT recreated on reload — only the per-service replica

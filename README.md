@@ -173,6 +173,20 @@ cdkl start-alb --from-cfn-stack \
 
 `--image-build-arg KEY=` (empty value) is accepted and forwarded verbatim to `docker build --build-arg KEY=` — the canonical way to unset a Dockerfile `ARG`'s default. Empty KEY (e.g. `--image-build-arg =val`) is rejected.
 
+**Per-service build inputs (monorepo case).** When two overridden services need different build args, secrets, or target stages, prefix the value with the service name. The per-service form wins over the global on the same target:
+
+```bash
+cdkl start-alb --from-cfn-stack \
+  --image-override AppService=./services/app/Dockerfile \
+  --image-override Reporting=./services/reporting/Dockerfile \
+  --image-build-secret AppService:npmrc=./.npmrc-private \
+  --image-build-secret Reporting:npmrc=./.npmrc-public \
+  --image-target AppService=builder \
+  --image-target Reporting=runtime
+```
+
+Syntax convention: flags whose payload already contains `=` (`--image-build-arg`, `--image-build-secret`) use `:` to separate the service prefix from the `<key>=<value>` payload — `<service>:<key>=<value>`. Flags whose payload is a single token (`--image-target`) use `=` — `<service>=<stage>` (matches the `--image-override <service>=<dockerfile>` convention). A per-service flag whose service name has no matching `--image-override` mapping (and no boot-prompt-injected mapping) is a boot error so a typo can't silently get ignored.
+
 Opt-outs:
 
 - `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
