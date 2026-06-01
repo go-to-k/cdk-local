@@ -590,7 +590,10 @@ export function applyResponseParameters(
     const op = headerMatch[1].toLowerCase();
     const name = headerMatch[2].toLowerCase();
     if (isReservedHeader(name)) {
-      logger.debug(
+      // Mirrors the unmatched-key path above: surface the drop at warn
+      // (not debug) so the user notices a reserved header silently
+      // disappearing from the configured response mapping.
+      logger.warn(
         `ResponseParameters: header '${name}' is reserved by API Gateway and was skipped`
       );
       continue;

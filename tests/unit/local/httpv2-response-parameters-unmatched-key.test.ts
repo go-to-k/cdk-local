@@ -48,25 +48,27 @@ describe('applyResponseParameters — unmatched key surfaces a warn', () => {
     expect(debugs.join('\n')).not.toContain("'appen:header.x-custom'");
   });
 
-  it('keeps the reserved-header skip path as a separate warn (regression guard)', () => {
-    // The reserved-header branch at line 587 already used `warn`. We want
-    // to make sure the new unmatched-key warn coexists with it and they
-    // log distinct messages.
+  it('reserved-header skip path fires its own warn (mirrors unmatched-key warn for symmetry)', () => {
+    // Reserved headers (Connection / Transfer-Encoding / Content-Length etc.)
+    // are silently dropped by API Gateway. We surface the drop at `warn`
+    // (the same level as the unmatched-key warn above) so the user notices
+    // a reserved header silently disappearing from the configured mapping.
     const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
     applyResponseParameters(
       { statusCode: 200, body: 'ok', headers: {} },
       {
         '200': {
-          // Reserved header (Connection / Transfer-Encoding / etc.) — the
-          // reserved-header skip warn fires regardless of the new branch.
+          // Reserved header — the reserved-header skip warn fires.
           'overwrite:header.content-length': '42',
         },
       },
       ctx
     );
     const warns = warnSpy.mock.calls.map((c) => String(c[0]));
-    // The reserved branch logs its own line (already warn) — assert the
-    // unmatched-key warn did NOT fire on this well-formed key.
+    // Assert the reserved-header warn fired with its distinct message.
+    expect(warns.some((w) => w.includes("'content-length' is reserved"))).toBe(true);
+    // Assert the unmatched-key warn did NOT fire on this well-formed key
+    // (the two warns log distinct messages).
     expect(warns.some((w) => w.includes('does not match the expected shape'))).toBe(false);
   });
 

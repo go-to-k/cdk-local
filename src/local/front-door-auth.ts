@@ -119,6 +119,16 @@ export function buildAuthCheck(
       } catch (err) {
         const errClass = err instanceof Error ? err.constructor.name : typeof err;
         const errMessage = err instanceof Error ? err.message : String(err);
+        // Cap the client-visible reason: a pathological upstream
+        // error message could reflect arbitrary bytes (potentially
+        // including token-adjacent content from a future verifier)
+        // into the 401 body otherwise. The internal warn keeps the
+        // full message for dev diagnostics.
+        const REASON_MESSAGE_CAP = 200;
+        const clientMessage =
+          errMessage.length > REASON_MESSAGE_CAP
+            ? `${errMessage.slice(0, REASON_MESSAGE_CAP)}...`
+            : errMessage;
         getLogger()
           .child('front-door-auth')
           .warn(
@@ -127,7 +137,7 @@ export function buildAuthCheck(
           );
         return {
           allow: false,
-          reason: `Auth check failed: ${errClass} — ${errMessage}`,
+          reason: `Auth check failed: ${errClass} — ${clientMessage}`,
         };
       }
     },
