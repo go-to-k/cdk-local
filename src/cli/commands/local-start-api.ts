@@ -240,7 +240,11 @@ interface LocalStartApiOptions {
  *     container does NOT get attached to the deployed VPC.
  *
  * PR 8c additions (issue #235):
- *   - `--watch` enables hot reload on `cdk.out/` + asset-dir changes.
+ *   - `--watch` enables hot reload: re-synths the CDK app and reloads
+ *     routes when the source tree changes. Honors `cdk.json`'s
+ *     `watch.include` / `watch.exclude` globs; `cdk.out/`,
+ *     `node_modules`, and `.git` are ALWAYS excluded regardless of
+ *     glob config.
  *   - HTTP API v2 OPTIONS preflight is intercepted when the API has a
  *     `CorsConfiguration`; REST v1 CORS (Mock OPTIONS method) stays
  *     out of scope.

@@ -325,6 +325,12 @@ no duplicate `.addOption(...)` block on the host side.
   Does NOT compose with `addCommonEcsServiceOptions` — the single-task
   surface intentionally diverges from the multi-replica service surface
   (no `--max-tasks` / `--restart-policy`).
+- `addStartServiceSpecificOptions(cmd)` — `cdkl start-service`
+  flags (`--host-port`, `--watch`, plus the `--image-override` family:
+  `--image-override`, `--image-build-arg`, `--image-build-secret`,
+  `--image-target`, `--no-interactive-overrides`, `--strict-overrides`).
+  Compose with `addCommonEcsServiceOptions` (no `addAlbSpecificOptions` —
+  `start-service` runs replicas only, no load balancer).
 - `addListSpecificOptions(cmd)` — `cdkl list` flag (`-l, --long`).
   Intentionally minimal so the surface-contract test pattern stays
   uniform across every per-command helper.

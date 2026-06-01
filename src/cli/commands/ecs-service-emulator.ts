@@ -2601,7 +2601,9 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
           'in container env vars / secrets / image URIs with the deployed physical IDs / exports. ' +
           'Use for CDK apps deployed via the upstream CDK CLI (`cdk deploy`). ' +
           `Bare form uses the ${getEmbedConfig().binaryName} stack name; pass an explicit value when the CFn stack name differs. ` +
-          'Fn::GetAtt is warn-and-dropped in v1 (CFn ListStackResources does not return per-attribute values).'
+          'Fn::GetAtt in container Environment[].Value is warn-and-dropped: CFn ListStackResources does not return per-attribute values, ' +
+          'and unlike Lambda (where `cdkl invoke --from-cfn-stack` recovers Fn::GetAtt from the deployed function via lambda:GetFunctionConfiguration), ' +
+          'no ECS-side equivalent resolves attributes off a deployed task / service.'
       )
     )
     .addOption(
