@@ -66,7 +66,7 @@ cdkl list                                      # every runnable target, grouped 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
-- **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, HTTP / SSE / WebSocket / MCP protocols, with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
+- **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP / MCP / A2A / AGUI; SSE and WebSocket are HTTP wire-shape variants on the same port 8080), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
@@ -201,7 +201,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | Goal | Command | How to reach |
 |---|---|---|
 | App logic / DB / response shape — hit the handler directly | `cdkl start-service --max-tasks 1 --host-port 80=8080` | `curl http://127.0.0.1:8080/...` |
-| ALB routing — listener rules, host-header / path / method, default actions, redirects, fixed-response, weighted forwards, authenticate-cognito / authenticate-oidc | `cdkl start-alb --lb-port 443=8443` | `curl -H 'Host: api.example.com' http://127.0.0.1:8443/...` |
+| ALB routing — listener rules, host-header / path / method, default actions, redirects, fixed-response, weighted forwards, authenticate-cognito / authenticate-oidc | `cdkl start-alb --lb-port 443=8443 --tls` | `curl -H 'Host: api.example.com' https://127.0.0.1:8443/...` |
 | Multi-replica rolling-reload + Cloud Map service discovery | `cdkl start-service` (multi-replica default) | Sibling container on the `cdkl-svc-` network |
 
 **Why the extra flags on the simple case?** The template's `DesiredCount` (typically 3 in production) is honored locally by default, but N replicas can't all bind the same host port — so `start-service` skips host publishing for multi-replica runs and the app is reachable only from inside the `cdkl-svc-` docker network. To get the simple `curl http://127.0.0.1:...` access path:

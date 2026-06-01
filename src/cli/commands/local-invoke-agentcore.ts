@@ -1544,15 +1544,16 @@ export function createLocalInvokeAgentCoreCommand(
   const cmd = new Command('invoke-agentcore')
     .description(
       'Run a Bedrock AgentCore Runtime container locally and invoke it once over its protocol ' +
-        'contract: HTTP (POST /invocations + GET /ping on 8080) or MCP (POST /mcp Streamable HTTP ' +
-        'on 8000). Resolves the AWS::BedrockAgentCore::Runtime, pulls/builds its container, injects ' +
+        'contract: HTTP (POST /invocations + GET /ping on 8080; SSE / WebSocket are HTTP wire-shape ' +
+        'variants on the same port), MCP (POST /mcp Streamable HTTP on 8000), A2A, or AGUI. ' +
+        'Resolves the AWS::BedrockAgentCore::Runtime, pulls/builds its container, injects ' +
         'env vars + AWS credentials, and prints the response. For an MCP runtime, runs the session ' +
         'handshake then sends one JSON-RPC request (tools/list by default, or the method/params from ' +
         '--event). Target accepts a CDK display path (MyStack/MyAgent) or stack-qualified logical ID ' +
         '(MyStack:MyAgentRuntime1234). Single-stack apps may omit the stack prefix. ' +
         'Omit <target> in an interactive terminal to pick from a list. ' +
         'Supports the container artifact and the CodeConfiguration managed-runtime artifact ' +
-        '(fromCodeAsset, built from source) on the HTTP + MCP protocols; the agent calls real AWS for managed services.'
+        '(fromCodeAsset, built from source) on all four protocols; the agent calls real AWS for managed services.'
     )
     .argument(
       '[target]',

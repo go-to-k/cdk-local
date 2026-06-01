@@ -41,8 +41,12 @@ Shared across all subcommands:
   to iterate faster.
 - `--env-vars <file>` — SAM-compatible JSON override:
   `{"LogicalId":{"KEY":"VALUE"}, "Parameters":{...}}`. `null` clears a
-  key. Keys MUST be logical IDs today; display-path keys are tracked as
-  issue [#27](https://github.com/go-to-k/cdk-local/issues/27).
+  key. Top-level keys accept the **CFn logical ID** (exact match) OR
+  the **CDK construct path** from `Metadata['aws:cdk:path']`
+  (prefix-matched, so `MyStack/Fn` also catches
+  `MyStack/Fn/Resource`); for ECS containers the key is the
+  `ContainerDefinitions[].Name`. `Parameters` is reserved and applied
+  first to every target; a per-target key wins.
 - `--no-pull` — Skip `docker pull` (per-command semantics differ;
   consult each section).
 - `--from-cfn-stack [cfn-stack-name]` — Bind the local run to a
@@ -1133,7 +1137,7 @@ resolves to the synthesized L1 child (`MyStack/MyService/TaskDef/Resource`).
 | `--container-host <ip>` | `127.0.0.1` | Bind IP for `PortMappings` published ports. Must be a numeric IP — Docker rejects hostnames in `-p <ip>:<port>:<port>`. |
 | `--host-port <containerPort=hostPort>` | — | Publish a container port on a specific host port (e.g. `80=8080`); repeatable. Default: host port == container port. Map a privileged container port (< 1024) to a non-privileged host port to avoid macOS Docker Desktop's admin-password prompt. |
 | `--assume-task-role [<arn>]` | unset (host creds pass through) | Bare flag uses the task definition's `TaskRoleArn`. Resolves a flat-string ARN directly; for `{Ref: <Role>}` / `{Fn::GetAtt: [<Role>, 'Arn']}` against a same-stack `AWS::IAM::Role`, cdk-local substitutes the caller's account id (via STS `GetCallerIdentity`) into `arn:aws:iam::<account>:role/<RoleLogicalId>`. Pass an explicit ARN to override. Either way, `sts:AssumeRole` runs once at startup; the resulting creds are exposed via the local metadata sidecar at `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`. |
-| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` is warn-and-dropped in v1 (CFn `ListStackResources` does not return per-attribute values). See "Env / Secrets substitution" below. |
+| `--from-cfn-stack [cfn-stack-name]` | off | Read a deployed CloudFormation stack and substitute `Ref` / `Fn::ImportValue` / supported `Fn::Sub` / `Fn::Join` in container env vars / secrets / image URIs with the deployed physical IDs / exports. Bare form uses the CDK stack name; pass an explicit value when the CFn stack name differs. `Fn::GetAtt` in container `Environment[].Value` is warn-and-dropped (CFn `ListStackResources` does not return per-attribute values, and unlike Lambda there is no ECS-side equivalent of `lambda:GetFunctionConfiguration`). See "Env / Secrets substitution" below. |
 | `--stack-region <region>` | unset | Region used to construct the CloudFormation client for `--from-cfn-stack`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the metadata sidecar. |
 | `--ecr-role-arn <arn>` | — | Role ARN to assume before authenticating against ECR for cross-account / centralized registry pulls. Issues `sts:AssumeRole` via the CLI's resolved credentials (honoring `--profile`) and uses the resulting temp creds for `ecr:GetAuthorizationToken` + `docker pull` on every container whose `Image` resolves to an `<acct>.dkr.ecr.<region>.amazonaws.com/...` URI. Required when the caller's identity does not already have cross-account access to the target repository. Same-account / same-region pulls do not need this flag. No-op when `--no-pull` is set. |
@@ -1216,7 +1220,14 @@ parameters:
 | `Fn::Join: [<delim>, [<elements>]]` | recursive substitution of every element, then `Array.join` |
 | `Ref: AWS::AccountId` / `AWS::Region` / `AWS::Partition` / `AWS::URLSuffix` | STS `GetCallerIdentity` (lazy, cached) + the resolved region + region-derived partition / URL suffix |
 
-`Fn::GetAtt` is warn-and-dropped in v1 (CFn API limitation).
+`Fn::GetAtt` in ECS container `Environment[].Value` is warn-and-dropped
+(CFn `ListStackResources` does not return per-attribute values, and
+there is no ECS-side equivalent of `lambda:GetFunctionConfiguration`
+that would resolve attributes off a deployed task / service). Lambda
+env recovers (`cdkl invoke --from-cfn-stack` resolves `Fn::GetAtt`
+from the deployed function's `Environment.Variables` via
+`lambda:GetFunctionConfiguration` — see "CloudFormation-driven env
+recovery" above); ECS env drops.
 
 Per-key best-effort: when a substitution can't be produced (CFn
 resource missing, attribute not exposed via CFn, unsupported
@@ -1302,7 +1313,6 @@ torn down. Use to `docker exec` into a stopped container post-mortem.
 | Out of scope | Why |
 | --- | --- |
 | `AWS::ECS::Service` / `DesiredCount` / `LaunchType` | Use `cdkl start-service` instead |
-| ALB / NLB target group registration / listener rules | Deferred follow-up — needs an HTTP proxy emulator |
 | Service Connect / Cloud Map | Implemented for `cdkl start-service` via `--add-host` DNS overlay. `cdkl run-task` is single-task by design; cross-service discovery is meaningful only with multiple long-running services, so it stays out of scope here. |
 | Auto Scaling / Deployment Strategy | Not meaningful locally |
 | Fargate vs EC2 launch-type differences (PID namespace, `awsvpc`-only, ephemeral storage cap) | Local Docker can't enforce these |
@@ -1660,8 +1670,8 @@ immediately so users have an escape hatch when docker hangs.
 
 | Deferred | Tracked in / Why |
 | --- | --- |
-| Local load-balancer emulator (listener + round-robin + target-group health check) | Follow-up PR — needs an HTTP/TCP proxy emulator. Today's start-service does NOT register replicas to a local listener; reach a single-replica service via its published container ports, or any replica via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). |
-| Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default; an opt-in `--envoy` flag will ship with the sidecar. |
+| Local load-balancer emulator (listener + round-robin + ALB listener-rule routing) | Use `cdkl start-alb` instead — it boots the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, and authenticate-cognito / authenticate-oidc. `cdkl start-service` on its own stays pure-compute: a single-replica service is reached via its published container ports; any replica is reached via its docker network IP / alias (multi-replica services skip the host-port publish — see the host-port note above). NLB and target-group health checks remain out of scope. |
+| Envoy sidecar (L7 routing / retries / circuit breaking / mTLS) | Deferred follow-up — Cloud Map DNS overlay covers ~80% of debugging use cases; the missing 20% requires the AWS-published Envoy image (~120MB / task). DNS-only mode is the default. |
 | Rolling deployment strategy (`DeploymentConfiguration.MaximumPercent` etc.) | Follow-up — meaningful only with the LB emulator. |
 | `HealthCheckGracePeriodSeconds` runtime semantics | Field is parsed and surfaced on `ResolvedEcsService` but not yet acted on. Becomes load-bearing when the LB emulator ships (today's restart policy fires on essential-container exit code, not health-check failure). |
 

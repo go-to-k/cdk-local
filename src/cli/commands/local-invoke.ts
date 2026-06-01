@@ -1190,8 +1190,11 @@ export function addInvokeSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--no-pull',
-        'Skip docker pull (use cached image) — no-op for IMAGE local-build path; ' +
-          '`docker build` does not pull base layers by default'
+        'Skip docker pull. Semantics differ by code path: ZIP Lambdas skip pulling the public ' +
+          'Lambda base image; Container Lambdas on the local-build path are a no-op (docker build ' +
+          'does not refresh the FROM cache by default); Container Lambdas on the ECR-pull fallback ' +
+          'skip docker pull AND error if the image is not in the local cache (re-run without ' +
+          '--no-pull or pre-pull manually).'
       )
     )
     .addOption(
