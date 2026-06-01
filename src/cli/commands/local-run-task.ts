@@ -41,6 +41,11 @@ import {
 } from '../../local/ecs-task-runner.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
+  addEcsAssumeRoleOptions,
+  ecsClusterOption,
+  resolveEcsAssumeRoleOption,
+} from './ecs-service-emulator.js';
+import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
@@ -69,10 +74,29 @@ interface LocalRunTaskOptions {
    *   - flag absent → `undefined`
    *   - `--assume-task-role` (bare) → `true`
    *   - `--assume-task-role <arn>` → `'<arn>'`
-   * The runner branches on `typeof options.assumeTaskRole`.
+   * The runner branches on `typeof options.assumeTaskRole`. DEPRECATED
+   * alias of {@link assumeRole}; both forms accepted, but `--assume-role`
+   * is the cross-command name.
    */
   assumeTaskRole?: string | boolean;
+  /**
+   * Issue #249 / C6 — non-breaking cross-command alias of
+   * {@link assumeTaskRole}. Same three-state grammar. When BOTH are
+   * passed `--assume-role` wins. {@link resolveEcsAssumeRoleOption}
+   * collapses the two into a single effective value and fires a
+   * one-time deprecation warn when only the legacy form is set.
+   */
+  assumeRole?: string | boolean;
   pull: boolean;
+  /**
+   * Issue #249 / C8 — `--no-build` parity with `cdkl invoke`. Commander
+   * maps `--no-build` to `build: boolean` (default `true`). When the
+   * user passes `--no-build` the value flips to `false` and the runner
+   * skips `docker build` on every CDK-asset container's local-build
+   * path, requiring the deterministic tag to already be in the local
+   * docker registry.
+   */
+  build: boolean;
   /**
    * Optional role ARN passed to `pullEcrImage` for cross-account /
    * centralized registry pulls. Issues `sts:AssumeRole` via the
@@ -294,14 +318,19 @@ async function localRunTaskCommand(
     // in the account segment lazily via STS only when bare
     // `--assume-task-role` is set, so the STS round-trip does not fire
     // on the common pass-through path.
+    // Issue #249 / C6 — collapse `--assume-task-role` (legacy) and
+    // `--assume-role` (cross-command alias) into a single effective
+    // value. `--assume-role` wins when both are passed; the legacy form
+    // also emits a one-time deprecation warn.
+    const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);
     let assumedCredentials: RunEcsTaskOptions['taskCredentials'];
     let resolvedRoleArn: string | undefined;
-    if (options.assumeTaskRole === true) {
+    if (effectiveAssumeRole === true) {
       if (!task.taskRoleArn) {
         throw new Error(
-          `--assume-task-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
+          `--assume-role passed without an ARN but the task definition has no resolvable TaskRoleArn. ` +
             `Either the task definition does not set TaskRoleArn, or it points at a resource ${getEmbedConfig().binaryName} cannot resolve to an IAM Role at synth time. ` +
-            `Pass the ARN explicitly: --assume-task-role <arn>`
+            `Pass the ARN explicitly: --assume-role <arn>`
         );
       }
       resolvedRoleArn = await resolvePlaceholderAccount(
@@ -310,8 +339,8 @@ async function localRunTaskCommand(
         options.profile
       );
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
-    } else if (typeof options.assumeTaskRole === 'string') {
-      resolvedRoleArn = options.assumeTaskRole;
+    } else if (typeof effectiveAssumeRole === 'string') {
+      resolvedRoleArn = effectiveAssumeRole;
       assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
     }
 
@@ -352,6 +381,7 @@ async function localRunTaskCommand(
       cluster: options.cluster,
       containerHost: options.containerHost,
       skipPull: options.pull === false,
+      skipBuild: options.build === false,
       keepRunning: options.keepRunning,
       detach: options.detach,
     };
@@ -710,13 +740,10 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
  * surface non-trivially. Each command keeps its own helper.
  */
 export function addRunTaskSpecificOptions(cmd: Command): Command {
-  return cmd
-    .addOption(
-      new Option(
-        '--cluster <name>',
-        'Cluster name surfaced to ECS_CONTAINER_METADATA_URI_V4 and used as the docker network prefix'
-      ).default(getEmbedConfig().resourceNamePrefix)
-    )
+  cmd
+    // Issue #249 / C12 — `--cluster` default sourced from the shared
+    // helper so the embed-prefix default is defined exactly once.
+    .addOption(ecsClusterOption())
     .addOption(
       new Option(
         '--env-vars <file>',
@@ -737,17 +764,22 @@ export function addRunTaskSpecificOptions(cmd: Command): Command {
           'container port (< 1024) to a non-privileged host port and avoid the Docker ' +
           'Desktop admin-password prompt.'
       )
+    );
+  // Issue #249 / C6 — `--assume-task-role` plus its `--assume-role`
+  // cross-command alias, both routed through `resolveEcsAssumeRoleOption`.
+  addEcsAssumeRoleOptions(cmd);
+  cmd
+    .addOption(
+      new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
     )
     .addOption(
       new Option(
-        '--assume-task-role [arn]',
-        "Assume the task definition's TaskRoleArn (or the supplied ARN) and forward STS-issued temp " +
-          'credentials via the metadata sidecar so containers run with the deployed function role. ' +
-          "Bare flag uses the template's TaskRoleArn; pass an explicit ARN to override."
+        '--no-build',
+        'Skip docker build on every CDK-asset container (use the previously-built tag). ' +
+          'Requires the deterministic tag to already be in the local registry; errors with an ' +
+          'actionable message when missing. No-op for ECR-pull / public-registry containers. ' +
+          'Compatible with --no-pull.'
       )
-    )
-    .addOption(
-      new Option('--no-pull', 'Skip docker pull for every container image and the metadata sidecar')
     )
     .addOption(
       new Option(
@@ -797,4 +829,5 @@ export function addRunTaskSpecificOptions(cmd: Command): Command {
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
       )
     );
+  return cmd;
 }

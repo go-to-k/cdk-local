@@ -1602,7 +1602,7 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--env-vars <file>',
-        'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}})'
+        'JSON env-var overrides (SAM-compatible: {"LogicalId":{"KEY":"VALUE"}, "Parameters": {...}})'
       )
     )
     .addOption(
@@ -1630,10 +1630,15 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--bearer-token <jwt>',
-        'Bearer JWT to present when the runtime declares a customJwtAuthorizer. ' +
-          'Verified against the runtime OIDC discovery URL (signature / issuer / expiry / ' +
-          'audience) before the container starts, then forwarded to /invocations as ' +
-          'Authorization: Bearer <jwt>.'
+        'Bearer JWT this command SUPPLIES (the supplier role) when the runtime declares a ' +
+          'customJwtAuthorizer — `cdkl invoke-agentcore` is the local-dev client making the ' +
+          'outbound call, so it always presents this token to its own invocation. Verified ' +
+          "against the runtime's OIDC discovery URL (signature / issuer / expiry / audience) " +
+          'before the container starts, then forwarded to /invocations as Authorization: ' +
+          'Bearer <jwt>. ' +
+          'Contrast with `cdkl start-alb --bearer-token`, where the role is reversed — the ' +
+          'ALB front-door RECEIVES inbound requests and injects this token only as a default ' +
+          'when an inbound request has none (default-when-missing).'
       )
     )
     .addOption(
@@ -1672,7 +1677,10 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
       )
     )
     .addOption(
-      new Option('--container-host <host>', 'Host to bind the agent port to').default('127.0.0.1')
+      new Option(
+        '--container-host <host>',
+        'Host IP the host uses to bind the agent port to. Must be a numeric IP (Docker rejects hostnames here). Defaults to 127.0.0.1.'
+      ).default('127.0.0.1')
     )
     .addOption(
       new Option(

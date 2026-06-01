@@ -95,7 +95,11 @@ describe('list option surface contract (addListSpecificOptions)', () => {
 describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
   it('addRunTaskSpecificOptions registers exactly the known run-task-only flags', () => {
     const flags = longFlagsOf(addRunTaskSpecificOptions(new Command()));
+    // Issue #249 / C6 — `--assume-role` is the non-breaking alias of
+    // `--assume-task-role` so both forms are present.
+    // Issue #249 / C8 — `--no-build` parity with `cdkl invoke`.
     expect(flags).toEqual([
+      '--assume-role',
       '--assume-task-role',
       '--cluster',
       '--container-host',
@@ -105,6 +109,7 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
       '--from-cfn-stack',
       '--host-port',
       '--keep-running',
+      '--no-build',
       '--no-pull',
       '--platform',
       '--stack-region',
@@ -194,12 +199,18 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
 describe('start-api option surface contract (addStartApiSpecificOptions)', () => {
   it('addStartApiSpecificOptions registers exactly the known start-api-only flags', () => {
     const flags = longFlagsOf(addStartApiSpecificOptions(new Command()));
+    // Issue #249 / C7 — `--ecr-role-arn` parity with `cdkl invoke`.
+    // Issue #249 / C8 — `--no-build` parity with `cdkl invoke`.
+    // Issue #249 / C14 — `--debug-port` alias matching `cdkl invoke`'s
+    // flag name; `--debug-port-base` stays the canonical name.
     expect(flags).toEqual([
       '--all-stacks',
       '--api',
       '--assume-role',
       '--container-host',
+      '--debug-port',
       '--debug-port-base',
+      '--ecr-role-arn',
       '--env-vars',
       '--from-cfn-stack',
       '--host',
@@ -207,6 +218,7 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
       '--mtls-cert',
       '--mtls-key',
       '--mtls-truststore',
+      '--no-build',
       '--no-pull',
       '--per-lambda-concurrency',
       '--port',

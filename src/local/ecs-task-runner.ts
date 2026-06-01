@@ -15,7 +15,7 @@ import {
 } from './docker-runner.js';
 import { attachContainerLogStreamer } from './container-log-streamer.js';
 import { buildDockerImage } from '../assets/docker-build.js';
-import { pullEcrImage } from './ecr-puller.js';
+import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
 import {
@@ -112,6 +112,15 @@ export interface RunEcsTaskOptions {
   platformOverride?: string;
   /** Skip `docker pull` on every image (sidecar + each container's image). */
   skipPull: boolean;
+  /**
+   * Issue #249 / C8 — skip `docker build` on every CDK-asset container's
+   * local-build path. Requires the deterministic tag to already be in
+   * the local docker registry (built by an earlier run); throws
+   * {@link LocalInvokeBuildError} with an actionable message when the
+   * tag is missing. No-op for `ecr` / `public` container images.
+   * Compatible with {@link skipPull}.
+   */
+  skipBuild?: boolean;
   /**
    * Optional role ARN to assume before authenticating against ECR for
    * cross-account / centralized registry pulls (#455). Forwarded to
@@ -800,6 +809,27 @@ async function prepareOneImage(
         );
       }
       const tag = `${getEmbedConfig().resourceNamePrefix}-run-task-${(image.assetHash ?? 'single').slice(0, 16)}`;
+      // Issue #249 / C8 — `--no-build` short-circuit. Skip docker build
+      // entirely when the deterministic local tag is already in the
+      // registry from an earlier run; error with an actionable message
+      // when missing so the user knows to drop `--no-build` or pre-build
+      // manually.
+      if (options.skipBuild === true) {
+        const logger = getLogger().child('ecs-runner');
+        logger.info(
+          `Skipping docker build (--no-build) for container '${container.name}'; verifying ${tag} is in local registry...`
+        );
+        if (!(await isImageInLocalCache(tag))) {
+          throw new LocalInvokeBuildError(
+            `image '${tag}' not in local registry and --no-build is set ` +
+              `(ECS container '${container.name}'); remove --no-build or run \`docker build\` manually first.`
+          );
+        }
+        logger.debug(
+          `Local tag ${tag} is cached; skipping build for container '${container.name}'.`
+        );
+        return tag;
+      }
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
