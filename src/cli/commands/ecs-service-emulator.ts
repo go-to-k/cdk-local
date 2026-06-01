@@ -34,7 +34,9 @@ import {
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import {
   createServiceRunState,
+  DEFAULT_SHADOW_READY_TIMEOUT_MS,
   rollServiceReplica,
+  setShadowReadyTimeoutMs,
   softReloadReplica,
   startEcsService,
   type ServiceController,
@@ -273,6 +275,16 @@ export interface EcsServiceEmulatorOptions {
    * still-uncovered targets. Default off: warn-and-run.
    */
   strictOverrides?: boolean;
+  /**
+   * Issue #265 — `--shadow-ready-timeout <ms>`. Per-invocation
+   * override of the shadow-replica TCP-ready probe budget used by
+   * the `--watch` rolling primitive. Resolved precedence: flag wins
+   * over the `${envPrefix}_SHADOW_READY_TIMEOUT_MS` env var, env wins
+   * over the {@link DEFAULT_SHADOW_READY_TIMEOUT_MS} default (60s).
+   * Positive integer milliseconds; the CLI parser rejects 0 / negative /
+   * non-integer values up-front.
+   */
+  shadowReadyTimeout?: number;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -445,6 +457,19 @@ export async function runEcsServiceEmulator(
   // Commander resolves `--no-pull` to `options.pull = false` (the default is
   // true). Compute the "should we skip docker pull?" flag once here.
   const skipPull = options.pull === false;
+
+  // Issue #265 — resolve `--shadow-ready-timeout` / `${envPrefix}_SHADOW_READY_TIMEOUT_MS`
+  // / default precedence ONCE at boot and stamp it onto the runner's
+  // module-level state. The runner's rolling + soft-reload pathways
+  // read `shadowReadyTimeoutMs` (set by `setShadowReadyTimeoutMs`)
+  // on every probe, so a per-invocation value sticks for the entire
+  // session. Done BEFORE any docker / synth budget so an invalid env
+  // value surfaces its warn early.
+  const resolvedShadowReadyTimeoutMs = resolveShadowReadyTimeoutMs(
+    options,
+    getEmbedConfig().envPrefix
+  );
+  setShadowReadyTimeoutMs(resolvedShadowReadyTimeoutMs);
 
   type PerTarget = {
     boot: ServiceBoot;
@@ -2471,6 +2496,53 @@ export function parseRestartPolicy(raw: string): 'on-failure' | 'always' | 'none
 }
 
 /**
+ * Issue #265 — parser for `--shadow-ready-timeout <ms>`. Positive
+ * integer milliseconds; rejects 0 / negative / non-integer / NaN
+ * values up-front so the runner's `setShadowReadyTimeoutMs` guard
+ * is a second line of defense rather than the primary surface.
+ */
+export function parseShadowReadyTimeout(raw: string): number {
+  return parsePositiveInt(raw, '--shadow-ready-timeout');
+}
+
+/**
+ * Issue #265 — resolve the shadow-replica TCP-ready probe budget
+ * from the precedence chain: `--shadow-ready-timeout` flag wins
+ * over the `${envPrefix}_SHADOW_READY_TIMEOUT_MS` env var, env wins
+ * over the {@link DEFAULT_SHADOW_READY_TIMEOUT_MS} default. Exported
+ * so a unit test can verify the precedence without standing up the
+ * full emulator.
+ *
+ * Invalid env values (non-positive / non-integer) are warned about
+ * and dropped — the env var is a convenience knob; a typo there
+ * should NOT fail the whole boot. The flag form is parsed by
+ * Commander's argParser and errors out at parse time, so it is
+ * trusted as a positive integer by the time it reaches here.
+ */
+export function resolveShadowReadyTimeoutMs(
+  options: { shadowReadyTimeout?: number },
+  envPrefix: string,
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  if (typeof options.shadowReadyTimeout === 'number') {
+    return options.shadowReadyTimeout;
+  }
+  const envKey = `${envPrefix}_SHADOW_READY_TIMEOUT_MS`;
+  const raw = env[envKey];
+  if (raw !== undefined && raw !== '') {
+    const parsed = Number(raw);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+    getLogger().warn(
+      `${envKey}='${raw}' is not a positive integer; ignoring and using the ` +
+        `default ${DEFAULT_SHADOW_READY_TIMEOUT_MS}ms shadow-ready timeout.`
+    );
+  }
+  return DEFAULT_SHADOW_READY_TIMEOUT_MS;
+}
+
+/**
  * Resolve the credentials forwarded to the AWS-published metadata-endpoints
  * sidecar (shared across every replica boot in one CLI invocation). `--profile`
  * resolves via the SDK default chain; unset yields `undefined`. Per-service
@@ -2744,6 +2816,20 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
           'Pass --no-logs for multi-replica / multi-service runs whose interleaved log volume ' +
           'is unreadable; `docker logs -f <id>` in a separate terminal stays available.'
       )
+    )
+    .addOption(
+      new Option(
+        '--shadow-ready-timeout <ms>',
+        "Issue #265 — milliseconds the `--watch` rolling primitive waits for a shadow replica's " +
+          'first essential-container port to accept a TCP connection before swapping Cloud Map + ' +
+          'front-door registrations off the old replica. Defaults to 60000 (60s) which covers ' +
+          'realistic prod-shaped Node app cold-starts (TS->JS compile, full node_modules graph, ' +
+          'framework boot, DB pool init). Bump higher when the reload log surfaces ' +
+          `"TCP probe ${'<ip>:<port>'} did not accept within ${'<N>ms'}" — typical for Java / ` +
+          'heavy ORM init / `--inspect-brk` attach pauses. Honored by ' +
+          `--watch on \`${getEmbedConfig().binaryName} start-service\` and \`${getEmbedConfig().binaryName} start-alb\`. ` +
+          `Env var: \`${getEmbedConfig().envPrefix}_SHADOW_READY_TIMEOUT_MS\` (flag wins over env).`
+      ).argParser(parseShadowReadyTimeout)
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));

@@ -457,6 +457,21 @@ export {
  * via the symbol import.
  */
 export { SOFT_RELOAD_COMPLETION_LOG_SUFFIX } from './local/ecs-service-runner.js';
+
+/**
+ * Issue #265 — shadow-replica TCP-ready probe budget for the
+ * `--watch` rolling primitive. Host CLIs (cdkd) that wrap
+ * `runEcsServiceEmulator` and expose their own `--shadow-ready-timeout`
+ * flag / `${envPrefix}_SHADOW_READY_TIMEOUT_MS` env var resolve
+ * precedence locally and then call {@link setShadowReadyTimeoutMs}
+ * to stamp the value onto the runner before booting. The
+ * {@link DEFAULT_SHADOW_READY_TIMEOUT_MS} constant is the canonical
+ * fallback when neither flag nor env is supplied.
+ */
+export {
+  DEFAULT_SHADOW_READY_TIMEOUT_MS,
+  setShadowReadyTimeoutMs,
+} from './local/ecs-service-runner.js';
 export { createWatchPredicates, type WatchPredicates } from './cli/commands/local-start-api.js';
 
 /**

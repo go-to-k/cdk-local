@@ -129,6 +129,8 @@ cdkl start-alb --watch        # roll ALB-fronted ECS replicas on save
 
 `cdkl start-service --watch` and `cdkl start-alb --watch` bring the same edit-and-go loop to ECS services. A source-only edit on an interpreted-language handler (Node / Python / Ruby / shell) takes a sub-second fast path; a Dockerfile / dependency / compiled-source change triggers a rolling rebuild. Either way replicas roll one at a time, so the service stays available — an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services. Synth failures keep the previous replica(s) serving.
 
+The rebuild path waits for the freshly-built shadow replica's first essential-container port to accept a TCP connection before swapping registrations. The default budget is 60s, which covers realistic prod-shaped Node app cold-starts (TS->JS compile, full `node_modules` graph, framework boot, DB pool init). If the reload log surfaces `TCP probe <ip>:<port> did not accept within <N>ms`, bump it via `--shadow-ready-timeout 120000` (or set `CDKL_SHADOW_READY_TIMEOUT_MS=120000`) — typical for Java / heavy ORM init / `--inspect-brk` attach pauses.
+
 Full reload pipeline + glob defaults: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
 ### Local build override — `--image-override`

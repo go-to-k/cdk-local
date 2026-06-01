@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { FrontDoorEndpointPool } from '../../../src/local/front-door-pool.js';
 import { CloudMapRegistry } from '../../../src/local/cloud-map-registry.js';
+import { ConsoleLogger } from '../../../src/utils/logger.js';
 
 /**
  * Phase 2 of issue #214 — locks `rollServiceReplica` semantics (the
@@ -340,6 +341,40 @@ describe('rollServiceReplica (Phase 2 of issue #214)', () => {
     expect(pool.size()).toBe(2);
 
     await controller.shutdown();
+  });
+
+  it('TCP-ready probe success: debug log surfaces the elapsed-ms (issue #265)', async () => {
+    // Issue #265 — the probe used to log only on FAIL. On success it
+    // now surfaces `${label}: TCP probe <ip>:<port> accepted in <N>ms`
+    // at debug level so users tuning `--shadow-ready-timeout` know
+    // what budget to set. The fake probe always resolves immediately
+    // (see beforeEach) so the elapsed-ms is a small non-negative
+    // integer.
+    const debugSpy = vi.spyOn(ConsoleLogger.prototype, 'debug').mockImplementation(() => {});
+
+    const pool = new FrontDoorEndpointPool();
+    const registry = new CloudMapRegistry();
+    const runState = createServiceRunState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = frontDoorOptions(pool, registry) as any;
+    const controller = await startEcsService(fakeServiceConnectService(), opts, runState);
+    expect(controller.runState.replicas.length).toBe(2);
+
+    await rollServiceReplica({
+      controller,
+      oldReplicaIndex: 0,
+      newService: fakeServiceConnectService(),
+      newOptions: opts,
+    });
+
+    const debugLines = debugSpy.mock.calls.map((c) => String(c[0]));
+    const match = debugLines.find((l) =>
+      /TCP probe [\d.]+:\d+ accepted in \d+ms\.$/.test(l)
+    );
+    expect(match).toBeDefined();
+
+    await controller.shutdown();
+    debugSpy.mockRestore();
   });
 
   it('TCP-ready probe timing out: warns + swaps anyway (the new image is the user intent)', async () => {
