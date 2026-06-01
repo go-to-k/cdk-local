@@ -86,6 +86,18 @@ export interface RunDockerOptions {
    * mark; on non-zero exit it stops with an error mark before the
    * rejection propagates, so the caller's `try {} catch {}` wrap still
    * sees a clean spinner-less stderr.
+   *
+   * Concurrency: each `@clack/prompts` spinner instance registers its own
+   * `SIGINT` / `SIGTERM` / `exit` / `uncaughtExceptionMonitor` /
+   * `unhandledRejection` listeners against `process`. Callers must
+   * serialize concurrent spinner-bearing `spawnStreaming` invocations on
+   * the same `process.stdout` — two simultaneous spinners overwrite each
+   * other's frame line AND accumulate listeners (Node trips its default
+   * 10-listener warning at ~3 concurrent spinners). Every cdk-local call
+   * site as of this PR is strictly sequential
+   * (`runImageOverrideBuilds` for-of, `prepareImages` for-of, ECS
+   * Lambda asset builds are one-per-invoke); the future parallel-build
+   * path should either drop the label or memoize a single shared spinner.
    */
   progressLabel?: string;
 }
@@ -123,11 +135,25 @@ export async function spawnStreaming(
   const spin = startProgressSpinner(options.progressLabel, streamLive);
 
   return new Promise<SpawnResult>((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      cwd: options.cwd,
-      env,
-      stdio: [options.input ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-    });
+    // Defensive: a synchronous throw from `spawn` (e.g. Node's
+    // `ERR_INVALID_ARG_TYPE` on a non-string `cmd`) bypasses the close /
+    // error handlers below — without this try/catch the spinner would be
+    // left animating until process exit. Today unreachable
+    // (`getDockerCmd()` always returns a string + all call-site `args`
+    // are `string[]`), but the wrap is free defense-in-depth on a
+    // process-launch helper.
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        cwd: options.cwd,
+        env,
+        stdio: [options.input ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      stopProgressSpinner(spin, options.progressLabel);
+      reject(err as Error);
+      return;
+    }
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];

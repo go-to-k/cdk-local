@@ -132,6 +132,23 @@ describe('spawnStreaming progressLabel spinner', () => {
     expect(spinnerStartMock).not.toHaveBeenCalled();
   });
 
+  it('stops the spinner on a synchronous spawn throw so it does not animate until process exit', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    spawnMock.mockImplementation(() => {
+      const err: NodeJS.ErrnoException = Object.assign(new Error('ERR_INVALID_ARG_TYPE'), {
+        code: 'ERR_INVALID_ARG_TYPE',
+      });
+      throw err;
+    });
+
+    await expect(
+      runDockerStreaming(['build', '.'], { progressLabel: 'Building foo' })
+    ).rejects.toThrow(/ERR_INVALID_ARG_TYPE/);
+
+    expect(spinnerStartMock).toHaveBeenCalledWith('Building foo');
+    expect(spinnerStopMock).toHaveBeenCalledWith('Building foo');
+  });
+
   it('does NOT start a spinner when progressLabel is undefined (pre-spinner default behavior)', async () => {
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
     const child = makeChild();
