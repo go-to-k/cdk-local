@@ -179,6 +179,11 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
       '--sigv4',
       '--stack-region',
       '--timeout',
+      // Issue #255 — `--watch` mirrors the long-running session flag on
+      // start-api / start-service / start-alb. Only meaningful on the
+      // `/ws` paths; the single-shot HTTP / MCP / A2A invocations log a
+      // WARN and proceed single-shot.
+      '--watch',
       '--ws',
       '--ws-interactive',
     ]);

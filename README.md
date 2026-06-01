@@ -120,14 +120,17 @@ When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster rea
 ### Hot reload — `--watch`
 
 ```bash
-cdkl start-api --watch        # reload API routes on save
-cdkl start-service --watch    # roll ECS replicas on save
-cdkl start-alb --watch        # roll ALB-fronted ECS replicas on save
+cdkl start-api --watch                       # reload API routes on save
+cdkl start-service --watch                   # roll ECS replicas on save
+cdkl start-alb --watch                       # roll ALB-fronted ECS replicas on save
+cdkl invoke-agentcore --ws --watch           # reload an open /ws agent session
 ```
 
 `cdkl start-api --watch` re-synths your CDK app and reloads routes when the source changes, so editing a handler is reflected on the next request without restarting the server. Synth failures keep the previous version serving (warn-and-continue). Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
 
 `cdkl start-service --watch` and `cdkl start-alb --watch` bring the same edit-and-go loop to ECS services. A source-only edit on an interpreted-language handler (Node / Python / Ruby / shell) takes a sub-second fast path; a Dockerfile / dependency / compiled-source change triggers a rolling rebuild. Either way replicas roll one at a time, so the service stays available — an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services. Synth failures keep the previous replica(s) serving.
+
+`cdkl invoke-agentcore --watch` is wired for the long-running `/ws` session paths (`--ws` / `--ws-interactive`). On a source change the same classifier picks the per-firing primitive (`docker cp` + `docker restart` for interpreted-language source edits; rebuild for Dockerfile / dependency / compiled-source / ambiguous edits). The active `/ws` socket is closed cleanly on every reload firing (AgentCore has no protocol-defined mid-session container handoff) so the next session connects to the rebuilt container. `--watch` on the single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A `POST /` paths logs a one-line WARN and proceeds single-shot.
 
 The rebuild path waits for the freshly-built shadow replica's first essential-container port to accept a TCP connection before swapping registrations. The default budget is 60s, which covers realistic prod-shaped Node app cold-starts (TS->JS compile, full `node_modules` graph, framework boot, DB pool init). If the reload log surfaces `TCP probe <ip>:<port> did not accept within <N>ms`, bump it via `--shadow-ready-timeout 120000` (or set `CDKL_SHADOW_READY_TIMEOUT_MS=120000`) — typical for Java / heavy ORM init / `--inspect-brk` attach pauses.
 

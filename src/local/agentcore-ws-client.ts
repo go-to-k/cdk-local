@@ -44,6 +44,17 @@ export interface InvokeAgentCoreWsOptions {
    * the function's rejection.
    */
   frameSource?: AsyncIterable<string>;
+  /**
+   * Issue #255 — optional `AbortSignal` the caller fires when an external
+   * event (e.g. `--watch` reload) needs to tear down the WS exchange
+   * before the agent closes it. On abort the client closes the WebSocket
+   * cleanly + resolves the promise with the current frame count (NOT a
+   * reject), mirroring the agent-close path so the `--watch` reload loop
+   * can re-open against the rebuilt container without needing a separate
+   * "was this a graceful abort?" branch. Pre-fired signals are honored
+   * before `open` (the WS is closed immediately after construction).
+   */
+  abortSignal?: AbortSignal;
   /** Injected WebSocket implementation for tests. Defaults to `ws`. */
   webSocketImpl?: typeof WebSocket;
 }
@@ -101,6 +112,29 @@ export async function invokeAgentCoreWs(
         );
       });
     }, options.timeoutMs);
+
+    // Issue #255 — abort path. The signal is fired by the `--watch` reload
+    // loop when a source change needs the running container torn down.
+    // Resolve (don't reject) so the loop can re-open against the rebuilt
+    // container without needing a "graceful abort?" branch.
+    const onAbort = (): void => {
+      finish(() => {
+        stopIterator();
+        try {
+          ws.close();
+        } catch {
+          /* already closing */
+        }
+        resolve({ frames });
+      });
+    };
+    if (options.abortSignal) {
+      if (options.abortSignal.aborted) {
+        onAbort();
+      } else {
+        options.abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
 
     let iterator: AsyncIterator<string> | undefined;
     const stopIterator = (): void => {
