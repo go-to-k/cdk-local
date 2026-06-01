@@ -107,6 +107,7 @@ import {
   parseImageOverrideFlags,
   resolveImageOverrides,
   runImageOverrideBuilds,
+  type ImageOverrideMap,
 } from '../../local/image-override-engine.js';
 
 /**
@@ -685,13 +686,14 @@ export async function runEcsServiceEmulator(
     //      record the resulting local-only tags.
     // Throws on a malformed flag / missing Dockerfile / build failure
     // — the emulator's outer try/finally tears down what was set up.
-    const imageOverrideTags = await resolveAndBuildImageOverrides({
-      perTarget: perTarget.map((pt) => pt.boot.target),
-      stacks,
-      options,
-      extraStateProviders,
-      logger,
-    });
+    const { tags: imageOverrideTags, overrides: imageOverrideMap } =
+      await resolveAndBuildImageOverrides({
+        perTarget: perTarget.map((pt) => pt.boot.target),
+        stacks,
+        options,
+        extraStateProviders,
+        logger,
+      });
 
     // Boot every target SEQUENTIALLY so a first-target failure surfaces before
     // we burn docker budget on the rest.
@@ -838,6 +840,7 @@ export async function runEcsServiceEmulator(
               frontDoorByService,
               changedPaths,
               imageOverrideTags,
+              imageOverrideMap,
               logger,
             })
           );
@@ -964,8 +967,27 @@ async function reloadAllServices(args: {
    * shadow boot uses the locally-built image, not the deployed
    * pin. Empty / absent entry => normal CDK-asset / ECR / public
    * image resolution.
+   *
+   * Issue #262 — this map is REFRESHED on every reload from the
+   * retained `imageOverrideMap` (re-running
+   * {@link runImageOverrideBuilds}) so a source edit under a
+   * covered Dockerfile actually propagates. The original
+   * boot-time tags are discarded on success; on per-target rebuild
+   * failure the boot-time value for THAT target survives so the
+   * old replica stays serving.
    */
   imageOverrideTags: ReadonlyMap<string, string>;
+  /**
+   * Issue #262 — the post-Stage-3 resolved override map retained
+   * from boot. Re-fed to {@link runImageOverrideBuilds} on every
+   * reload so a covered Dockerfile's content-addressed tag flips
+   * when the source / Dockerfile bytes change, and the rolling
+   * primitive picks up the freshly-built image. The interactive
+   * Stage 1 (picker) and Stage 3 (boot prompt) re-runs are
+   * intentionally skipped — those resolved once at boot. Empty
+   * map => no covered overrides, nothing to re-build.
+   */
+  imageOverrideMap: ImageOverrideMap;
   logger: ReturnType<typeof getLogger>;
 }): Promise<void> {
   const {
@@ -982,7 +1004,8 @@ async function reloadAllServices(args: {
     profileCredsFile,
     frontDoorByService,
     changedPaths,
-    imageOverrideTags,
+    imageOverrideTags: boottimeImageOverrideTags,
+    imageOverrideMap,
     logger,
   } = args;
 
@@ -994,6 +1017,43 @@ async function reloadAllServices(args: {
       `cdk synth failed during reload; keeping previous version. (${err instanceof Error ? err.message : String(err)})`
     );
     return;
+  }
+
+  // Issue #262 — re-build each covered `--image-override` Dockerfile so
+  // a source edit under the override Dockerfile's context propagates.
+  // The boot-time tags map is seeded as the fallback (so a per-target
+  // build failure here doesn't strand the rolling primitive with no
+  // image: the OLD tag stays valid + the OLD replica keeps serving).
+  // We invoke `runImageOverrideBuilds` per-entry rather than over the
+  // whole map so one target's `docker build` failure (Dockerfile
+  // deleted mid-watch, syntax error in user source, missing secret
+  // file) doesn't abort the rebuilds for sibling targets — mirror
+  // the per-target try/catch shape the classifier already uses below.
+  //
+  // Skipped on reload: Stage 1 picker (interactive, resolved at boot),
+  // Stage 3 boot prompt (interactive, resolved at boot), and
+  // `enforceImageOverrideOrphans` (the `ImageOverrideMap` shape is
+  // stable post-boot, so re-validating would be a tautology).
+  const imageOverrideTags = new Map<string, string>(boottimeImageOverrideTags);
+  for (const [target, entry] of imageOverrideMap.entries()) {
+    try {
+      const oneTagMap = await runImageOverrideBuilds(new Map([[target, entry]]));
+      const newTag = oneTagMap.get(target);
+      if (newTag !== undefined) imageOverrideTags.set(target, newTag);
+    } catch (err) {
+      // Match the synth-failure warn shape above: name the trigger +
+      // error head, then continue. The boot-time tag stays in
+      // `imageOverrideTags` so the per-target roll below either rolls
+      // against the old image (verdict !== skip) or falls through to
+      // the source-change classifier's normal path. The OLD replicas
+      // for this target keep serving regardless because the rolling
+      // primitive's shadow-boot-then-swap order means the old
+      // container only goes away after a healthy shadow comes up.
+      logger.warn(
+        `Reload of '${target}': --image-override rebuild failed; keeping the previous local image. ` +
+          `(${err instanceof Error ? err.message : String(err)})`
+      );
+    }
   }
 
   // The new `frontDoor` plan is intentionally discarded: `reloadAllServices`
@@ -2452,7 +2512,7 @@ async function resolveAndBuildImageOverrides(args: {
   options: EcsServiceEmulatorOptions;
   extraStateProviders: ExtraStateProviders | undefined;
   logger: ReturnType<typeof getLogger>;
-}): Promise<Map<string, string>> {
+}): Promise<{ tags: Map<string, string>; overrides: ImageOverrideMap }> {
   const { perTarget, stacks, options, extraStateProviders, logger } = args;
 
   // Issue #242 / N1 — collect every target's resolved service first,
@@ -2524,7 +2584,7 @@ async function resolveAndBuildImageOverrides(args: {
     rawFlags.pickerPaths.length === 0 &&
     rawFlags.perService.size === 0
   ) {
-    return new Map();
+    return { tags: new Map(), overrides: new Map() };
   }
 
   // Resolve overrides — picker prompts + boot prompt fire here when in
@@ -2548,12 +2608,22 @@ async function resolveAndBuildImageOverrides(args: {
   // handler renders it cleanly.
   enforceImageOverrideOrphans(rawFlags, overrides);
 
-  if (overrides.size === 0) return new Map();
+  if (overrides.size === 0) return { tags: new Map(), overrides: new Map() };
 
   // Build every covered Dockerfile. Per-build progress goes to stdout
   // via the docker-runner's streamLive path; the per-target
   // "Building override image..." line surfaces ahead of each build.
-  return runImageOverrideBuilds(overrides);
+  //
+  // Issue #262 — retain the resolved `overrides` map (the post-Stage-3
+  // `ImageOverrideMap`) alongside the per-target tag map. The watcher's
+  // reload pathway calls `runImageOverrideBuilds(overrides)` AGAIN per
+  // reload firing so a source edit under a covered Dockerfile flips
+  // the content-addressed tag and the rolling primitive boots a shadow
+  // from the freshly-built image. Without retention, the reload reuses
+  // the stale boot-time tag and the user's source edit silently never
+  // reaches the running container.
+  const tags = await runImageOverrideBuilds(overrides);
+  return { tags, overrides };
 }
 
 /**

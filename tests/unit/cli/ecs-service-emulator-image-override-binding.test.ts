@@ -121,6 +121,151 @@ describe('ecs-service-emulator image-override engine binding (issue #238)', () =
   });
 });
 
+describe('reload-time --image-override rebuild (issue #262)', () => {
+  // Issue #262 — the boot-time tag map is stale on every `--watch`
+  // reload because `runImageOverrideBuilds` only ran once at boot.
+  // Source edits under a covered Dockerfile therefore never reached
+  // the running container — the rolling primitive booted a shadow
+  // from the SAME local tag, which still pointed at the boot-time
+  // image bytes.
+  //
+  // The fix retains the post-Stage-3 `ImageOverrideMap` (alongside
+  // the boot-time tag map), threads it through to
+  // `reloadAllServices`, and re-runs `runImageOverrideBuilds`
+  // per-target on every reload so a content-addressed tag flip
+  // boots the shadow against the freshly-built image. Stage 1
+  // (picker) and Stage 3 (boot prompt) interactive paths AND the
+  // orphan validator are intentionally NOT re-run — they were
+  // resolved at boot and don't change.
+  //
+  // These source-grep bindings pin the four load-bearing pieces a
+  // future refactor could silently drop:
+  //   1. The boot-time helper returns BOTH `tags` and `overrides`,
+  //      and the caller destructures both.
+  //   2. The watcher's `onChange` forwards the retained
+  //      `imageOverrideMap` to `reloadAllServices` next to the tag
+  //      map.
+  //   3. `reloadAllServices` re-invokes `runImageOverrideBuilds` on
+  //      `imageOverrideMap` BEFORE the per-target classifier /
+  //      skip / roll loop fires.
+  //   4. The re-build is wrapped in a per-target try/catch so a
+  //      single failure logs a warn + keeps the OLD replica
+  //      serving + lets sibling targets continue rolling.
+
+  it('resolveAndBuildImageOverrides returns BOTH `tags` and `overrides`, caller destructures both', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // Return type names both fields.
+    expect(source).toMatch(
+      /Promise<\{\s*tags:\s*Map<string,\s*string>;\s*overrides:\s*ImageOverrideMap\s*\}>/
+    );
+    // Boot path destructures both — anchored on the destructure
+    // line containing `tags: imageOverrideTags` AND
+    // `overrides: imageOverrideMap`.
+    expect(source).toMatch(
+      /\{\s*tags:\s*imageOverrideTags,\s*overrides:\s*imageOverrideMap\s*\}\s*=\s*await\s+resolveAndBuildImageOverrides\(/
+    );
+  });
+
+  it('watcher onChange forwards `imageOverrideMap` to reloadAllServices alongside `imageOverrideTags`', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The watcher block must thread the retained map to the reload
+    // function — without it, the reload pathway has no input to
+    // re-feed `runImageOverrideBuilds`.
+    const watcherCall = source.match(
+      /onChange:\s*\(changedPaths\)\s*=>\s*\{[\s\S]*?reloadAllServices\(\{[\s\S]*?imageOverrideMap[\s\S]*?\}\)/
+    );
+    expect(
+      watcherCall,
+      'watcher onChange missing the imageOverrideMap thread (issue #262)'
+    ).toBeTruthy();
+  });
+
+  it('reloadAllServices accepts the `imageOverrideMap` param of type ImageOverrideMap', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    expect(body).toMatch(/imageOverrideMap:\s*ImageOverrideMap/);
+  });
+
+  it('reloadAllServices re-invokes runImageOverrideBuilds BEFORE the per-target roll loop', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    // The re-build call must exist AND walk `imageOverrideMap`
+    // entries (per-target so one failure doesn't abort siblings).
+    expect(body).toMatch(/for\s*\(\s*const\s+\[target,\s*entry\]\s+of\s+imageOverrideMap\.entries/);
+    expect(body).toMatch(/await\s+runImageOverrideBuilds\(\s*new\s+Map\(\[\[target,\s*entry\]\]\)\s*\)/);
+    // It must precede the per-target classifier / skip / roll loop.
+    const rebuildIdx = body.search(/await\s+runImageOverrideBuilds\(/);
+    const rollLoopIdx = body.indexOf('for (const pt of perTarget)');
+    expect(rebuildIdx, 'reload-time runImageOverrideBuilds call missing').toBeGreaterThan(-1);
+    expect(rollLoopIdx, 'per-target roll loop missing').toBeGreaterThan(-1);
+    expect(rebuildIdx).toBeLessThan(rollLoopIdx);
+  });
+
+  it('reload-time rebuild is wrapped in try/catch so one target failure does not abort siblings', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    // The per-target rebuild block must have a try { runImageOverrideBuilds(...) }
+    // catch shape that logs a warn naming the target + error head,
+    // and the catch must NOT throw so the loop continues.
+    const tryCatchRegion = body.match(
+      /for\s*\(\s*const\s+\[target,\s*entry\]\s+of\s+imageOverrideMap\.entries[\s\S]*?try\s*\{[\s\S]*?runImageOverrideBuilds[\s\S]*?\}\s*catch\s*\(err\)\s*\{[\s\S]*?logger\.warn\(/
+    );
+    expect(
+      tryCatchRegion,
+      'reload-time rebuild try/catch + logger.warn missing'
+    ).toBeTruthy();
+  });
+
+  it('reload-time rebuild does NOT re-fire interactive stages or orphan validator', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    // Stage 1 (picker) + Stage 3 (boot prompt) live inside
+    // `resolveImageOverrides`; the orphan check lives in
+    // `enforceImageOverrideOrphans`. None of the three should appear
+    // inside the reload function body — they were all resolved at
+    // boot, and re-firing the interactive prompts mid-watch would
+    // be a UX foot-gun.
+    expect(body).not.toMatch(/resolveImageOverrides\(/);
+    expect(body).not.toMatch(/enforceImageOverrideOrphans\(/);
+    expect(body).not.toMatch(/parseImageOverrideFlags\(/);
+  });
+
+  it('seeds the per-reload tags map from the boot-time map so a per-target rebuild failure preserves the old tag', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    const reloadFnRegion = source.match(
+      /async function reloadAllServices\(args:[\s\S]*?logger\.info\('Reload complete\.'\);/
+    );
+    expect(reloadFnRegion, 'reloadAllServices body missing').toBeTruthy();
+    const body = reloadFnRegion![0];
+    // The destructure renames the incoming param to
+    // `boottimeImageOverrideTags`, then a fresh `imageOverrideTags`
+    // Map is seeded from it. A per-target rebuild failure leaves
+    // the boot-time tag in place for that target, so the rolling
+    // primitive still has a valid local image to consult (and the
+    // OLD replica keeps serving until a healthy shadow comes up).
+    expect(body).toMatch(/imageOverrideTags:\s*boottimeImageOverrideTags/);
+    expect(body).toMatch(
+      /const\s+imageOverrideTags\s*=\s*new\s+Map<string,\s*string>\(\s*boottimeImageOverrideTags\s*\)/
+    );
+  });
+});
+
 describe('enforceStrictOverrides (issue #238 strict-overrides guard, behavioral)', () => {
   // Behavioral test for the strict-overrides guard. Pulled out of the
   // boot path into a small pure helper so we don't need to mock the

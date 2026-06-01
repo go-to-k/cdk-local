@@ -196,7 +196,7 @@ Opt-outs:
 - `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
 - `--strict-overrides` fails fast at boot if any pinned target remains uncovered. Off by default; the per-target WARN (which now fires on any cold start when an ECR pin is detected, not just under `--watch`) still surfaces regardless.
 
-Under `--watch`, overridden targets go through the rebuild rolling primitive on each save — the new local Dockerfile build is picked up automatically.
+Under `--watch`, every reload re-runs `docker build` for each covered Dockerfile, then rolls the replicas through the rebuild primitive — so a source edit picked up by the Dockerfile's `COPY` flips the content-addressed tag and the new image bytes serve immediately. The Stage 1 picker / Stage 3 boot prompt are NOT re-fired on reload (resolved once at boot); a per-target rebuild failure logs a warn and keeps the old replica serving while sibling targets continue rolling.
 
 ### start-service vs start-alb — which one?
 

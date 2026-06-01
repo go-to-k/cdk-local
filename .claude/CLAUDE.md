@@ -86,7 +86,15 @@ AWS managed services.
   supplied Dockerfile (deterministic local-only tag
   `cdkl-override-<svc>-<hash>:local`) and threaded through the
   rebuild rolling primitive on `--watch` reload — the engine module
-  lives in `src/local/image-override-engine.ts`. Issue #240 added
+  lives in `src/local/image-override-engine.ts`. Issue #262 retained
+  the post-Stage-3 `ImageOverrideMap` so every `--watch` reload firing
+  re-invokes `runImageOverrideBuilds` per covered target (no Stage 1
+  picker re-fire, no Stage 3 prompt re-fire, no orphan re-validation
+  — those are boot-time-only); a source edit under the covered
+  Dockerfile's context flips the content-addressed tag and the
+  rolling primitive boots a shadow against the freshly-built image
+  (per-target rebuild failure logs a warn + keeps the old replica
+  serving + lets sibling targets continue rolling). Issue #240 added
   per-service variants of the three build-input flags
   (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for
   target); the per-service form overrides the global per-key on the
