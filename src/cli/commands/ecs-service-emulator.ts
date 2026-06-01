@@ -2726,11 +2726,28 @@ export function addEcsAssumeRoleOptions(cmd: Command): Command {
 }
 
 /**
+ * Module-level latch for the `--assume-task-role` deprecation warn.
+ * Per-process single-fire, so a `--watch` reload that re-enters the
+ * resolver on every source-change firing does not spam the user.
+ *
+ * Test-only `__resetAssumeTaskRoleDeprecationLatch` lets the unit suite
+ * drive the latch through repeated invocations.
+ */
+let assumeTaskRoleDeprecationWarned = false;
+
+/** @internal — test-only. */
+export function __resetAssumeTaskRoleDeprecationLatch(): void {
+  assumeTaskRoleDeprecationWarned = false;
+}
+
+/**
  * Collapse `--assume-task-role` (legacy) and `--assume-role` (new) into
  * a single effective value. When BOTH are set, `--assume-role` wins
  * (matches Commander's "later wins" default for repeatable flags, and
  * gives the cross-command name priority). When ONLY `--assume-task-role`
- * is set, fires a one-time deprecation warn naming the replacement.
+ * is set, fires a **per-process one-time** deprecation warn naming the
+ * replacement — the latch above prevents `--watch` reloads from
+ * re-emitting the warn on every source-change firing.
  *
  * Issue #249 / C6.
  */
@@ -2742,10 +2759,13 @@ export function resolveEcsAssumeRoleOption(options: {
     return options.assumeRole;
   }
   if (options.assumeTaskRole !== undefined) {
-    getLogger().warn(
-      '--assume-task-role is deprecated; use --assume-role instead. ' +
-        'Both forms continue to work, but --assume-role is the cross-command name.'
-    );
+    if (!assumeTaskRoleDeprecationWarned) {
+      assumeTaskRoleDeprecationWarned = true;
+      getLogger().warn(
+        '--assume-task-role is deprecated; use --assume-role instead. ' +
+          'Both forms continue to work, but --assume-role is the cross-command name.'
+      );
+    }
     return options.assumeTaskRole;
   }
   return undefined;
@@ -2782,7 +2802,8 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
         '--no-build',
         'Skip docker build on the local CDK-asset path for every container (use the previously-built tag). ' +
           'Requires the deterministic tag to already be in the local registry; errors with an actionable ' +
-          'message when missing. No-op for ECR-pull / public-registry images. Compatible with --no-pull.'
+          'message when missing. No-op for ECR-pull / public-registry images. Per-container --image-override ' +
+          'mappings take precedence (the override tag is used as-is, --no-build does not apply). Compatible with --no-pull.'
       )
     )
     .addOption(

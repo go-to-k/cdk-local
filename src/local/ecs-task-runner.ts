@@ -814,8 +814,24 @@ async function prepareOneImage(
       // registry from an earlier run; error with an actionable message
       // when missing so the user knows to drop `--no-build` or pre-build
       // manually.
+      //
+      // Reject the cache-hit path when `image.assetHash` is undefined:
+      // the tag falls back to `...-single`, which is shared across
+      // multiple invocations against unrelated assets. A `--no-build`
+      // cache hit on that synthetic key would silently reuse a stale
+      // image from an unrelated prior run. Force the user to drop
+      // `--no-build` (so the next build seeds a stable hash) or to
+      // re-synthesize the CDK app with `assetHash` set.
       if (options.skipBuild === true) {
         const logger = getLogger().child('ecs-runner');
+        if (image.assetHash === undefined) {
+          throw new LocalInvokeBuildError(
+            `Cannot honor --no-build for ECS container '${container.name}': ` +
+              `the asset has no stable assetHash (synthetic tag '${tag}' may collide ` +
+              'with unrelated prior runs). Drop --no-build, or re-synthesize with an ' +
+              'explicit assetHash on the ContainerImage.fromAsset call.'
+          );
+        }
         logger.info(
           `Skipping docker build (--no-build) for container '${container.name}'; verifying ${tag} is in local registry...`
         );

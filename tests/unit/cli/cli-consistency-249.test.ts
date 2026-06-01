@@ -292,4 +292,78 @@ describe('issue #249 / C14 — `--debug-port` alias on start-api matches `cdkl i
     expect(opts.debugPortBase).toBe('9000');
     expect(opts.debugPort).toBeUndefined();
   });
+
+  it('canonical-wins coalescing: --debug-port-base wins over --debug-port when both are passed', () => {
+    // Pins the coalescing at `local-start-api.ts` —
+    // `options.debugPortBase ?? options.debugPort` — that the PR body
+    // and the `--debug-port` help text both promise. Without this
+    // assertion, a future refactor could flip the precedence (or use
+    // `options.debugPort ?? options.debugPortBase`) and only an
+    // integration test would catch the regression.
+    const cmd = new Command();
+    addStartApiSpecificOptions(cmd);
+    cmd.action(() => undefined);
+    cmd.parse([
+      'node',
+      'cdkl',
+      '--debug-port',
+      '8000',
+      '--debug-port-base',
+      '9000',
+    ]);
+    const opts = cmd.opts() as { debugPort?: string; debugPortBase?: string };
+    expect(opts.debugPortBase).toBe('9000');
+    expect(opts.debugPort).toBe('8000');
+    // Canonical-wins coalescing (mirrors `local-start-api.ts`).
+    const resolved = opts.debugPortBase ?? opts.debugPort;
+    expect(resolved).toBe('9000');
+  });
+});
+
+describe('issue #249 / C6 — `--assume-task-role` deprecation warn latch (per-process single-fire)', () => {
+  // Reload-spam regression — under `--watch`, `resolveEcsAssumeRoleOption`
+  // is re-entered on every source-change firing per service. Without a
+  // module-level latch, every reload would re-emit the deprecation
+  // warn, drowning the actually-useful reload log. The latch pins one
+  // emit per process; the reset helper is test-only.
+  it('emits the warn ONCE per process even when called many times with the legacy form', async () => {
+    const { resolveEcsAssumeRoleOption, __resetAssumeTaskRoleDeprecationLatch } =
+      await import('../../../src/cli/commands/ecs-service-emulator.js');
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    __resetAssumeTaskRoleDeprecationLatch();
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      // 5 invocations — boot + 4 reload firings.
+      for (let i = 0; i < 5; i++) {
+        const out = resolveEcsAssumeRoleOption({ assumeTaskRole: 'arn:aws:iam::123:role/X' });
+        expect(out).toBe('arn:aws:iam::123:role/X');
+      }
+      const deprecationCalls = warnSpy.mock.calls.filter((c) =>
+        String(c[0] ?? '').includes('--assume-task-role is deprecated')
+      );
+      expect(deprecationCalls).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+      __resetAssumeTaskRoleDeprecationLatch();
+    }
+  });
+
+  it('the latch is bypassed when the new `--assume-role` form is used (no warn)', async () => {
+    const { resolveEcsAssumeRoleOption, __resetAssumeTaskRoleDeprecationLatch } =
+      await import('../../../src/cli/commands/ecs-service-emulator.js');
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    __resetAssumeTaskRoleDeprecationLatch();
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      const out = resolveEcsAssumeRoleOption({ assumeRole: 'arn:aws:iam::123:role/Y' });
+      expect(out).toBe('arn:aws:iam::123:role/Y');
+      const deprecationCalls = warnSpy.mock.calls.filter((c) =>
+        String(c[0] ?? '').includes('--assume-task-role is deprecated')
+      );
+      expect(deprecationCalls).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+      __resetAssumeTaskRoleDeprecationLatch();
+    }
+  });
 });
