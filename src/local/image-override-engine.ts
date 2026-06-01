@@ -131,6 +131,19 @@ export interface RawImageOverrideFlags {
  * Collision detection: a service target named more than once in
  * `--image-override <svc>=...` is an error (last-write-wins would
  * silently drop the earlier mapping; explicit error is clearer).
+ *
+ * Empty-value semantics:
+ * - `--image-build-arg KEY=` (empty value) is ACCEPTED. The empty
+ *   string is forwarded verbatim to `docker build --build-arg KEY=`,
+ *   which docker itself accepts (the canonical way to unset a
+ *   Dockerfile `ARG`'s default). `KEY=` (empty key) is rejected.
+ * - `--image-target ""` (empty value) is REJECTED — an empty
+ *   `--target` is meaningless to `docker build` (`--target` is a
+ *   single stage name, not a list).
+ * - `--image-override <svc>=` and `--image-override =<dockerfile>`
+ *   are REJECTED — both halves must be non-empty.
+ * - `--image-build-secret id=` and `--image-build-secret =src` are
+ *   REJECTED — both halves must be non-empty.
  */
 export function parseImageOverrideFlags(input: {
   imageOverride?: string[];
@@ -492,12 +505,32 @@ export function buildImageOverrideTag(serviceTarget: string, entry: ImageOverrid
  * order maximizes cache reuse). On any failure the function rejects
  * with {@link ImageOverrideError}; the emulator surfaces this before
  * any container is started.
+ *
+ * Partial-failure rollback (issue #242 / N3): when build N (1-indexed)
+ * fails, the 1..(N-1) successfully built local-only tags from THIS run
+ * are best-effort `docker image rm`'d before re-throwing. Not a leak
+ * (the tags are deterministic per
+ * {@link buildImageOverrideTag} so a re-run collides safely with any
+ * leftover), but the cleanup keeps the local Docker daemon tidy after
+ * a failed boot — disk-pressure scenarios that occasionally surface
+ * on dev laptops never accumulate orphan override images across a
+ * day of iterations. Cleanup failures are logged at `debug` (another
+ * container could be using the image, the image could already have
+ * been removed by a parallel `docker system prune`, etc.) and the
+ * loop continues so one un-removable tag doesn't shadow the others.
+ * The originating {@link ImageOverrideError} is always the thrown
+ * value — a cleanup-step error never replaces it.
  */
 export async function runImageOverrideBuilds(
   overrides: ImageOverrideMap
 ): Promise<Map<string, string>> {
   const logger = getLogger();
   const out = new Map<string, string>();
+  // Track every successfully built tag from THIS invocation so a
+  // mid-run failure can `docker image rm` them (N3). Distinct from
+  // `out` for clarity — `out` is the success-path return value;
+  // `builtTags` is the rollback bookkeeping.
+  const builtTags: string[] = [];
   for (const [target, entry] of overrides.entries()) {
     const tag = buildImageOverrideTag(target, entry);
     const args: string[] = ['build', '--tag', tag, '--file', entry.dockerfile];
@@ -521,12 +554,27 @@ export async function runImageOverrideBuilds(
       });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
-      throw new ImageOverrideError(
+      const wrapped = new ImageOverrideError(
         `docker build failed for --image-override '${target}' (Dockerfile=${entry.dockerfile}): ` +
           (e.stderr?.trim() || e.message || String(err))
       );
+      // Best-effort rollback: remove every tag built earlier in this
+      // run. Per-tag failures are logged at debug + swallowed so the
+      // originating build error stays the surfaced one.
+      for (const priorTag of builtTags) {
+        try {
+          await runDockerStreaming(['image', 'rm', priorTag], {});
+        } catch (rmErr) {
+          logger.debug(
+            `Image-override rollback: \`docker image rm ${priorTag}\` failed: ` +
+              `${rmErr instanceof Error ? rmErr.message : String(rmErr)}.`
+          );
+        }
+      }
+      throw wrapped;
     }
     out.set(target, tag);
+    builtTags.push(tag);
   }
   return out;
 }

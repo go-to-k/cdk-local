@@ -101,7 +101,7 @@ import {
 import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache } from '../../local/cognito-jwt.js';
-import { describePinnedImageUri, isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
+import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
 import {
   parseImageOverrideFlags,
   resolveImageOverrides,
@@ -753,22 +753,28 @@ export async function runEcsServiceEmulator(
     // regardless of whether they'd save a file later. The watch
     // wiring stays gated separately (the watcher only fires under
     // `--watch && supportsWatch`).
+    // Issue #242 / N1 — derive the pinned set through `listPinnedTargets`
+    // so the WARN loop walks the same one-shot helper the override
+    // engine's pre-boot resolution consumed. Source-only iteration of
+    // `perTarget` here is unchanged; the per-target isLocalCdkAsset +
+    // describePinnedImageUri pair is now collapsed into one helper call.
     const uncoveredPinnedTargets: string[] = [];
-    for (const pt of perTarget) {
-      const service = pt.controller?.service;
-      if (!service) continue;
-      if (isLocalCdkAssetImage(service)) continue;
-      if (imageOverrideTags.has(pt.boot.target)) continue;
-      const pinnedUri = describePinnedImageUri(service);
-      const uriDisplay = pinnedUri ? `\`${pinnedUri}\`` : 'a deployed registry';
+    const pinnedEntries = listPinnedTargets(
+      perTarget
+        .filter((pt) => pt.controller?.service)
+        .map((pt) => ({ target: pt.boot.target, service: pt.controller!.service }))
+    );
+    for (const entry of pinnedEntries) {
+      if (imageOverrideTags.has(entry.target)) continue;
+      const uriDisplay = entry.label ? `\`${entry.label}\`` : 'a deployed registry';
       logger.warn(
-        `'${pt.boot.target}': running image is pinned to a deployed registry ` +
+        `'${entry.target}': running image is pinned to a deployed registry ` +
           `(${uriDisplay}). To iterate on local source, either pass ` +
           '`--image-override <dockerfile>` (or `<service>=<dockerfile>`) to substitute ' +
           'a local build, or drop `--from-cfn-stack` and switch the CDK app to ' +
           '`ContainerImage.fromAsset(...)`.'
       );
-      uncoveredPinnedTargets.push(pt.boot.target);
+      uncoveredPinnedTargets.push(entry.target);
     }
 
     // Issue #238 — `--strict-overrides` fail-fast guard. After the
@@ -2389,13 +2395,14 @@ async function resolveAndBuildImageOverrides(args: {
 }): Promise<Map<string, string>> {
   const { perTarget, stacks, options, extraStateProviders, logger } = args;
 
-  // Identify pinned targets via the same representative-essential anchor
-  // the boot WARN + reload-skip use. Each target is re-resolved with its
-  // own image-resolution context (so `--from-cfn-stack` substitutions
-  // are applied) — necessary to distinguish a CDK asset, an ECR pin,
-  // and a public-registry pin in the resolved template.
-  const pinnedTargets: string[] = [];
-  const pinnedLabels = new Map<string, string>();
+  // Issue #242 / N1 — collect every target's resolved service first,
+  // then hand the whole list to `listPinnedTargets` so the pinned set +
+  // labels are derived through the same helper the post-boot WARN
+  // loop consumes. Each target is re-resolved with its own image-
+  // resolution context (so `--from-cfn-stack` substitutions are
+  // applied) — necessary to distinguish a CDK asset, an ECR pin, and
+  // a public-registry pin in the resolved template.
+  const resolvedForPeek: Array<{ target: string; service: ResolvedEcsService }> = [];
   for (const target of perTarget) {
     const parsed = parseEcsTarget(target);
     const candidate = pickCandidateStack(parsed.stackPattern, stacks);
@@ -2421,10 +2428,13 @@ async function resolveAndBuildImageOverrides(args: {
       if (stateProvider) stateProvider.dispose();
     }
     if (!service) continue;
-    if (isLocalCdkAssetImage(service)) continue;
-    pinnedTargets.push(target);
-    const uri = describePinnedImageUri(service);
-    if (uri) pinnedLabels.set(target, uri);
+    resolvedForPeek.push({ target, service });
+  }
+  const pinnedEntries = listPinnedTargets(resolvedForPeek);
+  const pinnedTargets: string[] = pinnedEntries.map((e) => e.target);
+  const pinnedLabels = new Map<string, string>();
+  for (const entry of pinnedEntries) {
+    if (entry.label !== undefined) pinnedLabels.set(entry.target, entry.label);
   }
 
   // Parse the raw flags. A parser error is reported as a clean
