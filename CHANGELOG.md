@@ -1,3 +1,10 @@
+# [0.73.0](https://github.com/go-to-k/cdk-local/compare/v0.72.0...v0.73.0) (2026-06-01)
+
+
+### Features
+
+* **image-override:** per-service variants of build-arg / build-secret / target ([#244](https://github.com/go-to-k/cdk-local/issues/244)) ([6875eeb](https://github.com/go-to-k/cdk-local/commit/6875eebe6d5f49c3446dae361d6346885e98f50b))
+
 # [0.72.0](https://github.com/go-to-k/cdk-local/compare/v0.71.2...v0.72.0) (2026-05-31)
 
 
