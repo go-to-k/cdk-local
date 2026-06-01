@@ -1,3 +1,10 @@
+# [0.75.0](https://github.com/go-to-k/cdk-local/compare/v0.74.0...v0.75.0) (2026-06-01)
+
+
+### Features
+
+* **start-api:** `--assume-role-auto` boolean flag auto-resolves each routed Lambda's own execution role ([#256](https://github.com/go-to-k/cdk-local/issues/256) Option 1) ([#271](https://github.com/go-to-k/cdk-local/issues/271)) ([22555b2](https://github.com/go-to-k/cdk-local/commit/22555b21734bcb39e35eb54735edddbfcac698a8))
+
 # [0.74.0](https://github.com/go-to-k/cdk-local/compare/v0.73.6...v0.74.0) (2026-06-01)
 
 
