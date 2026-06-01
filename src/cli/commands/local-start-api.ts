@@ -1918,7 +1918,7 @@ function warnIamRoutes(routesWithAuth: readonly RouteWithAuth[]): boolean {
  *          active, via the same shared helper
  *          `resolveExecutionRoleArnFromState` `cdkl invoke`'s bare-
  *          form uses.
- *   - flag absent / `--no-assume-role` — returns `undefined`
+ *   - flag absent / `--no-assume-role-auto` — returns `undefined`
  *     (per-Lambda map and global default already filtered out by the
  *     null-check at the top; bare-auto-resolve = false short-circuits
  *     before the state lookup).
