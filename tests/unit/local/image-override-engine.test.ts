@@ -24,11 +24,14 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 
 const {
   buildImageOverrideTag,
+  enforceImageOverrideOrphans,
   ImageOverrideError,
+  mergeForService,
   parseImageOverrideFlags,
   resolveImageOverrides,
   runImageOverrideBuilds,
 } = await import('../../../src/local/image-override-engine.js');
+const { LocalStartServiceError } = await import('../../../src/utils/error-handler.js');
 
 /**
  * Issue #238 — engine-level coverage. The picker / boot-prompt branches
@@ -793,5 +796,435 @@ describe('resolveImageOverrides Stage 3 boot prompt skip sentinels (M3)', () => 
     expect(source).toMatch(/lower === 'no'/);
     // And the prompt copy must contain the [path / N] hint.
     expect(source).toMatch(/\[path \/ N\]/);
+  });
+});
+
+// =============================================================================
+// Issue #240 — per-service variants of --image-build-arg /
+// --image-build-secret / --image-target.
+// =============================================================================
+
+describe('parseImageOverrideFlags per-service form (issue #240)', () => {
+  it('parses --image-build-arg <svc>:KEY=VAL into perService', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['AppService:NODE_ENV=production'],
+    });
+    expect(out.globals.buildArgs.size).toBe(0);
+    expect(out.perService.size).toBe(1);
+    const overlay = out.perService.get('AppService');
+    expect(overlay?.buildArgs.get('NODE_ENV')).toBe('production');
+  });
+
+  it('parses --image-build-secret <svc>:id=src into perService (src resolved abs)', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildSecret: ['AppService:npmrc=./.npmrc-private'],
+    });
+    expect(out.globals.buildSecrets.size).toBe(0);
+    const overlay = out.perService.get('AppService');
+    expect(overlay?.buildSecrets.get('npmrc')).toBe(path.resolve(process.cwd(), './.npmrc-private'));
+  });
+
+  it('parses --image-target <svc>=<stage> into perService', () => {
+    const out = parseImageOverrideFlags({
+      imageTarget: ['AppService=builder'],
+    });
+    expect(out.globals.targetStage).toBeUndefined();
+    expect(out.perService.get('AppService')?.targetStage).toBe('builder');
+  });
+
+  it('mixes global + per-service for --image-build-arg in one invocation', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['KEY=global', 'AppService:KEY=appOnly', 'OtherSvc:OTHER=val'],
+    });
+    expect(out.globals.buildArgs.get('KEY')).toBe('global');
+    expect(out.perService.get('AppService')?.buildArgs.get('KEY')).toBe('appOnly');
+    expect(out.perService.get('OtherSvc')?.buildArgs.get('OTHER')).toBe('val');
+  });
+
+  it('accepts --image-target as an array (global + per-service mix)', () => {
+    const out = parseImageOverrideFlags({
+      imageTarget: ['builder', 'AppService=release', 'Reporting=runtime'],
+    });
+    expect(out.globals.targetStage).toBe('builder');
+    expect(out.perService.get('AppService')?.targetStage).toBe('release');
+    expect(out.perService.get('Reporting')?.targetStage).toBe('runtime');
+  });
+
+  it('rejects --image-build-arg <svc>:= (empty key after prefix)', () => {
+    expect(() => parseImageOverrideFlags({ imageBuildArg: ['AppService:=val'] })).toThrow(
+      /<service>:KEY=VAL/
+    );
+  });
+
+  it('accepts --image-build-arg <svc>:KEY= (empty VALUE) per global semantics', () => {
+    // Empty VALUE is canonical "unset the ARG default". Per-service form
+    // mirrors that semantic.
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['AppService:UNSET='],
+    });
+    expect(out.perService.get('AppService')?.buildArgs.get('UNSET')).toBe('');
+  });
+
+  it('rejects --image-build-secret <svc>:id= or <svc>:=src (both halves required)', () => {
+    expect(() =>
+      parseImageOverrideFlags({ imageBuildSecret: ['AppService:id='] })
+    ).toThrow(/non-empty/);
+    expect(() =>
+      parseImageOverrideFlags({ imageBuildSecret: ['AppService:=src'] })
+    ).toThrow();
+  });
+
+  it('rejects --image-target <svc>= (empty stage)', () => {
+    expect(() => parseImageOverrideFlags({ imageTarget: ['AppService='] })).toThrow(
+      /right side .* is empty/
+    );
+  });
+
+  it('rejects --image-target =stage (empty service)', () => {
+    expect(() => parseImageOverrideFlags({ imageTarget: ['=stage'] })).toThrow(
+      /left side .* is empty/
+    );
+  });
+
+  it('keeps a `KEY=val:with:colons` global form un-misparsed (= before :)', () => {
+    // The `:` after the `=` is part of the VALUE, not a service prefix.
+    // Pin this so a future refactor of the splitter cannot silently
+    // start treating `=val:bar` as a per-service form.
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['KEY=val:with:colons'],
+    });
+    expect(out.globals.buildArgs.get('KEY')).toBe('val:with:colons');
+    expect(out.perService.size).toBe(0);
+  });
+
+  it('last-write-wins for repeated per-service entries on same <svc>:KEY', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['AppService:KEY=first', 'AppService:KEY=second'],
+    });
+    expect(out.perService.get('AppService')?.buildArgs.get('KEY')).toBe('second');
+  });
+});
+
+describe('mergeForService precedence (issue #240)', () => {
+  it('per-service buildArgs overrides global on key collision', () => {
+    const merged = mergeForService(
+      'AppService',
+      { buildArgs: new Map([['KEY', 'global']]), buildSecrets: new Map() },
+      new Map([
+        [
+          'AppService',
+          { buildArgs: new Map([['KEY', 'perSvc']]), buildSecrets: new Map() },
+        ],
+      ])
+    );
+    expect(merged.buildArgs.get('KEY')).toBe('perSvc');
+  });
+
+  it('non-overlapping keys merge — global K1 + per-service K2 both present', () => {
+    const merged = mergeForService(
+      'AppService',
+      { buildArgs: new Map([['K1', 'g']]), buildSecrets: new Map() },
+      new Map([
+        [
+          'AppService',
+          { buildArgs: new Map([['K2', 'p']]), buildSecrets: new Map() },
+        ],
+      ])
+    );
+    expect(merged.buildArgs.get('K1')).toBe('g');
+    expect(merged.buildArgs.get('K2')).toBe('p');
+  });
+
+  it('per-service buildSecrets overrides global on id collision', () => {
+    const merged = mergeForService(
+      'AppService',
+      {
+        buildArgs: new Map(),
+        buildSecrets: new Map([['npmrc', '/abs/global']]),
+      },
+      new Map([
+        [
+          'AppService',
+          {
+            buildArgs: new Map(),
+            buildSecrets: new Map([['npmrc', '/abs/perSvc']]),
+          },
+        ],
+      ])
+    );
+    expect(merged.buildSecrets.get('npmrc')).toBe('/abs/perSvc');
+  });
+
+  it('per-service targetStage overrides global', () => {
+    const merged = mergeForService(
+      'AppService',
+      { buildArgs: new Map(), buildSecrets: new Map(), targetStage: 'builder' },
+      new Map([
+        [
+          'AppService',
+          {
+            buildArgs: new Map(),
+            buildSecrets: new Map(),
+            targetStage: 'release',
+          },
+        ],
+      ])
+    );
+    expect(merged.targetStage).toBe('release');
+  });
+
+  it('falls back to global when the per-service overlay omits targetStage', () => {
+    const merged = mergeForService(
+      'AppService',
+      { buildArgs: new Map(), buildSecrets: new Map(), targetStage: 'builder' },
+      new Map([
+        [
+          'AppService',
+          { buildArgs: new Map([['K', 'v']]), buildSecrets: new Map() },
+        ],
+      ])
+    );
+    expect(merged.targetStage).toBe('builder');
+  });
+
+  it('returns a FRESH map (mutations do not bleed into the shared globals)', () => {
+    const globals = { buildArgs: new Map([['K', 'g']]), buildSecrets: new Map() };
+    const merged = mergeForService('X', globals, new Map());
+    merged.buildArgs.set('K', 'mutated');
+    expect(globals.buildArgs.get('K')).toBe('g');
+  });
+
+  it('global passes through unchanged when the service has no overlay', () => {
+    const merged = mergeForService(
+      'UnrelatedService',
+      { buildArgs: new Map([['K', 'g']]), buildSecrets: new Map(), targetStage: 'builder' },
+      new Map([
+        [
+          'AppService',
+          { buildArgs: new Map([['K', 'pp']]), buildSecrets: new Map() },
+        ],
+      ])
+    );
+    expect(merged.buildArgs.get('K')).toBe('g');
+    expect(merged.targetStage).toBe('builder');
+  });
+});
+
+describe('resolveImageOverrides — per-service overlay threads into entry (issue #240)', () => {
+  it('a per-service buildArg lands on its target only; global covers others', async () => {
+    const dockerfileA = makeTmpDockerfile('Dockerfile.app');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.auth');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfileA}`, `AuthService=${dockerfileB}`],
+      imageBuildArg: ['NODE_ENV=production', 'AppService:NPM_TOKEN=secret123'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService', 'AuthService'],
+    });
+    const app = overrides.get('AppService');
+    const auth = overrides.get('AuthService');
+    // Both get the global NODE_ENV.
+    expect(app?.buildArgs.get('NODE_ENV')).toBe('production');
+    expect(auth?.buildArgs.get('NODE_ENV')).toBe('production');
+    // Only AppService gets the per-service NPM_TOKEN.
+    expect(app?.buildArgs.get('NPM_TOKEN')).toBe('secret123');
+    expect(auth?.buildArgs.get('NPM_TOKEN')).toBeUndefined();
+  });
+
+  it('per-service value overrides global on the same key for the named target', async () => {
+    const dockerfile = makeTmpDockerfile('Dockerfile.coll');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfile}`],
+      imageBuildArg: ['KEY=global', 'AppService:KEY=appOnly'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService'],
+    });
+    expect(overrides.get('AppService')?.buildArgs.get('KEY')).toBe('appOnly');
+  });
+
+  it('per-service targetStage overrides global on the named target', async () => {
+    const dockerfileA = makeTmpDockerfile('Dockerfile.stageA');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.stageB');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfileA}`, `Reporting=${dockerfileB}`],
+      imageTarget: ['builder', 'Reporting=runtime'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService', 'Reporting'],
+    });
+    expect(overrides.get('AppService')?.targetStage).toBe('builder');
+    expect(overrides.get('Reporting')?.targetStage).toBe('runtime');
+  });
+});
+
+describe('runImageOverrideBuilds — per-service argv assembly (issue #240)', () => {
+  beforeEach(() => {
+    runDockerStreamingMock.mockReset();
+    runDockerStreamingMock.mockResolvedValue(undefined);
+  });
+
+  it('emits the correct --build-arg pair per target (per-service does not bleed)', async () => {
+    const dockerfileA = makeTmpDockerfile('Dockerfile.argA');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.argB');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfileA}`, `AuthService=${dockerfileB}`],
+      imageBuildArg: ['NODE_ENV=production', 'AppService:NPM_TOKEN=secret'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService', 'AuthService'],
+    });
+    await runImageOverrideBuilds(overrides);
+    expect(runDockerStreamingMock).toHaveBeenCalledTimes(2);
+    const calls = runDockerStreamingMock.mock.calls.map(([a]) => a as string[]);
+    // Determine which build invocation was App vs Auth by `--file` value.
+    const appCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileA)!;
+    const authCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileB)!;
+    expect(appCall).toContain('NODE_ENV=production');
+    expect(appCall).toContain('NPM_TOKEN=secret');
+    expect(authCall).toContain('NODE_ENV=production');
+    // AuthService MUST NOT carry the per-service NPM_TOKEN.
+    expect(authCall).not.toContain('NPM_TOKEN=secret');
+  });
+
+  it('emits the correct --secret pair per target (per-service overrides on id collision)', async () => {
+    const dockerfileA = makeTmpDockerfile('Dockerfile.secA');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.secB');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfileA}`, `Reporting=${dockerfileB}`],
+      imageBuildSecret: [
+        'AppService:npmrc=/abs/.npmrc-private',
+        'Reporting:npmrc=/abs/.npmrc-public',
+      ],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService', 'Reporting'],
+    });
+    await runImageOverrideBuilds(overrides);
+    const calls = runDockerStreamingMock.mock.calls.map(([a]) => a as string[]);
+    const appCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileA)!;
+    const repCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileB)!;
+    expect(appCall).toContain('id=npmrc,src=/abs/.npmrc-private');
+    expect(repCall).toContain('id=npmrc,src=/abs/.npmrc-public');
+  });
+
+  it('emits --target per-service when only one target carries a per-service stage', async () => {
+    const dockerfileA = makeTmpDockerfile('Dockerfile.tA');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.tB');
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfileA}`, `Reporting=${dockerfileB}`],
+      imageTarget: ['Reporting=runtime'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService', 'Reporting'],
+    });
+    await runImageOverrideBuilds(overrides);
+    const calls = runDockerStreamingMock.mock.calls.map(([a]) => a as string[]);
+    const appCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileA)!;
+    const repCall = calls.find((a) => a[a.indexOf('--file') + 1] === dockerfileB)!;
+    expect(appCall.indexOf('--target')).toBe(-1);
+    const tIdx = repCall.indexOf('--target');
+    expect(tIdx).toBeGreaterThan(-1);
+    expect(repCall[tIdx + 1]).toBe('runtime');
+  });
+});
+
+describe('enforceImageOverrideOrphans (issue #240)', () => {
+  function dockerfile(): string {
+    return makeTmpDockerfile('Dockerfile.orphan');
+  }
+
+  it('no-op when no per-service flag was passed', async () => {
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfile()}`],
+      imageBuildArg: ['NODE_ENV=production'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService'],
+    });
+    expect(() => enforceImageOverrideOrphans(rawFlags, overrides)).not.toThrow();
+  });
+
+  it('throws LocalStartServiceError when a per-service build-arg names an uncovered service', async () => {
+    // `--image-build-arg AppService:KEY=val` but `--image-override` only
+    // covers AuthService — AppService is an orphan.
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AuthService=${dockerfile()}`],
+      imageBuildArg: ['AppService:KEY=val'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AuthService'],
+    });
+    expect(() => enforceImageOverrideOrphans(rawFlags, overrides)).toThrow(
+      LocalStartServiceError
+    );
+    try {
+      enforceImageOverrideOrphans(rawFlags, overrides);
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/--image-build-arg AppService:KEY/);
+      expect(msg).toMatch(/no --image-override mapping/);
+    }
+  });
+
+  it('throws naming every offending flag kind for the same orphan service', async () => {
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AuthService=${dockerfile()}`],
+      imageBuildArg: ['AppService:K=v'],
+      imageBuildSecret: ['AppService:npmrc=/abs/.npmrc'],
+      imageTarget: ['AppService=builder'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AuthService'],
+    });
+    try {
+      enforceImageOverrideOrphans(rawFlags, overrides);
+      expect.fail('should have thrown');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/--image-build-arg AppService/);
+      expect(msg).toMatch(/--image-build-secret AppService/);
+      expect(msg).toMatch(/--image-target AppService=builder/);
+    }
+  });
+
+  it('does NOT throw when the per-service flag names a covered service', async () => {
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`AppService=${dockerfile()}`],
+      imageBuildArg: ['AppService:KEY=val'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['AppService'],
+    });
+    expect(() => enforceImageOverrideOrphans(rawFlags, overrides)).not.toThrow();
+  });
+
+  it('lists multiple orphan services in one message', async () => {
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`Covered=${dockerfile()}`],
+      imageBuildArg: ['Orphan1:K=v', 'Orphan2:K=v'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['Covered'],
+    });
+    try {
+      enforceImageOverrideOrphans(rawFlags, overrides);
+      expect.fail('should have thrown');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/Orphan1/);
+      expect(msg).toMatch(/Orphan2/);
+    }
   });
 });

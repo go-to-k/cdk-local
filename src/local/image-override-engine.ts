@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { isCancel, multiselect, text } from '@clack/prompts';
-import { CdkLocalError } from '../utils/error-handler.js';
+import { CdkLocalError, LocalStartServiceError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -51,17 +51,35 @@ import { isInteractive } from './target-picker.js';
 /**
  * Per-target build inputs the engine collects from the CLI flags + boot
  * prompt + picker, then hands off to {@link runImageOverrideBuilds}.
+ *
+ * `buildArgs` / `buildSecrets` / `targetStage` are the EFFECTIVE inputs
+ * for THIS target's `docker build` — already a merge of the global
+ * (`--image-build-arg KEY=VAL` etc.) AND the per-service
+ * (`<svc>:KEY=VAL` etc.) flag forms (issue #240). The per-service form
+ * overrides the global per key when both match the target.
  */
 export interface ImageOverrideEntry {
   /** Absolute path to the Dockerfile to build from. */
   dockerfile: string;
   /** Absolute path to the build context directory (Dockerfile's parent for v1). */
   contextDir: string;
-  /** `--image-build-arg KEY=VAL` pairs, applied globally to every override. */
+  /**
+   * Effective build args for this target — global + per-service merged
+   * (per-service wins on key collision). Order: globals first, then
+   * per-service entries (Map iteration order = insertion order, so a
+   * per-service override on a globally-set key keeps its own position
+   * because the merge re-assigns the key in place).
+   */
   buildArgs: Map<string, string>;
-  /** `--image-build-secret id=src` entries, applied globally to every override. */
+  /**
+   * Effective build secrets for this target — global + per-service
+   * merged (per-service wins on id collision).
+   */
   buildSecrets: Map<string, string>;
-  /** Optional `--image-target <stage>` multi-stage build target. */
+  /**
+   * Effective `--target <stage>` value. Per-service `<svc>=<stage>`
+   * wins over the global `--image-target <stage>` when both are set.
+   */
   targetStage?: string;
 }
 
@@ -82,12 +100,33 @@ export class ImageOverrideError extends CdkLocalError {
 }
 
 /**
- * Global build options that apply to every overridden target. v1 spec
- * keeps these flat (no per-service variants — tracked separately in
- * issue #240). Used inside {@link parseImageOverrideFlags} when promoting
- * each per-target raw entry into a full {@link ImageOverrideEntry}.
+ * Global build options that apply to EVERY overridden target. Issue
+ * #240 added per-service variants (see {@link PerServiceBuildInputs}
+ * on {@link RawImageOverrideFlags}); the global form remains the
+ * baseline that per-service entries layer on top of (per-service wins
+ * on key collision).
  */
 export interface ImageOverrideGlobals {
+  buildArgs: Map<string, string>;
+  buildSecrets: Map<string, string>;
+  targetStage?: string;
+}
+
+/**
+ * Issue #240 — per-service build inputs collected from the prefixed
+ * flag forms (`<svc>:KEY=VAL` for build-arg / build-secret;
+ * `<svc>=stage` for target). One entry per named service; missing
+ * fields fall through to the corresponding {@link ImageOverrideGlobals}
+ * value at merge time.
+ *
+ * Service-name validation happens in {@link enforceImageOverrideOrphans}
+ * AFTER picker + boot-prompt resolve — a per-service flag that names a
+ * service with no `--image-override` mapping (and no boot-prompt-
+ * injected mapping) is a hard error so the user can't silently get
+ * "my AppService:KEY=val flag was ignored because I forgot to add
+ * --image-override AppService".
+ */
+export interface PerServiceBuildInputs {
   buildArgs: Map<string, string>;
   buildSecrets: Map<string, string>;
   targetStage?: string;
@@ -100,6 +139,12 @@ export interface ImageOverrideGlobals {
  * pinned targets via a multi-select prompt). Both forms may appear in
  * one invocation; the emulator's resolver collapses them into a single
  * {@link ImageOverrideMap}.
+ *
+ * Issue #240 added the `perService` bucket: prefixed forms of the
+ * build-input flags (`<svc>:KEY=VAL`, `<svc>:id=src`, `<svc>=stage`)
+ * land here keyed by service name. The global counterparts stay in
+ * {@link ImageOverrideGlobals}; the resolver merges global + per-service
+ * per-target when promoting into {@link ImageOverrideEntry}.
  */
 export interface RawImageOverrideFlags {
   /** Service target -> Dockerfile path (explicit mapping). */
@@ -112,6 +157,13 @@ export interface RawImageOverrideFlags {
    */
   pickerPaths: string[];
   globals: ImageOverrideGlobals;
+  /**
+   * Issue #240 — per-service overlay on top of {@link globals}. Keyed
+   * by service name (the part LEFT of the leading `:` for build-arg /
+   * build-secret; LEFT of `=` for target). Empty when no per-service
+   * flag form appears in the invocation.
+   */
+  perService: Map<string, PerServiceBuildInputs>;
 }
 
 /**
@@ -125,34 +177,88 @@ export interface RawImageOverrideFlags {
  * - `--image-override <svc>=<dockerfile>` -> `explicit.set(svc, dockerfile)`
  * - `--image-override <dockerfile>` (no `=`) -> `pickerPaths.push(...)`
  * - `--image-build-arg KEY=VAL` -> `globals.buildArgs.set('KEY', 'VAL')`
+ * - `--image-build-arg <svc>:KEY=VAL` -> `perService(svc).buildArgs.set('KEY', 'VAL')` (issue #240)
  * - `--image-build-secret id=src` -> `globals.buildSecrets.set('id', 'src')`
+ * - `--image-build-secret <svc>:id=src` -> `perService(svc).buildSecrets.set('id', 'src')` (issue #240)
  * - `--image-target <stage>` -> `globals.targetStage = '<stage>'`
+ * - `--image-target <svc>=<stage>` -> `perService(svc).targetStage = '<stage>'` (issue #240)
+ *
+ * Per-service syntax convention (issue #240):
+ * - Flags whose payload already contains `=` (build-arg, build-secret)
+ *   use `:` to separate the service prefix from the `<key>=<value>`
+ *   payload — `<svc>:KEY=VAL`. The FIRST `:` before the FIRST `=` (if
+ *   any) is treated as the prefix delimiter.
+ * - Flags whose payload is a single token (target) use `=` to separate
+ *   the service prefix from the stage — `<svc>=stage`. Matches the
+ *   `--image-override <svc>=<dockerfile>` convention.
+ * - Per-service entries override the global entry per-key when both
+ *   forms set the same key on the same target. Globals still apply to
+ *   every OTHER overridden target.
  *
  * Collision detection: a service target named more than once in
  * `--image-override <svc>=...` is an error (last-write-wins would
  * silently drop the earlier mapping; explicit error is clearer).
+ * Repeated per-service `--image-build-arg <svc>:KEY=...` entries on
+ * the same `<svc>:KEY` pair are last-write-wins (the same shape the
+ * global form already uses for repeated `KEY=...` entries — both
+ * forms behave identically inside their respective bucket).
  *
  * Empty-value semantics:
  * - `--image-build-arg KEY=` (empty value) is ACCEPTED. The empty
  *   string is forwarded verbatim to `docker build --build-arg KEY=`,
  *   which docker itself accepts (the canonical way to unset a
  *   Dockerfile `ARG`'s default). `KEY=` (empty key) is rejected.
+ *   Per-service form `<svc>:KEY=` is similarly accepted (same empty-
+ *   value semantics applied to the per-service entry).
  * - `--image-target ""` (empty value) is REJECTED — an empty
  *   `--target` is meaningless to `docker build` (`--target` is a
- *   single stage name, not a list).
+ *   single stage name, not a list). Per-service `<svc>=` is similarly
+ *   rejected (empty stage).
  * - `--image-override <svc>=` and `--image-override =<dockerfile>`
  *   are REJECTED — both halves must be non-empty.
  * - `--image-build-secret id=` and `--image-build-secret =src` are
- *   REJECTED — both halves must be non-empty.
+ *   REJECTED — both halves must be non-empty. Per-service form
+ *   `<svc>:id=` and `<svc>:=src` are similarly rejected.
  */
 export function parseImageOverrideFlags(input: {
   imageOverride?: string[];
   imageBuildArg?: string[];
   imageBuildSecret?: string[];
-  imageTarget?: string;
+  /**
+   * `--image-target` may now be repeated to support per-service forms
+   * alongside a global. Accepts the legacy single-string shape too,
+   * so existing call sites that pass a scalar don't break.
+   */
+  imageTarget?: string | string[];
 }): RawImageOverrideFlags {
   const explicit = new Map<string, string>();
   const pickerPaths: string[] = [];
+  const perService = new Map<string, PerServiceBuildInputs>();
+  // Lazily fetch / create a per-service bucket. Centralized so we don't
+  // forget to initialize a new `PerServiceBuildInputs` on the first
+  // touch of a service name.
+  const getPerSvc = (svc: string): PerServiceBuildInputs => {
+    let entry = perService.get(svc);
+    if (!entry) {
+      entry = { buildArgs: new Map(), buildSecrets: new Map() };
+      perService.set(svc, entry);
+    }
+    return entry;
+  };
+  // Split a `<svc>:<rest>` raw token at the FIRST `:` BEFORE the FIRST
+  // `=` (if any). Returns null when the raw value carries no leading
+  // service prefix (i.e. the value is the legacy global form).
+  // The `:` MUST precede the `=` to count as a per-service prefix —
+  // otherwise a `KEY=val:with:colons` value would be misparsed.
+  const splitPerServicePrefix = (raw: string): { svc: string; rest: string } | null => {
+    const colon = raw.indexOf(':');
+    const eq = raw.indexOf('=');
+    if (colon < 0) return null;
+    if (eq >= 0 && eq < colon) return null;
+    const svc = raw.slice(0, colon).trim();
+    if (!svc) return null;
+    return { svc, rest: raw.slice(colon + 1) };
+  };
   for (const raw of input.imageOverride ?? []) {
     const eq = raw.indexOf('=');
     // No `=` -> picker form. An absolute path or a relative one both
@@ -190,6 +296,27 @@ export function parseImageOverrideFlags(input: {
 
   const buildArgs = new Map<string, string>();
   for (const raw of input.imageBuildArg ?? []) {
+    const prefix = splitPerServicePrefix(raw);
+    if (prefix) {
+      // Per-service form `<svc>:KEY=VAL`. Validate KEY=VAL inside the
+      // post-prefix `rest` portion under the same rules the global
+      // form uses (empty VAL OK, empty KEY rejected).
+      const eq = prefix.rest.indexOf('=');
+      if (eq <= 0) {
+        throw new ImageOverrideError(
+          `Invalid --image-build-arg value "${raw}": expected <service>:KEY=VAL.`
+        );
+      }
+      const key = prefix.rest.slice(0, eq).trim();
+      const value = prefix.rest.slice(eq + 1);
+      if (!key) {
+        throw new ImageOverrideError(
+          `Invalid --image-build-arg value "${raw}": empty key (after service prefix).`
+        );
+      }
+      getPerSvc(prefix.svc).buildArgs.set(key, value);
+      continue;
+    }
     const eq = raw.indexOf('=');
     if (eq <= 0) {
       throw new ImageOverrideError(`Invalid --image-build-arg value "${raw}": expected KEY=VAL.`);
@@ -204,6 +331,27 @@ export function parseImageOverrideFlags(input: {
 
   const buildSecrets = new Map<string, string>();
   for (const raw of input.imageBuildSecret ?? []) {
+    const prefix = splitPerServicePrefix(raw);
+    if (prefix) {
+      // Per-service form `<svc>:id=src`. Validate id=src inside `rest`
+      // under the same rules as global (both halves non-empty).
+      const eq = prefix.rest.indexOf('=');
+      if (eq <= 0) {
+        throw new ImageOverrideError(
+          `Invalid --image-build-secret value "${raw}": expected <service>:id=src (e.g. AppService:npmrc=./.npmrc).`
+        );
+      }
+      const id = prefix.rest.slice(0, eq).trim();
+      const src = prefix.rest.slice(eq + 1).trim();
+      if (!id || !src) {
+        throw new ImageOverrideError(
+          `Invalid --image-build-secret value "${raw}": id and src must both be non-empty (after service prefix).`
+        );
+      }
+      const absSrcPS = isAbsolute(src) ? src : resolvePath(process.cwd(), src);
+      getPerSvc(prefix.svc).buildSecrets.set(id, absSrcPS);
+      continue;
+    }
     const eq = raw.indexOf('=');
     if (eq <= 0) {
       throw new ImageOverrideError(
@@ -230,14 +378,46 @@ export function parseImageOverrideFlags(input: {
   }
 
   const globals: ImageOverrideGlobals = { buildArgs, buildSecrets };
-  if (input.imageTarget !== undefined) {
-    if (!input.imageTarget) {
+  // `--image-target` accepts either a single scalar (legacy / global)
+  // or an array (per-service variants + an optional global). Coerce
+  // to an array up-front so the loop body handles both shapes.
+  const imageTargetList: string[] =
+    input.imageTarget === undefined
+      ? []
+      : Array.isArray(input.imageTarget)
+        ? input.imageTarget
+        : [input.imageTarget];
+  for (const raw of imageTargetList) {
+    if (raw === undefined || raw === null) continue;
+    if (!raw) {
       throw new ImageOverrideError('Invalid --image-target value: empty string.');
     }
-    globals.targetStage = input.imageTarget;
+    const eq = raw.indexOf('=');
+    if (eq < 0) {
+      // Global form: a bare stage name. Last write wins when the user
+      // repeated the flag with multiple bare values (parser is liberal
+      // so an accidental `--image-target a --image-target b` doesn't
+      // hard-error; the latter overrides).
+      globals.targetStage = raw;
+      continue;
+    }
+    // Per-service form: `<svc>=<stage>`. Both halves must be non-empty.
+    const svc = raw.slice(0, eq).trim();
+    const stage = raw.slice(eq + 1).trim();
+    if (!svc) {
+      throw new ImageOverrideError(
+        `Invalid --image-target value "${raw}": left side (service target) is empty.`
+      );
+    }
+    if (!stage) {
+      throw new ImageOverrideError(
+        `Invalid --image-target value "${raw}": right side (stage) is empty.`
+      );
+    }
+    getPerSvc(svc).targetStage = stage;
   }
 
-  return { explicit, pickerPaths, globals };
+  return { explicit, pickerPaths, globals, perService };
 }
 
 /**
@@ -317,7 +497,7 @@ export async function resolveImageOverrides(args: {
       );
       continue;
     }
-    out.set(svc, makeEntryFromPath(dockerfileRaw, rawFlags.globals, cwd));
+    out.set(svc, makeEntryFromPath(dockerfileRaw, svc, rawFlags, cwd));
   }
 
   // Stage 2: picker-form Dockerfile paths.
@@ -359,8 +539,11 @@ export async function resolveImageOverrides(args: {
           logger.warn(`--image-override ${dockerfileRaw}: empty selection. Skipped.`);
           continue;
         }
-        const entry = makeEntryFromPath(dockerfileRaw, rawFlags.globals, cwd);
-        for (const t of chosen) out.set(t, entry);
+        // Picker form may bind one Dockerfile to MULTIPLE targets. Each
+        // target merges its own per-service overlay (no cross-talk),
+        // so the entries differ per target whenever a per-service flag
+        // touches one of the picked services.
+        for (const t of chosen) out.set(t, makeEntryFromPath(dockerfileRaw, t, rawFlags, cwd));
       }
     }
   }
@@ -392,7 +575,7 @@ export async function resolveImageOverrides(args: {
       if (!value) continue;
       const lower = value.toLowerCase();
       if (lower === 'n' || lower === 'no') continue;
-      out.set(target, makeEntryFromPath(value, rawFlags.globals, cwd));
+      out.set(target, makeEntryFromPath(value, target, rawFlags, cwd));
     }
   }
 
@@ -400,16 +583,54 @@ export async function resolveImageOverrides(args: {
 }
 
 /**
- * Promote a per-target Dockerfile path + globals into a full
+ * Issue #240 — produce the EFFECTIVE per-target build inputs by layering
+ * a per-service overlay on top of the global baseline. Per-service
+ * entries override the global per-key (and per-service `targetStage`
+ * overrides the global `targetStage`).
+ *
+ * The returned Maps are fresh copies — the caller may mutate the
+ * resulting {@link ImageOverrideEntry}'s Maps without bleeding back
+ * into the shared global Maps inside {@link RawImageOverrideFlags}.
+ * Per-service entries are merged AFTER globals so a key shared between
+ * the two ends up with the per-service value (Map's `set` overwrites
+ * on duplicate key).
+ */
+export function mergeForService(
+  serviceTarget: string,
+  globals: ImageOverrideGlobals,
+  perService: ReadonlyMap<string, PerServiceBuildInputs>
+): { buildArgs: Map<string, string>; buildSecrets: Map<string, string>; targetStage?: string } {
+  const buildArgs = new Map<string, string>(globals.buildArgs);
+  const buildSecrets = new Map<string, string>(globals.buildSecrets);
+  let targetStage = globals.targetStage;
+  const overlay = perService.get(serviceTarget);
+  if (overlay) {
+    for (const [k, v] of overlay.buildArgs.entries()) buildArgs.set(k, v);
+    for (const [k, v] of overlay.buildSecrets.entries()) buildSecrets.set(k, v);
+    if (overlay.targetStage !== undefined) targetStage = overlay.targetStage;
+  }
+  return {
+    buildArgs,
+    buildSecrets,
+    ...(targetStage !== undefined && { targetStage }),
+  };
+}
+
+/**
+ * Promote a per-target Dockerfile path + raw flags into a full
  * {@link ImageOverrideEntry}. Resolves the path against `cwd`, asserts
  * the Dockerfile exists and is a regular file (so the user sees
  * "file not found" up-front rather than mid-`docker build`), and
  * derives the build context as the Dockerfile's parent directory
  * (the v1 simplification — custom contexts are tracked separately).
+ *
+ * Issue #240 — `serviceTarget` is now part of the entry-construction
+ * input so the global + per-service merge runs per target.
  */
 function makeEntryFromPath(
   raw: string,
-  globals: ImageOverrideGlobals,
+  serviceTarget: string,
+  rawFlags: RawImageOverrideFlags,
   cwd: string
 ): ImageOverrideEntry {
   const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
@@ -424,12 +645,13 @@ function makeEntryFromPath(
       `--image-override: '${raw}' is not a regular file (resolved to '${abs}').`
     );
   }
+  const merged = mergeForService(serviceTarget, rawFlags.globals, rawFlags.perService);
   return {
     dockerfile: abs,
     contextDir: dirname(abs),
-    buildArgs: globals.buildArgs,
-    buildSecrets: globals.buildSecrets,
-    ...(globals.targetStage !== undefined && { targetStage: globals.targetStage }),
+    buildArgs: merged.buildArgs,
+    buildSecrets: merged.buildSecrets,
+    ...(merged.targetStage !== undefined && { targetStage: merged.targetStage }),
   };
 }
 
@@ -577,4 +799,68 @@ export async function runImageOverrideBuilds(
     builtTags.push(tag);
   }
   return out;
+}
+
+/**
+ * Issue #240 — orphan validation. A per-service build-input flag
+ * (`--image-build-arg <svc>:KEY=VAL`, `--image-build-secret
+ * <svc>:id=src`, or `--image-target <svc>=stage`) names a service that
+ * MUST appear in the resolved override map — otherwise the per-service
+ * value silently gets discarded because no `docker build` runs for
+ * that service.
+ *
+ * Called AFTER {@link resolveImageOverrides} (Stage 3 boot prompt
+ * complete) so a service the user added via the prompt counts as
+ * covered. A still-orphan per-service flag at this point means the
+ * user typo'd the service name OR forgot a corresponding
+ * `--image-override <svc>=<dockerfile>` mapping (and either chose `N`
+ * in the boot prompt or ran with `--no-interactive-overrides`).
+ *
+ * Throws {@link LocalStartServiceError} naming every offending
+ * `<flag>` + `<service>` pair so the user can fix all in one go
+ * (matches the `enforceStrictOverrides` pattern). Mutates nothing.
+ *
+ * Host-side use case: cdkd and other shim hosts that wrap the engine
+ * re-export this via `cdk-local/internal` and call it right after
+ * their own `resolveImageOverrides` invocation to inherit the same
+ * orphan-detection semantics.
+ *
+ * @param rawFlags Output of {@link parseImageOverrideFlags}.
+ * @param resolvedOverrides Output of {@link resolveImageOverrides}
+ *   (after the boot prompt has run).
+ */
+export function enforceImageOverrideOrphans(
+  rawFlags: RawImageOverrideFlags,
+  resolvedOverrides: ImageOverrideMap
+): void {
+  if (rawFlags.perService.size === 0) return;
+  const offenders: string[] = [];
+  for (const [svc, overlay] of rawFlags.perService.entries()) {
+    if (resolvedOverrides.has(svc)) continue;
+    // Surface one line per offending FLAG kind so the user sees every
+    // piece they need to fix, not just the first.
+    if (overlay.buildArgs.size > 0) {
+      const keys = Array.from(overlay.buildArgs.keys()).join(', ');
+      offenders.push(
+        `--image-build-arg ${svc}:${keys} references a service with no --image-override mapping.`
+      );
+    }
+    if (overlay.buildSecrets.size > 0) {
+      const ids = Array.from(overlay.buildSecrets.keys()).join(', ');
+      offenders.push(
+        `--image-build-secret ${svc}:${ids} references a service with no --image-override mapping.`
+      );
+    }
+    if (overlay.targetStage !== undefined) {
+      offenders.push(
+        `--image-target ${svc}=${overlay.targetStage} references a service with no --image-override mapping.`
+      );
+    }
+  }
+  if (offenders.length === 0) return;
+  throw new LocalStartServiceError(
+    `Per-service image-override flag(s) target a service with no --image-override ` +
+      `coverage. Add the matching --image-override <service>=<dockerfile>, drop the ` +
+      `per-service flag, or fix the service name:\n  ${offenders.join('\n  ')}`
+  );
 }

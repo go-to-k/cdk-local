@@ -528,26 +528,41 @@ export {
 } from './cli/commands/ecs-service-emulator.js';
 
 /**
- * Issue #238 — `cdkl start-service` / `cdkl start-alb`
+ * Issue #238 / #240 — `cdkl start-service` / `cdkl start-alb`
  * `--image-override` family engine. `parseImageOverrideFlags` is the
  * pure flag parser; `resolveImageOverrides` walks the picker + boot
  * prompt against the pinned target set; `runImageOverrideBuilds`
  * runs the `docker build` pass per covered Dockerfile and returns
  * the deterministic local tag per target. `buildImageOverrideTag` is
  * exposed so a host CLI can reproduce the same tag-naming convention
- * if it wraps the engine for a custom build orchestration. Re-exported
- * via `cdk-local/internal` so host CLIs (e.g. cdkd) inherit the same
- * override pipeline without a byte-identical copy.
+ * if it wraps the engine for a custom build orchestration.
+ *
+ * Issue #240 additions: `enforceImageOverrideOrphans` is the
+ * orphan-validation pass that fires after Stage 3 (boot prompt) — a
+ * per-service flag (`<svc>:KEY=VAL` etc.) naming a service the
+ * resolved override map does NOT cover throws `LocalStartServiceError`.
+ * `mergeForService` produces the effective build inputs for one
+ * service target by layering its per-service overlay on top of the
+ * globals (per-service wins on key collision); host CLIs reuse it
+ * when they bypass `resolveImageOverrides` and assemble entries
+ * directly. `PerServiceBuildInputs` is the per-service overlay type
+ * referenced from `RawImageOverrideFlags.perService`.
+ *
+ * Re-exported via `cdk-local/internal` so host CLIs (e.g. cdkd)
+ * inherit the same override pipeline without a byte-identical copy.
  */
 export {
   parseImageOverrideFlags,
   resolveImageOverrides,
   runImageOverrideBuilds,
   buildImageOverrideTag,
+  enforceImageOverrideOrphans,
+  mergeForService,
   ImageOverrideError,
   type ImageOverrideEntry,
   type ImageOverrideMap,
   type ImageOverrideGlobals,
+  type PerServiceBuildInputs,
   type RawImageOverrideFlags,
 } from './local/image-override-engine.js';
 

@@ -103,6 +103,7 @@ import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
 import {
+  enforceImageOverrideOrphans,
   parseImageOverrideFlags,
   resolveImageOverrides,
   runImageOverrideBuilds,
@@ -231,24 +232,30 @@ export interface EcsServiceEmulatorOptions {
    */
   imageOverride?: string[];
   /**
-   * Issue #238 — `--image-build-arg KEY=VAL` pairs, repeatable. Global
-   * (apply to every overridden target's `docker build --build-arg`).
-   * Per-service variants are intentionally out of scope for v1
-   * (tracked separately in #240).
+   * Issue #238 / #240 — `--image-build-arg KEY=VAL` (global) or
+   * `<svc>:KEY=VAL` (per-service, issue #240), repeatable. Global
+   * applies to every overridden target's `docker build --build-arg`;
+   * per-service overrides the global per-key on the named target.
    */
   imageBuildArg?: string[];
   /**
-   * Issue #238 — `--image-build-secret id=src`, repeatable. Global.
-   * Forwarded to `docker build --secret id=<id>,src=<src>` for every
-   * overridden target so `RUN --mount=type=secret,id=<id>` works
-   * locally (the private-registry / npm-token recipe).
+   * Issue #238 / #240 — `--image-build-secret id=src` (global) or
+   * `<svc>:id=src` (per-service, issue #240), repeatable. Global
+   * forwards to `docker build --secret id=<id>,src=<src>` for every
+   * overridden target; per-service overrides the global per-id on
+   * the named target so a monorepo can mount different `npmrc`
+   * tokens per service Dockerfile.
    */
   imageBuildSecret?: string[];
   /**
-   * Issue #238 — `--image-target <stage>`. Global. Forwarded to
-   * `docker build --target=<stage>` for every overridden target.
+   * Issue #238 / #240 — `--image-target <stage>` (global) or
+   * `<svc>=<stage>` (per-service, issue #240). Repeatable now that
+   * per-service variants exist (each occurrence may be a different
+   * shape). Forwarded to `docker build --target=<stage>` for every
+   * overridden target (or the named one when the per-service form
+   * is used).
    */
-  imageTarget?: string;
+  imageTarget?: string[];
   /**
    * Issue #238 — `--no-interactive-overrides`. Suppresses the boot
    * prompt + the picker-form prompt; the override map is whatever
@@ -2468,6 +2475,16 @@ async function resolveAndBuildImageOverrides(args: {
     noInteractive,
   });
 
+  // Issue #240 — orphan validation runs AFTER Stage 3 (boot prompt
+  // complete). A per-service flag (`--image-build-arg <svc>:KEY=VAL`,
+  // `--image-build-secret <svc>:id=src`, `--image-target <svc>=stage`)
+  // that names a service still not covered in `overrides` is a hard
+  // error — the user typo'd or forgot the corresponding
+  // `--image-override <svc>=<dockerfile>`. Wrapped as
+  // `LocalStartServiceError` inside the engine so the global error
+  // handler renders it cleanly.
+  enforceImageOverrideOrphans(rawFlags, overrides);
+
   if (overrides.size === 0) return new Map();
 
   // Build every covered Dockerfile. Per-build progress goes to stdout
@@ -2646,9 +2663,11 @@ export function addImageOverrideOptions(cmd: Command): Command {
     )
     .addOption(
       new Option(
-        '--image-target <stage>',
-        'Global `docker build --target=<stage>` forwarded to every --image-override build. Useful ' +
-          'when the Dockerfile is multi-stage and you want to stop at a specific intermediate stage.'
+        '--image-target <stage or svc=stage...>',
+        'Repeatable. Bare `<stage>` is a global --target for every --image-override build; ' +
+          '`<service>=<stage>` (issue #240) scopes the --target to one overridden target so a ' +
+          'monorepo with different multi-stage Dockerfiles per service can stop each at its own ' +
+          'intermediate stage. Per-service form overrides the global on the named target.'
       )
     )
     .addOption(
