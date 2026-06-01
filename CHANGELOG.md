@@ -1,3 +1,10 @@
+# [0.76.0](https://github.com/go-to-k/cdk-local/compare/v0.75.0...v0.76.0) (2026-06-01)
+
+
+### Features
+
+* **invoke-agentcore:** add --watch on the /ws session paths ([#255](https://github.com/go-to-k/cdk-local/issues/255)) ([#270](https://github.com/go-to-k/cdk-local/issues/270)) ([6585513](https://github.com/go-to-k/cdk-local/commit/6585513f487f474bbc7abad678a89fa9e608a4a4))
+
 # [0.75.0](https://github.com/go-to-k/cdk-local/compare/v0.74.0...v0.75.0) (2026-06-01)
 
 
