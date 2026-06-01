@@ -234,6 +234,105 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
     expect(wsInvoker).toHaveBeenCalledTimes(2);
   });
 
+  it('falls back to rebuild when the classifier context build throws', async () => {
+    // The classifier needs `loadAgentCoreAssetContext` (synth + asset
+    // manifest read) to succeed; on synth / manifest failure the watch
+    // loop logs a warn and forces verdict='rebuild' (slow-but-correct
+    // default). Force the failure by wiring __classifierContext to
+    // throw and assert the rebuild callback fires.
+    wireOneReloadThenEnd();
+    rebuild.mockResolvedValue({ containerId: 'newId', hostPort: 9099, stacks: [] });
+
+    await runAgentCoreWatchLoop({
+      containerHost: '127.0.0.1',
+      hostPort: 9001,
+      event: {},
+      sessionId: 'sid',
+      timeoutMs: 1000,
+      wsInteractive: false,
+      options: { output: 'cdk.out' } as never,
+      resolvedTarget: 'ChatAgent',
+      resolved: baseRuntime(),
+      synthesizer,
+      synthOpts: {} as never,
+      stacks: [],
+      rebuild,
+      softReload,
+      __wsInvoker: wsInvoker,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: async () => {
+        throw new Error('synth boom');
+      },
+    });
+
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    expect(softReload).not.toHaveBeenCalled();
+  });
+
+  it('exits the watch loop when the rebuild callback rejects (avoids the ~30s waitForPing hang on stale currentHostPort)', async () => {
+    // M1 review nit: when rebuild() rejects, the prior container is
+    // already torn down so the next iteration's waitForPing on the
+    // OLD `currentHostPort` would block until its default timeout.
+    // The fix flips a `reloadFailed` flag that the main loop checks
+    // BEFORE waitForPing, breaking out cleanly. This test exercises
+    // the single-WS path: one session, watcher fires, rebuild rejects,
+    // loop bails out without a second waitForPing.
+    let pingCalls = 0;
+    waitForPing = vi.fn().mockImplementation(async () => {
+      pingCalls += 1;
+    });
+    // Only ONE WS session — the loop must exit after the rebuild
+    // failure rather than entering a second iteration.
+    wsInvoker = vi
+      .fn()
+      .mockImplementationOnce(async (_h, _p, _e, opts: { abortSignal?: AbortSignal }) => {
+        process.nextTick(() => {
+          onChangeRef?.(['/abs/handler.py']);
+        });
+        await new Promise<void>((res) => {
+          opts.abortSignal?.addEventListener('abort', () => res());
+        });
+        return { frames: 0 };
+      });
+    rebuild.mockRejectedValue(new Error('build failed: missing Dockerfile'));
+
+    await runAgentCoreWatchLoop({
+      containerHost: '127.0.0.1',
+      hostPort: 9001,
+      event: {},
+      sessionId: 'sid',
+      timeoutMs: 1000,
+      wsInteractive: false,
+      options: { output: 'cdk.out' } as never,
+      resolvedTarget: 'ChatAgent',
+      resolved: baseRuntime(),
+      synthesizer,
+      synthOpts: {} as never,
+      stacks: [],
+      rebuild,
+      softReload,
+      __wsInvoker: wsInvoker,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: async () => undefined,
+    });
+
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    // Exactly one waitForPing (the initial one before the first WS
+    // session). The loop MUST NOT enter a second iteration that would
+    // call waitForPing again on the stale port.
+    expect(pingCalls).toBe(1);
+    expect(wsInvoker).toHaveBeenCalledTimes(1);
+    expect(watcher.close).toHaveBeenCalled();
+  });
+
   it('exits the loop on a benign agent close with no pending reload', async () => {
     // Single WS session, resolves naturally — no watcher firing.
     wsInvoker = vi.fn().mockResolvedValue({ frames: 5 });
@@ -313,5 +412,27 @@ describe('softReloadAgentContainer — docker cp + docker restart wiring', () =>
     await expect(softReloadAgentContainer('cid', '/src')).rejects.toThrow(/docker cp/);
     // inspect + cp = 2 calls; restart must NOT run after cp fails.
     expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves docker stderr inside the wrapped CdkLocalError message (M3)', async () => {
+    // execFile rejections carry an `err.stderr` property — the docker
+    // CLI writes its actionable diagnostics there. Without surfacing
+    // it the wrapped error only carries the generic
+    // "Command failed with exit code N" line; the user has to docker
+    // logs the container by hand to learn what actually failed.
+    execFileMock.mockImplementation((_cmd: string, argv: string[]) => {
+      if (argv[0] === 'cp') {
+        const err: Error & { stderr?: string } = Object.assign(
+          new Error('Command failed with exit code 1'),
+          { stderr: 'Error: No such container: cid_gone\n' }
+        );
+        return err;
+      }
+      return '/srv/app\n';
+    });
+
+    await expect(softReloadAgentContainer('cid_gone', '/src')).rejects.toThrow(
+      /No such container: cid_gone/
+    );
   });
 });

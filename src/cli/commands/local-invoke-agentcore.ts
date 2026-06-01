@@ -1,6 +1,8 @@
+import { execFile as execFileCb } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path, { dirname } from 'node:path';
+import { promisify } from 'node:util';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -11,6 +13,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
@@ -1799,6 +1802,12 @@ export async function runAgentCoreWatchLoop(args: {
   // iteration (reload) or exits the loop (agent closed without a
   // pending reload).
   let pendingReload = false;
+  // Flips to true if a rebuild or soft-reload callback throws — both
+  // paths teardown the old container before bringing the replacement
+  // up, so `currentHostPort` may point at a torn-down container. The
+  // main loop checks this BEFORE the next waitForPing so we bail out
+  // instead of blocking for the ~30s ping timeout.
+  let reloadFailed = false;
   // Tracks "the watcher fired during a reload"; the watch loop's
   // serialized reloadChain handles re-firing without re-entry races.
 
@@ -1830,13 +1839,11 @@ export async function runAgentCoreWatchLoop(args: {
       // default the ECS emulator's reload pathway uses.
       let verdict: ReloadVerdict = { kind: 'rebuild', reason: 'classifier not consulted' };
       let assetCtx: ReloadAssetContext | undefined;
-      let preReloadStacks: StackInfo[] = currentStacks;
       try {
         if (args.__classifierContext) {
           assetCtx = await args.__classifierContext(changedPaths);
         } else {
           const { stacks: freshStacks } = await args.synthesizer.synthesize(args.synthOpts);
-          preReloadStacks = freshStacks;
           const oldAssetHash = await deriveOldAssetHash({
             resolvedTarget: args.resolvedTarget,
             resolved: args.resolved,
@@ -1897,19 +1904,20 @@ export async function runAgentCoreWatchLoop(args: {
           logger.info(`Reload: rebuilt the agent container.`);
         }
       } catch (err) {
+        // Both rebuild and soft-reload teardown the running container
+        // before bringing the replacement up. On failure `currentHostPort`
+        // points at a container that may already be gone, so the next
+        // iteration's `waitForPing` would block until its ~30s timeout.
+        // Signal the main loop to bail out cleanly instead — SIGINT
+        // stays the user-initiated termination path.
         logger.error(
           `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
-            'The previous container may already be torn down; check container logs.'
+            'The previous container may already be torn down; exiting --watch loop. ' +
+            'Re-run cdkl invoke-agentcore --watch to recover.'
         );
-        // Even on failure we'd entered pendingReload mode; the WS
-        // dispatch loop will re-attempt to open against `currentHostPort`
-        // (which may still point at the old port if the rebuild failed
-        // mid-tear-down). The user can `^C` and re-run.
+        reloadFailed = true;
+        currentAbort?.abort();
       }
-      // Suppress unused-warning on the deliberately-thrown-away
-      // pre-reload stacks (kept for symmetry + a future env-only
-      // fast path; not load-bearing today).
-      void preReloadStacks;
     });
     reloadChain = next.catch((err) => {
       logger.error(`Reload chain threw: ${err instanceof Error ? err.message : String(err)}`);
@@ -1924,6 +1932,7 @@ export async function runAgentCoreWatchLoop(args: {
     // not the termination path on user-initiated shutdown.
     // eslint-disable-next-line no-constant-condition
     while (true) {
+      if (reloadFailed) break;
       await waitForPing(args.containerHost, currentHostPort);
       if (firstIteration) {
         logger.info(
@@ -2000,15 +2009,28 @@ export async function runAgentCoreWatchLoop(args: {
  * @internal — exported for unit tests of the docker-cp + docker-restart
  * shape without standing up a real container.
  */
+const execFileAsync = promisify(execFileCb);
+
+// Stringify a child_process / execFile rejection. `err.stderr` is where
+// docker writes its actionable diagnostics; without it the wrapped error
+// only carries the generic "Command failed with exit code N" message.
+function describeExecError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const stderr = (err as { stderr?: unknown }).stderr;
+  const stderrText =
+    typeof stderr === 'string'
+      ? stderr.trim()
+      : stderr instanceof Buffer
+        ? stderr.toString('utf8').trim()
+        : '';
+  return stderrText ? `${err.message}\n${stderrText}` : err.message;
+}
+
 export async function softReloadAgentContainer(
   containerId: string,
   newAssetSourceDir: string
 ): Promise<void> {
   const logger = getLogger();
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const { getDockerCmd } = await import('../../utils/docker-cmd.js');
-  const execFileAsync = promisify(execFile);
   const dockerCmd = getDockerCmd();
 
   // Resolve the runtime WORKDIR. Empty -> `/` (Docker runtime default).
@@ -2024,7 +2046,7 @@ export async function softReloadAgentContainer(
   } catch (err) {
     throw new CdkLocalError(
       `softReloadAgentContainer: docker inspect of container '${containerId}' failed: ` +
-        `${err instanceof Error ? err.message : String(err)}.`,
+        `${describeExecError(err)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_INSPECT_FAILED'
     );
   }
@@ -2043,7 +2065,7 @@ export async function softReloadAgentContainer(
   } catch (err) {
     throw new CdkLocalError(
       `softReloadAgentContainer: docker cp into '${containerId}:${workdir}' failed: ` +
-        `${err instanceof Error ? err.message : String(err)}.`,
+        `${describeExecError(err)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_CP_FAILED'
     );
   }
@@ -2052,7 +2074,7 @@ export async function softReloadAgentContainer(
   } catch (err) {
     throw new CdkLocalError(
       `softReloadAgentContainer: docker restart of '${containerId}' failed: ` +
-        `${err instanceof Error ? err.message : String(err)}.`,
+        `${describeExecError(err)}.`,
       'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_RESTART_FAILED'
     );
   }
