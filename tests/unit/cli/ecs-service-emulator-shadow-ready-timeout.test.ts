@@ -31,13 +31,21 @@ describe('shadow-ready-timeout resolution (issue #265)', () => {
       expect(parseShadowReadyTimeout('45000')).toBe(45000);
       expect(parseShadowReadyTimeout('1')).toBe(1);
       expect(parseShadowReadyTimeout('120000')).toBe(120000);
+      // Scientific notation expands to an integer — accepted (so a
+      // user who genuinely types `1e6` gets 1,000,000ms, not a silent
+      // truncation to 1 like `parseInt` would produce).
+      expect(parseShadowReadyTimeout('1e6')).toBe(1_000_000);
     });
 
-    it('rejects 0 / negative / non-numeric input', () => {
+    it('rejects 0 / negative / non-numeric / trailing-garbage / decimal input', () => {
       expect(() => parseShadowReadyTimeout('0')).toThrow();
       expect(() => parseShadowReadyTimeout('-1')).toThrow();
       expect(() => parseShadowReadyTimeout('abc')).toThrow();
       expect(() => parseShadowReadyTimeout('')).toThrow();
+      // Reviewer-flagged foot-guns previously silently accepted via
+      // `parseInt`'s lenient parsing — now strict.
+      expect(() => parseShadowReadyTimeout('1.5')).toThrow();
+      expect(() => parseShadowReadyTimeout('45000abc')).toThrow();
     });
   });
 

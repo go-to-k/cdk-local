@@ -2464,8 +2464,17 @@ export function logEndpointsBanner(
 }
 
 function parsePositiveInt(raw: string, flagName: string): number {
-  const parsed = parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
+  // Use `Number` (not `parseInt`) so trailing garbage, decimals, and
+  // scientific notation are rejected rather than silently truncated:
+  //   parseInt('1.5', 10)    -> 1        (silent truncate)
+  //   parseInt('1e6', 10)    -> 1        (parses just the '1')
+  //   parseInt('45000abc')   -> 45000    (trailing garbage)
+  //   Number('1.5')          -> 1.5      -> rejected by isInteger
+  //   Number('1e6')          -> 1000000  -> accepted (correct)
+  //   Number('45000abc')     -> NaN      -> rejected
+  // Plus the leading-empty case: Number('') -> 0 which we reject below.
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
     throw new LocalStartServiceError(`${flagName} must be a positive integer (got '${raw}').`);
   }
   return parsed;
