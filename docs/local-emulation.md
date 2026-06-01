@@ -1537,6 +1537,8 @@ picking up a flipped deployed env value for an ECR-pinned target
 without an override) is a follow-up — today the skip is total for
 uncovered pinned targets.
 
+### Local build override (`--image-override`)
+
 **Override an ECR pin with a local Dockerfile build (`--image-override`, issue #238).**
 `cdkl start-service` and `cdkl start-alb` accept a flag family that
 maps a pinned service target to a local `docker build` of a
@@ -1559,7 +1561,10 @@ UNCOVERED by the override map. Six flags compose:
   a `@clack/prompts` multi-select against the still-uncovered
   pinned targets; mix explicit + picker forms freely.
 - `--image-build-arg KEY=VAL` — global, repeatable. Forwarded to
-  every overridden target's `docker build --build-arg`.
+  every overridden target's `docker build --build-arg`. An empty
+  value (`--image-build-arg KEY=`) is accepted and forwarded
+  verbatim — the canonical way to unset a Dockerfile `ARG`'s default.
+  An empty key (`--image-build-arg =VAL`) is rejected at boot.
 - `--image-build-secret id=src` — global, repeatable. Forwarded to
   `docker build --secret id=<id>,src=<src>`; the canonical recipe
   for a Dockerfile that uses
@@ -1578,7 +1583,20 @@ UNCOVERED by the override map. Six flags compose:
 
 When `--no-interactive-overrides` is unset AND the session is a
 TTY, the engine walks each still-uncovered pinned target with a
-prompt:
+prompt. A one-line intro explaining what the prompt does and how to
+opt out (`--no-interactive-overrides`) surfaces once per session
+before the first target's prompt — not before every target.
+
+For each target, the engine first scans `cwd` for `Dockerfile` /
+`Dockerfile.*` files (depth-limited recursive walk, capped at the
+10 most recently modified entries by mtime, skipping
+`node_modules` / `.git` / `cdk.out` / `dist` / `.next` / `.cache` /
+`build` / `coverage` / `.turbo` / `.vite` at every depth — those
+are dirs whose Dockerfiles are build artifacts or vendored
+dependencies, not the user's iteration target). When at least one
+match is found, the prompt offers them as a `@clack/prompts`
+multi-select picker; when none is found, the prompt falls back to
+free-text:
 
 ```
 ? Detected pinned image on 'AppService' (123…/repo:4.5.1).
@@ -1592,7 +1610,14 @@ still fires for it.
 `--image-build-secret id=<src>` resolves a relative `<src>` against
 the directory you ran `cdkl` from (not the Dockerfile's parent), so
 `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless
-of where the Dockerfile lives in the tree.
+of where the Dockerfile lives in the tree. A leading `~` / `~/` is
+expanded to the running user's home directory before resolution, so
+`--image-build-secret npmrc=~/.npmrc` (the POSIX-canonical npm
+credentials path) works the same whether the shell pre-expanded it
+or not. The same `~/` expansion applies to the
+`--image-override <svc>=<dockerfile>` path. Named-user tildes
+(`~user/foo`) are passed through literally — Node has no built-in
+for resolving an arbitrary username to its home directory.
 
 The override engine builds each covered Dockerfile once at boot,
 tagging the resulting image with a deterministic local-only tag
