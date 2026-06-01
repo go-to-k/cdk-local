@@ -1535,11 +1535,17 @@ uncovered pinned targets.
 maps a pinned service target to a local `docker build` of a
 supplied Dockerfile, so `--from-cfn-stack` keeps wiring real
 DynamoDB / Secrets / SSM into the container while the application
-image is locally iterable. Under `--watch`, an overridden target
-goes through the rebuild rolling primitive on each save — the new
-local Dockerfile build is picked up automatically (the reload-skip
-above only fires for targets that remain UNCOVERED by the override
-map). Six flags compose:
+image is locally iterable. Under `--watch`, every reload re-runs
+`docker build` per covered Dockerfile (issue #262), then rolls each
+replica through the rebuild primitive — a source edit picked up by
+the Dockerfile's `COPY` flips the content-addressed tag and the
+shadow boots against the freshly-built image. The Stage 1 picker /
+Stage 3 boot prompt are NOT re-fired (resolved once at boot); the
+orphan validator is NOT re-run (the `ImageOverrideMap` shape is
+stable post-boot); a per-target rebuild failure logs a warn and
+keeps the OLD replica serving while sibling targets continue
+rolling. The reload-skip above only fires for targets that remain
+UNCOVERED by the override map. Six flags compose:
 
 - `--image-override <svc>=<dockerfile>` (explicit) or
   `<dockerfile>` (picker-form) — repeatable. The picker-form opens

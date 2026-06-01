@@ -483,6 +483,36 @@ describe('runImageOverrideBuilds argv shape (issue #238, T1)', () => {
     expect(opts.cwd).toBe(path.dirname(dockerfile));
   });
 
+  it('re-invoked after Dockerfile bytes change produces a DIFFERENT tag (issue #262 reload-rebuild)', async () => {
+    // Issue #262 — the watcher's reload pathway calls
+    // `runImageOverrideBuilds` again per firing so a source edit under
+    // a covered Dockerfile flips the content-addressed tag and the
+    // rolling primitive boots a shadow against the freshly-built
+    // image. This row pins the tag-bytes-flip contract at the engine
+    // boundary: the SAME entry shape, only the Dockerfile bytes
+    // changed -> the returned tag MUST differ.
+    const dockerfile = makeTmpDockerfile('Dockerfile.reload-flip');
+    writeFileSync(dockerfile, 'FROM alpine:3.18\n');
+    const entry = {
+      dockerfile,
+      contextDir: path.dirname(dockerfile),
+      buildArgs: new Map<string, string>(),
+      buildSecrets: new Map<string, string>(),
+    };
+    const overrides = new Map([['Svc', entry]]);
+    const before = await runImageOverrideBuilds(overrides);
+    // Same entry shape, Dockerfile bytes change (sim. of a `src/`
+    // edit that the user's Dockerfile COPYs into the image — at the
+    // engine boundary the bytes axis is the Dockerfile itself).
+    writeFileSync(dockerfile, 'FROM alpine:3.19\n');
+    const after = await runImageOverrideBuilds(overrides);
+    const tagBefore = before.get('Svc');
+    const tagAfter = after.get('Svc');
+    expect(tagBefore).toBeDefined();
+    expect(tagAfter).toBeDefined();
+    expect(tagAfter).not.toBe(tagBefore);
+  });
+
   it('wraps a docker build failure with ImageOverrideError + stderr tail', async () => {
     const dockerfile = makeTmpDockerfile('Dockerfile.fail');
     runDockerStreamingMock.mockRejectedValueOnce(
