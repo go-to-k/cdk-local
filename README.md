@@ -35,7 +35,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
   - API Gateway routing and request shaping
   - Lambda authorizers, running in real local containers
   - pure handler logic — validation, transforms, branching
-- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs, Secret values, and IAM credentials into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs and Secret values into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
   - dumping production data into a local DB
   - mirroring Secret values into local Secrets Manager
   - anonymizing fixtures across schema changes
@@ -43,7 +43,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / 
 
 ## What runs locally
 
-cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (`--assume-role`, or `--from-cfn-stack` to bind to a deployed stack).
+cdk-local runs your **application compute** in Docker, using your CDK app as the source of truth. It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (or pass `--assume-role <arn>` to assume a different role). Add `--from-cfn-stack` to also bind env vars to a deployed stack's real ARNs and Secret values.
 
 The locally executable resources are listed under [Supported resources](#supported-resources).
 
