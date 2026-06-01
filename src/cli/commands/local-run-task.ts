@@ -172,7 +172,11 @@ async function localRunTaskCommand(
   };
 
   try {
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnIfSet({
+      roleArn: options.roleArn,
+      region: options.region,
+      profile: options.profile,
+    });
     await ensureDockerAvailable();
 
     const appCmd = resolveApp(options.app);

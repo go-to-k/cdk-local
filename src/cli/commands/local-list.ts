@@ -47,7 +47,11 @@ async function localListCommand(options: LocalListOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: undefined });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: undefined,
+    profile: options.profile,
+  });
 
   const appCmd = resolveApp(options.app);
   if (!appCmd) {

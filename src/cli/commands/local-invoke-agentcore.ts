@@ -275,7 +275,11 @@ async function localInvokeAgentCoreCommand(
   );
 
   try {
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnIfSet({
+      roleArn: options.roleArn,
+      region: options.region,
+      profile: options.profile,
+    });
     await ensureDockerAvailable();
 
     const profileCredentials = options.profile

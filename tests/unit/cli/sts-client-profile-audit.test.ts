@@ -28,7 +28,16 @@ import { describe, expect, it } from 'vite-plus/test';
 const here = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
-const SCAN_ROOTS = [join(repoRoot, 'src', 'cli'), join(repoRoot, 'src', 'local')];
+// `src/utils/` is included alongside `src/cli/` + `src/local/` because
+// `src/utils/role-arn.ts` was previously outside the audit scope despite
+// hosting `applyRoleArnIfSet`'s STSClient call, which is invoked by
+// every command. The PR-review caught the relapse vector and widened
+// the scope so the next half-wire trips a test failure here.
+const SCAN_ROOTS = [
+  join(repoRoot, 'src', 'cli'),
+  join(repoRoot, 'src', 'local'),
+  join(repoRoot, 'src', 'utils'),
+];
 
 /** Recursively collect every `*.ts` file under `dir`. */
 function collectTsFiles(dir: string): string[] {
@@ -64,6 +73,17 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (!line.includes('new STSClient(')) continue;
+    // Skip JSDoc / comment lines that mention the literal pattern in
+    // backticks for documentation purposes (e.g. the historical-pattern
+    // call-out inside `buildStsClientConfig`'s own docstring). A real
+    // construction site is never inside a comment block.
+    const trimmedStart = line.trim();
+    if (
+      trimmedStart.startsWith('*') ||
+      trimmedStart.startsWith('//') ||
+      trimmedStart.startsWith('/*')
+    )
+      continue;
     // The construction may span multiple lines — read the next few too
     // so multi-line `new STSClient(\n  buildStsClientConfig(...))` is
     // recognized as a wrapped helper call, not a bare construction.

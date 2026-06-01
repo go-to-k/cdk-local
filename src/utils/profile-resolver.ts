@@ -45,9 +45,21 @@ export async function resolveProfileCredentials(profile: string): Promise<{
       const resolved =
         typeof regionProvider === 'function' ? await regionProvider() : regionProvider;
       if (typeof resolved === 'string' && resolved.length > 0) region = resolved;
-    } catch {
+    } catch (err) {
       // Profile has no region configured (and no AWS_REGION env) — leave
       // undefined; the container falls through to the next region source.
+      //
+      // BUT: don't swallow real auth / IMDS errors (SSO token expiry,
+      // ConfigurationError, NetworkingError) under this no-region
+      // umbrella. Those should propagate so the caller sees the actual
+      // problem instead of a misleading fall-through to "no region".
+      const msg = err instanceof Error ? err.message : String(err);
+      const isMissingRegionError =
+        /region is missing/i.test(msg) ||
+        /could not resolve region/i.test(msg) ||
+        /no region in config/i.test(msg) ||
+        /region.*not.*set/i.test(msg);
+      if (!isMissingRegionError) throw err;
       region = undefined;
     }
     return {

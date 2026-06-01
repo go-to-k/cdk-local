@@ -325,7 +325,11 @@ async function localStartApiCommand(
     );
   }
 
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: options.region,
+    profile: options.profile,
+  });
 
   await ensureDockerAvailable();
 
