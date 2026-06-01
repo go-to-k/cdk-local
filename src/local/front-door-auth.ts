@@ -120,10 +120,28 @@ export function buildAuthCheck(
           reason: 'Bearer token rejected (signature / iss / aud / exp check failed).',
         };
       } catch (err) {
+        const errClass = err instanceof Error ? err.constructor.name : typeof err;
+        const errMessage = err instanceof Error ? err.message : String(err);
+        // Cap the client-visible reason: a pathological upstream
+        // error message could reflect arbitrary bytes (potentially
+        // including token-adjacent content from a future verifier)
+        // into the 401 body otherwise. The internal warn keeps the
+        // full message for dev diagnostics.
+        const REASON_MESSAGE_CAP = 200;
+        const clientMessage =
+          errMessage.length > REASON_MESSAGE_CAP
+            ? `${errMessage.slice(0, REASON_MESSAGE_CAP)}...`
+            : errMessage;
         getLogger()
           .child('front-door-auth')
-          .debug(`auth check threw: ${err instanceof Error ? err.message : String(err)}`);
-        return { allow: false, reason: 'Auth check failed.' };
+          .warn(
+            `Bearer JWT verification threw (${errClass}): ${errMessage}. ` +
+              `Returning 401 to client. Check the JWKS URL is reachable and the token is well-formed.`
+          );
+        return {
+          allow: false,
+          reason: `Auth check failed: ${errClass} — ${clientMessage}`,
+        };
       }
     },
   };

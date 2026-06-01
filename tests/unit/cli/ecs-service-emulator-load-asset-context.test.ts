@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 const { hoisted } = vi.hoisted(() => ({
   hoisted: {
@@ -354,5 +354,186 @@ describe('loadAssetContextForTarget (Phase 4 follow-up of #214, #218)', () => {
     // edit to `dockerfiles/Prod.Dockerfile` would silently route to
     // soft-reload.
     expect((ctx as { dockerFile: string }).dockerFile).toBe('Prod.Dockerfile');
+  });
+});
+
+/**
+ * Issue #246 site 6 — the six `return undefined` branches in
+ * `loadAssetContextForTarget` used to all collapse silently to the same
+ * downstream verdict `rebuild ("classifier not consulted")`. Future
+ * `--verbose` runs need to pinpoint WHICH condition fired in <10 seconds.
+ * These rows lock that each branch emits a DISTINCT `logger.debug`
+ * message. This is intentionally debug-level (not warn) — the verdict
+ * defaults to rebuild (safe), so the signal is only needed under
+ * `--verbose`.
+ */
+describe('loadAssetContextForTarget — distinct debug messages per branch (issue #246)', () => {
+  let debugSpy: ReturnType<typeof vi.spyOn>;
+  let testLogger: ReturnType<typeof getLogger>['child'] extends (n: string) => infer R ? R : never;
+
+  beforeEach(() => {
+    hoisted.resolveMode = 'happy';
+    hoisted.manifest = {
+      version: '1.0.0',
+      files: {},
+      dockerImages: {
+        newhash: {
+          displayName: 'WebTask:web',
+          source: { directory: 'asset.newhash' },
+          destinations: {},
+        },
+      },
+    };
+    hoisted.loadManifestCalls = [];
+    testLogger = getLogger().child('test');
+    debugSpy = vi.spyOn(testLogger, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function callWith(opts: {
+    target?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    stacks?: any[];
+  }): Promise<unknown> {
+    return loadAssetContextForTarget({
+      target: opts.target ?? 'AppStack:WebService',
+      controller: fakeControllerWithOldAssetHash('oldhash', 'omit'),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      stacks: (opts.stacks ?? [fakeStack()]) as any,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: new AssetManifestLoader(),
+      logger: testLogger,
+    });
+  }
+
+  function debugMessages(): string[] {
+    return debugSpy.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('branch 1: no candidate stack → distinct debug naming the missing stack', async () => {
+    await callWith({ stacks: [], target: 'NoSuchStack:Svc' });
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('NoSuchStack');
+    expect(msgs[0]).toMatch(/not in the assembly/);
+  });
+
+  it('branch 2: resolveEcsServiceTarget throws → distinct debug naming the throw', async () => {
+    hoisted.resolveMode = 'throw';
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('resolveEcsServiceTarget threw');
+    expect(msgs[0]).toContain('synthetic resolveEcsServiceTarget throw');
+  });
+
+  it('branch 3: no essential container → distinct debug naming the empty task', async () => {
+    hoisted.resolveMode = 'no-containers';
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('no containers');
+  });
+
+  it('branch 4: image is not a CDK asset (ECR pin) → distinct debug naming the image kind', async () => {
+    hoisted.resolveMode = 'non-cdk-asset';
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('not a CDK asset');
+    expect(msgs[0]).toContain("kind='ecr'");
+  });
+
+  it('branch 5: asset manifest missing → distinct debug naming the stack + cdkOutDir', async () => {
+    hoisted.manifest = null;
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('asset manifest missing');
+    expect(msgs[0]).toContain('AppStack');
+    expect(msgs[0]).toContain('/tmp/cdk.out');
+  });
+
+  it('branch 6: asset hash not in manifest dockerImages → distinct debug naming the hash', async () => {
+    hoisted.manifest = { version: '1.0.0', files: {}, dockerImages: {} };
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain("'newhash'");
+    expect(msgs[0]).toContain('not present');
+  });
+
+  it('branch 7: executable-mode docker asset (no source.directory) → distinct debug naming executable-mode', async () => {
+    hoisted.manifest = {
+      version: '1.0.0',
+      files: {},
+      dockerImages: {
+        newhash: {
+          displayName: 'WebTask:web',
+          source: { executable: ['my-builder.sh'] },
+          destinations: {},
+        },
+      },
+    };
+    await callWith({});
+    const msgs = debugMessages();
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[0]).toContain('loadAssetContext');
+    expect(msgs[0]).toContain('executable-mode');
+  });
+
+  it('every branch message contains the loadAssetContext prefix so a --verbose grep finds them all', async () => {
+    // Drive every branch in one suite to assert the common prefix.
+    const branches: Array<() => Promise<void>> = [
+      async () => {
+        await callWith({ stacks: [], target: 'NoSuchStack:Svc' });
+      },
+      async () => {
+        hoisted.resolveMode = 'throw';
+        await callWith({});
+      },
+      async () => {
+        hoisted.resolveMode = 'no-containers';
+        await callWith({});
+      },
+      async () => {
+        hoisted.resolveMode = 'non-cdk-asset';
+        await callWith({});
+      },
+      async () => {
+        hoisted.manifest = null;
+        await callWith({});
+      },
+      async () => {
+        hoisted.manifest = { version: '1.0.0', files: {}, dockerImages: {} };
+        await callWith({});
+      },
+      async () => {
+        hoisted.manifest = {
+          version: '1.0.0',
+          files: {},
+          dockerImages: {
+            newhash: { displayName: 'WebTask:web', source: { executable: ['x'] } },
+          },
+        };
+        await callWith({});
+      },
+    ];
+    for (const b of branches) {
+      debugSpy.mockReset();
+      await b();
+      const msgs = debugMessages();
+      expect(msgs.length).toBeGreaterThan(0);
+      expect(msgs[0]).toContain('loadAssetContext');
+    }
   });
 });

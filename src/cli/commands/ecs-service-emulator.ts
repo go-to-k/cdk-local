@@ -1194,7 +1194,13 @@ export async function loadAssetContextForTarget(args: {
   // image isn't a CDK asset.
   const parsed = parseEcsTarget(target);
   const candidate = pickCandidateStack(parsed.stackPattern, stacks);
-  if (!candidate) return undefined;
+  if (!candidate) {
+    logger.debug(
+      `loadAssetContext: stack pattern '${parsed.stackPattern}' from target '${target}' ` +
+        `not in the assembly. Classifier will see no asset context (rebuild).`
+    );
+    return undefined;
+  }
   let newService: ResolvedEcsService;
   try {
     newService = resolveEcsServiceTarget(target, stacks, undefined, {
@@ -1202,7 +1208,7 @@ export async function loadAssetContextForTarget(args: {
     });
   } catch (err) {
     logger.debug(
-      `loadAssetContextForTarget: target '${target}' could not be re-resolved against ` +
+      `loadAssetContext: resolveEcsServiceTarget threw for target '${target}' against ` +
         `the new stacks: ${err instanceof Error ? err.message : String(err)}. ` +
         'Classifier will see no asset context (rebuild).'
     );
@@ -1215,18 +1221,47 @@ export async function loadAssetContextForTarget(args: {
   // representative.
   const essential =
     newService.task.containers.find((c) => c.essential) ?? newService.task.containers[0];
-  if (!essential) return undefined;
+  if (!essential) {
+    logger.debug(
+      `loadAssetContext: task definition for target '${target}' has no containers. ` +
+        'Classifier will see no asset context (rebuild).'
+    );
+    return undefined;
+  }
   if (essential.image.kind !== 'cdk-asset' || !essential.image.assetHash) {
+    const assetHashStr =
+      essential.image.kind === 'cdk-asset' ? (essential.image.assetHash ?? 'undefined') : 'n/a';
+    logger.debug(
+      `loadAssetContext: target '${target}' essential image is not a CDK asset ` +
+        `(kind='${essential.image.kind}', assetHash=${assetHashStr}). ` +
+        'Classifier will see no asset context (rebuild).'
+    );
     return undefined;
   }
   const newAssetHash = essential.image.assetHash;
   const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
-  if (!manifest) return undefined;
+  if (!manifest) {
+    logger.debug(
+      `loadAssetContext: asset manifest missing for stack '${candidate.stackName}' under ` +
+        `'${cdkOutDir}'. Classifier will see no asset context (rebuild).`
+    );
+    return undefined;
+  }
   const newDockerImage = manifest.dockerImages?.[newAssetHash];
-  if (!newDockerImage) return undefined;
+  if (!newDockerImage) {
+    logger.debug(
+      `loadAssetContext: asset hash '${newAssetHash}' not present in stack ` +
+        `'${candidate.stackName}' dockerImages. Classifier will see no asset context (rebuild).`
+    );
+    return undefined;
+  }
   if (!newDockerImage.source.directory) {
     // `executable`-mode docker asset (custom build script). No staged
     // source directory to copy from.
+    logger.debug(
+      `loadAssetContext: docker asset '${newAssetHash}' for stack '${candidate.stackName}' ` +
+        `is executable-mode (no source.directory). Classifier will see no asset context (rebuild).`
+    );
     return undefined;
   }
   const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
