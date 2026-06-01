@@ -835,7 +835,7 @@ describe('resolveInboundAuthorization — JWT gate', () => {
       },
       'Bearer tok',
       expect.anything(),
-      expect.objectContaining({ warned: expect.any(Set) })
+      expect.objectContaining({ warnedAt: expect.any(Map) })
     );
   });
 

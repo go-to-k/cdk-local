@@ -1,4 +1,4 @@
-import { verifyJwtAuthorizer, type JwksCache } from './cognito-jwt.js';
+import { verifyJwtAuthorizer, type JwksCache, type WarnedAt } from './cognito-jwt.js';
 import type { AuthCheck } from './front-door-server.js';
 import type { FrontDoorAuthGuard } from './elb-front-door-resolver.js';
 import { getLogger } from '../utils/logger.js';
@@ -34,11 +34,14 @@ export function buildAuthCheck(
     /** Injected as the default `Authorization: Bearer <jwt>` when missing. */
     bearerToken?: string;
     /**
-     * Shared "JWKS warn-once" Set. Lifted to caller scope so two rules
-     * pointing at the same Cognito JWKS URL share the warn-on-first-request
-     * de-dupe instead of each warning independently.
+     * Shared "JWKS warn re-emit window" map (URL -> last-warned-at unix ms).
+     * Lifted to caller scope so two rules pointing at the same Cognito JWKS
+     * URL share the per-time-window dedup (#247) instead of each warning
+     * independently. The warn re-emits every
+     * {@link import('./cognito-jwt.js').WARN_REEMIT_INTERVAL_MS} per URL so a
+     * long-running `--watch` session keeps surfacing the degraded-auth state.
      */
-    warned?: Set<string>;
+    warnedAt?: WarnedAt;
   } = {}
 ): AuthCheck {
   const realm = guard.label;
@@ -52,8 +55,8 @@ export function buildAuthCheck(
 
   // De-dupe "JWKS unreachable -> pass-through" warn lines across requests for
   // the same authorizer URL (matches how start-api's JWT authorizers behave).
-  // Falls back to a per-AuthCheck Set when the caller did not supply one.
-  const warned = opts.warned ?? new Set<string>();
+  // Falls back to a per-AuthCheck Map when the caller did not supply one.
+  const warnedAt: WarnedAt = opts.warnedAt ?? new Map<string, number>();
   const sessionCookiePrefix = guard.sessionCookieName;
   const injectedBearer = opts.bearerToken;
 
@@ -109,7 +112,7 @@ export function buildAuthCheck(
           },
           authorization,
           jwksCache,
-          { warned }
+          { warnedAt }
         );
         if (result.allow) return { allow: true };
         return {

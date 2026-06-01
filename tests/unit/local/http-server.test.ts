@@ -445,14 +445,14 @@ describe('startApiServer — JWKS pass-through warn fires once per server (must-
         throw new Error('unreachable');
       },
     });
-    const jwksWarnedUrls = new Set<string>();
+    const jwksWarnedAt = new Map<string, number>();
     const server = await startApiServer({
       state: { routes: [route], pool: makePool(), corsConfigByApiId: new Map() },
       rieTimeoutMs: 1000,
       host: '127.0.0.1',
       port: 0,
       jwksCache,
-      jwksWarnedUrls,
+      jwksWarnedAt,
     });
 
     try {
@@ -468,8 +468,9 @@ describe('startApiServer — JWKS pass-through warn fires once per server (must-
         const msg = args.map((a) => String(a)).join(' ');
         return msg.includes('JWKS pass-through mode for ');
       });
-      // Pre-fix: warn fired every request (2 lines). Post-fix: warn
-      // fires at most once per JWKS URL per server lifecycle.
+      // Pre-fix: warn fired every request (2 lines). Post-fix (#247):
+      // warn re-emits every WARN_REEMIT_INTERVAL_MS per JWKS URL, so two
+      // back-to-back requests within the window emit exactly one line.
       expect(passThroughWarns).toHaveLength(1);
     } finally {
       await server.close();

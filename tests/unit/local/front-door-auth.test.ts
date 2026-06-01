@@ -106,18 +106,22 @@ describe('buildAuthCheck — Bearer token verification', () => {
     expect(result.reason).toMatch(/scheme is not Bearer/);
   });
 
-  it('lets a shared `warned` Set de-dupe the JWKS-unreachable warn across guards', async () => {
-    // Same JWKS URL behind two different AuthChecks sharing one warned Set.
-    // The Set is populated by the verifier on first warn; assert that any
+  it('lets a shared `warnedAt` Map de-dupe the JWKS-unreachable warn across guards', async () => {
+    // Same JWKS URL behind two different AuthChecks sharing one warnedAt Map.
+    // The Map is populated by the verifier on first warn; assert that any
     // mutation we do here is visible to the second AuthCheck (proves the
     // reference is shared, not copied).
-    const sharedWarned = new Set<string>();
-    const checkA = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), { warned: sharedWarned });
-    const checkB = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), { warned: sharedWarned });
+    const sharedWarnedAt = new Map<string, number>();
+    const checkA = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), {
+      warnedAt: sharedWarnedAt,
+    });
+    const checkB = buildAuthCheck(COGNITO_GUARD, passThroughJwksCache(), {
+      warnedAt: sharedWarnedAt,
+    });
     await checkA.check({ authorization: 'Bearer t' });
-    sharedWarned.add('marker');
-    expect(sharedWarned.has('marker')).toBe(true);
-    // Second AuthCheck sees the same Set (no error, just verifies reference identity).
+    sharedWarnedAt.set('marker', 1);
+    expect(sharedWarnedAt.has('marker')).toBe(true);
+    // Second AuthCheck sees the same Map (no error, just verifies reference identity).
     expect((await checkB.check({ authorization: 'Bearer t' })).allow).toBe(true);
   });
 });

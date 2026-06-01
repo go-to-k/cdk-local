@@ -100,7 +100,7 @@ import {
 } from '../../local/front-door-lambda-runner.js';
 import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
-import { createJwksCache } from '../../local/cognito-jwt.js';
+import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
 import {
   enforceImageOverrideOrphans,
@@ -1835,17 +1835,19 @@ export async function buildFrontDoor(
       })
     : undefined;
 
-  // Shared JWKS cache + warn-once Set, both at buildFrontDoor scope so two
-  // rules pointing at the same Cognito JWKS URL de-dupe the "JWKS
-  // unreachable -> pass-through" warn line instead of each warning
-  // independently.
+  // Shared JWKS cache + warn-re-emit Map, both at buildFrontDoor scope so two
+  // rules pointing at the same Cognito JWKS URL share the per-time-window
+  // dedup (#247) for the "JWKS unreachable -> pass-through" warn line instead
+  // of each warning independently. The warn re-emits every
+  // WARN_REEMIT_INTERVAL_MS per URL so a long-running `--watch` session keeps
+  // surfacing the degraded-auth state.
   const jwksCache = createJwksCache();
-  const sharedWarned = new Set<string>();
+  const sharedWarnedAt: WarnedAt = new Map<string, number>();
   const authForGuard = (guard: FrontDoorAuthGuard): ReturnType<typeof buildAuthCheck> =>
     buildAuthCheck(guard, jwksCache, {
       ...(options.verifyAuth === false && { noVerifyAuth: true }),
       ...(options.bearerToken !== undefined && { bearerToken: options.bearerToken }),
-      warned: sharedWarned,
+      warnedAt: sharedWarnedAt,
     });
   const attachAuth = (action: RouteAction, guard: FrontDoorAuthGuard | undefined): RouteAction =>
     guard ? { ...action, auth: authForGuard(guard) } : action;

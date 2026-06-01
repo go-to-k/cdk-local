@@ -586,7 +586,7 @@ export async function resolveInboundAuthorization(
     },
     header,
     createJwksCache(),
-    { warned: new Set() }
+    { warnedAt: new Map() }
   );
   if (!result.allow) {
     throw new CdkLocalError(

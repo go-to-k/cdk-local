@@ -581,7 +581,10 @@ before the container starts:
 - **Discovery URL / JWKS unreachable** → falls back to pass-through (accept +
   warn), the same offline-dev trade-off `cdkl start-api` makes for
   unreachable Cognito JWKS. Scope / custom-claim verification does NOT run on
-  the pass-through path — every Bearer token is accepted.
+  the pass-through path — every Bearer token is accepted. The warn re-emits
+  every 5 minutes per URL (#247) so a long-running session keeps surfacing
+  the degraded state instead of silently accepting tokens for the rest of
+  the run.
 - **`--no-verify-auth`** → skips verification entirely; a `--bearer-token`,
   if given, is still forwarded.
 
@@ -1368,6 +1371,19 @@ request passes). `UserPoolArn` / `Issuer` / `ClientId` MUST be literal
 strings in the synthesized template — a `Ref` / `Fn::GetAtt` / cross-stack
 intrinsic in any of those fields drops the guard with a warning, and the
 terminal action then serves unguarded.
+
+**JWKS / OIDC discovery unreachable → token accepted without verification.**
+When the upstream JWKS endpoint (Cognito) or OIDC discovery URL is
+unreachable, the verifier falls back to pass-through accept (every Bearer
+token is accepted) to keep local dev iterating through transient network
+glitches / VPN drops / proxy outages — the same trade-off `cdkl start-api`
+makes for unreachable Cognito JWKS. The fallback emits a `warn` line
+naming the unreachable URL and re-emits it every 5 minutes per URL (#247).
+A long-running `cdkl start-alb --watch` session therefore keeps surfacing
+the degraded-auth state every 5 minutes rather than silently accepting
+tokens for the rest of the run after the first warn fires. Do NOT rely on
+this fallback in any shared environment — the dev machine accepts every
+token, including forged ones.
 
 **WebSocket `Upgrade`** is proxied for ECS forward targets. The inbound
 upgrade request goes through the same `route()` callback as a regular

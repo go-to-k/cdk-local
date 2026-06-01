@@ -843,14 +843,19 @@ gets a synthetic `unknown` principal and an empty claims map):
 The failure entry has a short TTL (~60s) so a transient blip doesn't
 lock pass-through for the full 1hr success TTL — the next minute's
 request retries the JWKS fetch. The pass-through warn line itself
-fires at most once per JWKS URL per server lifecycle (the warn-set
-is constructed once at server startup, not per request).
+re-emits every 5 minutes per JWKS URL (per-time-window dedup; #247):
+back-to-back requests share one log line, but a long-running
+`cdkl start-api` / `cdkl start-alb --watch` session continues to
+surface the degraded-auth state periodically so the user notices that
+auth is not being verified for the rest of the run.
 
 This is a deliberate dev-tool tradeoff: surprising deny is worse than
 warn+allow when the developer is iterating on a function and the JWKS
 URL is blocked by a corporate proxy. **Do NOT rely on this in any
 shared environment** — the dev's machine accepts every token, including
-forged ones.
+forged ones. The 5-minute re-emit makes the degraded state visible in
+the tail of the log so the dev knows whether the local server is
+actually verifying signatures or has fallen through to accept-all.
 
 `AWS_IAM` authorization is supported with **signature-verification-only**
 semantics on BOTH REST v1 (`AuthorizationType: 'AWS_IAM'`) and Function

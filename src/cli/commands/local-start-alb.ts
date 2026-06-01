@@ -306,7 +306,7 @@ export function albStrategy(options: EcsServiceEmulatorOptions): EmulatorStrateg
     // synchronous Map mutations on the FrontDoorEndpointPool that JS's
     // single-threaded read in `next()` cannot observe mid-mutation,
     // so a continuous external request stream never sees an empty
-    // pool. TLS materials, JWKS cache + warned-set, Lambda-target
+    // pool. TLS materials, JWKS cache + warn-re-emit map, Lambda-target
     // RIE containers, and the host front-door servers are all built
     // once in `buildFrontDoor` BEFORE the watcher is installed, so
     // they are NOT recreated on reload (no re-issued cert, no re-
