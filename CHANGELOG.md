@@ -1,3 +1,10 @@
+## [0.73.6](https://github.com/go-to-k/cdk-local/compare/v0.73.5...v0.73.6) (2026-06-01)
+
+
+### Bug Fixes
+
+* **start-service,start-alb:** bump shadow-ready timeout to 60s + add --shadow-ready-timeout flag ([#265](https://github.com/go-to-k/cdk-local/issues/265)) ([#266](https://github.com/go-to-k/cdk-local/issues/266)) ([2cd7f1f](https://github.com/go-to-k/cdk-local/commit/2cd7f1fefcd637bde933e5fb26952b53c44bd709))
+
 ## [0.73.5](https://github.com/go-to-k/cdk-local/compare/v0.73.4...v0.73.5) (2026-06-01)
 
 
