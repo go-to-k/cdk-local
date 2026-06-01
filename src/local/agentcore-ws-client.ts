@@ -8,7 +8,7 @@ import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
  *
  * Connect to `ws://host:8080/ws`, send the `--event` as the first frame, and
  * stream every received frame to the sink. When a {@link
- * InvokeAgentCoreWsOptions.frameSource} is supplied (the `--ws-interactive`
+ * InvokeAgentCoreWsOptions.frameSource} is supplied (the auto-detected TTY
  * REPL path), additional frames from that async iterable are sent after the
  * initial event, and the client closes the stream when the iterable is
  * exhausted (or when the server closes first — whichever happens first). The
@@ -36,9 +36,9 @@ export interface InvokeAgentCoreWsOptions {
   authorization?: string;
   /**
    * Optional async iterable of additional text frames to send after the
-   * initial `event`. Used by `--ws-interactive` to wire `process.stdin`
-   * (line-buffered) to the WebSocket — each yielded string becomes one text
-   * frame. The connection is closed gracefully when the iterable is
+   * initial `event`. The auto-detected TTY REPL path wires
+   * `process.stdin` (line-buffered) here — each yielded string becomes one
+   * text frame. The connection is closed gracefully when the iterable is
    * exhausted; if the server closes first, iteration is stopped via the
    * iterator's `return()` method. Errors thrown by the iterable propagate as
    * the function's rejection.

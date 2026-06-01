@@ -185,7 +185,6 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
       // WARN and proceed single-shot.
       '--watch',
       '--ws',
-      '--ws-interactive',
     ]);
   });
 

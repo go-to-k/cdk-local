@@ -132,15 +132,17 @@ interface LocalInvokeAgentCoreOptions {
    * `--ws`: use the HTTP-protocol agent's bidirectional `/ws` WebSocket
    * endpoint (on 8080) instead of `POST /invocations` — send `--event` as the
    * first frame and stream received frames to stdout until the agent closes.
+   *
+   * When stdin is a TTY (interactive terminal), additionally read stdin lines
+   * as follow-up text frames (one frame per line, trailing newline stripped)
+   * until stdin EOFs (Ctrl-D) or the agent closes the connection. This
+   * matches the deployed `/ws` endpoint's bidirectional shape: a TTY user
+   * gets a multi-turn session by default. When stdin is NOT a TTY (piped /
+   * redirected / CI), only the initial `--event` frame is sent and the
+   * client only receives — the standard one-shot script-friendly shape.
+   * Force one-shot in a TTY with `cdkl ... --ws </dev/null`.
    */
   ws?: boolean;
-  /**
-   * `--ws-interactive`: after the initial `--event` frame, read additional
-   * frames from stdin (one frame per line, trailing newline stripped) and
-   * send each as a text frame to the agent until stdin EOFs (Ctrl-D) or the
-   * agent closes the connection. Only meaningful with `--ws`.
-   */
-  wsInteractive?: boolean;
   /** Session id forwarded via the AgentCore session-id header (auto-generated when omitted). */
   sessionId?: string;
   /**
@@ -189,8 +191,8 @@ interface LocalInvokeAgentCoreOptions {
   /**
    * Issue #255 — `cdkl invoke-agentcore --watch`. Re-synth and reload the
    * agent container on CDK source changes. Only meaningful with the
-   * long-running `/ws` session paths (`--ws` / `--ws-interactive`):
-   * the single-shot `POST /invocations` / `POST /mcp` / A2A `POST /`
+   * long-running `--ws` session path: the single-shot `POST /invocations`
+   * / `POST /mcp` / A2A `POST /`
    * paths run once and exit, so `--watch` is logged as a no-op WARN
    * there and the single-shot proceeds normally.
    *
@@ -388,9 +390,6 @@ async function localInvokeAgentCoreCommand(
         `--ws applies only to the HTTP / AGUI protocols; ignoring it for this ${resolved.protocol} runtime.`
       );
     }
-    if (options.wsInteractive && !options.ws) {
-      logger.warn('--ws-interactive is meaningful only with --ws; ignoring.');
-    }
     if (options.sigv4 && (isMcp || isA2a || options.ws)) {
       logger.warn(
         '--sigv4 signs the HTTP /invocations request only; ignoring it for the ' +
@@ -408,7 +407,7 @@ async function localInvokeAgentCoreCommand(
     if (options.watch === true && !watchEligible) {
       const ignoredFor = isMcp ? 'MCP' : isA2a ? 'A2A' : 'single-shot HTTP POST /invocations';
       logger.warn(
-        `--watch is meaningful only with the long-running --ws / --ws-interactive session paths; ` +
+        `--watch is meaningful only with the long-running --ws session path; ` +
           `ignoring it for the ${ignoredFor} path (single-shot invocations run once and exit).`
       );
     }
@@ -523,10 +522,16 @@ async function localInvokeAgentCoreCommand(
     } else if (options.ws) {
       // Bidirectional `/ws` (same 8080 container as /invocations): send the
       // event as the first frame, stream every received frame to stdout, then
-      // resolve when the agent closes the stream. With `--ws-interactive` we
-      // additionally wire `process.stdin` (line-buffered) as a frame source,
-      // so each typed line becomes a follow-up text frame until EOF / agent
-      // close — a REPL on top of the same connection.
+      // resolve when the agent closes the stream. When stdin is a TTY
+      // (real terminal — `process.stdin.isTTY === true`), additionally wire
+      // `process.stdin` (line-buffered) as a frame source so each typed line
+      // becomes a follow-up text frame until EOF (Ctrl-D) or the agent
+      // closes — the multi-turn shape the deployed `/ws` endpoint is built
+      // for. When stdin is NOT a TTY (piped, redirected, CI), only the
+      // initial event frame is sent and the client receives until close —
+      // the standard one-shot script-friendly shape. Force one-shot in a
+      // TTY with `cdkl ... --ws </dev/null`.
+      const interactive = process.stdin.isTTY === true;
       if (watchActive) {
         // Issue #255 — `--watch` wraps the /ws dispatch in a reload-driven
         // loop. The WebSocket is closed cleanly on every reload firing
@@ -540,7 +545,7 @@ async function localInvokeAgentCoreCommand(
           event,
           sessionId,
           timeoutMs: options.timeout,
-          wsInteractive: options.wsInteractive === true,
+          interactive,
           options,
           resolvedTarget,
           resolved,
@@ -632,9 +637,9 @@ async function localInvokeAgentCoreCommand(
         });
       } else {
         await waitForAgentCorePing(containerHost, hostPort);
-        const frameSource = options.wsInteractive ? readStdinLines() : undefined;
+        const frameSource = interactive ? readStdinLines() : undefined;
         logger.info(
-          options.wsInteractive
+          interactive
             ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
             : 'Opening the agent /ws WebSocket and streaming frames...'
         );
@@ -1710,8 +1715,8 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
  *      classifier picks `'rebuild'` vs `'soft-reload'` and the
  *      corresponding container-swap helper runs. After the swap, the
  *      loop re-opens the WS against the new / restarted container with
- *      the same `--event` first frame + a fresh stdin reader (for
- *      `--ws-interactive`).
+ *      the same `--event` first frame + a fresh stdin reader (when
+ *      `interactive` mode is active — see `args.interactive`).
  *
  * Active `/ws` socket handling: the AgentCore `/ws` protocol does not
  * define mid-session container handoff, so the only honest local-dev
@@ -1734,7 +1739,13 @@ export async function runAgentCoreWatchLoop(args: {
   event: unknown;
   sessionId: string;
   timeoutMs: number;
-  wsInteractive: boolean;
+  /**
+   * When `true`, attach `readStdinLines()` as the WS frame source so each
+   * stdin line becomes a follow-up text frame (multi-turn REPL). The caller
+   * computes this from `process.stdin.isTTY === true`; passing it in keeps
+   * `runAgentCoreWatchLoop` testable without mocking the TTY.
+   */
+  interactive: boolean;
   authorization?: string;
   options: LocalInvokeAgentCoreOptions;
   /** Original CDK target string (display path / logical id) so the resolver can re-pick the stack on reload. */
@@ -1936,14 +1947,14 @@ export async function runAgentCoreWatchLoop(args: {
       await waitForPing(args.containerHost, currentHostPort);
       if (firstIteration) {
         logger.info(
-          args.wsInteractive
+          args.interactive
             ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
             : 'Opening the agent /ws WebSocket and streaming frames...'
         );
         firstIteration = false;
       } else {
         logger.info(
-          args.wsInteractive
+          args.interactive
             ? 'Re-opening the agent /ws WebSocket (interactive) against the rebuilt container...'
             : 'Re-opening the agent /ws WebSocket against the rebuilt container...'
         );
@@ -1951,7 +1962,7 @@ export async function runAgentCoreWatchLoop(args: {
       const abort = new AbortController();
       currentAbort = abort;
       pendingReload = false;
-      const frameSource = args.wsInteractive ? readStdinLines() : undefined;
+      const frameSource = args.interactive ? readStdinLines() : undefined;
       try {
         const result = await wsInvoker(args.containerHost, currentHostPort, args.event, {
           sessionId: args.sessionId,
@@ -2268,15 +2279,11 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
         '--ws',
         "Stream over the HTTP-protocol agent's bidirectional /ws WebSocket endpoint (on 8080) " +
           'instead of POST /invocations: send --event as the first frame and print every received ' +
-          'frame to stdout until the agent closes. Ignored for an MCP runtime.'
-      ).default(false)
-    )
-    .addOption(
-      new Option(
-        '--ws-interactive',
-        'REPL mode for --ws: after the initial --event frame, read additional frames from stdin ' +
-          '(one frame per line, trailing newline stripped) and send each as a text frame until ' +
-          'stdin EOFs (Ctrl-D) or the agent closes. Only meaningful with --ws.'
+          'frame to stdout until the agent closes. ' +
+          'When stdin is a TTY, additionally reads stdin lines as follow-up text frames ' +
+          '(multi-turn REPL; Ctrl-D to end). When stdin is piped / redirected / non-TTY (CI), ' +
+          'only the initial --event frame is sent (one-shot). Force one-shot in a TTY with ' +
+          '`cdkl ... --ws </dev/null`. Ignored for an MCP runtime.'
       ).default(false)
     )
     .addOption(
@@ -2382,7 +2389,7 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
       new Option(
         '--watch',
         'Re-synth and reload the agent container on CDK source changes. Only meaningful with the ' +
-          'long-running /ws session paths (--ws / --ws-interactive); single-shot POST /invocations, ' +
+          'long-running --ws session path; single-shot POST /invocations, ' +
           'MCP, and A2A invocations run once and exit, so --watch is logged as a no-op WARN for them ' +
           'and the single shot proceeds. The active /ws socket is closed cleanly on every reload firing ' +
           'so the next session connects to the rebuilt container — the honest local-dev semantic.'
