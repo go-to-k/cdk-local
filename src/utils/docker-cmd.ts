@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { spinner as createSpinner } from '@clack/prompts';
 import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 
@@ -63,6 +64,30 @@ export interface RunDockerOptions {
    * level" — matches the existing `--verbose` UX.
    */
   streamLive?: boolean;
+  /**
+   * When set, show an interactive {@link createSpinner | clack spinner}
+   * with this label for the duration of the spawn — so a long-running
+   * `docker build` / `docker pull` against a real-world image doesn't
+   * look like cdk-local hung. The spinner only renders when:
+   *
+   *   - `streamLive` is false (live BuildKit output already shows motion;
+   *     overlaying a spinner on top would visually clash and the line
+   *     overwriting would mangle the build log), AND
+   *   - `process.stdout` is a TTY (non-TTY callers such as integ-test
+   *     fixtures or CI runs already log linearly; a spinner there would
+   *     emit raw ANSI escapes into the captured log).
+   *
+   * In either skipped case the spawn proceeds as if `progressLabel` were
+   * undefined — the caller's pre-spawn `logger.info(...)` "Building X..."
+   * line continues to be the only progress signal, which is the
+   * pre-spinner behavior and matches what scripts / CI expect.
+   *
+   * On exit code 0 the spinner stops with the same label and a check
+   * mark; on non-zero exit it stops with an error mark before the
+   * rejection propagates, so the caller's `try {} catch {}` wrap still
+   * sees a clean spinner-less stderr.
+   */
+  progressLabel?: string;
 }
 
 /**
@@ -95,6 +120,7 @@ export async function spawnStreaming(
 ): Promise<SpawnResult> {
   const streamLive = options.streamLive ?? getLogger().getLevel() === 'debug';
   const env = options.env ? mergeEnv(options.env) : undefined;
+  const spin = startProgressSpinner(options.progressLabel, streamLive);
 
   return new Promise<SpawnResult>((resolve, reject) => {
     const child = spawn(cmd, args, {
@@ -116,6 +142,7 @@ export async function spawnStreaming(
     });
 
     child.once('error', (err: NodeJS.ErrnoException) => {
+      stopProgressSpinner(spin, options.progressLabel);
       if (err.code === 'ENOENT') {
         const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
         reject(
@@ -136,8 +163,10 @@ export async function spawnStreaming(
       const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
       const stderr = Buffer.concat(stderrChunks).toString('utf-8');
       if (code === 0) {
+        stopProgressSpinner(spin, options.progressLabel);
         resolve({ stdout, stderr });
       } else {
+        stopProgressSpinner(spin, options.progressLabel);
         const message =
           stderr.trim() || stdout.trim() || `${cmd} ${args[0] ?? ''} exited with code ${code}`;
         const err = new Error(message) as SpawnError;
@@ -163,6 +192,38 @@ export async function spawnStreaming(
       child.stdin!.end();
     }
   });
+}
+
+type ClackSpinner = ReturnType<typeof createSpinner>;
+
+/**
+ * Start an interactive clack spinner for the spawn, but only when the
+ * current shell would actually render it (TTY) and the caller isn't
+ * already streaming live output. Returns `undefined` when either
+ * precondition fails — `stopProgressSpinner` then is a no-op.
+ *
+ * Test seam: the integration with `@clack/prompts` is mocked in
+ * `tests/unit/utils/docker-cmd-progress-spinner.test.ts`.
+ */
+function startProgressSpinner(
+  label: string | undefined,
+  streamLive: boolean
+): ClackSpinner | undefined {
+  if (label === undefined || streamLive || process.stdout.isTTY !== true) return undefined;
+  const spin = createSpinner();
+  spin.start(label);
+  return spin;
+}
+
+function stopProgressSpinner(spin: ClackSpinner | undefined, label: string | undefined): void {
+  // `@clack/prompts`' `spinner().stop(message?)` only takes the message at
+  // the TS-level signature (the runtime impl ignores the optional `code`
+  // second arg, hard-coding success), so we mirror its public API. The
+  // upstream caller's wrapped error / rejection still surfaces the
+  // failure detail; the spinner's only job here is to stop animating
+  // cleanly so the error stderr renders on its own fresh line.
+  if (spin === undefined) return;
+  spin.stop(label ?? '');
 }
 
 /**

@@ -997,6 +997,13 @@ export async function runImageOverrideBuilds(
       await runDockerStreaming(args, {
         cwd: entry.contextDir,
         env: { BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
+        // The pre-spawn `logger.info` line above explains WHAT is being
+        // built (which target, which Dockerfile, which tag). The spinner's
+        // job is just to show MOTION so a multi-minute BuildKit build
+        // doesn't look like cdk-local hung. The shorter label keeps the
+        // spinner line readable on narrow terminals — the (tag=...) detail
+        // already shipped via the info log line and is in the scrollback.
+        progressLabel: `Building override image for '${target}'`,
       });
     } catch (err) {
       const e = err as { stderr?: string; message?: string };

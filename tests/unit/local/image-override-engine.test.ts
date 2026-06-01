@@ -392,6 +392,24 @@ describe('runImageOverrideBuilds argv shape (issue #238, T1)', () => {
     expect(opts.env?.BUILDX_NO_DEFAULT_ATTESTATIONS).toBe('1');
   });
 
+  it('passes a per-target progressLabel through to runDockerStreaming so the multi-minute build animates', async () => {
+    const dockerfile = makeTmpDockerfile('Dockerfile.progress');
+    const overrides = new Map([
+      [
+        'AppService',
+        {
+          dockerfile,
+          contextDir: path.dirname(dockerfile),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+    ]);
+    await runImageOverrideBuilds(overrides);
+    const [, opts] = runDockerStreamingMock.mock.calls[0]!;
+    expect(opts.progressLabel).toBe(`Building override image for 'AppService'`);
+  });
+
   it('emits canonical `--secret id=<id>,src=<src>` for every build-secrets entry', async () => {
     const dockerfile = makeTmpDockerfile('Dockerfile.secrets');
     const overrides = new Map([

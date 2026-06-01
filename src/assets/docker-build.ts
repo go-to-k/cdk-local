@@ -54,6 +54,16 @@ export interface BuildDockerImageOptions {
    * specific to the call site.
    */
   wrapError: (stderr: string) => Error;
+  /**
+   * When set, forward to `runDockerStreaming` so an interactive spinner
+   * renders for the duration of the `docker build`. Callers like
+   * `docker-image-builder.ts` (Lambda container builds) and
+   * `ecs-task-runner.ts` (ECS asset builds) set this to "Building
+   * container image '<tag>'..." so real-world multi-minute builds don't
+   * look like cdk-local hung. No-op in `executable` source mode and
+   * when stdout is non-TTY.
+   */
+  progressLabel?: string;
 }
 
 /**
@@ -147,6 +157,7 @@ export async function buildDockerImage(
       // this, BuildKit/Buildx attaches provenance attestation manifests
       // that ECR's single-arch pull path rejects.
       env: { BUILDX_NO_DEFAULT_ATTESTATIONS: '1' },
+      ...(options.progressLabel !== undefined && { progressLabel: options.progressLabel }),
     });
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
