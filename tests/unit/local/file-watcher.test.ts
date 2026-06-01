@@ -5,6 +5,7 @@ const { watchMock } = vi.hoisted(() => ({ watchMock: vi.fn() }));
 vi.mock('chokidar', () => ({ watch: watchMock }));
 
 import { createFileWatcher } from '../../../src/local/file-watcher.js';
+import { ConsoleLogger } from '../../../src/utils/logger.js';
 
 interface FakeWatcher {
   capturedPaths: unknown;
@@ -138,6 +139,42 @@ describe('createFileWatcher', () => {
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(onChange.mock.calls[0]![0]).toEqual(['/root/a.ts']);
     expect(onChange.mock.calls[1]![0]).toEqual(['/root/b.ts']);
+  });
+
+  // Issue #246 site 5 — chokidar 'error' events (EMFILE on macOS when
+  // nesting deep, watch root unmounted, etc.) used to log at
+  // `logger.debug`. The user would see `--watch active` at boot but no
+  // reload ever fired; default-level cdkl output stayed quiet. Lock
+  // the bump to `logger.warn` so the user gets a visible signal +
+  // mention that --watch may be degraded for the rest of the session.
+  it('logs chokidar error events at warn (not debug) so --watch degradation is visible', () => {
+    // Spy on the prototype so the file-watcher's own
+    // `getLogger().child('start-api-watch')` (a fresh child instance)
+    // trips the spy.
+    const warnSpy = vi
+      .spyOn(ConsoleLogger.prototype, 'warn')
+      .mockImplementation(() => {});
+    const debugSpy = vi
+      .spyOn(ConsoleLogger.prototype, 'debug')
+      .mockImplementation(() => {});
+
+    createFileWatcher({ paths: ['/root'], onChange: () => {} });
+
+    // Drive the chokidar error path with a representative EMFILE error.
+    const err = new Error('EMFILE: too many open files');
+    // The on('error', ...) callback is registered on the fake.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fake as any).emit('error', err as any);
+
+    const warns = warnSpy.mock.calls.map((c) => String(c[0]));
+    const errLine = warns.find((w) => w.includes('chokidar error'));
+    expect(errLine).toBeDefined();
+    expect(errLine!).toContain('EMFILE');
+    expect(errLine!).toContain('--watch');
+
+    // The pre-fix debug path is gone.
+    const debugs = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(debugs.some((d) => d.includes('chokidar error'))).toBe(false);
   });
 
   it('drops shouldTrigger-rejected paths from the changed-set the callback sees', () => {

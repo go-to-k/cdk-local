@@ -579,7 +579,14 @@ export function applyResponseParameters(
       continue;
     }
     const headerMatch = /^(append|overwrite|remove):header\.(.+)$/i.exec(key);
-    if (!headerMatch || !headerMatch[1] || !headerMatch[2]) continue;
+    if (!headerMatch || !headerMatch[1] || !headerMatch[2]) {
+      logger.warn(
+        `ResponseParameters: key '${key}' does not match the expected shape ` +
+          `'(append|overwrite|remove):header.<name>' or 'overwrite:statuscode'; ` +
+          `the value was dropped. Check for typos (e.g. 'appen:' vs 'append:').`
+      );
+      continue;
+    }
     const op = headerMatch[1].toLowerCase();
     const name = headerMatch[2].toLowerCase();
     if (isReservedHeader(name)) {

@@ -117,10 +117,18 @@ export function buildAuthCheck(
           reason: 'Bearer token rejected (signature / iss / aud / exp check failed).',
         };
       } catch (err) {
+        const errClass = err instanceof Error ? err.constructor.name : typeof err;
+        const errMessage = err instanceof Error ? err.message : String(err);
         getLogger()
           .child('front-door-auth')
-          .debug(`auth check threw: ${err instanceof Error ? err.message : String(err)}`);
-        return { allow: false, reason: 'Auth check failed.' };
+          .warn(
+            `Bearer JWT verification threw (${errClass}): ${errMessage}. ` +
+              `Returning 401 to client. Check the JWKS URL is reachable and the token is well-formed.`
+          );
+        return {
+          allow: false,
+          reason: `Auth check failed: ${errClass} — ${errMessage}`,
+        };
       }
     },
   };

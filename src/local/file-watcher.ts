@@ -79,10 +79,13 @@ const DEFAULT_DEBOUNCE_MS = 500;
  * (chokidar starts listening before this function returns); the
  * caller does not need to `await` ready.
  *
- * Errors from chokidar (typically "ENOENT: path doesn't exist") are
- * logged at debug and otherwise swallowed — the start-api server
- * should keep serving even when one of the watched asset directories
- * goes missing during a reload.
+ * Errors from chokidar (typically "ENOENT: path doesn't exist", or
+ * EMFILE on macOS when watching a deep tree) are logged at WARN and
+ * otherwise swallowed — the start-api server should keep serving even
+ * when one of the watched asset directories goes missing during a
+ * reload, but the user gets a visible signal that `--watch` may have
+ * stopped firing so they don't sit there waiting for a reload that
+ * will never come.
  */
 export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   const logger = getLogger().child('start-api-watch');
@@ -152,8 +155,10 @@ export function createFileWatcher(options: FileWatcherOptions): FileWatcher {
   watcher.on('unlink', onEvent);
 
   watcher.on('error', (err) => {
-    logger.debug(
-      `chokidar error: ${err instanceof Error ? err.message : String(err)}. Continuing.`
+    logger.warn(
+      `chokidar error: ${err instanceof Error ? err.message : String(err)}. ` +
+        `--watch may be degraded for the remainder of this session — file changes ` +
+        `may no longer trigger reloads. Restart cdkl to recover.`
     );
   });
 

@@ -230,19 +230,27 @@ export async function verifySigV4(
   try {
     parsed = parseAuthorizationHeader(authHeader);
   } catch (err) {
-    logger.debug(
-      `AWS_IAM authorizer: malformed Authorization header — ${err instanceof Error ? err.message : String(err)}`
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — malformed Authorization header ` +
+        `(${err instanceof Error ? err.message : String(err)}). Expected shape: ` +
+        `'AWS4-HMAC-SHA256 Credential=<AKID>/<YYYYMMDD>/<region>/<service>/aws4_request, ` +
+        `SignedHeaders=<h1>;<h2>;..., Signature=<hex>'.`
     );
     return { allow: false, identityHash: undefined };
   }
 
   if (parsed.algorithm !== 'AWS4-HMAC-SHA256') {
-    logger.debug(`AWS_IAM authorizer: unsupported algorithm '${parsed.algorithm}'`);
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — unsupported Authorization algorithm ` +
+        `'${parsed.algorithm}'. Expected 'AWS4-HMAC-SHA256'.`
+    );
     return { allow: false, identityHash: undefined };
   }
   if (parsed.credentialTerminator !== 'aws4_request') {
-    logger.debug(
-      `AWS_IAM authorizer: invalid credential scope terminator '${parsed.credentialTerminator}'`
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — invalid credential-scope terminator ` +
+        `'${parsed.credentialTerminator}'. Expected 'aws4_request' (the last '/' segment ` +
+        `of the Credential= value).`
     );
     return { allow: false, identityHash: undefined };
   }
@@ -252,12 +260,18 @@ export async function verifySigV4(
   // to `date` for compatibility with curl --aws-sigv4 etc.
   const amzDate = pickHeader(req.headers, 'x-amz-date') ?? pickHeader(req.headers, 'date');
   if (!amzDate) {
-    logger.debug('AWS_IAM authorizer: missing x-amz-date / date header');
+    logger.info(
+      'AWS_IAM authorizer: rejecting request — missing x-amz-date / date header. ' +
+        "Expected ISO-8601 basic 'YYYYMMDDTHHMMSSZ' in 'x-amz-date' (AWS SDK default) " +
+        "or RFC 1123 in 'date' (curl --aws-sigv4)."
+    );
     return { allow: false, identityHash: undefined };
   }
   if (!validateAmzDateMatchesCredentialDate(amzDate, parsed.credentialDate)) {
-    logger.debug(
-      `AWS_IAM authorizer: x-amz-date '${amzDate}' does not match credential scope date '${parsed.credentialDate}'`
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' does not match ` +
+        `credential-scope date '${parsed.credentialDate}'. The 'YYYYMMDD' prefix of ` +
+        `x-amz-date must equal the date segment of Credential=<AKID>/<YYYYMMDD>/...`
     );
     return { allow: false, identityHash: undefined };
   }
@@ -267,7 +281,11 @@ export async function verifySigV4(
   // that here — a missing `now` defaults to real time.
   const now = (opts.now ?? ((): Date => new Date()))();
   if (amzDateOutsideSkew(amzDate, now)) {
-    logger.debug(`AWS_IAM authorizer: x-amz-date '${amzDate}' outside 15-min clock skew`);
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' is outside the ` +
+        `15-minute clock-skew window (local now=${now.toISOString()}). Re-sign the ` +
+        `request with the current time or sync the local clock.`
+    );
     return { allow: false, identityHash: undefined };
   }
 
@@ -391,8 +409,11 @@ export async function verifySigV4(
   // key, recompute the signature, compare.
   const recomputed = computeSignature(req, parsed, local.secretAccessKey, amzDate);
   if (!constantTimeEqual(recomputed, parsed.signature)) {
-    logger.debug(
-      `AWS_IAM authorizer: signature mismatch (expected '${recomputed}', got '${parsed.signature}')`
+    logger.info(
+      `AWS_IAM authorizer: rejecting request — Signature= mismatch (recomputed ` +
+        `'${recomputed}', got '${parsed.signature}'). The request was signed with the ` +
+        `expected access-key-id but the HMAC does not verify — check the SignedHeaders ` +
+        `list, request body, and canonical-request normalization on the signer side.`
     );
     return { allow: false, identityHash: undefined };
   }
