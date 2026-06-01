@@ -1,12 +1,35 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
-import { isCancel, multiselect, text } from '@clack/prompts';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path';
+import { isCancel, multiselect, select, text } from '@clack/prompts';
 import { CdkLocalError, LocalStartServiceError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { getEmbedConfig } from './embed-config.js';
 import { isInteractive } from './target-picker.js';
+
+/**
+ * Issue #260 — expand a leading `~` / `~/` to the user's home directory
+ * so the canonical npm-secret recipe
+ * (`--image-build-secret npmrc=~/.npmrc`) and the analogous
+ * `--image-override <svc>=~/Dockerfile` form work without the shell
+ * pre-expanding (e.g. when the user wrapped the value in single quotes
+ * to escape a shell-interpolation concern, or when the value came from
+ * a config file that Node parses directly without shell involvement).
+ *
+ * Only the `~/` and bare `~` shapes are supported — `~user/foo` (named
+ * user) is intentionally NOT expanded because Node has no built-in
+ * for resolving an arbitrary username to its home directory; passing
+ * the literal through preserves the user's input and lets `docker
+ * build` surface a clear "no such file" error if they meant a real
+ * tilde-prefixed file.
+ */
+export function expandTilde(p: string): string {
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return join(homedir(), p.slice(2));
+  return p;
+}
 
 /**
  * Issue #238 — `--image-override` family for `cdkl start-service` /
@@ -348,7 +371,11 @@ export function parseImageOverrideFlags(input: {
           `Invalid --image-build-secret value "${raw}": id and src must both be non-empty (after service prefix).`
         );
       }
-      const absSrcPS = isAbsolute(src) ? src : resolvePath(process.cwd(), src);
+      // Issue #260: tilde-expand BEFORE the absolute check + cwd-join
+      // so `~/.npmrc` resolves to `<HOME>/.npmrc` instead of
+      // `<cwd>/~/.npmrc`. Absolute paths after expansion pass through.
+      const expandedPS = expandTilde(src);
+      const absSrcPS = isAbsolute(expandedPS) ? expandedPS : resolvePath(process.cwd(), expandedPS);
       getPerSvc(prefix.svc).buildSecrets.set(id, absSrcPS);
       continue;
     }
@@ -373,7 +400,13 @@ export function parseImageOverrideFlags(input: {
     // CLI flag means — relative to where they ran the command.
     // Mirrors the absolute-resolution behavior of
     // `--image-override <path>` in {@link makeEntryFromPath}.
-    const absSrc = isAbsolute(src) ? src : resolvePath(process.cwd(), src);
+    //
+    // Issue #260: tilde-expand BEFORE the absolute check + cwd-join
+    // so `--image-build-secret npmrc=~/.npmrc` resolves to
+    // `<HOME>/.npmrc` (the canonical npm-secret recipe documented in
+    // the README) instead of literally appending `~/.npmrc` to cwd.
+    const expanded = expandTilde(src);
+    const absSrc = isAbsolute(expanded) ? expanded : resolvePath(process.cwd(), expanded);
     buildSecrets.set(id, absSrc);
   }
 
@@ -554,26 +587,33 @@ export async function resolveImageOverrides(args: {
   // targets. Gated on TTY + the caller's opt-in flag + the user not
   // having passed --no-interactive-overrides.
   if (args.interactiveBootPrompt === true && isInteractive() && noInteractive !== true) {
+    // Issue #259 — auto-detect Dockerfiles under cwd ONCE per session
+    // so each per-target prompt can offer them as a picker. The scan
+    // is best-effort (filesystem errors fall through silently), but a
+    // populated list flips the per-target prompt from a free-text
+    // input to a `select` with the discovered Dockerfiles + an
+    // "Enter custom path" + "Skip" pair of sentinels. When the scan
+    // turns up nothing, fall back to the existing text prompt.
+    const discoveredDockerfiles = discoverDockerfiles(cwd);
+    // Issue #258 — fire the intro copy ONCE per session (right before
+    // the first per-target prompt) so the user sees what's happening
+    // without it being repeated for every pinned target.
+    let introShown = false;
     for (const target of pinnedTargets) {
       if (out.has(target)) continue;
-      const label = labels.get(target);
-      const message =
-        `Detected pinned image on '${target}'` +
-        (label ? ` (${label})` : '') +
-        '. Override with a local build? [path / N]:';
-      const answer = await text({
-        message,
-        placeholder: '',
-      });
-      if (isCancel(answer)) {
-        throw new ImageOverrideError(
-          'Image-override boot prompt cancelled. Re-run with --no-interactive-overrides to suppress, or pass --image-override explicitly.'
-        );
+      if (!introShown) {
+        logger.info(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO);
+        introShown = true;
       }
-      const value = ((answer as string | undefined) ?? '').trim();
+      const label = labels.get(target);
+      const headline = `Detected pinned image on '${target}'` + (label ? ` (${label})` : '') + '.';
+      const value = await promptForOverridePath({
+        headline,
+        discoveredDockerfiles,
+      });
       // Accept any case variant of `n` / `no` as a skip sentinel
-      // (matches the `[path / N]` hint shown to the user). Empty
-      // input also skips.
+      // (matches the [Dockerfile path / N / blank=skip] hint shown to
+      // the user on the text-fallback path). Empty input also skips.
       if (!value) continue;
       const lower = value.toLowerCase();
       if (lower === 'n' || lower === 'no') continue;
@@ -582,6 +622,183 @@ export async function resolveImageOverrides(args: {
   }
 
   return out;
+}
+
+/**
+ * Issue #258 — one-shot intro copy surfaced ONCE per session right before
+ * the first Stage 3 per-target boot prompt. Explains WHAT the prompt is
+ * doing (cdk-local can substitute a local `docker build` for a deployed
+ * ECR pin so source iteration still works), what the user's options are
+ * (Dockerfile path / blank-or-N to skip), and how to opt out
+ * (`--no-interactive-overrides`). Exported so binding tests can pin the
+ * exact copy.
+ */
+export const IMAGE_OVERRIDE_BOOT_PROMPT_INTRO =
+  'The following ECS service(s) reference a deployed container image ' +
+  '(ContainerImage.fromEcrRepository / fromRegistry). Local source edits ' +
+  "won't reflect against a deployed image — cdk-local can substitute a " +
+  'local `docker build` instead so you can iterate.\n\n' +
+  'For each pinned service below, enter a Dockerfile path to use a local ' +
+  'build, leave blank or type N to keep the deployed image (--watch ' +
+  "reload + source edits won't take effect for that service), or pass " +
+  '--no-interactive-overrides next time to skip this prompt.';
+
+/**
+ * Issue #259 — sentinel values returned from the Stage 3 `select` picker
+ * when the user picks the "Enter custom path" or "Skip" option. Distinct
+ * from any possible Dockerfile path so the caller can switch on them
+ * without ambiguity.
+ */
+const PROMPT_SENTINEL_CUSTOM = '\0custom\0';
+const PROMPT_SENTINEL_SKIP = '\0skip\0';
+
+/**
+ * Issue #259 — fire one per-target prompt. When at least one Dockerfile
+ * was auto-detected under cwd the prompt is a `select` with the
+ * discovered paths + an "Enter custom path" + "Skip" pair; otherwise it
+ * falls back to a free-text input (the legacy shape). Returns the raw
+ * answer string the caller passes to {@link makeEntryFromPath}, or an
+ * empty string for skip / cancel-by-empty. Cancel (Ctrl+C / Esc) throws
+ * {@link ImageOverrideError}.
+ */
+async function promptForOverridePath(args: {
+  headline: string;
+  discoveredDockerfiles: string[];
+}): Promise<string> {
+  const { headline, discoveredDockerfiles } = args;
+  if (discoveredDockerfiles.length > 0) {
+    const options = [
+      ...discoveredDockerfiles.map((p) => ({ value: p, label: p })),
+      { value: PROMPT_SENTINEL_CUSTOM, label: '(Enter custom path)' },
+      { value: PROMPT_SENTINEL_SKIP, label: '(Skip — use ECR pin)' },
+    ];
+    const picked = await select({
+      message: `${headline} Override with a local build?`,
+      options,
+    });
+    if (isCancel(picked)) {
+      throw new ImageOverrideError(
+        'Image-override boot prompt cancelled. Re-run with --no-interactive-overrides to suppress, or pass --image-override explicitly.'
+      );
+    }
+    if (picked === PROMPT_SENTINEL_SKIP) return '';
+    if (picked !== PROMPT_SENTINEL_CUSTOM) return picked as string;
+    // Custom path — fall through to a text prompt so the user can
+    // type one not surfaced by the auto-detect scan (e.g. outside
+    // cwd, or inside an excluded directory).
+  }
+  const message = `${headline} Override with a local build? [Dockerfile path / N / blank=skip]:`;
+  const answer = await text({
+    message,
+    placeholder: '',
+  });
+  if (isCancel(answer)) {
+    throw new ImageOverrideError(
+      'Image-override boot prompt cancelled. Re-run with --no-interactive-overrides to suppress, or pass --image-override explicitly.'
+    );
+  }
+  return ((answer as string | undefined) ?? '').trim();
+}
+
+/**
+ * Issue #259 — directories the Dockerfile auto-detect scan skips. These
+ * are dirs where Dockerfiles, if any, are build artifacts or vendored
+ * dependencies, not the user's iteration target. Kept top-level only so
+ * a `dist/` somewhere in a sub-tree (e.g. `packages/foo/dist/`) is also
+ * skipped by name match.
+ */
+const DOCKERFILE_SCAN_IGNORED_DIRS = new Set<string>([
+  'node_modules',
+  '.git',
+  'cdk.out',
+  'dist',
+  '.next',
+  '.cache',
+  'build',
+  'coverage',
+  '.turbo',
+  '.vite',
+]);
+
+/** Cap the auto-detected Dockerfile list so the picker stays usable in large monorepos. */
+const DOCKERFILE_SCAN_CAP = 10;
+
+/**
+ * Issue #259 — depth-limited recursive scan for `Dockerfile` /
+ * `Dockerfile.*` files under `cwd`. Excludes the build-artifact /
+ * dependency directories listed in {@link DOCKERFILE_SCAN_IGNORED_DIRS}
+ * (by name match, at any depth) and caps the result at
+ * {@link DOCKERFILE_SCAN_CAP} entries selected by mtime (newest first)
+ * so a monorepo with hundreds of Dockerfiles stays manageable in the
+ * picker. Returned paths are relative to `cwd` and prefixed with `./`
+ * so they round-trip cleanly through `resolvePath(cwd, ...)`.
+ *
+ * Best-effort: a per-directory read failure (permission denied,
+ * unreadable symlink target, race with a concurrent rm -rf) is logged
+ * at debug and the offending directory is skipped — the scan does not
+ * propagate filesystem errors up because the Stage 3 prompt must
+ * still fire even if the auto-detect helper hits a snag.
+ *
+ * Hard depth cap of 8 segments below `cwd` keeps the scan bounded even
+ * when an excluded directory is named differently than the default
+ * set (the user's monorepo has its own conventions); pathological
+ * cases hit the cap before the response becomes annoying.
+ *
+ * Exported for unit-testing the scan logic directly against a tmp
+ * fixture tree.
+ */
+export function discoverDockerfiles(cwd: string): string[] {
+  const found: { abs: string; rel: string; mtime: number }[] = [];
+  const MAX_DEPTH = 8;
+  const visit = (dir: string, depth: number): void => {
+    if (depth > MAX_DEPTH) return;
+    // Pass `encoding: 'utf-8'` alongside `withFileTypes: true` so the
+    // overload resolves to `Dirent<string>` rather than the buffer-typed
+    // variant TypeScript otherwise picks here.
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf-8' });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const name = entry.name;
+      // Skip dot-files at root level (e.g. `.DS_Store`) but allow
+      // explicit Dockerfile.* matches (which never start with a dot).
+      if (entry.isDirectory()) {
+        if (DOCKERFILE_SCAN_IGNORED_DIRS.has(name)) continue;
+        if (name.startsWith('.') && name !== '.') continue;
+        visit(join(dir, name), depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      // `Dockerfile` exact, OR `Dockerfile.<anything>`. Case-sensitive
+      // by design — `dockerfile` lowercase is not the conventional
+      // filename and Docker itself doesn't auto-pick it up.
+      if (name === 'Dockerfile' || name.startsWith('Dockerfile.')) {
+        const abs = join(dir, name);
+        let mtime = 0;
+        try {
+          mtime = statSync(abs).mtimeMs;
+        } catch {
+          /* best-effort — leave mtime=0 so it sorts last */
+        }
+        const rel = relative(cwd, abs);
+        // Prefix `./` so the resolved path round-trips through
+        // resolvePath(cwd, ...) without ambiguity vs a bare basename
+        // that could be mistaken for a $PATH lookup elsewhere.
+        const display = rel.startsWith('.') ? rel : `./${rel}`;
+        found.push({ abs, rel: display, mtime });
+      }
+    }
+  };
+  try {
+    visit(cwd, 0);
+  } catch {
+    return [];
+  }
+  found.sort((a, b) => b.mtime - a.mtime);
+  return found.slice(0, DOCKERFILE_SCAN_CAP).map((f) => f.rel);
 }
 
 /**
@@ -635,7 +852,12 @@ function makeEntryFromPath(
   rawFlags: RawImageOverrideFlags,
   cwd: string
 ): ImageOverrideEntry {
-  const abs = isAbsolute(raw) ? raw : resolvePath(cwd, raw);
+  // Issue #260: tilde-expand BEFORE the absolute check + cwd-join so
+  // `--image-override Svc=~/Dockerfile` and a boot-prompt answer of
+  // `~/Dockerfile` resolve to `<HOME>/Dockerfile` instead of
+  // `<cwd>/~/Dockerfile`. Mirrors the build-secret `src` resolution.
+  const expanded = expandTilde(raw);
+  const abs = isAbsolute(expanded) ? expanded : resolvePath(cwd, expanded);
   if (!existsSync(abs)) {
     throw new ImageOverrideError(
       `--image-override: Dockerfile '${raw}' does not exist (resolved to '${abs}').`
