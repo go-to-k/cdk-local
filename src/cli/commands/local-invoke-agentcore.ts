@@ -1659,7 +1659,10 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--platform <platform>',
-        'docker --platform for the agent container (linux/amd64 or linux/arm64)'
+        'docker --platform for the agent container (linux/amd64 or linux/arm64). ' +
+          'Defaults to linux/arm64 because the cloud AgentCore Runtime requires arm64. ' +
+          'Override to linux/amd64 only when iterating against an amd64 dev container locally; ' +
+          'note the image will not run on the cloud runtime as-is.'
       )
         .choices(['linux/amd64', 'linux/arm64'])
         .default('linux/arm64')
