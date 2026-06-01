@@ -51,7 +51,7 @@ The locally executable resources are listed under [Supported resources](#support
 
 Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
 
-Run any command with no target for an arrow-key picker (`invoke` / `run-task` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
+Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `run-task` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ```bash
 cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
