@@ -1,3 +1,10 @@
+# [0.74.0](https://github.com/go-to-k/cdk-local/compare/v0.73.6...v0.74.0) (2026-06-01)
+
+
+### Features
+
+* **docker:** show interactive spinner during long docker build / pull ([#269](https://github.com/go-to-k/cdk-local/issues/269)) ([14665e0](https://github.com/go-to-k/cdk-local/commit/14665e0333d13eca8e09555d5b866ef389ac458d))
+
 ## [0.73.6](https://github.com/go-to-k/cdk-local/compare/v0.73.5...v0.73.6) (2026-06-01)
 
 
