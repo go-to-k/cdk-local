@@ -1,6 +1,8 @@
+import { execFile as execFileCb } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import path, { dirname } from 'node:path';
+import { promisify } from 'node:util';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -11,12 +13,20 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
-import { resolveApp } from '../config-loader.js';
+import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
+import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import {
+  classifySourceChange,
+  type ReloadAssetContext,
+  type ReloadVerdict,
+} from '../../local/source-change-classifier.js';
+import { createWatchPredicates } from './local-start-api.js';
 import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
@@ -176,6 +186,28 @@ interface LocalInvokeAgentCoreOptions {
    * exceed the default — the cloud's AgentCore quota goes well above 120s.
    */
   timeout: number;
+  /**
+   * Issue #255 — `cdkl invoke-agentcore --watch`. Re-synth and reload the
+   * agent container on CDK source changes. Only meaningful with the
+   * long-running `/ws` session paths (`--ws` / `--ws-interactive`):
+   * the single-shot `POST /invocations` / `POST /mcp` / A2A `POST /`
+   * paths run once and exit, so `--watch` is logged as a no-op WARN
+   * there and the single-shot proceeds normally.
+   *
+   * Per-firing the source-change classifier (shared with `start-service`
+   * / `start-alb` Phase 4 of issue #214) decides `'rebuild'` vs
+   * `'soft-reload'`. Source-only edits on an interpreted-language
+   * handler (Node / Python / Ruby / shell — no Dockerfile, no
+   * dependency manifest, no compiled-language source) `docker cp` the
+   * freshly-synthed asset directory contents into the running
+   * container's WORKDIR + `docker restart`. Everything else (Dockerfile
+   * / dependency manifest / compiled source / ambiguous) rebuilds the
+   * image from scratch + restarts the container. The active `/ws`
+   * socket is closed cleanly on every reload firing (no protocol-defined
+   * mid-session container handoff) so the next session connects to the
+   * rebuilt container — that is the honest local-dev semantic.
+   */
+  watch?: boolean;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -366,6 +398,20 @@ async function localInvokeAgentCoreCommand(
           ' path.'
       );
     }
+    // Issue #255 — `--watch` is only meaningful on the long-running /ws
+    // session paths. The single-shot HTTP `POST /invocations`, MCP `POST /mcp`,
+    // and A2A `POST /` paths run once and exit, so a watch loop has nothing
+    // to drive: log a one-line WARN and let the single shot proceed normally
+    // (the flag declaration itself does not gate that case).
+    const watchEligible = options.ws === true && !isMcp && !isA2a;
+    const watchActive = options.watch === true && watchEligible;
+    if (options.watch === true && !watchEligible) {
+      const ignoredFor = isMcp ? 'MCP' : isA2a ? 'A2A' : 'single-shot HTTP POST /invocations';
+      logger.warn(
+        `--watch is meaningful only with the long-running --ws / --ws-interactive session paths; ` +
+          `ignoring it for the ${ignoredFor} path (single-shot invocations run once and exit).`
+      );
+    }
 
     // Read + validate the event (and resolve the session id) BEFORE any
     // Docker work, so a bad --event / --event-stdin fails fast instead of
@@ -481,23 +527,128 @@ async function localInvokeAgentCoreCommand(
       // additionally wire `process.stdin` (line-buffered) as a frame source,
       // so each typed line becomes a follow-up text frame until EOF / agent
       // close — a REPL on top of the same connection.
-      await waitForAgentCorePing(containerHost, hostPort);
-      const frameSource = options.wsInteractive ? readStdinLines() : undefined;
-      logger.info(
-        options.wsInteractive
-          ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
-          : 'Opening the agent /ws WebSocket and streaming frames...'
-      );
-      const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
-        sessionId,
-        timeoutMs: options.timeout,
-        onMessage: (text) => process.stdout.write(text),
-        ...(authorization && { authorization }),
-        ...(frameSource && { frameSource }),
-      });
-      // Settle so container logs flush before teardown.
-      await new Promise((r) => setTimeout(r, 250));
-      emitWsResult(wsResult);
+      if (watchActive) {
+        // Issue #255 — `--watch` wraps the /ws dispatch in a reload-driven
+        // loop. The WebSocket is closed cleanly on every reload firing
+        // (via the abort signal) and re-opened against the rebuilt /
+        // soft-reloaded container; the host-side teardown is otherwise
+        // identical to the non-watch path. The watch loop only returns
+        // when SIGINT triggers cleanup.
+        await runAgentCoreWatchLoop({
+          containerHost,
+          hostPort,
+          event,
+          sessionId,
+          timeoutMs: options.timeout,
+          wsInteractive: options.wsInteractive === true,
+          options,
+          resolvedTarget,
+          resolved,
+          synthesizer,
+          synthOpts,
+          stacks,
+          ...(authorization && { authorization }),
+          rebuild: async () => {
+            // Tear down the OLD container, then re-run the full image build
+            // + container run pipeline against the new synth. Returns the
+            // new (containerId, stopLogs, hostPort). Reuses the same
+            // env / state / image-resolution machinery used at first
+            // boot; the only thing not re-resolved is the inbound auth
+            // (the bearer token / OIDC discovery URL is stable across
+            // a CDK source edit).
+            if (stopLogs) {
+              try {
+                stopLogs();
+              } catch {
+                /* best-effort */
+              }
+              stopLogs = undefined;
+            }
+            if (containerId) {
+              await removeContainer(containerId);
+              containerId = undefined;
+            }
+            const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+            const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, newStacks);
+            const { context: newImageContext, loaded: newLoaded } =
+              stateProvider && newCandidate
+                ? await buildAgentCoreImageContext(newCandidate, stateProvider, options)
+                : { context: undefined, loaded: undefined };
+            const newResolved = resolveAgentCoreTarget(resolvedTarget, newStacks, newImageContext);
+            await resolveFromS3BucketIntrinsic(
+              newResolved,
+              stateProvider,
+              newLoaded,
+              newImageContext
+            );
+            const newImage = await resolveAgentCoreImage(
+              newResolved,
+              options,
+              newLoaded,
+              stateProvider
+            );
+            const { env: newEnv, sensitiveEnvKeys: newSensitive } = await buildContainerEnv(
+              newResolved,
+              options,
+              profileCredentials,
+              profileCredsFile,
+              stateProvider,
+              newLoaded,
+              newImageContext
+            );
+            const newHostPort = await pickFreePort();
+            const newName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+            logger.info(
+              `Reload: starting agent container (image=${newImage}, port=${newHostPort} -> 8080)...`
+            );
+            containerId = await runDetached({
+              image: newImage,
+              mounts: [],
+              env: newEnv,
+              cmd: [],
+              hostPort: newHostPort,
+              host: containerHost,
+              platform: options.platform,
+              name: newName,
+              ...(newSensitive.size > 0 && { sensitiveEnvKeys: newSensitive }),
+            });
+            stopLogs = streamLogs(containerId);
+            return { containerId, hostPort: newHostPort, stacks: newStacks };
+          },
+          softReload: async (newSourceDir) => {
+            if (!containerId) {
+              throw new CdkLocalError(
+                'softReload: no live container to docker cp / docker restart into.',
+                'LOCAL_INVOKE_AGENTCORE_WATCH_NO_CONTAINER'
+              );
+            }
+            await softReloadAgentContainer(containerId, newSourceDir);
+            // Re-synth so the caller has the freshly-resolved stacks for the
+            // next classifier firing's asset-context lookup; we discard env /
+            // image changes (soft-reload by definition only swaps source).
+            const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+            return { stacks: newStacks };
+          },
+        });
+      } else {
+        await waitForAgentCorePing(containerHost, hostPort);
+        const frameSource = options.wsInteractive ? readStdinLines() : undefined;
+        logger.info(
+          options.wsInteractive
+            ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
+            : 'Opening the agent /ws WebSocket and streaming frames...'
+        );
+        const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
+          sessionId,
+          timeoutMs: options.timeout,
+          onMessage: (text) => process.stdout.write(text),
+          ...(authorization && { authorization }),
+          ...(frameSource && { frameSource }),
+        });
+        // Settle so container logs flush before teardown.
+        await new Promise((r) => setTimeout(r, 250));
+        emitWsResult(wsResult);
+      }
     } else {
       await waitForAgentCorePing(containerHost, hostPort);
 
@@ -1544,6 +1695,507 @@ export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideF
   return parsed as EnvOverrideFile;
 }
 
+/**
+ * Issue #255 — `cdkl invoke-agentcore --watch` main loop. Wraps the
+ * `/ws` dispatch in a reload-driven loop:
+ *
+ *   1. Open the WebSocket against the current container; stream frames
+ *      to stdout. The connection is bound to an abort signal the
+ *      watcher fires when a source change is detected.
+ *   2. When the agent closes the stream naturally (no reload pending),
+ *      the loop exits — `--watch` does NOT auto-reconnect on a benign
+ *      close (the user can `^C` to leave or just re-run the command).
+ *   3. When a reload fires, the abort signal closes the WS cleanly
+ *      (resolves with the current frame count, not a reject), then the
+ *      classifier picks `'rebuild'` vs `'soft-reload'` and the
+ *      corresponding container-swap helper runs. After the swap, the
+ *      loop re-opens the WS against the new / restarted container with
+ *      the same `--event` first frame + a fresh stdin reader (for
+ *      `--ws-interactive`).
+ *
+ * Active `/ws` socket handling: the AgentCore `/ws` protocol does not
+ * define mid-session container handoff, so the only honest local-dev
+ * semantic is "close the socket cleanly and let the client reconnect."
+ * The reload firing logs that loudly so the user sees it.
+ *
+ * `softReload` and `rebuild` are passed as callbacks so the watch loop
+ * itself stays uncoupled from the boot pipeline + the docker helpers
+ * the outer command owns. The host-side teardown (state provider
+ * dispose, container removal, profile creds-file dispose) is the
+ * outer command's `finally` cleanup — the watch loop only swaps the
+ * one agent container.
+ *
+ * @internal — exported so a unit test can drive the loop without the
+ * full Docker + chokidar pipeline.
+ */
+export async function runAgentCoreWatchLoop(args: {
+  containerHost: string;
+  hostPort: number;
+  event: unknown;
+  sessionId: string;
+  timeoutMs: number;
+  wsInteractive: boolean;
+  authorization?: string;
+  options: LocalInvokeAgentCoreOptions;
+  /** Original CDK target string (display path / logical id) so the resolver can re-pick the stack on reload. */
+  resolvedTarget: string;
+  resolved: ResolvedAgentCoreRuntime;
+  synthesizer: Synthesizer;
+  synthOpts: SynthesisOptions;
+  stacks: StackInfo[];
+  /**
+   * Rebuild the agent container from scratch. SIGTERM + `docker rm -f`
+   * the old container, re-resolve the image (re-running the same
+   * `cdk synth` + image-build pipeline the cold start runs), then
+   * `docker run` a fresh container. Returns the new (containerId,
+   * hostPort, stacks) so the loop can update its local state.
+   */
+  rebuild: () => Promise<{ containerId: string; hostPort: number; stacks: StackInfo[] }>;
+  /**
+   * Soft-reload the agent container in place. `docker cp` the
+   * freshly-synthed asset directory contents into the existing
+   * container's WORKDIR + `docker restart` it. No `docker build`, no
+   * container swap — the container ID + host port are preserved.
+   * Returns the freshly-synthed stacks for the next classifier firing's
+   * asset-context lookup.
+   */
+  softReload: (newAssetSourceDir: string) => Promise<{ stacks: StackInfo[] }>;
+  /** Test hook for the WS dispatch (replaces `invokeAgentCoreWs`). */
+  __wsInvoker?: typeof invokeAgentCoreWs;
+  /**
+   * Test hook for the watcher factory. The default uses
+   * {@link createFileWatcher} against the cwd, honoring `cdk.json`'s
+   * `watch.include` / `watch.exclude` like every other `--watch` path.
+   */
+  __watcherFactory?: (onChange: (changedPaths: readonly string[]) => void) => FileWatcher;
+  /** Test hook for the ping wait between container boot + WS open. */
+  __waitForPing?: (host: string, port: number) => Promise<void>;
+  /**
+   * Test hook for the per-firing classifier context builder. The default
+   * runs a fresh `synthesizer.synthesize(synthOpts)` + the
+   * {@link loadAgentCoreAssetContext} + {@link deriveOldAssetHash}
+   * pipeline; the override lets a unit test drive the rebuild vs
+   * soft-reload branches directly without standing up a real
+   * AssetManifestLoader.
+   */
+  __classifierContext?: (
+    changedPaths: readonly string[]
+  ) => Promise<ReloadAssetContext | undefined>;
+}): Promise<void> {
+  const logger = getLogger();
+  const wsInvoker = args.__wsInvoker ?? invokeAgentCoreWs;
+  const waitForPing = args.__waitForPing ?? waitForAgentCorePing;
+
+  let currentHostPort = args.hostPort;
+  let currentStacks = args.stacks;
+
+  // Reload queue: serialize reload events so two rapid edits don't run
+  // two rebuilds in parallel. The chain `then`s every new event onto
+  // the previous one, just like start-api + the ECS service emulator.
+  let reloadChain: Promise<unknown> = Promise.resolve();
+  // Per-iteration AbortController that the watcher's onChange fires
+  // to close the in-flight WS so the reload can swap the container.
+  // Recreated each iteration so a fresh WS gets a fresh signal.
+  let currentAbort: AbortController | undefined;
+  // Flips to true when a reload was triggered for the CURRENT WS
+  // session — used to decide whether the post-WS path enters another
+  // iteration (reload) or exits the loop (agent closed without a
+  // pending reload).
+  let pendingReload = false;
+  // Flips to true if a rebuild or soft-reload callback throws — both
+  // paths teardown the old container before bringing the replacement
+  // up, so `currentHostPort` may point at a torn-down container. The
+  // main loop checks this BEFORE the next waitForPing so we bail out
+  // instead of blocking for the ~30s ping timeout.
+  let reloadFailed = false;
+  // Tracks "the watcher fired during a reload"; the watch loop's
+  // serialized reloadChain handles re-firing without re-entry races.
+
+  const watcherFactory =
+    args.__watcherFactory ??
+    ((onChange) => {
+      const watchRoot = process.cwd();
+      const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+        watchRoot,
+        output: args.options.output,
+        watchConfig: resolveWatchConfig(),
+      });
+      logger.info(
+        `Watching ${watchRoot} for source changes (excluding ${excludePatterns.join(', ')}).`
+      );
+      return createFileWatcher({ paths: [watchRoot], ignored, shouldTrigger, onChange });
+    });
+
+  const cdkOutDir = args.options.output;
+  const assetLoader = new AssetManifestLoader();
+
+  const watcher = watcherFactory((changedPaths) => {
+    const next = reloadChain.then(async () => {
+      // Classify per firing. The classifier needs the OLD + NEW asset
+      // hashes + the new asset source directory; we re-derive against
+      // the freshly-synthed stacks before deciding rebuild vs
+      // soft-reload. A classifier-context build failure (e.g. asset
+      // manifest missing) falls back to rebuild — the same conservative
+      // default the ECS emulator's reload pathway uses.
+      let verdict: ReloadVerdict = { kind: 'rebuild', reason: 'classifier not consulted' };
+      let assetCtx: ReloadAssetContext | undefined;
+      try {
+        if (args.__classifierContext) {
+          assetCtx = await args.__classifierContext(changedPaths);
+        } else {
+          const { stacks: freshStacks } = await args.synthesizer.synthesize(args.synthOpts);
+          const oldAssetHash = await deriveOldAssetHash({
+            resolvedTarget: args.resolvedTarget,
+            resolved: args.resolved,
+            stacks: currentStacks,
+            cdkOutDir,
+            assetLoader,
+          });
+          assetCtx = await loadAgentCoreAssetContext({
+            resolvedTarget: args.resolvedTarget,
+            resolved: args.resolved,
+            stacks: freshStacks,
+            cdkOutDir,
+            assetLoader,
+            oldAssetHash,
+          });
+        }
+        verdict = classifySourceChange(changedPaths, assetCtx);
+        logger.info(
+          `Detected source change (${changedPaths.length} path(s)); verdict=${verdict.kind} (${verdict.reason}).`
+        );
+      } catch (err) {
+        logger.warn(
+          `Reload: classifier context unavailable ` +
+            `(${err instanceof Error ? err.message : String(err)}); falling back to rebuild.`
+        );
+        verdict = {
+          kind: 'rebuild',
+          reason: 'classifier context unavailable; falling back to rebuild',
+        };
+      }
+      // Mark the pending reload BEFORE aborting so the WS dispatch
+      // promise (which resolves on abort) knows to re-enter the loop
+      // instead of exiting.
+      pendingReload = true;
+      logger.warn(
+        'cdkl invoke-agentcore --watch: source change detected; closing the active /ws ' +
+          'socket so the client can reconnect to the rebuilt container.'
+      );
+      // Abort the current WS exchange so the dispatch promise resolves
+      // and the loop iteration can proceed to the swap step.
+      currentAbort?.abort();
+      try {
+        if (verdict.kind === 'soft-reload') {
+          const { stacks: newStacks } = await args.softReload(verdict.newAssetSourceDir);
+          currentStacks = newStacks;
+          logger.info(
+            `Reload: soft-reloaded the agent container (docker cp + docker restart; ` +
+              `container ID + host port preserved).`
+          );
+        } else {
+          const {
+            containerId: _newId,
+            hostPort: newHostPort,
+            stacks: newStacks,
+          } = await args.rebuild();
+          currentHostPort = newHostPort;
+          currentStacks = newStacks;
+          logger.info(`Reload: rebuilt the agent container.`);
+        }
+      } catch (err) {
+        // Both rebuild and soft-reload teardown the running container
+        // before bringing the replacement up. On failure `currentHostPort`
+        // points at a container that may already be gone, so the next
+        // iteration's `waitForPing` would block until its ~30s timeout.
+        // Signal the main loop to bail out cleanly instead — SIGINT
+        // stays the user-initiated termination path.
+        logger.error(
+          `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
+            'The previous container may already be torn down; exiting --watch loop. ' +
+            'Re-run cdkl invoke-agentcore --watch to recover.'
+        );
+        reloadFailed = true;
+        currentAbort?.abort();
+      }
+    });
+    reloadChain = next.catch((err) => {
+      logger.error(`Reload chain threw: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  });
+
+  try {
+    let firstIteration = true;
+    // Outer loop: each iteration opens one WS session. The loop only
+    // ends on a benign agent-close (no pending reload) — SIGINT runs
+    // the outer command's cleanup + `process.exit`, so this loop is
+    // not the termination path on user-initiated shutdown.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (reloadFailed) break;
+      await waitForPing(args.containerHost, currentHostPort);
+      if (firstIteration) {
+        logger.info(
+          args.wsInteractive
+            ? 'Opening the agent /ws WebSocket (interactive — stdin lines = follow-up frames; Ctrl-D to end)...'
+            : 'Opening the agent /ws WebSocket and streaming frames...'
+        );
+        firstIteration = false;
+      } else {
+        logger.info(
+          args.wsInteractive
+            ? 'Re-opening the agent /ws WebSocket (interactive) against the rebuilt container...'
+            : 'Re-opening the agent /ws WebSocket against the rebuilt container...'
+        );
+      }
+      const abort = new AbortController();
+      currentAbort = abort;
+      pendingReload = false;
+      const frameSource = args.wsInteractive ? readStdinLines() : undefined;
+      try {
+        const result = await wsInvoker(args.containerHost, currentHostPort, args.event, {
+          sessionId: args.sessionId,
+          timeoutMs: args.timeoutMs,
+          onMessage: (text) => process.stdout.write(text),
+          abortSignal: abort.signal,
+          ...(args.authorization && { authorization: args.authorization }),
+          ...(frameSource && { frameSource }),
+        });
+        // Settle so container logs flush before the next iteration / exit.
+        await new Promise((r) => setTimeout(r, 250));
+        emitWsResult(result);
+      } finally {
+        currentAbort = undefined;
+      }
+      if (!pendingReload) {
+        // Agent closed naturally — drain the reload chain (in case a
+        // late firing landed) and exit the loop. SIGINT remains the
+        // termination path the outer command relies on for shutdown.
+        await reloadChain.catch(() => undefined);
+        if (!pendingReload) break;
+      }
+      // Wait for the reload to finish before re-opening. The reload
+      // updates `currentHostPort` / `currentStacks` in place.
+      await reloadChain.catch(() => undefined);
+    }
+  } finally {
+    try {
+      await watcher.close();
+    } catch (err) {
+      logger.warn(`Watcher close failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/**
+ * Issue #255 — soft-reload the agent container in place. `docker cp`
+ * the freshly-synthed asset directory contents into the running
+ * container's WORKDIR + `docker restart` the container.
+ *
+ * - WORKDIR is resolved from the live container's image config via
+ *   `docker inspect --format '{{.Config.WorkingDir}}'`. An empty
+ *   WORKDIR (Docker runtime default) maps to `/`. For
+ *   CodeConfiguration runtimes the generated Dockerfile sets
+ *   `WORKDIR /app`, so the copy lands there.
+ * - The trailing `/.` on the source ensures CONTENTS are copied
+ *   (not the directory itself); the trailing `/` on the dest forces
+ *   docker cp to treat it as a directory.
+ * - `docker restart` cycles PID 1 — the new source is picked up by
+ *   the interpreted-language runtime on its next startup. The
+ *   container ID + host port + network are preserved across the
+ *   restart, so the surrounding watch loop's host-port reference
+ *   stays valid.
+ *
+ * @internal — exported for unit tests of the docker-cp + docker-restart
+ * shape without standing up a real container.
+ */
+const execFileAsync = promisify(execFileCb);
+
+// Stringify a child_process / execFile rejection. `err.stderr` is where
+// docker writes its actionable diagnostics; without it the wrapped error
+// only carries the generic "Command failed with exit code N" message.
+function describeExecError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const stderr = (err as { stderr?: unknown }).stderr;
+  const stderrText =
+    typeof stderr === 'string'
+      ? stderr.trim()
+      : stderr instanceof Buffer
+        ? stderr.toString('utf8').trim()
+        : '';
+  return stderrText ? `${err.message}\n${stderrText}` : err.message;
+}
+
+export async function softReloadAgentContainer(
+  containerId: string,
+  newAssetSourceDir: string
+): Promise<void> {
+  const logger = getLogger();
+  const dockerCmd = getDockerCmd();
+
+  // Resolve the runtime WORKDIR. Empty -> `/` (Docker runtime default).
+  let workdir: string;
+  try {
+    const { stdout } = await execFileAsync(dockerCmd, [
+      'inspect',
+      '--format',
+      '{{.Config.WorkingDir}}',
+      containerId,
+    ]);
+    workdir = stdout.trim() || '/';
+  } catch (err) {
+    throw new CdkLocalError(
+      `softReloadAgentContainer: docker inspect of container '${containerId}' failed: ` +
+        `${describeExecError(err)}.`,
+      'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_INSPECT_FAILED'
+    );
+  }
+  const workdirDest = workdir.endsWith('/') ? workdir : `${workdir}/`;
+  logger.info(
+    `Soft-reload: docker cp ${newAssetSourceDir} -> ${containerId}:${workdirDest}; restart.`
+  );
+  try {
+    await execFileAsync(
+      dockerCmd,
+      ['cp', `${newAssetSourceDir}/.`, `${containerId}:${workdirDest}`],
+      {
+        maxBuffer: 64 * 1024 * 1024,
+      }
+    );
+  } catch (err) {
+    throw new CdkLocalError(
+      `softReloadAgentContainer: docker cp into '${containerId}:${workdir}' failed: ` +
+        `${describeExecError(err)}.`,
+      'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_CP_FAILED'
+    );
+  }
+  try {
+    await execFileAsync(dockerCmd, ['restart', containerId]);
+  } catch (err) {
+    throw new CdkLocalError(
+      `softReloadAgentContainer: docker restart of '${containerId}' failed: ` +
+        `${describeExecError(err)}.`,
+      'LOCAL_INVOKE_AGENTCORE_WATCH_SOFT_RELOAD_RESTART_FAILED'
+    );
+  }
+}
+
+/**
+ * Issue #255 — build the per-firing classifier context for the agent
+ * container. Mirrors the ECS service emulator's `loadAssetContextForTarget`
+ * shape: returns `undefined` (and the classifier defaults to `'rebuild'`)
+ * when the runtime's image is not a CDK docker-image asset, or when the
+ * asset manifest lookup misses for either the OLD or NEW synth.
+ *
+ * For a CodeConfiguration (`fromCodeAsset`) runtime we treat the bundle's
+ * `codeAssetHash` as the asset hash + the staged source directory as
+ * `newAssetSourceDir`, and synthesize a `Dockerfile` basename that never
+ * matches a real file (the generated Dockerfile lives in a build tmpdir,
+ * not the source tree, so chokidar can't observe an edit to it). A
+ * `fromS3` bundle has no local source tree, so it returns `undefined` and
+ * the classifier defaults to rebuild.
+ *
+ * Container artifacts go through the same `AssetManifestLoader` lookup
+ * the ECS path uses, then read `source.directory` + `source.dockerFile`
+ * off the matched docker-image entry.
+ *
+ * @internal — exported for the watch loop's classifier dispatch test.
+ */
+export async function loadAgentCoreAssetContext(args: {
+  /** Original CDK target string the command resolved (display path / logical id). */
+  resolvedTarget: string;
+  resolved: ResolvedAgentCoreRuntime;
+  stacks: StackInfo[];
+  cdkOutDir: string;
+  assetLoader: AssetManifestLoader;
+  oldAssetHash: string | undefined;
+}): Promise<ReloadAssetContext | undefined> {
+  const { resolvedTarget, resolved, stacks, cdkOutDir, assetLoader, oldAssetHash } = args;
+  // Resolve the freshly-synthed candidate stack + runtime so the
+  // classifier reads the NEW asset hash, not the boot-time descriptor.
+  const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
+  if (!newCandidate) return undefined;
+  // CodeConfiguration (managed runtime) path. `codeAssetHash` is the
+  // bundle's file-asset hash; the source dir is the staged asset
+  // directory under cdk.out. A `fromS3` bundle has no local source tree
+  // — bail out + rebuild.
+  if (resolved.codeArtifact) {
+    if (resolved.codeArtifact.s3Source) return undefined;
+    const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+    if (!manifest) return undefined;
+    const fileAssets = assetLoader.getFileAssets(manifest);
+    const asset = fileAssets.get(resolved.codeArtifact.codeAssetHash);
+    if (!asset) return undefined;
+    const sourceDir = assetLoader.getAssetSourcePath(cdkOutDir, asset);
+    return {
+      ...(oldAssetHash !== undefined && { oldAssetHash }),
+      newAssetHash: resolved.codeArtifact.codeAssetHash,
+      newAssetSourceDir: sourceDir,
+      // The Dockerfile is generated inside `buildAgentCoreCodeImage`'s
+      // build tmpdir, not the source tree, so chokidar can never report
+      // an edit to it. Use a sentinel basename that can't collide with
+      // anything in the user's source tree (the leading `.` plus the
+      // `cdkl-` prefix), so the classifier's `basename === dockerFile`
+      // check is effectively dead — interpreted-language source edits
+      // route to soft-reload, every other rebuild trigger still works.
+      dockerFile: '.cdkl-agentcore-generated-Dockerfile',
+    };
+  }
+  // Container artifact path. The container URI must match a cdk.out
+  // docker-image asset entry; otherwise the image is a deployed-registry
+  // pin and the classifier rebuild-default is the right answer.
+  if (resolved.containerUri === undefined) return undefined;
+  const manifest = await assetLoader.loadManifest(cdkOutDir, newCandidate.stackName);
+  if (!manifest) return undefined;
+  const dockerImageEntry = getDockerImageBySourceHash(manifest, resolved.containerUri);
+  if (!dockerImageEntry) return undefined;
+  const newAssetHash = dockerImageEntry.hash;
+  const newDockerImage = dockerImageEntry.asset;
+  if (!newDockerImage.source.directory) return undefined;
+  const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
+  return {
+    ...(oldAssetHash !== undefined && { oldAssetHash }),
+    newAssetHash,
+    newAssetSourceDir,
+    dockerFile: path.basename(newDockerImage.source.dockerFile ?? 'Dockerfile'),
+  };
+}
+
+/**
+ * Helper: derive the current asset hash from the live (pre-reload)
+ * stacks for the classifier's `oldAssetHash` field. Returns `undefined`
+ * when the runtime's image is not resolvable as a CDK asset against the
+ * old stacks — the classifier defaults to rebuild in that case, which
+ * is the right answer.
+ */
+/**
+ * Async helper: derive the OLD (pre-reload) asset hash for the
+ * classifier's `oldAssetHash` field. Code-artifact runtimes carry the
+ * hash on the boot-time `resolved.codeArtifact.codeAssetHash`; container
+ * runtimes need a manifest lookup against the previous-synth stacks to
+ * extract it. Returns `undefined` when the OLD hash can't be derived
+ * (image is not a CDK asset, manifest unreadable, no candidate stack) —
+ * the classifier treats `undefined` as "force rebuild", which is the
+ * conservative default.
+ */
+async function deriveOldAssetHash(args: {
+  resolvedTarget: string;
+  resolved: ResolvedAgentCoreRuntime;
+  stacks: StackInfo[];
+  cdkOutDir: string;
+  assetLoader: AssetManifestLoader;
+}): Promise<string | undefined> {
+  const { resolvedTarget, resolved, stacks, cdkOutDir, assetLoader } = args;
+  if (resolved.codeArtifact) return resolved.codeArtifact.codeAssetHash;
+  if (resolved.containerUri === undefined) return undefined;
+  const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
+  if (!candidate) return undefined;
+  const manifest = await assetLoader.loadManifest(cdkOutDir, candidate.stackName);
+  if (!manifest) return undefined;
+  const entry = getDockerImageBySourceHash(manifest, resolved.containerUri);
+  return entry?.hash;
+}
+
 export function createLocalInvokeAgentCoreCommand(
   opts: CreateLocalInvokeAgentCoreCommandOptions = {}
 ): Command {
@@ -1725,5 +2377,15 @@ export function addInvokeAgentCoreSpecificOptions(cmd: Command): Command {
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
       )
+    )
+    .addOption(
+      new Option(
+        '--watch',
+        'Re-synth and reload the agent container on CDK source changes. Only meaningful with the ' +
+          'long-running /ws session paths (--ws / --ws-interactive); single-shot POST /invocations, ' +
+          'MCP, and A2A invocations run once and exit, so --watch is logged as a no-op WARN for them ' +
+          'and the single shot proceeds. The active /ws socket is closed cleanly on every reload firing ' +
+          'so the next session connects to the rebuilt container — the honest local-dev semantic.'
+      ).default(false)
     );
 }

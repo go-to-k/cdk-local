@@ -170,7 +170,19 @@ AWS managed services.
   `run-task`: a same-stack ECR ContainerUri resolves to the deployed image,
   `AWS::SSM::Parameter::Value` env values resolve (decrypted `SecureString`
   values kept off the `docker run` argv), and bare `--assume-role` resolves an
-  intrinsic `RoleArn` from state
+  intrinsic `RoleArn` from state. Issue #255 added `--watch` on the
+  long-running `/ws` session paths (`--ws` / `--ws-interactive`): the
+  per-firing classifier shared with `start-service` / `start-alb`
+  (Phase 4 of issue #214) decides `'rebuild'` vs `'soft-reload'`;
+  source-only edits on an interpreted-language handler `docker cp` +
+  `docker restart` the running container, Dockerfile / dependency /
+  compiled-source / ambiguous edits SIGTERM the old container and
+  rebuild from scratch. The active `/ws` socket is closed cleanly on
+  every reload firing (AgentCore has no protocol-defined mid-session
+  container handoff) so the next session connects to the rebuilt
+  container — the honest local-dev semantic. `--watch` on the
+  single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A
+  `POST /` paths logs a one-line WARN and proceeds single-shot
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 
