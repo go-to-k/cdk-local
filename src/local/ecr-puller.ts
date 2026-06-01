@@ -7,6 +7,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 
 /**
@@ -202,10 +203,9 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   const callerIdentityKey = `${options.profile ?? '_noprofile'}|${callerRegion ?? '_unset'}`;
   let callerAccount = CALLER_IDENTITY_CACHE.get(callerIdentityKey);
   if (callerAccount === undefined) {
-    const sts = new STSClient({
-      ...(callerRegion && { region: callerRegion }),
-      ...(options.profile && { profile: options.profile }),
-    });
+    const sts = new STSClient(
+      buildStsClientConfig({ region: callerRegion, profile: options.profile })
+    );
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       if (!identity.Account) {
@@ -304,10 +304,7 @@ async function assumeRoleForEcr(
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
   // Thread `--profile` so the AssumeRole source identity is the profile's,
   // matching the rest of the pull path.
-  const sts = new STSClient({
-    ...(callerRegion && { region: callerRegion }),
-    ...(profile && { profile }),
-  });
+  const sts = new STSClient(buildStsClientConfig({ region: callerRegion, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

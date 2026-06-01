@@ -107,6 +107,10 @@ export function defaultCredentialsLoader(): CredentialsLoader {
     if (cached) return cached;
     cached = (async (): Promise<ResolvedCredentials> => {
       const { STSClient } = await import('@aws-sdk/client-sts');
+      // sts-audit: ignore: the SigV4 inbound verifier resolves the host's
+      // default credentials for ambient request signing. `--profile`
+      // threading into this loader is a separate follow-up — the path is
+      // host-side / pre-container and does not affect Lambda env injection.
       const client = new STSClient({});
       // STSClient typings (AWS SDK v3) expose `config.credentials` as a
       // memoized provider function; invoke it to resolve the dev's local

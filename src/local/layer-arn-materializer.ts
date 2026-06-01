@@ -247,6 +247,11 @@ async function defaultLambdaClientFactory(): Promise<
 
 async function defaultStsClientFactory(): Promise<(region: string) => StsSendClient> {
   const { STSClient } = await import('@aws-sdk/client-sts');
+  // sts-audit: ignore: this is a region-only factory whose call chain
+  // does not yet receive `--profile` (issue #448's --layer-role-arn flow
+  // assumes default-credential-chain access to the layer's account);
+  // when --profile threading is extended to layer materialization, this
+  // becomes a `buildStsClientConfig({ region, profile })` call.
   return (region) => new STSClient({ region });
 }
 

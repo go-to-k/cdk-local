@@ -608,7 +608,7 @@ export {
  * per-command flag the upstream cdk-local CLI adds, without a manual
  * `.addOption(...)` duplication on the host side. Each helper sits ON TOP
  * of the shared `commonOptions` / `appOptions` / `contextOptions` /
- * `deprecatedRegionOption` block (which the matching `create<Cmd>Command`
+ * `regionOption` block (which the matching `create<Cmd>Command`
  * factory still composes around the helper). Mirrors the shape of
  * {@link addAlbSpecificOptions}.
  *
@@ -637,3 +637,16 @@ export {
   addStartServiceSpecificOptions,
   serviceStrategy,
 } from './cli/commands/local-start-service.js';
+
+/**
+ * Shared `--profile` plumbing helpers (issue #245). Every STS-touching
+ * call site across `cdkl` commands now goes through these two helpers
+ * so a host CLI (e.g. cdkd) wrapping the same factories inherits the
+ * same `--profile` precedence — both for credentials AND region —
+ * without having to re-implement it. `resolveProfileCredentials`
+ * returns the credential triple + the profile's configured region;
+ * `buildStsClientConfig` returns the `STSClient` constructor config
+ * that omits empty `region` / `profile` fields, matching the inline
+ * `{ ...(region && { region }) }` shape callers used to write by hand.
+ */
+export { resolveProfileCredentials, buildStsClientConfig } from './utils/profile-resolver.js';

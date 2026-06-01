@@ -6,9 +6,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -93,6 +92,7 @@ import {
 import type { FileAsset } from '../../types/assets.js';
 import { singleFlight } from '../../utils/single-flight.js';
 import { resolveProfileCredentials } from './local-start-api.js';
+import { buildStsClientConfig } from '../../utils/profile-resolver.js';
 import {
   applyProfileCredentialsOverlay,
   resolveExecutionRoleArnFromState,
@@ -221,8 +221,6 @@ async function localInvokeAgentCoreCommand(
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
-
-  warnIfDeprecatedRegion(options);
 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
@@ -694,7 +692,7 @@ async function resolveHostCredentialsForSigV4(
   const assumeRoleArn = await resolveAssumeRoleArn(options, resolved, loaded, stateProvider);
   if (assumeRoleArn) {
     try {
-      return await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+      return await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
     } catch (err) {
       logger.warn(
         `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for --sigv4 signing: ` +
@@ -924,7 +922,7 @@ async function resolveAgentCoreCodeImageFromS3(
     | undefined;
   if (assumeRoleArn) {
     try {
-      credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region);
+      credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
     } catch (err) {
       logger.warn(
         `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for the fromS3 bundle download: ` +
@@ -1044,6 +1042,7 @@ export async function buildContainerEnv(
   await applyAgentCoreCredentialEnv(dockerEnv, {
     ...(assumeRoleArn !== undefined && { assumeRoleArn }),
     ...(options.region !== undefined && { region: options.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
     ...(profileCredentials !== undefined && { profileCredentials }),
     ...(profileCredsFile !== undefined && {
       profileCredsFile: {
@@ -1188,7 +1187,7 @@ async function resolveCallerAccountId(
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -1213,6 +1212,7 @@ export async function applyAgentCoreCredentialEnv(
   args: {
     assumeRoleArn?: string;
     region?: string;
+    profile?: string;
     profileCredentials?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
     profileCredsFile?: { containerPath: string; profileName: string };
   }
@@ -1222,7 +1222,7 @@ export async function applyAgentCoreCredentialEnv(
   if (args.assumeRoleArn) {
     const stsRegion = args.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
     try {
-      const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion);
+      const creds = await assumeAgentCoreExecutionRole(args.assumeRoleArn, stsRegion, args.profile);
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -1427,10 +1427,13 @@ function forwardAwsEnv(env: Record<string, string>): void {
 
 async function assumeAgentCoreExecutionRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so AssumeRole is signed with the profile's
+  // credentials, not the default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -1568,7 +1571,7 @@ export function createLocalInvokeAgentCoreCommand(
 
   addInvokeAgentCoreSpecificOptions(cmd);
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }
 

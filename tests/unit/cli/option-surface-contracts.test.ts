@@ -4,7 +4,7 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
 } from '../../../src/cli/options.js';
 import {
   addListSpecificOptions,
@@ -41,16 +41,16 @@ function longFlagsOf(cmd: Command): string[] {
 
 /**
  * Long-flag set of the shared `commonOptions` / `appOptions` /
- * `contextOptions` / `deprecatedRegionOption` block every per-command
+ * `contextOptions` / `regionOption` block every per-command
  * `create<Cmd>Command` factory composes around its `add<Cmd>SpecificOptions`
  * helper. Built fresh per call so the helpers' inner per-call freshness
  * (e.g. `commonOptions()` rebuilds with the active embed config) is
  * preserved.
  */
-function commonAppContextDeprecatedFlags(): string[] {
+function commonAppContextRegionFlags(): string[] {
   const cmd = new Command();
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return longFlagsOf(cmd);
 }
 
@@ -84,7 +84,7 @@ describe('list option surface contract (addListSpecificOptions)', () => {
     const full = longFlagsOf(createLocalListCommand());
     const expected = Array.from(
       new Set([
-        ...commonAppContextDeprecatedFlags(),
+        ...commonAppContextRegionFlags(),
         ...longFlagsOf(addListSpecificOptions(new Command())),
       ])
     ).sort();
@@ -115,7 +115,7 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
     const full = longFlagsOf(createLocalRunTaskCommand());
     const expected = Array.from(
       new Set([
-        ...commonAppContextDeprecatedFlags(),
+        ...commonAppContextRegionFlags(),
         ...longFlagsOf(addRunTaskSpecificOptions(new Command())),
       ])
     ).sort();
@@ -146,7 +146,7 @@ describe('invoke option surface contract (addInvokeSpecificOptions)', () => {
     const full = longFlagsOf(createLocalInvokeCommand());
     const expected = Array.from(
       new Set([
-        ...commonAppContextDeprecatedFlags(),
+        ...commonAppContextRegionFlags(),
         ...longFlagsOf(addInvokeSpecificOptions(new Command())),
       ])
     ).sort();
@@ -183,7 +183,7 @@ describe('invoke-agentcore option surface contract (addInvokeAgentCoreSpecificOp
     const full = longFlagsOf(createLocalInvokeAgentCoreCommand());
     const expected = Array.from(
       new Set([
-        ...commonAppContextDeprecatedFlags(),
+        ...commonAppContextRegionFlags(),
         ...longFlagsOf(addInvokeAgentCoreSpecificOptions(new Command())),
       ])
     ).sort();
@@ -223,7 +223,7 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
     const full = longFlagsOf(createLocalStartApiCommand());
     const expected = Array.from(
       new Set([
-        ...commonAppContextDeprecatedFlags(),
+        ...commonAppContextRegionFlags(),
         ...longFlagsOf(addStartApiSpecificOptions(new Command())),
       ])
     ).sort();
