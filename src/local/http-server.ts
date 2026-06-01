@@ -36,7 +36,12 @@ import {
   invokeRequestAuthorizer,
   invokeTokenAuthorizer,
 } from './lambda-authorizer.js';
-import { type JwksCache, verifyCognitoJwt, verifyJwtAuthorizer } from './cognito-jwt.js';
+import {
+  type JwksCache,
+  type WarnedAt,
+  verifyCognitoJwt,
+  verifyJwtAuthorizer,
+} from './cognito-jwt.js';
 import { type CredentialsLoader, verifySigV4 } from './sigv4-verify.js';
 import {
   applyResponseParameters,
@@ -122,14 +127,18 @@ export interface StartApiServerOptions {
   /** JWKS cache (PR 8b). Required when any route has a Cognito / JWT authorizer. */
   jwksCache?: JwksCache;
   /**
-   * Per-server-lifecycle Set of JWKS URLs we have already emitted a
-   * pass-through warn line for (PR 8b post-review fix). Constructed once
-   * by the caller (`local-start-api.ts`) and threaded through to every
-   * request so the warn fires at most ONCE per JWKS URL per server.
-   * When omitted, the verifier no-ops the warn (used in tests where the
-   * server is not started through the CLI bootstrap).
+   * Per-server-lifecycle Map of JWKS URL -> last-warn-at unix ms (#247).
+   * Constructed once by the caller (`local-start-api.ts`) and threaded
+   * through to every request so the "JWKS unreachable -> token accepted"
+   * warn re-emits every
+   * {@link import('./cognito-jwt.js').WARN_REEMIT_INTERVAL_MS} per URL.
+   * Pre-#247 this was a `Set<string>` (URL -> warned-forever) which left a
+   * long-running `--watch` session silently accepting tokens for the rest
+   * of the run after the first warn fired. When omitted, the verifier
+   * no-ops the warn (used in tests where the server is not started through
+   * the CLI bootstrap).
    */
-  jwksWarnedUrls?: Set<string>;
+  jwksWarnedAt?: WarnedAt;
   /**
    * Optional mTLS configuration. When set, the server uses
    * `https.createServer({requestCert: true, rejectUnauthorized: true,
@@ -157,8 +166,11 @@ export interface StartApiServerOptions {
   /**
    * Per-server-lifecycle Set of `Credential=` access-key-ids we have
    * already emitted a warn-and-pass line for (foreign-identity SigV4
-   * requests cannot be verified against the dev's local key). Same
-   * dedup pattern as `jwksWarnedUrls`.
+   * requests cannot be verified against the dev's local key). Once-per-
+   * session dedup is appropriate here because the warn surfaces a
+   * configuration mismatch (foreign access-key-id) that does not flap
+   * with network state — distinct from the JWKS / OIDC discovery
+   * unreachable warns which #247 widened to a 5-minute re-emit window.
    */
   sigV4WarnedForeignIds?: Set<string>;
   /**
@@ -1131,7 +1143,7 @@ async function runAuthorizerPass(
   }
 
   const authHeader = headers['authorization'];
-  const jwksOpts = { ...(opts.jwksWarnedUrls && { warned: opts.jwksWarnedUrls }) };
+  const jwksOpts = { ...(opts.jwksWarnedAt && { warnedAt: opts.jwksWarnedAt }) };
   if (authorizer.kind === 'cognito') {
     if (cache && authHeader !== undefined) {
       const cached = cache.get(authorizer.logicalId, hashOne(authHeader));

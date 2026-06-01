@@ -62,6 +62,57 @@ export interface JwksCache {
   clear(): void;
 }
 
+/**
+ * Per-time-window dedup map for "JWKS / OIDC discovery unreachable -> token
+ * accepted without verification" warn lines.
+ *
+ * Pre-#247 the dedup was a `Set<string>` (URL -> warned-forever-for-this-run).
+ * Once tripped, every subsequent JWT was silently accepted for the rest of
+ * the session — a long-running `cdkl start-alb --watch` user briefly off VPN
+ * at boot would never see the degraded-auth state again.
+ *
+ * Post-#247 the dedup is a `Map<string, number>` (URL -> last-warned-at unix
+ * ms). The verifier re-emits the warn every {@link WARN_REEMIT_INTERVAL_MS}
+ * so the user keeps seeing the degraded state surfaced periodically.
+ *
+ * Key shape: the URL of the unreachable endpoint (JWKS URL for the JWKS
+ * fallback, discovery URL for the OIDC-discovery fallback). Distinct IdPs
+ * therefore get independent dedup windows.
+ */
+export type WarnedAt = Map<string, number>;
+
+/**
+ * Re-emit window for unreachable-endpoint warns. 5 minutes is short enough
+ * the user notices the degraded state on a normal `--watch` session, long
+ * enough not to spam the log on every request when the upstream IdP is down.
+ */
+export const WARN_REEMIT_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Returns true iff `key`'s last warn timestamp is older than
+ * {@link WARN_REEMIT_INTERVAL_MS} (or has never been recorded). When true,
+ * `warnedAt[key]` is updated to `now` as a side effect so the next call
+ * within the window returns false.
+ *
+ * Callers that omit `warnedAt` (the per-AuthCheck local fallback in tests
+ * and the no-dedup branch in shape-only call sites) get a no-op true on
+ * every call.
+ */
+export function shouldWarn(
+  key: string,
+  warnedAt: WarnedAt | undefined,
+  now: () => number
+): boolean {
+  if (!warnedAt) return true;
+  const last = warnedAt.get(key);
+  const t = now();
+  if (last !== undefined && t - last < WARN_REEMIT_INTERVAL_MS) {
+    return false;
+  }
+  warnedAt.set(key, t);
+  return true;
+}
+
 const DEFAULT_JWKS_TTL_MS = 60 * 60 * 1000;
 /**
  * Failure-mode TTL for JWKS-unreachable entries. Pre-fix the failure
@@ -211,7 +262,7 @@ export async function verifyCognitoJwt(
   authorizer: CognitoUserPoolAuthorizer,
   authorizationHeader: string | undefined,
   jwksCache: JwksCache,
-  opts: { now?: () => number; warned?: Set<string> } = {}
+  opts: { now?: () => number; warnedAt?: WarnedAt } = {}
 ): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
   const now = opts.now ?? ((): number => Date.now());
   const token = extractBearer(authorizationHeader);
@@ -285,7 +336,7 @@ export async function verifyCognitoJwt(
     undefined,
     undefined,
     jwksCache,
-    opts.warned,
+    opts.warnedAt,
     now
   );
 }
@@ -297,7 +348,7 @@ export async function verifyJwtAuthorizer(
   authorizer: JwtAuthorizer,
   authorizationHeader: string | undefined,
   jwksCache: JwksCache,
-  opts: { now?: () => number; warned?: Set<string> } = {}
+  opts: { now?: () => number; warnedAt?: WarnedAt } = {}
 ): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
   const now = opts.now ?? ((): number => Date.now());
   const token = extractBearer(authorizationHeader);
@@ -318,7 +369,7 @@ export async function verifyJwtAuthorizer(
     undefined,
     undefined,
     jwksCache,
-    opts.warned,
+    opts.warnedAt,
     now
   );
 }
@@ -378,7 +429,7 @@ export async function verifyJwtViaDiscovery(
   jwksCache: JwksCache,
   opts: {
     now?: () => number;
-    warned?: Set<string>;
+    warnedAt?: WarnedAt;
     fetchImpl?: (
       url: string
     ) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
@@ -407,9 +458,11 @@ export async function verifyJwtViaDiscovery(
     jwksUri = doc.jwks_uri;
   } catch (err) {
     // Discovery unreachable / malformed → pass-through accept (offline dev),
-    // mirroring the JWKS-unreachable fallback in `createJwksCache`.
-    if (opts.warned && !opts.warned.has(authorizer.discoveryUrl)) {
-      opts.warned.add(authorizer.discoveryUrl);
+    // mirroring the JWKS-unreachable fallback in `createJwksCache`. The
+    // warn re-emits every {@link WARN_REEMIT_INTERVAL_MS} (#247) so a
+    // long-running `--watch` session keeps surfacing the degraded state
+    // instead of silently accepting tokens after the first warn.
+    if (shouldWarn(authorizer.discoveryUrl, opts.warnedAt, now)) {
       getLogger()
         .child('cognito-jwt')
         .warn(
@@ -433,7 +486,7 @@ export async function verifyJwtViaDiscovery(
     authorizer.allowedScopes,
     authorizer.customClaims,
     jwksCache,
-    opts.warned,
+    opts.warnedAt,
     now
   );
 }
@@ -446,7 +499,7 @@ async function verifyAndShape(
   requiredScopes: ReadonlyArray<string> | undefined,
   customClaims: ReadonlyArray<JwtCustomClaim> | undefined,
   jwksCache: JwksCache,
-  warned: Set<string> | undefined,
+  warnedAt: WarnedAt | undefined,
   now: () => number
 ): Promise<CachedAuthorizerResult & { identityHash: string | undefined; ttlSeconds: number }> {
   const identityHash = buildIdentityHash([token]);
@@ -460,8 +513,12 @@ async function verifyAndShape(
   const jwks = await jwksCache.fetchAndCache(jwksUrl);
 
   if (jwks.passThrough) {
-    if (warned && !warned.has(jwksUrl)) {
-      warned.add(jwksUrl);
+    // Pre-#247 the warn was gated by a `Set<string>` URL set — once warned
+    // for a URL, never again for the rest of the session. A long-running
+    // `--watch` session that lost network briefly at boot silently accepted
+    // every JWT for the rest of the afternoon. Post-#247 the warn re-emits
+    // every {@link WARN_REEMIT_INTERVAL_MS}.
+    if (shouldWarn(jwksUrl, warnedAt, now)) {
       getLogger()
         .child('cognito-jwt')
         .warn(

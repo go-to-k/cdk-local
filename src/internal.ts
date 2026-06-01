@@ -82,6 +82,7 @@ export {
   type JwksCache,
   type DiscoveryJwtAuthorizer,
   type JwtCustomClaim,
+  type WarnedAt,
 } from './local/cognito-jwt.js';
 export {
   buildMethodArn,

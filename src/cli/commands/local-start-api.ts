@@ -118,6 +118,7 @@ import {
   buildCognitoJwksUrl,
   buildJwksUrlFromIssuer,
   createJwksCache,
+  type WarnedAt,
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
@@ -370,11 +371,14 @@ async function localStartApiCommand(
   // PR 8b: per-server-lifecycle caches. Constructed once at server
   // startup; persisted across hot reloads (PR 8c) so authorizer
   // verdicts and JWKS keys aren't re-fetched on every reload. The
-  // jwksWarnedUrls Set ensures the pass-through warn fires at most
-  // ONCE per JWKS URL per server lifecycle.
+  // jwksWarnedAt Map (URL -> last-warn-at ms; #247) ensures the
+  // "JWKS unreachable -> token accepted" warn re-emits every
+  // WARN_REEMIT_INTERVAL_MS per URL — a long-running `--watch` session
+  // keeps surfacing the degraded-auth state instead of silently accepting
+  // every token after the first warn.
   const authorizerCache = createAuthorizerCache();
   const jwksCache = createJwksCache();
-  const jwksWarnedUrls = new Set<string>();
+  const jwksWarnedAt: WarnedAt = new Map<string, number>();
   // #447: SigV4 verifier state for `AuthorizationType: 'AWS_IAM'` routes.
   // The credentials loader is constructed eagerly but the credential
   // chain itself is only hit on the first IAM-protected request — see
@@ -847,7 +851,7 @@ async function localStartApiCommand(
       port: basePort === 0 ? 0 : nextPort,
       authorizerCache,
       jwksCache,
-      jwksWarnedUrls,
+      jwksWarnedAt,
       sigV4CredentialsLoader,
       sigV4WarnedForeignIds,
       sigV4Strict: options.strictSigv4 === true,
@@ -942,7 +946,7 @@ async function localStartApiCommand(
       port: basePort === 0 ? 0 : nextPort,
       authorizerCache,
       jwksCache,
-      jwksWarnedUrls,
+      jwksWarnedAt,
       sigV4WarnedForeignIds,
       sigV4Strict: options.strictSigv4 === true,
       preDispatch: async (req, res) => {

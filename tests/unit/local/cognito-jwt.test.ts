@@ -4,9 +4,11 @@ import {
   buildCognitoJwksUrl,
   buildJwksUrlFromIssuer,
   createJwksCache,
+  shouldWarn,
   verifyCognitoJwt,
   verifyJwtAuthorizer,
   verifyJwtViaDiscovery,
+  WARN_REEMIT_INTERVAL_MS,
 } from '../../../src/local/cognito-jwt.js';
 import type {
   CognitoUserPoolAuthorizer,
@@ -838,7 +840,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: discoveryFetch, warned: new Set() }
+      { fetchImpl: discoveryFetch, warnedAt: new Map() }
     );
     expect(r.allow).toBe(true);
     expect(discoveryFetch).toHaveBeenCalledWith(DISCOVERY);
@@ -852,7 +854,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedClients: ['client-9'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: discoveryFetch, warned: new Set() }
+      { fetchImpl: discoveryFetch, warnedAt: new Map() }
     );
     expect(r.allow).toBe(true);
   });
@@ -865,7 +867,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: discoveryFetch, warned: new Set() }
+      { fetchImpl: discoveryFetch, warnedAt: new Map() }
     );
     expect(r.allow).toBe(false);
   });
@@ -878,7 +880,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: discoveryFetch, warned: new Set() }
+      { fetchImpl: discoveryFetch, warnedAt: new Map() }
     );
     expect(r.allow).toBe(false);
   });
@@ -891,7 +893,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: discoveryFetch, warned: new Set() }
+      { fetchImpl: discoveryFetch, warnedAt: new Map() }
     );
     expect(r.allow).toBe(false);
   });
@@ -901,7 +903,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
     const { discoveryFetch, cache } = setup(f);
     const r = await verifyJwtViaDiscovery({ discoveryUrl: DISCOVERY }, undefined, cache, {
       fetchImpl: discoveryFetch,
-      warned: new Set(),
+      warnedAt: new Map(),
     });
     expect(r.allow).toBe(false);
   });
@@ -915,7 +917,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: unreachable, warned: new Set() }
+      { fetchImpl: unreachable, warnedAt: new Map() }
     );
     expect(r.allow).toBe(true);
   });
@@ -926,7 +928,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
     const unreachable = vi.fn(async () => ({ ok: false, status: 500, text: async () => 'err' }));
     const r = await verifyJwtViaDiscovery({ discoveryUrl: DISCOVERY }, 'Bearer not-a-jwt', cache, {
       fetchImpl: unreachable,
-      warned: new Set(),
+      warnedAt: new Map(),
     });
     expect(r.allow).toBe(true);
     expect(r.principalId).toBe('unknown');
@@ -945,7 +947,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
       { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'] },
       `Bearer ${token}`,
       cache,
-      { fetchImpl: malformedDoc, warned: new Set() }
+      { fetchImpl: malformedDoc, warnedAt: new Map() }
     );
     expect(r.allow).toBe(true);
   });
@@ -962,7 +964,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read', 'write'] },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(true);
     });
@@ -975,7 +977,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read', 'write'] },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -988,7 +990,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1001,7 +1003,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1017,7 +1019,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         { discoveryUrl: DISCOVERY, allowedAudience: ['aud-1'], allowedScopes: ['read'] },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(true);
     });
@@ -1038,7 +1040,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(true);
     });
@@ -1057,7 +1059,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1079,7 +1081,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1098,7 +1100,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1120,7 +1122,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1142,7 +1144,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(true);
     });
@@ -1169,7 +1171,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(true);
     });
@@ -1193,7 +1195,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1212,7 +1214,7 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
@@ -1241,9 +1243,114 @@ describe('verifyJwtViaDiscovery (AgentCore customJwtAuthorizer)', () => {
         },
         `Bearer ${token}`,
         cache,
-        { fetchImpl: discoveryFetch, warned: new Set() }
+        { fetchImpl: discoveryFetch, warnedAt: new Map() }
       );
       expect(r.allow).toBe(false);
     });
+  });
+});
+
+describe('shouldWarn — per-time-window dedup helper (#247)', () => {
+  it('returns true on the first call for a key and records the timestamp', () => {
+    const warnedAt = new Map<string, number>();
+    let t = 1_000_000;
+    expect(shouldWarn('jwks-url', warnedAt, () => t)).toBe(true);
+    expect(warnedAt.get('jwks-url')).toBe(1_000_000);
+  });
+
+  it('returns false inside the re-emit window', () => {
+    const warnedAt = new Map<string, number>();
+    let t = 1_000_000;
+    shouldWarn('jwks-url', warnedAt, () => t);
+    t = 1_000_000 + WARN_REEMIT_INTERVAL_MS - 1;
+    expect(shouldWarn('jwks-url', warnedAt, () => t)).toBe(false);
+    // Timestamp NOT bumped on a suppressed call.
+    expect(warnedAt.get('jwks-url')).toBe(1_000_000);
+  });
+
+  it('returns true once the re-emit window has elapsed and bumps the timestamp', () => {
+    const warnedAt = new Map<string, number>();
+    let t = 1_000_000;
+    shouldWarn('jwks-url', warnedAt, () => t);
+    t = 1_000_000 + WARN_REEMIT_INTERVAL_MS;
+    expect(shouldWarn('jwks-url', warnedAt, () => t)).toBe(true);
+    expect(warnedAt.get('jwks-url')).toBe(t);
+  });
+
+  it('tracks each key independently', () => {
+    const warnedAt = new Map<string, number>();
+    let t = 1_000_000;
+    expect(shouldWarn('jwks-A', warnedAt, () => t)).toBe(true);
+    // Different URL is independent — its dedup window starts fresh.
+    expect(shouldWarn('jwks-B', warnedAt, () => t)).toBe(true);
+    // Same URL inside the window is still deduped.
+    expect(shouldWarn('jwks-A', warnedAt, () => t)).toBe(false);
+    expect(shouldWarn('jwks-B', warnedAt, () => t)).toBe(false);
+  });
+
+  it('is a no-op true when no warnedAt map is supplied', () => {
+    // Used by call sites that opt out of dedup entirely (e.g. test
+    // harnesses). Returns true unconditionally and has no side effect.
+    expect(shouldWarn('any-key', undefined, () => 0)).toBe(true);
+    expect(shouldWarn('any-key', undefined, () => 1_000_000)).toBe(true);
+  });
+});
+
+describe('verifyJwtViaDiscovery — warn re-emits per time window (#247)', () => {
+  const ISSUER = 'https://idp.example.com';
+  const DISCOVERY = `${ISSUER}/.well-known/openid-configuration`;
+
+  it('re-emits the "discovery unreachable" warn after WARN_REEMIT_INTERVAL_MS', async () => {
+    // Discovery fetch always rejects; the verifier falls through to
+    // pass-through accept. Pre-#247 the warn fired once for the URL and
+    // never again for the rest of the session. Post-#247 it re-emits
+    // every WARN_REEMIT_INTERVAL_MS.
+    const unreachable = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const cache = createJwksCache();
+    const warnedAt = new Map<string, number>();
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      let t = 1_000_000;
+      // Call 1: warn fires.
+      const r1 = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY },
+        'Bearer t1',
+        cache,
+        { fetchImpl: unreachable, warnedAt, now: () => t }
+      );
+      expect(r1.allow).toBe(true);
+
+      // Call 2: 100ms later, well under the window — warn suppressed.
+      t = 1_000_000 + 100;
+      const r2 = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY },
+        'Bearer t2',
+        cache,
+        { fetchImpl: unreachable, warnedAt, now: () => t }
+      );
+      expect(r2.allow).toBe(true);
+
+      // Call 3: window elapsed — warn re-emits.
+      t = 1_000_000 + WARN_REEMIT_INTERVAL_MS + 1000;
+      const r3 = await verifyJwtViaDiscovery(
+        { discoveryUrl: DISCOVERY },
+        'Bearer t3',
+        cache,
+        { fetchImpl: unreachable, warnedAt, now: () => t }
+      );
+      expect(r3.allow).toBe(true);
+
+      const discoveryWarns = warnSpy.mock.calls.filter((args) =>
+        args.map((a) => String(a)).join(' ').includes('OIDC discovery unreachable')
+      );
+      // Exactly two warn lines: call 1 (initial) + call 3 (re-emit).
+      // Call 2 was suppressed by the dedup window.
+      expect(discoveryWarns).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
