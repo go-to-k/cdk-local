@@ -207,6 +207,7 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
       '--all-stacks',
       '--api',
       '--assume-role',
+      '--assume-role-auto',
       '--container-host',
       '--debug-port',
       '--debug-port-base',

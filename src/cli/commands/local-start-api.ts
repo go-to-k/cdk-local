@@ -188,22 +188,28 @@ interface LocalStartApiOptions {
   debugPort?: string;
   envVars?: string;
   /**
-   * Commander stores the raw `--assume-role` accumulator here:
+   * Commander stores the raw `--assume-role` accumulator here. Each
+   * `--assume-role <arn-or-pair>` invocation adds to it:
    *
    *   - `undefined` — flag not passed
-   *   - `false` — `--no-assume-role` (explicit opt-out)
-   *   - `true` — bare `--assume-role` (no value); issue #256 Option 1
-   *     bare-auto-resolve mode
    *   - `AssumeRoleOption` — one or more value-form tokens (global ARN
-   *     and/or per-Lambda `<LogicalId>=<arn>` entries, with
-   *     `bareAutoResolve` carried on the accumulator if a bare flag
-   *     preceded any value form)
+   *     and/or per-Lambda `<LogicalId>=<arn>` entries)
    *
-   * Normalized at boot via {@link normalizeStartApiAssumeRole} (also
-   * enforces the bare-vs-global mutual exclusion guard) before being
-   * threaded into {@link buildContainerSpec}.
+   * Composed with {@link LocalStartApiOptions.assumeRoleAuto} at boot
+   * via {@link normalizeStartApiAssumeRole} (also enforces the
+   * `--assume-role-auto` vs global-ARN mutual exclusion guard) before
+   * being threaded into {@link buildContainerSpec}.
    */
-  assumeRole?: AssumeRoleOption | boolean;
+  assumeRole?: AssumeRoleOption;
+  /**
+   * Issue #256 Option 1 — `--assume-role-auto`: auto-resolve EACH
+   * routed Lambda's own execution role per-Lambda. Surfaced as a
+   * separate boolean flag (not the `[arn]` optional-value shape) so
+   * Commander never silently overwrites the value-form accumulator
+   * when the bare form is parsed after value forms. Composed with
+   * {@link LocalStartApiOptions.assumeRole} at boot.
+   */
+  assumeRoleAuto?: boolean;
   /**
    * Issue #448: role to sts:AssumeRole before calling
    * `lambda:GetLayerVersion` for every literal-ARN entry in any
@@ -371,13 +377,16 @@ async function localStartApiCommand(
     );
   }
 
-  // Issue #256 Option 1: collapse Commander's raw accumulator
-  // (`undefined` | `false` | `true` | `AssumeRoleOption`) into the
-  // in-process `AssumeRoleOption | undefined` representation used
-  // downstream, AND enforce the bare-vs-global mutual-exclusion guard
-  // at boot. Rejected combinations throw with an actionable error
-  // before any synth / docker work.
-  const normalizedAssumeRole = normalizeStartApiAssumeRole(options.assumeRole);
+  // Issue #256 Option 1: compose `--assume-role` (value-form
+  // accumulator) and the separate `--assume-role-auto` boolean flag
+  // into the in-process `AssumeRoleOption | undefined` representation
+  // used downstream, AND enforce the bare-vs-global mutual-exclusion
+  // guard at boot. Rejected combinations throw with an actionable
+  // error before any synth / docker work.
+  const normalizedAssumeRole = normalizeStartApiAssumeRole(
+    options.assumeRole,
+    options.assumeRoleAuto ?? false
+  );
   if (normalizedAssumeRole === undefined) {
     delete options.assumeRole;
   } else {
@@ -3830,16 +3839,21 @@ export function addStartApiSpecificOptions(cmd: Command): Command {
       )
       .addOption(
         new Option(
-          '--assume-role [arn-or-pair]',
-          "Assume the Lambda's execution role and forward STS-issued temp creds. Three forms: " +
+          '--assume-role <arn-or-pair>',
+          "Assume the Lambda's execution role and forward STS-issued temp creds. Two forms: " +
             '(1) `--assume-role <arn>` sets a single global default ARN used for every routed Lambda; ' +
-            '(2) `--assume-role <LogicalId>=<arn>` (repeatable) is a per-Lambda override (wins over the global default and over bare-auto-resolve for the named Lambda); ' +
-            "(3) `--assume-role` (bare, no value) auto-resolves EACH routed Lambda's own execution role per-Lambda (slower boot — N STS calls — but the right shape when each Lambda's deployed role differs). " +
-            'The bare form and a global ARN are mutually exclusive on the global slot; combining them errors at boot. ' +
-            'Per-Lambda > (bare-auto-resolve OR global default) > unset (developer creds passed through).'
-        ).argParser((raw, prev: AssumeRoleOption | boolean | undefined) =>
-          parseAssumeRoleToken(raw, prev)
-        )
+            '(2) `--assume-role <LogicalId>=<arn>` (repeatable) is a per-Lambda override (wins over the global default and over --assume-role-auto for the named Lambda). ' +
+            'Pair with --assume-role-auto to auto-resolve every other Lambda. Precedence: per-Lambda > (--assume-role-auto OR global default) > unset (developer creds passed through).'
+        ).argParser((raw, prev: AssumeRoleOption | undefined) => parseAssumeRoleToken(raw, prev))
+      )
+      .addOption(
+        new Option(
+          '--assume-role-auto',
+          "Auto-resolve EACH routed Lambda's own execution role per-Lambda (literal ARN / Fn::GetAtt against template / --from-cfn-stack state). " +
+            "Slower boot — one STS call per Lambda — but the right shape when each Lambda's deployed role differs. " +
+            'Mutually exclusive with `--assume-role <arn>` (global default); errors at boot. ' +
+            'Compatible with `--assume-role <LogicalId>=<arn>` per-Lambda overrides — the map wins for named Lambdas, auto-resolve handles the rest.'
+        ).default(false)
       )
       .addOption(
         new Option(

@@ -106,10 +106,17 @@ export const contextOptions = [
  * Each invocation is one of:
  *   - bare ARN — sets / overwrites the global default
  *   - `<LogicalId>=<arn>` — per-Lambda override (repeatable)
- *   - bare flag (no value) — issue #256 Option 1 (non-breaking):
- *     `bareAutoResolve = true` switches start-api into the per-routed-
- *     Lambda auto-resolve mode (resolve EACH routed Lambda's own `Role`
- *     property and STS-AssumeRole that ARN for the container creds)
+ *
+ * Issue #256 Option 1's per-routed-Lambda auto-resolve mode is
+ * surfaced as a SEPARATE boolean flag (`--assume-role-auto`) rather
+ * than the `[arn]` optional-value shape — Commander's optional-value
+ * handling silently overwrites a value-form accumulator with `true`
+ * when the bare form is parsed AFTER value forms, dropping the
+ * per-Lambda map. The separate flag eliminates the ordering quirk;
+ * the two surfaces are then composed at boot via
+ * {@link normalizeStartApiAssumeRole}, which still enforces the
+ * mutually-exclusive global slot (auto-resolve + global ARN is
+ * rejected).
  *
  * Resolution precedence (`effectiveAssumeRoleArn`): per-Lambda map
  * entry > global ARN > unset. Bare-auto-resolve is orthogonal — it
@@ -123,10 +130,13 @@ export interface AssumeRoleOption {
   /** Per-Lambda override map (`LogicalId` -> ARN). */
   perLambda: Record<string, string>;
   /**
-   * Issue #256 Option 1 — non-breaking: bare `--assume-role` (no
-   * value) means "auto-resolve EACH routed Lambda's own execution
-   * role per-Lambda". Mutually exclusive with `globalArn`; the
-   * per-Lambda map still wins for the named Lambda.
+   * Issue #256 Option 1 — non-breaking: `--assume-role-auto` means
+   * "auto-resolve EACH routed Lambda's own execution role per-Lambda".
+   * Mutually exclusive with `globalArn`; the per-Lambda map still
+   * wins for the named Lambda. Set by
+   * {@link normalizeStartApiAssumeRole} from the separate
+   * `--assume-role-auto` boolean flag — never set directly by
+   * {@link parseAssumeRoleToken}.
    */
   bareAutoResolve?: boolean;
 }
@@ -135,19 +145,9 @@ const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
 
 export function parseAssumeRoleToken(
   raw: string,
-  previous: AssumeRoleOption | boolean | undefined
+  previous: AssumeRoleOption | undefined
 ): AssumeRoleOption {
-  // Bare `--assume-role` (no value) before this call would have left
-  // Commander's accumulator at `true` (the optional-value default for
-  // `[arn-or-pair]`); preserve `bareAutoResolve` on the new
-  // AssumeRoleOption so the mixing rule "bare + per-Lambda map"
-  // survives parser-token ordering.
-  const acc: AssumeRoleOption =
-    typeof previous === 'object' && previous !== null
-      ? previous
-      : previous === true
-        ? { perLambda: {}, bareAutoResolve: true }
-        : { perLambda: {} };
+  const acc: AssumeRoleOption = previous ?? { perLambda: {} };
   if (!acc.perLambda) acc.perLambda = {};
 
   const eqIndex = raw.indexOf('=');
@@ -178,39 +178,42 @@ export function parseAssumeRoleToken(
 }
 
 /**
- * Normalize Commander's raw `options.assumeRole` value (`undefined` |
- * `false` | `true` | `AssumeRoleOption`) into the in-process
+ * Compose `--assume-role` (value-form accumulator) and the separate
+ * `--assume-role-auto` boolean flag into the in-process
  * representation `localStartApiCommand` consumes downstream.
  *
- *   - `undefined` -> `undefined` (flag absent; pass dev creds through)
- *   - `false` -> `undefined` (`--no-assume-role`; explicit opt-out)
- *   - `true` -> `{ perLambda: {}, bareAutoResolve: true }`
- *     (bare `--assume-role`; per-Lambda auto-resolve)
- *   - `AssumeRoleOption` -> returned as-is (one or more value-form
- *     tokens were given; `bareAutoResolve` is already set on the
- *     accumulator if a bare flag preceded any value form)
+ *   - both unset -> `undefined` (pass dev creds through)
+ *   - only `--assume-role-auto` -> `{ perLambda: {}, bareAutoResolve: true }`
+ *     (per-Lambda auto-resolve for every routed Lambda)
+ *   - only `--assume-role` -> the value-form accumulator (global ARN
+ *     and/or per-Lambda map) as-is
+ *   - both -> accumulator with `bareAutoResolve = true` overlaid;
+ *     the per-Lambda map still wins for named Lambdas, auto-resolve
+ *     fills in for every Lambda the map does NOT name
  *
- * Also enforces the mutual-exclusion guard: bare-auto-resolve and a
- * global ARN both occupy the "default for every other Lambda" slot,
- * so the combination is ambiguous and rejected at boot with a clear
- * error. The per-Lambda map IS compatible with either side — it
- * overrides whichever default is in effect.
+ * Enforces the mutual-exclusion guard: `--assume-role-auto` and a
+ * global ARN (`--assume-role <arn>`) both occupy the "default for
+ * every other Lambda" slot, so the combination is ambiguous and
+ * rejected at boot with a clear error. The per-Lambda map IS
+ * compatible with either side.
  */
 export function normalizeStartApiAssumeRole(
-  raw: AssumeRoleOption | boolean | undefined
+  raw: AssumeRoleOption | undefined,
+  autoResolve: boolean
 ): AssumeRoleOption | undefined {
-  if (raw === undefined) return undefined;
-  if (raw === false) return undefined;
-  if (raw === true) return { perLambda: {}, bareAutoResolve: true };
-  if (raw.bareAutoResolve && raw.globalArn) {
+  if (raw === undefined) {
+    return autoResolve ? { perLambda: {}, bareAutoResolve: true } : undefined;
+  }
+  if (autoResolve && raw.globalArn) {
     throw new Error(
-      `--assume-role: bare (no value) auto-resolves EACH routed Lambda's own execution role, ` +
+      `--assume-role-auto auto-resolves EACH routed Lambda's own execution role, ` +
         `but --assume-role ${raw.globalArn} also names a single global default. ` +
         `These are mutually exclusive on the global slot. Either drop the global ARN ` +
-        `to keep bare-auto-resolve for every Lambda, or drop the bare flag to keep the global default. ` +
+        `to keep --assume-role-auto for every Lambda, or drop --assume-role-auto to keep the global default. ` +
         `Per-Lambda overrides (--assume-role <LogicalId>=<arn>) are compatible with either side.`
     );
   }
+  if (autoResolve) raw.bareAutoResolve = true;
   return raw;
 }
 
