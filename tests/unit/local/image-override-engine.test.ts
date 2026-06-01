@@ -133,6 +133,14 @@ describe('parseImageOverrideFlags (issue #238)', () => {
     expect(out.globals.targetStage).toBe('builder');
   });
 
+  it('trims surrounding whitespace from a bare global --image-target (parity with per-service form trim)', () => {
+    // The per-service branch (`<svc>=<stage>`) trims both halves; the
+    // bare global form trims too so `--image-target ' builder '`
+    // behaves the same way regardless of which form the user picked.
+    const out = parseImageOverrideFlags({ imageTarget: '  builder  ' });
+    expect(out.globals.targetStage).toBe('builder');
+  });
+
   it('rejects an empty --image-target', () => {
     expect(() => parseImageOverrideFlags({ imageTarget: '' })).toThrow();
   });

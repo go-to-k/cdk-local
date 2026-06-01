@@ -183,6 +183,43 @@ describe('enforceStrictOverrides (issue #238 strict-overrides guard, behavioral)
   });
 });
 
+describe('enforceImageOverrideOrphans (issue #240 orphan validator, wiring)', () => {
+  // Behavioral coverage for the helper itself lives in
+  // tests/unit/local/image-override-engine.test.ts. This block pins
+  // the boot-path wiring so a refactor that drops, reorders, or
+  // short-circuits past the call site surfaces here.
+
+  it('boot path calls enforceImageOverrideOrphans AFTER resolveImageOverrides (post-Stage 3 prompt)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The Stage 3 boot prompt fires inside resolveImageOverrides;
+    // the orphan validator MUST run AFTER so prompt-injected mappings
+    // count as "covered" and the check fires only on genuine typos /
+    // forgotten --image-override mappings.
+    const resolveIdx = source.indexOf('await resolveImageOverrides(');
+    const enforceIdx = source.indexOf('enforceImageOverrideOrphans(');
+    expect(resolveIdx, 'resolveImageOverrides call missing').toBeGreaterThan(-1);
+    expect(enforceIdx, 'enforceImageOverrideOrphans call missing').toBeGreaterThan(-1);
+    expect(resolveIdx).toBeLessThan(enforceIdx);
+    // The call MUST forward rawFlags + the resolved overrides map.
+    expect(source).toMatch(
+      /enforceImageOverrideOrphans\(\s*rawFlags\s*,\s*overrides\s*\)/
+    );
+  });
+
+  it('boot-path short-circuit gates on rawFlags.perService.size === 0 (per-service typos must reach the orphan validator)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The short-circuit condition that returns an empty override map
+    // when there's nothing to do MUST include `rawFlags.perService.size
+    // === 0`. A user who passes only `--image-build-arg <svc>:KEY=val`
+    // (per-service form, no `--image-override`) would otherwise have
+    // their typo silently dropped instead of surfaced as a
+    // LocalStartServiceError by enforceImageOverrideOrphans.
+    expect(source).toMatch(
+      /pinnedTargets\.length === 0[\s\S]{0,400}rawFlags\.perService\.size === 0/
+    );
+  });
+});
+
 describe('addImageOverrideOptions wiring (issue #238)', () => {
   const SERVICE_SOURCE = path.join(
     __dirname,

@@ -397,8 +397,10 @@ export function parseImageOverrideFlags(input: {
       // Global form: a bare stage name. Last write wins when the user
       // repeated the flag with multiple bare values (parser is liberal
       // so an accidental `--image-target a --image-target b` doesn't
-      // hard-error; the latter overrides).
-      globals.targetStage = raw;
+      // hard-error; the latter overrides). Trim mirrors the per-service
+      // branch below so `--image-target ' builder '` is treated the same
+      // way regardless of which form the user picked.
+      globals.targetStage = raw.trim();
       continue;
     }
     // Per-service form: `<svc>=<stage>`. Both halves must be non-empty.

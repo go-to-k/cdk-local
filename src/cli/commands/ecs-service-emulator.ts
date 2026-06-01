@@ -2456,10 +2456,20 @@ async function resolveAndBuildImageOverrides(args: {
   // Short-circuit: nothing to do when no override flag was passed AND
   // no pinned target exists to prompt about. Saves a no-op pass on the
   // common case (local CDK assets, no flags).
+  //
+  // Per-service build-input flags (`--image-build-arg <svc>:KEY=VAL`,
+  // `--image-build-secret <svc>:id=src`, `--image-target <svc>=stage`)
+  // are intentionally NOT eligible for short-circuit: a user who passes
+  // a per-service flag alone but no `--image-override` for that service
+  // has a typo or forgotten mapping that the orphan validator
+  // (`enforceImageOverrideOrphans`, called below) MUST surface as a
+  // hard `LocalStartServiceError`. Short-circuiting before the
+  // validator runs would silently drop those flags.
   if (
     pinnedTargets.length === 0 &&
     rawFlags.explicit.size === 0 &&
-    rawFlags.pickerPaths.length === 0
+    rawFlags.pickerPaths.length === 0 &&
+    rawFlags.perService.size === 0
   ) {
     return new Map();
   }
