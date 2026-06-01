@@ -143,11 +143,15 @@ cdkl start-alb --from-cfn-stack    # interactive boot prompt for each pinned tar
 
 ```
 ? Detected pinned image on 'AppService' (123…/repo:4.5.1).
-  Override with a local build? [path / N]:
-> ./services/app/Dockerfile
+  Override with a local build?
+    >  ./Dockerfile
+       ./services/app/Dockerfile
+       ./services/auth/Dockerfile
+       (Enter custom path)
+       (Skip — use ECR pin)
 ```
 
-Enter a Dockerfile path to override, or `N` (any case) / blank to skip the target.
+When cdk-local finds at least one `Dockerfile` / `Dockerfile.*` under your cwd (top 10 by mtime, excluding `node_modules` / `.git` / `cdk.out` / `dist` / `.next` / `.cache` / `build` / `coverage` / `.turbo` / `.vite`), it offers them as a picker. Otherwise the prompt falls back to free-text — type a Dockerfile path, or `N` (any case) / blank to skip the target. The intro line explaining what the prompt does + the `--no-interactive-overrides` opt-out surfaces once per session.
 
 Or name them up-front (CI / scripted setups):
 
@@ -169,7 +173,7 @@ cdkl start-alb --from-cfn-stack \
   --image-target builder
 ```
 
-`--image-build-secret npmrc=./.npmrc` wires a private-registry token into a Dockerfile that uses `RUN --mount=type=secret,id=npmrc` — the canonical recipe for installing private packages during the local build. The `src=` path resolves against the directory you ran `cdkl` from (not the Dockerfile's parent), so `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless of where the Dockerfile lives in the tree.
+`--image-build-secret npmrc=./.npmrc` wires a private-registry token into a Dockerfile that uses `RUN --mount=type=secret,id=npmrc` — the canonical recipe for installing private packages during the local build. The `src=` path resolves against the directory you ran `cdkl` from (not the Dockerfile's parent), so `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless of where the Dockerfile lives in the tree. A leading `~` / `~/` is expanded to your home directory so `--image-build-secret npmrc=~/.npmrc` (the POSIX-canonical npm credentials path) works the same way whether the shell pre-expanded it or not. The same expansion applies to `--image-override <svc>=~/path/Dockerfile`. Named-user tildes (`~user/foo`) are passed through literally — Node has no built-in for that shape.
 
 `--image-build-arg KEY=` (empty value) is accepted and forwarded verbatim to `docker build --build-arg KEY=` — the canonical way to unset a Dockerfile `ARG`'s default. Empty KEY (e.g. `--image-build-arg =val`) is rejected.
 

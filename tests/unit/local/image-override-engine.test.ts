@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
@@ -24,7 +24,10 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 
 const {
   buildImageOverrideTag,
+  discoverDockerfiles,
   enforceImageOverrideOrphans,
+  expandTilde,
+  IMAGE_OVERRIDE_BOOT_PROMPT_INTRO,
   ImageOverrideError,
   mergeForService,
   parseImageOverrideFlags,
@@ -802,8 +805,9 @@ describe('resolveImageOverrides Stage 3 boot prompt skip sentinels (M3)', () => 
     expect(source).toMatch(/value\.toLowerCase\(\)/);
     expect(source).toMatch(/lower === 'n'/);
     expect(source).toMatch(/lower === 'no'/);
-    // And the prompt copy must contain the [path / N] hint.
-    expect(source).toMatch(/\[path \/ N\]/);
+    // And the text-fallback prompt copy must contain the new
+    // [Dockerfile path / N / blank=skip] hint introduced for #258.
+    expect(source).toMatch(/\[Dockerfile path \/ N \/ blank=skip\]/);
   });
 });
 
@@ -1234,5 +1238,252 @@ describe('enforceImageOverrideOrphans (issue #240)', () => {
       expect(msg).toMatch(/Orphan1/);
       expect(msg).toMatch(/Orphan2/);
     }
+  });
+});
+
+// =============================================================================
+// Issue #260 — tilde expansion in --image-build-secret / --image-override
+// =============================================================================
+
+describe('expandTilde (issue #260)', () => {
+  it('expands `~/<rest>` to `<HOME>/<rest>`', () => {
+    expect(expandTilde('~/.npmrc')).toBe(path.join(homedir(), '.npmrc'));
+    expect(expandTilde('~/work/foo.txt')).toBe(path.join(homedir(), 'work/foo.txt'));
+  });
+
+  it('expands bare `~` to `<HOME>`', () => {
+    expect(expandTilde('~')).toBe(homedir());
+  });
+
+  it('passes `~user/foo` through unchanged (named-user form unsupported)', () => {
+    // Node has no built-in to resolve an arbitrary username to a home
+    // directory, so the named-user form is intentionally left as-is.
+    // `docker build` will surface a clear "no such file" if the user
+    // actually meant a literal `~user/...` path.
+    expect(expandTilde('~root/etc/passwd')).toBe('~root/etc/passwd');
+  });
+
+  it('passes an absolute path through unchanged', () => {
+    expect(expandTilde('/abs/path')).toBe('/abs/path');
+  });
+
+  it('passes a relative path with no leading tilde through unchanged', () => {
+    expect(expandTilde('./relative/path')).toBe('./relative/path');
+    expect(expandTilde('relative/path')).toBe('relative/path');
+  });
+});
+
+describe('parseImageOverrideFlags --image-build-secret tilde expansion (issue #260)', () => {
+  it('resolves `~/.npmrc` to `<HOME>/.npmrc` for the global build-secret form', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildSecret: ['npmrc=~/.npmrc'],
+    });
+    // The repro command in #260 was
+    // `--image-build-secret npmrc=~/.npmrc` — pin that exact shape so
+    // a future refactor that drops the tilde-expansion silently breaks
+    // the documented npm-secret recipe again.
+    expect(out.globals.buildSecrets.get('npmrc')).toBe(path.join(homedir(), '.npmrc'));
+  });
+
+  it('resolves `~/.npmrc` to `<HOME>/.npmrc` for the per-service build-secret form', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildSecret: ['AppService:npmrc=~/.npmrc'],
+    });
+    const overlay = out.perService.get('AppService');
+    expect(overlay?.buildSecrets.get('npmrc')).toBe(path.join(homedir(), '.npmrc'));
+  });
+
+  it('resolves bare `~` for a build-secret src', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildSecret: ['homedir=~'],
+    });
+    expect(out.globals.buildSecrets.get('homedir')).toBe(homedir());
+  });
+});
+
+describe('makeEntryFromPath tilde expansion for --image-override path (issue #260)', () => {
+  let tmpHomeDockerfile: string;
+  let originalHome: string | undefined;
+  let scratchHome: string;
+
+  beforeEach(() => {
+    // Stage a fake $HOME so the test can put a Dockerfile under it
+    // without touching the real home directory, then re-route
+    // `homedir()` via $HOME (Node's `os.homedir()` consults $HOME on
+    // POSIX, USERPROFILE on Windows — POSIX is the CI target). The
+    // re-route survives only for the duration of this describe.
+    scratchHome = mkdtempSync(path.join(tmpdir(), 'cdkl-override-home-'));
+    tmpHomeDockerfile = path.join(scratchHome, 'Dockerfile');
+    writeFileSync(tmpHomeDockerfile, 'FROM scratch\n');
+    originalHome = process.env.HOME;
+    process.env.HOME = scratchHome;
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    try {
+      rmSync(scratchHome, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  it('resolves `~/Dockerfile` to `<HOME>/Dockerfile` for the explicit form', async () => {
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: ['Svc=~/Dockerfile'],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['Svc'],
+    });
+    expect(overrides.get('Svc')?.dockerfile).toBe(tmpHomeDockerfile);
+    expect(overrides.get('Svc')?.contextDir).toBe(scratchHome);
+  });
+});
+
+// =============================================================================
+// Issue #259 — Dockerfile auto-detect picker
+// =============================================================================
+
+describe('discoverDockerfiles (issue #259)', () => {
+  let scanRoot: string;
+
+  beforeEach(() => {
+    scanRoot = mkdtempSync(path.join(tmpdir(), 'cdkl-override-scan-'));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(scanRoot, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  function writeFile(rel: string, body = 'FROM scratch\n'): string {
+    const abs = path.join(scanRoot, rel);
+    mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileSync(abs, body);
+    return abs;
+  }
+
+  it('finds top-level Dockerfile + nested Dockerfile.* and excludes ignored dirs', () => {
+    writeFile('Dockerfile');
+    writeFile('services/app/Dockerfile');
+    writeFile('services/auth/Dockerfile.prod');
+    // Excluded paths — must NOT appear in the result.
+    writeFile('node_modules/pkg/Dockerfile');
+    writeFile('.git/Dockerfile');
+    writeFile('cdk.out/asset.abc/Dockerfile');
+    writeFile('dist/Dockerfile');
+    writeFile('.next/Dockerfile');
+    writeFile('.cache/Dockerfile');
+
+    const found = discoverDockerfiles(scanRoot);
+    // Every returned path is relative-to-cwd with a `./` prefix.
+    expect(found.every((p) => p.startsWith('./'))).toBe(true);
+    expect(found).toContain('./Dockerfile');
+    expect(found).toContain('./services/app/Dockerfile');
+    expect(found).toContain('./services/auth/Dockerfile.prod');
+    expect(found.some((p) => p.includes('node_modules'))).toBe(false);
+    expect(found.some((p) => p.includes('.git/'))).toBe(false);
+    expect(found.some((p) => p.includes('cdk.out'))).toBe(false);
+    expect(found.some((p) => p.includes('dist/'))).toBe(false);
+    expect(found.some((p) => p.includes('.next'))).toBe(false);
+    expect(found.some((p) => p.includes('.cache'))).toBe(false);
+  });
+
+  it('caps the result at 10 most-recently-modified entries in a large tree', () => {
+    // 15 Dockerfiles, mtime-stamped in known order. The cap is 10
+    // (DOCKERFILE_SCAN_CAP) so only the 10 newest must come back.
+    for (let i = 0; i < 15; i++) {
+      writeFile(`svc-${i}/Dockerfile`);
+    }
+    const found = discoverDockerfiles(scanRoot);
+    expect(found.length).toBe(10);
+  });
+
+  it('returns an empty array when no Dockerfile exists under cwd', () => {
+    writeFile('package.json', '{}');
+    writeFile('src/index.ts', '// noop');
+    expect(discoverDockerfiles(scanRoot)).toEqual([]);
+  });
+
+  it('skips a `dockerfile` file (lowercase) — case-sensitive by design', () => {
+    // Docker itself does NOT auto-pick `dockerfile` lowercase as the
+    // build file; mirror that convention so the picker doesn't
+    // surface a file that wouldn't behave as a Dockerfile.
+    writeFile('dockerfile');
+    expect(discoverDockerfiles(scanRoot)).toEqual([]);
+  });
+});
+
+// =============================================================================
+// Issue #258 — boot-prompt intro copy + per-target prompt picker shape
+// =============================================================================
+
+describe('IMAGE_OVERRIDE_BOOT_PROMPT_INTRO copy (issue #258)', () => {
+  // The intro string is the user-visible "why is this prompt firing?"
+  // copy that surfaces ONCE per session right before the first Stage 3
+  // per-target prompt. Pin the load-bearing phrases so a future
+  // re-word that loses one of them is caught at test time.
+  it('names the deployed-image binding the user is overriding', () => {
+    expect(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO).toMatch(/deployed container image/);
+    expect(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO).toMatch(/fromEcrRepository/);
+  });
+
+  it('names what happens when the user enters a path (local docker build)', () => {
+    expect(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO).toMatch(/local `docker build`/);
+  });
+
+  it('names what happens when the user skips (blank / N)', () => {
+    expect(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO).toMatch(/leave blank or type N/);
+  });
+
+  it('names the --no-interactive-overrides opt-out for next time', () => {
+    expect(IMAGE_OVERRIDE_BOOT_PROMPT_INTRO).toMatch(/--no-interactive-overrides/);
+  });
+});
+
+describe('Stage 3 boot prompt source-level binding (issues #258 + #259)', () => {
+  // Stage 3 is TTY-gated and can't be driven from a unit-test runner.
+  // We pin the source-level wiring of the new UX so a regression that
+  // drops the intro-once flag, the auto-detect call, or the
+  // select-or-text branching is caught here.
+  it('intro is emitted ONCE per session (introShown flag in the loop)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const ENGINE_SOURCE = path.join(here, '../../../src/local/image-override-engine.ts');
+    const source = readFileSync(ENGINE_SOURCE, 'utf-8');
+    // The Stage 3 loop must:
+    //   1. initialize an `introShown` flag BEFORE the loop;
+    //   2. fire the intro inside the loop only when !introShown;
+    //   3. flip the flag after firing.
+    expect(source).toMatch(/let introShown = false/);
+    expect(source).toMatch(/if \(!introShown\)/);
+    expect(source).toMatch(/IMAGE_OVERRIDE_BOOT_PROMPT_INTRO/);
+    expect(source).toMatch(/introShown = true/);
+  });
+
+  it('Stage 3 invokes discoverDockerfiles + promptForOverridePath', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const ENGINE_SOURCE = path.join(here, '../../../src/local/image-override-engine.ts');
+    const source = readFileSync(ENGINE_SOURCE, 'utf-8');
+    // Stage 3 must call `discoverDockerfiles(cwd)` once per session
+    // (outside the per-target loop) AND fire the per-target prompt via
+    // the `promptForOverridePath` helper. That helper internally picks
+    // between `select` (auto-detected) and `text` (fallback).
+    expect(source).toMatch(/discoverDockerfiles\(cwd\)/);
+    expect(source).toMatch(/promptForOverridePath\(/);
+    // The select branch fires when discoveredDockerfiles.length > 0;
+    // the text fallback fires when it's empty. Pin the select call's
+    // sentinel pair so a refactor that drops the (Enter custom path)
+    // or (Skip — use ECR pin) options is caught here.
+    expect(source).toMatch(/Enter custom path/);
+    expect(source).toMatch(/Skip — use ECR pin/);
   });
 });
