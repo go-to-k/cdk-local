@@ -1,3 +1,10 @@
+## [0.73.5](https://github.com/go-to-k/cdk-local/compare/v0.73.4...v0.73.5) (2026-06-01)
+
+
+### Bug Fixes
+
+* **image-override:** re-build covered overrides on --watch reload so source edits propagate ([#263](https://github.com/go-to-k/cdk-local/issues/263)) ([95c64fe](https://github.com/go-to-k/cdk-local/commit/95c64fe100c4190a30b49c1a039ec72a61cac718))
+
 ## [0.73.4](https://github.com/go-to-k/cdk-local/compare/v0.73.3...v0.73.4) (2026-06-01)
 
 
