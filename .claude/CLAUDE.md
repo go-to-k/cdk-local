@@ -171,7 +171,7 @@ AWS managed services.
   `AWS::SSM::Parameter::Value` env values resolve (decrypted `SecureString`
   values kept off the `docker run` argv), and bare `--assume-role` resolves an
   intrinsic `RoleArn` from state. Issue #255 added `--watch` on the
-  long-running `/ws` session paths (`--ws` / `--ws-interactive`): the
+  long-running `--ws` session path: the
   per-firing classifier shared with `start-service` / `start-alb`
   (Phase 4 of issue #214) decides `'rebuild'` vs `'soft-reload'`;
   source-only edits on an interpreted-language handler `docker cp` +

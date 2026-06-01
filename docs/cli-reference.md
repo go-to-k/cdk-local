@@ -522,8 +522,7 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--event-stdin` | off | Read the event JSON from stdin instead of a file (mutually exclusive with `--event`). |
 | `--env-vars <file>` | — | JSON env-var overrides, SAM-compatible shape: `{"LogicalId":{"KEY":"VALUE"}}` plus an optional top-level `"Parameters"` block. `null` clears a key. |
 | `--session-id <id>` | random UUID | Value for the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` request header. |
-| `--ws` | off | Stream over the HTTP-protocol agent's bidirectional `/ws` WebSocket endpoint (on 8080) instead of `POST /invocations`: send `--event` as the first frame and print every received frame to stdout until the agent closes. See [WebSocket transport](#websocket-transport---ws) below. Ignored for an MCP runtime. |
-| `--ws-interactive` | off | REPL mode for `--ws`: after the initial `--event` frame, read additional frames from stdin (one frame per line, trailing newline stripped) and send each as a text frame until stdin EOFs (Ctrl-D) or the agent closes. Only meaningful with `--ws`. See [Interactive REPL (`--ws-interactive`)](#interactive-repl---ws-interactive) below. |
+| `--ws` | off | Stream over the HTTP-protocol agent's bidirectional `/ws` WebSocket endpoint (on 8080) instead of `POST /invocations`. Sends `--event` as the first frame and prints every received frame to stdout until the agent closes. **TTY auto-detect**: when stdin is a TTY (real terminal), additionally reads stdin lines as follow-up text frames so each typed line becomes one WS frame — multi-turn REPL by default (Ctrl-D to end). When stdin is NOT a TTY (piped / redirected / CI), only the initial frame is sent — one-shot. Force one-shot in a TTY with `cdkl ... --ws </dev/null`. See [WebSocket transport](#websocket-transport---ws) below. Ignored for an MCP runtime. |
 | `--bearer-token <jwt>` | — | Bearer JWT this command **supplies** as the outbound client when the runtime declares a `customJwtAuthorizer` — `cdkl invoke-agentcore` is the local-dev caller, so it always presents this token to its own invocation. Verified against the runtime's OIDC discovery URL (signature / `iss` / `exp` / audience) before the container starts, then forwarded to `/invocations` (or the `/ws` upgrade) as `Authorization: Bearer <jwt>`. Contrast with `cdkl start-alb --bearer-token` where the role flips: that command **receives** inbound requests and injects this token only as a default-when-missing fallback. |
 | `--no-verify-auth` | off (verify on) | Skip inbound JWT verification even when the runtime declares a `customJwtAuthorizer` (local-dev escape hatch). A `--bearer-token`, if given, is still forwarded. |
 | `--sigv4` | off | Sign the `/invocations` POST with AWS SigV4 (service `bedrock-agentcore`) using the resolved credentials — the same `Authorization: AWS4-HMAC-SHA256 ...` + `X-Amz-*` headers the cloud receives when the runtime declares no `customJwtAuthorizer`. Opt-in: default unsigned. Mutually exclusive with `--bearer-token`; ignored on a JWT-protected runtime. See [Inbound SigV4 (`--sigv4`)](#inbound-sigv4---sigv4) below. |
@@ -532,7 +531,7 @@ prefix. Omit the target in a TTY to pick from a list.
 | `--no-build` | off | Skip `docker build` on the local-asset path (reuse the previously-built tag). No-op for the ECR / registry pull paths. |
 | `--container-host <host>` | `127.0.0.1` | Host to bind the agent's published port to. |
 | `--timeout <ms>` | `120000` | Per-request timeout in milliseconds. Applied to `POST /invocations`, `POST /mcp`, and the `/ws` open-to-close window. Raise this for long-running agent calls that exceed the default. |
-| `--watch` | off | Re-synth + reload the agent container on CDK source changes. Only meaningful with the long-running `/ws` session paths (`--ws` / `--ws-interactive`): the single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A `POST /` paths run once and exit, so `--watch` is logged as a one-line WARN there and the single shot proceeds normally. The per-firing classifier shared with `start-service` / `start-alb` decides `'rebuild'` vs `'soft-reload'`: source-only edits on an interpreted-language handler (Node / Python / Ruby / shell) `docker cp` + `docker restart` the running container, Dockerfile / dependency / compiled-source / ambiguous edits SIGTERM the old container and rebuild from scratch. The active `/ws` socket is closed cleanly on every reload firing (AgentCore has no protocol-defined mid-session container handoff) so the next session connects to the rebuilt container — the honest local-dev semantic. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs. |
+| `--watch` | off | Re-synth + reload the agent container on CDK source changes. Only meaningful with the long-running `--ws` session path: the single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A `POST /` paths run once and exit, so `--watch` is logged as a one-line WARN there and the single shot proceeds normally. The per-firing classifier shared with `start-service` / `start-alb` decides `'rebuild'` vs `'soft-reload'`: source-only edits on an interpreted-language handler (Node / Python / Ruby / shell) `docker cp` + `docker restart` the running container, Dockerfile / dependency / compiled-source / ambiguous edits SIGTERM the old container and rebuild from scratch. The active `/ws` socket is closed cleanly on every reload firing (AgentCore has no protocol-defined mid-session container handoff) so the next session connects to the rebuilt container — the honest local-dev semantic. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs. |
 | `--assume-role [arn]` | off | Assume an execution role and forward STS temp creds. `--assume-role <arn>` uses the explicit ARN; bare `--assume-role` uses the runtime's `RoleArn` when it is a literal ARN, else resolves it from `--from-cfn-stack` state; `--no-assume-role` opts out. Off by default forwards the developer's shell credentials. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR for cross-account / centralized registries. |
 | `--from-cfn-stack [name]` | — | Read a deployed CloudFormation stack via `ListStackResources` and substitute `Ref` / `Fn::ImportValue` in env vars with the deployed physical IDs / exports, resolve a same-stack `AWS::ECR::Repository` ContainerUri to the deployed image, and resolve `AWS::SSM::Parameter::Value` env values (decrypted `SecureString` values are kept off the `docker run` argv). Bare form uses the resolved stack name. |
@@ -654,32 +653,36 @@ The over-the-wire framing on `/ws` is agent-defined — AWS pipes bytes
 transparently — so `cdkl` mirrors that and does not interpret the frames.
 `--ws` is HTTP-only; it is ignored (with a warning) for an MCP runtime.
 
-### Interactive REPL (`--ws-interactive`)
+### Interactive mode (TTY auto-detect)
 
-The default `--ws` is one-shot: send `--event` as the first frame, stream
-received frames, and exit when the agent closes. For a chat-style agent
-you want to talk back to (send a follow-up message after seeing the
-response), `--ws-interactive` adds a REPL on top of the same connection:
+`--ws` adapts to its stdin:
 
-1. send `--event` (default `{}`) as the first frame, just as one-shot mode
-   does,
-2. then read `process.stdin` line-buffered — each line (trailing `\r?\n`
-   stripped) becomes one follow-up text frame,
-3. stop when stdin EOFs (Ctrl-D at a terminal, end-of-pipe for a piped
-   stdin), then gracefully close the WebSocket.
-
-Pipe a script:
+- **stdin is a TTY (real terminal)** — auto-attach a REPL on top of the
+  same connection. After `--event` is sent as the first frame, each
+  subsequent line you type on stdin becomes one follow-up text frame,
+  until you Ctrl-D (stdin EOF) or the agent closes the WebSocket. This
+  matches the deployed `/ws` endpoint's bidirectional shape: a TTY user
+  gets a multi-turn session by default. Server-side close (agent closes
+  the stream) ends the session early — the iterator is released and
+  stdin reading stops.
+- **stdin is NOT a TTY (piped, redirected, CI, `< /dev/null`)** — only
+  the initial `--event` frame is sent; the client receives until the
+  agent closes. The standard one-shot script-friendly shape.
 
 ```bash
-printf 'what is 2+2\nand 3+3\n' | \
-  cdkl invoke-agentcore MyChatAgent --ws --ws-interactive --event ./open.json
+# Interactive (real terminal): multi-turn REPL by default
+cdkl invoke-agentcore MyChatAgent --ws --event ./open.json
+# > here, each line you type becomes a follow-up WS frame
+# > Ctrl-D to end
+
+# One-shot in a TTY (force non-interactive): redirect stdin to /dev/null
+cdkl invoke-agentcore MyChatAgent --ws --event ./open.json </dev/null
+
+# CI / piped (stdin already non-TTY): one-shot by default
+echo '{"prompt":"hi"}' | cdkl invoke-agentcore MyChatAgent --ws
 ```
 
-Or run it interactively from a terminal and type replies as the agent
-responds. Server-side close (agent closes the stream) ends the session
-early — the iterator is released and stdin reading stops.
-
-`--ws-interactive` is only meaningful with `--ws`; it is otherwise ignored.
+`--ws` is HTTP-only; it is ignored (with a warning) for an MCP runtime.
 
 ### MCP protocol
 
@@ -741,9 +744,9 @@ for structured pretty-printing:
 cdkl invoke-agentcore MyAguiAgent --event ./prompt.json | jq -c .
 ```
 
-`--ws` / `--ws-interactive` / `--bearer-token` / `--no-verify-auth` /
-`--sigv4` all apply unchanged — AGUI's wire is the same shape as HTTP's, so
-the entire HTTP option surface carries over.
+`--ws` / `--bearer-token` / `--no-verify-auth` / `--sigv4` all apply
+unchanged — AGUI's wire is the same shape as HTTP's, so the entire HTTP
+option surface carries over.
 
 ### Per-request timeout (`--timeout`)
 

@@ -169,7 +169,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
       event: { hi: 1 },
       sessionId: 'sid',
       timeoutMs: 1000,
-      wsInteractive: false,
+      interactive: false,
       options: { output: 'cdk.out' } as never,
       resolvedTarget: 'ChatAgent',
       resolved: baseRuntime(),
@@ -211,7 +211,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
       event: {},
       sessionId: 'sid',
       timeoutMs: 1000,
-      wsInteractive: false,
+      interactive: false,
       options: { output: 'cdk.out' } as never,
       resolvedTarget: 'ChatAgent',
       resolved: baseRuntime(),
@@ -234,6 +234,92 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
     expect(wsInvoker).toHaveBeenCalledTimes(2);
   });
 
+  it('wires `readStdinLines()` as the WS frame source when `interactive: true` (multi-turn REPL)', async () => {
+    // The command-level dispatch sets `interactive = process.stdin.isTTY === true`
+    // and threads it into the watch loop. When true, the loop attaches a
+    // `frameSource` to each `wsInvoker(...)` call so each stdin line becomes
+    // a follow-up WS text frame (the auto-detected REPL shape).
+    wireOneReloadThenEnd();
+    softReload.mockResolvedValue({ stacks: [] });
+    const softReloadAssetCtx: ReloadAssetContext = {
+      oldAssetHash: 'OLDHASH',
+      newAssetHash: 'NEWHASH',
+      newAssetSourceDir: '/cdk.out/asset.NEWHASH',
+      dockerFile: '.cdkl-agentcore-generated-Dockerfile',
+    };
+
+    await runAgentCoreWatchLoop({
+      containerHost: '127.0.0.1',
+      hostPort: 9001,
+      event: { hi: 1 },
+      sessionId: 'sid',
+      timeoutMs: 1000,
+      interactive: true,
+      options: { output: 'cdk.out' } as never,
+      resolvedTarget: 'ChatAgent',
+      resolved: baseRuntime(),
+      synthesizer,
+      synthOpts: {} as never,
+      stacks: [],
+      rebuild,
+      softReload,
+      __wsInvoker: wsInvoker,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: async () => softReloadAssetCtx,
+    });
+
+    // Both WS invocations (initial + post-reload re-open) received a
+    // frameSource on their options. The exact value is opaque — what
+    // matters is that the option key was set, NOT undefined.
+    expect(wsInvoker).toHaveBeenCalledTimes(2);
+    const opts1 = wsInvoker.mock.calls[0]?.[3] as { frameSource?: unknown };
+    const opts2 = wsInvoker.mock.calls[1]?.[3] as { frameSource?: unknown };
+    expect(opts1?.frameSource).toBeDefined();
+    expect(opts2?.frameSource).toBeDefined();
+  });
+
+  it('omits `frameSource` from the WS options when `interactive: false` (one-shot / non-TTY)', async () => {
+    // The companion of the row above: when stdin is NOT a TTY (piped / CI),
+    // the dispatch passes `interactive: false` and no frame source is
+    // attached. Existing rebuild + softReload tests run with `interactive:
+    // false` and incidentally cover this; the dedicated row pins the
+    // negative path explicitly so a future regression that hardcodes
+    // `readStdinLines()` would surface here.
+    wireOneReloadThenEnd();
+    rebuild.mockResolvedValue({ containerId: 'newId', hostPort: 9002, stacks: [] });
+
+    await runAgentCoreWatchLoop({
+      containerHost: '127.0.0.1',
+      hostPort: 9001,
+      event: {},
+      sessionId: 'sid',
+      timeoutMs: 1000,
+      interactive: false,
+      options: { output: 'cdk.out' } as never,
+      resolvedTarget: 'ChatAgent',
+      resolved: baseRuntime(),
+      synthesizer,
+      synthOpts: {} as never,
+      stacks: [],
+      rebuild,
+      softReload,
+      __wsInvoker: wsInvoker,
+      __waitForPing: waitForPing,
+      __watcherFactory: (onChange) => {
+        onChangeRef = onChange;
+        return watcher;
+      },
+      __classifierContext: async () => undefined,
+    });
+
+    const opts1 = wsInvoker.mock.calls[0]?.[3] as { frameSource?: unknown };
+    expect(opts1?.frameSource).toBeUndefined();
+  });
+
   it('falls back to rebuild when the classifier context build throws', async () => {
     // The classifier needs `loadAgentCoreAssetContext` (synth + asset
     // manifest read) to succeed; on synth / manifest failure the watch
@@ -249,7 +335,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
       event: {},
       sessionId: 'sid',
       timeoutMs: 1000,
-      wsInteractive: false,
+      interactive: false,
       options: { output: 'cdk.out' } as never,
       resolvedTarget: 'ChatAgent',
       resolved: baseRuntime(),
@@ -306,7 +392,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
       event: {},
       sessionId: 'sid',
       timeoutMs: 1000,
-      wsInteractive: false,
+      interactive: false,
       options: { output: 'cdk.out' } as never,
       resolvedTarget: 'ChatAgent',
       resolved: baseRuntime(),
@@ -343,7 +429,7 @@ describe('runAgentCoreWatchLoop — classifier dispatch (soft-reload vs rebuild)
       event: {},
       sessionId: 'sid',
       timeoutMs: 1000,
-      wsInteractive: false,
+      interactive: false,
       options: { output: 'cdk.out' } as never,
       resolvedTarget: 'ChatAgent',
       resolved: baseRuntime(),

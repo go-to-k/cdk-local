@@ -307,7 +307,7 @@ no duplicate `.addOption(...)` block on the host side.
   `--ecr-role-arn`, `--from-cfn-stack`, `--stack-region`).
 - `addInvokeAgentCoreSpecificOptions(cmd)` — `cdkl invoke-agentcore`
   flags (`--event`, `--event-stdin`, `--env-vars`, `--session-id`,
-  `--ws`, `--ws-interactive`, `--bearer-token`, `--no-verify-auth`,
+  `--ws`, `--bearer-token`, `--no-verify-auth`,
   `--sigv4`, `--platform`, `--no-pull`, `--no-build`, `--container-host`,
   `--timeout`, `--assume-role`, `--ecr-role-arn`, `--from-cfn-stack`,
   `--stack-region`).
