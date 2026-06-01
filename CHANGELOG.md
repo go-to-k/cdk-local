@@ -1,3 +1,10 @@
+## [0.73.2](https://github.com/go-to-k/cdk-local/compare/v0.73.1...v0.73.2) (2026-06-01)
+
+
+### Bug Fixes
+
+* **local-dev:** surface auth / watcher / HTTPv2 / classifier rejection reasons (no more silent debug-log fallbacks) ([#253](https://github.com/go-to-k/cdk-local/issues/253)) ([7ad06b8](https://github.com/go-to-k/cdk-local/commit/7ad06b8191d2e92f65d343bb6db485b663388e2b))
+
 ## [0.73.1](https://github.com/go-to-k/cdk-local/compare/v0.73.0...v0.73.1) (2026-06-01)
 
 
