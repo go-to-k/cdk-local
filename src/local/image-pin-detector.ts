@@ -81,3 +81,55 @@ export function describePinnedImageUri(service: ResolvedEcsService): string | un
   if (image.kind === 'cdk-asset') return undefined;
   return image.uri;
 }
+
+/**
+ * Per-target outcome from {@link listPinnedTargets}: the target name +
+ * an optional deployed-registry URI label (undefined when the image is
+ * a local CDK asset and so is NOT pinned).
+ */
+export interface PinnedTargetEntry {
+  /** ECS service target string (e.g. `StackName/ServiceConstructPath`). */
+  target: string;
+  /**
+   * Human-readable deployed-registry URI for the pinned image, or
+   * `undefined` when the helper bucketed the target as NOT pinned (the
+   * caller filters by presence of this entry — entries are only emitted
+   * for targets whose representative image is NOT a local CDK asset).
+   */
+  label?: string;
+}
+/**
+ * Issue #242 / N1 — dedupe pinned-target detection across the two
+ * sites that need it during a `cdkl start-service` / `cdkl start-alb`
+ * boot:
+ *
+ *   1. The `--image-override` engine's pre-boot resolution
+ *      ({@link resolveImageOverrides}) — needs the pinned set + per-
+ *      target deployed-registry URI labels so the picker + boot-prompt
+ *      hint can name the image the user is overriding.
+ *   2. The post-boot WARN loop in `runEcsServiceEmulator` — surfaces a
+ *      per-target WARN naming the deployed-registry URI for every
+ *      pinned target the override engine did NOT cover.
+ *
+ * Before this helper both sites re-walked `isLocalCdkAssetImage` +
+ * `describePinnedImageUri` independently. The semantic computation is
+ * identical — given a `ResolvedEcsService`, decide pinned vs local-
+ * asset and (for pinned targets) surface the URI label. Hoisting the
+ * walk here keeps the two call sites in lock-step and gives both a
+ * single test surface.
+ *
+ * Returns one entry per pinned target in the input's iteration order.
+ * Targets whose representative image is a local CDK asset are
+ * filtered out — the caller never sees them.
+ */
+export function listPinnedTargets(
+  resolvedServices: Iterable<{ target: string; service: ResolvedEcsService }>
+): PinnedTargetEntry[] {
+  const out: PinnedTargetEntry[] = [];
+  for (const { target, service } of resolvedServices) {
+    if (isLocalCdkAssetImage(service)) continue;
+    const label = describePinnedImageUri(service);
+    out.push({ target, ...(label !== undefined && { label }) });
+  }
+  return out;
+}

@@ -1,7 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // T1 — mock `runDockerStreaming` at module level so we can capture the
 // argv `runImageOverrideBuilds` hands to docker (the canonical
@@ -512,6 +512,259 @@ describe('parseImageOverrideFlags --image-build-secret src resolution (M1)', () 
       imageBuildSecret: ['token=/etc/secrets/token.txt'],
     });
     expect(out.globals.buildSecrets.get('token')).toBe('/etc/secrets/token.txt');
+  });
+});
+
+describe('parseImageOverrideFlags --image-build-arg empty-value semantics (issue #242 / M2)', () => {
+  // Issue #242 M2: `--image-build-arg KEY=` (empty VALUE) is accepted
+  // and forwarded verbatim to `docker build --build-arg KEY=`, which
+  // docker itself accepts (the canonical way to unset a Dockerfile
+  // `ARG`'s default). Empty KEY is still rejected.
+  it('accepts an empty value (`KEY=`) and surfaces it as the empty string', () => {
+    const out = parseImageOverrideFlags({ imageBuildArg: ['KEY='] });
+    expect(out.globals.buildArgs.get('KEY')).toBe('');
+  });
+
+  it('still rejects an empty key (`=value`)', () => {
+    expect(() => parseImageOverrideFlags({ imageBuildArg: ['=value'] })).toThrow(/KEY=VAL/);
+  });
+
+  it('mixes empty-value and populated entries in one invocation', () => {
+    const out = parseImageOverrideFlags({
+      imageBuildArg: ['UNSET=', 'NODE_ENV=production'],
+    });
+    expect(Array.from(out.globals.buildArgs.entries())).toEqual([
+      ['UNSET', ''],
+      ['NODE_ENV', 'production'],
+    ]);
+  });
+});
+
+describe('makeEntryFromPath path-resolution edge cases (issue #242)', () => {
+  // The `makeEntryFromPath` helper is exercised through `resolveImageOverrides`
+  // (Stage 1 explicit mapping is the simplest covered call site). The next
+  // three tests pin two branches the existing grid covered only on the happy
+  // path: absolute paths pass through, relative paths resolve against `cwd`,
+  // and a path that resolves to a DIRECTORY raises the "not a regular file"
+  // ImageOverrideError up-front (before any docker build runs).
+
+  const dirsToCleanup: string[] = [];
+  afterEach(() => {
+    for (const dir of dirsToCleanup.splice(0)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+
+  it('passes an absolute Dockerfile path through unchanged', async () => {
+    const dockerfile = makeTmpDockerfile('Dockerfile.abs');
+    expect(path.isAbsolute(dockerfile)).toBe(true);
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`Svc=${dockerfile}`],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['Svc'],
+    });
+    expect(overrides.get('Svc')?.dockerfile).toBe(dockerfile);
+    expect(overrides.get('Svc')?.contextDir).toBe(path.dirname(dockerfile));
+  });
+
+  it('resolves a relative Dockerfile path against the supplied `cwd`', async () => {
+    // makeTmpDockerfile gives us an absolute path under a tmp dir; we
+    // re-derive a RELATIVE form (basename) and feed `cwd=<tmp>` so the
+    // resolver lands at the same absolute path the helper produced.
+    const dockerfile = makeTmpDockerfile('Dockerfile.rel');
+    const baseDir = path.dirname(dockerfile);
+    const baseName = path.basename(dockerfile);
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`Svc=${baseName}`],
+    });
+    const overrides = await resolveImageOverrides({
+      rawFlags,
+      pinnedTargets: ['Svc'],
+      cwd: baseDir,
+    });
+    expect(overrides.get('Svc')?.dockerfile).toBe(path.resolve(baseDir, baseName));
+    expect(overrides.get('Svc')?.contextDir).toBe(baseDir);
+  });
+
+  it('rejects a path that resolves to a directory with "not a regular file"', async () => {
+    // mkdtempSync gives an absolute directory path; passing it where a
+    // Dockerfile is expected must surface the existsSync-passes-but-
+    // isFile-fails branch in `makeEntryFromPath`. The test asserts the
+    // ImageOverrideError + the message names the directory anchor so a
+    // future refactor that swallows the branch into a generic "missing"
+    // surface is caught.
+    const dirPath = mkdtempSync(path.join(tmpdir(), 'cdkl-override-dir-'));
+    dirsToCleanup.push(dirPath);
+    const rawFlags = parseImageOverrideFlags({
+      imageOverride: [`Svc=${dirPath}`],
+    });
+    await expect(
+      resolveImageOverrides({ rawFlags, pinnedTargets: ['Svc'] })
+    ).rejects.toMatchObject({
+      name: 'ImageOverrideError',
+      message: expect.stringMatching(/not a regular file/),
+    });
+  });
+});
+
+describe('runImageOverrideBuilds partial-failure rollback (issue #242 / N3)', () => {
+  // N3: when the Nth build fails, the 1..(N-1) previously built tags are
+  // best-effort `docker image rm`'d before the ImageOverrideError is
+  // re-thrown. Cleanup failures are swallowed at debug — the original
+  // build error stays the surfaced one.
+
+  beforeEach(() => {
+    runDockerStreamingMock.mockReset();
+  });
+
+  it('runs `docker image rm <tag>` for every previously built tag on mid-run failure', async () => {
+    // Three targets; the 2nd build fails. The 1st target's tag should
+    // receive a `docker image rm` cleanup call; the 3rd never builds
+    // (the loop throws before reaching it).
+    const dockerfileA = makeTmpDockerfile('Dockerfile.rb-a');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.rb-b');
+    const dockerfileC = makeTmpDockerfile('Dockerfile.rb-c');
+    let callIdx = 0;
+    runDockerStreamingMock.mockImplementation((args: string[]) => {
+      callIdx += 1;
+      if (args[0] === 'build' && callIdx === 2) {
+        // 2nd build (target B) — fail.
+        return Promise.reject(
+          Object.assign(new Error('spawn failed'), {
+            stderr: 'ERROR: cache key not found\n',
+          })
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    const overrides = new Map([
+      [
+        'A',
+        {
+          dockerfile: dockerfileA,
+          contextDir: path.dirname(dockerfileA),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+      [
+        'B',
+        {
+          dockerfile: dockerfileB,
+          contextDir: path.dirname(dockerfileB),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+      [
+        'C',
+        {
+          dockerfile: dockerfileC,
+          contextDir: path.dirname(dockerfileC),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+    ]);
+    await expect(runImageOverrideBuilds(overrides)).rejects.toBeInstanceOf(ImageOverrideError);
+    // Inspect the recorded calls. Expect:
+    //   - build A (success)
+    //   - build B (failure)
+    //   - image rm <tag-A> (rollback)
+    // C never builds; only A's tag is in the rollback list.
+    const calls = runDockerStreamingMock.mock.calls.map(([args]) => args as string[]);
+    const rmCalls = calls.filter((a) => a[0] === 'image' && a[1] === 'rm');
+    expect(rmCalls.length).toBe(1);
+    // Tag-A shape: derived from buildImageOverrideTag for the A entry.
+    const tagA = buildImageOverrideTag('A', {
+      dockerfile: dockerfileA,
+      contextDir: path.dirname(dockerfileA),
+      buildArgs: new Map<string, string>(),
+      buildSecrets: new Map<string, string>(),
+    });
+    expect(rmCalls[0]![2]).toBe(tagA);
+  });
+
+  it('propagates the ORIGINAL ImageOverrideError when the cleanup step itself fails', async () => {
+    // Build A succeeds, build B fails, then `image rm tag-A` ALSO fails.
+    // The thrown value MUST be the build-failure ImageOverrideError (not
+    // the cleanup error) so the user sees the actionable build message.
+    const dockerfileA = makeTmpDockerfile('Dockerfile.rb-orig-a');
+    const dockerfileB = makeTmpDockerfile('Dockerfile.rb-orig-b');
+    let callIdx = 0;
+    runDockerStreamingMock.mockImplementation((args: string[]) => {
+      callIdx += 1;
+      if (args[0] === 'build' && callIdx === 2) {
+        return Promise.reject(
+          Object.assign(new Error('spawn failed'), {
+            stderr: 'ERROR: original build failure stderr\n',
+          })
+        );
+      }
+      if (args[0] === 'image' && args[1] === 'rm') {
+        return Promise.reject(new Error('rm failed: image is in use'));
+      }
+      return Promise.resolve(undefined);
+    });
+    const overrides = new Map([
+      [
+        'A',
+        {
+          dockerfile: dockerfileA,
+          contextDir: path.dirname(dockerfileA),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+      [
+        'B',
+        {
+          dockerfile: dockerfileB,
+          contextDir: path.dirname(dockerfileB),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+    ]);
+    await expect(runImageOverrideBuilds(overrides)).rejects.toMatchObject({
+      name: 'ImageOverrideError',
+      // The thrown error must carry the BUILD failure stderr, not the
+      // cleanup error's "rm failed" message.
+      message: expect.stringMatching(/original build failure stderr/),
+    });
+  });
+
+  it('does NOT call `docker image rm` when the FIRST build fails (no prior tags to clean up)', async () => {
+    const dockerfile = makeTmpDockerfile('Dockerfile.rb-first');
+    runDockerStreamingMock.mockImplementation((args: string[]) => {
+      if (args[0] === 'build') {
+        return Promise.reject(
+          Object.assign(new Error('boom'), { stderr: 'first build failed\n' })
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+    const overrides = new Map([
+      [
+        'Solo',
+        {
+          dockerfile,
+          contextDir: path.dirname(dockerfile),
+          buildArgs: new Map<string, string>(),
+          buildSecrets: new Map<string, string>(),
+        },
+      ],
+    ]);
+    await expect(runImageOverrideBuilds(overrides)).rejects.toBeInstanceOf(ImageOverrideError);
+    const calls = runDockerStreamingMock.mock.calls.map(([args]) => args as string[]);
+    const rmCalls = calls.filter((a) => a[0] === 'image' && a[1] === 'rm');
+    expect(rmCalls.length).toBe(0);
   });
 });
 

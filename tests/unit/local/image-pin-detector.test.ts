@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import {
   isLocalCdkAssetImage,
   describePinnedImageUri,
+  listPinnedTargets,
 } from '../../../src/local/image-pin-detector.js';
 import type { ResolvedEcsService } from '../../../src/local/ecs-service-resolver.js';
 import type { ResolvedEcsContainer, ResolvedEcsImage } from '../../../src/local/ecs-task-resolver.js';
@@ -136,5 +137,78 @@ describe('describePinnedImageUri (issue #234)', () => {
   it('returns undefined when the service has no containers (degenerate)', () => {
     const service = fakeService([]);
     expect(describePinnedImageUri(service)).toBeUndefined();
+  });
+});
+
+describe('listPinnedTargets (issue #242 / N1 dedupe)', () => {
+  function ecrService(uri: string): ResolvedEcsService {
+    return fakeService([
+      {
+        essential: true,
+        image: { kind: 'ecr', uri, account: '000000000000', region: 'us-east-1' },
+      },
+    ]);
+  }
+  function assetService(): ResolvedEcsService {
+    return fakeService([{ essential: true, image: { kind: 'cdk-asset', assetHash: 'h' } }]);
+  }
+  function publicService(uri: string): ResolvedEcsService {
+    return fakeService([{ essential: true, image: { kind: 'public', uri } }]);
+  }
+
+  it('returns one entry per pinned target with the URI label preserved', () => {
+    const out = listPinnedTargets([
+      { target: 'StackA/AppService', service: ecrService('111.dkr.ecr.us-east-1.amazonaws.com/a:1') },
+      { target: 'StackA/AuthService', service: ecrService('111.dkr.ecr.us-east-1.amazonaws.com/b:2') },
+    ]);
+    expect(out).toEqual([
+      { target: 'StackA/AppService', label: '111.dkr.ecr.us-east-1.amazonaws.com/a:1' },
+      { target: 'StackA/AuthService', label: '111.dkr.ecr.us-east-1.amazonaws.com/b:2' },
+    ]);
+  });
+
+  it('filters out CDK-asset targets (only pinned targets surface)', () => {
+    const out = listPinnedTargets([
+      { target: 'StackA/AssetSvc', service: assetService() },
+      { target: 'StackA/AssetSvc2', service: assetService() },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it('handles a mixed set: pinned + asset interleaved', () => {
+    const out = listPinnedTargets([
+      { target: 'AppSvc', service: assetService() },
+      { target: 'AuthSvc', service: ecrService('111.dkr.ecr.us-east-1.amazonaws.com/auth:1') },
+      { target: 'WebSvc', service: assetService() },
+      { target: 'BgSvc', service: publicService('nginx:latest') },
+    ]);
+    expect(out).toEqual([
+      { target: 'AuthSvc', label: '111.dkr.ecr.us-east-1.amazonaws.com/auth:1' },
+      { target: 'BgSvc', label: 'nginx:latest' },
+    ]);
+  });
+
+  it('returns [] for an empty iterable (no booted services on the controller)', () => {
+    expect(listPinnedTargets([])).toEqual([]);
+  });
+
+  it('preserves caller-supplied iteration order across pinned entries', () => {
+    const order: Array<{ target: string; service: ResolvedEcsService }> = [
+      { target: 'Z', service: ecrService('e.com/z:1') },
+      { target: 'A', service: ecrService('e.com/a:1') },
+      { target: 'M', service: ecrService('e.com/m:1') },
+    ];
+    expect(listPinnedTargets(order).map((e) => e.target)).toEqual(['Z', 'A', 'M']);
+  });
+
+  it('omits the `label` property when the service has no containers (degenerate)', () => {
+    // No containers => describePinnedImageUri returns undefined, but the
+    // target is still NOT a local CDK asset (no image at all), so it
+    // surfaces as a pinned-target entry sans label. The WARN loop falls
+    // back to "a deployed registry" prose when label is undefined.
+    const empty = fakeService([]);
+    expect(listPinnedTargets([{ target: 'Empty', service: empty }])).toEqual([
+      { target: 'Empty' },
+    ]);
   });
 });

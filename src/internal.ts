@@ -469,7 +469,12 @@ export { createWatchPredicates, type WatchPredicates } from './cli/commands/loca
  * UX matches cdk-local's instead of silently inheriting the
  * "Reload complete." disguised-no-op symptom.
  */
-export { isLocalCdkAssetImage, describePinnedImageUri } from './local/image-pin-detector.js';
+export {
+  isLocalCdkAssetImage,
+  describePinnedImageUri,
+  listPinnedTargets,
+  type PinnedTargetEntry,
+} from './local/image-pin-detector.js';
 export { resolveWatchConfig, type CdkWatchConfig } from './cli/config-loader.js';
 
 /**

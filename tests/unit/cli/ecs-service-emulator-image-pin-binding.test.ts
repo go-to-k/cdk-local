@@ -36,27 +36,35 @@ const EMULATOR_SOURCE = path.join(
  * documented.
  */
 describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
-  it('imports `isLocalCdkAssetImage` + `describePinnedImageUri` from the local helper module', () => {
+  it('imports `isLocalCdkAssetImage` + `listPinnedTargets` from the local helper module', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     expect(source).toMatch(
       /from\s+['"]\.\.\/\.\.\/local\/image-pin-detector\.js['"]/
     );
+    // `isLocalCdkAssetImage` is still consumed by the reload-time skip
+    // guard in `reloadAllServices` (issue #234), and `listPinnedTargets`
+    // is the issue #242 / N1 dedupe consumed by both the override
+    // engine's pre-boot peek + the post-boot WARN loop. The detector
+    // module also exports `describePinnedImageUri`, but the emulator no
+    // longer imports it directly — every call site now flows through
+    // `listPinnedTargets`.
     expect(source).toMatch(/isLocalCdkAssetImage/);
-    expect(source).toMatch(/describePinnedImageUri/);
+    expect(source).toMatch(/listPinnedTargets/);
   });
 
-  it('boot-time WARN loop calls `isLocalCdkAssetImage` + `describePinnedImageUri` + `logger.warn` together', () => {
+  it('boot-time WARN loop derives the pinned set via `listPinnedTargets` and surfaces it through `logger.warn`', () => {
     const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
     // Anchor on the unique boot-WARN rationale comment ("Warn UP-FRONT")
-    // and verify the per-target loop downstream of it calls both
-    // helpers AND surfaces the warning via `logger.warn`. The outer
+    // and verify the per-target block downstream of it derives the
+    // pinned set through the `listPinnedTargets` helper (issue #242 N1
+    // dedupe) AND surfaces the warning via `logger.warn`. The outer
     // gate (a hoisted `watchActive` const today; could be inlined back
     // or renamed by a future refactor) intentionally isn't pinned here
     // — what matters for issue #234 is that the loop body has the
-    // right shape. A refactor that drops either call would silently
+    // right shape. A refactor that drops the helper call would silently
     // ship the no-op-disguised-as-success bug back into the boot stream.
     const bootWarnLoop = source.match(
-      /Warn UP-FRONT[\s\S]*?for \(const pt of perTarget\) \{[\s\S]*?isLocalCdkAssetImage[\s\S]*?describePinnedImageUri[\s\S]*?logger\.warn\(/
+      /Warn UP-FRONT[\s\S]*?listPinnedTargets\([\s\S]*?logger\.warn\(/
     );
     expect(bootWarnLoop, 'boot-time WARN loop missing').toBeTruthy();
   });
@@ -70,22 +78,71 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     // is precisely what #238 explicitly broadens.
     //
     // Anchor on the intrinsic "Warn UP-FRONT" rationale comment + the
-    // helper call site (`isLocalCdkAssetImage` / `describePinnedImageUri`
-    // / `logger.warn`) that the WARN block uniquely uses. Avoid keying
-    // on incidental landmarks like `Phase 1 + Phase 2` (which a future
-    // section-comment rewrite would silently invalidate). Take the
-    // 4-KiB window starting at "Warn UP-FRONT" — large enough to
-    // contain the entire loop, small enough that an unrelated future
-    // copy of the helpers downstream won't accidentally bleed in.
+    // helper call site (`listPinnedTargets` / `logger.warn`) that the
+    // WARN block uniquely uses. Avoid keying on incidental landmarks
+    // like `Phase 1 + Phase 2` (which a future section-comment rewrite
+    // would silently invalidate). Take the 4-KiB window starting at
+    // "Warn UP-FRONT" — large enough to contain the entire loop, small
+    // enough that an unrelated future copy of the helpers downstream
+    // won't accidentally bleed in.
+    //
+    // Issue #242 anti-pattern follow-up: drop the previous
+    // `.split('for (const pt of perTarget)')` landmark — a rename of
+    // `perTarget` would silently widen a split-based assertion to
+    // cover the whole region, shadowing a regression. Instead bound
+    // the WARN region with two semantic anchors:
+    //
+    //   - START: the intrinsic `Warn UP-FRONT` rationale comment
+    //     (unique to the WARN block).
+    //   - END: the `enforceStrictOverrides(` call site that
+    //     immediately follows the WARN loop. Cutting at that call
+    //     keeps the unrelated `--watch` watcher block (which legitly
+    //     opens an `if (watchActive)` gate later) out of the region,
+    //     so a `not.toMatch(/if \(watchActive\)/)` assertion stays
+    //     scoped to the WARN gate question.
+    //
+    // A regression that re-hoists `if (watchActive)` over the boot
+    // WARN must land BEFORE `enforceStrictOverrides(...)` runs (the
+    // WARN populates the `uncoveredPinnedTargets` array that
+    // `enforceStrictOverrides` consumes), so the boundary's
+    // safe.
     const warnUpFrontIdx = source.indexOf('Warn UP-FRONT');
     expect(warnUpFrontIdx).toBeGreaterThan(-1);
-    const bootWarnRegion = source.slice(warnUpFrontIdx, warnUpFrontIdx + 4096);
-    expect(bootWarnRegion).toMatch(/isLocalCdkAssetImage/);
-    expect(bootWarnRegion).toMatch(/describePinnedImageUri/);
+    const strictIdx = source.indexOf('enforceStrictOverrides(', warnUpFrontIdx);
+    expect(strictIdx).toBeGreaterThan(warnUpFrontIdx);
+    const bootWarnRegion = source.slice(warnUpFrontIdx, strictIdx);
+    expect(bootWarnRegion).toMatch(/listPinnedTargets/);
     expect(bootWarnRegion).toMatch(/logger\.warn\(/);
-    // The region preceding the per-target loop must not open a watch gate.
-    const preLoop = bootWarnRegion.split('for (const pt of perTarget)')[0]!;
-    expect(preLoop).not.toMatch(/if \(watchActive\)/);
+    expect(bootWarnRegion).not.toMatch(/if \(watchActive\)/);
+  });
+
+  it('both pinned-detection call sites consume the SAME `listPinnedTargets` helper (issue #242 / N1 dedupe)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The N1 dedupe lifts the two independent walks (engine pre-boot
+    // resolution + post-boot WARN loop) onto a single `listPinnedTargets`
+    // helper. Site-level binding: both regions must call it. A future
+    // refactor that re-inlines one side would surface a regression here
+    // (and silently drift the two pinned-set verdicts apart).
+    //
+    // Engine pre-boot site: anchored on the comment that names the
+    // dedupe rationale (the "Issue #242 / N1" tag inside
+    // `resolveAndBuildImageOverrides`).
+    const engineRegion = source.match(
+      /Issue #242 \/ N1 — collect every target's resolved service[\s\S]{0,3072}listPinnedTargets\(/
+    );
+    expect(engineRegion, 'engine pre-boot listPinnedTargets call missing').toBeTruthy();
+    // Post-boot WARN site: same helper, separately anchored on the
+    // Warn UP-FRONT rationale comment so the two call-site checks
+    // can't accidentally overlap into one region.
+    const warnUpFrontIdx = source.indexOf('Warn UP-FRONT');
+    const warnRegion = source.slice(warnUpFrontIdx, warnUpFrontIdx + 4096);
+    expect(warnRegion).toMatch(/listPinnedTargets\(/);
+    // Sanity: the engine pre-boot region anchor and the WARN region
+    // anchor are distinct (the helper call appears in both).
+    const engineIdx = source.indexOf("Issue #242 / N1 — collect every target's resolved service");
+    expect(engineIdx).toBeGreaterThan(-1);
+    expect(warnUpFrontIdx).toBeGreaterThan(-1);
+    expect(engineIdx).not.toBe(warnUpFrontIdx);
   });
 
   it('reload-time skip guard AND-s `verdict.reason` with `isLocalCdkAssetImage(controller.service)` BEFORE `rollOneTarget`', () => {

@@ -171,6 +171,8 @@ cdkl start-alb --from-cfn-stack \
 
 `--image-build-secret npmrc=./.npmrc` wires a private-registry token into a Dockerfile that uses `RUN --mount=type=secret,id=npmrc` — the canonical recipe for installing private packages during the local build. The `src=` path resolves against the directory you ran `cdkl` from (not the Dockerfile's parent), so `./.npmrc` means "the `.npmrc` next to your `cdk.json`" regardless of where the Dockerfile lives in the tree.
 
+`--image-build-arg KEY=` (empty value) is accepted and forwarded verbatim to `docker build --build-arg KEY=` — the canonical way to unset a Dockerfile `ARG`'s default. Empty KEY (e.g. `--image-build-arg =val`) is rejected.
+
 Opt-outs:
 
 - `--no-interactive-overrides` suppresses the boot prompt + the multi-select picker; the override map is whatever explicit `--image-override <svc>=<dockerfile>` flags resolved to. Useful for scripted invocations.
