@@ -853,6 +853,7 @@ async function prepareOneImage(
           new LocalInvokeBuildError(
             `docker build failed for ECS container '${container.name}' (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
           ),
+        progressLabel: `Building container image for '${container.name}'`,
       });
       if (actualTag !== tag) {
         // `executable` source mode returns the script's own tag — re-tag

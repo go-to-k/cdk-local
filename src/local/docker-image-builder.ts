@@ -82,6 +82,7 @@ export async function buildContainerImage(
       new LocalInvokeBuildError(
         `docker build failed for container Lambda asset (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
       ),
+    progressLabel: `Building container image (platform=${platform})`,
   });
   if (actualTag !== tag) {
     logger.debug(`Re-tagging executable-built image '${actualTag}' → '${tag}'`);

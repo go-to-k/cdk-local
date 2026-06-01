@@ -183,9 +183,14 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   // Captured-mode pull: stdout/stderr collected, mirrored only when
   // --verbose is on (which the branch above already handles via
   // runDockerForeground), so streamLive: false keeps the silent
-  // contract on the default compact log level.
+  // contract on the default compact log level. The spinner shows
+  // motion during what is otherwise a multi-minute silent pull
+  // against a real-world image.
   try {
-    await runDockerStreaming(['pull', image], { streamLive: false });
+    await runDockerStreaming(['pull', image], {
+      streamLive: false,
+      progressLabel: `Pulling ${image}`,
+    });
   } catch (err) {
     const e = err as {
       exitCode?: number | null;

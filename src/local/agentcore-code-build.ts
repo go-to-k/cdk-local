@@ -97,16 +97,10 @@ export async function buildAgentCoreCodeImage(
   const dockerfilePath = join(buildDir, 'Dockerfile');
   try {
     await writeFile(dockerfilePath, dockerfile, 'utf-8');
-    await runDockerStreaming([
-      'build',
-      '--platform',
-      platform,
-      '--tag',
-      tag,
-      '--file',
-      dockerfilePath,
-      options.sourceDir,
-    ]);
+    await runDockerStreaming(
+      ['build', '--platform', platform, '--tag', tag, '--file', dockerfilePath, options.sourceDir],
+      { progressLabel: `Building agent image (runtime=${options.runtime})` }
+    );
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr?.trim();
     throw new LocalInvokeBuildError(
