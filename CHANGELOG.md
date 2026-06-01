@@ -1,3 +1,10 @@
+## [0.73.3](https://github.com/go-to-k/cdk-local/compare/v0.73.2...v0.73.3) (2026-06-01)
+
+
+### Bug Fixes
+
+* **cli:** fully wire --profile across all STSClient sites + drop the misleading --region deprecation copy ([#254](https://github.com/go-to-k/cdk-local/issues/254)) ([13eb5a7](https://github.com/go-to-k/cdk-local/commit/13eb5a714bf8945b0d3e780e4c2076e109d15af6))
+
 ## [0.73.2](https://github.com/go-to-k/cdk-local/compare/v0.73.1...v0.73.2) (2026-06-01)
 
 
