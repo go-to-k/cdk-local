@@ -646,7 +646,7 @@ async function localInvokeAgentCoreCommand(
         const wsResult = await invokeAgentCoreWs(containerHost, hostPort, event, {
           sessionId,
           timeoutMs: options.timeout,
-          onMessage: (text) => process.stdout.write(text),
+          onMessage: wrapWsOnMessage((text) => process.stdout.write(text), interactive),
           ...(authorization && { authorization }),
           ...(frameSource && { frameSource }),
         });
@@ -1669,11 +1669,51 @@ export async function* readStdinLines(): AsyncIterable<string> {
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   try {
     for await (const line of rl) {
+      // Issue #276 — skip strictly-empty lines in interactive mode.
+      // Without this, pressing Enter without typing sends an empty WS text
+      // frame; a loop-mode agent (e.g. the integ fixture's EchoAgent) then
+      // replies with a half-line like `loop-echo:` that visually corrupts
+      // the REPL. A whitespace-only line is NOT skipped — sending spaces
+      // can be a deliberate signal for some agents.
+      if (line.length === 0) continue;
       yield line;
     }
   } finally {
     rl.close();
   }
+}
+
+/**
+ * Issue #276 — REPL prompt indicator for the auto-detected TTY mode.
+ * Written to stdout (no trailing newline) after each received agent frame,
+ * so the user has a clear visual signal that the REPL is waiting for input.
+ */
+export const WS_REPL_PROMPT = '> ';
+
+/**
+ * Issue #276 — wrap `onMessage` so each agent WS text frame lands on its
+ * own line when the auto-REPL is active AND a `>` prompt indicator
+ * follows. WS frames carry no trailing `\n` by protocol (each frame is a
+ * discrete message); the cloud `/ws` endpoint behaves the same. That's
+ * correct on the wire but visually run-on in an interactive terminal —
+ * the user's next keystroke concatenates onto the last frame's tail char
+ * and they have no signal that the REPL is waiting for input. In
+ * interactive mode we append `\n` (unless already present) and then write
+ * a `>` prompt, so each agent message is presented as its own line and
+ * the next input prompt is visible.
+ *
+ * Non-interactive (piped / CI) is unchanged — the raw stdout shape is
+ * what scripts rely on, and the WS-protocol-faithful pass-through stays.
+ */
+export function wrapWsOnMessage(
+  sink: (text: string) => void,
+  interactive: boolean
+): (text: string) => void {
+  if (!interactive) return sink;
+  return (text) => {
+    sink(text.endsWith('\n') ? text : `${text}\n`);
+    sink(WS_REPL_PROMPT);
+  };
 }
 
 export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
@@ -1967,7 +2007,7 @@ export async function runAgentCoreWatchLoop(args: {
         const result = await wsInvoker(args.containerHost, currentHostPort, args.event, {
           sessionId: args.sessionId,
           timeoutMs: args.timeoutMs,
-          onMessage: (text) => process.stdout.write(text),
+          onMessage: wrapWsOnMessage((text) => process.stdout.write(text), args.interactive),
           abortSignal: abort.signal,
           ...(args.authorization && { authorization: args.authorization }),
           ...(frameSource && { frameSource }),

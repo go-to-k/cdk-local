@@ -61,6 +61,7 @@ import {
   createLocalInvokeAgentCoreCommand,
   runAgentCoreWatchLoop,
   softReloadAgentContainer,
+  wrapWsOnMessage,
 } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -520,5 +521,48 @@ describe('softReloadAgentContainer — docker cp + docker restart wiring', () =>
     await expect(softReloadAgentContainer('cid_gone', '/src')).rejects.toThrow(
       /No such container: cid_gone/
     );
+  });
+});
+
+describe('wrapWsOnMessage — interactive newline policy (issue #276)', () => {
+  it('non-interactive: passes the frame through verbatim (WS-protocol-faithful)', () => {
+    // CI / piped path. The raw WS-protocol shape is what scripts rely on,
+    // so no newline coercion is applied.
+    const captured: string[] = [];
+    const wrapped = wrapWsOnMessage((t) => captured.push(t), false);
+    wrapped('frame-one');
+    wrapped('frame-two');
+    expect(captured).toEqual(['frame-one', 'frame-two']);
+  });
+
+  it('interactive: appends `\\n` to a frame that does not already end with one + writes a `>` prompt', () => {
+    // The fix: each agent message lands on its own line AND a prompt
+    // indicator follows so the user knows the REPL is waiting for input.
+    // Without this, frames run together visually and there is no signal
+    // that input is expected (issue #276 reproduction).
+    const captured: string[] = [];
+    const wrapped = wrapWsOnMessage((t) => captured.push(t), true);
+    wrapped('frame-one');
+    wrapped('frame-two');
+    expect(captured).toEqual(['frame-one\n', '> ', 'frame-two\n', '> ']);
+  });
+
+  it('interactive: does NOT double-append `\\n` when the frame already ends with one; prompt still written', () => {
+    // Some agents send line-terminated frames already. Don't add a second
+    // newline — that would produce gratuitous blank lines in the REPL.
+    // The `>` prompt still follows so the next-input cue is consistent.
+    const captured: string[] = [];
+    const wrapped = wrapWsOnMessage((t) => captured.push(t), true);
+    wrapped('already-terminated\n');
+    expect(captured).toEqual(['already-terminated\n', '> ']);
+  });
+
+  it('interactive: empty frame still gets a trailing `\\n` + prompt', () => {
+    // The wrap policy is per-frame; an empty frame from the agent should
+    // still produce a blank line + prompt, not a no-op.
+    const captured: string[] = [];
+    const wrapped = wrapWsOnMessage((t) => captured.push(t), true);
+    wrapped('');
+    expect(captured).toEqual(['\n', '> ']);
   });
 });
