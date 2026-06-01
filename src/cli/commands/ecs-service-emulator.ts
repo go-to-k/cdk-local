@@ -4,9 +4,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -19,6 +18,7 @@ import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
+import { buildStsClientConfig } from '../../utils/profile-resolver.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -441,8 +441,6 @@ export async function runEcsServiceEmulator(
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  warnIfDeprecatedRegion(options);
-
   // Commander resolves `--no-pull` to `options.pull = false` (the default is
   // true). Compute the "should we skip docker pull?" flag once here.
   const skipPull = options.pull === false;
@@ -568,7 +566,11 @@ export async function runEcsServiceEmulator(
   );
 
   try {
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnIfSet({
+      roleArn: options.roleArn,
+      region: options.region,
+      profile: options.profile,
+    });
     await ensureDockerAvailable();
 
     const appCmd = resolveApp(options.app);
@@ -1667,11 +1669,15 @@ async function resolveServiceAndRunnerOpts(
           `has no resolvable TaskRoleArn. Pass the ARN explicitly: --assume-task-role <arn>`
       );
     }
-    resolvedRoleArn = await resolvePlaceholderAccount(service.task.taskRoleArn, options.region);
-    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+    resolvedRoleArn = await resolvePlaceholderAccount(
+      service.task.taskRoleArn,
+      options.region,
+      options.profile
+    );
+    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
   } else if (typeof options.assumeTaskRole === 'string') {
     resolvedRoleArn = options.assumeTaskRole;
-    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+    assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
   }
 
   const envOverrides = readEnvOverridesFile(options.envVars);
@@ -2114,10 +2120,17 @@ function describeForwardTargetForSummary(t: PlannedForwardTarget): string {
   return t.kind === 'lambda' ? `<Lambda: ${t.lambda.logicalId}>` : `<ECS: ${t.serviceTarget}>`;
 }
 
-async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
+async function resolvePlaceholderAccount(
+  arn: string,
+  region: string | undefined,
+  profile: string | undefined
+): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so the resolved account is the profile's account
+  // (matching the inline same-stack IAM role resolution under
+  // `--from-cfn-stack --profile <p>`) (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -2134,10 +2147,13 @@ async function resolvePlaceholderAccount(arn: string, region: string | undefined
 
 async function assumeTaskRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so AssumeRole is signed with the profile's
+  // credentials, not the default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -2273,7 +2289,7 @@ async function resolveCallerAccountId(
   profile: string | undefined
 ): Promise<string | undefined> {
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -2661,7 +2677,7 @@ export function addCommonEcsServiceOptions(cmd: Command): Command {
     );
 
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }
 

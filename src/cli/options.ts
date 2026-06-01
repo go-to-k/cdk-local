@@ -22,9 +22,9 @@ export function parseContextOptions(contextArgs?: string[]): Record<string, stri
  * module-level const) so the `--role-arn` env-var hint reflects the active
  * embed config, which the command factory installs before calling this.
  *
- * `--region` is intentionally NOT in `commonOptions` — local commands
- * pick the region from `AWS_REGION` / profile / synthesized stack env.
- * The deprecated flag below remains for muscle-memory compatibility.
+ * `--region` is intentionally NOT in `commonOptions` — it is registered
+ * separately via {@link regionOption} so a host CLI (cdkd) can swap the
+ * shared option block once without losing the `--region` flag.
  */
 export function commonOptions(): Option[] {
   const { envPrefix } = getEmbedConfig();
@@ -43,29 +43,32 @@ export function commonOptions(): Option[] {
 }
 
 /**
- * Deprecated `--region` option attached to every command.
+ * `--region` option attached to every command. The value drives both
+ * host-side AWS SDK calls (STS `GetCallerIdentity` for
+ * `${AWS::AccountId}` resolution, `AssumeRole` for `--assume-role`, etc.)
+ * and the container's `AWS_REGION` env var. When omitted, region
+ * precedence falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` env,
+ * then the synthesized stack region, then the `--profile`'s configured
+ * region — same shape as the AWS CLI's `--region` flag (issue #245).
  *
- * Kept (rather than fully removed) so that scripts or muscle memory
- * passing `--region` do not break. The value is parsed but ignored;
- * the SDK picks the region from `AWS_REGION` / profile / synthesized
- * stack env.
+ * Kept as a standalone export rather than baked into `commonOptions`
+ * so a host CLI (cdkd) can swap the shared option block once without
+ * losing this flag.
  */
-export const deprecatedRegionOption = new Option(
+export const regionOption = new Option(
   '--region <region>',
-  '[deprecated] No effect on this command; use AWS_REGION or your AWS profile'
-).hideHelp();
+  'AWS region for SDK calls; defaults to AWS_REGION env, the synthesized stack region, or the resolved profile region'
+);
 
 /**
- * Emit a one-shot stderr warning when a command receives `--region`.
+ * Backward-compat alias for the previous `deprecatedRegionOption` export.
+ * `--region` is no longer deprecated (issue #245) but external callers
+ * (including cdkd) may still import the old name. Slated for removal
+ * once those callers migrate to {@link regionOption}.
+ *
+ * @deprecated Use {@link regionOption}.
  */
-export function warnIfDeprecatedRegion(options: { region?: string }): void {
-  if (options.region !== undefined) {
-    process.stderr.write(
-      'Warning: --region is deprecated for this command and has no effect. ' +
-        'Use the AWS_REGION environment variable or your AWS profile to override the SDK default region.\n'
-    );
-  }
-}
+export const deprecatedRegionOption = regionOption;
 
 /**
  * App options. Built per-call (not a module-level const) so the `--app`

@@ -3,9 +3,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -48,9 +47,11 @@ async function localListCommand(options: LocalListOptions): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  warnIfDeprecatedRegion(options);
-
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: undefined });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: undefined,
+    profile: options.profile,
+  });
 
   const appCmd = resolveApp(options.app);
   if (!appCmd) {
@@ -194,7 +195,7 @@ export function createLocalListCommand(opts: CreateLocalListCommandOptions = {})
 
   addListSpecificOptions(cmd);
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }
 

@@ -42,7 +42,7 @@ Shared across every `cdkl` subcommand (declared in
 | `-a, --app <cmd-or-dir>` | — | CDK app command (e.g. `"node app.ts"`) or path to a pre-synthesized cloud assembly directory (e.g. `"cdk.out"`). Falls back to `CDKL_APP` env or the `app` field in `cdk.json`. |
 | `--output <path>` | `cdk.out` | Output directory for synthesis. |
 | `-c, --context <key=value...>` | — | Set CDK context values (repeatable). |
-| `--region <region>` | — | **Deprecated.** No effect on local commands; the SDK picks the region from `AWS_REGION` or your AWS profile. Kept for muscle-memory compatibility. |
+| `--region <region>` | — | AWS region for the host-side SDK calls (STS `GetCallerIdentity` for `${AWS::AccountId}` resolution, `AssumeRole` for `--assume-role`, the `--from-cfn-stack` CFn client) and the container's `AWS_REGION` env var. Defaults to `AWS_REGION` / `AWS_DEFAULT_REGION` env, then the synthesized stack region, then the `--profile`'s configured region. |
 
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.

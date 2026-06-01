@@ -6,13 +6,13 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
   type AssumeRoleOption,
-  warnIfDeprecatedRegion,
 } from '../options.js';
+import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
@@ -330,8 +330,11 @@ async function localStartApiCommand(
     );
   }
 
-  warnIfDeprecatedRegion(options);
-  await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+  await applyRoleArnIfSet({
+    roleArn: options.roleArn,
+    region: options.region,
+    profile: options.profile,
+  });
 
   await ensureDockerAvailable();
 
@@ -1936,6 +1939,7 @@ async function buildContainerSpec(args: {
     layerTmpDirs,
     stateByStack,
     skipPull,
+    profile,
     layerRoleArn,
     profileCredentials,
     profileCredsFile,
@@ -2078,7 +2082,7 @@ async function buildContainerSpec(args: {
 
   const roleArn = effectiveAssumeRoleArn(logicalId, assumeRole);
   if (roleArn) {
-    const creds = await assumeLambdaExecutionRole(roleArn, stsRegion);
+    const creds = await assumeLambdaExecutionRole(roleArn, stsRegion, profile);
     dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
     dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
     dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -2855,89 +2859,15 @@ function forwardAwsEnv(env: Record<string, string>): void {
 }
 
 /**
- * Issue #654: resolve `--profile <p>` to a concrete credential set
- * for forwarding to Lambda containers.
- *
- * The dev's AWS credentials may live in any of:
- *   - `~/.aws/sso/cache/*.json` (AWS IAM Identity Center / legacy SSO)
- *   - `~/.aws/credentials` (regular long-lived access keys)
- *   - `~/.aws/config` profiles with `role_arn` + `source_profile` (chained AssumeRole)
- *   - `credential_process` external resolvers
- *
- * `forwardAwsEnv` only reads `process.env.AWS_*`, which is empty for
- * every shape except "user manually exported the env vars". The
- * Lambda container therefore boots without creds and the handler's
- * AWS SDK call fails with `Could not load credentials from any providers`.
- *
- * This helper constructs a transient `STSClient({ profile })` to drive
- * the SDK's default credential provider chain — same code path the
- * host's own AWS SDK clients use when `--profile` is set, so SSO / IAM
- * Identity Center / role-assumption profiles all resolve the same way
- * they already do for the host's outbound calls. We then extract the
- * resolved `AwsCredentialIdentity` via `sts.config.credentials()` and
- * return the underlying `{ accessKeyId, secretAccessKey, sessionToken? }`
- * for env-var injection.
- *
- * Called ONCE at server boot; the resolved creds are reused for every
- * Lambda container's env overlay (when `--assume-role` is not set for
- * that Lambda — assume-role wins per the existing precedence). SSO
- * temp creds typically last 1h+, so a single resolve is fine for the
- * common dev session; long-running `--watch` sessions that outlive
- * the creds need a cdk-local restart (deferred refresh out of scope for
- * v1, see issue #654).
- *
- * Also resolves the profile's configured `region` (from `~/.aws/config`'s
- * `region = ...` for this profile) off the same client config. The
- * synthesized credentials file we mount into the container carries only
- * the credential triple — no `region =` — so without this the container
- * boots with creds but no region, and a handler's ambient-region SDK call
- * (`new XxxClient({})`) fails with "Region is missing". The caller seeds
- * the container's `AWS_REGION` fallback with it (see
- * {@link resolveContainerFallbackRegion}). Region resolution is
- * best-effort: a profile with no region (or any resolution failure)
- * yields `region: undefined` rather than throwing — a missing region is
- * not a missing-credentials error.
+ * Re-export the shared `resolveProfileCredentials` helper that drives
+ * `--profile` resolution for every `cdkl` subcommand (see
+ * `src/utils/profile-resolver.ts` for the helper). Kept as a re-export
+ * here so existing importers (cdkd, in-repo callers) keep working
+ * without a path migration — the helper itself lives in `src/utils/`
+ * so it is reachable from every command without an awkward cross-
+ * command import (issue #245).
  */
-export async function resolveProfileCredentials(profile: string): Promise<{
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-  region?: string;
-}> {
-  const { STSClient } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ profile });
-  try {
-    const credsProvider = sts.config.credentials;
-    const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
-    if (!creds || !creds.accessKeyId || !creds.secretAccessKey) {
-      throw new Error(
-        `--profile '${profile}': credential provider chain resolved without usable credentials. ` +
-          'Check `aws sso login --profile ' +
-          profile +
-          '` for SSO profiles, or `~/.aws/credentials` / `~/.aws/config` for regular profiles.'
-      );
-    }
-    let region: string | undefined;
-    try {
-      const regionProvider = sts.config.region;
-      const resolved =
-        typeof regionProvider === 'function' ? await regionProvider() : regionProvider;
-      if (typeof resolved === 'string' && resolved.length > 0) region = resolved;
-    } catch {
-      // Profile has no region configured (and no AWS_REGION env) — leave
-      // undefined; the container falls through to the next region source.
-      region = undefined;
-    }
-    return {
-      accessKeyId: creds.accessKeyId,
-      secretAccessKey: creds.secretAccessKey,
-      ...(creds.sessionToken && { sessionToken: creds.sessionToken }),
-      ...(region && { region }),
-    };
-  } finally {
-    sts.destroy();
-  }
-}
+export { resolveProfileCredentials };
 
 /**
  * Resolve the fallback `AWS_REGION` for a Lambda container when neither
@@ -2978,10 +2908,13 @@ export function resolveContainerFallbackRegion(args: {
  */
 async function assumeLambdaExecutionRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so AssumeRole is signed with the profile's
+  // credentials, not the default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -3521,7 +3454,9 @@ async function resolvePseudoParametersForStartApi(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...(region && { region }) });
+    // Thread `--profile` so the resolved account is the profile's account,
+    // not whatever the default credential chain points at (issue #245).
+    const sts = new STSClient(buildStsClientConfig({ region, profile: options.profile }));
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
@@ -3625,7 +3560,7 @@ export function createLocalStartApiCommand(opts: CreateLocalStartApiCommandOptio
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) =>
     startApi.addOption(opt)
   );
-  startApi.addOption(deprecatedRegionOption);
+  startApi.addOption(regionOption);
 
   return startApi;
 }

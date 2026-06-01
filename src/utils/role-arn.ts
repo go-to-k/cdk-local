@@ -1,6 +1,7 @@
 import { STSClient, AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
+import { buildStsClientConfig } from './profile-resolver.js';
 
 /**
  * Resolve the role-arn argument (CLI flag or `CDKL_ROLE_ARN` env var) and,
@@ -16,11 +17,21 @@ import { getEmbedConfig } from '../local/embed-config.js';
  * entry makes every later `new XxxClient()` pick up the assumed-role
  * credentials automatically without touching the client construction sites.
  *
+ * `profile` is threaded into the STSClient construction (via
+ * {@link buildStsClientConfig}) so `--profile <p> --role-arn <arn>` runs
+ * AssumeRole through the named profile's credential chain rather than
+ * the default chain — this was the second-relapse vector closed by
+ * issue #245 (every STSClient site under `src/cli/**` + `src/local/**`
+ * is audited, but `src/utils/role-arn.ts` was outside the audit scope's
+ * first cut; this caller-side threading + the widened audit scope in
+ * `tests/unit/cli/sts-client-profile-audit.test.ts` keep them in sync).
+ *
  * Default session duration is 1 hour.
  */
 export async function applyRoleArnIfSet(opts: {
   roleArn: string | undefined;
   region: string | undefined;
+  profile: string | undefined;
 }): Promise<void> {
   const roleArn = opts.roleArn || process.env[`${getEmbedConfig().envPrefix}_ROLE_ARN`];
   if (!roleArn) return;
@@ -28,7 +39,7 @@ export async function applyRoleArnIfSet(opts: {
   const logger = getLogger().child('role-arn');
   logger.debug(`Assuming role ${roleArn}...`);
 
-  const sts = new STSClient({ ...(opts.region && { region: opts.region }) });
+  const sts = new STSClient(buildStsClientConfig({ region: opts.region, profile: opts.profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({

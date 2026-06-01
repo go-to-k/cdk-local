@@ -296,7 +296,7 @@ A host CLI that ports an individual `cdkl` command verbatim (rather than
 re-exporting the factory) can compose the per-command option block on
 its own Commander instance. Each helper registers only that command's
 NON-common flags; the host still owns the shared `commonOptions` /
-`appOptions` / `contextOptions` / `deprecatedRegionOption` block (or
+`appOptions` / `contextOptions` / `regionOption` block (or
 calls them via its own re-export). Adding or renaming a per-command flag
 in upstream cdk-local propagates to every embedder calling the helper —
 no duplicate `.addOption(...)` block on the host side.

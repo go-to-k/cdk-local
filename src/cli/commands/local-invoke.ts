@@ -7,10 +7,11 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
+import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
+import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
@@ -162,8 +163,6 @@ async function localInvokeCommand(
     logger.setLevel('debug');
   }
 
-  warnIfDeprecatedRegion(options);
-
   let imagePlan: ImagePlan | undefined;
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
@@ -250,7 +249,11 @@ async function localInvokeCommand(
   );
 
   try {
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnIfSet({
+      roleArn: options.roleArn,
+      region: options.region,
+      profile: options.profile,
+    });
 
     await ensureDockerAvailable();
 
@@ -469,7 +472,11 @@ async function localInvokeCommand(
       const stsRegion =
         options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
       try {
-        const creds = await assumeLambdaExecutionRole(resolvedAssumeRoleArn, stsRegion);
+        const creds = await assumeLambdaExecutionRole(
+          resolvedAssumeRoleArn,
+          stsRegion,
+          options.profile
+        );
         dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
         dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
         dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
@@ -495,6 +502,21 @@ async function localInvokeCommand(
         dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
         dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
       }
+    }
+    // Seed the container's `AWS_REGION` fallback so handler ambient-region
+    // SDK calls (`new XxxClient({})`) reach the same region the deployed
+    // function would. Precedence mirrors `start-api` via
+    // `resolveContainerFallbackRegion`:
+    //   1. `--region` / `AWS_REGION` / `AWS_DEFAULT_REGION` (forwarded above)
+    //   2. the synth-derived stack region (`env.region` on the CDK stack)
+    //   3. the `--profile`'s configured region (new in #245)
+    if (!dockerEnv['AWS_REGION'] && !dockerEnv['AWS_DEFAULT_REGION']) {
+      const fallbackRegion = resolveContainerFallbackRegion({
+        stackRegionOverride: options.region,
+        synthRegion: lambda.stack.region,
+        profileRegion: profileCredentials?.region,
+      });
+      if (fallbackRegion) dockerEnv['AWS_REGION'] = fallbackRegion;
     }
 
     let debugPort: number | undefined;
@@ -817,7 +839,9 @@ async function resolvePseudoParametersForInvoke(
   let accountId: string | undefined;
   try {
     const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const sts = new STSClient({ ...(region && { region }) });
+    // Thread `--profile` so the resolved account is the profile's account,
+    // not whatever the default credential chain points at (issue #245).
+    const sts = new STSClient(buildStsClientConfig({ region, profile: options.profile }));
     try {
       const identity = await sts.send(new GetCallerIdentityCommand({}));
       accountId = identity.Account;
@@ -923,10 +947,14 @@ async function readStdin(): Promise<string> {
 
 async function assumeLambdaExecutionRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so the AssumeRole call is signed with the profile's
+  // credentials (matching `aws sts assume-role --profile <p>`), not the
+  // default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -960,36 +988,6 @@ function forwardAwsEnv(env: Record<string, string>): void {
   for (const key of passThrough) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
-  }
-}
-
-/**
- * Resolve `--profile <p>` to a concrete credential set. Mirrors the
- * helper in `local-start-api.ts`.
- */
-async function resolveProfileCredentials(
-  profile: string
-): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken?: string }> {
-  const { STSClient } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ profile });
-  try {
-    const credsProvider = sts.config.credentials;
-    const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
-    if (!creds || !creds.accessKeyId || !creds.secretAccessKey) {
-      throw new Error(
-        `--profile '${profile}': credential provider chain resolved without usable credentials. ` +
-          'Check `aws sso login --profile ' +
-          profile +
-          '` for SSO profiles, or `~/.aws/credentials` / `~/.aws/config` for regular profiles.'
-      );
-    }
-    return {
-      accessKeyId: creds.accessKeyId,
-      secretAccessKey: creds.secretAccessKey,
-      ...(creds.sessionToken && { sessionToken: creds.sessionToken }),
-    };
-  } finally {
-    sts.destroy();
   }
 }
 
@@ -1158,7 +1156,7 @@ export function createLocalInvokeCommand(opts: CreateLocalInvokeCommandOptions =
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((option) =>
     invoke.addOption(option)
   );
-  invoke.addOption(deprecatedRegionOption);
+  invoke.addOption(regionOption);
 
   return invoke;
 }

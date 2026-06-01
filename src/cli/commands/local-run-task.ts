@@ -4,9 +4,8 @@ import {
   appOptions,
   commonOptions,
   contextOptions,
-  deprecatedRegionOption,
+  regionOption,
   parseContextOptions,
-  warnIfDeprecatedRegion,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
@@ -17,6 +16,7 @@ import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
 import { resolveProfileCredentials } from './local-start-api.js';
+import { buildStsClientConfig } from '../../utils/profile-resolver.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -127,8 +127,6 @@ async function localRunTaskCommand(
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
 
-  warnIfDeprecatedRegion(options);
-
   const state: EcsRunState = createEcsRunState();
   let sigintHandler: (() => void) | undefined;
   let sigintCount = 0;
@@ -174,7 +172,11 @@ async function localRunTaskCommand(
   };
 
   try {
-    await applyRoleArnIfSet({ roleArn: options.roleArn, region: options.region });
+    await applyRoleArnIfSet({
+      roleArn: options.roleArn,
+      region: options.region,
+      profile: options.profile,
+    });
     await ensureDockerAvailable();
 
     const appCmd = resolveApp(options.app);
@@ -302,11 +304,15 @@ async function localRunTaskCommand(
             `Pass the ARN explicitly: --assume-task-role <arn>`
         );
       }
-      resolvedRoleArn = await resolvePlaceholderAccount(task.taskRoleArn, options.region);
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+      resolvedRoleArn = await resolvePlaceholderAccount(
+        task.taskRoleArn,
+        options.region,
+        options.profile
+      );
+      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
     } else if (typeof options.assumeTaskRole === 'string') {
       resolvedRoleArn = options.assumeTaskRole;
-      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region);
+      assumedCredentials = await assumeTaskRole(resolvedRoleArn, options.region, options.profile);
     }
 
     // When `--assume-task-role` is NOT effective but `--profile <p>` IS
@@ -401,10 +407,17 @@ async function localRunTaskCommand(
  * resolver for inline same-stack IAM Roles, substitute the live caller
  * account via STS `GetCallerIdentity`. Otherwise pass through unchanged.
  */
-async function resolvePlaceholderAccount(arn: string, region: string | undefined): Promise<string> {
+async function resolvePlaceholderAccount(
+  arn: string,
+  region: string | undefined,
+  profile: string | undefined
+): Promise<string> {
   if (!arn.includes(TASK_ROLE_ACCOUNT_PLACEHOLDER)) return arn;
   const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so the resolved account is the profile's account
+  // (matching the inline same-stack IAM role resolution under
+  // `--from-cfn-stack --profile <p>`) (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
@@ -425,10 +438,13 @@ async function resolvePlaceholderAccount(arn: string, region: string | undefined
  */
 async function assumeTaskRole(
   roleArn: string,
-  region: string | undefined
+  region: string | undefined,
+  profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  const sts = new STSClient({ ...(region && { region }) });
+  // Thread `--profile` so AssumeRole is signed with the profile's
+  // credentials, not the default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const response = await sts.send(
       new AssumeRoleCommand({
@@ -576,7 +592,7 @@ async function resolveCallerAccountId(
   // the default credential chain points at. Without this, the
   // `${AWS::AccountId}` substitution that builds same-stack ECR image
   // URIs picks the wrong account and the subsequent `docker pull` 404s.
-  const sts = new STSClient({ ...(region && { region }), ...(profile && { profile }) });
+  const sts = new STSClient(buildStsClientConfig({ region, profile }));
   try {
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     return identity.Account;
@@ -668,7 +684,7 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
 
   addRunTaskSpecificOptions(cmd);
   [...commonOptions(), ...appOptions(), ...contextOptions].forEach((opt) => cmd.addOption(opt));
-  cmd.addOption(deprecatedRegionOption);
+  cmd.addOption(regionOption);
   return cmd;
 }
 

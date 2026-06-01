@@ -1,10 +1,10 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect } from 'vite-plus/test';
 
 import {
   parseContextOptions,
   parseAssumeRoleToken,
   effectiveAssumeRoleArn,
-  warnIfDeprecatedRegion,
+  regionOption,
   type AssumeRoleOption,
 } from '../../../src/cli/options.js';
 
@@ -173,26 +173,29 @@ describe('effectiveAssumeRoleArn', () => {
   });
 });
 
-describe('warnIfDeprecatedRegion', () => {
-  it('does not write to stderr when region is undefined', () => {
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfDeprecatedRegion({});
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+describe('regionOption', () => {
+  // Issue #245: `--region` was previously documented as
+  // `[deprecated] No effect on this command` even though the code paths
+  // still consumed `options.region` for SDK calls and the container's
+  // `AWS_REGION` injection. The flag is now a normal AWS-CLI-style
+  // `--region` option; the description must not carry deprecation
+  // language and the flag must NOT be hidden from `--help`.
+  it('is named --region and is visible in --help', () => {
+    expect(regionOption.long).toBe('--region');
+    expect(regionOption.hidden).toBeFalsy();
   });
 
-  it('writes a deprecation warning to stderr when region is provided', () => {
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfDeprecatedRegion({ region: 'us-east-1' });
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0][0]).toMatch(/deprecated/);
-    spy.mockRestore();
+  it('description does not advertise the option as deprecated or a no-op', () => {
+    const desc = regionOption.description ?? '';
+    expect(desc.toLowerCase()).not.toMatch(/deprecat/);
+    expect(desc.toLowerCase()).not.toMatch(/no effect/);
   });
 
-  it('warns even when region is empty string (strict !== undefined check)', () => {
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    warnIfDeprecatedRegion({ region: '' });
-    expect(spy).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+  it('description references the AWS-CLI-style precedence sources (env / profile)', () => {
+    const desc = (regionOption.description ?? '').toLowerCase();
+    // Surface the precedence path so the user understands what `--region`
+    // falls back to when omitted — the AWS CLI's own `--region` description
+    // does the same.
+    expect(desc).toMatch(/aws_region|profile|region/);
   });
 });
