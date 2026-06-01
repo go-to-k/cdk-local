@@ -1,3 +1,10 @@
+## [0.73.4](https://github.com/go-to-k/cdk-local/compare/v0.73.3...v0.73.4) (2026-06-01)
+
+
+### Bug Fixes
+
+* **image-override:** tilde-expand paths + better boot-prompt UX (explain + Dockerfile picker) ([#261](https://github.com/go-to-k/cdk-local/issues/261)) ([5c3592c](https://github.com/go-to-k/cdk-local/commit/5c3592c223e9000bff3756fc291e639090952170))
+
 ## [0.73.3](https://github.com/go-to-k/cdk-local/compare/v0.73.2...v0.73.3) (2026-06-01)
 
 
