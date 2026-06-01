@@ -1,3 +1,10 @@
+## [0.77.1](https://github.com/go-to-k/cdk-local/compare/v0.77.0...v0.77.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **invoke-agentcore:** `--ws` interactive REPL UX — trailing newline + `>` prompt + skip empty Enter ([#276](https://github.com/go-to-k/cdk-local/issues/276)) ([#278](https://github.com/go-to-k/cdk-local/issues/278)) ([1d63f77](https://github.com/go-to-k/cdk-local/commit/1d63f772d77956858054169ace167e84a00a8cdd))
+
 # [0.77.0](https://github.com/go-to-k/cdk-local/compare/v0.76.0...v0.77.0) (2026-06-01)
 
 # [0.76.0](https://github.com/go-to-k/cdk-local/compare/v0.75.0...v0.76.0) (2026-06-01)
