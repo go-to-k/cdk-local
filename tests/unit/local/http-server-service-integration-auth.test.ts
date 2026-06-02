@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { http } from '../../helpers/agentless-http.js';
 
 // vi.hoisted so the spies are available inside the vi.mock factory below
 // (vi.mock is hoisted to file-top — top-level consts captured by the
@@ -174,7 +175,7 @@ describe('PR #515 item 8: service-integration route + authorizer-deny → SDK ne
 
     try {
       const url = `http://${server.host}:${server.port}/protected-sqs`;
-      const resp = await fetch(url, {
+      const resp = await http(url, {
         method: 'POST',
         body: 'message-body',
         headers: { authorization: 'Bearer wrong-token', 'content-type': 'text/plain' },
@@ -212,7 +213,7 @@ describe('PR #515 item 8: service-integration route + authorizer-deny → SDK ne
 
     try {
       const url = `http://${server.host}:${server.port}/protected-sqs`;
-      const resp = await fetch(url, {
+      const resp = await http(url, {
         method: 'POST',
         body: 'message-body',
         // No `authorization` header — Lambda REQUEST identity source missing.
@@ -253,7 +254,7 @@ describe('PR #515 item 8: service-integration route + authorizer-deny → SDK ne
 
     try {
       const url = `http://${server.host}:${server.port}/protected-sqs`;
-      const resp = await fetch(url, {
+      const resp = await http(url, {
         method: 'POST',
         body: 'message-body',
         headers: { authorization: 'Bearer xyz', 'content-type': 'text/plain' },
@@ -299,7 +300,7 @@ describe('PR #515 item 8: service-integration route + authorizer-deny → SDK ne
       // does not match anything `verifyJwtAuthorizer` would accept; the
       // mock returns deny regardless.
       const forgedJwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.bogus';
-      const resp = await fetch(url, {
+      const resp = await http(url, {
         method: 'POST',
         body: 'message-body',
         headers: { authorization: `Bearer ${forgedJwt}`, 'content-type': 'text/plain' },

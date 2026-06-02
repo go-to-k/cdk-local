@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { http } from '../../helpers/agentless-http.js';
 import { startApiServer, type ServerState } from '../../../src/local/http-server.js';
 import type {
   ContainerPool,
@@ -93,7 +94,7 @@ async function preflight(
   extraHeaders: Record<string, string> = {}
 ): Promise<{ status: number; headers: Headers; body: string }> {
   const url = `http://${host}:${port}${path}`;
-  const res = await fetch(url, {
+  const res = await http(url, {
     method: 'OPTIONS',
     headers: {
       origin: 'https://example.com',
@@ -225,7 +226,7 @@ describe('http-server CORS preflight integration', () => {
     // route dispatch — but the routes don't include OPTIONS for /items,
     // so it 404s.
     const url = `http://${server.host}:${server.port}/items`;
-    const res = await fetch(url, {
+    const res = await http(url, {
       method: 'OPTIONS',
       headers: { origin: 'https://example.com' },
     });
