@@ -8,9 +8,31 @@ import {
 import type { TargetListing } from '../../../src/local/target-lister.js';
 
 const running: RunningStudioServer[] = [];
+// Every streaming SSE fetch is opened through an AbortController so the
+// connection can be DESTROYED (not returned to undici's keep-alive pool)
+// when the test is done. A pooled idle SSE socket that the server then
+// tears down via `closeAllConnections()` surfaces as an unhandled
+// rejection on undici's side, which crashes the vitest worker fork (Node
+// exits the process on an unhandled rejection) — observed only under the
+// `forks` pool on a loaded CI box, never locally. Aborting the client
+// connection first sidesteps the pool entirely.
+const sseControllers: AbortController[] = [];
+
+/** Open an SSE connection whose socket is destroyed (not pooled) on abort. */
+function openSse(url: string): { res: Promise<Response>; abort: () => void } {
+  const ac = new AbortController();
+  sseControllers.push(ac);
+  return { res: fetch(url, { signal: ac.signal }), abort: () => ac.abort() };
+}
 
 afterEach(async () => {
+  // Destroy any still-open client SSE connections BEFORE tearing the
+  // servers down, so undici drops them from its pool rather than seeing
+  // a server-side socket destroy.
+  for (const ac of sseControllers.splice(0)) ac.abort();
   await Promise.all(running.splice(0).map((s) => s.close()));
+  // Let undici fully unwind the aborted sockets before the worker exits.
+  await new Promise((r) => setTimeout(r, 20));
 });
 
 async function boot(
@@ -101,13 +123,15 @@ describe('startStudioServer', () => {
     const server = await boot();
     const res = await fetch(`${server.url}/nope`);
     expect(res.status).toBe(404);
+    await res.text(); // drain the body so the connection does not linger
   });
 
   it('streams an emitted invocation over the SSE channel', async () => {
     const bus = new StudioEventBus();
     const server = await boot({ bus });
 
-    const res = await fetch(`${server.url}/api/events`);
+    const { res: resP, abort } = openSse(`${server.url}/api/events`);
+    const res = await resP;
     expect(res.headers.get('content-type')).toContain('text/event-stream');
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
@@ -129,7 +153,8 @@ describe('startStudioServer', () => {
       if (done) break;
       buf += decoder.decode(value, { stream: true });
     }
-    await reader.cancel();
+    // Destroy the connection (not pool it) now that we're done reading.
+    abort();
 
     expect(buf).toContain('event: invocation');
     expect(buf).toContain('"id":"sse1"');
@@ -165,14 +190,15 @@ describe('startStudioServer', () => {
     const bus = new StudioEventBus();
     const server = await boot({ bus });
 
-    const res = await fetch(`${server.url}/api/events`);
+    const { res: resP, abort } = openSse(`${server.url}/api/events`);
+    const res = await resP;
     const reader = res.body!.getReader();
     await reader.read(); // open the stream so the server subscribes
     // Subscribed: one invocation + one log listener.
     expect(bus.listenerCount('invocation')).toBe(1);
     expect(bus.listenerCount('log')).toBe(1);
 
-    await reader.cancel(); // client disconnect
+    abort(); // client disconnect (destroys the connection)
 
     // The server's req/res `close` handler must unsubscribe. Poll briefly
     // since the disconnect propagates asynchronously.
@@ -185,12 +211,13 @@ describe('startStudioServer', () => {
 
   it('close() resolves even with a live SSE client connected', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/events`);
+    const { res: resP, abort } = openSse(`${server.url}/api/events`);
+    const res = await resP;
     const reader = res.body!.getReader();
     await reader.read(); // open the stream
     // close() must not hang on the open keep-alive socket.
     await expect(server.close()).resolves.toBeUndefined();
     running.splice(running.indexOf(server), 1);
-    await reader.cancel().catch(() => undefined);
+    abort();
   });
 });
