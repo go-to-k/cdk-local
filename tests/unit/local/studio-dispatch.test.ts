@@ -54,11 +54,20 @@ describe('createStudioDispatcher', () => {
 
     // The CLI binary is invoked with the right argv shape.
     expect(spawnFn).toHaveBeenCalledTimes(1);
-    const [bin, argv] = spawnFn.mock.calls[0] as unknown as [string, string[]];
+    const [bin, argv, opts] = spawnFn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { cwd: string; env: NodeJS.ProcessEnv },
+    ];
     expect(bin).toBe('/usr/bin/node');
     expect(argv[0]).toBe('/path/to/cli.js');
     expect(argv.slice(1, 3)).toEqual(['invoke', 'Stack/Fn']);
     expect(argv).toContain('--event');
+    // The child runs with CDKL_LOG_LEVEL=warn so cdk-local's own synth /
+    // orchestration progress is silenced — the studio LOGS panel must show
+    // only the Lambda container's runtime logs, never "Successfully
+    // synthesized to ..." noise.
+    expect(opts.env['CDKL_LOG_LEVEL']).toBe('warn');
 
     expect(result.ok).toBe(true);
     expect(result.status).toBe(200);

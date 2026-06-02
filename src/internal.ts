@@ -682,10 +682,10 @@ export { addStudioSpecificOptions } from './cli/commands/local-studio.js';
  * an interactive front over the same target enumeration + runners the
  * headless commands use; a host CLI embedding studio re-exports these to
  * boot the server and subscribe to the observation bus. The
- * `createLocalStudioCommand` factory is intentionally NOT yet on the
- * stable `cdk-local` entry while studio is built behind the
- * `CDKL_STUDIO_PREVIEW` gate — it graduates to `src/index.ts` in the
- * unveil slice.
+ * `createLocalStudioCommand` factory itself is on the stable `cdk-local`
+ * entry (`src/index.ts`); these low-level building blocks stay on the
+ * unstable `cdk-local/internal` subpath for hosts that embed the server
+ * directly rather than the whole subcommand.
  */
 export {
   StudioEventBus,

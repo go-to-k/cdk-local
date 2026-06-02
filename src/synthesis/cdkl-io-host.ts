@@ -1,4 +1,5 @@
 import { NonInteractiveIoHost, type IoMessage } from '@aws-cdk/toolkit-lib';
+import { resolveConfiguredLogLevel } from '../utils/logger.js';
 
 /**
  * Custom IoHost that prevents cdk-local from coloring CDK app subprocess
@@ -29,16 +30,37 @@ import { NonInteractiveIoHost, type IoMessage } from '@aws-cdk/toolkit-lib';
  * command additionally writes its own `Synthesizing...` status to
  * stderr so its stdout is exactly the list. These are status lines no
  * caller parses from cdk-local's stdout.
+ *
+ * When `CDKL_LOG_LEVEL` resolves to `warn` / `error` (set by `cdkl studio`
+ * on its single-shot `cdkl invoke` child), the synth-progress notifications
+ * above — and any other non-`warn`/`error` toolkit message — are dropped
+ * entirely, so cdk-local's own synth chatter never reaches the child's
+ * stderr. This keeps the studio LOGS panel free of "Successfully
+ * synthesized to ..." / asset-bundling noise; real synth failures still
+ * surface (toolkit raises `AssemblyError` on non-zero subprocess exit, and
+ * `warn` / `error` messages still pass through).
  */
 export class CdklIoHost extends NonInteractiveIoHost {
+  private readonly suppressNonWarnings = (() => {
+    const level = resolveConfiguredLogLevel();
+    return level === 'warn' || level === 'error';
+  })();
+
   async notify(msg: IoMessage<unknown>): Promise<void> {
-    if (
+    const reclassified =
       msg.code === 'CDK_ASSEMBLY_E1002' ||
       msg.code === 'CDK_TOOLKIT_I1901' ||
       msg.code === 'CDK_TOOLKIT_I1902'
+        ? { ...msg, level: 'info' as const }
+        : msg;
+
+    if (
+      this.suppressNonWarnings &&
+      reclassified.level !== 'warn' &&
+      reclassified.level !== 'error'
     ) {
-      return super.notify({ ...msg, level: 'info' });
+      return;
     }
-    return super.notify(msg);
+    return super.notify(reclassified);
   }
 }

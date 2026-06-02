@@ -7,7 +7,7 @@ lifecycle, mTLS, authorizers, networking), see
 [local-emulation.md](./local-emulation.md). When something breaks, see
 [troubleshooting.md](./troubleshooting.md).
 
-cdk-local has six subcommands, all under the `cdkl` binary:
+cdk-local has eight subcommands, all under the `cdkl` binary:
 
 | Subcommand | Emulates | Backed by |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ cdk-local has six subcommands, all under the `cdkl` binary:
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
 | `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
+| `cdkl studio` | Interactive web console over every runnable target — invoke / serve from the browser, watch a live activity timeline | `node:http` server hosting the embedded UI; spawns the same `invoke` / `start-api` / `start-alb` / `start-service` runners as child processes |
 
 The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
 `start-service` / `start-alb`) require Docker on the developer's machine. The
@@ -1436,4 +1437,62 @@ remote, or use a permissive loopback CIDR for local smoke tests.
 - `0` — front-door + services started cleanly and shut down on SIGTERM.
 - `1` — startup failure (Docker missing, target not an application ALB, no
   frontable ECS service behind it, port bind failure) OR uncaught exception.
+- `130` — exited via SIGINT (`^C`).
+
+## `cdkl studio` (interactive web console)
+
+`cdkl studio` is the interactive counterpart to the headless `invoke` /
+`start-*` commands. It synthesizes the CDK app once, then serves a local
+web console that lists every runnable target and lets you drive them from
+the browser instead of the terminal. It is a control plane over the same
+CLI runners: every action spawns the SAME `cdkl invoke` / `cdkl start-api`
+/ `cdkl start-alb` / `cdkl start-service` the headless commands run as a
+child process — there is no second execution path to keep in sync.
+
+It takes no target argument (it lists them all). Run it from the CDK
+project root:
+
+```bash
+cdkl studio                       # boot on the default port, open the browser
+cdkl studio --studio-port 4000    # pin the port
+cdkl studio --no-open             # do not auto-open the browser (CI / headless)
+```
+
+The console is a three-pane layout:
+
+- **Targets** — every synthesized target, grouped by command. Lambdas get
+  an `[Invoke]` composer; `api` / `alb` / `ecs` serve targets get a
+  `[Start]` / `[Stop]` control with a `running ● :port` indicator (an ECS
+  service shows `running` with no port — it is pure compute with no host
+  endpoint; only servable ECS *services* are runnable, not task
+  definitions).
+- **Workspace** — the composer for the selected target (event JSON for a
+  Lambda invoke; start / stop for a serve).
+- **Timeline** — a live activity feed over SSE carrying both Lambda
+  invocations and captured serve requests. A started `start-api` / `start-alb`
+  serve is fronted by a capture proxy, so every request to the served port
+  (browser, `curl`, or app traffic alike) lands on the timeline as a
+  read-only Request / Response detail with its bound logs. A log search box
+  queries the session's retained log lines.
+
+### Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--studio-port <port>` | `9999` | Preferred port for the studio web server; bumps to the next free port on collision. |
+| `--no-open` | (auto-opens) | Do not auto-open the browser when studio starts (TTY only). |
+
+`cdkl studio` also accepts the shared app / context / region / profile
+flags (`--app`, `-c key=value`, `--region`, `--profile`, etc.) — they are
+threaded into the synth and into every child runner it spawns.
+
+Booting studio itself needs no Docker (it only synthesizes the app and
+serves the UI); Docker is required the moment you invoke or serve a target
+through it, because that spawns the real RIE / ECS containers.
+
+### `cdkl studio` exit codes
+
+- `0` — studio server started cleanly and shut down on SIGTERM.
+- `1` — startup failure (synthesis error, port bind failure) OR uncaught
+  exception.
 - `130` — exited via SIGINT (`^C`).

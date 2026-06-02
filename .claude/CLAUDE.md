@@ -219,10 +219,11 @@ compute-locally category for Lambda + API Gateway).
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
   `createLocalStudioCommand` (`cdkl studio`, issue #282) is the
-  interactive web console over the same target enumeration; it is built
-  incrementally and registered ONLY when `CDKL_STUDIO_PREVIEW=1` (the
-  binary keeps it hidden until the unveil slice), so it is NOT yet on the
-  README's user-facing command surface.
+  interactive web console over the same target enumeration — a control
+  plane that spawns the SAME `invoke` / `start-api` / `start-alb` /
+  `start-service` runners as child processes. It is on the user-facing
+  command surface (the unveil slice removed the `CDKL_STUDIO_PREVIEW`
+  gate) and exported from `src/index.ts` for host CLIs.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -312,7 +313,14 @@ compute-locally category for Lambda + API Gateway).
   spawning the SAME `cdkl invoke` the headless command runs as a child
   process — studio is a control plane over the CLI — streaming its
   stdout/stderr to the event bus and returning the parsed Lambda
-  response), studio-serve-manager (issue #282 — the
+  response. The child is spawned with `CDKL_LOG_LEVEL=warn` so
+  cdk-local's OWN synth / orchestration progress (toolkit "Successfully
+  synthesized to ...", asset-bundling, info-level status — honored by
+  `resolveConfiguredLogLevel` in `utils/logger.ts` + `CdklIoHost`) is
+  silenced in the child; the studio LOGS panel then shows only the
+  Lambda container's runtime logs, which stream straight from
+  `docker logs` and are unaffected by the level, plus the response),
+  studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host
   HTTP endpoints each fronted by a studio-proxy so the `endpoints` handed

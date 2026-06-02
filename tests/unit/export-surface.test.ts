@@ -14,6 +14,7 @@ describe('package export surface', () => {
       'createLocalStartServiceCommand',
       'createLocalStartAlbCommand',
       'createLocalListCommand',
+      'createLocalStudioCommand',
       'setEmbedConfig',
       'getEmbedConfig',
       'resetEmbedConfig',
