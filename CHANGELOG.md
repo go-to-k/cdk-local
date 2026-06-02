@@ -1,3 +1,10 @@
+# [0.85.0](https://github.com/go-to-k/cdk-local/compare/v0.84.0...v0.85.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** session-global --from-cfn-stack / --assume-role threaded to children ([#301](https://github.com/go-to-k/cdk-local/issues/301)) ([#302](https://github.com/go-to-k/cdk-local/issues/302)) ([ab0cf6c](https://github.com/go-to-k/cdk-local/commit/ab0cf6c86fe4ccc12745c0fcc301b414f9558bb6))
+
 # [0.84.0](https://github.com/go-to-k/cdk-local/compare/v0.83.0...v0.84.0) (2026-06-02)
 
 
