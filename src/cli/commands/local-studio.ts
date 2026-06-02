@@ -105,6 +105,14 @@ interface LocalStudioOptions {
   studioPort: string;
   /** `--no-open`: suppress auto-opening the browser (Commander sets `open`). */
   open: boolean;
+  /**
+   * `--from-cfn-stack [name]`: bind the whole studio session to a deployed
+   * stack. Commander maps the bare flag to `true` and a named value to the
+   * string; forwarded verbatim to every child command.
+   */
+  fromCfnStack?: string | boolean;
+  /** `--assume-role <arn>`: explicit role ARN forwarded to every child command. */
+  assumeRole?: string;
 }
 
 /**
@@ -173,6 +181,8 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     ...(options.profile ? { profile: options.profile } : {}),
     ...(options.region ? { region: options.region } : {}),
     ...(Object.keys(context).length > 0 ? { context } : {}),
+    ...(options.fromCfnStack !== undefined ? { fromCfnStack: options.fromCfnStack } : {}),
+    ...(options.assumeRole ? { assumeRole: options.assumeRole } : {}),
   };
   const dispatcher = createStudioDispatcher(childConfig);
   const serveManager = createStudioServeManager(childConfig);
@@ -311,6 +321,21 @@ export function addStudioSpecificOptions(cmd: Command): Command {
   );
   cmd.addOption(
     new Option('--no-open', 'Do not auto-open the browser when studio starts (TTY only)')
+  );
+  cmd.addOption(
+    new Option(
+      '--from-cfn-stack [cfn-stack-name]',
+      'Bind the whole studio session to a deployed CloudFormation stack: every invoke / serve ' +
+        'started from the UI runs against the deployed stack real ARNs / Secret values. Bare flag ' +
+        'auto-resolves a single-stack app; pass a name to pick the stack. Forwarded to each child command.'
+    )
+  );
+  cmd.addOption(
+    new Option(
+      '--assume-role <arn>',
+      'IAM role ARN to assume for every invoke / serve started from the UI (temp credentials ' +
+        'forwarded into the containers). Forwarded to each child command.'
+    )
   );
   return cmd;
 }

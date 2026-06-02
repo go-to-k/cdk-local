@@ -198,6 +198,60 @@ describe('createStudioDispatcher', () => {
     expect(argv).toContain('env=prod');
   });
 
+  it('threads --from-cfn-stack <name> + --assume-role <arn> into the child argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      fromCfnStack: 'MyStack',
+      assumeRole: 'arn:aws:iam::123456789012:role/app',
+      idFactory: () => 'inv-cfn',
+    });
+
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{}');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--from-cfn-stack');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('MyStack');
+    const j = argv.indexOf('--assume-role');
+    expect(j).toBeGreaterThan(-1);
+    expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/app');
+  });
+
+  it('threads a bare --from-cfn-stack (true) with no value into the child argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      fromCfnStack: true,
+      idFactory: () => 'inv-cfn-bare',
+    });
+
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{}');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--from-cfn-stack');
+    expect(i).toBeGreaterThan(-1);
+    // Bare flag: the next token must NOT be a stray value (it's the end or another flag).
+    expect(argv[i + 1] === undefined || argv[i + 1]?.startsWith('--')).toBe(true);
+    expect(argv).not.toContain('--assume-role');
+  });
+
   it('extracts the LAST JSON line as the response even when a log line trails it', async () => {
     const bus = new StudioEventBus();
     const { invocations, logs } = collect(bus);

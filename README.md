@@ -70,11 +70,20 @@ cdkl studio                                    # interactive web console over ev
 
 ![cdkl invoke against a local sample CDK app — standalone, no deploy](assets/cdkl-invoke.gif)
 
+`invoke` runs one Lambda in a real RIE container; the options you reach for most:
+
+```bash
+cdkl invoke MyStack/Fn --event ./event.json             # run with a JSON event payload
+cdkl invoke MyStack/Fn --env-vars ./env.json            # overlay env vars (SAM-shape file)
+cdkl invoke MyStack/Fn --from-cfn-stack                 # bind env to the deployed stack's real values
+cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its deployed execution role
+```
+
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
 - **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
-- **`studio`** opens a local web console over the same synthesized targets: pick a Lambda and invoke it, start / stop a `start-api` / `start-alb` / `start-service` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs — a point-and-click front over the same CLI runners. It takes no target (it lists them all); `--no-open` skips the browser launch and `--studio-port` pins the port.
+- **`studio`** opens a local web console over the same synthesized targets: pick a Lambda and invoke it, start / stop a `start-api` / `start-alb` / `start-service` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs — a point-and-click front over the same CLI runners. It takes no target (it lists them all); `--no-open` skips the browser launch and `--studio-port` pins the port. Add `--from-cfn-stack` (and `--assume-role`) to bind the whole session to a deployed stack — every invoke / serve from the UI then runs against its real ARNs / Secrets.
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).

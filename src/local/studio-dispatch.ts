@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
+import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 
 /** A request to run a target, as the studio UI posts it to `/api/run`. */
 export interface StudioRunRequest {
@@ -37,21 +38,13 @@ export interface StudioRunResult {
 }
 
 /** Config for {@link createStudioDispatcher}. */
-export interface StudioDispatchConfig {
+export interface StudioDispatchConfig extends SharedChildConfig {
   /** Path to the `cdkl` CLI entry (`dist/cli.js`) — usually `process.argv[1]`. */
   cliEntry: string;
   /** The shared event bus; invocation + log events are emitted onto it. */
   bus: StudioEventBus;
   /** Working directory for the child invoke (defaults to `process.cwd()`). */
   cwd?: string;
-  /** `--app` value to thread into the child invoke, if studio was given one. */
-  app?: string;
-  /** `-c key=value` context overrides to thread through. */
-  context?: Record<string, string>;
-  /** `--profile` to thread through. */
-  profile?: string;
-  /** `--region` to thread through. */
-  region?: string;
   /** Node binary to spawn (defaults to `process.execPath`; injectable for tests). */
   nodeBin?: string;
   /** Spawn implementation (injectable for tests). */
@@ -133,13 +126,7 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       const eventFile = join(dir, 'event.json');
       writeFileSync(eventFile, JSON.stringify(req.event ?? {}));
 
-      const args = ['invoke', req.targetId, '--event', eventFile];
-      if (config.app) args.push('--app', config.app);
-      if (config.profile) args.push('--profile', config.profile);
-      if (config.region) args.push('--region', config.region);
-      for (const [k, v] of Object.entries(config.context ?? {})) {
-        args.push('-c', `${k}=${v}`);
-      }
+      const args = ['invoke', req.targetId, '--event', eventFile, ...buildSharedChildArgs(config)];
 
       const { code, stdout, stderr } = await runChild(
         spawnFn,

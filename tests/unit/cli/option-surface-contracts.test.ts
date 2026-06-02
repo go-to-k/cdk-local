@@ -135,7 +135,7 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
 describe('studio option surface contract (addStudioSpecificOptions)', () => {
   it('addStudioSpecificOptions registers exactly the known studio-only flags', () => {
     const flags = longFlagsOf(addStudioSpecificOptions(new Command()));
-    expect(flags).toEqual(['--no-open', '--studio-port']);
+    expect(flags).toEqual(['--assume-role', '--from-cfn-stack', '--no-open', '--studio-port']);
   });
 
   it('createLocalStudioCommand surface equals common + studio-specific (no inline drift)', () => {

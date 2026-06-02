@@ -5,6 +5,7 @@ import {
   type RunningStudioProxy,
   type StudioProxyConfig,
 } from './studio-proxy.js';
+import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -37,21 +38,13 @@ export interface StudioServeState {
 }
 
 /** Config for {@link createStudioServeManager}. */
-export interface StudioServeManagerConfig {
+export interface StudioServeManagerConfig extends SharedChildConfig {
   /** Path to the `cdkl` CLI entry (`dist/cli.js`) — usually `process.argv[1]`. */
   cliEntry: string;
   /** The shared event bus; serve + log events are emitted onto it. */
   bus: StudioEventBus;
   /** Working directory for the child serve (defaults to `process.cwd()`). */
   cwd?: string;
-  /** `--app` value to thread into the child serve, if studio was given one. */
-  app?: string;
-  /** `-c key=value` context overrides to thread through. */
-  context?: Record<string, string>;
-  /** `--profile` to thread through. */
-  profile?: string;
-  /** `--region` to thread through. */
-  region?: string;
   /** Node binary to spawn (defaults to `process.execPath`; injectable for tests). */
   nodeBin?: string;
   /** Spawn implementation (injectable for tests). */
@@ -237,14 +230,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
   }
 
   function buildArgs(targetId: string, spec: ServeKindSpec): string[] {
-    const args = [spec.command, targetId, ...spec.portArgs];
-    if (config.app) args.push('--app', config.app);
-    if (config.profile) args.push('--profile', config.profile);
-    if (config.region) args.push('--region', config.region);
-    for (const [k, v] of Object.entries(config.context ?? {})) {
-      args.push('-c', `${k}=${v}`);
-    }
-    return args;
+    return [spec.command, targetId, ...spec.portArgs, ...buildSharedChildArgs(config)];
   }
 
   async function start(req: StudioServeRequest): Promise<StudioServeState> {

@@ -536,5 +536,79 @@ fi
 STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
+# ---------------------------------------------------------------------------
+# 12. Session-global flag threading (issue #301 slice 1): `cdkl studio
+#     --from-cfn-stack <name> --assume-role <arn>` forwards both flags to the
+#     child commands it spawns. Boot studio bound to a BOGUS stack + role (no
+#     deploy, no cleanup): the child's `--from-cfn-stack` attempt logs the
+#     stack name then GRACEFULLY falls back, so we assert (a) the invoke still
+#     succeeds and (b) the bound per-invocation logs name the bogus stack —
+#     proof the flag threaded CLI -> child end-to-end. The child's actual
+#     from-cfn-stack binding is covered by local-invoke-from-cfn-stack.
+# ---------------------------------------------------------------------------
+echo "==> --from-cfn-stack / --assume-role thread through to the spawned child"
+BOGUS_STACK="BOGUSNONEXISTENTSTACK301"
+BOGUS_ROLE="arn:aws:iam::123456789012:role/bogus-studio-301"
+LOG_FILE2=$(mktemp)
+${CDKL} studio --no-open --studio-port "${PORT}" \
+  --from-cfn-stack "${BOGUS_STACK}" --assume-role "${BOGUS_ROLE}" \
+  >"${LOG_FILE2}" 2>&1 &
+STUDIO_PID=$!
+URL2=""
+for _ in $(seq 1 60); do
+  if ! kill -0 "${STUDIO_PID}" 2>/dev/null; then
+    echo "FAIL: studio (flag-threading boot) exited during startup"
+    cat "${LOG_FILE2}"; rm -f "${LOG_FILE2}"; exit 1
+  fi
+  URL2=$(grep -oE "http://${HOST}:[0-9]+" "${LOG_FILE2}" | head -1 || true)
+  if [[ -n "${URL2}" ]] && curl -fsS "${URL2}/api/targets" -o /dev/null 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ -z "${URL2}" ]]; then
+  echo "FAIL: flag-threading studio never bound a URL"; cat "${LOG_FILE2}"; rm -f "${LOG_FILE2}"; exit 1
+fi
+
+RUN_FILE2=$(mktemp)
+HTTP_CODE2=$(curl -s -o "${RUN_FILE2}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL2}/api/run" \
+  -H 'content-type: application/json' \
+  -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' || true)
+# Graceful fallback: the bogus binding must NOT break the invoke.
+if [[ "${HTTP_CODE2}" != "200" ]] || ! grep -qF '"ok":true' "${RUN_FILE2}"; then
+  echo "FAIL: invoke under bogus --from-cfn-stack did not gracefully succeed (HTTP ${HTTP_CODE2})"
+  cat "${RUN_FILE2}"; rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
+fi
+INV2=$(grep -oE '"invocationId":"[^"]+"' "${RUN_FILE2}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
+if [[ -z "${INV2}" ]]; then
+  echo "FAIL: no invocationId from the flag-threading invoke"
+  cat "${RUN_FILE2}"; rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
+fi
+# Both flags name themselves in the child's (warn-level, un-suppressed)
+# fallback output, streamed onto the bus and bound to the invocation:
+#   --from-cfn-stack -> 'ListStackResources(<stack>) failed ... Falling back.'
+#   --assume-role    -> 'STS AssumeRole(<arn>) failed ... '
+# Their presence proves BOTH flags threaded CLI -> child end-to-end.
+curl -fsS "${URL2}/api/invocations/${INV2}/logs" -o "${BODY_FILE}"
+if ! grep -qF "${BOGUS_STACK}" "${BODY_FILE}"; then
+  echo "FAIL: --from-cfn-stack did not reach the child (bogus stack name absent from bound logs)"
+  echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+  echo "----- studio log -----"; head -c 2000 "${LOG_FILE2}"; echo; echo "----------------------"
+  rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
+fi
+if ! grep -qF "${BOGUS_ROLE}" "${BODY_FILE}"; then
+  echo "FAIL: --assume-role did not reach the child (bogus role ARN absent from bound logs)"
+  echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+  echo "----- studio log -----"; head -c 2000 "${LOG_FILE2}"; echo; echo "----------------------"
+  rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
+fi
+echo "    OK: --from-cfn-stack '${BOGUS_STACK}' + --assume-role threaded to the child; invoke fell back gracefully"
+
+kill "${STUDIO_PID}" 2>/dev/null || true
+wait "${STUDIO_PID}" 2>/dev/null || true
+STUDIO_PID=""
+rm -f "${LOG_FILE2}" "${RUN_FILE2}"
+
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + flag-threading + shutdown)"

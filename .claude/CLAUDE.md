@@ -223,7 +223,11 @@ compute-locally category for Lambda + API Gateway).
   plane that spawns the SAME `invoke` / `start-api` / `start-alb` /
   `start-service` runners as child processes. It is on the user-facing
   command surface (the unveil slice removed the `CDKL_STUDIO_PREVIEW`
-  gate) and exported from `src/index.ts` for host CLIs.
+  gate) and exported from `src/index.ts` for host CLIs. Issue #301
+  slice 1 added the session-global `--from-cfn-stack [name]` /
+  `--assume-role <arn>` flags to `cdkl studio`: they bind the whole
+  session and are forwarded verbatim to every spawned child (built in
+  `src/local/studio-child-args.ts`).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -320,6 +324,12 @@ compute-locally category for Lambda + API Gateway).
   silenced in the child; the studio LOGS panel then shows only the
   Lambda container's runtime logs, which stream straight from
   `docker logs` and are unaffected by the level, plus the response),
+  studio-child-args (issue #301 slice 1 — `buildSharedChildArgs`, the
+  single place that turns studio's session-global config (`--app` /
+  `--profile` / `--region` / `-c` / `--from-cfn-stack` / `--assume-role`)
+  into the argv fragment both studio-dispatch and studio-serve-manager
+  forward to their spawned child commands, so the two spawn sites cannot
+  drift),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host
