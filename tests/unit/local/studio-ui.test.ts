@@ -7,10 +7,10 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('<!doctype html>');
     expect(html).toContain('cdkl studio');
     expect(html).toContain('MyStack');
-    // The three panes are present.
+    // The three panes are present (targets / workspace / timeline).
     expect(html).toContain('id="targets"');
+    expect(html).toContain('id="workspace"');
     expect(html).toContain('id="timeline"');
-    expect(html).toContain('id="detail"');
   });
 
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {

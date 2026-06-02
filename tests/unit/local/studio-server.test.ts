@@ -209,6 +209,59 @@ describe('startStudioServer', () => {
     expect(bus.listenerCount('log')).toBe(0);
   });
 
+  it('POST /api/run dispatches to onRun and returns its result as JSON', async () => {
+    const onRun = (body: unknown): Promise<unknown> =>
+      Promise.resolve({ echoed: body, ok: true });
+    const server = await boot({ onRun });
+
+    const res = await fetch(`${server.url}/api/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetId: 'T', kind: 'lambda', event: { a: 1 } }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { echoed: unknown; ok: boolean };
+    expect(data.ok).toBe(true);
+    expect(data.echoed).toEqual({ targetId: 'T', kind: 'lambda', event: { a: 1 } });
+  });
+
+  it('POST /api/run answers 501 when no onRun handler is wired', async () => {
+    const server = await boot(); // observe-only shell, no onRun
+    const res = await fetch(`${server.url}/api/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(501);
+    await res.text();
+  });
+
+  it('POST /api/run answers 400 on an invalid JSON body', async () => {
+    const server = await boot({ onRun: () => Promise.resolve({}) });
+    const res = await fetch(`${server.url}/api/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error: string };
+    expect(data.error).toMatch(/invalid json/i);
+  });
+
+  it('POST /api/run answers 500 when the handler throws', async () => {
+    const server = await boot({
+      onRun: () => Promise.reject(new Error('dispatch blew up')),
+    });
+    const res = await fetch(`${server.url}/api/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(500);
+    const data = (await res.json()) as { error: string };
+    expect(data.error).toContain('dispatch blew up');
+  });
+
   it('close() resolves even with a live SSE client connected', async () => {
     const server = await boot();
     const { res: resP, abort } = openSse(`${server.url}/api/events`);

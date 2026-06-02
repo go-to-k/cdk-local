@@ -35,13 +35,19 @@ fi
 
 LOG_FILE=$(mktemp)
 BODY_FILE=$(mktemp)
+RUN_FILE=$(mktemp)
+SSE_FILE=$(mktemp)
 STUDIO_PID=""
+SSE_PID=""
 cleanup() {
+  if [[ -n "${SSE_PID}" ]] && kill -0 "${SSE_PID}" 2>/dev/null; then
+    kill "${SSE_PID}" 2>/dev/null || true
+  fi
   if [[ -n "${STUDIO_PID}" ]] && kill -0 "${STUDIO_PID}" 2>/dev/null; then
     kill "${STUDIO_PID}" 2>/dev/null || true
     wait "${STUDIO_PID}" 2>/dev/null || true
   fi
-  rm -f "${LOG_FILE}" "${BODY_FILE}"
+  rm -f "${LOG_FILE}" "${BODY_FILE}" "${RUN_FILE}" "${SSE_FILE}"
 }
 trap cleanup EXIT
 
@@ -145,7 +151,60 @@ fi
 echo "    OK: SSE stream opened"
 
 # ---------------------------------------------------------------------------
-# 6. Clean shutdown on SIGTERM.
+# 6. POST /api/run invokes a real Lambda in Docker (slice B) and the
+#    invocation is broadcast over SSE.
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run invokes the fixture Lambda in Docker"
+
+# Start a background SSE listener BEFORE the invoke so it captures the
+# invocation events the dispatch emits.
+curl -sN --max-time 180 "${URL}/api/events" >"${SSE_FILE}" 2>/dev/null &
+SSE_PID=$!
+sleep 1 # let the SSE subscription establish
+
+# The dispatch spawns `cdkl invoke LocalStudioFixture/MyHandler` which boots a
+# RIE Node container — generous timeout to cover the first-run base-image pull.
+HTTP_CODE=$(curl -s -o "${RUN_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" \
+  -H 'content-type: application/json' \
+  -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' || true)
+
+if [[ "${HTTP_CODE}" != "200" ]]; then
+  echo "FAIL: POST /api/run returned HTTP ${HTTP_CODE}"
+  echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+# The fixture handler returns { statusCode: 200, body: 'ok' }; the studio run
+# result wraps it as { ok: true, status: 200, response: {...} }.
+for needle in '"ok":true' '"status":200' '"statusCode":200'; do
+  if ! grep -qF "${needle}" "${RUN_FILE}"; then
+    echo "FAIL: /api/run response missing: ${needle}"
+    echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
+    exit 1
+  fi
+  echo "    OK: run response has ${needle}"
+done
+
+echo "==> The invocation was broadcast over SSE"
+# Give the SSE listener a moment to receive the end event, then stop it.
+for _ in $(seq 1 20); do
+  if grep -qF 'event: invocation' "${SSE_FILE}" && grep -qF 'MyHandler' "${SSE_FILE}"; then
+    break
+  fi
+  sleep 0.5
+done
+kill "${SSE_PID}" 2>/dev/null || true
+SSE_PID=""
+if ! grep -qF 'event: invocation' "${SSE_FILE}" || ! grep -qF 'MyHandler' "${SSE_FILE}"; then
+  echo "FAIL: SSE stream did not carry the MyHandler invocation"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: invocation observed on the SSE timeline"
+
+# ---------------------------------------------------------------------------
+# 7. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
 kill "${STUDIO_PID}"

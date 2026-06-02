@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  coerceRunRequest,
   createLocalStudioCommand,
   parseStudioPort,
 } from '../../../src/cli/commands/local-studio.js';
@@ -35,4 +36,40 @@ describe('parseStudioPort', () => {
   it.each(['-1', '65536', 'abc', '', '80.5'])('rejects %p', (raw) => {
     expect(() => parseStudioPort(raw)).toThrow(/--studio-port must be 0\.\.65535/);
   });
+});
+
+describe('coerceRunRequest', () => {
+  it('accepts a well-formed run request', () => {
+    expect(coerceRunRequest({ targetId: 'Stack/Fn', kind: 'lambda', event: { a: 1 } })).toEqual({
+      targetId: 'Stack/Fn',
+      kind: 'lambda',
+      event: { a: 1 },
+    });
+  });
+
+  it('allows an absent event (undefined)', () => {
+    expect(coerceRunRequest({ targetId: 'T', kind: 'lambda' })).toEqual({
+      targetId: 'T',
+      kind: 'lambda',
+      event: undefined,
+    });
+  });
+
+  it.each([null, 42, 'str', undefined])('rejects a non-object body %p', (body) => {
+    expect(() => coerceRunRequest(body)).toThrow(/must be a JSON object/);
+  });
+
+  it.each([{}, { targetId: '' }, { targetId: '  ', kind: 'lambda' }, { kind: 'lambda' }])(
+    'rejects a missing/empty targetId %p',
+    (body) => {
+      expect(() => coerceRunRequest(body)).toThrow(/non-empty "targetId"/);
+    }
+  );
+
+  it.each([{ targetId: 'T' }, { targetId: 'T', kind: 'nope' }, { targetId: 'T', kind: 5 }])(
+    'rejects a missing/unknown kind %p',
+    (body) => {
+      expect(() => coerceRunRequest(body)).toThrow(/"kind" must be one of/);
+    }
+  );
 });

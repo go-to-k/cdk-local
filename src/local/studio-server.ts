@@ -73,6 +73,15 @@ export interface StudioServerOptions {
    * Defaults to 20.
    */
   maxPortBump?: number;
+  /**
+   * Handler for `POST /api/run` — runs a target (slice B: a single-shot
+   * Lambda invoke) and returns the result. When omitted, `/api/run`
+   * answers 501 (the observe-only shell). The body is the parsed JSON
+   * request; the handler emits its own invocation / log events onto the
+   * bus, so the UI's timeline updates over SSE independently of the
+   * response.
+   */
+  onRun?: (body: unknown) => Promise<unknown>;
 }
 
 /** A running studio server. */
@@ -102,7 +111,7 @@ export async function startStudioServer(
   const targetsJson = JSON.stringify({ groups: options.targetGroups });
 
   const server = createServer((req, res) =>
-    handleRequest(req, res, options.bus, html, targetsJson)
+    handleRequest(req, res, options.bus, html, targetsJson, options.onRun)
   );
 
   const boundPort = await listenWithBump(server, host, options.port, maxBump);
@@ -125,7 +134,8 @@ function handleRequest(
   res: ServerResponse,
   bus: StudioEventBus,
   html: string,
-  targetsJson: string
+  targetsJson: string,
+  onRun?: (body: unknown) => Promise<unknown>
 ): void {
   const url = req.url ?? '/';
   const path = url.split('?')[0];
@@ -144,8 +154,89 @@ function handleRequest(
     serveSse(req, res, bus);
     return;
   }
+  if (req.method === 'POST' && path === '/api/run') {
+    void handleRun(req, res, onRun);
+    return;
+  }
   res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
   res.end('Not found');
+}
+
+const MAX_RUN_BODY_BYTES = 5 * 1024 * 1024;
+
+/** Reply to `POST /api/run`: parse the JSON body, dispatch via `onRun`. */
+async function handleRun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  onRun?: (body: unknown) => Promise<unknown>
+): Promise<void> {
+  const sendJson = (statusCode: number, payload: unknown): void => {
+    res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(payload));
+  };
+
+  if (!onRun) {
+    // The observe-only shell (no dispatcher wired) cannot run targets.
+    sendJson(501, { error: 'Running targets is not supported by this studio server.' });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    sendJson(400, { error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+
+  try {
+    const result = await onRun(body);
+    sendJson(200, result);
+  } catch (err) {
+    sendJson(500, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** Read + JSON-parse a request body, bounded to {@link MAX_RUN_BODY_BYTES}. */
+function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise<unknown>((resolveBody, reject) => {
+    let raw = '';
+    let bytes = 0;
+    // Single-flight: once the promise settles (over-limit / end / error) the
+    // handlers short-circuit so a late chunk or the destroy-triggered `error`
+    // cannot re-settle it.
+    let done = false;
+    const settle = (fn: () => void): void => {
+      if (done) return;
+      done = true;
+      fn();
+    };
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => {
+      if (done) return;
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > MAX_RUN_BODY_BYTES) {
+        settle(() => reject(new Error('Request body too large.')));
+        req.destroy();
+        return;
+      }
+      raw += chunk;
+    });
+    req.on('end', () => {
+      settle(() => {
+        if (raw.trim() === '') {
+          resolveBody(undefined);
+          return;
+        }
+        try {
+          resolveBody(JSON.parse(raw));
+        } catch {
+          reject(new Error('Invalid JSON body.'));
+        }
+      });
+    });
+    req.on('error', (err) => settle(() => reject(err)));
+  });
 }
 
 function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus): void {

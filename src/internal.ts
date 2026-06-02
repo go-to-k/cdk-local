@@ -702,3 +702,20 @@ export {
   type StudioTargetGroup,
 } from './local/studio-server.js';
 export { renderStudioHtml } from './local/studio-ui.js';
+
+/**
+ * `cdkl studio` run dispatcher (issue #282, slice B). A host CLI embedding
+ * studio wires `createStudioDispatcher(...).run` as the `startStudioServer`
+ * `onRun` handler so the browser's `POST /api/run` runs a target by spawning
+ * the host's own `invoke` subcommand as a child process (studio is a control
+ * plane over the CLI). `coerceRunRequest` validates the untyped request body
+ * a host's `onRun` receives into a typed {@link StudioRunRequest}.
+ */
+export {
+  createStudioDispatcher,
+  type StudioDispatcher,
+  type StudioDispatchConfig,
+  type StudioRunRequest,
+  type StudioRunResult,
+} from './local/studio-dispatch.js';
+export { coerceRunRequest } from './cli/commands/local-studio.js';

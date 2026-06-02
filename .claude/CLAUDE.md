@@ -292,7 +292,13 @@ compute-locally category for Lambda + API Gateway).
   UI at `/`, the synthesized target list at `/api/targets`, and an SSE
   stream of the event bus at `/api/events`; collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
-  inside the npm package with no asset-copy build step), etc.
+  inside the npm package with no asset-copy build step; 3-pane: targets /
+  workspace composer / timeline), studio-dispatch (issue #282 — the
+  `POST /api/run` handler that runs a target from the studio UI by
+  spawning the SAME `cdkl invoke` the headless command runs as a child
+  process — studio is a control plane over the CLI — streaming its
+  stdout/stderr to the event bus and returning the parsed Lambda response;
+  slice B is Lambda single-shot invoke), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
