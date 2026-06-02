@@ -61,6 +61,12 @@ function httpReq(
         res.on('end', () =>
           resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers })
         );
+        // A mid-stream upstream death destroys this response socket; handle
+        // its 'error' so it never propagates as an unhandled rejection (which
+        // would crash the test worker) and resolve with whatever arrived.
+        res.on('error', () =>
+          resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers })
+        );
       }
     );
     req.on('error', reject);
@@ -242,7 +248,17 @@ describe('startStudioProxy', () => {
 
   it('emits exactly ONE end event when the upstream dies mid-response', async () => {
     const bus = new StudioEventBus();
-    const evs = collect(bus);
+    const ends: StudioInvocationEvent[] = [];
+    // Resolve the moment the (first) terminal event fires — deterministic,
+    // no fixed sleep — then a microtask later assert no SECOND one slipped in.
+    const firstEnd = new Promise<void>((resolve) => {
+      bus.on('invocation', (e) => {
+        if (e.status != null) {
+          ends.push(e);
+          resolve();
+        }
+      });
+    });
     const upstream = await bootUpstream((_req, res) => {
       res.writeHead(200);
       res.write('partial');
@@ -253,8 +269,8 @@ describe('startStudioProxy', () => {
     const proxy = await boot(bus, upstream);
 
     await httpReq(`${proxy.url}/die`).catch(() => undefined); // client may see a reset
-    await new Promise((r) => setTimeout(r, 50));
-    const ends = evs.filter((e) => e.status != null);
+    await firstEnd;
+    await new Promise((r) => setImmediate(r)); // let any (wrongly) queued second end fire
     expect(ends).toHaveLength(1);
   });
 
