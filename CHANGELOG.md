@@ -1,3 +1,10 @@
+# [0.80.0](https://github.com/go-to-k/cdk-local/compare/v0.79.0...v0.80.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 slice C1 — start/stop a long-running API serve from the studio UI ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#293](https://github.com/go-to-k/cdk-local/issues/293)) ([cfd8f2d](https://github.com/go-to-k/cdk-local/commit/cfd8f2dc3e50a2fd938abc4d6b4e0c8ffba1154e))
+
 # [0.79.0](https://github.com/go-to-k/cdk-local/compare/v0.78.1...v0.79.0) (2026-06-02)
 
 
