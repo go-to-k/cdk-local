@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import { describe, it, expect, afterEach } from 'vite-plus/test';
 import { StudioEventBus } from '../../../src/local/studio-events.js';
 import {
@@ -9,30 +10,133 @@ import { createStudioStore } from '../../../src/local/studio-store.js';
 import type { TargetListing } from '../../../src/local/target-lister.js';
 
 const running: RunningStudioServer[] = [];
-// Every streaming SSE fetch is opened through an AbortController so the
-// connection can be DESTROYED (not returned to undici's keep-alive pool)
-// when the test is done. A pooled idle SSE socket that the server then
-// tears down via `closeAllConnections()` surfaces as an unhandled
-// rejection on undici's side, which crashes the vitest worker fork (Node
-// exits the process on an unhandled rejection) — observed only under the
-// `forks` pool on a loaded CI box, never locally. Aborting the client
-// connection first sidesteps the pool entirely.
-const sseControllers: AbortController[] = [];
 
-/** Open an SSE connection whose socket is destroyed (not pooled) on abort. */
-function openSse(url: string): { res: Promise<Response>; abort: () => void } {
-  const ac = new AbortController();
-  sseControllers.push(ac);
-  return { res: fetch(url, { signal: ac.signal }), abort: () => ac.abort() };
+// All HTTP here goes through a keep-alive-FREE `node:http` client
+// (`agent: false`) — NOT global `fetch` (undici). undici pools the idle
+// keep-alive socket after a request; the server's `closeAllConnections()`
+// on teardown then destroys that pooled socket, and undici raises an
+// unhandled rejection that crashes the vitest worker fork (exit 1) — seen
+// ONLY under the `forks` pool on a loaded CI box, never locally, and it
+// turned `main` red after the slice A and C2/C3 merges. `agent: false`
+// uses a fresh socket per request that closes on response end, so nothing
+// is ever pooled and there is no socket for `closeAllConnections()` to
+// destroy. Mirrors the studio-proxy test's approach.
+
+interface HttpResp {
+  status: number;
+  headers: { get: (k: string) => string | undefined };
+  json: () => Promise<unknown>;
+  text: () => Promise<string>;
+}
+
+/** A keep-alive-free request (no undici pool). Mirrors a minimal `fetch`. */
+function http(
+  url: string,
+  opts: { method?: string; body?: string; headers?: Record<string, string> } = {}
+): Promise<HttpResp> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const reqHeaders =
+      opts.body != null ? { 'content-type': 'application/json', ...opts.headers } : (opts.headers ?? {});
+    const req = httpRequest(
+      {
+        hostname: u.hostname,
+        port: u.port,
+        path: u.pathname + u.search,
+        method: opts.method ?? 'GET',
+        agent: false,
+        headers: reqHeaders,
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => (data += c));
+        const finish = (): void =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: { get: (k) => headerValue(res.headers[k.toLowerCase()]) },
+            json: () => Promise.resolve(JSON.parse(data)),
+            text: () => Promise.resolve(data),
+          });
+        res.on('end', finish);
+        res.on('error', finish);
+      }
+    );
+    req.on('error', reject);
+    if (opts.body != null) req.write(opts.body);
+    req.end();
+  });
+}
+
+function headerValue(v: string | string[] | undefined): string | undefined {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
+interface SseReader {
+  read: () => Promise<{ value?: Buffer; done: boolean }>;
+}
+interface SseResp {
+  headers: { get: (k: string) => string | undefined };
+  body: { getReader: () => SseReader };
+}
+
+const sseReqs: Array<{ destroy: () => void }> = [];
+
+/** Open an SSE stream over a keep-alive-free socket; `abort()` destroys it. */
+function openSse(url: string): { res: Promise<SseResp>; abort: () => void } {
+  const u = new URL(url);
+  const queue: Buffer[] = [];
+  let waiter: ((v: { value?: Buffer; done: boolean }) => void) | null = null;
+  let ended = false;
+  let resolveRes!: (r: SseResp) => void;
+  const resP = new Promise<SseResp>((r) => (resolveRes = r));
+  const req = httpRequest(
+    { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'GET', agent: false },
+    (res) => {
+      res.on('data', (c: Buffer) => {
+        if (waiter) {
+          const w = waiter;
+          waiter = null;
+          w({ value: c, done: false });
+        } else {
+          queue.push(c);
+        }
+      });
+      res.on('end', () => {
+        ended = true;
+        if (waiter) {
+          const w = waiter;
+          waiter = null;
+          w({ done: true });
+        }
+      });
+      const reader: SseReader = {
+        read: () =>
+          new Promise((rr) => {
+            if (queue.length) rr({ value: queue.shift(), done: false });
+            else if (ended) rr({ done: true });
+            else waiter = rr;
+          }),
+      };
+      resolveRes({
+        headers: { get: (k) => headerValue(res.headers[k.toLowerCase()]) },
+        body: { getReader: () => reader },
+      });
+    }
+  );
+  req.on('error', () => undefined); // a destroy() on abort/teardown is expected
+  req.end();
+  const ctl = { destroy: () => req.destroy() };
+  sseReqs.push(ctl);
+  return { res: resP, abort: () => req.destroy() };
 }
 
 afterEach(async () => {
-  // Destroy any still-open client SSE connections BEFORE tearing the
-  // servers down, so undici drops them from its pool rather than seeing
-  // a server-side socket destroy.
-  for (const ac of sseControllers.splice(0)) ac.abort();
+  // Destroy any still-open SSE client sockets BEFORE tearing the servers
+  // down (they are the only long-lived sockets; everything else is
+  // agent:false and already closed).
+  for (const ctl of sseReqs.splice(0)) ctl.destroy();
   await Promise.all(running.splice(0).map((s) => s.close()));
-  // Let undici fully unwind the aborted sockets before the worker exits.
   await new Promise((r) => setTimeout(r, 20));
 });
 
@@ -102,7 +206,7 @@ describe('toStudioTargetGroups', () => {
 describe('startStudioServer', () => {
   it('serves the UI HTML at GET /', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/`);
+    const res = await http(`${server.url}/`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     const body = await res.text();
@@ -112,7 +216,7 @@ describe('startStudioServer', () => {
 
   it('serves the target groups at GET /api/targets', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/targets`);
+    const res = await http(`${server.url}/api/targets`);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     const data = (await res.json()) as { groups: { kind: string; entries: unknown[] }[] };
@@ -122,7 +226,7 @@ describe('startStudioServer', () => {
 
   it('404s an unknown path', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/nope`);
+    const res = await http(`${server.url}/nope`);
     expect(res.status).toBe(404);
     await res.text(); // drain the body so the connection does not linger
   });
@@ -217,7 +321,7 @@ describe('startStudioServer', () => {
       Promise.resolve({ echoed: body, ok: true });
     const server = await boot({ onRun });
 
-    const res = await fetch(`${server.url}/api/run`, {
+    const res = await http(`${server.url}/api/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ targetId: 'T', kind: 'lambda', event: { a: 1 } }),
@@ -230,7 +334,7 @@ describe('startStudioServer', () => {
 
   it('POST /api/run answers 501 when no onRun handler is wired', async () => {
     const server = await boot(); // observe-only shell, no onRun
-    const res = await fetch(`${server.url}/api/run`, {
+    const res = await http(`${server.url}/api/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -241,7 +345,7 @@ describe('startStudioServer', () => {
 
   it('POST /api/run answers 400 on an invalid JSON body', async () => {
     const server = await boot({ onRun: () => Promise.resolve({}) });
-    const res = await fetch(`${server.url}/api/run`, {
+    const res = await http(`${server.url}/api/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: 'not json',
@@ -255,7 +359,7 @@ describe('startStudioServer', () => {
     const server = await boot({
       onRun: () => Promise.reject(new Error('dispatch blew up')),
     });
-    const res = await fetch(`${server.url}/api/run`, {
+    const res = await http(`${server.url}/api/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -273,7 +377,7 @@ describe('startStudioServer', () => {
     };
     const server = await boot({ onStop });
 
-    const res = await fetch(`${server.url}/api/stop`, {
+    const res = await http(`${server.url}/api/stop`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ targetId: 'MyApi' }),
@@ -286,7 +390,7 @@ describe('startStudioServer', () => {
 
   it('POST /api/stop answers 501 when no onStop handler is wired', async () => {
     const server = await boot(); // observe-only shell
-    const res = await fetch(`${server.url}/api/stop`, {
+    const res = await http(`${server.url}/api/stop`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
@@ -299,7 +403,7 @@ describe('startStudioServer', () => {
     const server = await boot({
       getRunning: () => ({ running: [{ targetId: 'MyApi', kind: 'api', status: 'running' }] }),
     });
-    const res = await fetch(`${server.url}/api/running`);
+    const res = await http(`${server.url}/api/running`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as { running: { targetId: string }[] };
     expect(data.running).toEqual([{ targetId: 'MyApi', kind: 'api', status: 'running' }]);
@@ -307,7 +411,7 @@ describe('startStudioServer', () => {
 
   it('GET /api/running returns an empty list when no getRunning is wired', async () => {
     const server = await boot(); // observe-only shell
-    const res = await fetch(`${server.url}/api/running`);
+    const res = await http(`${server.url}/api/running`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as { running: unknown[] };
     expect(data.running).toEqual([]);
@@ -320,7 +424,7 @@ describe('startStudioServer', () => {
     bus.emit('log', { ts: 1, containerId: 'a', target: 'T', line: 'hello', stream: 'stdout' });
     const server = await boot({ bus, store });
 
-    const res = await fetch(`${server.url}/api/history`);
+    const res = await http(`${server.url}/api/history`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as { invocations: { id: string }[]; logs: { line: string }[] };
     expect(data.invocations.map((i) => i.id)).toEqual(['a']);
@@ -329,7 +433,7 @@ describe('startStudioServer', () => {
 
   it('GET /api/history returns empty when no store is wired', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/history`);
+    const res = await http(`${server.url}/api/history`);
     const data = (await res.json()) as { invocations: unknown[]; logs: unknown[] };
     expect(data).toEqual({ invocations: [], logs: [] });
   });
@@ -341,7 +445,7 @@ describe('startStudioServer', () => {
     bus.emit('log', { ts: 2, containerId: 'c', target: 'T', line: 'unrelated', stream: 'stdout' });
     const server = await boot({ bus, store });
 
-    const res = await fetch(`${server.url}/api/logs?q=${encodeURIComponent('/hello')}`);
+    const res = await http(`${server.url}/api/logs?q=${encodeURIComponent('/hello')}`);
     const data = (await res.json()) as { logs: { line: string }[] };
     expect(data.logs.map((l) => l.line)).toEqual(['GET /hello 200']);
   });
@@ -353,7 +457,7 @@ describe('startStudioServer', () => {
     const server = await boot({ bus, store });
 
     // A bare `target=` must NOT filter to logs whose target is the empty string.
-    const res = await fetch(`${server.url}/api/logs?q=kept&target=`);
+    const res = await http(`${server.url}/api/logs?q=kept&target=`);
     const data = (await res.json()) as { logs: { line: string }[] };
     expect(data.logs.map((l) => l.line)).toEqual(['kept']);
   });
@@ -366,14 +470,14 @@ describe('startStudioServer', () => {
     bus.emit('log', { ts: 1, containerId: 'other', target: 'T', line: 'theirs', stream: 'stdout' });
     const server = await boot({ bus, store });
 
-    const res = await fetch(`${server.url}/api/invocations/inv-9/logs`);
+    const res = await http(`${server.url}/api/invocations/inv-9/logs`);
     const data = (await res.json()) as { logs: { line: string }[] };
     expect(data.logs.map((l) => l.line)).toEqual(['mine']);
   });
 
   it('GET /api/logs returns empty when no store is wired', async () => {
     const server = await boot();
-    const res = await fetch(`${server.url}/api/logs?q=anything`);
+    const res = await http(`${server.url}/api/logs?q=anything`);
     const data = (await res.json()) as { logs: unknown[] };
     expect(data.logs).toEqual([]);
   });
