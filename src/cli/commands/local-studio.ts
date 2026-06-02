@@ -19,6 +19,7 @@ import {
 } from '../../local/embed-config.js';
 import { listTargets } from '../../local/target-lister.js';
 import { StudioEventBus, type StudioTargetKind } from '../../local/studio-events.js';
+import { createStudioStore, type StudioStore } from '../../local/studio-store.js';
 import {
   startStudioServer,
   toStudioTargetGroups,
@@ -165,6 +166,10 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   };
   const dispatcher = createStudioDispatcher(childConfig);
   const serveManager = createStudioServeManager(childConfig);
+  // Retain a bounded window of invocations + logs so the browser can render
+  // history on (re)connect, search logs full-text, and bind a request's
+  // logs at CloudWatch granularity (slice C3).
+  const store = createStudioStore(bus);
 
   const server = await startStudioServer({
     port,
@@ -172,6 +177,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     targetGroups,
     appLabel,
     cliName: getEmbedConfig().cliName,
+    store,
     // `/api/run`: a Lambda is a single-shot invoke; everything else is a
     // long-running serve start (slice C1 supports the `api` kind, the
     // serve manager rejects the rest with a clear message).
@@ -197,7 +203,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     openBrowser(server.url);
   }
 
-  await blockUntilShutdown(server, serveManager, cliName);
+  await blockUntilShutdown(server, serveManager, store, cliName);
 }
 
 /** Best-effort cross-platform browser open. Failures are non-fatal. */
@@ -227,6 +233,7 @@ function openBrowser(url: string): void {
 function blockUntilShutdown(
   server: RunningStudioServer,
   serveManager: StudioServeManager,
+  store: StudioStore,
   cliName: string
 ): Promise<void> {
   return new Promise<void>((resolveShutdown) => {
@@ -235,6 +242,9 @@ function blockUntilShutdown(
       if (shuttingDown) return;
       shuttingDown = true;
       getLogger().info(`Received ${signal}; stopping ${cliName} studio...`);
+      // Unsubscribe the store from the bus so a host CLI that restarts
+      // studio in a long-lived process does not accumulate listeners.
+      store.dispose();
       void serveManager
         .stopAll()
         .catch((err: unknown) => getLogger().warn(`Error stopping serve targets: ${String(err)}`))

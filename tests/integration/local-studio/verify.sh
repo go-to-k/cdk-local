@@ -18,7 +18,10 @@
 #     the served route through it (the served endpoint is the studio
 #     CAPTURE PROXY — slice C2), asserts the request is captured on the
 #     timeline as an `invocation` row, GET /api/running reflects it + a
-#     `serve` SSE event fired, then POST /api/stop tears it down, and
+#     `serve` SSE event fired, then POST /api/stop tears it down,
+#   - asserts the store (slice C3) serves GET /api/history, full-text
+#     GET /api/logs?q=, and per-invocation GET /api/invocations/<id>/logs,
+#     and
 #   - tears the server down cleanly.
 #
 # Docker required — the invoke + serve slices boot real RIE containers.
@@ -190,6 +193,10 @@ for needle in '"ok":true' '"status":200' '"statusCode":200'; do
   fi
   echo "    OK: run response has ${needle}"
 done
+# Capture the Lambda invocation id for the slice-C3 per-invocation log
+# binding assertion below.
+LAMBDA_INV_ID=$(grep -oE '"invocationId":"[^"]+"' "${RUN_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
+echo "    (lambda invocationId=${LAMBDA_INV_ID})"
 
 echo "==> The invocation was broadcast over SSE"
 # Give the SSE listener a moment to receive the end event, then stop it.
@@ -341,7 +348,47 @@ fi
 echo "    OK: serve stopped; /api/running is empty"
 
 # ---------------------------------------------------------------------------
-# 8. Clean shutdown on SIGTERM.
+# 8. The store (slice C3): history + full-text log search + per-invocation
+#    log binding (decision D5) are served from the retained event window.
+# ---------------------------------------------------------------------------
+echo "==> GET /api/history retains the session's invocations + logs"
+curl -fsS "${URL}/api/history" -o "${BODY_FILE}"
+# Both the Lambda invoke and the captured serve request must be retained.
+if ! grep -qF 'MyHandler' "${BODY_FILE}" || ! grep -qF 'GET /hello' "${BODY_FILE}"; then
+  echo "FAIL: /api/history did not retain the session's invocations"
+  echo "----- history -----"; head -c 2000 "${BODY_FILE}"; echo; echo "-------------------"
+  exit 1
+fi
+echo "    OK: history retains the Lambda invoke + the captured serve request"
+
+echo "==> GET /api/logs?q= full-text searches the retained logs"
+# The serve child prints a stable 'Server listening on ...' line, streamed
+# onto the bus as a log event — search must find it.
+curl -fsS "${URL}/api/logs?q=Server%20listening" -o "${BODY_FILE}"
+if ! grep -qF 'Server listening on' "${BODY_FILE}"; then
+  echo "FAIL: /api/logs search did not find the serve listening line"
+  echo "----- logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------"
+  exit 1
+fi
+echo "    OK: log search found the serve listening line"
+
+if [[ -n "${LAMBDA_INV_ID}" ]]; then
+  echo "==> GET /api/invocations/<id>/logs binds the Lambda's logs (D5)"
+  curl -fsS "${URL}/api/invocations/${LAMBDA_INV_ID}/logs" -o "${BODY_FILE}"
+  # The fixture handler runs in a RIE container that prints START/REPORT
+  # lines; the strict per-invocation bind must return a non-empty list.
+  if ! grep -qF '"line"' "${BODY_FILE}"; then
+    echo "FAIL: /api/invocations/<id>/logs returned no bound logs"
+    echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+    exit 1
+  fi
+  echo "    OK: the Lambda invocation's logs are bound at per-invocation granularity"
+else
+  echo "    (skipping per-invocation log bind: no invocationId parsed)"
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
 kill "${STUDIO_PID}"
@@ -357,4 +404,4 @@ STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + request capture + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + request capture + history/log-search + shutdown)"

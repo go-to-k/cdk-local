@@ -5,6 +5,7 @@ import {
   toStudioTargetGroups,
   type RunningStudioServer,
 } from '../../../src/local/studio-server.js';
+import { createStudioStore } from '../../../src/local/studio-store.js';
 import type { TargetListing } from '../../../src/local/target-lister.js';
 
 const running: RunningStudioServer[] = [];
@@ -310,6 +311,71 @@ describe('startStudioServer', () => {
     expect(res.status).toBe(200);
     const data = (await res.json()) as { running: unknown[] };
     expect(data.running).toEqual([]);
+  });
+
+  it('GET /api/history returns the store snapshot', async () => {
+    const bus = new StudioEventBus();
+    const store = createStudioStore(bus);
+    bus.emit('invocation', { id: 'a', ts: 1, target: 'T', kind: 'lambda', label: 'invoke' });
+    bus.emit('log', { ts: 1, containerId: 'a', target: 'T', line: 'hello', stream: 'stdout' });
+    const server = await boot({ bus, store });
+
+    const res = await fetch(`${server.url}/api/history`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { invocations: { id: string }[]; logs: { line: string }[] };
+    expect(data.invocations.map((i) => i.id)).toEqual(['a']);
+    expect(data.logs.map((l) => l.line)).toEqual(['hello']);
+  });
+
+  it('GET /api/history returns empty when no store is wired', async () => {
+    const server = await boot();
+    const res = await fetch(`${server.url}/api/history`);
+    const data = (await res.json()) as { invocations: unknown[]; logs: unknown[] };
+    expect(data).toEqual({ invocations: [], logs: [] });
+  });
+
+  it('GET /api/logs?q= full-text searches the store', async () => {
+    const bus = new StudioEventBus();
+    const store = createStudioStore(bus);
+    bus.emit('log', { ts: 1, containerId: 'c', target: 'T', line: 'GET /hello 200', stream: 'stdout' });
+    bus.emit('log', { ts: 2, containerId: 'c', target: 'T', line: 'unrelated', stream: 'stdout' });
+    const server = await boot({ bus, store });
+
+    const res = await fetch(`${server.url}/api/logs?q=${encodeURIComponent('/hello')}`);
+    const data = (await res.json()) as { logs: { line: string }[] };
+    expect(data.logs.map((l) => l.line)).toEqual(['GET /hello 200']);
+  });
+
+  it('GET /api/logs treats a bare target= as no filter (not target==="")', async () => {
+    const bus = new StudioEventBus();
+    const store = createStudioStore(bus);
+    bus.emit('log', { ts: 1, containerId: 'c', target: 'T', line: 'kept', stream: 'stdout' });
+    const server = await boot({ bus, store });
+
+    // A bare `target=` must NOT filter to logs whose target is the empty string.
+    const res = await fetch(`${server.url}/api/logs?q=kept&target=`);
+    const data = (await res.json()) as { logs: { line: string }[] };
+    expect(data.logs.map((l) => l.line)).toEqual(['kept']);
+  });
+
+  it('GET /api/invocations/<id>/logs binds a Lambda invocation by container id', async () => {
+    const bus = new StudioEventBus();
+    const store = createStudioStore(bus);
+    bus.emit('invocation', { id: 'inv-9', ts: 1, target: 'T', kind: 'lambda', label: 'invoke' });
+    bus.emit('log', { ts: 1, containerId: 'inv-9', target: 'T', line: 'mine', stream: 'stdout' });
+    bus.emit('log', { ts: 1, containerId: 'other', target: 'T', line: 'theirs', stream: 'stdout' });
+    const server = await boot({ bus, store });
+
+    const res = await fetch(`${server.url}/api/invocations/inv-9/logs`);
+    const data = (await res.json()) as { logs: { line: string }[] };
+    expect(data.logs.map((l) => l.line)).toEqual(['mine']);
+  });
+
+  it('GET /api/logs returns empty when no store is wired', async () => {
+    const server = await boot();
+    const res = await fetch(`${server.url}/api/logs?q=anything`);
+    const data = (await res.json()) as { logs: unknown[] };
+    expect(data.logs).toEqual([]);
   });
 
   it('streams an emitted serve event over the SSE channel', async () => {

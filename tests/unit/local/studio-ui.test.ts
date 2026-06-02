@@ -11,6 +11,11 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('id="targets"');
     expect(html).toContain('id="workspace"');
     expect(html).toContain('id="timeline"');
+    // Slice C3: the log search box + history/search wiring are present.
+    expect(html).toContain('id="log-search"');
+    expect(html).toContain('/api/logs?q=');
+    expect(html).toContain('/api/history');
+    expect(html).toContain('/api/invocations/');
   });
 
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
