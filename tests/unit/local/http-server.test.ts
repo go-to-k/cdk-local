@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { http } from '../../helpers/agentless-http.js';
 import type { ServerResponse } from 'node:http';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
@@ -126,7 +127,7 @@ describe('writeAuthRejection', () => {
 /**
  * End-to-end tests for the per-request authorizer pass via `startApiServer`.
  * We boot a real `node:http` server on an ephemeral port and curl-equivalent
- * `fetch()` it; the route handler + authorizer are mocked via `invokeRie`.
+ * `http()` it; the route handler + authorizer are mocked via `invokeRie`.
  */
 function makePool(): ContainerPool {
   const acquire = vi.fn(async () => ({
@@ -219,9 +220,9 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
       // Two requests with the same identity → authorizer Lambda invoked
       // exactly once (cache reuses verdict for the second).
       const url = `http://${server.host}:${server.port}/items/42`;
-      const r1 = await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      const r1 = await http(url, { headers: { authorization: 'Bearer xyz' } });
       expect(r1.status).toBe(200);
-      const r2 = await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      const r2 = await http(url, { headers: { authorization: 'Bearer xyz' } });
       expect(r2.status).toBe(200);
 
       const authorizerInvocations = invokeRieMock.mock.calls.filter(
@@ -267,8 +268,8 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
 
     try {
       const url = `http://${server.host}:${server.port}/items/42`;
-      await fetch(url, { headers: { authorization: 'Bearer A' } });
-      await fetch(url, { headers: { authorization: 'Bearer B' } });
+      await http(url, { headers: { authorization: 'Bearer A' } });
+      await http(url, { headers: { authorization: 'Bearer B' } });
       const authorizerInvocations = invokeRieMock.mock.calls.filter(
         (c) => (c[2] as { type?: string }).type === 'REQUEST'
       );
@@ -318,8 +319,8 @@ describe('startApiServer — REQUEST authorizer cache (must-fix #1)', () => {
 
     try {
       const url = `http://${server.host}:${server.port}/items/42`;
-      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
-      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      await http(url, { headers: { authorization: 'Bearer xyz' } });
+      await http(url, { headers: { authorization: 'Bearer xyz' } });
       const authorizerInvocations = invokeRieMock.mock.calls.filter(
         (c) => (c[2] as { type?: string }).type === 'REQUEST'
       );
@@ -373,7 +374,7 @@ describe('startApiServer — narrow-Resource cache leak (must-fix #2)', () => {
     try {
       const baseUrl = `http://${server.host}:${server.port}`;
       // 1st request: hits /items/42 (narrow Resource matches) → 200.
-      const r1 = await fetch(`${baseUrl}/items/42`, {
+      const r1 = await http(`${baseUrl}/items/42`, {
         headers: { authorization: 'Bearer xyz' },
       });
       expect(r1.status).toBe(200);
@@ -382,7 +383,7 @@ describe('startApiServer — narrow-Resource cache leak (must-fix #2)', () => {
       // /items/999 does NOT match the narrow Resource → must deny.
       // Pre-fix this returned 200 (cache stored the verdict directly,
       // no per-request Resource re-eval).
-      const r2 = await fetch(`${baseUrl}/items/999`, {
+      const r2 = await http(`${baseUrl}/items/999`, {
         headers: { authorization: 'Bearer xyz' },
       });
       expect(r2.status).toBe(403);
@@ -458,8 +459,8 @@ describe('startApiServer — JWKS pass-through warn fires once per server (must-
     try {
       const url = `http://${server.host}:${server.port}/protected`;
       // Use any-old Bearer token; pass-through accepts.
-      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
-      await fetch(url, { headers: { authorization: 'Bearer xyz' } });
+      await http(url, { headers: { authorization: 'Bearer xyz' } });
+      await http(url, { headers: { authorization: 'Bearer xyz' } });
 
       // Count warn lines about pass-through. The logger emits other
       // warn lines (JWKS unreachable at startup) — only count the
@@ -509,7 +510,7 @@ describe('startApiServer — unsupported route (deferred 501)', () => {
     });
     try {
       const url = `http://${server.host}:${server.port}/admin`;
-      const r = await fetch(url);
+      const r = await http(url);
       expect(r.status).toBe(501);
       const body = (await r.json()) as { message: string; reason: string };
       expect(body.message).toBe('Not Implemented');
@@ -539,7 +540,7 @@ describe('startApiServer — unsupported route (deferred 501)', () => {
       authorizerCache: createAuthorizerCache(),
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/items/42`, {
+      const r = await http(`http://${server.host}:${server.port}/items/42`, {
         headers: { authorization: 'Bearer x' },
       });
       expect(r.status).toBe(501);
@@ -585,7 +586,7 @@ describe('startApiServer — mockCors preflight', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/items`, { method: 'OPTIONS' });
+      const r = await http(`http://${server.host}:${server.port}/items`, { method: 'OPTIONS' });
       expect(r.status).toBe(204);
       expect(r.headers.get('access-control-allow-origin')).toBe('*');
       expect(r.headers.get('access-control-allow-methods')).toBe('OPTIONS,GET,POST');
@@ -634,7 +635,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       expect(r.status).toBe(200);
       expect(r.headers.get('content-type')).toBe('text/plain');
       expect(r.headers.get('x-custom')).toBe('hello');
@@ -680,7 +681,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       // Node's fetch / undici exposes multi-valued Set-Cookie via getSetCookie().
       const cookies = r.headers.getSetCookie();
       expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/']);
@@ -714,7 +715,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       expect(r.status).toBe(200);
       expect(await r.text()).toBe('buffered-response');
       expect(invokeRieMock).toHaveBeenCalledTimes(1);
@@ -747,7 +748,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       expect(r.status).toBe(502);
       // Pool must be released so the warm container can serve the next request.
       expect((pool.release as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
@@ -800,7 +801,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       // Outer catch reports 502 (no headers were sent before the throw).
       expect(r.status).toBe(502);
       // (a) Pool must be released so the warm container can serve again.
@@ -852,7 +853,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       expect(r.status).toBe(200);
       // Node emits Transfer-Encoding: chunked automatically when no
       // Content-Length is set. The handler's "gzip" stays stripped.
@@ -905,7 +906,7 @@ describe('startApiServer — RESPONSE_STREAM dispatch (#467)', () => {
       port: 0,
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/anything`);
+      const r = await http(`http://${server.host}:${server.port}/anything`);
       expect(r.status).toBe(200);
       expect(r.headers.get('content-length')).toBeNull();
       // Node still emits chunked automatically.
@@ -1261,7 +1262,7 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
         region: 'us-east-1',
         amzDate,
       });
-      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+      const r = await http(`http://${server.host}:${server.port}${path}`, {
         headers: { authorization, ...headers },
       });
       expect(r.status).toBe(200);
@@ -1296,7 +1297,7 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
       sigV4CredentialsLoader: stubCredentialsLoader({ accessKeyId, secretAccessKey }),
     });
     try {
-      const r = await fetch(`http://${server.host}:${server.port}/items/42`);
+      const r = await http(`http://${server.host}:${server.port}/items/42`);
       expect(r.status).toBe(403);
       const body = (await r.json()) as { Message: string };
       expect(body.Message).toBe('Forbidden');
@@ -1333,7 +1334,7 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
       const tampered = authorization.replace(/Signature=([0-9a-f])/, (_m, c: string) =>
         `Signature=${c === '0' ? '1' : '0'}`
       );
-      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+      const r = await http(`http://${server.host}:${server.port}${path}`, {
         headers: { authorization: tampered, ...headers },
       });
       expect(r.status).toBe(403);
@@ -1385,7 +1386,7 @@ describe('startApiServer — Function URL AWS_IAM (#621)', () => {
         // informational" contract documented in #626.
         service: 'execute-api',
       });
-      const r = await fetch(`http://${server.host}:${server.port}${path}`, {
+      const r = await http(`http://${server.host}:${server.port}${path}`, {
         headers: { authorization, ...headers },
       });
       expect(r.status).toBe(200);
