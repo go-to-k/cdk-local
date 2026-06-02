@@ -5,12 +5,13 @@
  * the studio HTTP server (`startStudioServer`) at `GET /`.
  *
  * 3-pane shell (decision D6), framework-free vanilla JS (decision D7):
- *   - left   = target list (from `GET /api/targets`); each runnable
- *     Lambda has an [Invoke] button and a selected-highlight.
- *   - center = the WORKSPACE for the selected target: an event composer
- *     (textarea + Invoke button) with the latest run's Request /
- *     Response / Logs shown BELOW it, so you can edit and re-invoke
- *     repeatedly without losing the composer.
+ *   - left   = target list (from `GET /api/targets`); each Lambda has an
+ *     [Invoke] button, each API a [Start] / [Stop] serve control with a
+ *     `running ● :port` indicator (slice C1), plus a selected-highlight.
+ *   - center = the WORKSPACE for the selected target: for a Lambda, an
+ *     event composer (textarea + Invoke button) with the latest run's
+ *     Request / Response / Logs shown below; for an API, a Start/Stop
+ *     control with the served endpoints + streaming logs.
  *   - right  = the timeline (history) of every invocation; clicking a
  *     row loads it back into the workspace.
  *
@@ -59,6 +60,13 @@ const STUDIO_CSS = `
   }
   .target .invoke-btn:hover { background: #6fe097; }
   .target.sel .invoke-btn { background: #6fe097; }
+  .target .stop-btn {
+    padding: 2px 10px; font: 11px ui-monospace, Menlo, monospace; font-weight: 700;
+    color: #2a0d0d; background: #e0707a; border: 0; border-radius: 3px; cursor: pointer;
+  }
+  .target .stop-btn:hover { background: #ec8a92; }
+  .target .run-dot { color: #7bd88f; font-size: 11px; white-space: nowrap; }
+  .target .run-dot.starting { color: #e0b54e; }
   .empty { padding: 16px 12px; color: #666; }
   .row {
     padding: 5px 12px; border-bottom: 1px solid #222; cursor: pointer;
@@ -90,6 +98,8 @@ const STUDIO_CSS = `
   .section h3 .ok { color: #7bd88f; }
   .section h3 .bad { color: #e0707a; }
   .section pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #cfcfcf; }
+  .endpoint { display: block; color: #6aa9ff; text-decoration: none; padding: 2px 0; }
+  .endpoint:hover { text-decoration: underline; }
   #conn { font-size: 11px; }
   #conn.up { color: #7bd88f; }
   #conn.down { color: #e0707a; }
@@ -99,10 +109,13 @@ const STUDIO_SCRIPT = `
   const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', agentcore: 'AgentCore' };
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
-  const logsById = new Map();      // invocationId -> [log lines]
+  const logsById = new Map();      // invocationId / serve targetId -> [log lines]
   const targetEls = new Map();     // targetId -> left-pane element
+  const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
+  const serveState = new Map();    // serve targetId -> { status, endpoints }
   let active = null;               // { id, kind, ta, btn, msg, result }
   let shownInvId = null;           // invocation whose result is in the workspace
+  let shownServeId = null;         // serve target whose workspace is shown
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -123,20 +136,32 @@ const STUDIO_SCRIPT = `
         pane.appendChild(el('div', 'group-title', group.title));
         for (const entry of group.entries) {
           total += 1;
-          // Slice B: only Lambda targets are runnable from the UI (single-shot
-          // invoke). Other kinds list but are not yet selectable.
-          const runnable = group.kind === 'lambda';
+          // Lambda targets are single-shot invokes; API targets are
+          // long-running serves (slice C1). Other kinds list but are not
+          // yet runnable.
+          const runnable = group.kind === 'lambda' || group.kind === 'api';
           const t = el('div', runnable ? 'target runnable' : 'target');
           const name = el('span', 'name', entry.id);
           name.title = entry.id; // full path on hover even when truncated
           t.appendChild(name);
           t.appendChild(el('span', 'kind', '(' + (KIND_LABEL[group.kind] || group.kind) + ')'));
-          if (runnable) {
+          if (group.kind === 'lambda') {
             const btn = el('button', 'invoke-btn', 'Invoke');
-            btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };
+            btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, 'lambda'); };
             t.appendChild(btn);
-            t.onclick = () => selectTarget(entry.id, group.kind);
+            t.onclick = () => selectTarget(entry.id, 'lambda');
             targetEls.set(entry.id, t);
+          } else if (group.kind === 'api') {
+            // A serve target: a running-state dot + a Start/Stop button
+            // slot, both refreshed by updateServeRow on serve events.
+            const dot = el('span', 'run-dot');
+            const btnSlot = el('span', 'btn-slot');
+            t.appendChild(dot);
+            t.appendChild(btnSlot);
+            t.onclick = () => selectTarget(entry.id, 'api');
+            targetEls.set(entry.id, t);
+            serveMeta.set(entry.id, { dot, btnSlot });
+            updateServeRow(entry.id);
           }
           pane.appendChild(t);
         }
@@ -147,6 +172,50 @@ const STUDIO_SCRIPT = `
     }
   }
 
+  // Pull any already-running serves (e.g. after a UI reload) so the rows
+  // and workspace reflect them without waiting for a fresh serve event.
+  async function loadRunning() {
+    try {
+      const res = await fetch('/api/running');
+      const data = await res.json();
+      for (const s of (data.running || [])) {
+        serveState.set(s.targetId, { status: s.status, endpoints: s.endpoints || [] });
+        updateServeRow(s.targetId);
+      }
+    } catch (err) {
+      /* best-effort; the serve SSE stream still drives live updates */
+    }
+  }
+
+  function firstPort(endpoints) {
+    const u = (endpoints || [])[0];
+    if (!u) return '';
+    const m = /:(\\d+)/.exec(u);
+    return m ? ':' + m[1] : '';
+  }
+
+  function updateServeRow(id) {
+    const meta = serveMeta.get(id);
+    if (!meta) return;
+    const st = serveState.get(id);
+    const status = st ? st.status : 'stopped';
+    const running = status === 'running';
+    const starting = status === 'starting';
+    meta.dot.textContent = running ? '● ' + firstPort(st.endpoints) : starting ? '○ starting' : '';
+    meta.dot.className = 'run-dot' + (starting ? ' starting' : '');
+    meta.btnSlot.innerHTML = '';
+    const btn = running || starting
+      ? el('button', 'stop-btn', 'Stop')
+      : el('button', 'invoke-btn', 'Start');
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (running || starting) stopServe(id); else startServe(id);
+    };
+    meta.btnSlot.appendChild(btn);
+    // Refresh the workspace if it is showing this serve.
+    if (shownServeId === id) renderServeWorkspace(id);
+  }
+
   function highlightTarget(id) {
     document.querySelectorAll('.target.sel').forEach((n) => n.classList.remove('sel'));
     const t = targetEls.get(id);
@@ -155,7 +224,104 @@ const STUDIO_SCRIPT = `
 
   function selectTarget(id, kind) {
     highlightTarget(id);
-    renderComposer(id, kind, '{}');
+    if (kind === 'api') {
+      shownServeId = id;
+      shownInvId = null;
+      active = null;
+      renderServeWorkspace(id);
+    } else {
+      shownServeId = null;
+      renderComposer(id, kind, '{}');
+    }
+  }
+
+  async function startServe(id) {
+    serveState.set(id, { status: 'starting', endpoints: [] });
+    updateServeRow(id);
+    try {
+      const res = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetId: id, kind: 'api' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        // Roll back the optimistic 'starting' on a rejected start.
+        serveState.set(id, { status: 'error', endpoints: [] });
+        updateServeRow(id);
+        if (shownServeId === id) renderServeWorkspace(id, data.error || ('HTTP ' + res.status));
+      }
+      // On success the serve SSE 'running' event fills in the endpoints.
+    } catch (err) {
+      serveState.set(id, { status: 'error', endpoints: [] });
+      updateServeRow(id);
+      if (shownServeId === id) renderServeWorkspace(id, String(err));
+    }
+  }
+
+  async function stopServe(id) {
+    try {
+      await fetch('/api/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetId: id }),
+      });
+      // The serve SSE 'stopped' event clears the running state.
+    } catch (err) {
+      /* the stop SSE event (or a later refresh) reconciles state */
+    }
+  }
+
+  function renderServeWorkspace(id, errMsg) {
+    const ws = document.getElementById('workspace');
+    ws.innerHTML = '';
+    const st = serveState.get(id) || { status: 'stopped', endpoints: [] };
+    const running = st.status === 'running';
+    const starting = st.status === 'starting';
+
+    const head = el('div', 'composer');
+    head.appendChild(el('div', 'target-name', 'Serve ' + id));
+    const btn = running || starting
+      ? el('button', null, 'Stop')
+      : el('button', null, starting ? 'Starting…' : 'Start');
+    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id); };
+    head.appendChild(btn);
+    if (errMsg) {
+      const m = el('div', 'err', errMsg);
+      head.appendChild(m);
+    }
+    ws.appendChild(head);
+
+    const epSec = el('div', 'section');
+    epSec.appendChild(el('h3', null, 'Endpoints'));
+    if (running && st.endpoints.length) {
+      for (const url of st.endpoints) {
+        const link = href(url);
+        epSec.appendChild(link);
+      }
+    } else {
+      epSec.appendChild(el('pre', null, starting ? '(starting…)' : '(not running)'));
+    }
+    ws.appendChild(epSec);
+
+    const logs = logsById.get(id) || [];
+    const logSec = el('div', 'section');
+    logSec.appendChild(el('h3', null, 'Logs'));
+    logSec.appendChild(el('pre', null, logs.length ? logs.join('\\n') : '(none)'));
+    ws.appendChild(logSec);
+  }
+
+  // Build an <a> that opens an http(s) endpoint in a new tab; ws:// URLs
+  // are shown as plain text (not navigable in a browser tab).
+  function href(url) {
+    if (/^https?:/.test(url)) {
+      const a = el('a', 'endpoint', url);
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      return a;
+    }
+    return el('div', 'endpoint', url);
   }
 
   function renderComposer(id, kind, eventText) {
@@ -304,13 +470,26 @@ const STUDIO_SCRIPT = `
     es.addEventListener('open', () => { conn.textContent = '● live'; conn.className = 'up'; });
     es.addEventListener('error', () => { conn.textContent = '● disconnected'; conn.className = 'down'; });
     es.addEventListener('invocation', (e) => addInvocation(JSON.parse(e.data)));
+    es.addEventListener('serve', (e) => onServeEvent(JSON.parse(e.data)));
     es.addEventListener('log', (e) => {
       const ev = JSON.parse(e.data);
       const arr = logsById.get(ev.containerId) || [];
       arr.push(ev.line);
       logsById.set(ev.containerId, arr);
       if (shownInvId === ev.containerId) renderResult(ev.containerId);
+      if (shownServeId === ev.containerId) renderServeWorkspace(ev.containerId);
     });
+  }
+
+  function onServeEvent(ev) {
+    // A 'stopped' / 'error' transition clears the running state; otherwise
+    // record the latest status + endpoints for the row + workspace.
+    if (ev.status === 'stopped' || ev.status === 'error') {
+      serveState.set(ev.target, { status: ev.status, endpoints: [] });
+    } else {
+      serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [] });
+    }
+    updateServeRow(ev.target);
   }
 
   function initSplitters() {
@@ -343,7 +522,7 @@ const STUDIO_SCRIPT = `
     wire('split-right', (dx, l0, r0) => { right = clamp(r0 - dx); });
   }
 
-  loadTargets();
+  loadTargets().then(loadRunning);
   connect();
   initSplitters();
 `;
@@ -373,7 +552,7 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
 <main>
   <section class="pane" id="targets"><h2>Targets</h2></section>
   <div class="splitter" id="split-left"></div>
-  <section class="pane" id="workspace"><div class="empty">Pick a Lambda on the left to invoke it.</div></section>
+  <section class="pane" id="workspace"><div class="empty">Pick a Lambda to invoke, or an API to serve, on the left.</div></section>
   <div class="splitter" id="split-right"></div>
   <section class="pane" id="timeline"><h2>Timeline</h2><div class="empty">No requests yet.</div></section>
 </main>

@@ -1,0 +1,418 @@
+import { EventEmitter } from 'node:events';
+import { describe, it, expect, vi } from 'vite-plus/test';
+import {
+  StudioEventBus,
+  type StudioLogEvent,
+  type StudioServeEvent,
+} from '../../../src/local/studio-events.js';
+import { createStudioServeManager } from '../../../src/local/studio-serve-manager.js';
+
+/** A minimal stand-in for a long-running spawned serve child. */
+function makeFakeChild(pid = 4242): EventEmitter & {
+  stdout: EventEmitter & { setEncoding: () => void };
+  stderr: EventEmitter & { setEncoding: () => void };
+  kill: ReturnType<typeof vi.fn>;
+  pid: number;
+  exitCode: number | null;
+  signalCode: string | null;
+} {
+  const stdout = Object.assign(new EventEmitter(), { setEncoding: () => undefined });
+  const stderr = Object.assign(new EventEmitter(), { setEncoding: () => undefined });
+  return Object.assign(new EventEmitter(), {
+    stdout,
+    stderr,
+    kill: vi.fn(),
+    pid,
+    exitCode: null as number | null,
+    signalCode: null as string | null,
+  });
+}
+
+function collect(bus: StudioEventBus): { serves: StudioServeEvent[]; logs: StudioLogEvent[] } {
+  const serves: StudioServeEvent[] = [];
+  const logs: StudioLogEvent[] = [];
+  bus.on('serve', (e) => serves.push(e));
+  bus.on('log', (e) => logs.push(e));
+  return { serves, logs };
+}
+
+const fixedClock = (): (() => number) => {
+  let t = 1000;
+  return () => (t += 10);
+};
+
+/**
+ * A controllable timer pair: `setTimeoutFn` records callbacks instead of
+ * scheduling them; `fireLast` / `fireAll` invoke them on demand so tests
+ * can drive the ready-timeout + SIGKILL-escalation timers deterministically.
+ */
+function manualTimers(): {
+  setTimeoutFn: typeof setTimeout;
+  clearTimeoutFn: typeof clearTimeout;
+  fireLast: () => void;
+  fireAll: () => void;
+} {
+  const pending = new Map<number, () => void>();
+  let nextId = 1;
+  const setTimeoutFn = ((cb: () => void) => {
+    const id = nextId++;
+    pending.set(id, cb);
+    return { __id: id, unref: () => undefined };
+  }) as unknown as typeof setTimeout;
+  const clearTimeoutFn = ((t: { __id?: number }) => {
+    if (t && t.__id != null) pending.delete(t.__id);
+  }) as unknown as typeof clearTimeout;
+  const fireLast = (): void => {
+    const ids = [...pending.keys()];
+    const id = ids[ids.length - 1];
+    if (id != null) {
+      const cb = pending.get(id);
+      pending.delete(id);
+      cb?.();
+    }
+  };
+  const fireAll = (): void => {
+    for (const [id, cb] of [...pending]) {
+      pending.delete(id);
+      cb();
+    }
+  };
+  return { setTimeoutFn, clearTimeoutFn, fireLast, fireAll };
+}
+
+const LISTENING = 'Server listening on http://127.0.0.1:51234  (MyApi)\n';
+
+describe('createStudioServeManager', () => {
+  it('spawns `cdkl start-api <target> --port 0` and resolves running on the listening line', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    const state = await p;
+
+    const [bin, argv] = spawnFn.mock.calls[0] as unknown as [string, string[]];
+    expect(bin).toBe('/usr/bin/node');
+    expect(argv[0]).toBe('/path/to/cli.js');
+    expect(argv.slice(1, 6)).toEqual(['start-api', 'MyApi', '--port', '0', '--host']);
+
+    expect(state.status).toBe('running');
+    expect(state.endpoints).toEqual(['http://127.0.0.1:51234']);
+    expect(state.pid).toBe(4242);
+
+    // serve events: starting then running.
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
+    expect(serves[1].endpoints).toEqual(['http://127.0.0.1:51234']);
+  });
+
+  it('streams child stdout AND stderr lines onto the bus as log events keyed by the target', async () => {
+    const bus = new StudioEventBus();
+    const { logs } = collect(bus);
+    const child = makeFakeChild();
+
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stderr.emit('data', 'warming container\n');
+    child.stdout.emit('data', LISTENING);
+    await p;
+    child.stdout.emit('data', 'GET /health 200\n');
+
+    const lines = logs.map((l) => l.line);
+    expect(lines).toContain('warming container');
+    expect(lines).toContain('GET /health 200');
+    // The listening line itself is also surfaced as a log line.
+    expect(lines.some((l) => l.startsWith('Server listening on'))).toBe(true);
+    expect(logs.every((l) => l.containerId === 'MyApi' && l.target === 'MyApi')).toBe(true);
+  });
+
+  it('rejects a non-api kind without spawning', async () => {
+    const bus = new StudioEventBus();
+    const spawnFn = vi.fn();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+    });
+
+    await expect(mgr.start({ targetId: 'MySvc', kind: 'ecs' })).rejects.toThrow(/not supported/i);
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects starting a target that is already running', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+
+    await expect(mgr.start({ targetId: 'MyApi', kind: 'api' })).rejects.toThrow(/already running/i);
+  });
+
+  it('rejects + emits error when the child exits before ever listening', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.emit('close', 1);
+
+    await expect(p).rejects.toThrow(/exited before listening/i);
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'error']);
+    // A failed boot is not tracked as running.
+    expect(mgr.list()).toEqual([]);
+  });
+
+  it('rejects when spawn throws synchronously', async () => {
+    const bus = new StudioEventBus();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => {
+        throw new Error('ENOENT: node not found');
+      }) as never,
+    });
+
+    await expect(mgr.start({ targetId: 'MyApi', kind: 'api' })).rejects.toThrow(/ENOENT/);
+    expect(mgr.list()).toEqual([]);
+  });
+
+  it('rejects when the child emits an error event before ready', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.emit('error', new Error('spawn EACCES'));
+    await expect(p).rejects.toThrow(/EACCES/);
+  });
+
+  it('gracefully stops (SIGTERM->SIGKILL) the child + rejects on the ready timeout', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const { setTimeoutFn, clearTimeoutFn, fireLast, fireAll } = manualTimers();
+
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      readyTimeoutMs: 5,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    fireLast(); // fire the ready-timeout timer
+    await expect(p).rejects.toThrow(/did not start/i);
+    // The timeout must SIGTERM (graceful) first — NOT an immediate SIGKILL,
+    // so start-api can tear down its RIE containers (#3).
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+    fireAll(); // fire the SIGKILL-escalation grace timer
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(serves.some((s) => s.status === 'error')).toBe(true);
+  });
+
+  it('reports a crash WHILE running (close not via stop) as stopped + evicts it', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    child.emit('close', 1); // the server process crashed on its own
+
+    expect(serves.at(-1)?.status).toBe('stopped');
+    expect(serves.at(-1)?.message).toMatch(/exited/i);
+    expect(mgr.list()).toEqual([]);
+  });
+
+  it('marks a post-ready child error as errored + evicts it', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    child.emit('error', new Error('post-ready boom'));
+
+    expect(serves.at(-1)?.status).toBe('error');
+    expect(serves.at(-1)?.message).toContain('post-ready boom');
+    expect(mgr.list()).toEqual([]);
+  });
+
+  it('stopping a still-STARTING serve is a clean stop, not a boot failure (#1)', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const { setTimeoutFn, clearTimeoutFn } = manualTimers();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    // Start but never emit a listening line — the serve stays `starting`.
+    const startP = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    const stopP = mgr.stop({ targetId: 'MyApi' });
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', 0); // child exits in response to the stop's SIGTERM
+
+    await expect(startP).rejects.toThrow(/stopped before it finished starting/i);
+    await stopP;
+
+    // Exactly starting -> stopped; NO `error` event for a user-initiated stop.
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'stopped']);
+  });
+
+  it('appends a second listening endpoint and re-emits running', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    child.stdout.emit('data', 'Server listening on ws://127.0.0.1:51235/ws  (MyWs)\n');
+
+    const running = serves.filter((s) => s.status === 'running');
+    expect(running).toHaveLength(2);
+    expect(running[1].endpoints).toEqual([
+      'http://127.0.0.1:51234',
+      'ws://127.0.0.1:51235/ws',
+    ]);
+    expect(mgr.list()[0].endpoints).toHaveLength(2);
+  });
+
+  it('stop() SIGTERMs the child, emits stopped, and drops it from the running list', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    expect(mgr.list().map((s) => s.targetId)).toEqual(['MyApi']);
+
+    const stopP = mgr.stop({ targetId: 'MyApi' });
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('close', 0); // child exits in response to SIGTERM
+    await stopP;
+
+    expect(mgr.list()).toEqual([]);
+    expect(serves.at(-1)?.status).toBe('stopped');
+  });
+
+  it('stop() escalates to SIGKILL when the child ignores SIGTERM', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const { setTimeoutFn, clearTimeoutFn, fireAll } = manualTimers();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+
+    const stopP = mgr.stop({ targetId: 'MyApi' });
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    fireAll(); // child ignored SIGTERM -> the grace timer escalates
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    child.emit('close', null); // finally dies from the SIGKILL
+    await stopP;
+    expect(mgr.list()).toEqual([]);
+  });
+
+  it('stop() rejects for a target that is not running', async () => {
+    const bus = new StudioEventBus();
+    const mgr = createStudioServeManager({ cliEntry: 'cli.js', bus, spawnFn: (() => makeFakeChild()) as never });
+    await expect(mgr.stop({ targetId: 'Nope' })).rejects.toThrow(/not running/i);
+  });
+
+  it('stopAll() stops every running serve', async () => {
+    const bus = new StudioEventBus();
+    const children = [makeFakeChild(1), makeFakeChild(2)];
+    let i = 0;
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => children[i++]) as never,
+    });
+
+    const p1 = mgr.start({ targetId: 'ApiA', kind: 'api' });
+    children[0].stdout.emit('data', LISTENING);
+    await p1;
+    const p2 = mgr.start({ targetId: 'ApiB', kind: 'api' });
+    children[1].stdout.emit('data', LISTENING);
+    await p2;
+    expect(mgr.list()).toHaveLength(2);
+
+    const allP = mgr.stopAll();
+    children[0].emit('close', 0);
+    children[1].emit('close', 0);
+    await allP;
+
+    expect(mgr.list()).toEqual([]);
+    expect(children[0].kill).toHaveBeenCalledWith('SIGTERM');
+    expect(children[1].kill).toHaveBeenCalledWith('SIGTERM');
+  });
+});

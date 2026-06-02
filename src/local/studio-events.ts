@@ -60,11 +60,43 @@ export interface StudioLogEvent {
 }
 
 /**
+ * Lifecycle of a long-running served target (`api` / `alb` / `ecs`
+ * service) the studio started. Unlike {@link StudioInvocationEvent}
+ * (one per request), a serve emits one event per status TRANSITION:
+ * `starting` when the child is spawned, `running` once it is listening
+ * (with the served endpoints), `stopped` after a clean stop, `error`
+ * when it failed to come up or crashed. The UI keys these by
+ * {@link StudioServeEvent.target} to drive the per-target `running ●
+ * :port [Stop]` affordance.
+ */
+export interface StudioServeEvent {
+  /** Wall-clock epoch ms when the status was observed. */
+  ts: number;
+  /** Target id of the served target (stack-qualified or display path). */
+  target: string;
+  /** The served target's kind. */
+  kind: StudioTargetKind;
+  /** Lifecycle status this event reports. */
+  status: 'starting' | 'running' | 'stopped' | 'error';
+  /**
+   * Served endpoint URLs, present on `running` (e.g.
+   * `['http://127.0.0.1:51234']`). A single served target can expose
+   * several (multiple APIs / WebSocket listeners), so this is a list.
+   */
+  endpoints?: string[];
+  /** Child process id, present from `starting` onward. */
+  pid?: number;
+  /** Status / error detail (e.g. the failure reason on `error`). */
+  message?: string;
+}
+
+/**
  * Map of event name -> listener argument, for the typed wrapper below.
  */
 interface StudioEventMap {
   invocation: [StudioInvocationEvent];
   log: [StudioLogEvent];
+  serve: [StudioServeEvent];
 }
 
 /**

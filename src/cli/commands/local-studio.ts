@@ -25,6 +25,11 @@ import {
   type RunningStudioServer,
 } from '../../local/studio-server.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
+import {
+  createStudioServeManager,
+  type StudioServeManager,
+  type StudioStopRequest,
+} from '../../local/studio-serve-manager.js';
 
 const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
   'lambda',
@@ -52,6 +57,22 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     throw new Error(`Request body "kind" must be one of: ${STUDIO_TARGET_KINDS.join(', ')}.`);
   }
   return { targetId, kind: kind as StudioTargetKind, event };
+}
+
+/**
+ * Validate + narrow the untyped `POST /api/stop` body into a
+ * {@link StudioStopRequest}. Throws (→ 400 from the server) on a missing
+ * / empty target id.
+ */
+export function coerceStopRequest(body: unknown): StudioStopRequest {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('Request body must be a JSON object.');
+  }
+  const { targetId } = body as Record<string, unknown>;
+  if (typeof targetId !== 'string' || targetId.trim() === '') {
+    throw new Error('Request body must include a non-empty "targetId" string.');
+  }
+  return { targetId };
 }
 
 const DEFAULT_STUDIO_PORT = 9999;
@@ -128,17 +149,22 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   const appLabel = stacks.map((s) => s.stackName).join(', ') || appCmd;
 
   const bus = new StudioEventBus();
-  const dispatcher = createStudioDispatcher({
-    // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
-    // bin); the dispatcher spawns it again as `cdkl invoke <target>`.
-    cliEntry: process.argv[1] ?? '',
+  // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
+  // bin); both the invoke dispatcher and the serve manager spawn it again
+  // (`cdkl invoke <target>` / `cdkl start-api <target>`) — studio is a
+  // control plane over the CLI.
+  const cliEntry = process.argv[1] ?? '';
+  const childConfig = {
+    cliEntry,
     bus,
     cwd: process.cwd(),
     ...(appCmd ? { app: appCmd } : {}),
     ...(options.profile ? { profile: options.profile } : {}),
     ...(options.region ? { region: options.region } : {}),
     ...(Object.keys(context).length > 0 ? { context } : {}),
-  });
+  };
+  const dispatcher = createStudioDispatcher(childConfig);
+  const serveManager = createStudioServeManager(childConfig);
 
   const server = await startStudioServer({
     port,
@@ -146,7 +172,19 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     targetGroups,
     appLabel,
     cliName: getEmbedConfig().cliName,
-    onRun: (body) => dispatcher.run(coerceRunRequest(body)),
+    // `/api/run`: a Lambda is a single-shot invoke; everything else is a
+    // long-running serve start (slice C1 supports the `api` kind, the
+    // serve manager rejects the rest with a clear message).
+    onRun: (body) => {
+      const req = coerceRunRequest(body);
+      return req.kind === 'lambda' ? dispatcher.run(req) : serveManager.start(req);
+    },
+    onStop: async (body) => {
+      const req = coerceStopRequest(body);
+      await serveManager.stop(req);
+      return { stopped: req.targetId };
+    },
+    getRunning: () => ({ running: serveManager.list() }),
   });
 
   const cliName = getEmbedConfig().cliName;
@@ -159,7 +197,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     openBrowser(server.url);
   }
 
-  await blockUntilShutdown(server, cliName);
+  await blockUntilShutdown(server, serveManager, cliName);
 }
 
 /** Best-effort cross-platform browser open. Failures are non-fatal. */
@@ -180,18 +218,27 @@ function openBrowser(url: string): void {
 }
 
 /**
- * Block until SIGINT / SIGTERM, then close the studio server and resolve.
- * Mirrors the long-running serve commands' graceful-shutdown contract.
+ * Block until SIGINT / SIGTERM, then stop every running serve child,
+ * close the studio server, and resolve. Mirrors the long-running serve
+ * commands' graceful-shutdown contract — the serve children are killed
+ * BEFORE the server closes so their RIE containers are torn down rather
+ * than orphaned.
  */
-function blockUntilShutdown(server: RunningStudioServer, cliName: string): Promise<void> {
+function blockUntilShutdown(
+  server: RunningStudioServer,
+  serveManager: StudioServeManager,
+  cliName: string
+): Promise<void> {
   return new Promise<void>((resolveShutdown) => {
     let shuttingDown = false;
     const shutdown = (signal: string): void => {
       if (shuttingDown) return;
       shuttingDown = true;
       getLogger().info(`Received ${signal}; stopping ${cliName} studio...`);
-      void server
-        .close()
+      void serveManager
+        .stopAll()
+        .catch((err: unknown) => getLogger().warn(`Error stopping serve targets: ${String(err)}`))
+        .then(() => server.close())
         .catch((err: unknown) => getLogger().warn(`Error stopping studio server: ${String(err)}`))
         .finally(() => resolveShutdown());
     };

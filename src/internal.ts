@@ -691,6 +691,7 @@ export {
   StudioEventBus,
   type StudioInvocationEvent,
   type StudioLogEvent,
+  type StudioServeEvent,
   type StudioTargetKind,
 } from './local/studio-events.js';
 export {
@@ -718,4 +719,23 @@ export {
   type StudioRunRequest,
   type StudioRunResult,
 } from './local/studio-dispatch.js';
-export { coerceRunRequest } from './cli/commands/local-studio.js';
+export { coerceRunRequest, coerceStopRequest } from './cli/commands/local-studio.js';
+
+/**
+ * `cdkl studio` serve manager (issue #282, slice C1). A host CLI
+ * embedding studio wires `createStudioServeManager(...)` so the browser's
+ * `POST /api/run` for a long-running target (the `api` kind) starts the
+ * host's own `start-api` subcommand as a managed child process — studio
+ * is a control plane over the CLI — and `POST /api/stop` /
+ * `GET /api/running` drive its lifecycle. The manager emits `serve`
+ * events onto the {@link StudioEventBus} so the UI reflects running state
+ * over SSE. `coerceStopRequest` validates the untyped `/api/stop` body.
+ */
+export {
+  createStudioServeManager,
+  type StudioServeManager,
+  type StudioServeManagerConfig,
+  type StudioServeRequest,
+  type StudioStopRequest,
+  type StudioServeState,
+} from './local/studio-serve-manager.js';

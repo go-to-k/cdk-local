@@ -194,9 +194,10 @@ describe('startStudioServer', () => {
     const res = await resP;
     const reader = res.body!.getReader();
     await reader.read(); // open the stream so the server subscribes
-    // Subscribed: one invocation + one log listener.
+    // Subscribed: one invocation + one log + one serve listener.
     expect(bus.listenerCount('invocation')).toBe(1);
     expect(bus.listenerCount('log')).toBe(1);
+    expect(bus.listenerCount('serve')).toBe(1);
 
     abort(); // client disconnect (destroys the connection)
 
@@ -207,6 +208,7 @@ describe('startStudioServer', () => {
     }
     expect(bus.listenerCount('invocation')).toBe(0);
     expect(bus.listenerCount('log')).toBe(0);
+    expect(bus.listenerCount('serve')).toBe(0);
   });
 
   it('POST /api/run dispatches to onRun and returns its result as JSON', async () => {
@@ -260,6 +262,85 @@ describe('startStudioServer', () => {
     expect(res.status).toBe(500);
     const data = (await res.json()) as { error: string };
     expect(data.error).toContain('dispatch blew up');
+  });
+
+  it('POST /api/stop dispatches to onStop and returns its result as JSON', async () => {
+    let received: unknown;
+    const onStop = (body: unknown): Promise<unknown> => {
+      received = body;
+      return Promise.resolve({ stopped: 'MyApi' });
+    };
+    const server = await boot({ onStop });
+
+    const res = await fetch(`${server.url}/api/stop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetId: 'MyApi' }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { stopped: string };
+    expect(data.stopped).toBe('MyApi');
+    expect(received).toEqual({ targetId: 'MyApi' });
+  });
+
+  it('POST /api/stop answers 501 when no onStop handler is wired', async () => {
+    const server = await boot(); // observe-only shell
+    const res = await fetch(`${server.url}/api/stop`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(501);
+    await res.text();
+  });
+
+  it('GET /api/running returns the getRunning snapshot', async () => {
+    const server = await boot({
+      getRunning: () => ({ running: [{ targetId: 'MyApi', kind: 'api', status: 'running' }] }),
+    });
+    const res = await fetch(`${server.url}/api/running`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { running: { targetId: string }[] };
+    expect(data.running).toEqual([{ targetId: 'MyApi', kind: 'api', status: 'running' }]);
+  });
+
+  it('GET /api/running returns an empty list when no getRunning is wired', async () => {
+    const server = await boot(); // observe-only shell
+    const res = await fetch(`${server.url}/api/running`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { running: unknown[] };
+    expect(data.running).toEqual([]);
+  });
+
+  it('streams an emitted serve event over the SSE channel', async () => {
+    const bus = new StudioEventBus();
+    const server = await boot({ bus });
+
+    const { res: resP, abort } = openSse(`${server.url}/api/events`);
+    const res = await resP;
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    await reader.read(); // opening `:ok`
+
+    bus.emit('serve', {
+      ts: 1,
+      target: 'MyApi',
+      kind: 'api',
+      status: 'running',
+      endpoints: ['http://127.0.0.1:51234'],
+    });
+
+    let buf = '';
+    while (!buf.includes('event: serve')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+    }
+    abort();
+
+    expect(buf).toContain('event: serve');
+    expect(buf).toContain('"status":"running"');
+    expect(buf).toContain('http://127.0.0.1:51234');
   });
 
   it('close() resolves even with a live SSE client connected', async () => {

@@ -12,11 +12,15 @@
 #   - asserts the UI HTML is served at GET /,
 #   - asserts GET /api/targets lists the fixture's targets,
 #   - asserts GET /api/events opens a text/event-stream (SSE),
-#   - asserts the command is HIDDEN without the preview env gate, and
+#   - asserts the command is HIDDEN without the preview env gate,
+#   - drives POST /api/run to invoke a Lambda in a RIE container (slice B),
+#   - drives POST /api/run to START a long-running `start-api` serve, curls
+#     the served route through it, asserts GET /api/running reflects it +
+#     a `serve` SSE event fired, then POST /api/stop tears it down (slice
+#     C1), and
 #   - tears the server down cleanly.
 #
-# No Docker required — Phase 1 is a pure synth + HTTP read. (The invoke /
-# serve slices add Docker-backed timeline coverage.)
+# Docker required — the invoke + serve slices boot real RIE containers.
 #
 #   bash tests/integration/local-studio/verify.sh
 
@@ -204,7 +208,116 @@ fi
 echo "    OK: invocation observed on the SSE timeline"
 
 # ---------------------------------------------------------------------------
-# 7. Clean shutdown on SIGTERM.
+# 7. POST /api/run STARTS a long-running `start-api` serve (slice C1); curl
+#    the served route; assert running state + a serve SSE event; stop it.
+# ---------------------------------------------------------------------------
+API_TARGET="LocalStudioFixture/MyHttpApi"
+echo "==> POST /api/run starts a serve for ${API_TARGET}"
+
+# Capture serve SSE events from before the start so we observe the running
+# transition.
+curl -sN --max-time 200 "${URL}/api/events" >"${SSE_FILE}" 2>/dev/null &
+SSE_PID=$!
+sleep 1
+
+# Starting the serve boots a local HTTP server (the RIE container starts on
+# the first request, so the listening line — and this response — come back
+# quickly; the generous timeout only covers a slow synth).
+SERVE_FILE=$(mktemp)
+HTTP_CODE=$(curl -s -o "${SERVE_FILE}" -w '%{http_code}' --max-time 120 \
+  -X POST "${URL}/api/run" \
+  -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${API_TARGET}\",\"kind\":\"api\"}" || true)
+
+if [[ "${HTTP_CODE}" != "200" ]]; then
+  echo "FAIL: POST /api/run (serve) returned HTTP ${HTTP_CODE}"
+  echo "----- serve response -----"; cat "${SERVE_FILE}"; echo "--------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${SERVE_FILE}"
+  exit 1
+fi
+for needle in '"status":"running"' '"kind":"api"'; do
+  if ! grep -qF "${needle}" "${SERVE_FILE}"; then
+    echo "FAIL: serve response missing: ${needle}"
+    echo "----- serve response -----"; cat "${SERVE_FILE}"; echo "--------------------------"
+    rm -f "${SERVE_FILE}"
+    exit 1
+  fi
+done
+SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${SERVE_FILE}" | head -1 || true)
+rm -f "${SERVE_FILE}"
+if [[ -z "${SERVED}" ]]; then
+  echo "FAIL: could not parse the served endpoint from the run response"
+  exit 1
+fi
+echo "    OK: serve started at ${SERVED}"
+
+echo "==> The served route answers through the studio-managed start-api"
+# First request boots the RIE container for MyHandler — generous timeout.
+ROUTE_FILE=$(mktemp)
+# The fixture handler returns the exact body `ok` — match it as a whole
+# line (not a loose substring) so a stray `tokens` / `not ok` cannot pass.
+ROUTE_CODE=$(curl -s -o "${ROUTE_FILE}" -w '%{http_code}' --max-time 180 "${SERVED}/hello" || true)
+if [[ "${ROUTE_CODE}" != "200" ]] || ! grep -qx 'ok' "${ROUTE_FILE}"; then
+  echo "FAIL: served route did not return 200 ok (HTTP ${ROUTE_CODE})"
+  echo "----- route body -----"; cat "${ROUTE_FILE}"; echo "----------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${ROUTE_FILE}"
+  exit 1
+fi
+rm -f "${ROUTE_FILE}"
+echo "    OK: GET ${SERVED}/hello -> 200 ok"
+
+echo "==> GET /api/running reflects the running serve"
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! grep -qF "${API_TARGET}" "${BODY_FILE}" || ! grep -qF '"status":"running"' "${BODY_FILE}"; then
+  echo "FAIL: /api/running did not list the running serve"
+  cat "${BODY_FILE}"
+  exit 1
+fi
+echo "    OK: /api/running lists ${API_TARGET}"
+
+echo "==> A serve event was broadcast over SSE"
+for _ in $(seq 1 20); do
+  if grep -qF 'event: serve' "${SSE_FILE}" && grep -qF '"status":"running"' "${SSE_FILE}"; then
+    break
+  fi
+  sleep 0.5
+done
+if ! grep -qF 'event: serve' "${SSE_FILE}" || ! grep -qF '"status":"running"' "${SSE_FILE}"; then
+  echo "FAIL: SSE stream did not carry the serve running event"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: serve running event observed on the SSE timeline"
+
+echo "==> POST /api/stop tears the serve down"
+STOP_CODE=$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 30 \
+  -X POST "${URL}/api/stop" \
+  -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${API_TARGET}\"}" || true)
+if [[ "${STOP_CODE}" != "200" ]]; then
+  echo "FAIL: POST /api/stop returned HTTP ${STOP_CODE}"
+  cat "${BODY_FILE}"
+  exit 1
+fi
+kill "${SSE_PID}" 2>/dev/null || true
+SSE_PID=""
+# After the stop, the running list must be empty again.
+for _ in $(seq 1 20); do
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null || true
+  if ! grep -qF "${API_TARGET}" "${BODY_FILE}"; then break; fi
+  sleep 0.5
+done
+if grep -qF "${API_TARGET}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running still lists ${API_TARGET} after stop"
+  cat "${BODY_FILE}"
+  exit 1
+fi
+echo "    OK: serve stopped; /api/running is empty"
+
+# ---------------------------------------------------------------------------
+# 8. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
 kill "${STUDIO_PID}"
@@ -220,4 +333,4 @@ STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + shutdown)"
