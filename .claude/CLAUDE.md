@@ -212,11 +212,17 @@ compute-locally category for Lambda + API Gateway).
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
   `createLocalInvokeAgentCoreCommand`, `createLocalStartApiCommand`,
   `createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
-  `createLocalStartAlbCommand`, `createLocalListCommand`) + shared option
+  `createLocalStartAlbCommand`, `createLocalListCommand`,
+  `createLocalStudioCommand`) + shared option
   helpers. `start-service` and `start-alb` share one neutral orchestration
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
+  `createLocalStudioCommand` (`cdkl studio`, issue #282) is the
+  interactive web console over the same target enumeration; it is built
+  incrementally and registered ONLY when `CDKL_STUDIO_PREVIEW=1` (the
+  binary keeps it hidden until the unveil slice), so it is NOT yet on the
+  README's user-facing command surface.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -278,7 +284,15 @@ compute-locally category for Lambda + API Gateway).
   action gates serving with a 401 + `WWW-Authenticate: Bearer` on deny;
   WebSocket `Upgrade` requests run through the same route + auth
   pipeline, then bridge the raw TCP socket to the picked ECS replica
-  with `Upgrade` / `Sec-WebSocket-*` headers preserved), etc.
+  with `Upgrade` / `Sec-WebSocket-*` headers preserved),
+  studio-events (issue #282 — the typed in-process event bus every
+  `cdkl studio` observation flows through; the studio HTTP server
+  subscribes and forwards to the browser over SSE), studio-server
+  (the localhost HTTP server behind `cdkl studio`: serves the embedded
+  UI at `/`, the synthesized target list at `/api/targets`, and an SSE
+  stream of the event bus at `/api/events`; collision-bumps the port),
+  studio-ui (the framework-free web UI embedded as a string so it ships
+  inside the npm package with no asset-copy build step), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
@@ -422,6 +436,19 @@ vp run runtime:smoke
   (spec compliance / code quality / test adequacy) catch different
   classes of issues. Sub-agents have read-only tools (Read / Glob /
   Grep / Bash) so they can never accidentally edit.
+
+- **Never defer integration tests to a later PR**: when a feature is
+  built incrementally across multiple PRs (slices), every slice that
+  lands on `main` MUST carry its own integration coverage green before
+  merge — NEVER ship code-then-integ-later. A slice that adds a runtime
+  code path without exercising it end-to-end (Docker / fixture) can
+  release with a latent bug behind a working-looking unit suite; that
+  is unacceptable. Each PR is a self-contained vertical: unit + integ
+  for exactly the behavior it adds. A "final integ pass" slice is a
+  design smell — fold the integ into the slice that introduces the
+  behavior. (If a slice's behavior is genuinely not yet user-reachable,
+  gate it so it cannot ship enabled — but still integ-test the real
+  code path it adds, e.g. via the gated entrypoint.)
 
 - **When running integration tests**: use `/run-integ <test-name>`
   (e.g., `/run-integ local-invoke`). Never bypass by shelling into

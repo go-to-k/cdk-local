@@ -26,6 +26,10 @@ import {
   addStartApiSpecificOptions,
   createLocalStartApiCommand,
 } from '../../../src/cli/commands/local-start-api.js';
+import {
+  addStudioSpecificOptions,
+  createLocalStudioCommand,
+} from '../../../src/cli/commands/local-studio.js';
 
 /**
  * Return the sorted long-flag set for a Commander command. Mirrors the
@@ -122,6 +126,24 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
       new Set([
         ...commonAppContextRegionFlags(),
         ...longFlagsOf(addRunTaskSpecificOptions(new Command())),
+      ])
+    ).sort();
+    expect(full).toEqual(expected);
+  });
+});
+
+describe('studio option surface contract (addStudioSpecificOptions)', () => {
+  it('addStudioSpecificOptions registers exactly the known studio-only flags', () => {
+    const flags = longFlagsOf(addStudioSpecificOptions(new Command()));
+    expect(flags).toEqual(['--no-open', '--studio-port']);
+  });
+
+  it('createLocalStudioCommand surface equals common + studio-specific (no inline drift)', () => {
+    const full = longFlagsOf(createLocalStudioCommand());
+    const expected = Array.from(
+      new Set([
+        ...commonAppContextRegionFlags(),
+        ...longFlagsOf(addStudioSpecificOptions(new Command())),
       ])
     ).sort();
     expect(full).toEqual(expected);
