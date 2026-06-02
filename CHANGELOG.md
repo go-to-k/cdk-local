@@ -1,3 +1,10 @@
+# [0.86.0](https://github.com/go-to-k/cdk-local/compare/v0.85.0...v0.86.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** per-target run options in the UI composer ([#301](https://github.com/go-to-k/cdk-local/issues/301)) ([#304](https://github.com/go-to-k/cdk-local/issues/304)) ([1a89adb](https://github.com/go-to-k/cdk-local/commit/1a89adb40aa9f03e0d6b004d01abccdc780028e1))
+
 # [0.85.0](https://github.com/go-to-k/cdk-local/compare/v0.84.0...v0.85.0) (2026-06-02)
 
 
