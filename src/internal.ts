@@ -755,3 +755,20 @@ export {
   type StudioProxyConfig,
   type RunningStudioProxy,
 } from './local/studio-proxy.js';
+
+/**
+ * `cdkl studio` in-memory event store (issue #282, slice C3). A host CLI
+ * embedding studio wires `createStudioStore(bus)` and passes it to
+ * `startStudioServer({ store })` so the browser's history (`GET
+ * /api/history`), full-text log search (`GET /api/logs?q=`), and
+ * per-request log binding at CloudWatch granularity (`GET
+ * /api/invocations/<id>/logs`) are served from a bounded, newest-wins
+ * window of the {@link StudioEventBus} events.
+ */
+export {
+  createStudioStore,
+  type StudioStore,
+  type StudioStoreOptions,
+  type StudioHistory,
+  type StudioLogSearchOptions,
+} from './local/studio-store.js';

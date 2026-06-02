@@ -102,6 +102,20 @@ const STUDIO_CSS = `
   .section pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #cfcfcf; }
   .endpoint { display: block; color: #6aa9ff; text-decoration: none; padding: 2px 0; }
   .endpoint:hover { text-decoration: underline; }
+  .searchbar { padding: 6px 10px; border-bottom: 1px solid #2a2a2a; background: #151515;
+    position: sticky; top: 28px; z-index: 1; }
+  .searchbar input {
+    width: 100%; background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
+    padding: 5px 8px; font: 12px ui-monospace, Menlo, monospace;
+  }
+  .searchbar input:focus { outline: none; border-color: #4ec97a; }
+  #log-results { display: none; }
+  #log-results.active { display: block; }
+  .log-hit { padding: 4px 12px; border-bottom: 1px solid #222; white-space: pre-wrap;
+    word-break: break-word; }
+  .log-hit .lt { color: #777; }
+  .log-hit .lg { color: #6aa9ff; }
+  .log-hits-meta { padding: 6px 12px; color: #888; font-size: 11px; }
   #conn { font-size: 11px; }
   #conn.up { color: #7bd88f; }
   #conn.down { color: #e0707a; }
@@ -428,7 +442,7 @@ const STUDIO_SCRIPT = `
 
   function addInvocation(ev) {
     invById.set(ev.id, Object.assign(invById.get(ev.id) || {}, ev));
-    const timeline = document.getElementById('timeline');
+    const timeline = document.getElementById('timeline-rows');
     const placeholder = timeline.querySelector('.empty');
     if (placeholder) placeholder.remove();
 
@@ -508,6 +522,84 @@ const STUDIO_SCRIPT = `
     respSec.appendChild(h);
     respSec.appendChild(el('pre', null, ev.response != null ? fmt(ev.response) : '(pending…)'));
     ws.appendChild(respSec);
+
+    // Logs bound to THIS request at CloudWatch granularity (D5), fetched
+    // from the server store.
+    const logSec = el('div', 'section');
+    logSec.appendChild(el('h3', null, 'Logs'));
+    const logPre = el('pre', null, '(loading…)');
+    logSec.appendChild(logPre);
+    ws.appendChild(logSec);
+    fetchInvocationLogs(id, logPre);
+  }
+
+  async function fetchInvocationLogs(id, pre) {
+    try {
+      const res = await fetch('/api/invocations/' + encodeURIComponent(id) + '/logs');
+      const data = await res.json();
+      const lines = (data.logs || []).map((l) => l.line);
+      if (shownDetailId === id) pre.textContent = lines.length ? lines.join('\\n') : '(none)';
+    } catch (err) {
+      if (shownDetailId === id) pre.textContent = '(failed to load logs)';
+    }
+  }
+
+  // Full-text log search over the server store. A non-empty query shows
+  // matching log lines INSTEAD of the timeline rows; clearing restores them.
+  let searchTimer = null;
+  function wireLogSearch() {
+    const input = document.getElementById('log-search');
+    const rows = document.getElementById('timeline-rows');
+    const results = document.getElementById('log-results');
+    input.addEventListener('input', () => {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => runLogSearch(input.value.trim(), rows, results), 180);
+    });
+  }
+
+  async function runLogSearch(query, rows, results) {
+    if (query === '') {
+      results.classList.remove('active');
+      rows.style.display = '';
+      results.innerHTML = '';
+      return;
+    }
+    rows.style.display = 'none';
+    results.classList.add('active');
+    try {
+      const res = await fetch('/api/logs?q=' + encodeURIComponent(query));
+      const data = await res.json();
+      const hits = data.logs || [];
+      results.innerHTML = '';
+      results.appendChild(el('div', 'log-hits-meta', hits.length + ' match' + (hits.length === 1 ? '' : 'es')));
+      for (const h of hits) {
+        const row = el('div', 'log-hit');
+        row.appendChild(el('span', 'lt', new Date(h.ts).toLocaleTimeString() + '  '));
+        row.appendChild(el('span', 'lg', (h.target || '') + '  '));
+        row.appendChild(document.createTextNode(h.line));
+        results.appendChild(row);
+      }
+    } catch (err) {
+      results.innerHTML = '';
+      results.appendChild(el('div', 'log-hits-meta', 'Search failed: ' + err));
+    }
+  }
+
+  // Pull retained history on (re)connect so the timeline + logs reflect the
+  // whole session, not just events since this page loaded.
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/history');
+      const data = await res.json();
+      for (const log of (data.logs || [])) {
+        const arr = logsById.get(log.containerId) || [];
+        arr.push(log.line);
+        logsById.set(log.containerId, arr);
+      }
+      for (const inv of (data.invocations || [])) addInvocation(inv);
+    } catch (err) {
+      /* live SSE still drives the timeline; history is best-effort */
+    }
   }
 
   function connect() {
@@ -569,8 +661,10 @@ const STUDIO_SCRIPT = `
   }
 
   loadTargets().then(loadRunning);
+  loadHistory();
   connect();
   initSplitters();
+  wireLogSearch();
 `;
 
 /**
@@ -600,7 +694,12 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <div class="splitter" id="split-left"></div>
   <section class="pane" id="workspace"><div class="empty">Pick a Lambda to invoke, or an API to serve, on the left.</div></section>
   <div class="splitter" id="split-right"></div>
-  <section class="pane" id="timeline"><h2>Timeline</h2><div class="empty">No requests yet.</div></section>
+  <section class="pane" id="timeline">
+    <h2>Timeline</h2>
+    <div class="searchbar"><input id="log-search" type="search" placeholder="Search logs…" autocomplete="off" spellcheck="false" /></div>
+    <div id="timeline-rows"><div class="empty">No requests yet.</div></div>
+    <div id="log-results"></div>
+  </section>
 </main>
 <script>${STUDIO_SCRIPT}</script>
 </body>

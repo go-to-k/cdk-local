@@ -7,6 +7,7 @@ import {
   type StudioServeEvent,
 } from './studio-events.js';
 import { renderStudioHtml } from './studio-ui.js';
+import type { StudioStore } from './studio-store.js';
 import type { TargetListing } from './target-lister.js';
 
 /** One target as the studio UI consumes it (`GET /api/targets`). */
@@ -95,6 +96,13 @@ export interface StudioServerOptions {
    * list (the observe-only shell never runs anything).
    */
   getRunning?: () => unknown;
+  /**
+   * In-memory event/log store (slice C3) backing the history + log-search
+   * + per-request-log endpoints (`GET /api/history`, `GET /api/logs`,
+   * `GET /api/invocations/<id>/logs`). When omitted those endpoints return
+   * empty results.
+   */
+  store?: StudioStore;
 }
 
 /** A running studio server. */
@@ -167,6 +175,35 @@ function handleRequest(
     const running = options.getRunning ? options.getRunning() : { running: [] };
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(running));
+    return;
+  }
+  if (req.method === 'GET' && path === '/api/history') {
+    const history = options.store ? options.store.history() : { invocations: [], logs: [] };
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(history));
+    return;
+  }
+  if (req.method === 'GET' && path === '/api/logs') {
+    const params = new URLSearchParams(url.split('?')[1] ?? '');
+    const query = params.get('q') ?? '';
+    // `|| undefined`: a bare `target=` (empty) means "no filter", not
+    // "logs whose target is the empty string".
+    const target = params.get('target') || undefined;
+    const logs = options.store
+      ? options.store.searchLogs(query, target !== undefined ? { target } : {})
+      : [];
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ logs }));
+    return;
+  }
+  // `GET /api/invocations/<id>/logs` — the request's logs at CloudWatch
+  // granularity (decision D5).
+  const invLogsMatch = /^\/api\/invocations\/([^/]+)\/logs$/.exec(path ?? '');
+  if (req.method === 'GET' && invLogsMatch) {
+    const id = decodeURIComponent(invLogsMatch[1] ?? '');
+    const logs = options.store ? options.store.logsForInvocation(id) : [];
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ logs }));
     return;
   }
   if (req.method === 'GET' && path === '/api/events') {

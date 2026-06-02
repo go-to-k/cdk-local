@@ -292,14 +292,19 @@ compute-locally category for Lambda + API Gateway).
   (the localhost HTTP server behind `cdkl studio`: serves the embedded
   UI at `/`, the synthesized target list at `/api/targets`, an SSE
   stream of the event bus at `/api/events`, `POST /api/run` (single-shot
-  invoke / serve start), `POST /api/stop` (serve stop), and
-  `GET /api/running` (running serve snapshot); collision-bumps the port),
+  invoke / serve start), `POST /api/stop` (serve stop),
+  `GET /api/running` (running serve snapshot), and the slice-C3 store
+  endpoints `GET /api/history` / `GET /api/logs?q=` (full-text log
+  search) / `GET /api/invocations/<id>/logs` (per-request log binding);
+  collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
   workspace composer / timeline; Lambdas get an [Invoke] composer, APIs a
   [Start]/[Stop] serve control with a `running ● :port` indicator; the
   timeline carries both Lambda invocations and captured serve requests,
-  the latter opening a read-only Request/Response detail), studio-dispatch
+  the latter opening a read-only Request/Response detail; a log search box
+  queries the store and a captured request's detail shows its bound logs),
+  studio-dispatch
   (issue #282 — the single-shot `POST /api/run` handler
   for the `lambda` kind: runs a target from the studio UI by
   spawning the SAME `cdkl invoke` the headless command runs as a child
@@ -320,8 +325,14 @@ compute-locally category for Lambda + API Gateway).
   bounded body) onto the bus, so every request to the served port lands
   on the timeline regardless of source — browser / curl / pad alike
   (decision D4a); `Upgrade` (WebSocket) requests are raw-bridged without
-  capture. Full-text log search + alb / ecs serve kinds still to come),
-  etc.
+  capture), studio-store (issue #282, slice C3 — the in-memory event
+  store: subscribes to the bus and retains a bounded, newest-wins window
+  of invocations + log lines so the server can answer history on
+  (re)connect, full-text log search across the session, and
+  per-invocation log binding at CloudWatch granularity (decision D5 — a
+  Lambda binds strictly by container id; a captured serve request binds
+  best-effort by target + time window). alb / ecs serve kinds still to
+  come), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
