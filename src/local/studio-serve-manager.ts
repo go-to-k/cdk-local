@@ -1,5 +1,10 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StudioEventBus, type StudioServeEvent, type StudioTargetKind } from './studio-events.js';
+import {
+  startStudioProxy,
+  type RunningStudioProxy,
+  type StudioProxyConfig,
+} from './studio-proxy.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -68,6 +73,19 @@ export interface StudioServeManagerConfig {
   setTimeoutFn?: typeof setTimeout;
   /** `clearTimeout` (injectable for tests). */
   clearTimeoutFn?: typeof clearTimeout;
+  /**
+   * Factory for the capture proxy fronting each HTTP serve endpoint
+   * (slice C2). Injectable for tests; defaults to {@link startStudioProxy}.
+   * When `captureRequests` is false this is never called.
+   */
+  proxyFactory?: (config: StudioProxyConfig) => Promise<RunningStudioProxy>;
+  /**
+   * Front each HTTP serve endpoint with a capture proxy so every request
+   * to the served port lands on the studio timeline (decision D4a).
+   * Defaults to true; set false to hand the child's port through
+   * unproxied (the slice C1 behavior).
+   */
+  captureRequests?: boolean;
 }
 
 /** A bound serve manager exposing the start / stop / list surface. */
@@ -90,6 +108,8 @@ const LISTENING_RE = /Server listening on (\S+)/;
 
 interface ServeEntry extends StudioServeState {
   child: ChildProcessWithoutNullStreams;
+  /** Capture proxies fronting this serve's HTTP endpoints (slice C2). */
+  proxies: RunningStudioProxy[];
   /**
    * Set by `stop()` when it tears the child down WHILE it is still
    * `starting` (the ready promise has not settled). The child's `close`
@@ -114,9 +134,11 @@ interface ServeEntry extends StudioServeState {
  * with the discovered endpoints. `stop()` SIGTERMs the child (SIGKILL
  * after a grace window) and emits `stopped`.
  *
- * Request capture for traffic to the served port (decision D4a / D5) and
- * full-text log search arrive in slice C2; C1 is lifecycle + log
- * streaming only.
+ * Slice C2 fronts each HTTP serve endpoint with a capture proxy
+ * ({@link startStudioProxy}) so every request to the served port lands
+ * on the studio timeline (decision D4a); the `endpoints` the UI is
+ * handed are the proxy URLs. Full-text log search and alb / ecs serve
+ * kinds are still to come.
  */
 export function createStudioServeManager(config: StudioServeManagerConfig): StudioServeManager {
   const spawnFn = config.spawnFn ?? nodeSpawn;
@@ -127,8 +149,16 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
   const setTimeoutFn = config.setTimeoutFn ?? setTimeout;
   const clearTimeoutFn = config.clearTimeoutFn ?? clearTimeout;
   const cwd = config.cwd ?? process.cwd();
+  const proxyFactory = config.proxyFactory ?? startStudioProxy;
+  const captureRequests = config.captureRequests ?? true;
 
   const entries = new Map<string, ServeEntry>();
+
+  /** Close every capture proxy fronting `e` (best-effort; idempotent). */
+  async function closeProxies(e: ServeEntry): Promise<void> {
+    const proxies = e.proxies.splice(0);
+    await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));
+  }
 
   function publicState(e: ServeEntry): StudioServeState {
     const s: StudioServeState = {
@@ -192,6 +222,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       endpoints: [],
       startedAt,
       child,
+      proxies: [],
     };
     if (child.pid !== undefined) entry.pid = child.pid;
     entries.set(req.targetId, entry);
@@ -211,6 +242,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         // traps SIGTERM to tear down its RIE containers, so a hard kill on a
         // half-booted child would orphan those containers.
         void stopChild(child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
+        void closeProxies(entry);
         entries.delete(req.targetId);
         reject(new Error(`'${req.targetId}' did not start within ${readyTimeoutMs}ms.`));
       }, readyTimeoutMs);
@@ -225,16 +257,44 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         resolve(publicState(entry));
       };
 
+      // Resolve a child `Server listening on <childUrl>` line into the
+      // endpoint the UI is handed: an HTTP endpoint is fronted with a
+      // capture proxy (slice C2 / decision D4a) so every request to it
+      // lands on the timeline; ws:// (and capture-off) endpoints pass the
+      // child URL straight through. The FIRST resolved endpoint flips the
+      // serve to running; later ones append + re-emit.
+      const onListening = async (childUrl: string): Promise<void> => {
+        let endpoint = childUrl;
+        if (captureRequests && /^https?:/i.test(childUrl)) {
+          try {
+            const proxy = await proxyFactory({
+              bus: config.bus,
+              target: req.targetId,
+              kind: req.kind,
+              upstream: childUrl,
+            });
+            entry.proxies.push(proxy);
+            endpoint = proxy.url;
+          } catch {
+            // Proxy failed to bind — fall back to the direct child URL so
+            // the serve is still usable (just uncaptured).
+            endpoint = childUrl;
+          }
+        }
+        // A stop() may have raced the async proxy startup; if so, drop the
+        // now-orphan proxy and do not resurrect the torn-down serve.
+        if (entry.stopping || (settled && !entries.has(req.targetId))) {
+          await closeProxies(entry);
+          return;
+        }
+        if (!entry.endpoints.includes(endpoint)) entry.endpoints.push(endpoint);
+        if (settled) emitServe(entry);
+        else becomeRunning();
+      };
+
       streamLines(child.stdout, (line) => {
         const m = LISTENING_RE.exec(line);
-        if (m?.[1]) {
-          if (!entry.endpoints.includes(m[1])) entry.endpoints.push(m[1]);
-          // First listening line flips the serve to running; later lines
-          // (multi-listener apps) append + re-emit so the UI's endpoint
-          // list fills in.
-          if (settled) emitServe(entry);
-          else becomeRunning();
-        }
+        if (m?.[1]) void onListening(m[1]);
         emitLog(config.bus, clock, req.targetId, line, 'stdout');
       });
       streamLines(child.stderr, (line) => {
@@ -246,6 +306,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
           // Post-ready spawn error: mark the entry errored for the UI.
           entry.status = 'error';
           emitServe(entry, err.message);
+          void closeProxies(entry);
           entries.delete(req.targetId);
           return;
         }
@@ -253,6 +314,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         clearTimeoutFn(timer);
         entry.status = 'error';
         emitServe(entry, err.message);
+        void closeProxies(entry);
         entries.delete(req.targetId);
         reject(err);
       });
@@ -273,6 +335,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
           entry.status = 'error';
           const msg = `Server exited before listening (code ${code ?? 'null'}).`;
           emitServe(entry, msg);
+          void closeProxies(entry);
           entries.delete(req.targetId);
           reject(new Error(msg));
           return;
@@ -284,6 +347,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         if (tracked === entry && entry.status === 'running') {
           entry.status = 'stopped';
           emitServe(entry, `Server process exited (code ${code ?? 'null'}).`);
+          void closeProxies(entry);
           entries.delete(req.targetId);
         }
       });
@@ -299,7 +363,14 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     // boot failure, when the serve was still `starting` (#1).
     entry.stopping = true;
     entries.delete(req.targetId);
-    await stopChild(entry.child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
+    // Tear down the capture proxies and SIGTERM the child concurrently —
+    // both are initiated synchronously (stopChild attaches its `close`
+    // listener + sends SIGTERM in the same tick) so neither races the
+    // child's exit.
+    await Promise.all([
+      closeProxies(entry),
+      stopChild(entry.child, stopGraceMs, setTimeoutFn, clearTimeoutFn),
+    ]);
     entry.status = 'stopped';
     emitServe(entry);
   }
