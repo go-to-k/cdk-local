@@ -1,3 +1,10 @@
+# [0.79.0](https://github.com/go-to-k/cdk-local/compare/v0.78.1...v0.79.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 slice B — invoke a Lambda from the studio UI ([#292](https://github.com/go-to-k/cdk-local/issues/292)) ([9e5075c](https://github.com/go-to-k/cdk-local/commit/9e5075c450692ff056c7f2492cc3eb764463852c))
+
 ## [0.78.1](https://github.com/go-to-k/cdk-local/compare/v0.78.0...v0.78.1) (2026-06-02)
 
 
