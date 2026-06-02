@@ -674,3 +674,31 @@ export {
  * `{ ...(region && { region }) }` shape callers used to write by hand.
  */
 export { resolveProfileCredentials, buildStsClientConfig } from './utils/profile-resolver.js';
+
+export { addStudioSpecificOptions } from './cli/commands/local-studio.js';
+
+/**
+ * `cdkl studio` building blocks (issue #282). The studio web console is
+ * an interactive front over the same target enumeration + runners the
+ * headless commands use; a host CLI embedding studio re-exports these to
+ * boot the server and subscribe to the observation bus. The
+ * `createLocalStudioCommand` factory is intentionally NOT yet on the
+ * stable `cdk-local` entry while studio is built behind the
+ * `CDKL_STUDIO_PREVIEW` gate — it graduates to `src/index.ts` in the
+ * unveil slice.
+ */
+export {
+  StudioEventBus,
+  type StudioInvocationEvent,
+  type StudioLogEvent,
+  type StudioTargetKind,
+} from './local/studio-events.js';
+export {
+  startStudioServer,
+  toStudioTargetGroups,
+  type StudioServerOptions,
+  type RunningStudioServer,
+  type StudioTarget,
+  type StudioTargetGroup,
+} from './local/studio-server.js';
+export { renderStudioHtml } from './local/studio-ui.js';
