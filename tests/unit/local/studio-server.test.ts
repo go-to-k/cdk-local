@@ -190,8 +190,10 @@ describe('toStudioTargetGroups', () => {
       qualifiedId: 'S:Api',
       surface: 'HTTP API v2',
     });
-    // ECS services and task definitions fold into the one `ecs` group.
+    // ECS services and task definitions fold into the one `ecs` group, but
+    // only the SERVICE is servable (start-service); the task def is not.
     expect(groups[2].entries.map((e) => e.id)).toEqual(['S:Svc', 'S:Task']);
+    expect(groups[2].entries.map((e) => e.servable)).toEqual([true, false]);
   });
 
   it('falls back to the qualified id when no display path exists', () => {

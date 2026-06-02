@@ -76,12 +76,18 @@ export class LocalStudioStack extends cdk.Stack {
           image: 'public.ecr.aws/docker/library/python:3.12-alpine',
           essential: true,
           memoryReservation: 32,
+          // Serve HTTP on the container port so the studio ALB serve has a
+          // live upstream AND the service stays running (a long-running
+          // command — the image's default `python3` REPL would exit at once).
+          command: ['python', '-m', 'http.server', '80'],
           portMappings: [{ containerPort: 80, protocol: 'tcp' }],
         },
       ],
     });
 
-    // Target group + listener + ALB fronting the ECS service.
+    // Target group + listener + ALB fronting the ECS service. The listener
+    // is on a high (non-privileged) port so the studio ALB serve binds it
+    // locally without root and without a port remap.
     const targetGroup = new elbv2.CfnTargetGroup(this, 'MyTargetGroup', {
       port: 80,
       protocol: 'HTTP',
@@ -92,7 +98,7 @@ export class LocalStudioStack extends cdk.Stack {
     });
     new elbv2.CfnListener(this, 'MyListener', {
       loadBalancerArn: alb.ref,
-      port: 80,
+      port: 8080,
       protocol: 'HTTP',
       defaultActions: [{ type: 'forward', targetGroupArn: targetGroup.ref }],
     });

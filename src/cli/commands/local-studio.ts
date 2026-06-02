@@ -149,6 +149,16 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   const targetGroups = toStudioTargetGroups(listing);
   const appLabel = stacks.map((s) => s.stackName).join(', ') || appCmd;
 
+  // ECS target ids that are actually servable (services, not task
+  // definitions). The UI only wires servable rows, but a raw curl could
+  // POST a task-def with kind:'ecs' — reject it at the boundary with a
+  // clear message rather than spawning a doomed `start-service`.
+  const servableEcs = new Set(
+    targetGroups
+      .filter((g) => g.kind === 'ecs')
+      .flatMap((g) => g.entries.filter((e) => e.servable).map((e) => e.id))
+  );
+
   const bus = new StudioEventBus();
   // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
   // bin); both the invoke dispatcher and the serve manager spawn it again
@@ -178,12 +188,19 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     appLabel,
     cliName: getEmbedConfig().cliName,
     store,
-    // `/api/run`: a Lambda is a single-shot invoke; everything else is a
-    // long-running serve start (slice C1 supports the `api` kind, the
-    // serve manager rejects the rest with a clear message).
+    // `/api/run`: a Lambda is a single-shot invoke; api / alb / ecs are
+    // long-running serve starts (the serve manager rejects any other kind).
     onRun: (body) => {
       const req = coerceRunRequest(body);
-      return req.kind === 'lambda' ? dispatcher.run(req) : serveManager.start(req);
+      if (req.kind === 'lambda') return dispatcher.run(req);
+      if (req.kind === 'ecs' && !servableEcs.has(req.targetId)) {
+        return Promise.reject(
+          new Error(
+            `'${req.targetId}' is not a servable ECS service (an ECS task definition runs via run-task, not start-service).`
+          )
+        );
+      }
+      return serveManager.start(req);
     },
     onStop: async (body) => {
       const req = coerceStopRequest(body);

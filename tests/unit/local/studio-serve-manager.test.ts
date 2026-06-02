@@ -176,7 +176,7 @@ describe('createStudioServeManager', () => {
     expect(logs.every((l) => l.containerId === 'MyApi' && l.target === 'MyApi')).toBe(true);
   });
 
-  it('rejects a non-api kind without spawning', async () => {
+  it('rejects a non-serve kind without spawning', async () => {
     const bus = new StudioEventBus();
     const spawnFn = vi.fn();
     const mgr = createStudioServeManager({
@@ -185,8 +185,116 @@ describe('createStudioServeManager', () => {
       spawnFn: spawnFn as never,
     });
 
-    await expect(mgr.start({ targetId: 'MySvc', kind: 'ecs' })).rejects.toThrow(/not supported/i);
+    // `agentcore` is not a serve kind (it is a single-shot invoke target).
+    await expect(mgr.start({ targetId: 'MyAgent', kind: 'agentcore' })).rejects.toThrow(
+      /not supported/i
+    );
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('spawns the right headless command per serve kind (api / alb / ecs)', async () => {
+    const cases: Array<{ kind: 'api' | 'alb' | 'ecs'; command: string; hasPort: boolean }> = [
+      { kind: 'api', command: 'start-api', hasPort: true },
+      { kind: 'alb', command: 'start-alb', hasPort: false },
+      { kind: 'ecs', command: 'start-service', hasPort: false },
+    ];
+    for (const c of cases) {
+      const bus = new StudioEventBus();
+      const child = makeFakeChild();
+      const spawnFn = vi.fn(() => child as never);
+      const fp = fakeProxies();
+      const mgr = createStudioServeManager({
+        cliEntry: 'cli.js',
+        bus,
+        spawnFn: spawnFn as never,
+        proxyFactory: fp.factory,
+      });
+      const p = mgr.start({ targetId: 'T', kind: c.kind });
+      // Emit the kind's ready line (alb / ecs differ from api).
+      const readyLine =
+        c.kind === 'api'
+          ? LISTENING
+          : c.kind === 'alb'
+            ? 'ALB front-door: http://127.0.0.1:8080 (listener port 8080)\n'
+            : 'Service(s) running: MyService (1 replica).\n';
+      child.stdout.emit('data', readyLine);
+      await p;
+      const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+      expect(argv[1]).toBe(c.command);
+      expect(argv.includes('--port')).toBe(c.hasPort);
+    }
+  });
+
+  it('an alb serve fronts the front-door URL with a capture proxy', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'MyAlb', kind: 'alb' });
+    child.stdout.emit('data', 'ALB front-door: http://127.0.0.1:51234 (listener port 8080)\n');
+    const state = await p;
+
+    expect(state.status).toBe('running');
+    expect(state.endpoints).toEqual([PROXIED]);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+  });
+
+  it('defaults the stop grace to 45s so an ECS teardown is not SIGKILLed early', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const delays: number[] = [];
+    const setTimeoutFn = ((cb: () => void, ms: number) => {
+      delays.push(ms);
+      return { unref: () => undefined };
+    }) as unknown as typeof setTimeout;
+    const clearTimeoutFn = (() => undefined) as unknown as typeof clearTimeout;
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
+      setTimeoutFn,
+      clearTimeoutFn,
+    });
+
+    const p = mgr.start({ targetId: 'A', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    const stopP = mgr.stop({ targetId: 'A' });
+    child.emit('close', 0);
+    await stopP;
+
+    // The SIGTERM->SIGKILL grace timer was scheduled at the 45s default.
+    expect(delays).toContain(45_000);
+  });
+
+  it('an ecs service serve has NO endpoint and NO capture proxy (pure compute)', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'MySvc', kind: 'ecs' });
+    child.stdout.emit('data', 'Service(s) running: MySvc (1 replica).\n');
+    const state = await p;
+
+    expect(state.status).toBe('running');
+    expect(state.endpoints).toEqual([]); // no host port to capture
+    expect(fp.upstreams).toEqual([]); // no proxy created
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
   });
 
   it('rejects starting a target that is already running', async () => {

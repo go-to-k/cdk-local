@@ -123,6 +123,7 @@ const STUDIO_CSS = `
 
 const STUDIO_SCRIPT = `
   const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', agentcore: 'AgentCore' };
+  const SERVE_KINDS = ['api', 'alb', 'ecs']; // long-running serve targets
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
   const logsById = new Map();      // invocationId / serve targetId -> [log lines]
@@ -153,10 +154,11 @@ const STUDIO_SCRIPT = `
         pane.appendChild(el('div', 'group-title', group.title));
         for (const entry of group.entries) {
           total += 1;
-          // Lambda targets are single-shot invokes; API targets are
-          // long-running serves (slice C1). Other kinds list but are not
-          // yet runnable.
-          const runnable = group.kind === 'lambda' || group.kind === 'api';
+          // Lambda targets are single-shot invokes; api / alb / ecs are
+          // long-running serves. Other kinds list but are not yet runnable.
+          // Within ecs, only services are servable (task defs are run-task).
+          const isServe = SERVE_KINDS.includes(group.kind) && (group.kind !== 'ecs' || entry.servable === true);
+          const runnable = group.kind === 'lambda' || isServe;
           const t = el('div', runnable ? 'target runnable' : 'target');
           const name = el('span', 'name', entry.id);
           name.title = entry.id; // full path on hover even when truncated
@@ -168,16 +170,16 @@ const STUDIO_SCRIPT = `
             t.appendChild(btn);
             t.onclick = () => selectTarget(entry.id, 'lambda');
             targetEls.set(entry.id, t);
-          } else if (group.kind === 'api') {
+          } else if (isServe) {
             // A serve target: a running-state dot + a Start/Stop button
             // slot, both refreshed by updateServeRow on serve events.
             const dot = el('span', 'run-dot');
             const btnSlot = el('span', 'btn-slot');
             t.appendChild(dot);
             t.appendChild(btnSlot);
-            t.onclick = () => selectTarget(entry.id, 'api');
+            t.onclick = () => selectTarget(entry.id, group.kind);
             targetEls.set(entry.id, t);
-            serveMeta.set(entry.id, { dot, btnSlot });
+            serveMeta.set(entry.id, { dot, btnSlot, kind: group.kind });
             updateServeRow(entry.id);
           }
           pane.appendChild(t);
@@ -218,7 +220,10 @@ const STUDIO_SCRIPT = `
     const status = st ? st.status : 'stopped';
     const running = status === 'running';
     const starting = status === 'starting';
-    meta.dot.textContent = running ? '● ' + firstPort(st.endpoints) : starting ? '○ starting' : '';
+    // A serve with a host endpoint shows the dot + :port; a pure-compute
+    // ecs service has no endpoint, so just the dot + running.
+    const port = running ? firstPort(st.endpoints) : '';
+    meta.dot.textContent = running ? (port ? '● ' + port : '● running') : starting ? '○ starting' : '';
     meta.dot.className = 'run-dot' + (starting ? ' starting' : '');
     meta.btnSlot.innerHTML = '';
     const btn = running || starting
@@ -242,7 +247,7 @@ const STUDIO_SCRIPT = `
   function selectTarget(id, kind) {
     highlightTarget(id);
     shownDetailId = null;
-    if (kind === 'api') {
+    if (SERVE_KINDS.includes(kind)) {
       shownServeId = id;
       shownInvId = null;
       active = null;
@@ -254,13 +259,17 @@ const STUDIO_SCRIPT = `
   }
 
   async function startServe(id) {
+    // The serve kind (api / alb / ecs) drives which headless command the
+    // server spawns; it is recorded on the row when the target list loads.
+    const meta = serveMeta.get(id);
+    const kind = meta ? meta.kind : 'api';
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ targetId: id, kind: 'api' }),
+        body: JSON.stringify({ targetId: id, kind }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -310,6 +319,8 @@ const STUDIO_SCRIPT = `
     }
     ws.appendChild(head);
 
+    const meta = serveMeta.get(id);
+    const isEcs = meta && meta.kind === 'ecs';
     const epSec = el('div', 'section');
     epSec.appendChild(el('h3', null, 'Endpoints'));
     if (running && st.endpoints.length) {
@@ -317,6 +328,10 @@ const STUDIO_SCRIPT = `
         const link = href(url);
         epSec.appendChild(link);
       }
+    } else if (running && isEcs) {
+      // A pure-compute ECS service has no host endpoint — it just runs the
+      // replicas (reach them container-to-container via Cloud Map).
+      epSec.appendChild(el('pre', null, '(running — pure compute service, no host endpoint)'));
     } else {
       epSec.appendChild(el('pre', null, starting ? '(starting…)' : '(not running)'));
     }

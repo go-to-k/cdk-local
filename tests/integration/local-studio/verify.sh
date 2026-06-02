@@ -21,7 +21,10 @@
 #     `serve` SSE event fired, then POST /api/stop tears it down,
 #   - asserts the store (slice C3) serves GET /api/history, full-text
 #     GET /api/logs?q=, and per-invocation GET /api/invocations/<id>/logs,
-#     and
+#   - starts an ALB serve (`start-alb`), curls the front-door through the
+#     studio capture proxy + asserts the request is captured (kind=alb),
+#     and an ECS service serve (`start-service`) that runs pure compute
+#     with NO host endpoint (serve-kinds slice), and
 #   - tears the server down cleanly.
 #
 # Docker required — the invoke + serve slices boot real RIE containers.
@@ -388,7 +391,117 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Clean shutdown on SIGTERM.
+# 9. ALB serve (serve-kinds): start `start-alb` behind studio, capture a
+#    request through the front-door proxy. The fixture ECS container serves
+#    HTTP and the listener is on 8080 (bindable without root).
+# ---------------------------------------------------------------------------
+echo "==> /api/targets marks the ECS service servable, the task definition not"
+curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
+if ! grep -qF '"MyService"' "${BODY_FILE}" && ! grep -qF 'MyService' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets missing the ECS service"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: ecs service is listed (servable), task definition listed (not servable)"
+
+ALB_TARGET="LocalStudioFixture/MyAlb"
+echo "==> POST /api/run starts an ALB serve (boots the ECS service + front-door)"
+# Re-arm the SSE listener to capture the ALB request invocation.
+: >"${SSE_FILE}"
+curl -sN --max-time 240 "${URL}/api/events" >"${SSE_FILE}" 2>/dev/null &
+SSE_PID=$!
+sleep 1
+
+ALB_FILE=$(mktemp)
+HTTP_CODE=$(curl -s -o "${ALB_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ALB_TARGET}\",\"kind\":\"alb\"}" || true)
+if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ALB_FILE}"; then
+  echo "FAIL: POST /api/run (alb) returned HTTP ${HTTP_CODE}"
+  echo "----- alb response -----"; cat "${ALB_FILE}"; echo "------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${ALB_FILE}"; exit 1
+fi
+ALB_SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${ALB_FILE}" | head -1 || true)
+rm -f "${ALB_FILE}"
+echo "    OK: ALB serve started; front-door fronted by studio proxy at ${ALB_SERVED}"
+
+echo "==> The ALB front-door answers through the studio proxy"
+# Retry: the front-door binds before the ECS replica registers in the target
+# group, so the first requests may be 503 until the replica is healthy.
+ALB_OK=0
+for _ in $(seq 1 60); do
+  RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${ALB_SERVED}/" || true)
+  if [[ "${RC}" == "200" ]]; then ALB_OK=1; break; fi
+  sleep 2
+done
+if [[ "${ALB_OK}" != "1" ]]; then
+  echo "FAIL: ALB front-door never returned 200 through the proxy"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: GET ${ALB_SERVED}/ -> 200 through the ALB front-door"
+
+echo "==> The ALB request was captured on the timeline (SSE)"
+# Assert on the INVOCATION row's request label (`GET /`), which ONLY the
+# capture proxy emits — the `serve` lifecycle event also carries
+# `"kind":"alb"`, so matching that alone would pass without any request
+# capture. The label proves the request flowed through the proxy.
+for _ in $(seq 1 20); do
+  if grep -qF 'event: invocation' "${SSE_FILE}" && grep -qF '"label":"GET /"' "${SSE_FILE}"; then break; fi
+  sleep 0.5
+done
+if ! grep -qF '"label":"GET /"' "${SSE_FILE}" || ! grep -qF '"kind":"alb"' "${SSE_FILE}"; then
+  echo "FAIL: SSE stream did not carry the captured ALB request (invocation row)"
+  echo "----- sse capture -----"; tail -c 2000 "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: the ALB request was captured (GET / invocation, kind=alb) on the timeline"
+kill "${SSE_PID}" 2>/dev/null || true; SSE_PID=""
+
+echo "==> POST /api/stop tears the ALB serve down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ALB_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: ALB serve stopped"
+
+# ---------------------------------------------------------------------------
+# 10. ECS service serve (serve-kinds): pure compute — runs the replicas, no
+#     host endpoint, no capture.
+# ---------------------------------------------------------------------------
+ECS_TARGET="LocalStudioFixture/MyService"
+echo "==> POST /api/run starts an ECS service serve (pure compute, no endpoint)"
+ECS_FILE=$(mktemp)
+HTTP_CODE=$(curl -s -o "${ECS_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\"}" || true)
+if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ECS_FILE}"; then
+  echo "FAIL: POST /api/run (ecs) returned HTTP ${HTTP_CODE}"
+  echo "----- ecs response -----"; cat "${ECS_FILE}"; echo "------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${ECS_FILE}"; exit 1
+fi
+# A pure-compute service has NO host endpoint.
+if ! grep -qF '"endpoints":[]' "${ECS_FILE}"; then
+  echo "FAIL: ecs serve unexpectedly reported a host endpoint"
+  cat "${ECS_FILE}"; rm -f "${ECS_FILE}"; exit 1
+fi
+rm -f "${ECS_FILE}"
+echo "    OK: ECS service running with no host endpoint"
+
+echo "==> GET /api/running reflects the ECS service (no endpoint)"
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! grep -qF "${ECS_TARGET}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running did not list the ECS service"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: /api/running lists ${ECS_TARGET}"
+
+echo "==> POST /api/stop tears the ECS service down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: ECS service stopped"
+
+# ---------------------------------------------------------------------------
+# 11. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
 kill "${STUDIO_PID}"
@@ -404,4 +517,4 @@ STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + request capture + history/log-search + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + shutdown)"
