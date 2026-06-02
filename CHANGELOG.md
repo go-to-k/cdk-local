@@ -1,3 +1,10 @@
+# [0.78.0](https://github.com/go-to-k/cdk-local/compare/v0.77.1...v0.78.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 slice A — cdkl studio control-plane console shell ([#289](https://github.com/go-to-k/cdk-local/issues/289)) ([7d91330](https://github.com/go-to-k/cdk-local/commit/7d91330173bdab9508dd48cad365005f37d3b810))
+
 ## [0.77.1](https://github.com/go-to-k/cdk-local/compare/v0.77.0...v0.77.1) (2026-06-01)
 
 
