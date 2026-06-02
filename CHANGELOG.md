@@ -1,3 +1,10 @@
+# [0.82.0](https://github.com/go-to-k/cdk-local/compare/v0.81.1...v0.82.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 slice C3 — session history, full-text log search, per-request logs ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#296](https://github.com/go-to-k/cdk-local/issues/296)) ([384d1dc](https://github.com/go-to-k/cdk-local/commit/384d1dc749049c53c0da69d75a817bf6a9148a0f))
+
 ## [0.81.1](https://github.com/go-to-k/cdk-local/compare/v0.81.0...v0.81.1) (2026-06-02)
 
 
