@@ -252,6 +252,36 @@ describe('createStudioDispatcher', () => {
     expect(argv).not.toContain('--assume-role');
   });
 
+  it('materializes the env-vars per-run option into a --env-vars file arg', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      idFactory: () => 'inv-env',
+    });
+
+    const p = dispatcher.run({
+      targetId: 'T',
+      kind: 'lambda',
+      event: {},
+      options: { '--env-vars': [{ left: 'LOG_LEVEL', right: 'debug' }] },
+    });
+    child.stdout.emit('data', '{}');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--env-vars');
+    expect(i).toBeGreaterThan(-1);
+    // The next token is a temp file path the dispatch wrote (content is
+    // covered by resolveEnvVars unit tests).
+    expect(argv[i + 1]).toMatch(/env-vars\.json$/);
+  });
+
   it('extracts the LAST JSON line as the response even when a log line trails it', async () => {
     const bus = new StudioEventBus();
     const { invocations, logs } = collect(bus);

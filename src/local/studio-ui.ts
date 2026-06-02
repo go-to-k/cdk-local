@@ -22,6 +22,8 @@
  * the primary surface — the timeline is secondary history.
  */
 
+import { OPTION_SPECS } from './studio-option-specs.js';
+
 const STUDIO_CSS = `
   * { box-sizing: border-box; }
   body {
@@ -119,6 +121,35 @@ const STUDIO_CSS = `
   #conn { font-size: 11px; }
   #conn.up { color: #7bd88f; }
   #conn.down { color: #e0707a; }
+  .options .opt-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .options .opt-row.opt-col { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+  .opt-label { color: #aaa; font-size: 12px; min-width: 120px; }
+  .opt-bool { color: #ddd; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .options input[type=text], .options input[type=number] {
+    flex: 1; background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
+    padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 0;
+  }
+  .options input:focus, .envkv-ta:focus { outline: none; border-color: #4ec97a; }
+  .pair-wrap { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .pair-row { display: flex; align-items: center; gap: 6px; }
+  .pair-in { width: 1px; flex: 1; background: #111; color: #ddd; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
+  .pair-sep { color: #888; }
+  .pair-x { background: #2a2a2a; color: #bbb; border: none; border-radius: 3px; cursor: pointer;
+    padding: 2px 7px; font: 12px ui-monospace, monospace; }
+  .pair-x:hover { background: #3a2a2a; color: #e0707a; }
+  .pair-add { align-self: flex-start; background: #1d1d1d; color: #7bd88f; border: 1px solid #2f4030;
+    border-radius: 3px; cursor: pointer; padding: 3px 9px; font: 12px ui-monospace, monospace; }
+  .pair-add:hover { background: #243024; }
+  .envkv-modes { display: flex; gap: 0; }
+  .envkv-mode { background: #1a1a1a; color: #999; border: 1px solid #333; cursor: pointer;
+    padding: 3px 12px; font: 11px ui-monospace, monospace; }
+  .envkv-mode:first-child { border-radius: 3px 0 0 3px; }
+  .envkv-mode:last-child { border-radius: 0 3px 3px 0; border-left: none; }
+  .envkv-mode.active { background: #2a3a2c; color: #7bd88f; }
+  .envkv-ta { width: 100%; box-sizing: border-box; min-height: 70px; resize: vertical;
+    background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px; padding: 6px 8px;
+    font: 12px ui-monospace, Menlo, monospace; }
 `;
 
 const STUDIO_SCRIPT = `
@@ -140,6 +171,142 @@ const STUDIO_SCRIPT = `
     if (cls) e.className = cls;
     if (text != null) e.textContent = text;
     return e;
+  }
+
+  // Per-target run options (issue #301 slice 2). The descriptor table is
+  // serialized into the page by the server; we render a control per option
+  // and return { node, collect } so the caller places the section and reads
+  // the values when the user clicks Invoke / Start.
+  const OPTION_SPECS = window.__OPTION_SPECS__ || {};
+
+  function buildOptions(kind) {
+    const specs = OPTION_SPECS[kind] || [];
+    if (!specs.length) return { node: null, collect: function () { return undefined; } };
+    const sec = el('div', 'section options');
+    sec.appendChild(el('h3', null, 'Options'));
+    const getters = [];
+    const bools = {};
+
+    // Shared add-row pair list (used by repeat-pair AND the env-kv KV pane).
+    function pairList(spec) {
+      const list = el('div', 'pair-rows');
+      const pairs = [];
+      const addRow = function () {
+        const r = el('div', 'pair-row');
+        const lv = el('input');
+        lv.placeholder = spec.leftPlaceholder;
+        lv.className = 'pair-in';
+        const rv = el('input');
+        rv.placeholder = spec.rightPlaceholder;
+        rv.className = 'pair-in';
+        const pair = { l: lv, r: rv };
+        const x = el('button', 'pair-x', 'x');
+        x.type = 'button';
+        x.onclick = function () {
+          list.removeChild(r);
+          const i = pairs.indexOf(pair);
+          if (i >= 0) pairs.splice(i, 1);
+        };
+        r.appendChild(lv);
+        r.appendChild(el('span', 'pair-sep', spec.sep));
+        r.appendChild(rv);
+        r.appendChild(x);
+        list.appendChild(r);
+        pairs.push(pair);
+      };
+      const add = el('button', 'pair-add', '+ add');
+      add.type = 'button';
+      add.onclick = addRow;
+      const wrap = el('div', 'pair-wrap');
+      wrap.appendChild(list);
+      wrap.appendChild(add);
+      return {
+        node: wrap,
+        rows: function () {
+          return pairs.map(function (p) { return { left: p.l.value, right: p.r.value }; });
+        },
+      };
+    }
+
+    specs.forEach(function (spec) {
+      const row = el('div', 'opt-row');
+      if (spec.kind === 'boolean') {
+        const cb = el('input');
+        cb.type = 'checkbox';
+        const lab = el('label', 'opt-bool');
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(' ' + spec.label));
+        row.appendChild(lab);
+        bools[spec.flag] = cb;
+        getters.push(function () { return [spec.flag, cb.checked]; });
+      } else if (spec.kind === 'scalar') {
+        row.appendChild(el('span', 'opt-label', spec.label));
+        const inp = el('input');
+        inp.type = spec.inputType === 'number' ? 'number' : 'text';
+        if (spec.placeholder) inp.placeholder = spec.placeholder;
+        row.appendChild(inp);
+        if (spec.showWhen) {
+          const gate = bools[spec.showWhen];
+          const sync = function () { row.style.display = gate && gate.checked ? 'flex' : 'none'; };
+          if (gate) gate.addEventListener('change', sync);
+          sync();
+        }
+        getters.push(function () { return [spec.flag, inp.value]; });
+      } else if (spec.kind === 'env-kv') {
+        // Two input modes — KV add-rows or a raw JSON object; the server
+        // materializes either into a SAM-shape temp file for --env-vars.
+        row.className = 'opt-row opt-col';
+        row.appendChild(el('span', 'opt-label', spec.label));
+        const modes = el('div', 'envkv-modes');
+        const kvBtn = el('button', 'envkv-mode active', 'KV');
+        kvBtn.type = 'button';
+        const jsonBtn = el('button', 'envkv-mode', 'JSON');
+        jsonBtn.type = 'button';
+        modes.appendChild(kvBtn);
+        modes.appendChild(jsonBtn);
+        row.appendChild(modes);
+        const pl = pairList(spec);
+        row.appendChild(pl.node);
+        const ta = el('textarea', 'envkv-ta');
+        ta.placeholder = '{ "KEY": "value" }';
+        ta.spellcheck = false;
+        ta.style.display = 'none';
+        row.appendChild(ta);
+        let mode = 'kv';
+        kvBtn.onclick = function () {
+          mode = 'kv';
+          kvBtn.className = 'envkv-mode active';
+          jsonBtn.className = 'envkv-mode';
+          pl.node.style.display = '';
+          ta.style.display = 'none';
+        };
+        jsonBtn.onclick = function () {
+          mode = 'json';
+          jsonBtn.className = 'envkv-mode active';
+          kvBtn.className = 'envkv-mode';
+          ta.style.display = '';
+          pl.node.style.display = 'none';
+        };
+        getters.push(function () {
+          return mode === 'json' ? [spec.flag, ta.value] : [spec.flag, pl.rows()];
+        });
+      } else {
+        // repeat-pair: an add-row list of left<sep>right inputs.
+        row.appendChild(el('span', 'opt-label', spec.label));
+        const pl = pairList(spec);
+        row.appendChild(pl.node);
+        getters.push(function () { return [spec.flag, pl.rows()]; });
+      }
+      sec.appendChild(row);
+    });
+    return {
+      node: sec,
+      collect: function () {
+        const out = {};
+        getters.forEach(function (g) { const kv = g(); out[kv[0]] = kv[1]; });
+        return out;
+      },
+    };
   }
 
   async function loadTargets() {
@@ -258,7 +425,7 @@ const STUDIO_SCRIPT = `
     }
   }
 
-  async function startServe(id) {
+  async function startServe(id, options) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
@@ -266,10 +433,12 @@ const STUDIO_SCRIPT = `
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
+      const body = { targetId: id, kind };
+      if (options) body.options = options;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ targetId: id, kind }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -306,12 +475,17 @@ const STUDIO_SCRIPT = `
     const running = st.status === 'running';
     const starting = st.status === 'starting';
 
+    const meta = serveMeta.get(id);
+    const kind = meta ? meta.kind : 'api';
+
     const head = el('div', 'composer');
     head.appendChild(el('div', 'target-name', 'Serve ' + id));
     const btn = running || starting
       ? el('button', null, 'Stop')
       : el('button', null, starting ? 'Starting…' : 'Start');
-    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id); };
+    // Per-run options are only set before a start; collected on the Start click.
+    let collectOpts = function () { return undefined; };
+    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts()); };
     head.appendChild(btn);
     if (errMsg) {
       const m = el('div', 'err', errMsg);
@@ -319,7 +493,12 @@ const STUDIO_SCRIPT = `
     }
     ws.appendChild(head);
 
-    const meta = serveMeta.get(id);
+    if (!running && !starting) {
+      const opt = buildOptions(kind);
+      if (opt.node) ws.appendChild(opt.node);
+      collectOpts = opt.collect;
+    }
+
     const isEcs = meta && meta.kind === 'ecs';
     const epSec = el('div', 'section');
     epSec.appendChild(el('h3', null, 'Endpoints'));
@@ -367,6 +546,9 @@ const STUDIO_SCRIPT = `
     ta.value = eventText;
     ta.spellcheck = false;
     composer.appendChild(ta);
+    // Per-run options (e.g. env vars) below the event, above Invoke.
+    const opt = buildOptions(kind);
+    if (opt.node) composer.appendChild(opt.node);
     composer.appendChild(document.createElement('br'));
     const btn = el('button', null, 'Invoke');
     const msg = el('div', 'err');
@@ -378,7 +560,7 @@ const STUDIO_SCRIPT = `
     ws.appendChild(composer);
     ws.appendChild(result);
 
-    active = { id, kind, ta, btn, msg, result };
+    active = { id, kind, ta, btn, msg, result, collectOpts: opt.collect };
     btn.onclick = () => runInvoke();
     shownInvId = null;
     shownDetailId = null;
@@ -400,10 +582,13 @@ const STUDIO_SCRIPT = `
     btn.textContent = 'Invoking...';
     result.innerHTML = '';
     try {
+      const body = { targetId: id, kind, event };
+      const options = active.collectOpts ? active.collectOpts() : undefined;
+      if (options) body.options = options;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ targetId: id, kind, event }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.invocationId) {
@@ -690,6 +875,10 @@ const STUDIO_SCRIPT = `
 export function renderStudioHtml(appLabel: string, cliName: string): string {
   const safeApp = escapeHtml(appLabel);
   const safeCli = escapeHtml(cliName);
+  // The per-target option descriptors, serialized for the embedded UI to
+  // render controls from. `<` is escaped so a value can never close the
+  // surrounding <script> tag.
+  const optionSpecsJson = JSON.stringify(OPTION_SPECS).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -716,6 +905,7 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
     <div id="log-results"></div>
   </section>
 </main>
+<script>window.__OPTION_SPECS__ = ${optionSpecsJson};</script>
 <script>${STUDIO_SCRIPT}</script>
 </body>
 </html>`;

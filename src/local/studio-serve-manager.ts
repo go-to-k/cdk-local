@@ -6,6 +6,7 @@ import {
   type StudioProxyConfig,
 } from './studio-proxy.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
+import { buildPerRunArgs, type OptionValues } from './studio-option-specs.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -13,6 +14,8 @@ export interface StudioServeRequest {
   targetId: string;
   /** Target kind — a serve kind (`api` / `alb` / `ecs`); see SERVE_SPECS. */
   kind: StudioTargetKind;
+  /** Per-run option values (issue #301 slice 2), keyed by option flag. */
+  options?: OptionValues;
 }
 
 /** A request to stop a running served target. */
@@ -229,8 +232,14 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     config.bus.emit('serve', ev);
   }
 
-  function buildArgs(targetId: string, spec: ServeKindSpec): string[] {
-    return [spec.command, targetId, ...spec.portArgs, ...buildSharedChildArgs(config)];
+  function buildArgs(req: StudioServeRequest, spec: ServeKindSpec): string[] {
+    return [
+      spec.command,
+      req.targetId,
+      ...spec.portArgs,
+      ...buildSharedChildArgs(config),
+      ...buildPerRunArgs(req.kind, req.options),
+    ];
   }
 
   async function start(req: StudioServeRequest): Promise<StudioServeState> {
@@ -248,7 +257,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     const startedAt = clock();
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req.targetId, spec)], { cwd });
+      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec)], { cwd });
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
     }

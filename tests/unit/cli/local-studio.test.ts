@@ -73,6 +73,39 @@ describe('coerceRunRequest', () => {
       expect(() => coerceRunRequest(body)).toThrow(/"kind" must be one of/);
     }
   );
+
+  it('accepts + passes through valid per-run options', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'T',
+        kind: 'alb',
+        options: { '--tls': true, '--lb-port': [{ left: '443', right: '8443' }] },
+      })
+    ).toEqual({
+      targetId: 'T',
+      kind: 'alb',
+      event: undefined,
+      options: { '--tls': true, '--lb-port': [{ left: '443', right: '8443' }] },
+    });
+  });
+
+  it.each([null, 42, 'str', [1, 2]])('rejects non-object options %p', (options) => {
+    expect(() => coerceRunRequest({ targetId: 'T', kind: 'alb', options })).toThrow(
+      /"options" must be a JSON object/
+    );
+  });
+
+  it('rejects an unknown option flag for the kind (clean 400 at the boundary)', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'T', kind: 'ecs', options: { '--tls': true } })
+    ).toThrow(/Unknown option/);
+  });
+
+  it('rejects malformed env-vars JSON at the boundary', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'T', kind: 'lambda', options: { '--env-vars': '{bad' } })
+    ).toThrow(/not valid JSON/);
+  });
 });
 
 describe('coerceStopRequest', () => {
