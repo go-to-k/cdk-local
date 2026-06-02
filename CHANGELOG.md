@@ -1,3 +1,10 @@
+# [0.83.0](https://github.com/go-to-k/cdk-local/compare/v0.82.0...v0.83.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 serve-kinds — start/stop + capture for ALB and ECS service ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#298](https://github.com/go-to-k/cdk-local/issues/298)) ([6f1bfea](https://github.com/go-to-k/cdk-local/commit/6f1bfea19de06cd096c6b4c65d7493079bd8c949))
+
 # [0.82.0](https://github.com/go-to-k/cdk-local/compare/v0.81.1...v0.82.0) (2026-06-02)
 
 
