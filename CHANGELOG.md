@@ -1,3 +1,10 @@
+# [0.84.0](https://github.com/go-to-k/cdk-local/compare/v0.83.0...v0.84.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** unveil `cdkl studio` + fix per-invocation log binding ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#300](https://github.com/go-to-k/cdk-local/issues/300)) ([31f3eb3](https://github.com/go-to-k/cdk-local/commit/31f3eb36448f818258e3e0c1dcc5e8801fda908e))
+
 # [0.83.0](https://github.com/go-to-k/cdk-local/compare/v0.82.0...v0.83.0) (2026-06-02)
 
 
