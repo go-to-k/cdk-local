@@ -2,7 +2,7 @@
  * The studio web UI, embedded as a string so it ships inside the
  * `cdk-local` npm package (decision D9) with no asset-copy build step —
  * `tsdown` bundles this module like any other source file. Served by
- * {@link import('./studio-server.js').StudioServer} at `GET /`.
+ * the studio HTTP server (`startStudioServer`) at `GET /`.
  *
  * Slice A renders the 3-pane shell (decision D6): left = target list
  * (from `GET /api/targets`), center = live timeline (from the

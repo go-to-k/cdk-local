@@ -104,4 +104,13 @@ export class StudioEventBus {
     this.emitter.off(event, listener as (...args: unknown[]) => void);
     return this;
   }
+
+  /**
+   * Number of listeners currently subscribed to `event`. Exposed so the
+   * SSE server's subscribe / unsubscribe symmetry can be asserted (a
+   * dropped client must not leak a listener).
+   */
+  listenerCount<E extends keyof StudioEventMap>(event: E): number {
+    return this.emitter.listenerCount(event);
+  }
 }

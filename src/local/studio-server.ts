@@ -154,28 +154,55 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
     'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive',
   });
-  // Open the stream so EventSource fires `open` immediately.
-  res.write(':ok\n\n');
 
-  const onInvocation = (ev: StudioInvocationEvent): void => {
-    res.write(`event: invocation\ndata: ${JSON.stringify(ev)}\n\n`);
-  };
-  const onLog = (ev: StudioLogEvent): void => {
-    res.write(`event: log\ndata: ${JSON.stringify(ev)}\n\n`);
-  };
-  bus.on('invocation', onInvocation);
-  bus.on('log', onLog);
-
-  const heartbeat = setInterval(() => res.write(':hb\n\n'), SSE_HEARTBEAT_MS);
+  let closed = false;
+  const heartbeat = setInterval(() => safeWrite(':hb\n\n'), SSE_HEARTBEAT_MS);
   heartbeat.unref?.();
 
-  const cleanup = (): void => {
+  const onInvocation = (ev: StudioInvocationEvent): void => {
+    safeWrite(`event: invocation\ndata: ${JSON.stringify(ev)}\n\n`);
+  };
+  const onLog = (ev: StudioLogEvent): void => {
+    safeWrite(`event: log\ndata: ${JSON.stringify(ev)}\n\n`);
+  };
+
+  // Idempotent teardown: unsubscribe from the bus + stop the heartbeat so
+  // a dropped EventSource client never leaks a listener.
+  function cleanup(): void {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     bus.off('invocation', onInvocation);
     bus.off('log', onLog);
-  };
+  }
+
+  // Guard every write: on shutdown `close()` destroys live SSE sockets
+  // (closeAllConnections), and a bus emit / heartbeat tick can race that
+  // destroy. Writing to a destroyed socket emits an unhandled `error` on
+  // the response — which, with no top-level uncaughtException handler on
+  // the studio path, would crash the process on Ctrl-C. Drop the write
+  // (and tear down) instead.
+  function safeWrite(chunk: string): void {
+    if (closed || res.writableEnded || res.destroyed) {
+      cleanup();
+      return;
+    }
+    res.write(chunk);
+  }
+
+  bus.on('invocation', onInvocation);
+  bus.on('log', onLog);
+
+  // `close` fires on client disconnect AND on server-side socket destroy;
+  // `error` fires if a write loses the race with the destroy. All three
+  // route through the idempotent cleanup so the bus listeners + heartbeat
+  // never leak and a write error never propagates as uncaught.
   req.on('close', cleanup);
   res.on('close', cleanup);
+  res.on('error', cleanup);
+
+  // Open the stream so EventSource fires `open` immediately.
+  safeWrite(':ok\n\n');
 }
 
 /**

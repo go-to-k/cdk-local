@@ -148,7 +148,10 @@ function blockUntilShutdown(server: RunningStudioServer, cliName: string): Promi
       if (shuttingDown) return;
       shuttingDown = true;
       getLogger().info(`Received ${signal}; stopping ${cliName} studio...`);
-      void server.close().finally(() => resolveShutdown());
+      void server
+        .close()
+        .catch((err: unknown) => getLogger().warn(`Error stopping studio server: ${String(err)}`))
+        .finally(() => resolveShutdown());
     };
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));

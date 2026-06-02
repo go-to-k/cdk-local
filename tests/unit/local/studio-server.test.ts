@@ -144,6 +144,45 @@ describe('startStudioServer', () => {
     expect(second.port).toBe(first.port + 1);
   });
 
+  it('rejects when the preferred port is taken and no bumps are allowed', async () => {
+    const first = await boot({ port: 0 });
+    // maxPortBump: 0 => the first EADDRINUSE rejects immediately rather
+    // than bumping. Exercises the give-up branch of listenWithBump.
+    const bus = new StudioEventBus();
+    await expect(
+      startStudioServer({
+        port: first.port,
+        bus,
+        targetGroups: [],
+        appLabel: 'X',
+        cliName: 'cdkl',
+        maxPortBump: 0,
+      })
+    ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+  });
+
+  it('unsubscribes the bus listeners when an SSE client disconnects', async () => {
+    const bus = new StudioEventBus();
+    const server = await boot({ bus });
+
+    const res = await fetch(`${server.url}/api/events`);
+    const reader = res.body!.getReader();
+    await reader.read(); // open the stream so the server subscribes
+    // Subscribed: one invocation + one log listener.
+    expect(bus.listenerCount('invocation')).toBe(1);
+    expect(bus.listenerCount('log')).toBe(1);
+
+    await reader.cancel(); // client disconnect
+
+    // The server's req/res `close` handler must unsubscribe. Poll briefly
+    // since the disconnect propagates asynchronously.
+    for (let i = 0; i < 40 && bus.listenerCount('invocation') > 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(bus.listenerCount('invocation')).toBe(0);
+    expect(bus.listenerCount('log')).toBe(0);
+  });
+
   it('close() resolves even with a live SSE client connected', async () => {
     const server = await boot();
     const res = await fetch(`${server.url}/api/events`);
