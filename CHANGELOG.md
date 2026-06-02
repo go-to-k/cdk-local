@@ -1,3 +1,10 @@
+# [0.81.0](https://github.com/go-to-k/cdk-local/compare/v0.80.0...v0.81.0) (2026-06-02)
+
+
+### Features
+
+* **studio:** Phase 1 slice C2 — capture every served request on the timeline ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#294](https://github.com/go-to-k/cdk-local/issues/294)) ([31cc9de](https://github.com/go-to-k/cdk-local/commit/31cc9de8db37e8f66a522e958b91ef7aa0194394))
+
 # [0.80.0](https://github.com/go-to-k/cdk-local/compare/v0.79.0...v0.80.0) (2026-06-02)
 
 
