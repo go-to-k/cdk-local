@@ -137,7 +137,15 @@ export function startStudioProxy(config: StudioProxyConfig): Promise<RunningStud
             body: respBody.text(),
           })
         );
-        upstreamRes.on('error', () => emitEnd(502, 'upstream response stream error'));
+        upstreamRes.on('error', () => {
+          // The upstream died mid-response: terminate the client response so
+          // it does not hang half-open (a dangling client socket that the
+          // server's later closeAllConnections would destroy, surfacing as an
+          // unhandled error). pipe() does not auto-close the destination on a
+          // source error, so do it explicitly.
+          if (!clientRes.writableEnded) clientRes.destroy();
+          emitEnd(502, 'upstream response stream error');
+        });
       }
     );
 
