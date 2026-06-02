@@ -252,7 +252,15 @@ function runChild(
   return new Promise<ChildOutcome>((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(nodeBin, argv, { cwd });
+      // Silence cdk-local's OWN synth / orchestration progress in the child
+      // (toolkit "Successfully synthesized to ...", asset-bundling, info-level
+      // status) so the studio LOGS panel shows only the Lambda container's
+      // runtime logs (which stream straight from `docker logs`, unaffected by
+      // this level) plus the response. See `resolveConfiguredLogLevel`.
+      child = spawnFn(nodeBin, argv, {
+        cwd,
+        env: { ...process.env, CDKL_LOG_LEVEL: 'warn' },
+      });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
       return;

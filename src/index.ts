@@ -36,6 +36,10 @@ export {
   type CreateLocalListCommandOptions,
   type FormatTargetListingOptions,
 } from './cli/commands/local-list.js';
+export {
+  createLocalStudioCommand,
+  type CreateLocalStudioCommandOptions,
+} from './cli/commands/local-studio.js';
 
 /**
  * Target enumeration — turns a synthesized Cloud Assembly into the

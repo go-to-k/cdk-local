@@ -186,11 +186,30 @@ class ChildLogger extends ConsoleLogger {
   }
 }
 
+/**
+ * Resolve the initial log level from the `CDKL_LOG_LEVEL` env var, falling
+ * back to `'info'`. This is primarily an internal contract: `cdkl studio`
+ * spawns its single-shot `cdkl invoke` child with `CDKL_LOG_LEVEL=warn` so
+ * cdk-local's OWN synth / orchestration progress (toolkit "Successfully
+ * synthesized to ...", asset-bundling lines, info-level status) is silenced
+ * in the child — leaving the studio LOGS panel showing only the Lambda
+ * container's runtime logs (which stream straight from `docker logs` and are
+ * unaffected by this level) plus the response. `--verbose` still overrides to
+ * `debug` at the command layer. An invalid value is ignored.
+ */
+export function resolveConfiguredLogLevel(): LogLevel {
+  const env = process.env['CDKL_LOG_LEVEL'];
+  if (env === 'debug' || env === 'info' || env === 'warn' || env === 'error') {
+    return env;
+  }
+  return 'info';
+}
+
 let globalLogger: ConsoleLogger | null = null;
 
 export function getLogger(): ConsoleLogger {
   if (!globalLogger) {
-    globalLogger = new ConsoleLogger();
+    globalLogger = new ConsoleLogger(resolveConfiguredLogLevel());
   }
   return globalLogger;
 }

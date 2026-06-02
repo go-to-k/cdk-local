@@ -8,11 +8,11 @@
 # end-to-end (no unit-level stubbing) against a fixture app rich enough to
 # emit every target group:
 #
-#   - boots `cdkl studio` behind the CDKL_STUDIO_PREVIEW gate,
+#   - boots `cdkl studio`,
 #   - asserts the UI HTML is served at GET /,
 #   - asserts GET /api/targets lists the fixture's targets,
 #   - asserts GET /api/events opens a text/event-stream (SSE),
-#   - asserts the command is HIDDEN without the preview env gate,
+#   - asserts the command is registered on the user-facing surface,
 #   - drives POST /api/run to invoke a Lambda in a RIE container (slice B),
 #   - drives POST /api/run to START a long-running `start-api` serve, curls
 #     the served route through it (the served endpoint is the studio
@@ -63,28 +63,24 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# 1. The command must be HIDDEN without the preview gate (no half-finished
-#    command shipping enabled).
+# 1. The command must be registered on the user-facing command surface
+#    (the unveil slice removed the CDKL_STUDIO_PREVIEW gate).
 # ---------------------------------------------------------------------------
-echo "==> Asserting 'cdkl studio' is hidden without CDKL_STUDIO_PREVIEW"
+echo "==> Asserting 'cdkl studio' is on the user-facing command surface"
 # Commander prints root help (exit 0) for an unknown subcommand, so assert on
 # the registered-command listing rather than on exit status: studio must be
-# absent from `--help` without the gate and present with it.
-if ${CDKL} --help 2>&1 | grep -qE '^\s*studio\b'; then
-  echo "FAIL: 'cdkl studio' is listed without CDKL_STUDIO_PREVIEW=1"
+# present in `--help` unconditionally.
+if ! ${CDKL} --help 2>&1 | grep -qE '^\s*studio\b'; then
+  echo "FAIL: 'cdkl studio' is NOT listed on the command surface"
   exit 1
 fi
-if ! CDKL_STUDIO_PREVIEW=1 ${CDKL} --help 2>&1 | grep -qE '^\s*studio\b'; then
-  echo "FAIL: 'cdkl studio' is NOT listed even with CDKL_STUDIO_PREVIEW=1"
-  exit 1
-fi
-echo "    OK: command is gated off by default, on under the preview flag"
+echo "    OK: command is registered unconditionally"
 
 # ---------------------------------------------------------------------------
-# 2. Boot studio behind the gate; parse the bound URL from the boot log.
+# 2. Boot studio; parse the bound URL from the boot log.
 # ---------------------------------------------------------------------------
-echo "==> Booting cdkl studio (preview gate on)"
-CDKL_STUDIO_PREVIEW=1 ${CDKL} studio --no-open --studio-port "${PORT}" >"${LOG_FILE}" 2>&1 &
+echo "==> Booting cdkl studio"
+${CDKL} studio --no-open --studio-port "${PORT}" >"${LOG_FILE}" 2>&1 &
 STUDIO_PID=$!
 
 URL=""
@@ -386,8 +382,32 @@ if [[ -n "${LAMBDA_INV_ID}" ]]; then
     exit 1
   fi
   echo "    OK: the Lambda invocation's logs are bound at per-invocation granularity"
+
+  # The bound logs must be the LAMBDA's runtime logs (RIE START/REPORT etc.),
+  # NOT cdk-local's own synth / orchestration chatter. The studio invoke child
+  # runs with CDKL_LOG_LEVEL=warn so "Successfully synthesized to ..." and the
+  # asset-bundling progress are silenced; assert they never leaked into the
+  # per-invocation logs, and that a real RIE marker IS present.
+  echo "==> The bound logs exclude cdk-local synth chatter, keep RIE logs"
+  if grep -qiE 'Successfully synthesi|Synthesis time' "${BODY_FILE}"; then
+    echo "FAIL: cdk-local synth chatter leaked into the Lambda's bound logs"
+    echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+    exit 1
+  fi
+  if ! grep -qE 'RequestId|INVOKE|INIT START' "${BODY_FILE}"; then
+    echo "FAIL: bound logs do not contain the expected RIE runtime markers"
+    echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+    exit 1
+  fi
+  echo "    OK: logs are the Lambda's RIE runtime output, free of synth noise"
 else
-  echo "    (skipping per-invocation log bind: no invocationId parsed)"
+  # The Lambda invoke already succeeded above (the run-response needles
+  # passed), so the invocationId MUST have parsed. An empty value here means
+  # the response shape changed — hard-fail rather than silently disabling the
+  # per-invocation bind + synth-chatter regression guards.
+  echo "FAIL: no invocationId parsed from a successful invoke — log-bind guards disabled"
+  echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

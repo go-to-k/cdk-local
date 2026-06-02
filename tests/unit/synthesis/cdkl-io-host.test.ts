@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import { CdklIoHost } from '../../../src/synthesis/cdkl-io-host.js';
 
 describe('CdklIoHost', () => {
@@ -52,5 +52,57 @@ describe('CdklIoHost', () => {
     // typically false, so no color is applied — the test still
     // demonstrates non-interference with the code path.
     stderrSpy.mockRestore();
+  });
+
+  describe('CDKL_LOG_LEVEL=warn suppression (studio child)', () => {
+    const prev = process.env['CDKL_LOG_LEVEL'];
+    afterEach(() => {
+      if (prev === undefined) delete process.env['CDKL_LOG_LEVEL'];
+      else process.env['CDKL_LOG_LEVEL'] = prev;
+    });
+
+    it('drops the re-leveled synth-success notification entirely', async () => {
+      process.env['CDKL_LOG_LEVEL'] = 'warn';
+      const host = new CdklIoHost({ isCI: false });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+      // CDK_TOOLKIT_I1901 "Successfully synthesized to ..." is re-leveled to
+      // info, then suppressed under warn — it must reach NEITHER stream.
+      await host.notify({
+        time: new Date(),
+        level: 'result',
+        action: 'synth',
+        code: 'CDK_TOOLKIT_I1901',
+        message: 'Successfully synthesized to /tmp/cdk.out',
+        data: undefined,
+      });
+
+      const written =
+        stderrSpy.mock.calls.map((c) => String(c[0])).join('') +
+        stdoutSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).not.toContain('Successfully synthesized');
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    });
+
+    it('still passes warn / error messages through under warn', async () => {
+      process.env['CDKL_LOG_LEVEL'] = 'warn';
+      const host = new CdklIoHost({ isCI: false });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      await host.notify({
+        time: new Date(),
+        level: 'warn',
+        action: 'synth',
+        code: 'CDK_TOOLKIT_W0001',
+        message: 'a real warning',
+        data: undefined,
+      });
+
+      const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain('a real warning');
+      stderrSpy.mockRestore();
+    });
   });
 });
