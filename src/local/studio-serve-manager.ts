@@ -10,7 +10,7 @@ import {
 export interface StudioServeRequest {
   /** Target id the user picked (display path or stack-qualified id). */
   targetId: string;
-  /** Target kind. Slice C1 supports `'api'` (long-running `start-api`) only. */
+  /** Target kind — a serve kind (`api` / `alb` / `ecs`); see SERVE_SPECS. */
   kind: StudioTargetKind;
 }
 
@@ -66,7 +66,11 @@ export interface StudioServeManagerConfig {
   readyTimeoutMs?: number;
   /**
    * Ms to wait for a SIGTERM'd child to exit before sending SIGKILL.
-   * Defaults to 10_000.
+   * Generous by default so a serve command running its OWN teardown
+   * completes first — `start-alb` / `start-service` drain + remove their
+   * ECS replicas + the shared docker network, which can take well over
+   * 10s; a premature SIGKILL would orphan those containers/network.
+   * Defaults to 45_000.
    */
   stopGraceMs?: number;
   /** `setTimeout` (injectable for tests). */
@@ -100,11 +104,55 @@ export interface StudioServeManager {
   stopAll: () => Promise<void>;
 }
 
-/** Kinds the serve manager can start in this build. */
-const SERVE_SUPPORTED: readonly StudioTargetKind[] = ['api'];
+/** How the serve manager drives one long-running serve kind. */
+interface ServeKindSpec {
+  /** Headless subcommand spawned (e.g. `start-api`). */
+  command: string;
+  /** Port / host flags this command accepts (start-api binds an HTTP port). */
+  portArgs: readonly string[];
+  /**
+   * The stdout line that signals readiness. Capture group 1, when present,
+   * is the served endpoint URL (api / alb); a kind with no host endpoint
+   * (ecs service — pure compute) matches with NO capture group.
+   */
+  readyRe: RegExp;
+  /** Front each HTTP endpoint with a capture proxy (api / alb yes, ecs no). */
+  capturesHttp: boolean;
+}
 
-/** `Server listening on <url>` is the stable ready marker `start-api` prints. */
-const LISTENING_RE = /Server listening on (\S+)/;
+/**
+ * The serve lifecycle per kind. `api` + `alb` expose host HTTP endpoints
+ * the studio capture proxy fronts; `ecs` (start-service) is pure compute
+ * with no host port, so it has no endpoint and no capture — studio just
+ * runs the replicas + streams their logs.
+ */
+const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
+  api: {
+    command: 'start-api',
+    portArgs: ['--port', '0', '--host', '127.0.0.1'],
+    readyRe: /Server listening on (\S+)/,
+    capturesHttp: true,
+  },
+  alb: {
+    // start-alb binds the deployed listener ports directly (no --port);
+    // its front-door line carries the bound URL. Anchor the capture on a
+    // URL scheme: under --tls start-alb also logs `ALB front-door:
+    // generated self-signed cert at ...`, which a bare `(\S+)` would match
+    // (capturing `generated`) and flip the serve to running prematurely.
+    command: 'start-alb',
+    portArgs: [],
+    readyRe: /ALB front-door: (https?:\/\/\S+)/,
+    capturesHttp: true,
+  },
+  ecs: {
+    // start-service runs the service replicas only — no host port, no
+    // capture. `Service(s) running:` is its stable ready marker.
+    command: 'start-service',
+    portArgs: [],
+    readyRe: /Service\(s\) running:/,
+    capturesHttp: false,
+  },
+};
 
 interface ServeEntry extends StudioServeState {
   child: ChildProcessWithoutNullStreams;
@@ -137,15 +185,18 @@ interface ServeEntry extends StudioServeState {
  * Slice C2 fronts each HTTP serve endpoint with a capture proxy
  * ({@link startStudioProxy}) so every request to the served port lands
  * on the studio timeline (decision D4a); the `endpoints` the UI is
- * handed are the proxy URLs. Full-text log search and alb / ecs serve
- * kinds are still to come.
+ * handed are the proxy URLs. The serve-kinds slice generalized this to a
+ * per-kind {@link ServeKindSpec}: `api` (`start-api`) + `alb`
+ * (`start-alb`) expose host HTTP endpoints the proxy captures, while
+ * `ecs` (`start-service`) is pure compute — no host port, no capture,
+ * just the running replicas + their streamed logs.
  */
 export function createStudioServeManager(config: StudioServeManagerConfig): StudioServeManager {
   const spawnFn = config.spawnFn ?? nodeSpawn;
   const nodeBin = config.nodeBin ?? process.execPath;
   const clock = config.clock ?? Date.now;
   const readyTimeoutMs = config.readyTimeoutMs ?? 120_000;
-  const stopGraceMs = config.stopGraceMs ?? 10_000;
+  const stopGraceMs = config.stopGraceMs ?? 45_000;
   const setTimeoutFn = config.setTimeoutFn ?? setTimeout;
   const clearTimeoutFn = config.clearTimeoutFn ?? clearTimeout;
   const cwd = config.cwd ?? process.cwd();
@@ -185,8 +236,8 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     config.bus.emit('serve', ev);
   }
 
-  function buildArgs(targetId: string): string[] {
-    const args = ['start-api', targetId, '--port', '0', '--host', '127.0.0.1'];
+  function buildArgs(targetId: string, spec: ServeKindSpec): string[] {
+    const args = [spec.command, targetId, ...spec.portArgs];
     if (config.app) args.push('--app', config.app);
     if (config.profile) args.push('--profile', config.profile);
     if (config.region) args.push('--region', config.region);
@@ -197,9 +248,10 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
   }
 
   async function start(req: StudioServeRequest): Promise<StudioServeState> {
-    if (!SERVE_SUPPORTED.includes(req.kind)) {
+    const spec = SERVE_SPECS[req.kind];
+    if (!spec) {
       throw new Error(
-        `Serving '${req.kind}' targets from studio is not supported yet (API only in this build).`
+        `Serving '${req.kind}' targets from studio is not supported (serve kinds: ${Object.keys(SERVE_SPECS).join(', ')}).`
       );
     }
     const existing = entries.get(req.targetId);
@@ -210,7 +262,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     const startedAt = clock();
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req.targetId)], { cwd });
+      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req.targetId, spec)], { cwd });
     } catch (err) {
       throw err instanceof Error ? err : new Error(String(err));
     }
@@ -237,10 +289,10 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         if (settled) return;
         settled = true;
         entry.status = 'error';
-        emitServe(entry, `Timed out after ${readyTimeoutMs}ms waiting for the server to listen.`);
-        // Graceful SIGTERM -> SIGKILL (NOT an immediate SIGKILL): `start-api`
-        // traps SIGTERM to tear down its RIE containers, so a hard kill on a
-        // half-booted child would orphan those containers.
+        emitServe(entry, `Timed out after ${readyTimeoutMs}ms waiting for the serve to be ready.`);
+        // Graceful SIGTERM -> SIGKILL (NOT an immediate SIGKILL): the serve
+        // commands trap SIGTERM to tear down their containers, so a hard kill
+        // on a half-booted child would orphan those containers.
         void stopChild(child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
         void closeProxies(entry);
         entries.delete(req.targetId);
@@ -257,15 +309,16 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         resolve(publicState(entry));
       };
 
-      // Resolve a child `Server listening on <childUrl>` line into the
-      // endpoint the UI is handed: an HTTP endpoint is fronted with a
-      // capture proxy (slice C2 / decision D4a) so every request to it
-      // lands on the timeline; ws:// (and capture-off) endpoints pass the
-      // child URL straight through. The FIRST resolved endpoint flips the
-      // serve to running; later ones append + re-emit.
-      const onListening = async (childUrl: string): Promise<void> => {
+      // Handle a child ready line. `childUrl` (capture group 1) is the
+      // served endpoint for api / alb — fronted with a capture proxy (slice
+      // C2 / decision D4a) when `capturesHttp` so every request to it lands
+      // on the timeline; ws:// (and capture-off) endpoints pass straight
+      // through. An ecs service has NO endpoint (`childUrl` undefined): it
+      // just flips to running with no endpoint + no proxy. The FIRST ready
+      // line flips the serve to running; later ones append + re-emit.
+      const onReady = async (childUrl?: string): Promise<void> => {
         let endpoint = childUrl;
-        if (captureRequests && /^https?:/i.test(childUrl)) {
+        if (childUrl && spec.capturesHttp && captureRequests && /^https?:/i.test(childUrl)) {
           try {
             const proxy = await proxyFactory({
               bus: config.bus,
@@ -287,14 +340,16 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
           await closeProxies(entry);
           return;
         }
-        if (!entry.endpoints.includes(endpoint)) entry.endpoints.push(endpoint);
+        if (endpoint && !entry.endpoints.includes(endpoint)) entry.endpoints.push(endpoint);
         if (settled) emitServe(entry);
         else becomeRunning();
       };
 
       streamLines(child.stdout, (line) => {
-        const m = LISTENING_RE.exec(line);
-        if (m?.[1]) void onListening(m[1]);
+        const m = spec.readyRe.exec(line);
+        // m[1] is the endpoint URL for api / alb; undefined for ecs (no
+        // capture group) — a ready line with no host endpoint.
+        if (m) void onReady(m[1]);
         emitLog(config.bus, clock, req.targetId, line, 'stdout');
       });
       streamLines(child.stderr, (line) => {

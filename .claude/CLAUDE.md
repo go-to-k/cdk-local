@@ -299,8 +299,10 @@ compute-locally category for Lambda + API Gateway).
   collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
-  workspace composer / timeline; Lambdas get an [Invoke] composer, APIs a
-  [Start]/[Stop] serve control with a `running ● :port` indicator; the
+  workspace composer / timeline; Lambdas get an [Invoke] composer, serve
+  targets (api / alb / ecs) a [Start]/[Stop] control with a `running ●
+  :port` indicator (ecs services show `running` with no port — only the
+  servable ECS *services* are runnable, not the task definitions); the
   timeline carries both Lambda invocations and captured serve requests,
   the latter opening a read-only Request/Response detail; a log search box
   queries the store and a captured request's detail shows its bound logs),
@@ -310,14 +312,18 @@ compute-locally category for Lambda + API Gateway).
   spawning the SAME `cdkl invoke` the headless command runs as a child
   process — studio is a control plane over the CLI — streaming its
   stdout/stderr to the event bus and returning the parsed Lambda
-  response), studio-serve-manager (issue #282, slice C1 — the
-  long-running serve lifecycle for the `api` kind: spawns
-  `cdkl start-api <target> --port 0` as a managed child, resolves
-  running on the first `Server listening on <url>` line, tracks the
-  running set for `/api/running`, streams container logs onto the bus,
-  and SIGTERMs the child on `/api/stop` / studio shutdown; slice C2
-  fronts each HTTP serve endpoint with a studio-proxy so the
-  `endpoints` handed to the UI are the proxy URLs), studio-proxy
+  response), studio-serve-manager (issue #282 — the
+  long-running serve lifecycle, parameterized by a per-kind
+  `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host
+  HTTP endpoints each fronted by a studio-proxy so the `endpoints` handed
+  to the UI are the proxy URLs (slice C2 capture), while `ecs`
+  (`start-service`) is pure compute — no host port, no capture, just the
+  running replicas + their streamed logs. Resolves running on the kind's
+  ready line (`Server listening on <url>` / `ALB front-door: <url>` /
+  `Service(s) running:`), tracks the running set for `/api/running`, and
+  SIGTERMs the child on `/api/stop` / studio shutdown with a generous
+  grace so the serve command's OWN ECS-replica + docker-network teardown
+  completes before any SIGKILL), studio-proxy
   (issue #282, slice C2 — a capturing reverse proxy in front of each
   HTTP serve endpoint: forwards every request verbatim to the upstream
   `start-api` child while emitting `invocation` start/end events

@@ -18,6 +18,13 @@ export interface StudioTarget {
   qualifiedId: string;
   /** API surface kind (REST v1 / HTTP v2 / ...), only for `api` entries. */
   surface?: string;
+  /**
+   * Within a kind whose entries are not uniformly runnable, marks the ones
+   * that are. Used for the `ecs` group, which folds servable ECS *services*
+   * (`start-service`) together with ECS *task definitions* (run-task, not a
+   * serve target): only services carry `servable: true`.
+   */
+  servable?: boolean;
 }
 
 /** A category of targets, grouped by the studio kind that runs them. */
@@ -37,10 +44,14 @@ export interface StudioTargetGroup {
  * projection without booting the server.
  */
 export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[] {
-  const map = (entries: TargetListing['lambdas']): StudioTarget[] =>
+  const map = (
+    entries: TargetListing['lambdas'],
+    opts: { servable?: boolean } = {}
+  ): StudioTarget[] =>
     entries.map((e) => {
       const t: StudioTarget = { id: e.displayPath ?? e.qualifiedId, qualifiedId: e.qualifiedId };
       if (e.kind) t.surface = e.kind;
+      if (opts.servable !== undefined) t.servable = opts.servable;
       return t;
     });
   return [
@@ -49,7 +60,12 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     {
       kind: 'ecs',
       title: 'ECS Services / Tasks',
-      entries: [...map(listing.ecsServices), ...map(listing.ecsTaskDefinitions)],
+      // ECS services are servable (`start-service`); task definitions are
+      // run-task (single-shot), not a serve target.
+      entries: [
+        ...map(listing.ecsServices, { servable: true }),
+        ...map(listing.ecsTaskDefinitions, { servable: false }),
+      ],
     },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
     { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
