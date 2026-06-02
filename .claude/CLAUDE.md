@@ -297,8 +297,10 @@ compute-locally category for Lambda + API Gateway).
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
   workspace composer / timeline; Lambdas get an [Invoke] composer, APIs a
-  [Start]/[Stop] serve control with a `running ● :port` indicator),
-  studio-dispatch (issue #282 — the single-shot `POST /api/run` handler
+  [Start]/[Stop] serve control with a `running ● :port` indicator; the
+  timeline carries both Lambda invocations and captured serve requests,
+  the latter opening a read-only Request/Response detail), studio-dispatch
+  (issue #282 — the single-shot `POST /api/run` handler
   for the `lambda` kind: runs a target from the studio UI by
   spawning the SAME `cdkl invoke` the headless command runs as a child
   process — studio is a control plane over the CLI — streaming its
@@ -308,9 +310,18 @@ compute-locally category for Lambda + API Gateway).
   `cdkl start-api <target> --port 0` as a managed child, resolves
   running on the first `Server listening on <url>` line, tracks the
   running set for `/api/running`, streams container logs onto the bus,
-  and SIGTERMs the child on `/api/stop` / studio shutdown; request
-  capture + CloudWatch-granularity log binding + full-text log search
-  follow in slice C2), etc.
+  and SIGTERMs the child on `/api/stop` / studio shutdown; slice C2
+  fronts each HTTP serve endpoint with a studio-proxy so the
+  `endpoints` handed to the UI are the proxy URLs), studio-proxy
+  (issue #282, slice C2 — a capturing reverse proxy in front of each
+  HTTP serve endpoint: forwards every request verbatim to the upstream
+  `start-api` child while emitting `invocation` start/end events
+  (method / path / headers / bounded body + response status / headers /
+  bounded body) onto the bus, so every request to the served port lands
+  on the timeline regardless of source — browser / curl / pad alike
+  (decision D4a); `Upgrade` (WebSocket) requests are raw-bridged without
+  capture. Full-text log search + alb / ecs serve kinds still to come),
+  etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

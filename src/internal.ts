@@ -739,3 +739,19 @@ export {
   type StudioStopRequest,
   type StudioServeState,
 } from './local/studio-serve-manager.js';
+
+/**
+ * `cdkl studio` capture proxy (issue #282, slice C2). A host CLI
+ * embedding studio gets this for free via the serve manager (which
+ * fronts each HTTP serve endpoint with one), but it is re-exported so a
+ * host can stand up its own capture proxy in front of any upstream:
+ * `startStudioProxy(...)` forwards each request verbatim while emitting
+ * `invocation` start/end events (request/response, bounded bodies) onto
+ * the {@link StudioEventBus} so the browser timeline observes every
+ * request to the served port (decision D4a).
+ */
+export {
+  startStudioProxy,
+  type StudioProxyConfig,
+  type RunningStudioProxy,
+} from './local/studio-proxy.js';

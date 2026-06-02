@@ -12,8 +12,10 @@
  *     event composer (textarea + Invoke button) with the latest run's
  *     Request / Response / Logs shown below; for an API, a Start/Stop
  *     control with the served endpoints + streaming logs.
- *   - right  = the timeline (history) of every invocation; clicking a
- *     row loads it back into the workspace.
+ *   - right  = the timeline (history) of every invocation AND every
+ *     captured serve request (slice C2); clicking a Lambda row reloads
+ *     it into the composer, clicking a captured request row opens a
+ *     read-only Request / Response detail.
  *
  * The center workspace is deliberately adjacent to the left target list
  * (short eye-travel: pick a target -> compose right next to it), and is
@@ -114,8 +116,9 @@ const STUDIO_SCRIPT = `
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
   let active = null;               // { id, kind, ta, btn, msg, result }
-  let shownInvId = null;           // invocation whose result is in the workspace
+  let shownInvId = null;           // lambda invocation whose result is in the workspace
   let shownServeId = null;         // serve target whose workspace is shown
+  let shownDetailId = null;        // captured request whose read-only detail is shown
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -224,6 +227,7 @@ const STUDIO_SCRIPT = `
 
   function selectTarget(id, kind) {
     highlightTarget(id);
+    shownDetailId = null;
     if (kind === 'api') {
       shownServeId = id;
       shownInvId = null;
@@ -348,6 +352,7 @@ const STUDIO_SCRIPT = `
     active = { id, kind, ta, btn, msg, result };
     btn.onclick = () => runInvoke();
     shownInvId = null;
+    shownDetailId = null;
     ta.focus();
   }
 
@@ -448,8 +453,9 @@ const STUDIO_SCRIPT = `
         : '…';
     statusEl.className = 'status' + (merged.status != null && (merged.status < 200 || merged.status >= 300) ? ' err' : '');
 
-    // Live-refresh the workspace result if it is showing this invocation.
+    // Live-refresh the workspace if it is showing this invocation.
     if (shownInvId === ev.id) renderResult(ev.id);
+    if (shownDetailId === ev.id) renderCapturedDetail(ev.id);
   }
 
   function loadInvocation(id) {
@@ -459,9 +465,49 @@ const STUDIO_SCRIPT = `
     const row = rowsById.get(id);
     if (row) row.classList.add('sel');
     highlightTarget(ev.target);
-    renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : '{}');
-    shownInvId = id;
-    renderResult(id);
+    if (ev.kind === 'lambda') {
+      // A Lambda invocation row reloads into the re-invokable composer.
+      shownDetailId = null;
+      shownServeId = null;
+      renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : '{}');
+      shownInvId = id;
+      renderResult(id);
+    } else {
+      // A captured serve request (slice C2) opens a READ-ONLY detail —
+      // re-invoking a captured request is Phase 3.
+      shownInvId = null;
+      shownServeId = null;
+      active = null;
+      renderCapturedDetail(id);
+    }
+  }
+
+  // Read-only Request / Response detail for a captured serve request.
+  function renderCapturedDetail(id) {
+    shownDetailId = id;
+    const ev = invById.get(id);
+    const ws = document.getElementById('workspace');
+    ws.innerHTML = '';
+    if (!ev) return;
+
+    const head = el('div', 'composer');
+    head.appendChild(el('div', 'target-name', (ev.label || 'request') + '  —  ' + (ev.target || '')));
+    ws.appendChild(head);
+
+    const reqSec = el('div', 'section');
+    reqSec.appendChild(el('h3', null, 'Request'));
+    reqSec.appendChild(el('pre', null, ev.request != null ? fmt(ev.request) : '(none)'));
+    ws.appendChild(reqSec);
+
+    const respSec = el('div', 'section');
+    const h = el('h3', null, 'Response');
+    if (ev.status != null) {
+      const cls = ev.status >= 200 && ev.status < 300 ? 'ok' : 'bad';
+      h.appendChild(el('span', cls, '  ' + ev.status + (ev.durationMs != null ? ' · ' + ev.durationMs + 'ms' : '')));
+    }
+    respSec.appendChild(h);
+    respSec.appendChild(el('pre', null, ev.response != null ? fmt(ev.response) : '(pending…)'));
+    ws.appendChild(respSec);
   }
 
   function connect() {

@@ -15,9 +15,10 @@
 #   - asserts the command is HIDDEN without the preview env gate,
 #   - drives POST /api/run to invoke a Lambda in a RIE container (slice B),
 #   - drives POST /api/run to START a long-running `start-api` serve, curls
-#     the served route through it, asserts GET /api/running reflects it +
-#     a `serve` SSE event fired, then POST /api/stop tears it down (slice
-#     C1), and
+#     the served route through it (the served endpoint is the studio
+#     CAPTURE PROXY — slice C2), asserts the request is captured on the
+#     timeline as an `invocation` row, GET /api/running reflects it + a
+#     `serve` SSE event fired, then POST /api/stop tears it down, and
 #   - tears the server down cleanly.
 #
 # Docker required — the invoke + serve slices boot real RIE containers.
@@ -268,6 +269,29 @@ fi
 rm -f "${ROUTE_FILE}"
 echo "    OK: GET ${SERVED}/hello -> 200 ok"
 
+# The served endpoint is the studio CAPTURE PROXY (slice C2): the request
+# we just made must surface on the timeline as an `invocation` row with the
+# method/path label + the 200 status, proving every request to the served
+# port flows through studio (decision D4a).
+echo "==> The served request was captured on the timeline (SSE)"
+for _ in $(seq 1 20); do
+  if grep -qF 'event: invocation' "${SSE_FILE}" && grep -qF '"label":"GET /hello"' "${SSE_FILE}"; then
+    break
+  fi
+  sleep 0.5
+done
+if ! grep -qF '"label":"GET /hello"' "${SSE_FILE}"; then
+  echo "FAIL: SSE stream did not carry the captured GET /hello request"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+if ! grep -qF '"status":200' "${SSE_FILE}"; then
+  echo "FAIL: captured request did not carry the 200 status"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: GET /hello captured on the timeline with status 200"
+
 echo "==> GET /api/running reflects the running serve"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${API_TARGET}" "${BODY_FILE}" || ! grep -qF '"status":"running"' "${BODY_FILE}"; then
@@ -333,4 +357,4 @@ STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + serve start/stop + request capture + shutdown)"

@@ -80,7 +80,37 @@ function manualTimers(): {
   return { setTimeoutFn, clearTimeoutFn, fireLast, fireAll };
 }
 
+/**
+ * A fake capture-proxy factory: maps each HTTP upstream to a deterministic
+ * distinct proxy URL (`:512xx` -> `:612xx`) without binding a real socket,
+ * and records every `close` + `upstream` so tests can assert proxy
+ * lifecycle. Injected so the serve manager's default real proxy never runs.
+ */
+function fakeProxies(): {
+  factory: (config: { upstream: string }) => Promise<{
+    url: string;
+    port: number;
+    close: ReturnType<typeof vi.fn>;
+  }>;
+  closes: Array<ReturnType<typeof vi.fn>>;
+  upstreams: string[];
+} {
+  const closes: Array<ReturnType<typeof vi.fn>> = [];
+  const upstreams: string[] = [];
+  const factory = (config: { upstream: string }) => {
+    upstreams.push(config.upstream);
+    const u = new URL(config.upstream);
+    const proxyPort = Number('6' + u.port.slice(1));
+    const close = vi.fn(() => Promise.resolve());
+    closes.push(close);
+    return Promise.resolve({ url: `http://${u.hostname}:${proxyPort}`, port: proxyPort, close });
+  };
+  return { factory, closes, upstreams };
+}
+
 const LISTENING = 'Server listening on http://127.0.0.1:51234  (MyApi)\n';
+/** The proxy URL `fakeProxies` maps the LISTENING upstream to. */
+const PROXIED = 'http://127.0.0.1:61234';
 
 describe('createStudioServeManager', () => {
   it('spawns `cdkl start-api <target> --port 0` and resolves running on the listening line', async () => {
@@ -88,6 +118,7 @@ describe('createStudioServeManager', () => {
     const { serves } = collect(bus);
     const child = makeFakeChild();
     const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
 
     const mgr = createStudioServeManager({
       cliEntry: '/path/to/cli.js',
@@ -95,6 +126,7 @@ describe('createStudioServeManager', () => {
       nodeBin: '/usr/bin/node',
       spawnFn: spawnFn as never,
       clock: fixedClock(),
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -107,23 +139,27 @@ describe('createStudioServeManager', () => {
     expect(argv.slice(1, 6)).toEqual(['start-api', 'MyApi', '--port', '0', '--host']);
 
     expect(state.status).toBe('running');
-    expect(state.endpoints).toEqual(['http://127.0.0.1:51234']);
+    // The endpoint handed to the UI is the CAPTURE PROXY, fronting the child.
+    expect(state.endpoints).toEqual([PROXIED]);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
     expect(state.pid).toBe(4242);
 
     // serve events: starting then running.
     expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
-    expect(serves[1].endpoints).toEqual(['http://127.0.0.1:51234']);
+    expect(serves[1].endpoints).toEqual([PROXIED]);
   });
 
   it('streams child stdout AND stderr lines onto the bus as log events keyed by the target', async () => {
     const bus = new StudioEventBus();
     const { logs } = collect(bus);
     const child = makeFakeChild();
+    const fp = fakeProxies();
 
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -156,10 +192,12 @@ describe('createStudioServeManager', () => {
   it('rejects starting a target that is already running', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -243,14 +281,16 @@ describe('createStudioServeManager', () => {
     expect(serves.some((s) => s.status === 'error')).toBe(true);
   });
 
-  it('reports a crash WHILE running (close not via stop) as stopped + evicts it', async () => {
+  it('reports a crash WHILE running (close not via stop) as stopped + evicts it + closes the proxy', async () => {
     const bus = new StudioEventBus();
     const { serves } = collect(bus);
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -261,16 +301,20 @@ describe('createStudioServeManager', () => {
     expect(serves.at(-1)?.status).toBe('stopped');
     expect(serves.at(-1)?.message).toMatch(/exited/i);
     expect(mgr.list()).toEqual([]);
+    // The capture proxy must be torn down when the serve crashes.
+    expect(fp.closes[0]).toHaveBeenCalled();
   });
 
   it('marks a post-ready child error as errored + evicts it', async () => {
     const bus = new StudioEventBus();
     const { serves } = collect(bus);
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -309,38 +353,44 @@ describe('createStudioServeManager', () => {
     expect(serves.map((s) => s.status)).toEqual(['starting', 'stopped']);
   });
 
-  it('appends a second listening endpoint and re-emits running', async () => {
+  it('proxies an HTTP endpoint but passes a ws:// endpoint through, re-emitting running', async () => {
     const bus = new StudioEventBus();
     const { serves } = collect(bus);
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
     child.stdout.emit('data', LISTENING);
     await p;
     child.stdout.emit('data', 'Server listening on ws://127.0.0.1:51235/ws  (MyWs)\n');
+    // The ws path has no await, but yield once so the async onListening runs.
+    await Promise.resolve();
 
     const running = serves.filter((s) => s.status === 'running');
     expect(running).toHaveLength(2);
-    expect(running[1].endpoints).toEqual([
-      'http://127.0.0.1:51234',
-      'ws://127.0.0.1:51235/ws',
-    ]);
+    // The HTTP endpoint is fronted by the proxy; the ws:// endpoint passes
+    // through unproxied (an http capture proxy can't front a raw ws listener).
+    expect(running[1].endpoints).toEqual([PROXIED, 'ws://127.0.0.1:51235/ws']);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
     expect(mgr.list()[0].endpoints).toHaveLength(2);
   });
 
-  it('stop() SIGTERMs the child, emits stopped, and drops it from the running list', async () => {
+  it('stop() closes the proxy, SIGTERMs the child, emits stopped, and drops it from the running list', async () => {
     const bus = new StudioEventBus();
     const { serves } = collect(bus);
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
     });
 
     const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
@@ -349,22 +399,65 @@ describe('createStudioServeManager', () => {
     expect(mgr.list().map((s) => s.targetId)).toEqual(['MyApi']);
 
     const stopP = mgr.stop({ targetId: 'MyApi' });
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     child.emit('close', 0); // child exits in response to SIGTERM
     await stopP;
 
+    expect(fp.closes[0]).toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     expect(mgr.list()).toEqual([]);
     expect(serves.at(-1)?.status).toBe('stopped');
+  });
+
+  it('captureRequests:false hands the child URL through unproxied', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
+      captureRequests: false,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    const state = await p;
+
+    expect(state.endpoints).toEqual(['http://127.0.0.1:51234']);
+    expect(fp.upstreams).toEqual([]); // no proxy created
+  });
+
+  it('falls back to the direct child URL when the proxy fails to bind', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const failingFactory = (): Promise<never> => Promise.reject(new Error('EADDRINUSE'));
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      proxyFactory: failingFactory as never,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    const state = await p;
+
+    // The serve is still usable on the child URL, just uncaptured.
+    expect(state.status).toBe('running');
+    expect(state.endpoints).toEqual(['http://127.0.0.1:51234']);
   });
 
   it('stop() escalates to SIGKILL when the child ignores SIGTERM', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
+    const fp = fakeProxies();
     const { setTimeoutFn, clearTimeoutFn, fireAll } = manualTimers();
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => child) as never,
+      proxyFactory: fp.factory,
       setTimeoutFn,
       clearTimeoutFn,
     });
@@ -391,11 +484,13 @@ describe('createStudioServeManager', () => {
   it('stopAll() stops every running serve', async () => {
     const bus = new StudioEventBus();
     const children = [makeFakeChild(1), makeFakeChild(2)];
+    const fp = fakeProxies();
     let i = 0;
     const mgr = createStudioServeManager({
       cliEntry: 'cli.js',
       bus,
       spawnFn: (() => children[i++]) as never,
+      proxyFactory: fp.factory,
     });
 
     const p1 = mgr.start({ targetId: 'ApiA', kind: 'api' });
