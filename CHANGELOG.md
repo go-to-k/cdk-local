@@ -1,3 +1,10 @@
+## [0.81.1](https://github.com/go-to-k/cdk-local/compare/v0.81.0...v0.81.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **studio:** terminate the client response when the upstream dies mid-stream ([#282](https://github.com/go-to-k/cdk-local/issues/282)) ([#295](https://github.com/go-to-k/cdk-local/issues/295)) ([10b9b4d](https://github.com/go-to-k/cdk-local/commit/10b9b4dc84169486c77f5e16ac03f17811e53965))
+
 # [0.81.0](https://github.com/go-to-k/cdk-local/compare/v0.80.0...v0.81.0) (2026-06-02)
 
 
