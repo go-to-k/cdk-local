@@ -1481,10 +1481,15 @@ The console is a three-pane layout:
 | --- | --- | --- |
 | `--studio-port <port>` | `9999` | Preferred port for the studio web server; bumps to the next free port on collision. |
 | `--no-open` | (auto-opens) | Do not auto-open the browser when studio starts (TTY only). |
+| `--from-cfn-stack [name]` | (off) | Bind the whole studio session to a deployed CloudFormation stack — every invoke / serve started from the UI runs against the stack's real ARNs / Secret values. Bare flag auto-resolves a single-stack app; pass a name to pick the stack. Forwarded to each child command. |
+| `--assume-role <arn>` | (off) | IAM role ARN to assume for every invoke / serve started from the UI; the temporary credentials are forwarded into the containers. Forwarded to each child command. |
 
-`cdkl studio` also accepts the shared app / context / region / profile
-flags (`--app`, `-c key=value`, `--region`, `--profile`, etc.) — they are
-threaded into the synth and into every child runner it spawns.
+`--from-cfn-stack` and `--assume-role` are **session-global**: they apply
+to every target you run from the UI, so they sit on `cdkl studio` itself
+rather than being set per-target. `cdkl studio` also accepts the shared app
+/ context / region / profile flags (`--app`, `-c key=value`, `--region`,
+`--profile`, etc.) — they are threaded into the synth and into every child
+runner it spawns.
 
 Booting studio itself needs no Docker (it only synthesizes the app and
 serves the UI); Docker is required the moment you invoke or serve a target

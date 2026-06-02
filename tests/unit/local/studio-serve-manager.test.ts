@@ -149,6 +149,35 @@ describe('createStudioServeManager', () => {
     expect(serves[1].endpoints).toEqual([PROXIED]);
   });
 
+  it('threads --from-cfn-stack <name> + --assume-role <arn> into the serve child argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+      fromCfnStack: 'MyStack',
+      assumeRole: 'arn:aws:iam::123456789012:role/svc',
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--from-cfn-stack');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('MyStack');
+    const j = argv.indexOf('--assume-role');
+    expect(j).toBeGreaterThan(-1);
+    expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/svc');
+  });
+
   it('streams child stdout AND stderr lines onto the bus as log events keyed by the target', async () => {
     const bus = new StudioEventBus();
     const { logs } = collect(bus);
