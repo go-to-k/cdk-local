@@ -18,12 +18,41 @@ import {
   type CdkLocalEmbedConfig,
 } from '../../local/embed-config.js';
 import { listTargets } from '../../local/target-lister.js';
-import { StudioEventBus } from '../../local/studio-events.js';
+import { StudioEventBus, type StudioTargetKind } from '../../local/studio-events.js';
 import {
   startStudioServer,
   toStudioTargetGroups,
   type RunningStudioServer,
 } from '../../local/studio-server.js';
+import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
+
+const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
+  'lambda',
+  'api',
+  'alb',
+  'ecs',
+  'agentcore',
+];
+
+/**
+ * Validate + narrow the untyped `POST /api/run` body into a
+ * {@link StudioRunRequest}. Throws (→ 400 from the server) on a malformed
+ * body so a bad UI / curl payload fails loudly rather than spawning an
+ * `invoke` for an empty target.
+ */
+export function coerceRunRequest(body: unknown): StudioRunRequest {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('Request body must be a JSON object.');
+  }
+  const { targetId, kind, event } = body as Record<string, unknown>;
+  if (typeof targetId !== 'string' || targetId.trim() === '') {
+    throw new Error('Request body must include a non-empty "targetId" string.');
+  }
+  if (typeof kind !== 'string' || !STUDIO_TARGET_KINDS.includes(kind as StudioTargetKind)) {
+    throw new Error(`Request body "kind" must be one of: ${STUDIO_TARGET_KINDS.join(', ')}.`);
+  }
+  return { targetId, kind: kind as StudioTargetKind, event };
+}
 
 const DEFAULT_STUDIO_PORT = 9999;
 
@@ -99,12 +128,25 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   const appLabel = stacks.map((s) => s.stackName).join(', ') || appCmd;
 
   const bus = new StudioEventBus();
+  const dispatcher = createStudioDispatcher({
+    // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
+    // bin); the dispatcher spawns it again as `cdkl invoke <target>`.
+    cliEntry: process.argv[1] ?? '',
+    bus,
+    cwd: process.cwd(),
+    ...(appCmd ? { app: appCmd } : {}),
+    ...(options.profile ? { profile: options.profile } : {}),
+    ...(options.region ? { region: options.region } : {}),
+    ...(Object.keys(context).length > 0 ? { context } : {}),
+  });
+
   const server = await startStudioServer({
     port,
     bus,
     targetGroups,
     appLabel,
     cliName: getEmbedConfig().cliName,
+    onRun: (body) => dispatcher.run(coerceRunRequest(body)),
   });
 
   const cliName = getEmbedConfig().cliName;
