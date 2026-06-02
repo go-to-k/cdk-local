@@ -286,19 +286,31 @@ compute-locally category for Lambda + API Gateway).
   pipeline, then bridge the raw TCP socket to the picked ECS replica
   with `Upgrade` / `Sec-WebSocket-*` headers preserved),
   studio-events (issue #282 — the typed in-process event bus every
-  `cdkl studio` observation flows through; the studio HTTP server
+  `cdkl studio` observation flows through (`invocation` / `log` /
+  `serve` events); the studio HTTP server
   subscribes and forwards to the browser over SSE), studio-server
   (the localhost HTTP server behind `cdkl studio`: serves the embedded
-  UI at `/`, the synthesized target list at `/api/targets`, and an SSE
-  stream of the event bus at `/api/events`; collision-bumps the port),
+  UI at `/`, the synthesized target list at `/api/targets`, an SSE
+  stream of the event bus at `/api/events`, `POST /api/run` (single-shot
+  invoke / serve start), `POST /api/stop` (serve stop), and
+  `GET /api/running` (running serve snapshot); collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
-  workspace composer / timeline), studio-dispatch (issue #282 — the
-  `POST /api/run` handler that runs a target from the studio UI by
+  workspace composer / timeline; Lambdas get an [Invoke] composer, APIs a
+  [Start]/[Stop] serve control with a `running ● :port` indicator),
+  studio-dispatch (issue #282 — the single-shot `POST /api/run` handler
+  for the `lambda` kind: runs a target from the studio UI by
   spawning the SAME `cdkl invoke` the headless command runs as a child
   process — studio is a control plane over the CLI — streaming its
-  stdout/stderr to the event bus and returning the parsed Lambda response;
-  slice B is Lambda single-shot invoke), etc.
+  stdout/stderr to the event bus and returning the parsed Lambda
+  response), studio-serve-manager (issue #282, slice C1 — the
+  long-running serve lifecycle for the `api` kind: spawns
+  `cdkl start-api <target> --port 0` as a managed child, resolves
+  running on the first `Server listening on <url>` line, tracks the
+  running set for `/api/running`, streams container logs onto the bus,
+  and SIGTERMs the child on `/api/stop` / studio shutdown; request
+  capture + CloudWatch-granularity log binding + full-text log search
+  follow in slice C2), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state

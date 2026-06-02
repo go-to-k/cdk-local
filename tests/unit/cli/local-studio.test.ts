@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   coerceRunRequest,
+  coerceStopRequest,
   createLocalStudioCommand,
   parseStudioPort,
 } from '../../../src/cli/commands/local-studio.js';
@@ -70,6 +71,23 @@ describe('coerceRunRequest', () => {
     'rejects a missing/unknown kind %p',
     (body) => {
       expect(() => coerceRunRequest(body)).toThrow(/"kind" must be one of/);
+    }
+  );
+});
+
+describe('coerceStopRequest', () => {
+  it('accepts a well-formed stop request', () => {
+    expect(coerceStopRequest({ targetId: 'MyApi' })).toEqual({ targetId: 'MyApi' });
+  });
+
+  it.each([null, 42, 'str', undefined])('rejects a non-object body %p', (body) => {
+    expect(() => coerceStopRequest(body)).toThrow(/must be a JSON object/);
+  });
+
+  it.each([{}, { targetId: '' }, { targetId: '   ' }])(
+    'rejects a missing/empty targetId %p',
+    (body) => {
+      expect(() => coerceStopRequest(body)).toThrow(/non-empty "targetId"/);
     }
   );
 });

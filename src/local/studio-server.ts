@@ -4,6 +4,7 @@ import {
   StudioEventBus,
   type StudioInvocationEvent,
   type StudioLogEvent,
+  type StudioServeEvent,
 } from './studio-events.js';
 import { renderStudioHtml } from './studio-ui.js';
 import type { TargetListing } from './target-lister.js';
@@ -74,14 +75,26 @@ export interface StudioServerOptions {
    */
   maxPortBump?: number;
   /**
-   * Handler for `POST /api/run` — runs a target (slice B: a single-shot
-   * Lambda invoke) and returns the result. When omitted, `/api/run`
-   * answers 501 (the observe-only shell). The body is the parsed JSON
-   * request; the handler emits its own invocation / log events onto the
-   * bus, so the UI's timeline updates over SSE independently of the
+   * Handler for `POST /api/run` — runs a target (single-shot Lambda
+   * invoke, or start a long-running serve target) and returns the
+   * result. When omitted, `/api/run` answers 501 (the observe-only
+   * shell). The body is the parsed JSON request; the handler emits its
+   * own invocation / serve / log events onto the bus, so the UI's
+   * timeline + running state update over SSE independently of the
    * response.
    */
   onRun?: (body: unknown) => Promise<unknown>;
+  /**
+   * Handler for `POST /api/stop` — stop a running serve target. When
+   * omitted, `/api/stop` answers 501. The body identifies the target.
+   */
+  onStop?: (body: unknown) => Promise<unknown>;
+  /**
+   * Snapshot of the currently-running serve targets, served at
+   * `GET /api/running`. When omitted, the endpoint returns an empty
+   * list (the observe-only shell never runs anything).
+   */
+  getRunning?: () => unknown;
 }
 
 /** A running studio server. */
@@ -111,7 +124,7 @@ export async function startStudioServer(
   const targetsJson = JSON.stringify({ groups: options.targetGroups });
 
   const server = createServer((req, res) =>
-    handleRequest(req, res, options.bus, html, targetsJson, options.onRun)
+    handleRequest(req, res, options.bus, html, targetsJson, options)
   );
 
   const boundPort = await listenWithBump(server, host, options.port, maxBump);
@@ -135,7 +148,7 @@ function handleRequest(
   bus: StudioEventBus,
   html: string,
   targetsJson: string,
-  onRun?: (body: unknown) => Promise<unknown>
+  options: StudioServerOptions
 ): void {
   const url = req.url ?? '/';
   const path = url.split('?')[0];
@@ -150,12 +163,22 @@ function handleRequest(
     res.end(targetsJson);
     return;
   }
+  if (req.method === 'GET' && path === '/api/running') {
+    const running = options.getRunning ? options.getRunning() : { running: [] };
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(running));
+    return;
+  }
   if (req.method === 'GET' && path === '/api/events') {
     serveSse(req, res, bus);
     return;
   }
   if (req.method === 'POST' && path === '/api/run') {
-    void handleRun(req, res, onRun);
+    void handleDispatch(req, res, options.onRun);
+    return;
+  }
+  if (req.method === 'POST' && path === '/api/stop') {
+    void handleDispatch(req, res, options.onStop);
     return;
   }
   res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -164,18 +187,23 @@ function handleRequest(
 
 const MAX_RUN_BODY_BYTES = 5 * 1024 * 1024;
 
-/** Reply to `POST /api/run`: parse the JSON body, dispatch via `onRun`. */
-async function handleRun(
+/**
+ * Reply to a JSON POST endpoint (`/api/run` / `/api/stop`): parse the
+ * bounded JSON body and dispatch via `handler`. 501 when no handler is
+ * wired (the observe-only shell), 400 on a malformed body, 500 when the
+ * handler throws.
+ */
+async function handleDispatch(
   req: IncomingMessage,
   res: ServerResponse,
-  onRun?: (body: unknown) => Promise<unknown>
+  handler?: (body: unknown) => Promise<unknown>
 ): Promise<void> {
   const sendJson = (statusCode: number, payload: unknown): void => {
     res.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(payload));
   };
 
-  if (!onRun) {
+  if (!handler) {
     // The observe-only shell (no dispatcher wired) cannot run targets.
     sendJson(501, { error: 'Running targets is not supported by this studio server.' });
     return;
@@ -190,7 +218,7 @@ async function handleRun(
   }
 
   try {
-    const result = await onRun(body);
+    const result = await handler(body);
     sendJson(200, result);
   } catch (err) {
     sendJson(500, { error: err instanceof Error ? err.message : String(err) });
@@ -256,6 +284,9 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
   const onLog = (ev: StudioLogEvent): void => {
     safeWrite(`event: log\ndata: ${JSON.stringify(ev)}\n\n`);
   };
+  const onServe = (ev: StudioServeEvent): void => {
+    safeWrite(`event: serve\ndata: ${JSON.stringify(ev)}\n\n`);
+  };
 
   // Idempotent teardown: unsubscribe from the bus + stop the heartbeat so
   // a dropped EventSource client never leaks a listener.
@@ -265,6 +296,7 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
     clearInterval(heartbeat);
     bus.off('invocation', onInvocation);
     bus.off('log', onLog);
+    bus.off('serve', onServe);
   }
 
   // Guard every write: on shutdown `close()` destroys live SSE sockets
@@ -283,6 +315,7 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
 
   bus.on('invocation', onInvocation);
   bus.on('log', onLog);
+  bus.on('serve', onServe);
 
   // `close` fires on client disconnect AND on server-side socket destroy;
   // `error` fires if a write loses the race with the destroy. All three
