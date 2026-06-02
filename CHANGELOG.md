@@ -1,3 +1,10 @@
+## [0.78.1](https://github.com/go-to-k/cdk-local/compare/v0.78.0...v0.78.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **studio:** abort SSE test connections to stop a flaky vitest worker crash ([#290](https://github.com/go-to-k/cdk-local/issues/290)) ([00f8a19](https://github.com/go-to-k/cdk-local/commit/00f8a19d6fb2ac8a4a292bdd397ffb8b8d83bde1))
+
 # [0.78.0](https://github.com/go-to-k/cdk-local/compare/v0.77.1...v0.78.0) (2026-06-02)
 
 
