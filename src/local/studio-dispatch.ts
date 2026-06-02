@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
+import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
 
 /** A request to run a target, as the studio UI posts it to `/api/run`. */
 export interface StudioRunRequest {
@@ -13,6 +14,8 @@ export interface StudioRunRequest {
   kind: StudioTargetKind;
   /** The event payload to invoke with. */
   event: unknown;
+  /** Per-run option values (issue #301 slice 2), keyed by option flag. */
+  options?: OptionValues;
 }
 
 /** The outcome of a single-shot run, returned from `/api/run`. */
@@ -126,7 +129,24 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       const eventFile = join(dir, 'event.json');
       writeFileSync(eventFile, JSON.stringify(req.event ?? {}));
 
-      const args = ['invoke', req.targetId, '--event', eventFile, ...buildSharedChildArgs(config)];
+      const args = [
+        'invoke',
+        req.targetId,
+        '--event',
+        eventFile,
+        ...buildSharedChildArgs(config),
+        ...buildPerRunArgs('lambda', req.options),
+      ];
+
+      // The `--env-vars` per-run option takes a FILE — materialize the UI's
+      // KV rows / JSON into a SAM-shape temp file (in the same auto-cleaned
+      // dir as the event) and point the child at it.
+      const envVars = resolveEnvVars('lambda', req.options);
+      if (envVars) {
+        const envFile = join(dir, 'env-vars.json');
+        writeFileSync(envFile, JSON.stringify(envVars));
+        args.push('--env-vars', envFile);
+      }
 
       const { code, stdout, stderr } = await runChild(
         spawnFn,

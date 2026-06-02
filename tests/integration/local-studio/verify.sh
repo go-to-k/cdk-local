@@ -215,6 +215,33 @@ fi
 echo "    OK: invocation observed on the SSE timeline"
 
 # ---------------------------------------------------------------------------
+# 6b. Per-target run options (issue #301 slice 2): POST /api/run with an
+#     `--env-vars` option (KEY/VALUE rows). The server materializes it into a
+#     SAM-shape temp file passed as `--env-vars <file>` to the child invoke;
+#     the fixture handler echoes STUDIO_ENV_PROBE into its body, so the option
+#     is observable end-to-end (UI option -> /api/run -> file -> child -> RIE).
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run threads a per-target --env-vars option into the invoke"
+OPT_FILE=$(mktemp)
+PROBE="env-threaded-301"
+HTTP_OPT=$(curl -s -o "${OPT_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"options\":{\"--env-vars\":[{\"left\":\"STUDIO_ENV_PROBE\",\"right\":\"${PROBE}\"}]}}" || true)
+if [[ "${HTTP_OPT}" != "200" ]]; then
+  echo "FAIL: per-target option invoke returned HTTP ${HTTP_OPT}"
+  cat "${OPT_FILE}"; rm -f "${OPT_FILE}"; exit 1
+fi
+# The handler body is { ... "body": "<STUDIO_ENV_PROBE or 'ok'>" }; the env-var
+# option must have flipped it to the probe value.
+if ! grep -qF "${PROBE}" "${OPT_FILE}"; then
+  echo "FAIL: --env-vars option did not reach the container (probe value absent from response)"
+  echo "----- run response -----"; cat "${OPT_FILE}"; echo "------------------------"
+  rm -f "${OPT_FILE}"; exit 1
+fi
+rm -f "${OPT_FILE}"
+echo "    OK: --env-vars KEY/VALUE option threaded through to the Lambda container"
+
+# ---------------------------------------------------------------------------
 # 7. POST /api/run STARTS a long-running `start-api` serve (slice C1); curl
 #    the served route; assert running state + a serve SSE event; stop it.
 # ---------------------------------------------------------------------------
@@ -488,24 +515,45 @@ echo "    OK: ALB serve stopped"
 #     host endpoint, no capture.
 # ---------------------------------------------------------------------------
 ECS_TARGET="LocalStudioFixture/MyService"
-echo "==> POST /api/run starts an ECS service serve (pure compute, no endpoint)"
+# Thread TWO per-run options (issue #301 slice 2) into the serve child:
+# `--max-tasks 1` (single replica enables host-port publishing) +
+# `--host-port 80=<freeHostPort>` (a repeat-pair). The fixture container runs
+# `python -m http.server 80`, so a REACHABLE host port proves both options
+# threaded CLI -> child end-to-end (not a tautology — without the options the
+# port would never be published, and studio's ecs kind exposes no endpoint).
+ECS_HOST_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+echo "==> POST /api/run starts an ECS service serve with --max-tasks + --host-port options"
 ECS_FILE=$(mktemp)
 HTTP_CODE=$(curl -s -o "${ECS_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
-  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\"}" || true)
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${ECS_HOST_PORT}\"}]}}" || true)
 if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ECS_FILE}"; then
   echo "FAIL: POST /api/run (ecs) returned HTTP ${HTTP_CODE}"
   echo "----- ecs response -----"; cat "${ECS_FILE}"; echo "------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${ECS_FILE}"; exit 1
 fi
-# A pure-compute service has NO host endpoint.
+# studio's ecs kind still reports NO host endpoint (no capture proxy) ...
 if ! grep -qF '"endpoints":[]' "${ECS_FILE}"; then
   echo "FAIL: ecs serve unexpectedly reported a host endpoint"
   cat "${ECS_FILE}"; rm -f "${ECS_FILE}"; exit 1
 fi
 rm -f "${ECS_FILE}"
-echo "    OK: ECS service running with no host endpoint"
+# ... but the child published the --host-port: the replica's :80 is reachable
+# on the host port we picked. Retry while the replica finishes booting.
+ECS_REACH=""
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:${ECS_HOST_PORT}/" -o /dev/null 2>/dev/null; then
+    ECS_REACH="yes"; break
+  fi
+  sleep 1
+done
+if [[ -z "${ECS_REACH}" ]]; then
+  echo "FAIL: --host-port did not reach the child (host port ${ECS_HOST_PORT} not reachable)"
+  echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: --max-tasks + --host-port threaded; replica :80 reachable on host :${ECS_HOST_PORT}"
 
 echo "==> GET /api/running reflects the ECS service (no endpoint)"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
@@ -611,4 +659,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + flag-threading + shutdown)"

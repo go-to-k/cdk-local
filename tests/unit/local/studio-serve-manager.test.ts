@@ -178,6 +178,35 @@ describe('createStudioServeManager', () => {
     expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/svc');
   });
 
+  it('threads per-run options (boolean + repeat-pair) into the serve child argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'MyAlb',
+      kind: 'alb',
+      options: { '--tls': true, '--lb-port': [{ left: '443', right: '8443' }] },
+    });
+    child.stdout.emit('data', 'ALB front-door: http://127.0.0.1:51234\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).toContain('--tls');
+    const i = argv.indexOf('--lb-port');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('443=8443');
+  });
+
   it('streams child stdout AND stderr lines onto the bus as log events keyed by the target', async () => {
     const bus = new StudioEventBus();
     const { logs } = collect(bus);

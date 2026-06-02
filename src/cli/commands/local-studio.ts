@@ -27,6 +27,11 @@ import {
 } from '../../local/studio-server.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
 import {
+  buildPerRunArgs,
+  resolveEnvVars,
+  type OptionValues,
+} from '../../local/studio-option-specs.js';
+import {
   createStudioServeManager,
   type StudioServeManager,
   type StudioStopRequest,
@@ -50,14 +55,31 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
   if (typeof body !== 'object' || body === null) {
     throw new Error('Request body must be a JSON object.');
   }
-  const { targetId, kind, event } = body as Record<string, unknown>;
+  const { targetId, kind, event, options } = body as Record<string, unknown>;
   if (typeof targetId !== 'string' || targetId.trim() === '') {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
   if (typeof kind !== 'string' || !STUDIO_TARGET_KINDS.includes(kind as StudioTargetKind)) {
     throw new Error(`Request body "kind" must be one of: ${STUDIO_TARGET_KINDS.join(', ')}.`);
   }
-  return { targetId, kind: kind as StudioTargetKind, event };
+  let runOptions: OptionValues | undefined;
+  if (options !== undefined) {
+    if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+      throw new Error('Request body "options" must be a JSON object keyed by option flag.');
+    }
+    runOptions = options as OptionValues;
+    // Validate the values against the kind's option specs NOW so a bad option
+    // fails as a clean 400 at the boundary, not mid-spawn (buildPerRunArgs +
+    // resolveEnvVars both throw on malformed input).
+    buildPerRunArgs(kind as StudioTargetKind, runOptions);
+    resolveEnvVars(kind as StudioTargetKind, runOptions);
+  }
+  return {
+    targetId,
+    kind: kind as StudioTargetKind,
+    event,
+    ...(runOptions !== undefined ? { options: runOptions } : {}),
+  };
 }
 
 /**

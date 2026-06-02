@@ -18,6 +18,17 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('/api/invocations/');
   });
 
+  it('embeds the per-target OPTION_SPECS for the UI to render controls from', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    expect(html).toContain('window.__OPTION_SPECS__ =');
+    // The serialized table carries the known per-kind options.
+    expect(html).toContain('"--env-vars"');
+    expect(html).toContain('"--tls"');
+    expect(html).toContain('"--max-tasks"');
+    // `<` is escaped so a value can never close the surrounding <script>.
+    expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.

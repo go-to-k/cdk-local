@@ -330,6 +330,15 @@ compute-locally category for Lambda + API Gateway).
   into the argv fragment both studio-dispatch and studio-serve-manager
   forward to their spawned child commands, so the two spawn sites cannot
   drift),
+  studio-option-specs (issue #301 slice 2 — the per-target run-option
+  descriptor table (`OPTION_SPECS`) that is the single source the UI
+  renders controls from (serialized into the page) AND the server builds
+  + validates argv from (`buildPerRunArgs`): boolean -> checkbox, scalar
+  -> input (with `showWhen` gating), repeat-pair -> add-row list (one
+  `--flag left=right` per row), env-kv -> KV / JSON editor whose rows are
+  materialized by `resolveEnvVars` into a SAM-shape `{ Parameters: {...} }`
+  temp file passed as `--env-vars <file>`. Per-target options vary per
+  invoke / serve, vs the session-global flags in studio-child-args),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host

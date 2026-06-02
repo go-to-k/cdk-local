@@ -37,8 +37,11 @@ export class LocalStudioStack extends cdk.Stack {
     const fn = new lambda.Function(this, 'MyHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: 'index.handler',
+      // Echoes the STUDIO_ENV_PROBE env var into the body so the per-target
+      // `--env-vars` option (issue #301 slice 2) is observable end-to-end;
+      // defaults to 'ok' so the other assertions are unaffected.
       code: lambda.Code.fromInline(
-        "exports.handler = async () => ({ statusCode: 200, body: 'ok' });"
+        "exports.handler = async () => ({ statusCode: 200, body: process.env.STUDIO_ENV_PROBE || 'ok' });"
       ),
     });
 

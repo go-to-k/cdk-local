@@ -1467,7 +1467,13 @@ The console is a three-pane layout:
   endpoint; only servable ECS *services* are runnable, not task
   definitions).
 - **Workspace** — the composer for the selected target (event JSON for a
-  Lambda invoke; start / stop for a serve).
+  Lambda invoke; start / stop for a serve). An **Options** section exposes
+  the per-target run options as controls — a checkbox per boolean flag
+  (e.g. ALB `--tls` / `--no-verify-auth`), an input per value flag (ECS
+  `--max-tasks`, ALB `--bearer-token`), an add-row list for repeatable
+  mappings (ALB `--lb-port`, ECS `--host-port`), and a KEY/VALUE-or-JSON
+  editor for a Lambda's env vars (`--env-vars`). The values are passed to
+  the spawned child command for that run.
 - **Timeline** — a live activity feed over SSE carrying both Lambda
   invocations and captured serve requests. A started `start-api` / `start-alb`
   serve is fronted by a capture proxy, so every request to the served port
