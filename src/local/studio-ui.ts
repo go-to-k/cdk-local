@@ -892,20 +892,30 @@ const STUDIO_SCRIPT = `
     sec.appendChild(bodyTa);
 
     // Re-invoke prefill (issue #284): seed the fields from a captured request
-    // when the user clicked [Re-invoke] on a served-request detail. Consumed
-    // once (cleared) so a later fresh open of this serve starts empty.
+    // when the user clicked [Re-invoke] on a served-request detail. The prefill
+    // is address-tagged with its target; consume it UNCONDITIONALLY (so a stray
+    // one from a since-stopped serve never lingers) but only APPLY it when the
+    // target matches this composer.
     if (pendingReqPrefill) {
-      const pf = pendingReqPrefill;
+      const pending = pendingReqPrefill;
       pendingReqPrefill = null;
-      if (pf.method) method.value = String(pf.method).toUpperCase();
-      if (pf.path != null) path.value = pf.path;
-      if (pf.headers && typeof pf.headers === 'object') {
-        headers.value = Object.keys(pf.headers)
-          .map(function (k) { return k + ': ' + pf.headers[k]; })
-          .join('\\n');
-      }
-      if (pf.body != null) {
-        bodyTa.value = typeof pf.body === 'string' ? pf.body : JSON.stringify(pf.body);
+      if (pending.targetId === id && pending.req && typeof pending.req === 'object') {
+        const pf = pending.req;
+        if (pf.method) method.value = String(pf.method).toUpperCase();
+        if (pf.path != null) path.value = pf.path;
+        if (pf.headers && typeof pf.headers === 'object') {
+          // Drop hop-by-hop / transport headers the proxy captured verbatim
+          // (host / content-length / etc.) — they are noise in the editor and
+          // the relay sets them itself.
+          const SKIP = ['host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding'];
+          headers.value = Object.keys(pf.headers)
+            .filter(function (k) { return SKIP.indexOf(k.toLowerCase()) === -1; })
+            .map(function (k) { return k + ': ' + pf.headers[k]; })
+            .join('\\n');
+        }
+        if (pf.body != null) {
+          bodyTa.value = typeof pf.body === 'string' ? pf.body : JSON.stringify(pf.body);
+        }
       }
     }
 
@@ -1332,7 +1342,20 @@ const STUDIO_SCRIPT = `
     const reBtn = el('button', 'reinvoke-btn', 'Re-invoke');
     if (serveRunning) {
       reBtn.onclick = function () {
-        pendingReqPrefill = ev.request && typeof ev.request === 'object' ? ev.request : null;
+        // Re-check running at CLICK time: the serve may have stopped since the
+        // detail was rendered (the button is not re-rendered on a stop). If so,
+        // do NOT seed a prefill (it would otherwise leak into the next serve
+        // composer). The prefill is address-tagged with the target so a stray
+        // one is dropped on mismatch (see renderRequestComposer).
+        const cur = serveState.get(ev.target);
+        if (!cur || cur.status !== 'running') {
+          renderCapturedDetail(id); // re-render to reflect the now-stopped state
+          return;
+        }
+        pendingReqPrefill =
+          ev.request && typeof ev.request === 'object'
+            ? { targetId: ev.target, req: ev.request }
+            : null;
         selectTarget(ev.target, ev.kind);
       };
     } else {
