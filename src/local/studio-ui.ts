@@ -1693,7 +1693,13 @@ const STUDIO_SCRIPT = `
       cfn.checked = on;
       cfnName.value = typeof c.fromCfnStack === 'string' ? c.fromCfnStack : '';
       cfnName.style.display = on ? '' : 'none';
+      // assume-role is now checkbox-gated, symmetric with from-cfn-stack
+      // (issue #343): the ARN input appears only when the box is checked.
+      const roleOn = document.getElementById('sess-role-on');
+      const roleBound = !!c.assumeRole;
+      roleOn.checked = roleBound;
       role.value = c.assumeRole || '';
+      role.style.display = roleBound ? '' : 'none';
       document.getElementById('sess-watch').checked = c.watch === true;
       const s = c.synth || {};
       const parts = [];
@@ -1713,10 +1719,12 @@ const STUDIO_SCRIPT = `
     const cfn = document.getElementById('sess-cfn');
     const cfnName = document.getElementById('sess-cfn-name');
     const role = document.getElementById('sess-role');
+    const roleOn = document.getElementById('sess-role-on');
     const msg = document.getElementById('sess-msg');
     const body = {
       fromCfnStack: cfn.checked ? cfnName.value.trim() || true : null,
-      assumeRole: role.value.trim() || null,
+      // assume-role is explicit-ARN-only: checked + empty is simply not bound.
+      assumeRole: roleOn.checked ? role.value.trim() || null : null,
       watch: document.getElementById('sess-watch').checked,
     };
     try {
@@ -1748,9 +1756,17 @@ const STUDIO_SCRIPT = `
       if (cfn.checked) cfnName.focus();
       applyConfig();
     });
+    // assume-role toggle: show/hide the ARN input AND apply immediately
+    // (issue #343), mirroring the from-cfn-stack toggle above.
+    const roleOn = document.getElementById('sess-role-on');
+    roleOn.addEventListener('change', function () {
+      role.style.display = roleOn.checked ? '' : 'none';
+      if (roleOn.checked) role.focus();
+      applyConfig();
+    });
     // Text inputs apply on change (blur / Enter), not on every keystroke.
     cfnName.addEventListener('change', function () { if (cfn.checked) applyConfig(); });
-    role.addEventListener('change', applyConfig);
+    role.addEventListener('change', function () { if (roleOn.checked) applyConfig(); });
     document.getElementById('sess-watch').addEventListener('change', applyConfig);
   }
 
@@ -1805,8 +1821,8 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <label class="sess-bind"><input type="checkbox" id="sess-watch" /> watch</label>
   <label class="sess-bind"><input type="checkbox" id="sess-cfn" /> from-cfn-stack</label>
   <input id="sess-cfn-name" type="text" placeholder="stack name (blank = auto)" style="display:none" />
-  <label class="sess-bind" for="sess-role">assume-role</label>
-  <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" />
+  <label class="sess-bind"><input type="checkbox" id="sess-role-on" /> assume-role</label>
+  <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" style="display:none" />
   <span id="sess-msg"></span>
   <span id="sess-synth" class="sess-synth"></span>
 </div>

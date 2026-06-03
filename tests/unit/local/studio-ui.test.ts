@@ -117,8 +117,18 @@ describe('renderStudioHtml', () => {
     expect(html).not.toContain('id="sess-save"');
     expect(html).toContain('function applyConfig');
     // The controls wire their change events to apply immediately.
-    expect(html).toContain("role.addEventListener('change', applyConfig)");
     expect(html).toContain("document.getElementById('sess-watch').addEventListener('change', applyConfig)");
+  });
+
+  it('gives --assume-role a checkbox so the Session bar bindings are symmetric (issue #343)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // assume-role is now checkbox-gated like from-cfn-stack.
+    expect(html).toContain('id="sess-role-on"');
+    // Its ARN input is hidden until the box is checked.
+    expect(html).toContain('id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" style="display:none"');
+    // The binding reads the checkbox + reveals/hides the input on toggle.
+    expect(html).toContain('assumeRole: roleOn.checked ? role.value.trim() || null : null');
+    expect(html).toContain("role.style.display = roleOn.checked ? '' : 'none'");
   });
 
   it('renders the collapsible / zebra / filterable target pane (issue #301)', () => {
