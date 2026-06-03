@@ -801,6 +801,15 @@ const STUDIO_SCRIPT = `
     const st = serveState.get(id) || { status: 'stopped', endpoints: [] };
     const running = st.status === 'running';
     const starting = st.status === 'starting';
+    // A serve that exited with a failure reason is FAILED, distinct from a
+    // clean user stop. A boot failure arrives as status 'error'; a crash AFTER
+    // the serve was running arrives as status 'stopped' WITH a message (a clean
+    // user stop is 'stopped' with NO message). A failed serve keeps its
+    // "Started with" context + surfaces the reason + offers a Reconfigure
+    // button instead of silently dropping to a blank composer (which reads as
+    // "my inputs vanished" when the serve actually crashed).
+    const failed = st.status === 'error' || (st.status === 'stopped' && !!st.message);
+    const effErr = errMsg || (failed ? st.message : undefined);
     // A NON-running render (serve stopped / starting) tears down any open
     // WebSocket-console socket: its endpoint is gone, and leaving it open would
     // show "● connected" against a dead serve if the same target is restarted.
@@ -819,20 +828,32 @@ const STUDIO_SCRIPT = `
     head.appendChild(el('div', 'target-name', (isTaskRun ? 'Run ' : 'Serve ') + id));
     const btn = running || starting
       ? el('button', null, 'Stop')
-      : el('button', null, starting ? 'Starting…' : startLabel);
+      : el('button', null, failed ? 'Reconfigure' : startLabel);
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
     let collectRaw = function () { return undefined; };
     let collectImageOverride = function () { return undefined; };
-    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts(), collectRaw(), collectImageOverride()); };
+    btn.onclick = () => {
+      if (running || starting) {
+        stopServe(id);
+      } else if (failed) {
+        // Clear the failed state so the composer comes back (the user adjusts
+        // options + restarts) — NOT a blind default restart that would drop
+        // the env-vars / other options the crashed serve was started with.
+        serveState.set(id, { status: 'stopped', endpoints: [] });
+        renderServeWorkspace(id);
+      } else {
+        startServe(id, collectOpts(), collectRaw(), collectImageOverride());
+      }
+    };
     head.appendChild(btn);
-    if (errMsg) {
-      const m = el('div', 'err', errMsg);
+    if (effErr) {
+      const m = el('div', 'err', effErr);
       head.appendChild(m);
     }
     ws.appendChild(head);
 
-    if (!running && !starting) {
+    if (!running && !starting && !failed) {
       // A pinned ECS service (deployed-registry image) does not pick up local
       // source edits — offer an image-override Dockerfile picker so it can be
       // rebuilt locally (issue #301). Local-asset services hot-reload under
@@ -848,11 +869,12 @@ const STUDIO_SCRIPT = `
       collectRaw = opt.collectRaw;
     }
 
-    if (running || starting) {
+    if (running || starting || failed) {
       // Issue #356: the per-run option inputs are gone once the composer is
       // replaced by this running view, so surface what the serve was Started
       // with as a read-only summary (so e.g. a chosen --max-tasks stays
-      // visible instead of silently vanishing after Start).
+      // visible instead of silently vanishing after Start). A FAILED serve
+      // keeps this too, so a crash does not read as "my inputs disappeared".
       const lines = formatAppliedOptions(serveApplied.get(id));
       const startedSec = el('div', 'section started-with');
       startedSec.appendChild(el('h3', null, 'Started with'));
@@ -1727,9 +1749,14 @@ const STUDIO_SCRIPT = `
 
   function onServeEvent(ev) {
     // A 'stopped' / 'error' transition clears the running state; otherwise
-    // record the latest status + endpoints for the row + workspace.
+    // record the latest status + endpoints for the row + workspace. Keep the
+    // failure reason (ev.message) so the workspace can surface a crash instead
+    // of silently reverting to a blank composer: a boot failure arrives as
+    // 'error' with a message, a crash AFTER the serve was running arrives as
+    // 'stopped' WITH a message, and a clean user stop is 'stopped' with NO
+    // message (renderServeWorkspace uses message presence to tell them apart).
     if (ev.status === 'stopped' || ev.status === 'error') {
-      serveState.set(ev.target, { status: ev.status, endpoints: [] });
+      serveState.set(ev.target, { status: ev.status, endpoints: [], message: ev.message });
     } else {
       serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [], hostUrl: ev.hostUrl });
     }

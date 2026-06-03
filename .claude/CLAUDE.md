@@ -451,7 +451,14 @@ compute-locally category for Lambda + API Gateway).
   read-only "Started with" summary (issue #356 — `formatAppliedOptions`
   over the `serveApplied` map recorded at Start) surfaces the launch
   config the serve is running with (e.g. a chosen `--max-tasks` stays
-  visible instead of silently vanishing). A served
+  visible instead of silently vanishing). A serve that FAILS — a boot
+  failure (serve-manager emits status `error` with a message) or a crash
+  AFTER it was running (status `stopped` WITH a message, vs a clean user
+  stop which is `stopped` with NO message) — keeps that "Started with"
+  summary, surfaces the failure reason (`StudioServeEvent.message`,
+  threaded through `onServeEvent` -> `serveState` -> the workspace error
+  banner), and offers a `Reconfigure` button, instead of silently
+  reverting to a blank composer that reads as "my inputs vanished". A served
   API Gateway WebSocket API additionally gets a WebSocket console
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module
