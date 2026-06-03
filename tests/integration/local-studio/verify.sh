@@ -114,6 +114,33 @@ rm -f "${FLT_LOG}"
 echo "    OK: --stack scoped the list to the matching target only"
 
 # ---------------------------------------------------------------------------
+# 1b2. Custom-resource opt-in (issue #323): `cdkl studio --include-custom-resources`
+#      shows the provider-framework Lambda that is hidden by default. Boot a
+#      short-lived studio WITH the flag and assert /api/targets now includes it.
+# ---------------------------------------------------------------------------
+echo "==> --include-custom-resources surfaces the hidden provider Lambda"
+INC_LOG=$(mktemp)
+${CDKL} studio --no-open --studio-port "${PORT}" --include-custom-resources >"${INC_LOG}" 2>&1 &
+INC_PID=$!
+INC_URL=""
+for _ in $(seq 1 60); do
+  if ! kill -0 "${INC_PID}" 2>/dev/null; then
+    echo "FAIL: --include-custom-resources studio exited during boot"; cat "${INC_LOG}"; rm -f "${INC_LOG}"; exit 1
+  fi
+  INC_URL=$(grep -oE "http://${HOST}:[0-9]+" "${INC_LOG}" | head -1 || true)
+  if [[ -n "${INC_URL}" ]] && curl -fsS "${INC_URL}/api/targets" -o /dev/null 2>/dev/null; then break; fi
+  sleep 0.5
+done
+curl -fsS "${INC_URL}/api/targets" -o "${BODY_FILE}"
+if ! grep -qF 'framework-onEvent' "${BODY_FILE}"; then
+  echo "FAIL: --include-custom-resources did NOT surface the provider Lambda"; cat "${BODY_FILE}"
+  kill "${INC_PID}" 2>/dev/null || true; rm -f "${INC_LOG}"; exit 1
+fi
+kill "${INC_PID}" 2>/dev/null || true; wait "${INC_PID}" 2>/dev/null || true
+rm -f "${INC_LOG}"
+echo "    OK: --include-custom-resources surfaced the provider Lambda"
+
+# ---------------------------------------------------------------------------
 # 1c. Watch mode (issue #301): `cdkl studio --watch` spawns serves started from
 #     the UI with `--watch`, so they hot-reload on source changes. Boot a
 #     short-lived studio WITH --watch, assert the boot log + GET /api/config
@@ -267,6 +294,15 @@ do
   fi
   echo "    OK: ${needle}"
 done
+
+# Custom-resource exclusion (issue #323): the fixture's provider-framework
+# Lambda (path `.../MyCustomResourceProvider/framework-onEvent`) is infra
+# plumbing, so the DEFAULT target list must NOT include it.
+if grep -qF 'framework-onEvent' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets included the custom-resource provider Lambda by default"
+  cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: custom-resource provider Lambda excluded from the default target list"
 
 # ---------------------------------------------------------------------------
 # 5. GET /api/events opens a Server-Sent-Events stream.
@@ -1087,4 +1123,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
