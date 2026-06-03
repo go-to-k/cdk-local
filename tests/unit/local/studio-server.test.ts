@@ -273,7 +273,7 @@ describe('startStudioServer', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/html');
     const body = await res.text();
-    expect(body).toContain('cdkl studio');
+    expect(body).toContain('CDK Local Studio'); // default cdkl brand (issue #301)
     expect(body).toContain('MyStack');
   });
 
