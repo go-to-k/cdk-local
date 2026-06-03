@@ -1,3 +1,10 @@
+# [0.97.0](https://github.com/go-to-k/cdk-local/compare/v0.96.1...v0.97.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** target-pane UX (zebra + collapsible groups + filter) + apply-on-change Session bar ([#326](https://github.com/go-to-k/cdk-local/issues/326)) ([5436dbc](https://github.com/go-to-k/cdk-local/commit/5436dbc19d4205159be2f4cdf59ff8f227696d4e))
+
 ## [0.96.1](https://github.com/go-to-k/cdk-local/compare/v0.96.0...v0.96.1) (2026-06-03)
 
 
