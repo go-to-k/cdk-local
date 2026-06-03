@@ -629,7 +629,47 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     openBrowser(server.url);
   }
 
-  await blockUntilShutdown(server, serveManager, store, cliName);
+  // Keep the control plane alive across a stray error (issue #346): a single
+  // unhandled rejection / exception anywhere in the long-running studio process
+  // would otherwise crash it, after which the browser sees "Failed to fetch"
+  // and Stop / teardown stop responding. Log loudly and continue. Installed
+  // only now that the server is listening, so genuine startup / bind errors
+  // still propagate; removed on shutdown so it never leaks (e.g. for a host
+  // CLI embedding studio).
+  const uninstallGuard = installStudioResilienceGuard(logger);
+  try {
+    await blockUntilShutdown(server, serveManager, store, cliName);
+  } finally {
+    uninstallGuard();
+  }
+}
+
+/**
+ * Install process-level `uncaughtException` / `unhandledRejection` handlers
+ * that LOG and continue (instead of crashing the studio process), returning an
+ * uninstaller. studio is a long-running local dev control plane — a stray error
+ * from one bad request must not take down the whole console (issue #346). This
+ * also backstops the Ctrl-C SSE-socket-destroy race the streaming handler works
+ * around. Genuine fatal conditions are still visible in the log. Exported for
+ * unit testing; not a host-facing library API (not re-exported from
+ * `src/index.ts` / `src/internal.ts`).
+ */
+export function installStudioResilienceGuard(logger: ReturnType<typeof getLogger>): () => void {
+  const describe = (e: unknown): string => (e instanceof Error ? e.stack || e.message : String(e));
+  const onUncaught = (err: unknown): void => {
+    logger.warn(`studio caught an unexpected error and is continuing: ${describe(err)}`);
+  };
+  const onRejection = (reason: unknown): void => {
+    logger.warn(
+      `studio caught an unhandled promise rejection and is continuing: ${describe(reason)}`
+    );
+  };
+  process.on('uncaughtException', onUncaught);
+  process.on('unhandledRejection', onRejection);
+  return (): void => {
+    process.off('uncaughtException', onUncaught);
+    process.off('unhandledRejection', onRejection);
+  };
 }
 
 /** Best-effort cross-platform browser open. Failures are non-fatal. */
