@@ -1,3 +1,10 @@
+## [0.103.3](https://github.com/go-to-k/cdk-local/compare/v0.103.2...v0.103.3) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** --assume-role checkbox does nothing (post-apply loadConfig) ([#350](https://github.com/go-to-k/cdk-local/issues/350)) ([488efaa](https://github.com/go-to-k/cdk-local/commit/488efaa9159202e5e0ec92104992d24acadad61f))
+
 ## [0.103.2](https://github.com/go-to-k/cdk-local/compare/v0.103.1...v0.103.2) (2026-06-03)
 
 
