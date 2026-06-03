@@ -776,6 +776,17 @@ const STUDIO_SCRIPT = `
         const link = href(url);
         epSec.appendChild(link);
       }
+      // These are the studio capture-proxy URLs — the request target. curl
+      // THESE and the request lands on the timeline. The serve child in the
+      // Logs panel below advertises a DIFFERENT internal port (issue #325);
+      // that port works too but bypasses capture, so prefer the URLs here.
+      epSec.appendChild(
+        el(
+          'div',
+          'opt-hint',
+          'curl these — captured on the timeline. (The port in the Logs below is the serve child internal port; it bypasses capture.)'
+        )
+      );
     } else if (running && isEcs && st.hostUrl) {
       // An ecs service published via --host-port IS reachable on the host
       // (issue #322); show its host URL. No proxy fronts it, so requests are
@@ -813,6 +824,19 @@ const STUDIO_SCRIPT = `
     const logs = logsById.get(id) || [];
     const logSec = el('div', 'section');
     logSec.appendChild(el('h3', null, 'Logs'));
+    // A proxy-fronted serve (api / alb) streams its child start-* logs here,
+    // which advertise the child internal 127.0.0.1 port — a DIFFERENT port
+    // than the capture-proxy URL in Endpoints above. Flag it so the child
+    // hint is not mistaken for the address to curl (issue #325).
+    if (running && st.endpoints.length) {
+      logSec.appendChild(
+        el(
+          'div',
+          'opt-hint',
+          'Note: any 127.0.0.1 port below is the serve child internal port. To reach this serve on the timeline, use the Endpoints above.'
+        )
+      );
+    }
     logSec.appendChild(el('pre', null, logs.length ? logs.join('\\n') : '(none)'));
     ws.appendChild(logSec);
   }
