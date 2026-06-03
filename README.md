@@ -80,7 +80,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its depl
 ```
 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
-- **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
+- **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (a privileged port like 80 auto-remaps to a free high host port with a WARN; `--host-port <container>=<host>` pins a specific one). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
 - **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - **`studio`** opens a local web console over the same synthesized targets — a point-and-click front over the same CLI runners. Takes no target (it lists them all). Flags + in-UI controls: [Web console — `cdkl studio`](#web-console--cdkl-studio).
@@ -200,7 +200,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 **Why the extra flags on the simple case?** The template's `DesiredCount` (typically 3 in production) is honored locally by default, but N replicas can't all bind the same host port — so `start-service` skips host publishing for multi-replica runs and the app is reachable only from inside the `cdkl-svc-` docker network. To get the simple `curl http://127.0.0.1:...` access path:
 
 - `--max-tasks 1` clamps the local replica count to 1 without touching your CDK code.
-- `--host-port <containerPort>=<hostPort>` remaps the container port to a non-privileged host port (macOS Docker Desktop needs `sudo` for ports < 1024).
+- A privileged declared host port (`< 1024`, e.g. 80) is auto-remapped to a free high host port — with a WARN naming the remap — because macOS Docker Desktop refuses to publish privileged ports and a `< 1024` host port needs root. `--host-port <containerPort>=<hostPort>` pins a specific host port instead.
 
 `start-alb` uses the symmetric `--lb-port <listenerPort>=<hostPort>` for privileged listener ports like 80 / 443, and `--tls` (or `--tls-cert` / `--tls-key`) to terminate TLS locally instead of serving the HTTPS listener over plain HTTP (the default). Full resolution model: [docs/cli-reference.md](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally).
 

@@ -1193,6 +1193,51 @@ STUDIO_PID=""
 echo "    OK: studio stopped cleanly"
 
 # ---------------------------------------------------------------------------
+# 11b. Privileged host-port auto-remap (issue #357): a single-replica
+#      start-service whose task container declares a privileged port (80) and
+#      is NOT pinned with --host-port auto-remaps the host publish to a free
+#      high port + WARNs, instead of failing at `docker run` (macOS Docker
+#      Desktop rejects publishing 127.0.0.1:80 via the privileged vmnetd
+#      helper; a < 1024 host port needs root). The fixture's MyService runs
+#      `python -m http.server 80`, so the auto-assigned host port is reachable.
+#      Driven as a DIRECT start-service (studio is already stopped above).
+# ---------------------------------------------------------------------------
+echo "==> start-service auto-remaps a privileged container port to a high host port (#357)"
+PP_LOG=$(mktemp)
+${CDKL} start-service LocalStudioFixture/MyService --max-tasks 1 --no-pull --container-host 127.0.0.1 \
+  >"${PP_LOG}" 2>&1 &
+PP_PID=$!
+PP_PORT=""
+for _ in $(seq 1 90); do
+  if grep -qF 'Auto-remapped to host port' "${PP_LOG}"; then
+    PP_PORT=$(grep -oE 'published on 127\.0\.0\.1:[0-9]+' "${PP_LOG}" | head -1 | grep -oE '[0-9]+$' || true)
+    [ -n "${PP_PORT}" ] && break
+  fi
+  kill -0 "${PP_PID}" 2>/dev/null || break
+  sleep 1
+done
+if [ -z "${PP_PORT}" ]; then
+  echo "FAIL: start-service did not auto-remap the privileged port (no WARN + published-port line)"
+  cat "${PP_LOG}"; kill -TERM "${PP_PID}" 2>/dev/null || true; wait "${PP_PID}" 2>/dev/null || true; rm -f "${PP_LOG}"; exit 1
+fi
+if [ "${PP_PORT}" -lt 1024 ]; then
+  echo "FAIL: auto-remapped to a still-privileged host port ${PP_PORT}"
+  cat "${PP_LOG}"; kill -TERM "${PP_PID}" 2>/dev/null || true; wait "${PP_PID}" 2>/dev/null || true; rm -f "${PP_LOG}"; exit 1
+fi
+PP_REACH=""
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:${PP_PORT}/" -o /dev/null 2>/dev/null; then PP_REACH=yes; break; fi
+  sleep 1
+done
+kill -TERM "${PP_PID}" 2>/dev/null || true
+wait "${PP_PID}" 2>/dev/null || true
+rm -f "${PP_LOG}"
+if [ -z "${PP_REACH}" ]; then
+  echo "FAIL: container not reachable on the auto-remapped host port ${PP_PORT}"; exit 1
+fi
+echo "    OK: privileged port 80 auto-remapped to high host port ${PP_PORT}; reachable + WARN logged"
+
+# ---------------------------------------------------------------------------
 # 12. Session-global flag threading (issue #301 slice 1): `cdkl studio
 #     --from-cfn-stack <name> --assume-role <arn>` forwards both flags to the
 #     child commands it spawns. Boot studio bound to a BOGUS stack + role (no

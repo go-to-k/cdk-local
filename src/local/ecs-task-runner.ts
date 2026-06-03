@@ -11,6 +11,7 @@ import {
   removeContainer,
   appendEnvFlags,
   execEnvForSecrets,
+  pickFreePort,
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
 import { attachContainerLogStreamer } from './container-log-streamer.js';
@@ -100,6 +101,16 @@ export interface RunEcsTaskOptions {
    * publish flags emitted.
    */
   ephemeralPublishContainerPorts?: number[];
+  /**
+   * Issue #357 — free-host-port allocator used to auto-remap a privileged
+   * declared host port (`< 1024`, e.g. 80) that the user did NOT pin via
+   * `--host-port`, so `docker run` never tries to publish e.g.
+   * `127.0.0.1:80:80` (macOS Docker Desktop rejects privileged-port
+   * publishing through the `com.docker.vmnetd` helper, and a `< 1024` host
+   * port needs root on Linux too). Defaults to {@link pickFreePort};
+   * injected by tests for deterministic ports.
+   */
+  allocateHostPort?: () => Promise<number>;
   /** Optional STS-issued temp credentials to expose via the metadata sidecar (`--assume-task-role`). */
   taskCredentials?: {
     accessKeyId: string;
@@ -443,6 +454,27 @@ export async function runEcsTask(
   // pin v1 to per-task semantics).
   const volumeByName = await realizeDockerVolumes(task.volumes, state);
 
+  // Issue #357 — auto-remap privileged declared host ports (< 1024) the user
+  // did NOT pin via `--host-port` to free high ports, so `docker run` never
+  // tries to publish e.g. `127.0.0.1:80:80` (macOS Docker Desktop rejects
+  // privileged-port publishing; a < 1024 host port needs root). Skipped when
+  // host-port publishing is suppressed (multi-replica — nothing is published).
+  let effectiveHostPortOverrides = options.hostPortOverrides;
+  let autoRemappedContainerPorts: ReadonlySet<number> | undefined;
+  if (!options.skipHostPortPublish) {
+    const remaps = await resolvePrivilegedHostPortRemaps({
+      task,
+      userOverrides: options.hostPortOverrides,
+      ephemeralPorts: new Set(options.ephemeralPublishContainerPorts ?? []),
+      allocate: options.allocateHostPort ?? pickFreePort,
+    });
+    const remapKeys = Object.keys(remaps);
+    if (remapKeys.length > 0) {
+      effectiveHostPortOverrides = { ...options.hostPortOverrides, ...remaps };
+      autoRemappedContainerPorts = new Set(remapKeys.map(Number));
+    }
+  }
+
   // Pre-compute every container's CMD args so the start loop only does
   // docker calls.
   const dockerCmds = new Map<string, { args: string[]; sensitiveEnv: Record<string, string> }>();
@@ -467,7 +499,8 @@ export async function runEcsTask(
       region: options.region,
       sidecarIp: state.network.sidecarIp,
       ...(options.skipHostPortPublish ? { skipHostPortPublish: true } : {}),
-      ...(options.hostPortOverrides ? { hostPortOverrides: options.hostPortOverrides } : {}),
+      ...(effectiveHostPortOverrides ? { hostPortOverrides: effectiveHostPortOverrides } : {}),
+      ...(autoRemappedContainerPorts ? { autoRemappedContainerPorts } : {}),
       ...(options.ephemeralPublishContainerPorts &&
       options.ephemeralPublishContainerPorts.length > 0
         ? { ephemeralPublishContainerPorts: options.ephemeralPublishContainerPorts }
@@ -967,9 +1000,17 @@ interface BuildDockerRunArgs {
   skipHostPortPublish?: boolean;
   /**
    * `--host-port` overrides (`containerPort -> hostPort`); see the
-   * matching field on {@link RunEcsTaskOptions}.
+   * matching field on {@link RunEcsTaskOptions}. Includes the privileged-port
+   * auto-remaps (issue #357) merged over the user's pins by the caller.
    */
   hostPortOverrides?: Record<number, number>;
+  /**
+   * Issue #357 — container ports whose `hostPortOverrides` entry is an
+   * automatic privileged-port remap (not a user `--host-port` pin), so the
+   * publish log labels them "(privileged-port auto-remap)" rather than
+   * "(--host-port override)".
+   */
+  autoRemappedContainerPorts?: ReadonlySet<number>;
   /**
    * Issue #86 v1 — container ports to publish on EPHEMERAL host ports, used by
    * the local ALB front-door. A port is published (as
@@ -1050,6 +1091,66 @@ export function parseHostPortOverrides(values: string[] | undefined): Record<num
 }
 
 /**
+ * Issue #357 — auto-remap privileged declared host ports to free high host
+ * ports so `docker run` never tries to publish e.g. `127.0.0.1:80:80`.
+ *
+ * For each container port whose DECLARED host port (`hostPort ?? containerPort`)
+ * is privileged (`< 1024`), is NOT already pinned by a user `--host-port`
+ * override, and is NOT an ephemeral front-door port, a free high host port is
+ * allocated and recorded as an additional override. A loud WARN names the remap
+ * and the `--host-port` escape hatch so the change is never silent. The
+ * returned map is keyed by containerPort and meant to be merged OVER the user
+ * overrides (which always win).
+ *
+ * Why: macOS Docker Desktop rejects publishing a privileged host port through
+ * the `com.docker.vmnetd` helper, and a `< 1024` host port needs root on Linux
+ * — so a single-replica `start-service` / `run-task` / `start-alb` publish of a
+ * task definition that declares container port 80 used to fail at `docker run`.
+ * Remapping makes it work out of the box; the user can still pin a specific
+ * (even privileged) port with `--host-port`.
+ *
+ * Pure except for the injected `allocate` (a free-host-port finder). Callers
+ * skip this entirely when host-port publishing is suppressed (multi-replica).
+ * One remap per containerPort (the override map is flat / keyed by container
+ * port), matching the existing `--host-port` semantics.
+ *
+ * Applied automatically by `runEcsTask`; exported (no leading underscore) so the
+ * unit tests can assert the remap decisions directly with an injected allocator.
+ */
+export async function resolvePrivilegedHostPortRemaps(opts: {
+  task: ResolvedEcsTask;
+  userOverrides: Record<number, number> | undefined;
+  ephemeralPorts: ReadonlySet<number>;
+  allocate: () => Promise<number>;
+}): Promise<Record<number, number>> {
+  const { task, userOverrides, ephemeralPorts, allocate } = opts;
+  const remaps: Record<number, number> = {};
+  const seen = new Set<number>();
+  for (const container of task.containers) {
+    for (const pm of container.portMappings) {
+      const cp = pm.containerPort;
+      if (seen.has(cp)) continue; // one remap per container port (flat override map)
+      if (ephemeralPorts.has(cp)) continue; // front-door ephemeral publish, not a fixed bind
+      if (userOverrides && userOverrides[cp] !== undefined) continue; // user pinned it explicitly
+      const declaredHostPort = pm.hostPort ?? cp;
+      if (declaredHostPort >= 1024) continue; // not privileged — leave it
+      seen.add(cp);
+      const freePort = await allocate();
+      remaps[cp] = freePort;
+      getLogger()
+        .child('ecs')
+        .warn(
+          `Container '${container.name}' container port ${cp} declares a privileged host port ` +
+            `${declaredHostPort}, which cannot be published locally (macOS Docker Desktop rejects ` +
+            `privileged-port publishing; a host port < 1024 needs root). Auto-remapped to host port ` +
+            `${freePort}. Pass --host-port ${cp}=<hostPort> to pin a specific host port.`
+        );
+    }
+  }
+  return remaps;
+}
+
+/**
  * Build the full `docker run -d` argument list for one container.
  * Exported (no-leading-underscore) so the unit tests can assert against
  * the shape directly without spawning a process.
@@ -1125,7 +1226,12 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
       const declaredHostPort = pm.hostPort ?? pm.containerPort;
       const hostPort = opts.hostPortOverrides?.[pm.containerPort] ?? declaredHostPort;
       const overridden = hostPort !== declaredHostPort;
-      const overrideNote = overridden ? ' (--host-port override)' : '';
+      const autoRemapped = opts.autoRemappedContainerPorts?.has(pm.containerPort) ?? false;
+      const overrideNote = autoRemapped
+        ? ' (privileged-port auto-remap)'
+        : overridden
+          ? ' (--host-port override)'
+          : '';
       getLogger()
         .child('ecs')
         .info(
