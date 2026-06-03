@@ -155,6 +155,7 @@ const STUDIO_CSS = `
     background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px; padding: 5px;
     font: 12px/1.5 ui-monospace, Menlo, monospace; margin-bottom: 6px; }
   .req-composer .req-body { min-height: 70px; }
+  .req-composer .hdr-editor { margin-bottom: 8px; }
   .req-composer select:focus, .req-composer input:focus, .req-composer textarea:focus {
     outline: none; border-color: #4ec97a; }
   .req-composer .req-send { display: flex; align-items: center; gap: 10px; }
@@ -888,15 +889,116 @@ const STUDIO_SCRIPT = `
   // proxy and lands on the timeline.
   const REQ_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
-  function parseHeaderLines(text) {
-    const out = {};
-    String(text || '').split('\\n').forEach(function (line) {
-      const i = line.indexOf(':');
-      if (i <= 0) return;
-      const k = line.slice(0, i).trim();
-      if (k) out[k] = line.slice(i + 1).trim();
-    });
-    return out;
+  // Headers editor with a KV / JSON toggle (issue #337), mirroring the Lambda
+  // env-vars control. Returns { node, collect, prefill, jsonError }. KV mode is
+  // add-row Name/value pairs; JSON mode is a raw JSON object of string values.
+  // collect() yields a flat { Name: value } object; an invalid JSON object
+  // surfaces via jsonError() so the Send handler can refuse rather than silently
+  // drop the headers.
+  function buildHeaderEditor() {
+    const wrap = el('div', 'hdr-editor');
+    const modes = el('div', 'envkv-modes');
+    const kvBtn = el('button', 'envkv-mode active', 'KV');
+    kvBtn.type = 'button';
+    const jsonBtn = el('button', 'envkv-mode', 'JSON');
+    jsonBtn.type = 'button';
+    modes.appendChild(kvBtn);
+    modes.appendChild(jsonBtn);
+    wrap.appendChild(modes);
+
+    const list = el('div', 'pair-rows');
+    const pairs = [];
+    function addRow(name, value) {
+      const r = el('div', 'pair-row');
+      const lv = el('input', 'pair-in');
+      lv.placeholder = 'Header';
+      lv.value = name || '';
+      const rv = el('input', 'pair-in');
+      rv.placeholder = 'value';
+      rv.value = value || '';
+      const pair = { l: lv, r: rv };
+      const x = el('button', 'pair-x', 'x');
+      x.type = 'button';
+      x.onclick = function () {
+        list.removeChild(r);
+        const i = pairs.indexOf(pair);
+        if (i >= 0) pairs.splice(i, 1);
+      };
+      r.appendChild(lv);
+      r.appendChild(el('span', 'pair-sep', ':'));
+      r.appendChild(rv);
+      r.appendChild(x);
+      list.appendChild(r);
+      pairs.push(pair);
+    }
+    const add = el('button', 'pair-add', '+ add');
+    add.type = 'button';
+    add.onclick = function () { addRow(); };
+    const kvPane = el('div', 'pair-wrap');
+    kvPane.appendChild(list);
+    kvPane.appendChild(add);
+    wrap.appendChild(kvPane);
+
+    const ta = el('textarea', 'envkv-ta');
+    ta.placeholder = '{ "Authorization": "Bearer demo" }';
+    ta.spellcheck = false;
+    ta.style.display = 'none';
+    wrap.appendChild(ta);
+
+    let mode = 'kv';
+    kvBtn.onclick = function () {
+      mode = 'kv';
+      kvBtn.className = 'envkv-mode active';
+      jsonBtn.className = 'envkv-mode';
+      kvPane.style.display = '';
+      ta.style.display = 'none';
+    };
+    jsonBtn.onclick = function () {
+      mode = 'json';
+      jsonBtn.className = 'envkv-mode active';
+      kvBtn.className = 'envkv-mode';
+      ta.style.display = '';
+      kvPane.style.display = 'none';
+    };
+
+    function parseJson() {
+      const t = ta.value.trim();
+      if (t === '') return { ok: true, value: {} };
+      try {
+        const o = JSON.parse(t);
+        if (!o || typeof o !== 'object' || Array.isArray(o)) {
+          return { ok: false, error: 'Headers JSON must be an object of string values.' };
+        }
+        const out = {};
+        Object.keys(o).forEach(function (k) { out[k] = String(o[k]); });
+        return { ok: true, value: out };
+      } catch (e) {
+        return { ok: false, error: 'Invalid headers JSON: ' + e.message };
+      }
+    }
+
+    return {
+      node: wrap,
+      collect: function () {
+        if (mode === 'json') {
+          const p = parseJson();
+          return p.ok ? p.value : {};
+        }
+        const out = {};
+        pairs.forEach(function (p) {
+          const k = p.l.value.trim();
+          if (k) out[k] = p.r.value;
+        });
+        return out;
+      },
+      jsonError: function () {
+        return mode === 'json' ? (parseJson().ok ? null : parseJson().error) : null;
+      },
+      prefill: function (headersObj) {
+        if (!headersObj || typeof headersObj !== 'object') return;
+        Object.keys(headersObj).forEach(function (k) { addRow(k, String(headersObj[k])); });
+      },
+    };
   }
 
   function renderRequestComposer(id, baseUrl, captured) {
@@ -916,11 +1018,9 @@ const STUDIO_SCRIPT = `
     row.appendChild(path);
     sec.appendChild(row);
 
-    sec.appendChild(el('div', 'opt-label', 'Headers (one per line: Name: value)'));
-    const headers = el('textarea', 'req-headers');
-    headers.placeholder = 'Authorization: Bearer demo';
-    headers.spellcheck = false;
-    sec.appendChild(headers);
+    sec.appendChild(el('div', 'opt-label', 'Headers'));
+    const headerEditor = buildHeaderEditor();
+    sec.appendChild(headerEditor.node);
 
     sec.appendChild(el('div', 'opt-label', 'Body'));
     const bodyTa = el('textarea', 'req-body');
@@ -945,10 +1045,11 @@ const STUDIO_SCRIPT = `
           // (host / content-length / etc.) — they are noise in the editor and
           // the relay sets them itself.
           const SKIP = ['host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding'];
-          headers.value = Object.keys(pf.headers)
-            .filter(function (k) { return SKIP.indexOf(k.toLowerCase()) === -1; })
-            .map(function (k) { return k + ': ' + pf.headers[k]; })
-            .join('\\n');
+          const seed = {};
+          Object.keys(pf.headers).forEach(function (k) {
+            if (SKIP.indexOf(k.toLowerCase()) === -1) seed[k] = pf.headers[k];
+          });
+          headerEditor.prefill(seed);
         }
         if (pf.body != null) {
           bodyTa.value = typeof pf.body === 'string' ? pf.body : JSON.stringify(pf.body);
@@ -972,6 +1073,13 @@ const STUDIO_SCRIPT = `
 
     btn.onclick = async function () {
       msg.textContent = '';
+      // Refuse a send on a malformed Headers JSON rather than silently dropping
+      // the headers (issue #337).
+      const hdrErr = headerEditor.jsonError();
+      if (hdrErr) {
+        msg.textContent = hdrErr;
+        return;
+      }
       btn.disabled = true;
       btn.textContent = 'Sending…';
       result.innerHTML = '';
@@ -983,7 +1091,7 @@ const STUDIO_SCRIPT = `
           targetId: id,
           method: method.value,
           path: path.value || '/',
-          headers: parseHeaderLines(headers.value),
+          headers: headerEditor.collect(),
         };
         if (bodyTa.value !== '') payload.body = bodyTa.value;
         const res = await fetch('/api/request', {
