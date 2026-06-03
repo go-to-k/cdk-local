@@ -704,8 +704,9 @@ const STUDIO_SCRIPT = `
     const row = rowsById.get(id);
     if (row) row.classList.add('sel');
     highlightTarget(ev.target);
-    if (ev.kind === 'lambda') {
-      // A Lambda invocation row reloads into the re-invokable composer.
+    if (INVOKE_KINDS.includes(ev.kind)) {
+      // A single-shot invocation row (Lambda or AgentCore) reloads into the
+      // re-invokable composer.
       shownDetailId = null;
       shownServeId = null;
       renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : '{}');

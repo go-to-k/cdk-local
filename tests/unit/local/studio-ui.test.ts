@@ -37,6 +37,10 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('"--ws"');
     expect(html).toContain('"--sigv4"');
     expect(html).toContain('"--session-id"');
+    // A timeline row for ANY invoke kind (Lambda OR AgentCore) reloads into the
+    // re-invoke composer — gated on INVOKE_KINDS, not a lambda-only check, so an
+    // AgentCore row is not mis-routed to the read-only captured-request detail.
+    expect(html).toContain('INVOKE_KINDS.includes(ev.kind)');
   });
 
   it('renders the editable Session bar (issue #301 slice 3)', () => {

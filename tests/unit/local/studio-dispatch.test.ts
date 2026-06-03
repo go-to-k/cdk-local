@@ -470,6 +470,32 @@ describe('createStudioDispatcher', () => {
     expect(argv[s + 1]).toBe('sess-42');
   });
 
+  it('surfaces a failed Lambda run\'s stdout lines as log events (failure path)', async () => {
+    const bus = new StudioEventBus();
+    const { logs } = collect(bus);
+    const child = makeFakeChild();
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-fail-stdout',
+    });
+
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    // A failing invoke can still flush container logs to stdout before exit;
+    // on the failure path every stdout line is a log (none is the response).
+    child.stdout.emit('data', 'START RequestId: x\nhandler threw\n');
+    child.stderr.emit('data', 'Error: boom\n');
+    child.emit('close', 1);
+    const result = await p;
+
+    expect(result.ok).toBe(false);
+    const stdoutLogs = logs.filter((l) => l.stream === 'stdout').map((l) => l.line);
+    expect(stdoutLogs).toEqual(['START RequestId: x', 'handler threw']);
+  });
+
   it('marks a failed AgentCore invoke (non-zero exit) as 500 with the stderr error', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
