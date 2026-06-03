@@ -1,3 +1,10 @@
+# [0.102.0](https://github.com/go-to-k/cdk-local/compare/v0.101.0...v0.102.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** re-invoke a past timeline row with an edited payload ([#332](https://github.com/go-to-k/cdk-local/issues/332)) ([bd37582](https://github.com/go-to-k/cdk-local/commit/bd37582b5ee3ca598f1a681d664a74a7916b17b2))
+
 # [0.101.0](https://github.com/go-to-k/cdk-local/compare/v0.100.0...v0.101.0) (2026-06-03)
 
 
