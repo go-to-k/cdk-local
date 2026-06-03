@@ -1,3 +1,10 @@
+## [0.103.5](https://github.com/go-to-k/cdk-local/compare/v0.103.4...v0.103.5) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** split ECS Services and Task Definitions into separate target groups ([#358](https://github.com/go-to-k/cdk-local/issues/358)) ([26935ec](https://github.com/go-to-k/cdk-local/commit/26935ec5331e35cd26bde2b3dd63b0e25819ff99))
+
 ## [0.103.4](https://github.com/go-to-k/cdk-local/compare/v0.103.3...v0.103.4) (2026-06-03)
 
 
