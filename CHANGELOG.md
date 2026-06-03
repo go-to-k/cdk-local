@@ -1,3 +1,10 @@
+# [0.96.0](https://github.com/go-to-k/cdk-local/compare/v0.95.0...v0.96.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** image-override Dockerfile picker for pinned ECS services ([#320](https://github.com/go-to-k/cdk-local/issues/320)) ([e70dad3](https://github.com/go-to-k/cdk-local/commit/e70dad3403fc75f66002a9d13db3133afa9b60fa))
+
 # [0.95.0](https://github.com/go-to-k/cdk-local/compare/v0.94.0...v0.95.0) (2026-06-03)
 
 
