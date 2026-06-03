@@ -1,3 +1,10 @@
+# [0.104.0](https://github.com/go-to-k/cdk-local/compare/v0.103.9...v0.104.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** add a [Run] control for ECS task definitions (run-task) ([#368](https://github.com/go-to-k/cdk-local/issues/368)) ([faea92f](https://github.com/go-to-k/cdk-local/commit/faea92fd46e8e4b08f122226e4be4f53c7ed1b3a))
+
 ## [0.103.9](https://github.com/go-to-k/cdk-local/compare/v0.103.8...v0.103.9) (2026-06-03)
 
 
