@@ -1,3 +1,10 @@
+## [0.103.7](https://github.com/go-to-k/cdk-local/compare/v0.103.6...v0.103.7) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** show a "Started with" summary of a serve's launch options ([#361](https://github.com/go-to-k/cdk-local/issues/361)) ([8d2d7f1](https://github.com/go-to-k/cdk-local/commit/8d2d7f17a52327c2ef7197095d34f5f3e12e0cc3))
+
 ## [0.103.6](https://github.com/go-to-k/cdk-local/compare/v0.103.5...v0.103.6) (2026-06-03)
 
 
