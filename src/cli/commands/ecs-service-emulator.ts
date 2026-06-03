@@ -2031,16 +2031,41 @@ export async function buildFrontDoor(
       // user whose request missed on (say) the Host header sees every rule's
       // condition + action target, not just the request path (issue #228).
       const rulesSummary: FrontDoorRuleSummary[] = listener.rules.map(buildRuleSummary);
-      const server = await startFrontDoorServer({
+      const fdBase = {
         route,
-        port: listener.hostPort,
         host: containerHost,
         listenerPort: listener.listenerPort,
         label: `listener port ${listener.listenerPort}`,
         forwardedProto,
         rulesSummary,
         ...(tls ? { tls } : {}),
-      });
+      };
+      let server: StartedFrontDoorServer;
+      try {
+        server = await startFrontDoorServer({ ...fdBase, port: listener.hostPort });
+      } catch (bindErr) {
+        // A privileged listener port (< 1024, e.g. 80 / 443) cannot be bound
+        // without root. Rather than crash the whole front-door, fall back to an
+        // OS-assigned high host port and log the remap so the serve still comes
+        // up (issue #351). An explicit `--lb-port` override still wins (its
+        // remapped hostPort is what we tried first). Without this, every ALB on
+        // 80 / 443 was un-startable from `cdkl studio`, which surfaced only a
+        // cryptic "Server exited before listening (code 1)".
+        const code =
+          bindErr && typeof bindErr === 'object' && 'code' in bindErr
+            ? (bindErr as { code?: unknown }).code
+            : undefined;
+        if (code === 'EACCES' && listener.hostPort < 1024) {
+          server = await startFrontDoorServer({ ...fdBase, port: 0 });
+          logger.warn(
+            `  WARN: listener port ${listener.listenerPort} is privileged (< 1024) and cannot be ` +
+              `bound without root; serving it on host port ${server.port} instead. Pass ` +
+              `--lb-port ${listener.listenerPort}=<hostPort> to pin a fixed port.`
+          );
+        } else {
+          throw bindErr;
+        }
+      }
       servers.push(server);
 
       logger.info(

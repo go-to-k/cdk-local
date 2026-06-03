@@ -54,7 +54,55 @@ if [[ ! -d node_modules ]]; then
 fi
 
 OUT_FILE=$(mktemp)
-trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
+NOLB_OUT=$(mktemp)
+trap 'rm -f "${OUT_FILE}" "${NOLB_OUT}"; cleanup' EXIT
+
+# ---------------------------------------------------------------------------
+# Issue #351: start-alb WITHOUT --lb-port. The ALB's deployed listeners are on
+# 80 / 443 (privileged); rather than crash with EACCES, the front-door must
+# auto-remap each to an OS-assigned high host port + log a WARN, and still
+# serve. (Without this fix, an ALB on 80/443 was un-startable — which is what
+# broke `cdkl studio` Start on an ALB.)
+# ---------------------------------------------------------------------------
+echo "==> start-alb WITHOUT --lb-port: privileged 80/443 auto-remap to high host ports (issue #351)"
+${CDKL} start-alb CdkLocalStartAlbFixture:WebLB --container-host 127.0.0.1 > "${NOLB_OUT}" 2>&1 &
+NOLB_PID=$!
+NOLB_OK=0
+for _ in $(seq 1 90); do
+  if grep -q "Service(s) running:" "${NOLB_OUT}" 2>/dev/null && grep -q "ALB front-door:" "${NOLB_OUT}" 2>/dev/null; then
+    NOLB_OK=1; break
+  fi
+  if ! kill -0 "${NOLB_PID}" 2>/dev/null; then
+    echo "FAIL: start-alb without --lb-port exited (EACCES fallback should keep it running)"
+    echo "----- output -----"; cat "${NOLB_OUT}"; echo "------------------"; exit 1
+  fi
+  sleep 1
+done
+if [[ "${NOLB_OK}" -ne 1 ]]; then
+  echo "FAIL: start-alb without --lb-port did not come up within 90s"; cat "${NOLB_OUT}"; exit 1
+fi
+# The privileged-port auto-remap WARN must fire for listener 80.
+if ! grep -qE "listener port 80 is privileged .* serving it on host port [0-9]+ instead" "${NOLB_OUT}"; then
+  echo "FAIL: no privileged-port auto-remap WARN for listener 80 (issue #351)"; cat "${NOLB_OUT}"; exit 1
+fi
+# Parse the auto-assigned host port for listener 80 from its front-door banner + curl it.
+NOLB_PORT=$(grep -E "ALB front-door: http://127.0.0.1:[0-9]+ \(listener port 80\)" "${NOLB_OUT}" \
+  | grep -oE "127.0.0.1:[0-9]+" | grep -oE "[0-9]+$" | head -1)
+if [[ -z "${NOLB_PORT}" ]]; then
+  echo "FAIL: could not parse the auto-remapped host port for listener 80"; cat "${NOLB_OUT}"; exit 1
+fi
+NOLB_READY=0
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${NOLB_PORT}/" >/dev/null 2>&1; then NOLB_READY=1; break; fi
+  kill -0 "${NOLB_PID}" 2>/dev/null || break
+  sleep 1
+done
+if [[ "${NOLB_READY}" -ne 1 ]]; then
+  echo "FAIL: auto-remapped front-door (port ${NOLB_PORT}) never served 200"; cat "${NOLB_OUT}"; exit 1
+fi
+echo "    OK: privileged 80 auto-remapped to ${NOLB_PORT} + serving (no --lb-port needed)"
+kill -INT "${NOLB_PID}" 2>/dev/null; wait "${NOLB_PID}" 2>/dev/null || true
+cleanup
 
 echo "==> start-alb: naming the ALB (DesiredCount=2 backing service); HTTP:80 -> :${LB_HOST_PORT}, HTTPS:443 -> :${LB_HOST_PORT_HTTPS}"
 # Remap both privileged listener ports (80 / 443) to non-privileged host ports
