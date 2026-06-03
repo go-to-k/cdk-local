@@ -39,7 +39,7 @@ export interface StudioTarget {
 /** A category of targets, grouped by the studio kind that runs them. */
 export interface StudioTargetGroup {
   /** Studio kind discriminator shared with {@link StudioInvocationEvent}. */
-  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'agentcore';
+  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'agentcore';
   /** Human-readable group heading. */
   title: string;
   entries: StudioTarget[];
@@ -67,18 +67,14 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     { kind: 'lambda', title: 'Lambda Functions', entries: map(listing.lambdas) },
     { kind: 'api', title: 'APIs', entries: map(listing.apis) },
     // ECS services and task definitions are SEPARATE groups (issue #352),
-    // matching `cdkl list`: services are servable (`start-service` -> Start),
-    // task definitions are single-shot (`run-task`). They were previously
-    // lumped into one "ECS Services / Tasks" group, which obscured that task
-    // definitions are not a serve target. The services group stays FIRST so
-    // `annotatePinnedEcsTargets` (which finds the first `ecs`-kind group)
-    // annotates the servable services.
+    // matching `cdkl list`. Services are the `ecs` serve kind (start-service ->
+    // Start). Task definitions are the `ecs-task` kind (issue #366): a [Run]
+    // control that runs `cdkl run-task` as a long-running run (server task
+    // defs stream logs until stopped; batch tasks exit). The `ecs` services
+    // group stays FIRST so `annotatePinnedEcsTargets` (which finds the first
+    // `ecs`-kind group) annotates the servable services and NOT the task defs.
     { kind: 'ecs', title: 'ECS Services', entries: map(listing.ecsServices, { servable: true }) },
-    {
-      kind: 'ecs',
-      title: 'ECS Task Definitions',
-      entries: map(listing.ecsTaskDefinitions, { servable: false }),
-    },
+    { kind: 'ecs-task', title: 'ECS Task Definitions', entries: map(listing.ecsTaskDefinitions) },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
     { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
   ];

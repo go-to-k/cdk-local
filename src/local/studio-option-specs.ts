@@ -215,6 +215,28 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       help: 'Overlay the task container env vars — add KEY=VALUE rows or paste a JSON object.',
     },
   ],
+  // Task definitions run single-shot via `run-task` (issue #366). No
+  // --max-tasks (one task), but the declared container ports can be published
+  // and the container env overlaid, same as a service.
+  'ecs-task': [
+    {
+      flag: '--host-port',
+      kind: 'repeat-pair',
+      label: 'Container port publish',
+      sep: '=',
+      leftPlaceholder: 'containerPort',
+      rightPlaceholder: 'hostPort',
+    },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay the task container env vars — add KEY=VALUE rows or paste a JSON object.',
+    },
+  ],
 };
 
 /** True when `value` is a non-empty trimmed string. */

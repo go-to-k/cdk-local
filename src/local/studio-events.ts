@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
  * The kind of runnable target an invocation ran against. Mirrors the
  * categories `cdkl list` / the studio target list expose.
  */
-export type StudioTargetKind = 'lambda' | 'api' | 'alb' | 'ecs' | 'agentcore';
+export type StudioTargetKind = 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'agentcore';
 
 /**
  * One request observed by `cdkl studio` — a single-shot invoke or one

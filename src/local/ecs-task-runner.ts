@@ -152,6 +152,14 @@ export interface RunEcsTaskOptions {
   keepRunning: boolean;
   /** Start the containers and return without streaming logs. */
   detach: boolean;
+  /**
+   * Issue #366 — called ONCE after every container has started (and log
+   * streamers are attached) but BEFORE the runner blocks waiting for the
+   * essential container to exit. Non-detach only. `cdkl run-task` uses it to
+   * print a stable "Task running" banner that the studio serve-manager keys on
+   * to flip the run to `running`.
+   */
+  onReady?: () => void;
   /** AWS region for secret resolution + metadata sidecar. */
   region?: string;
   /**
@@ -557,6 +565,11 @@ export async function runEcsTask(
   if (options.detach) {
     return { exitCode: 0, state };
   }
+
+  // Issue #366 — every container is up + log streamers attached; signal ready
+  // BEFORE blocking on the essential container's exit so a caller (the studio
+  // serve-manager) can flip the run to `running`.
+  options.onReady?.();
 
   // Wait for the essential container to exit. AWS-side ECS treats the
   // first `essential: true` container as the task-driving one; cdk-local

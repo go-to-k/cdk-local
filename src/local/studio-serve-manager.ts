@@ -183,6 +183,17 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     readyRe: /Service\(s\) running:/,
     capturesHttp: false,
   },
+  'ecs-task': {
+    // run-task runs a task definition's containers once (issue #366). For a
+    // server task def the containers stream logs until stopped (the serve
+    // lifecycle); a batch task exits and the run flips to stopped. No host
+    // port, no capture. `Task running (family=...)` (the run-task onReady
+    // banner) is its stable ready marker.
+    command: 'run-task',
+    portArgs: [],
+    readyRe: /Task running \(family=/,
+    capturesHttp: false,
+  },
 };
 
 interface ServeEntry extends StudioServeState {

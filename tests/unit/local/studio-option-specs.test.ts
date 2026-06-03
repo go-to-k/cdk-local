@@ -108,6 +108,10 @@ describe('resolveEnvVars', () => {
     expect(resolveEnvVars('ecs', { '--env-vars': '{ "Parameters": { "X": "1" } }' })).toEqual({
       Parameters: { X: '1' },
     });
+    // Task definitions (run-task) likewise materialize env-kv (issue #366).
+    expect(resolveEnvVars('ecs-task', { '--env-vars': [{ left: 'STAGE', right: 'local' }] })).toEqual({
+      Parameters: { STAGE: 'local' },
+    });
   });
 
   it('wraps a flat JSON object in Parameters', () => {
@@ -153,6 +157,9 @@ describe('OPTION_SPECS table', () => {
     // alb + ecs gained an --env-vars env-kv option (issue #355).
     expect(OPTION_SPECS.alb?.map((s) => s.flag)).toContain('--env-vars');
     expect(OPTION_SPECS.ecs?.map((s) => s.flag)).toEqual(['--max-tasks', '--host-port', '--env-vars']);
+    // Task definitions run via run-task (issue #366): --host-port + --env-vars,
+    // no --max-tasks (a single task, not replicas).
+    expect(OPTION_SPECS['ecs-task']?.map((s) => s.flag)).toEqual(['--host-port', '--env-vars']);
     expect(OPTION_SPECS.agentcore?.map((s) => s.flag)).toEqual([
       '--ws',
       '--sigv4',
