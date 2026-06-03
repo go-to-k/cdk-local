@@ -142,6 +142,15 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       help: 'Default JWT injected for authenticate-cognito / authenticate-oidc actions.',
     },
     { flag: '--no-verify-auth', kind: 'boolean', label: 'Disable auth guard' },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay the backing ECS task container env vars — add KEY=VALUE rows or paste a JSON object.',
+    },
   ],
   agentcore: [
     {
@@ -195,6 +204,15 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       sep: '=',
       leftPlaceholder: 'containerPort',
       rightPlaceholder: 'hostPort',
+    },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay the task container env vars — add KEY=VALUE rows or paste a JSON object.',
     },
   ],
 };

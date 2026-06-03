@@ -68,6 +68,10 @@ describe('buildPerRunArgs', () => {
   it('emits NO direct arg for env-kv (materialized separately)', () => {
     expect(buildPerRunArgs('lambda', { '--env-vars': [{ left: 'K', right: 'V' }] })).toEqual([]);
     expect(buildPerRunArgs('lambda', { '--env-vars': '{"K":"V"}' })).toEqual([]);
+    // The alb / ecs serve kinds now declare --env-vars too (issue #355); it is
+    // likewise materialized into a file, not emitted as a direct arg.
+    expect(buildPerRunArgs('alb', { '--env-vars': [{ left: 'K', right: 'V' }] })).toEqual([]);
+    expect(buildPerRunArgs('ecs', { '--env-vars': [{ left: 'K', right: 'V' }] })).toEqual([]);
   });
 });
 
@@ -88,6 +92,22 @@ describe('resolveEnvVars', () => {
         ],
       })
     ).toEqual({ Parameters: { LOG_LEVEL: 'debug', TABLE: 'my-table' } });
+  });
+
+  it('resolves env-kv for the alb / ecs serve kinds too (issue #355)', () => {
+    // start-alb / start-service accept --env-vars (overlay the backing ECS
+    // task container env); the serve kinds gained the env-kv spec, so the same
+    // Parameters-form materialization applies — start-service / start-alb then
+    // overlay Parameters onto every container.
+    expect(resolveEnvVars('alb', { '--env-vars': [{ left: 'API_KEY', right: 'abc' }] })).toEqual({
+      Parameters: { API_KEY: 'abc' },
+    });
+    expect(resolveEnvVars('ecs', { '--env-vars': [{ left: 'STAGE', right: 'local' }] })).toEqual({
+      Parameters: { STAGE: 'local' },
+    });
+    expect(resolveEnvVars('ecs', { '--env-vars': '{ "Parameters": { "X": "1" } }' })).toEqual({
+      Parameters: { X: '1' },
+    });
   });
 
   it('wraps a flat JSON object in Parameters', () => {
@@ -130,7 +150,9 @@ describe('OPTION_SPECS table', () => {
   it('declares per-target options for the runnable kinds', () => {
     expect(OPTION_SPECS.lambda?.map((s) => s.flag)).toEqual(['--env-vars']);
     expect(OPTION_SPECS.alb?.map((s) => s.flag)).toContain('--tls');
-    expect(OPTION_SPECS.ecs?.map((s) => s.flag)).toEqual(['--max-tasks', '--host-port']);
+    // alb + ecs gained an --env-vars env-kv option (issue #355).
+    expect(OPTION_SPECS.alb?.map((s) => s.flag)).toContain('--env-vars');
+    expect(OPTION_SPECS.ecs?.map((s) => s.flag)).toEqual(['--max-tasks', '--host-port', '--env-vars']);
     expect(OPTION_SPECS.agentcore?.map((s) => s.flag)).toEqual([
       '--ws',
       '--sigv4',

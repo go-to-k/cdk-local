@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   StudioEventBus,
@@ -397,6 +398,67 @@ describe('createStudioServeManager', () => {
     // Explicit form keyed by the SAME target id passed as the start-service
     // target arg (the bare picker form would be skipped non-interactively).
     expect(argv[i + 1]).toBe('Stack/MyService=./Dockerfile.local');
+  });
+
+  it('materializes --env-vars into a SAM-shape temp file and removes it on stop (issue #355)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'Stack/MyService',
+      kind: 'ecs',
+      options: {
+        '--env-vars': [
+          { left: 'STAGE', right: 'local' },
+          { left: 'DEBUG', right: '1' },
+        ],
+      },
+    });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const ei = argv.indexOf('--env-vars');
+    expect(ei).toBeGreaterThan(-1);
+    const envFile = argv[ei + 1];
+    expect(existsSync(envFile)).toBe(true);
+    expect(JSON.parse(readFileSync(envFile, 'utf8'))).toEqual({
+      Parameters: { STAGE: 'local', DEBUG: '1' },
+    });
+
+    // Stop tears the serve down -> the env temp dir is removed (no leak). The
+    // fake child must emit `close` so stopChild's grace wait resolves.
+    const stopP = mgr.stop({ targetId: 'Stack/MyService' });
+    child.emit('close', 0, null);
+    await stopP;
+    expect(existsSync(envFile)).toBe(false);
+  });
+
+  it('passes NO --env-vars when the ecs serve has no env values', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const p = mgr.start({ targetId: 'Stack/MyService', kind: 'ecs', options: { '--max-tasks': '2' } });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+    expect((spawnFn.mock.calls[0] as unknown as [string, string[]])[1]).not.toContain('--env-vars');
   });
 
   it('omits --image-override when imageOverride is blank', async () => {

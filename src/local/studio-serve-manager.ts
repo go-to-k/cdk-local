@@ -1,4 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { StudioEventBus, type StudioServeEvent, type StudioTargetKind } from './studio-events.js';
 import {
   startStudioProxy,
@@ -6,7 +9,7 @@ import {
   type StudioProxyConfig,
 } from './studio-proxy.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
-import { buildPerRunArgs, type OptionValues } from './studio-option-specs.js';
+import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
 import { tokenizeRawArgs } from './studio-option-catalog.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
@@ -187,6 +190,13 @@ interface ServeEntry extends StudioServeState {
   /** Capture proxies fronting this serve's HTTP endpoints (slice C2). */
   proxies: RunningStudioProxy[];
   /**
+   * Temp dir holding the `--env-vars` SAM-shape file (issue #355), when the
+   * serve was started with env-var overrides. Removed on teardown (the file
+   * must outlive a `--watch` serve's reloads, which re-read it, so it is
+   * cleaned up only when the serve stops — not after spawn).
+   */
+  envDir?: string;
+  /**
    * Set by `stop()` when it tears the child down WHILE it is still
    * `starting` (the ready promise has not settled). The child's `close`
    * handler reads it so a user-initiated stop is not misreported as a
@@ -233,10 +243,23 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
 
   const entries = new Map<string, ServeEntry>();
 
-  /** Close every capture proxy fronting `e` (best-effort; idempotent). */
+  /**
+   * Release every per-serve resource fronting `e` (best-effort; idempotent):
+   * its capture proxies (slice C2) and the `--env-vars` temp dir (issue #355).
+   * Called at every teardown path so neither a proxy socket nor the env file
+   * leaks when a serve stops / errors / times out.
+   */
   async function closeProxies(e: ServeEntry): Promise<void> {
     const proxies = e.proxies.splice(0);
     await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));
+    if (e.envDir) {
+      try {
+        rmSync(e.envDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort temp cleanup — a leftover temp dir is harmless */
+      }
+      delete e.envDir;
+    }
   }
 
   function publicState(e: ServeEntry): StudioServeState {
@@ -266,7 +289,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     config.bus.emit('serve', ev);
   }
 
-  function buildArgs(req: StudioServeRequest, spec: ServeKindSpec): string[] {
+  function buildArgs(req: StudioServeRequest, spec: ServeKindSpec, envFile?: string): string[] {
     // A `--watch` serve MUST re-synth on source changes, so it keeps
     // `--app <app>`; a non-watch serve reuses the boot-synthesized cloud
     // assembly studio captured (issue #324) and skips its own synth. Read
@@ -279,6 +302,11 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...spec.portArgs,
       ...buildSharedChildArgs(config, { preferAssembly }),
       ...buildPerRunArgs(req.kind, req.options),
+      // The `--env-vars` per-run option takes a FILE (issue #355) — the env-kv
+      // KV rows / JSON were materialized into a SAM-shape temp file by the
+      // caller; point start-service / start-alb at it so the override applies
+      // to the backing ECS task containers.
+      ...(envFile ? ['--env-vars', envFile] : []),
       // Image-override picker (issue #301): a pinned ecs service rebuilds from
       // the chosen local Dockerfile. The EXPLICIT `<target>=<dockerfile>` form
       // is used (not the bare picker form) because studio spawns the child
@@ -313,10 +341,32 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     }
 
     const startedAt = clock();
+
+    // Materialize the `--env-vars` env-kv option (issue #355) into a SAM-shape
+    // temp file the serve child reads. Computed BEFORE spawn so a malformed
+    // JSON value throws as a clean /api/run boundary error rather than after a
+    // child is already running. The dir outlives the child (a `--watch` serve
+    // re-reads the file on reload) and is removed on teardown via closeProxies.
+    let envDir: string | undefined;
+    const envVars = resolveEnvVars(req.kind, req.options);
+    if (envVars) {
+      envDir = mkdtempSync(join(tmpdir(), 'cdkl-studio-env-'));
+      writeFileSync(join(envDir, 'env-vars.json'), JSON.stringify(envVars));
+    }
+    const envFile = envDir ? join(envDir, 'env-vars.json') : undefined;
+
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec)], { cwd });
+      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec, envFile)], { cwd });
     } catch (err) {
+      // Spawn never happened — drop the env temp dir so it does not leak.
+      if (envDir) {
+        try {
+          rmSync(envDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
       throw err instanceof Error ? err : new Error(String(err));
     }
 
@@ -330,6 +380,8 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       proxies: [],
     };
     if (child.pid !== undefined) entry.pid = child.pid;
+    // Bind the env temp dir to the entry so closeProxies removes it on teardown.
+    if (envDir) entry.envDir = envDir;
     // An ecs serve published via `--host-port` is reachable on the host (issue
     // #322); surface its host URL so the in-workspace request composer can
     // target it (the first mapping's host port). No proxy fronts it, so a
