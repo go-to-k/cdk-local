@@ -1,3 +1,10 @@
+# [0.94.0](https://github.com/go-to-k/cdk-local/compare/v0.93.0...v0.94.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** lead the Session bar with the watch toggle; drop the SESSION label ([#316](https://github.com/go-to-k/cdk-local/issues/316)) ([6a946ec](https://github.com/go-to-k/cdk-local/commit/6a946ecc2695af5655d0ae1edc5e2d9ec515be83))
+
 # [0.93.0](https://github.com/go-to-k/cdk-local/compare/v0.92.0...v0.93.0) (2026-06-03)
 
 
