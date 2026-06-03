@@ -1458,6 +1458,13 @@ cdkl studio --studio-port 4000    # pin the port
 cdkl studio --no-open             # do not auto-open the browser (CI / headless)
 ```
 
+A **Session bar** under the header shows the read-only synth-time context
+(`profile` / `region` / `app` — the target list was synthesized with them,
+so they are fixed for the session) and lets you edit the run-time bindings
+`--from-cfn-stack` and `--assume-role` live: a change applies to every
+subsequent invoke / serve started from the UI, no restart needed (the CLI
+flags set the initial values).
+
 The console is a three-pane layout:
 
 - **Targets** — every synthesized target, grouped by command. Lambdas get

@@ -98,6 +98,51 @@ export function coerceStopRequest(body: unknown): StudioStopRequest {
   return { targetId };
 }
 
+/** The session config served at `GET /api/config` (issue #301 slice 3). */
+export interface SessionConfigSnapshot {
+  /** Read-only synth-time context the target list was synthesized with. */
+  synth: { profile?: string | undefined; region?: string | undefined; app?: string | undefined };
+  /** Editable run-time binding — `--from-cfn-stack` (bare `true` / named). */
+  fromCfnStack?: string | boolean | undefined;
+  /** Editable run-time binding — `--assume-role <arn>`. */
+  assumeRole?: string | undefined;
+}
+
+/** The editable run-time bindings {@link applyConfigPatch} mutates in place. */
+export interface EditableSessionBindings {
+  fromCfnStack?: string | boolean;
+  assumeRole?: string;
+}
+
+/**
+ * Validate a `PATCH /api/config` body and apply the editable run-time
+ * bindings (`fromCfnStack` / `assumeRole`) onto `target` in place. Only the
+ * keys PRESENT in the body are touched (a partial update); `null` / `false` /
+ * `''` clears a binding. Throws on a malformed body / value so a bad patch
+ * fails loudly rather than silently mis-binding subsequent runs — the studio
+ * server surfaces a thrown handler error as a 500 (same as every other
+ * `/api/*` dispatch). The read-only synth context (profile / region / app) is
+ * never patchable.
+ */
+export function applyConfigPatch(body: unknown, target: EditableSessionBindings): void {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new Error('Request body must be a JSON object.');
+  }
+  const b = body as Record<string, unknown>;
+  if ('fromCfnStack' in b) {
+    const v = b['fromCfnStack'];
+    if (v === null || v === false || v === '') delete target.fromCfnStack;
+    else if (v === true || typeof v === 'string') target.fromCfnStack = v;
+    else throw new Error('"fromCfnStack" must be a string, boolean, or null.');
+  }
+  if ('assumeRole' in b) {
+    const v = b['assumeRole'];
+    if (v === null || v === '') delete target.assumeRole;
+    else if (typeof v === 'string') target.assumeRole = v;
+    else throw new Error('"assumeRole" must be a string or null.');
+  }
+}
+
 const DEFAULT_STUDIO_PORT = 9999;
 
 /**
@@ -195,7 +240,23 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   // (`cdkl invoke <target>` / `cdkl start-api <target>`) — studio is a
   // control plane over the CLI.
   const cliEntry = process.argv[1] ?? '';
-  const childConfig = {
+  // The MUTABLE session-run config. The dispatcher + serve-manager hold this
+  // SAME object by reference and read it per-run, so editing the run-time
+  // bindings (`fromCfnStack` / `assumeRole`) via `PATCH /api/config` applies
+  // to subsequent invokes / serves without a restart (issue #301 slice 3).
+  // `profile` / `region` / `app` are synth-time context (the target list was
+  // synthed with them) — read-only, surfaced for display only.
+  const childConfig: {
+    cliEntry: string;
+    bus: StudioEventBus;
+    cwd: string;
+    app?: string;
+    profile?: string;
+    region?: string;
+    context?: Record<string, string>;
+    fromCfnStack?: string | boolean;
+    assumeRole?: string;
+  } = {
     cliEntry,
     bus,
     cwd: process.cwd(),
@@ -208,6 +269,12 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   };
   const dispatcher = createStudioDispatcher(childConfig);
   const serveManager = createStudioServeManager(childConfig);
+
+  const sessionConfigSnapshot = (): SessionConfigSnapshot => ({
+    synth: { profile: childConfig.profile, region: childConfig.region, app: childConfig.app },
+    fromCfnStack: childConfig.fromCfnStack,
+    assumeRole: childConfig.assumeRole,
+  });
   // Retain a bounded window of invocations + logs so the browser can render
   // history on (re)connect, search logs full-text, and bind a request's
   // logs at CloudWatch granularity (slice C3).
@@ -240,6 +307,13 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
       return { stopped: req.targetId };
     },
     getRunning: () => ({ running: serveManager.list() }),
+    getConfig: () => sessionConfigSnapshot(),
+    patchConfig: (body) => {
+      // Mutates the shared childConfig the dispatcher + serve-manager read
+      // per-run, so the new binding applies to subsequent invokes / serves.
+      applyConfigPatch(body, childConfig);
+      return Promise.resolve(sessionConfigSnapshot());
+    },
   });
 
   const cliName = getEmbedConfig().cliName;

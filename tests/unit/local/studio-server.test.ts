@@ -527,3 +527,59 @@ describe('startStudioServer', () => {
     abort();
   });
 });
+
+describe('startStudioServer — session config (issue #301 slice 3)', () => {
+  it('GET /api/config returns the getConfig() snapshot', async () => {
+    const server = await boot({
+      getConfig: () => ({ synth: { profile: 'dev', region: 'us-east-1' }, fromCfnStack: 'MyStack' }),
+    });
+    const res = await http(`${server.url}/api/config`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      synth: { profile: 'dev', region: 'us-east-1' },
+      fromCfnStack: 'MyStack',
+    });
+  });
+
+  it('GET /api/config returns {} when no getConfig is wired', async () => {
+    const server = await boot();
+    const res = await http(`${server.url}/api/config`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({});
+  });
+
+  it('PATCH /api/config dispatches the body to patchConfig and returns its result', async () => {
+    let received: unknown;
+    const server = await boot({
+      patchConfig: (body) => {
+        received = body;
+        return Promise.resolve({ fromCfnStack: 'Patched' });
+      },
+    });
+    const res = await http(`${server.url}/api/config`, {
+      method: 'PATCH',
+      body: JSON.stringify({ fromCfnStack: 'Patched' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ fromCfnStack: 'Patched' });
+    expect(received).toEqual({ fromCfnStack: 'Patched' });
+  });
+
+  it('PATCH /api/config returns 500 when patchConfig throws (validation error)', async () => {
+    const server = await boot({
+      patchConfig: () => Promise.reject(new Error('"assumeRole" must be a string or null.')),
+    });
+    const res = await http(`${server.url}/api/config`, {
+      method: 'PATCH',
+      body: JSON.stringify({ assumeRole: 42 }),
+    });
+    expect(res.status).toBe(500);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: expect.stringContaining('assumeRole') });
+  });
+
+  it('PATCH /api/config answers 501 when no patchConfig is wired', async () => {
+    const server = await boot();
+    const res = await http(`${server.url}/api/config`, { method: 'PATCH', body: '{}' });
+    expect(res.status).toBe(501);
+  });
+});

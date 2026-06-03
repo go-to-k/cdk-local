@@ -242,6 +242,47 @@ rm -f "${OPT_FILE}"
 echo "    OK: --env-vars KEY/VALUE option threaded through to the Lambda container"
 
 # ---------------------------------------------------------------------------
+# 6c. Editable Session config (issue #301 slice 3): GET /api/config exposes
+#     the read-only synth context; PATCH /api/config sets a run-time binding
+#     (--from-cfn-stack) that applies to SUBSEQUENT runs. PATCH a BOGUS stack
+#     (no deploy), then invoke and assert the child's --from-cfn-stack attempt
+#     names it in the bound logs — proof the edited binding threaded through.
+# ---------------------------------------------------------------------------
+echo "==> GET /api/config exposes the session config"
+curl -fsS "${URL}/api/config" -o "${BODY_FILE}"
+if ! grep -qF '"synth"' "${BODY_FILE}"; then
+  echo "FAIL: /api/config did not return a session config"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: /api/config served"
+
+echo "==> PATCH /api/config sets --from-cfn-stack; it applies to the next invoke"
+CFG_STACK="BOGUSSESSIONSTACK301"
+PATCH_FILE=$(mktemp)
+HTTP_PATCH=$(curl -s -o "${PATCH_FILE}" -w '%{http_code}' -X PATCH "${URL}/api/config" \
+  -H 'content-type: application/json' -d "{\"fromCfnStack\":\"${CFG_STACK}\"}" || true)
+if [[ "${HTTP_PATCH}" != "200" ]] || ! grep -qF "${CFG_STACK}" "${PATCH_FILE}"; then
+  echo "FAIL: PATCH /api/config did not echo the updated binding (HTTP ${HTTP_PATCH})"
+  cat "${PATCH_FILE}"; rm -f "${PATCH_FILE}"; exit 1
+fi
+rm -f "${PATCH_FILE}"
+CFG_RUN=$(mktemp)
+curl -s -o "${CFG_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' >/dev/null || true
+CFG_INV=$(grep -oE '"invocationId":"[^"]+"' "${CFG_RUN}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
+rm -f "${CFG_RUN}"
+if [[ -z "${CFG_INV}" ]]; then echo "FAIL: no invocationId after a config-bound invoke"; exit 1; fi
+curl -fsS "${URL}/api/invocations/${CFG_INV}/logs" -o "${BODY_FILE}"
+if ! grep -qF "${CFG_STACK}" "${BODY_FILE}"; then
+  echo "FAIL: the PATCHed --from-cfn-stack binding did not reach the child (stack absent from logs)"
+  echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+  exit 1
+fi
+echo "    OK: edited Session binding '${CFG_STACK}' applied to the subsequent invoke"
+# Reset the binding so later serve sections are unaffected.
+curl -s -X PATCH "${URL}/api/config" -H 'content-type: application/json' \
+  -d '{"fromCfnStack":null}' -o /dev/null || true
+
+# ---------------------------------------------------------------------------
 # 7. POST /api/run STARTS a long-running `start-api` serve (slice C1); curl
 #    the served route; assert running state + a serve SSE event; stop it.
 # ---------------------------------------------------------------------------
@@ -659,4 +700,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
