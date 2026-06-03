@@ -1,3 +1,10 @@
+## [0.104.1](https://github.com/go-to-k/cdk-local/compare/v0.104.0...v0.104.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** detect a --from-cfn-stack-pinned ECS service at boot (image-override picker) ([#369](https://github.com/go-to-k/cdk-local/issues/369)) ([6a48f6c](https://github.com/go-to-k/cdk-local/commit/6a48f6cd78ce42df6782bf9ee1b517c1c512706f))
+
 # [0.104.0](https://github.com/go-to-k/cdk-local/compare/v0.103.9...v0.104.0) (2026-06-03)
 
 
