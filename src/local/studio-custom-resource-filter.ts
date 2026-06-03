@@ -24,6 +24,14 @@ import type { StudioTarget, StudioTargetGroup } from './studio-server.js';
  *   `Custom::CDKBucketDeployment<hash>` — the shared substring covers both).
  * - `CDKMetadata` — the CDK metadata resource (not a Lambda, but cheap to
  *   exclude defensively if it ever surfaces as one).
+ * - `custom::` — the GENERIC catch-all (issue #359). `Custom::` is
+ *   CloudFormation's reserved prefix for custom-resource provider construct
+ *   ids, and CDK threads it into the `aws:cdk:path` of provider Lambdas it
+ *   generates (e.g. `Stack/Custom::FooProvider/Handler`). The name-specific
+ *   entries above are a whack-a-mole list that misses any provider whose node
+ *   name is not one of them; this substring covers the whole family. A user's
+ *   own application Lambda never carries `Custom::` in its construct path, so
+ *   the match is safe (and still opt-out via `--include-custom-resources`).
  */
 const CUSTOM_RESOURCE_PATTERNS: readonly string[] = [
   'framework-onevent',
@@ -37,6 +45,7 @@ const CUSTOM_RESOURCE_PATTERNS: readonly string[] = [
   'customresourceprovider',
   'cdkbucketdeployment',
   'cdkmetadata',
+  'custom::',
 ];
 
 /**

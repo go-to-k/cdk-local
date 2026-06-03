@@ -74,6 +74,20 @@ export class LocalStudioStack extends cdk.Stack {
       code: lambda.Code.fromInline('exports.handler = async () => ({});'),
     });
 
+    // A SECOND custom-resource Lambda whose CDK path uses a `Custom::`-prefixed
+    // provider node (issue #359). Its path is
+    // `.../Custom::AcmeWidgetProvider/Handler` — NOT matched by any
+    // name-specific pattern (`framework-*`, `/provider/`,
+    // `customresourceprovider`, ...), so it exercises the GENERIC `custom::`
+    // catch-all. Excluded by default, surfaced only under
+    // `--include-custom-resources`.
+    const genericCr = new Construct(this, 'Custom::AcmeWidgetProvider');
+    new lambda.Function(genericCr, 'Handler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
+    });
+
     // HTTP API v2 + a single Lambda-backed route.
     const httpApi = new apigwv2.CfnApi(this, 'MyHttpApi', {
       name: 'cdkl-studio-fixture-http-api',
