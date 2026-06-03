@@ -1,3 +1,10 @@
+## [0.103.9](https://github.com/go-to-k/cdk-local/compare/v0.103.8...v0.103.9) (2026-06-03)
+
+
+### Bug Fixes
+
+* **ecs:** auto-remap a privileged declared host port to a free high port ([#364](https://github.com/go-to-k/cdk-local/issues/364)) ([925a9ef](https://github.com/go-to-k/cdk-local/commit/925a9efdf61a85b0c12514a9b1961167c9351450))
+
 ## [0.103.8](https://github.com/go-to-k/cdk-local/compare/v0.103.7...v0.103.8) (2026-06-03)
 
 
