@@ -711,6 +711,11 @@ export {
   type StudioTarget,
   type StudioTargetGroup,
 } from './local/studio-server.js';
+export {
+  isCustomResourceLambdaTarget,
+  filterStudioCustomResources,
+  type FilterStudioCustomResourcesOptions,
+} from './local/studio-custom-resource-filter.js';
 export { renderStudioHtml } from './local/studio-ui.js';
 
 /**

@@ -53,6 +53,18 @@ export class LocalStudioStack extends cdk.Stack {
       ),
     });
 
+    // A custom-resource / provider-framework Lambda (issue #323). Its CDK path
+    // contains `Provider/framework-onEvent`, which studio's custom-resource
+    // filter recognizes as infra plumbing and EXCLUDES from the target list by
+    // default (shown only under `--include-custom-resources`). Inline code, no
+    // bundling — synthesizes without AWS / assets like the other fixtures.
+    const crProvider = new Construct(this, 'MyCustomResourceProvider');
+    new lambda.Function(crProvider, 'framework-onEvent', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
+    });
+
     // HTTP API v2 + a single Lambda-backed route.
     const httpApi = new apigwv2.CfnApi(this, 'MyHttpApi', {
       name: 'cdkl-studio-fixture-http-api',

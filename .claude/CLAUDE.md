@@ -319,6 +319,14 @@ compute-locally category for Lambda + API Gateway).
   WebSocket `Upgrade` requests run through the same route + auth
   pipeline, then bridge the raw TCP socket to the picked ECS replica
   with `Upgrade` / `Sec-WebSocket-*` headers preserved),
+  studio-custom-resource-filter (issue #323 —
+  `isCustomResourceLambdaTarget` / `filterStudioCustomResources`:
+  recognizes CDK custom-resource / provider-framework Lambdas by their
+  construct path (provider-framework `framework-on*`, `LogRetention`,
+  `BucketNotificationsHandler`, `AwsCustomResource`, CDK bucket
+  deployment, the `AWS679...` singleton, etc.) so `cdkl studio` hides
+  them from the target list by default — `--include-custom-resources`
+  opts back in),
   studio-events (issue #282 — the typed in-process event bus every
   `cdkl studio` observation flows through (`invocation` / `log` /
   `serve` events); the studio HTTP server
@@ -326,7 +334,10 @@ compute-locally category for Lambda + API Gateway).
   (the localhost HTTP server behind `cdkl studio`: serves the embedded
   UI at `/`, the synthesized target list (+ the boot-discovered
   Dockerfiles + a `pinned` flag per ecs service — set by
-  `annotatePinnedEcsTargets` — for the image-override picker, issue #301)
+  `annotatePinnedEcsTargets` — for the image-override picker, issue #301;
+  CDK custom-resource / provider-framework Lambdas are excluded by
+  default via `filterStudioCustomResources`, issue #323 — pass
+  `cdkl studio --include-custom-resources` to surface them)
   at `/api/targets`, an SSE
   stream of the event bus at `/api/events`, `POST /api/run` (single-shot
   invoke / serve start), `POST /api/stop` (serve stop),
