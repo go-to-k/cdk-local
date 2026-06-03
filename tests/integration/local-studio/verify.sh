@@ -1053,12 +1053,17 @@ ECS_TARGET="LocalStudioFixture/MyService"
 # `python -m http.server 80`, so a REACHABLE host port proves both options
 # threaded CLI -> child end-to-end (not a tautology — without the options the
 # port would never be published, and studio's ecs kind exposes no endpoint).
+# ALSO thread `--env-vars` (issue #355): the env-kv option is materialized into
+# a SAM-shape `{Parameters:{...}}` temp file the serve child reads, and
+# start-service overlays Parameters onto every task container — proven below
+# by `docker inspect`-ing the replica's env for the overridden value.
 ECS_HOST_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-echo "==> POST /api/run starts an ECS service serve with --max-tasks + --host-port options"
+ECS_ENV_VALUE="studio-ecs-env-355"
+echo "==> POST /api/run starts an ECS service serve with --max-tasks + --host-port + --env-vars options"
 ECS_FILE=$(mktemp)
 HTTP_CODE=$(curl -s -o "${ECS_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
-  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${ECS_HOST_PORT}\"}]}}" || true)
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${ECS_HOST_PORT}\"}],\"--env-vars\":[{\"left\":\"STUDIO_ECS_PROBE\",\"right\":\"${ECS_ENV_VALUE}\"}]}}" || true)
 if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ECS_FILE}"; then
   echo "FAIL: POST /api/run (ecs) returned HTTP ${HTTP_CODE}"
   echo "----- ecs response -----"; cat "${ECS_FILE}"; echo "------------------------"
@@ -1086,6 +1091,29 @@ if [[ -z "${ECS_REACH}" ]]; then
   exit 1
 fi
 echo "    OK: --max-tasks + --host-port threaded; replica :80 reachable on host :${ECS_HOST_PORT}"
+
+# Issue #355: the --env-vars override reached the replica TASK container's env.
+# The studio env-kv -> {Parameters:{STUDIO_ECS_PROBE:...}} temp file ->
+# start-service Parameters overlay -> docker container env chain end-to-end.
+# The task container is named `<prefix>-<family>-<containerName>-<rand>`; the
+# `cdkl-svc-<rand>-metadata` sidecar (the ECS task-metadata endpoint) is a
+# DIFFERENT container with its own env, so iterate every NON-metadata cdkl-
+# container and assert at least one task container carries the override.
+ECS_ENV_HIT=""
+for c in $(docker ps --filter 'name=cdkl-' --format '{{.Names}}' | grep -v -- '-metadata'); do
+  if docker inspect --format '{{json .Config.Env}}' "$c" 2>/dev/null | grep -qF "STUDIO_ECS_PROBE=${ECS_ENV_VALUE}"; then
+    ECS_ENV_HIT="$c"; break
+  fi
+done
+if [[ -z "${ECS_ENV_HIT}" ]]; then
+  echo "FAIL: --env-vars override did NOT reach any replica task container env"
+  for c in $(docker ps --filter 'name=cdkl-' --format '{{.Names}}'); do
+    echo "----- ${c} Config.Env -----"; docker inspect --format '{{json .Config.Env}}' "$c" 2>/dev/null
+  done
+  echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: --env-vars threaded; task container '${ECS_ENV_HIT}' carries STUDIO_ECS_PROBE=${ECS_ENV_VALUE}"
 
 echo "==> GET /api/running reflects the ECS service (no endpoint)"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"

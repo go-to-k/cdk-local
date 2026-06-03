@@ -449,7 +449,10 @@ compute-locally category for Lambda + API Gateway).
   temp file passed as `--env-vars <file>`. Per-target options vary per
   invoke / serve, vs the session-global flags in studio-child-args; the
   `agentcore` kind (issue #303) declares `--ws` / `--sigv4` (boolean),
-  `--bearer-token` / `--session-id` (scalar), and `--env-vars` (env-kv)),
+  `--bearer-token` / `--session-id` (scalar), and `--env-vars` (env-kv);
+  the `alb` / `ecs` serve kinds also declare `--env-vars` (env-kv, issue
+  #355) so a UI-started serve can overlay the backing ECS task container
+  env)),
   studio-option-catalog (issue #301 — the AUTO-DERIVED full flag catalog
   that backs the composer's collapsed "All options" section.
   `buildFlagCatalog` introspects each runnable kind's Commander command
@@ -482,7 +485,14 @@ compute-locally category for Lambda + API Gateway).
   grace so the serve command's OWN ECS-replica + docker-network teardown
   completes before any SIGKILL. Under `cdkl studio --watch` it appends
   `--watch` to each serve child — read off the mutable config per
-  `start()`, so a Session-bar toggle applies to the next serve),
+  `start()`, so a Session-bar toggle applies to the next serve. Issue #355
+  added env-vars to the `alb` / `ecs` serve composers: `start()`
+  materializes the env-kv option via `resolveEnvVars` into a SAM-shape
+  temp file and appends `--env-vars <file>` so the override reaches the
+  backing ECS task containers (`start-service` / `start-alb` overlay the
+  `Parameters` map onto every container). The temp dir outlives the child
+  (a `--watch` serve re-reads it on reload) and is removed on teardown via
+  `closeProxies`),
   studio-proxy
   (issue #282, slice C2 — a capturing reverse proxy in front of each
   HTTP serve endpoint: forwards every request verbatim to the upstream
