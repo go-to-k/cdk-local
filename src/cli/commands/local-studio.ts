@@ -36,6 +36,7 @@ import {
   type OptionValues,
 } from '../../local/studio-option-specs.js';
 import { tokenizeRawArgs } from '../../local/studio-option-catalog.js';
+import { relayServeRequest } from '../../local/studio-request-relay.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
 import { discoverDockerfiles } from '../../local/image-override-engine.js';
@@ -43,6 +44,7 @@ import {
   createStudioServeManager,
   type StudioServeManager,
   type StudioStopRequest,
+  type StudioServeState,
 } from '../../local/studio-serve-manager.js';
 
 const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
@@ -126,6 +128,72 @@ export function coerceStopRequest(body: unknown): StudioStopRequest {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
   return { targetId };
+}
+
+/** A composed HTTP request to a running serve, as the studio UI posts it. */
+export interface StudioServeRequestPayload {
+  targetId: string;
+  method: string;
+  path?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+const SERVE_REQUEST_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+
+/**
+ * Pick the HTTP base URL the request composer relays to for a running serve
+ * (issue #322): the first `http(s)://` endpoint (the api / alb capture-proxy
+ * URL — a `ws://` WebSocket-API endpoint is NOT relayable, so it is skipped),
+ * else the ecs `--host-port` host URL, else `undefined` (no reachable HTTP
+ * endpoint). Exported so the relay base-URL choice is unit-testable.
+ */
+export function resolveServeBaseUrl(state: StudioServeState): string | undefined {
+  const http = (state.endpoints || []).find((u) => /^https?:/.test(u));
+  return http ?? state.hostUrl;
+}
+
+/**
+ * Validate + narrow the untyped `POST /api/request` body (issue #322). Throws
+ * on a malformed body; the studio server surfaces a thrown handler error as a
+ * 500 (the same convention as {@link coerceRunRequest} / {@link
+ * coerceStopRequest}) so a bad UI / curl payload fails loudly rather than
+ * relaying a bogus request.
+ */
+export function coerceServeRequest(body: unknown): StudioServeRequestPayload {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('Request body must be a JSON object.');
+  }
+  const { targetId, method, path, headers, body: reqBody } = body as Record<string, unknown>;
+  if (typeof targetId !== 'string' || targetId.trim() === '') {
+    throw new Error('Request body must include a non-empty "targetId" string.');
+  }
+  if (typeof method !== 'string' || !SERVE_REQUEST_METHODS.has(method.toUpperCase())) {
+    throw new Error(
+      `Request body "method" must be one of: ${[...SERVE_REQUEST_METHODS].join(', ')}.`
+    );
+  }
+  const out: StudioServeRequestPayload = { targetId, method: method.toUpperCase() };
+  if (path !== undefined) {
+    if (typeof path !== 'string') throw new Error('Request body "path" must be a string.');
+    out.path = path;
+  }
+  if (headers !== undefined) {
+    if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+      throw new Error('Request body "headers" must be a JSON object of string values.');
+    }
+    const h: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headers)) {
+      if (typeof v !== 'string') throw new Error(`Request header "${k}" must be a string.`);
+      if (k.trim() !== '') h[k] = v;
+    }
+    out.headers = h;
+  }
+  if (reqBody !== undefined) {
+    if (typeof reqBody !== 'string') throw new Error('Request body "body" must be a string.');
+    out.body = reqBody;
+  }
+  return out;
 }
 
 /** The session config served at `GET /api/config` (issue #301 slice 3). */
@@ -451,6 +519,31 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
       const req = coerceStopRequest(body);
       await serveManager.stop(req);
       return { stopped: req.targetId };
+    },
+    onServeRequest: async (body) => {
+      // Relay a composed HTTP request to a RUNNING serve, server-side (issue
+      // #322). For api / alb the base URL is the capture-proxy endpoint (so
+      // the request lands on the timeline); for an ecs serve published via
+      // --host-port it is the replica host URL (no proxy, not captured).
+      const req = coerceServeRequest(body);
+      const state = serveManager.list().find((s) => s.targetId === req.targetId);
+      if (!state || state.status !== 'running') {
+        throw new Error(`'${req.targetId}' is not a running serve target.`);
+      }
+      const baseUrl = resolveServeBaseUrl(state);
+      if (!baseUrl) {
+        throw new Error(
+          `'${req.targetId}' has no reachable HTTP endpoint (an ecs service needs --host-port).`
+        );
+      }
+      const result = await relayServeRequest({
+        baseUrl,
+        method: req.method,
+        ...(req.path !== undefined ? { path: req.path } : {}),
+        ...(req.headers !== undefined ? { headers: req.headers } : {}),
+        ...(req.body !== undefined ? { body: req.body } : {}),
+      });
+      return result;
     },
     getRunning: () => ({ running: serveManager.list() }),
     getConfig: () => sessionConfigSnapshot(),

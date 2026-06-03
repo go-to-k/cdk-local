@@ -6,11 +6,14 @@ import {
   applyConfigPatch,
   coerceRunRequest,
   coerceStopRequest,
+  coerceServeRequest,
+  resolveServeBaseUrl,
   createLocalStudioCommand,
   parseStudioPort,
   resolveBootAssemblyDir,
   type EditableSessionBindings,
 } from '../../../src/cli/commands/local-studio.js';
+import type { StudioServeState } from '../../../src/local/studio-serve-manager.js';
 
 describe('createLocalStudioCommand', () => {
   it('is named "studio"', () => {
@@ -282,5 +285,90 @@ describe('resolveBootAssemblyDir (issue #324)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('coerceServeRequest (issue #322)', () => {
+  it('accepts a well-formed request and upper-cases the method', () => {
+    expect(
+      coerceServeRequest({
+        targetId: 'Stack/Api',
+        method: 'post',
+        path: '/items?q=1',
+        headers: { 'content-type': 'application/json', '': 'dropped' },
+        body: '{"a":1}',
+      })
+    ).toEqual({
+      targetId: 'Stack/Api',
+      method: 'POST',
+      path: '/items?q=1',
+      headers: { 'content-type': 'application/json' }, // blank-name header dropped
+      body: '{"a":1}',
+    });
+  });
+
+  it('accepts a minimal request (method + targetId only)', () => {
+    expect(coerceServeRequest({ targetId: 'T', method: 'GET' })).toEqual({
+      targetId: 'T',
+      method: 'GET',
+    });
+  });
+
+  it.each([{}, { targetId: '', method: 'GET' }])('rejects a missing targetId %p', (body) => {
+    expect(() => coerceServeRequest(body)).toThrow(/non-empty "targetId"/);
+  });
+
+  it.each([{ targetId: 'T' }, { targetId: 'T', method: 'FETCH' }])(
+    'rejects a missing/invalid method %p',
+    (body) => {
+      expect(() => coerceServeRequest(body)).toThrow(/"method" must be one of/);
+    }
+  );
+
+  it('rejects a non-string path / body / header value', () => {
+    expect(() => coerceServeRequest({ targetId: 'T', method: 'GET', path: 1 })).toThrow(
+      /"path" must be a string/
+    );
+    expect(() => coerceServeRequest({ targetId: 'T', method: 'GET', body: {} })).toThrow(
+      /"body" must be a string/
+    );
+    expect(() =>
+      coerceServeRequest({ targetId: 'T', method: 'GET', headers: { x: 1 } })
+    ).toThrow(/header "x" must be a string/);
+  });
+});
+
+describe('resolveServeBaseUrl (issue #322)', () => {
+  const state = (over: Partial<StudioServeState>): StudioServeState => ({
+    targetId: 'T',
+    kind: 'api',
+    status: 'running',
+    endpoints: [],
+    startedAt: 0,
+    ...over,
+  });
+
+  it('picks the first http(s) endpoint (the api / alb capture-proxy URL)', () => {
+    expect(resolveServeBaseUrl(state({ endpoints: ['http://127.0.0.1:51234'] }))).toBe(
+      'http://127.0.0.1:51234'
+    );
+  });
+
+  it('skips a ws:// endpoint and falls back to the host URL', () => {
+    // A WebSocket-API serve exposes a ws:// endpoint that is NOT relayable.
+    expect(
+      resolveServeBaseUrl(state({ endpoints: ['ws://127.0.0.1:51234'], hostUrl: 'http://h:8080' }))
+    ).toBe('http://h:8080');
+  });
+
+  it('uses the ecs host URL when there is no http endpoint', () => {
+    expect(resolveServeBaseUrl(state({ kind: 'ecs', hostUrl: 'http://127.0.0.1:8080' }))).toBe(
+      'http://127.0.0.1:8080'
+    );
+  });
+
+  it('returns undefined when there is no reachable http endpoint', () => {
+    expect(resolveServeBaseUrl(state({ endpoints: ['ws://x'] }))).toBeUndefined();
+    expect(resolveServeBaseUrl(state({}))).toBeUndefined();
   });
 });

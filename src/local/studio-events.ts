@@ -84,6 +84,12 @@ export interface StudioServeEvent {
    * several (multiple APIs / WebSocket listeners), so this is a list.
    */
   endpoints?: string[];
+  /**
+   * Direct host URL for an `ecs` serve published via `--host-port` (issue
+   * #322) — no proxy in front (so a request to it is not captured). Absent for
+   * api / alb (use `endpoints`) and for an ecs serve without `--host-port`.
+   */
+  hostUrl?: string;
   /** Child process id, present from `starting` onward. */
   pid?: number;
   /** Status / error detail (e.g. the failure reason on `error`). */

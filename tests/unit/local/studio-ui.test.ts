@@ -133,6 +133,19 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('.group-body .target:nth-child(2n)');
   });
 
+  it('renders an in-workspace HTTP request composer for a running serve (issue #322)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The composer builder + its Send wiring to the same-origin relay.
+    expect(html).toContain('function renderRequestComposer');
+    expect(html).toContain("fetch('/api/request'");
+    // Gated on a running serve having an http base URL (proxy endpoint or the
+    // ecs --host-port host URL).
+    expect(html).toContain('renderRequestComposer(id, httpBase, captured)');
+    expect(html).toContain('isEcs ? st.hostUrl');
+    // The ecs host URL is shown in Endpoints with an "not captured" note.
+    expect(html).toContain('not captured on the timeline');
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.
