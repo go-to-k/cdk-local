@@ -279,7 +279,14 @@ if ! grep -qF "the serve child internal port" "${BODY_FILE}" \
   echo "FAIL: GET / did not include the proxy-vs-child port clarity hints (issue #325)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints"
+# Re-invoke wiring (issue #284): the composer posts to /api/reinvoke and rows
+# get the reinvoke marker.
+if ! grep -qF "url = '/api/reinvoke'" "${BODY_FILE}" \
+  || ! grep -qF "row.classList.add('reinvoke')" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the re-invoke wiring (issue #284)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
@@ -375,6 +382,44 @@ echo "    OK: response recovered via --response-file, not the trailing console.l
 # binding assertion below.
 LAMBDA_INV_ID=$(grep -oE '"invocationId":"[^"]+"' "${RUN_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 echo "    (lambda invocationId=${LAMBDA_INV_ID})"
+
+# ---------------------------------------------------------------------------
+# 6b. POST /api/reinvoke re-runs that recorded row with an EDITED payload
+#     (issue #284). The handler echoes the event's `echo` field into the
+#     response, so a modified `echo` proves the edited payload reached the
+#     target; the new invocation must carry `reinvokeOf` linking it to the
+#     source row (asserted via GET /api/history).
+# ---------------------------------------------------------------------------
+echo "==> POST /api/reinvoke re-runs the row with an edited payload"
+REINV_FILE=$(mktemp)
+HTTP_RI=$(curl -s -o "${REINV_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/reinvoke" \
+  -H 'content-type: application/json' \
+  -d "{\"invocationId\":\"${LAMBDA_INV_ID}\",\"payload\":{\"echo\":\"reinvoke-edited\"}}" || true)
+if [[ "${HTTP_RI}" != "200" ]]; then
+  echo "FAIL: POST /api/reinvoke returned HTTP ${HTTP_RI}"
+  echo "----- reinvoke response -----"; cat "${REINV_FILE}"; echo "-----------------------------"
+  rm -f "${REINV_FILE}"; exit 1
+fi
+# The edited payload reached the target: its response echoes the new value.
+if ! grep -qF '"echo":"reinvoke-edited"' "${REINV_FILE}"; then
+  echo "FAIL: re-invoke response did not echo the edited payload"
+  echo "----- reinvoke response -----"; cat "${REINV_FILE}"; echo "-----------------------------"
+  rm -f "${REINV_FILE}"; exit 1
+fi
+REINV_ID=$(grep -oE '"invocationId":"[^"]+"' "${REINV_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
+echo "    OK: re-invoke ran the edited payload (new invocationId=${REINV_ID})"
+rm -f "${REINV_FILE}"
+# The new row links to its source: GET /api/history shows reinvokeOf = source id.
+HIST_FILE=$(mktemp)
+curl -fsS "${URL}/api/history" -o "${HIST_FILE}"
+if ! grep -qF "\"reinvokeOf\":\"${LAMBDA_INV_ID}\"" "${HIST_FILE}"; then
+  echo "FAIL: history has no invocation linking back to the source (reinvokeOf=${LAMBDA_INV_ID})"
+  echo "----- history -----"; cat "${HIST_FILE}"; echo "-------------------"
+  rm -f "${HIST_FILE}"; exit 1
+fi
+rm -f "${HIST_FILE}"
+echo "    OK: the re-invoked row links to its source via reinvokeOf"
 
 echo "==> The invocation was broadcast over SSE"
 # Give the SSE listener a moment to receive the end event, then stop it.
@@ -1143,4 +1188,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + reinvoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"

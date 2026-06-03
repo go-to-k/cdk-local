@@ -756,6 +756,15 @@ export {
 } from './local/studio-request-relay.js';
 
 /**
+ * `cdkl studio` re-invoke (issue #284). A host CLI embedding studio wires
+ * `reinvoke` as the `startStudioServer` `onReinvoke` handler so a past
+ * Lambda / AgentCore timeline row can be re-run with an edited payload —
+ * resolving the source target from the store and re-dispatching through the
+ * same single-shot dispatcher `POST /api/run` uses, threading `reinvokeOf`.
+ */
+export { reinvoke, type ReinvokeInput, type ReinvokeDeps } from './local/studio-reinvoke.js';
+
+/**
  * `cdkl studio` serve manager (issue #282, slice C1). A host CLI
  * embedding studio wires `createStudioServeManager(...)` so the browser's
  * `POST /api/run` for a long-running target (the `api` kind) starts the

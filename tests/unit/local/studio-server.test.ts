@@ -508,6 +508,36 @@ describe('startStudioServer', () => {
     expect(data.error).toContain('dispatch blew up');
   });
 
+  it('POST /api/reinvoke dispatches to onReinvoke and returns its result as JSON (issue #284)', async () => {
+    let received: unknown;
+    const onReinvoke = (body: unknown): Promise<unknown> => {
+      received = body;
+      return Promise.resolve({ invocationId: 'new-inv', ok: true });
+    };
+    const server = await boot({ onReinvoke });
+    const res = await http(`${server.url}/api/reinvoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ invocationId: 'src-1', payload: { a: 2 } }),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { invocationId: string; ok: boolean };
+    expect(data.ok).toBe(true);
+    expect(data.invocationId).toBe('new-inv');
+    expect(received).toEqual({ invocationId: 'src-1', payload: { a: 2 } });
+  });
+
+  it('POST /api/reinvoke answers 501 when no onReinvoke handler is wired', async () => {
+    const server = await boot(); // observe-only shell
+    const res = await http(`${server.url}/api/reinvoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(501);
+    await res.text();
+  });
+
   it('POST /api/stop dispatches to onStop and returns its result as JSON', async () => {
     let received: unknown;
     const onStop = (body: unknown): Promise<unknown> => {

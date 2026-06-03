@@ -346,6 +346,10 @@ compute-locally category for Lambda + API Gateway).
   `studio-request-relay` so the browser composer reaches the served port
   same-origin; api / alb go through the capture proxy and land on the
   timeline, an ecs `--host-port` serve hits the replica host URL directly),
+  `POST /api/reinvoke` (issue #284 — re-run a past Lambda / AgentCore
+  timeline row with an edited payload via `studio-reinvoke`, threading
+  `reinvokeOf` so the new row links to its source; a served request is
+  re-sent through the request composer instead),
   the slice-C3 store
   endpoints `GET /api/history` / `GET /api/logs?q=` (full-text log
   search) / `GET /api/invocations/<id>/logs` (per-request log binding),
@@ -383,9 +387,20 @@ compute-locally category for Lambda + API Gateway).
   the serve body so `start-service` rebuilds the pinned image from local
   source; a local-asset service (which already hot-reloads under `--watch`)
   gets no picker (issue #301); the
-  timeline carries both Lambda invocations and captured serve requests,
-  the latter opening a read-only Request/Response detail; a log search box
-  queries the store and a captured request's detail shows its bound logs),
+  timeline carries both Lambda invocations and captured serve requests;
+  clicking a past Lambda / AgentCore row reloads it into the composer
+  pre-filled + wired to re-invoke (issue #284, the [Re-invoke] button ->
+  `POST /api/reinvoke`), a captured serve request opens a read-only
+  Request/Response detail whose [Re-invoke] reuses that serve's request
+  composer (pre-filled), and a re-invoked row is visually linked to its
+  source; a log search box queries the store and a captured request's
+  detail shows its bound logs),
+  studio-reinvoke (issue #284 — `reinvoke({invocationId, payload}, {store,
+  dispatcher})`: resolves the source target from the recorded invocation
+  and re-fires the edited payload through the SAME single-shot dispatcher
+  `POST /api/run` uses, threading `reinvokeOf`. Lambda / AgentCore only; a
+  served request is re-sent client-side through the request composer so
+  the capture proxy still records it),
   studio-dispatch
   (issue #282 / #303 — the single-shot `POST /api/run` handler
   for the invoke kinds: runs a target from the studio UI by

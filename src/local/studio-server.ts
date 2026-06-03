@@ -191,6 +191,13 @@ export interface StudioServerOptions {
    */
   onServeRequest?: (body: unknown) => Promise<unknown>;
   /**
+   * Handler for `POST /api/reinvoke` (issue #284) — re-run a past timeline
+   * row with an edited payload. Body `{ invocationId, payload }`; resolves the
+   * source target from the store and re-dispatches the edited payload (Lambda /
+   * AgentCore only). When omitted, `/api/reinvoke` answers 501.
+   */
+  onReinvoke?: (body: unknown) => Promise<unknown>;
+  /**
    * Snapshot of the currently-running serve targets, served at
    * `GET /api/running`. When omitted, the endpoint returns an empty
    * list (the observe-only shell never runs anything).
@@ -339,6 +346,10 @@ function handleRequest(
   }
   if (req.method === 'POST' && path === '/api/run') {
     void handleDispatch(req, res, options.onRun);
+    return;
+  }
+  if (req.method === 'POST' && path === '/api/reinvoke') {
+    void handleDispatch(req, res, options.onReinvoke);
     return;
   }
   if (req.method === 'POST' && path === '/api/request') {

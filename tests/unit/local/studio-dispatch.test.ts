@@ -451,6 +451,46 @@ describe('createStudioDispatcher', () => {
     expect(result.response).toEqual({ statusCode: 200, body: 'fallback' });
   });
 
+  it('threads reinvokeOf into the emitted start + end invocation events (issue #284)', async () => {
+    const bus = new StudioEventBus();
+    const { invocations } = collect(bus);
+    const child = makeFakeChild();
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-ri',
+    });
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: { a: 2 }, reinvokeOf: 'src-1' });
+    child.stdout.emit('data', '{"ok":true}');
+    child.emit('close', 0);
+    await p;
+    // Both the start (no status) and end (status filled) events carry the link.
+    expect(invocations).toHaveLength(2);
+    expect(invocations[0].reinvokeOf).toBe('src-1');
+    expect(invocations[1].reinvokeOf).toBe('src-1');
+  });
+
+  it('omits reinvokeOf for a fresh (non-re-invoke) run', async () => {
+    const bus = new StudioEventBus();
+    const { invocations } = collect(bus);
+    const child = makeFakeChild();
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-fresh',
+    });
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{"ok":true}');
+    child.emit('close', 0);
+    await p;
+    expect(invocations[0].reinvokeOf).toBeUndefined();
+    expect(invocations[1].reinvokeOf).toBeUndefined();
+  });
+
   it('rejects when spawn throws synchronously', async () => {
     const bus = new StudioEventBus();
     const spawnFn = vi.fn(() => {

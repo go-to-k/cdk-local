@@ -7,6 +7,7 @@ import {
   coerceRunRequest,
   coerceStopRequest,
   coerceServeRequest,
+  coerceReinvokeRequest,
   resolveServeBaseUrl,
   createLocalStudioCommand,
   parseStudioPort,
@@ -344,6 +345,37 @@ describe('coerceServeRequest (issue #322)', () => {
     expect(() =>
       coerceServeRequest({ targetId: 'T', method: 'GET', headers: { x: 1 } })
     ).toThrow(/header "x" must be a string/);
+  });
+});
+
+describe('coerceReinvokeRequest (issue #284)', () => {
+  it('accepts a well-formed body and returns invocationId + payload', () => {
+    expect(coerceReinvokeRequest({ invocationId: 'src-1', payload: { a: 2 } })).toEqual({
+      invocationId: 'src-1',
+      payload: { a: 2 },
+    });
+  });
+
+  it('accepts a null payload (the key is present) — clearing the event', () => {
+    expect(coerceReinvokeRequest({ invocationId: 'src-1', payload: null })).toEqual({
+      invocationId: 'src-1',
+      payload: null,
+    });
+  });
+
+  it.each([null, 'x', 42])('rejects a non-object body %p', (body) => {
+    expect(() => coerceReinvokeRequest(body)).toThrow(/must be a JSON object/);
+  });
+
+  it.each([{ payload: {} }, { invocationId: '', payload: {} }, { invocationId: 42, payload: {} }])(
+    'rejects a missing/blank invocationId %p',
+    (body) => {
+      expect(() => coerceReinvokeRequest(body)).toThrow(/non-empty "invocationId"/);
+    }
+  );
+
+  it('rejects when the payload key is absent (vs an explicit null)', () => {
+    expect(() => coerceReinvokeRequest({ invocationId: 'src-1' })).toThrow(/must include a "payload"/);
   });
 });
 
