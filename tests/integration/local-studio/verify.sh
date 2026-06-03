@@ -63,6 +63,7 @@ cleanup() {
     wait "${STUDIO_PID}" 2>/dev/null || true
   fi
   rm -f "${LOG_FILE}" "${BODY_FILE}" "${RUN_FILE}" "${SSE_FILE}"
+  rm -f "$(pwd)/.studio-ws-client.mjs"
 }
 trap cleanup EXIT
 
@@ -572,6 +573,73 @@ fi
 echo "    OK: serve stopped; /api/running is empty"
 
 # ---------------------------------------------------------------------------
+# 7b. WebSocket console (issue #303): studio serves a WebSocket API
+#     (`start-api LocalStudioFixture/MyWsApi`, resolvable as an explicit
+#     target since Part 1), exposes its raw ws:// endpoint un-proxied, and the
+#     browser WebSocket console connects straight to it. Drive the same path a
+#     headless client: start the serve, read the ws:// endpoint from
+#     /api/running, connect a client, send a frame, and assert the agent
+#     echoes it (proving studio -> start-api WS serve -> browser-reachable
+#     ws:// + frame exchange end-to-end). The console UI itself is unit-tested
+#     (renderStudioHtml string assertions).
+# ---------------------------------------------------------------------------
+WS_TARGET="LocalStudioFixture/MyWsApi"
+echo "==> POST /api/run starts a WebSocket-API serve for ${WS_TARGET}"
+WSV_FILE=$(mktemp)
+WHTTP=$(curl -s -o "${WSV_FILE}" -w '%{http_code}' --max-time 120 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${WS_TARGET}\",\"kind\":\"api\"}" || true)
+if [[ "${WHTTP}" != "200" ]]; then
+  echo "FAIL: WS-API serve start returned HTTP ${WHTTP}"; cat "${WSV_FILE}"; rm -f "${WSV_FILE}"; exit 1
+fi
+WSV_URL=$(grep -oE 'ws://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_]+' "${WSV_FILE}" | head -1 || true)
+rm -f "${WSV_FILE}"
+if [[ -z "${WSV_URL}" ]]; then
+  echo "FAIL: studio did not expose a ws:// endpoint for the WebSocket-API serve"; exit 1
+fi
+echo "    OK: WS-API serve running at ${WSV_URL}"
+# Confirm /api/running reports it (what the UI reads to render the console).
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! grep -qF "${WSV_URL}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running did not list the ws:// endpoint"; cat "${BODY_FILE}"; exit 1
+fi
+# Connect a client to the studio-served ws:// endpoint (Node 24 global WebSocket)
+# and assert the $default echo round-trips — the same thing the browser console
+# does.
+cat > "$(pwd)/.studio-ws-client.mjs" <<'NODE'
+const url = process.argv[2];
+const ws = new WebSocket(url);
+let got = '';
+const done = (code, msg) => { if (msg) console.error(msg); process.exit(code); };
+ws.addEventListener('open', () => ws.send(JSON.stringify({ action: 'sendMessage', text: 'studio-ws-303' })));
+ws.addEventListener('message', async (e) => {
+  // The local emulator delivers the echo as a binary Blob; decode to text
+  // (same as the browser console does).
+  got = typeof e.data === 'string' ? e.data : (e.data && typeof e.data.text === 'function' ? await e.data.text() : '');
+  ws.close();
+});
+ws.addEventListener('error', () => done(1, 'client socket error'));
+ws.addEventListener('close', () => got.includes('studio-ws-303') ? (console.log('PASS:', got), done(0)) : done(1, 'no echo: ' + got));
+setTimeout(() => done(1, 'timeout waiting for echo'), 30000);
+NODE
+if ! node "$(pwd)/.studio-ws-client.mjs" "${WSV_URL}"; then
+  echo "FAIL: WebSocket console round-trip through the studio-served endpoint"
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null; cat "${BODY_FILE}"
+  curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
+  rm -f "$(pwd)/.studio-ws-client.mjs"; exit 1
+fi
+rm -f "$(pwd)/.studio-ws-client.mjs"
+echo "    OK: WebSocket console round-trip echoed 'studio-ws-303' through ${WSV_URL}"
+# Stop the WS serve.
+curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
+for _ in $(seq 1 20); do
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null || true
+  if ! grep -qF "${WS_TARGET}" "${BODY_FILE}"; then break; fi
+  sleep 0.5
+done
+echo "    OK: WebSocket-API serve stopped"
+
+# ---------------------------------------------------------------------------
 # 8. The store (slice C3): history + full-text log search + per-invocation
 #    log binding (decision D5) are served from the retained event window.
 # ---------------------------------------------------------------------------
@@ -857,4 +925,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + ws-console + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"

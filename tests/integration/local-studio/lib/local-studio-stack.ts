@@ -74,6 +74,68 @@ export class LocalStudioStack extends cdk.Stack {
     // `(Function URL)` kind, keyed by the BACKING LAMBDA's logical ID.
     fn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
+    // WebSocket API (issue #303) — so studio can serve it and the browser
+    // WebSocket console can connect + exchange frames. One inline Lambda backs
+    // both routes: `$connect` admits the client; `$default` echoes the frame's
+    // `text` back over the connection via the local `@connections` management
+    // endpoint (`fetch`, no SDK — the local emulator does not require SigV4).
+    // The body-action selection expression routes every message to `$default`.
+    const wsFn = new lambda.Function(this, 'WsEchoHandler', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(
+        [
+          'exports.handler = async (event) => {',
+          '  const rc = event.requestContext || {};',
+          "  if (rc.routeKey === '$connect' || rc.routeKey === '$disconnect') return { statusCode: 200 };",
+          '  const endpoint = process.env.AWS_ENDPOINT_URL_APIGATEWAYMANAGEMENTAPI;',
+          '  let parsed; try { parsed = JSON.parse(event.body || "{}"); } catch { parsed = { text: event.body }; }',
+          '  await fetch(endpoint + "/@connections/" + encodeURIComponent(rc.connectionId), {',
+          '    method: "POST",',
+          '    body: JSON.stringify({ route: rc.routeKey, echo: parsed.text != null ? parsed.text : null, connectionId: rc.connectionId }),',
+          '  });',
+          '  return { statusCode: 200 };',
+          '};',
+        ].join('\n')
+      ),
+    });
+    const wsApi = new apigwv2.CfnApi(this, 'MyWsApi', {
+      name: 'cdkl-studio-fixture-ws-api',
+      protocolType: 'WEBSOCKET',
+      routeSelectionExpression: '$request.body.action',
+    });
+    const wsRegion = cdk.Stack.of(this).region;
+    const wsIntegrationUri = cdk.Fn.join('', [
+      `arn:aws:apigateway:${wsRegion}:lambda:path/2015-03-31/functions/`,
+      wsFn.functionArn,
+      '/invocations',
+    ]);
+    const wsConnectInteg = new apigwv2.CfnIntegration(this, 'MyWsConnectIntegration', {
+      apiId: wsApi.ref,
+      integrationType: 'AWS_PROXY',
+      integrationUri: wsIntegrationUri,
+    });
+    const wsDefaultInteg = new apigwv2.CfnIntegration(this, 'MyWsDefaultIntegration', {
+      apiId: wsApi.ref,
+      integrationType: 'AWS_PROXY',
+      integrationUri: wsIntegrationUri,
+    });
+    new apigwv2.CfnRoute(this, 'MyWsConnectRoute', {
+      apiId: wsApi.ref,
+      routeKey: '$connect',
+      target: cdk.Fn.join('/', ['integrations', wsConnectInteg.ref]),
+    });
+    new apigwv2.CfnRoute(this, 'MyWsDefaultRoute', {
+      apiId: wsApi.ref,
+      routeKey: '$default',
+      target: cdk.Fn.join('/', ['integrations', wsDefaultInteg.ref]),
+    });
+    new apigwv2.CfnStage(this, 'MyWsStage', {
+      apiId: wsApi.ref,
+      stageName: 'prod',
+      autoDeploy: true,
+    });
+
     // ECS cluster + bridge-mode task definition + service.
     const cluster = new ecs.CfnCluster(this, 'MyCluster', {
       clusterName: 'cdkl-studio-fixture-cluster',

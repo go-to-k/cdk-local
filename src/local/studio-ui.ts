@@ -12,7 +12,10 @@
  *   - center = the WORKSPACE for the selected target: for a Lambda or an
  *     AgentCore runtime, an event composer (textarea + Invoke button) with
  *     the latest run's Request / Response / Logs shown below; for an API, a
- *     Start/Stop control with the served endpoints + streaming logs.
+ *     Start/Stop control with the served endpoints + streaming logs. A served
+ *     API Gateway WebSocket API additionally gets a WebSocket console
+ *     (connect / send frame / received-frame log) wired straight to its ws://
+ *     endpoint (issue #303).
  *   - right  = the timeline (history) of every invocation AND every
  *     captured serve request (slice C2); clicking a Lambda row reloads
  *     it into the composer, clicking a captured request row opens a
@@ -127,6 +130,17 @@ const STUDIO_CSS = `
   .section pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #cfcfcf; }
   .endpoint { display: block; color: #6aa9ff; text-decoration: none; padding: 2px 0; }
   .endpoint:hover { text-decoration: underline; }
+  .ws-console .ws-status { font-size: 12px; color: #888; margin-left: 8px; font-weight: 400; }
+  .ws-console .ws-status.on { color: #4ec97a; }
+  .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .ws-row .ws-input { flex: 1; min-width: 0; background: #1a1a1a; border: 1px solid #333;
+    color: #ddd; border-radius: 4px; padding: 5px 7px; font: inherit; }
+  .ws-row .ws-input:focus { outline: none; border-color: #4ec97a; }
+  .ws-row button { background: #2a4636; color: #cfe; border: 0; border-radius: 4px;
+    padding: 5px 12px; cursor: pointer; }
+  .ws-row button:disabled { background: #2a2a2a; color: #666; cursor: default; }
+  .ws-frames { max-height: 180px; overflow: auto; background: #141414; border: 1px solid #262626;
+    border-radius: 4px; padding: 6px 8px; margin-top: 4px; min-height: 22px; }
   .searchbar { padding: 6px 10px; border-bottom: 1px solid #2a2a2a; background: #151515;
     position: sticky; top: 28px; z-index: 1; }
   .searchbar input {
@@ -437,6 +451,10 @@ const STUDIO_SCRIPT = `
   }
 
   function selectTarget(id, kind) {
+    // Navigating to any target closes a WebSocket console socket left open on
+    // a previously-shown serve (a log-driven re-render keeps it, an explicit
+    // navigation drops it — see renderWsConsole).
+    closeActiveWs();
     highlightTarget(id);
     shownDetailId = null;
     if (SERVE_KINDS.includes(kind)) {
@@ -541,6 +559,13 @@ const STUDIO_SCRIPT = `
     }
     ws.appendChild(epSec);
 
+    // A served WebSocket API exposes a ws:// endpoint — attach a WebSocket
+    // console so the browser can connect + exchange frames (issue #303).
+    const wsEndpoint = running ? (st.endpoints || []).find((u) => /^wss?:/.test(u)) : null;
+    if (wsEndpoint) {
+      ws.appendChild(renderWsConsole(wsEndpoint));
+    }
+
     const logs = logsById.get(id) || [];
     const logSec = el('div', 'section');
     logSec.appendChild(el('h3', null, 'Logs'));
@@ -549,7 +574,8 @@ const STUDIO_SCRIPT = `
   }
 
   // Build an <a> that opens an http(s) endpoint in a new tab; ws:// URLs
-  // are shown as plain text (not navigable in a browser tab).
+  // are shown as plain text (not navigable in a browser tab — the WebSocket
+  // console below connects to them instead).
   function href(url) {
     if (/^https?:/.test(url)) {
       const a = el('a', 'endpoint', url);
@@ -559,6 +585,131 @@ const STUDIO_SCRIPT = `
       return a;
     }
     return el('div', 'endpoint', url);
+  }
+
+  // --- WebSocket console (issue #303) ----------------------------------------
+  // A served API Gateway WebSocket API exposes a ws:// endpoint (handed through
+  // un-proxied by the serve manager). The console connects the BROWSER straight
+  // to it so you can send frames + watch received frames, without leaving the
+  // studio tab.
+  //
+  // The serve workspace re-renders on every streamed log line (line ~931), so
+  // the socket + the frame log live in MODULE state (not the rebuilt DOM): the
+  // socket's callbacks update the CURRENT DOM via wsEl() selectors, and
+  // renderWsConsole repopulates from wsFrames + the live socket state on each
+  // rebuild. So a log-triggered re-render never drops the connection.
+  let activeWs = null;
+  let wsFrames = [];
+  let wsConsoleUrl = null;
+
+  function wsEl(sel) {
+    return document.querySelector('#workspace .ws-console ' + sel);
+  }
+  function wsSyncUi() {
+    const on = !!activeWs && activeWs.readyState === 1;
+    const status = wsEl('.ws-status');
+    if (status) {
+      status.textContent = on ? '● connected' : '○ disconnected';
+      status.className = 'ws-status' + (on ? ' on' : '');
+    }
+    const cb = wsEl('.ws-connect');
+    if (cb) cb.textContent = activeWs ? 'Disconnect' : 'Connect';
+    const inp = wsEl('.ws-input');
+    if (inp) inp.disabled = !on;
+    const sb = wsEl('.ws-send');
+    if (sb) sb.disabled = !on;
+  }
+  function wsAppend(dir, text) {
+    wsFrames.push(dir + ' ' + text);
+    if (wsFrames.length > 200) wsFrames = wsFrames.slice(-200);
+    const pre = wsEl('.ws-frames');
+    if (pre) {
+      pre.textContent = wsFrames.join('\\n');
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+  function closeActiveWs() {
+    if (activeWs) {
+      try {
+        activeWs.onclose = null;
+        activeWs.close();
+      } catch (e) {
+        /* already closing */
+      }
+      activeWs = null;
+    }
+  }
+  function wsConnect(wsUrl) {
+    if (activeWs) {
+      closeActiveWs();
+      wsAppend('--', 'disconnected');
+      wsSyncUi();
+      return;
+    }
+    let sock;
+    try {
+      sock = new WebSocket(wsUrl);
+    } catch (err) {
+      wsAppend('!!', 'could not open: ' + err);
+      return;
+    }
+    activeWs = sock;
+    wsConsoleUrl = wsUrl;
+    wsAppend('--', 'connecting to ' + wsUrl + ' …');
+    wsSyncUi();
+    sock.onopen = function () { if (activeWs === sock) { wsAppend('--', 'connected'); wsSyncUi(); } };
+    sock.onmessage = function (e) {
+      // A frame arrives as a string (text) or — the local emulator's
+      // PostToConnection path sends binary — a Blob / ArrayBuffer. Decode the
+      // binary forms to text so the console shows the payload, not a placeholder.
+      const d = e.data;
+      if (typeof d === 'string') wsAppend('<-', d);
+      else if (d && typeof d.text === 'function') d.text().then(function (t) { wsAppend('<-', t); });
+      else if (d && d.byteLength !== undefined) wsAppend('<-', new TextDecoder().decode(d));
+      else wsAppend('<-', '[binary frame]');
+    };
+    sock.onerror = function () { wsAppend('!!', 'socket error'); };
+    sock.onclose = function () { if (activeWs === sock) { activeWs = null; wsAppend('--', 'closed'); wsSyncUi(); } };
+  }
+  function wsSend() {
+    const inp = wsEl('.ws-input');
+    if (activeWs && activeWs.readyState === 1 && inp && inp.value) {
+      activeWs.send(inp.value);
+      wsAppend('->', inp.value);
+      inp.value = '';
+    }
+  }
+
+  function renderWsConsole(wsUrl) {
+    // A fresh target's console starts with a clean frame log; same-url
+    // re-renders (log streaming) keep it so the history survives.
+    if (wsConsoleUrl !== wsUrl) wsFrames = [];
+    const on = !!activeWs && activeWs.readyState === 1;
+
+    const sec = el('div', 'section ws-console');
+    const h = el('h3', null, 'WebSocket');
+    h.appendChild(el('span', 'ws-status' + (on ? ' on' : ''), on ? '● connected' : '○ disconnected'));
+    sec.appendChild(h);
+
+    const connectBtn = el('button', 'invoke-btn ws-connect', activeWs ? 'Disconnect' : 'Connect');
+    connectBtn.onclick = function () { wsConnect(wsUrl); };
+    const input = el('input', 'ws-input');
+    input.placeholder = '{ "action": "sendMessage", "text": "hi" }';
+    input.disabled = !on;
+    input.onkeydown = function (e) { if (e.key === 'Enter') wsSend(); };
+    const sendBtn = el('button', 'ws-send', 'Send');
+    sendBtn.disabled = !on;
+    sendBtn.onclick = wsSend;
+
+    const row = el('div', 'ws-row');
+    row.appendChild(connectBtn);
+    row.appendChild(input);
+    row.appendChild(sendBtn);
+    sec.appendChild(row);
+
+    const frames = el('pre', 'ws-frames', wsFrames.join('\\n'));
+    sec.appendChild(frames);
+    return sec;
   }
 
   function renderComposer(id, kind, eventText) {
@@ -700,6 +851,7 @@ const STUDIO_SCRIPT = `
   function loadInvocation(id) {
     const ev = invById.get(id);
     if (!ev) return;
+    closeActiveWs(); // navigating to a timeline row leaves any serve WS console
     document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'));
     const row = rowsById.get(id);
     if (row) row.classList.add('sel');

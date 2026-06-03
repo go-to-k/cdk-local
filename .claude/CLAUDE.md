@@ -333,7 +333,12 @@ compute-locally category for Lambda + API Gateway).
   [Invoke] composer (`INVOKE_KINDS`), serve
   targets (api / alb / ecs) a [Start]/[Stop] control with a `running ●
   :port` indicator (ecs services show `running` with no port — only the
-  servable ECS *services* are runnable, not the task definitions); the
+  servable ECS *services* are runnable, not the task definitions); a served
+  API Gateway WebSocket API additionally gets a WebSocket console
+  (`renderWsConsole` — connect / send-frame / received-frame log) wired
+  straight to its ws:// endpoint, with the socket + frame log held in module
+  state so a log-driven serve re-render never drops the connection (issue
+  #303); the
   timeline carries both Lambda invocations and captured serve requests,
   the latter opening a read-only Request/Response detail; a log search box
   queries the store and a captured request's detail shows its bound logs),
