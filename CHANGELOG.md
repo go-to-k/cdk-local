@@ -1,3 +1,10 @@
+## [0.106.1](https://github.com/go-to-k/cdk-local/compare/v0.106.0...v0.106.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** surface a serve crash instead of silently reverting to a blank composer ([#374](https://github.com/go-to-k/cdk-local/issues/374)) ([90f75db](https://github.com/go-to-k/cdk-local/commit/90f75dbabab21e5b54ec61ebcc9faaedd777abcf))
+
 # [0.106.0](https://github.com/go-to-k/cdk-local/compare/v0.105.0...v0.106.0) (2026-06-03)
 
 
