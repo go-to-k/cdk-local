@@ -178,6 +178,73 @@ describe('createStudioServeManager', () => {
     expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/svc');
   });
 
+  it('appends --watch to the serve child argv only when config.watch is set', async () => {
+    const bus = new StudioEventBus();
+    const fp = fakeProxies();
+
+    // watch ON -> --watch appended.
+    const childOn = makeFakeChild();
+    const spawnOn = vi.fn(() => childOn as never);
+    const mgrOn = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnOn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+      watch: true,
+    });
+    const pOn = mgrOn.start({ targetId: 'MyApi', kind: 'api' });
+    childOn.stdout.emit('data', LISTENING);
+    await pOn;
+    expect((spawnOn.mock.calls[0] as unknown as [string, string[]])[1]).toContain('--watch');
+
+    // watch OFF (default) -> no --watch.
+    const childOff = makeFakeChild();
+    const spawnOff = vi.fn(() => childOff as never);
+    const mgrOff = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnOff as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const pOff = mgrOff.start({ targetId: 'MyApi2', kind: 'api' });
+    childOff.stdout.emit('data', LISTENING);
+    await pOff;
+    expect((spawnOff.mock.calls[0] as unknown as [string, string[]])[1]).not.toContain('--watch');
+  });
+
+  it('reflects a runtime watch toggle (mutated config) on the NEXT serve start', async () => {
+    const bus = new StudioEventBus();
+    const fp = fakeProxies();
+    // Mutable config object the manager reads per start (mirrors the studio
+    // childConfig that PATCH /api/config edits in place).
+    const config: { cliEntry: string; bus: StudioEventBus; watch?: boolean } & Record<string, unknown> =
+      {
+        cliEntry: '/path/to/cli.js',
+        bus,
+        spawnFn: vi.fn(),
+        clock: fixedClock(),
+        proxyFactory: fp.factory,
+      };
+    const child1 = makeFakeChild();
+    const child2 = makeFakeChild();
+    const spawnFn = vi.fn().mockReturnValueOnce(child1 as never).mockReturnValueOnce(child2 as never);
+    config['spawnFn'] = spawnFn;
+    const mgr = createStudioServeManager(config as never);
+
+    const p1 = mgr.start({ targetId: 'A', kind: 'api' });
+    child1.stdout.emit('data', LISTENING);
+    await p1;
+    expect((spawnFn.mock.calls[0] as unknown as [string, string[]])[1]).not.toContain('--watch');
+
+    config.watch = true; // toggle on (as a PATCH /api/config would)
+    const p2 = mgr.start({ targetId: 'B', kind: 'api' });
+    child2.stdout.emit('data', LISTENING);
+    await p2;
+    expect((spawnFn.mock.calls[1] as unknown as [string, string[]])[1]).toContain('--watch');
+  });
+
   it('threads per-run options (boolean + repeat-pair) into the serve child argv', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

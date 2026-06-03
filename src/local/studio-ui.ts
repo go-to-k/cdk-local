@@ -901,6 +901,7 @@ const STUDIO_SCRIPT = `
       cfnName.value = typeof c.fromCfnStack === 'string' ? c.fromCfnStack : '';
       cfnName.style.display = on ? '' : 'none';
       role.value = c.assumeRole || '';
+      document.getElementById('sess-watch').checked = c.watch === true;
       const s = c.synth || {};
       const parts = [];
       if (s.profile) parts.push('profile=' + s.profile);
@@ -920,6 +921,7 @@ const STUDIO_SCRIPT = `
     const body = {
       fromCfnStack: cfn.checked ? cfnName.value.trim() || true : null,
       assumeRole: role.value.trim() || null,
+      watch: document.getElementById('sess-watch').checked,
     };
     msg.textContent = 'Saving...';
     try {
@@ -992,6 +994,7 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <input id="sess-cfn-name" type="text" placeholder="stack name (blank = auto)" style="display:none" />
   <label class="sess-bind" for="sess-role">assume-role</label>
   <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" />
+  <label class="sess-bind"><input type="checkbox" id="sess-watch" /> watch</label>
   <button id="sess-save" type="button">Save</button>
   <span id="sess-msg"></span>
   <span id="sess-synth" class="sess-synth"></span>

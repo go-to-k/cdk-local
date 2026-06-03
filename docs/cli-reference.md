@@ -1461,9 +1461,9 @@ cdkl studio --no-open             # do not auto-open the browser (CI / headless)
 A **Session bar** under the header shows the read-only synth-time context
 (`profile` / `region` / `app` — the target list was synthesized with them,
 so they are fixed for the session) and lets you edit the run-time bindings
-`--from-cfn-stack` and `--assume-role` live: a change applies to every
-subsequent invoke / serve started from the UI, no restart needed (the CLI
-flags set the initial values).
+`--from-cfn-stack` and `--assume-role` — and the `--watch` mode — live: a
+change applies to every subsequent invoke / serve started from the UI, no
+restart needed (the CLI flags set the initial values).
 
 The console is a three-pane layout:
 
@@ -1499,6 +1499,7 @@ The console is a three-pane layout:
 | `--from-cfn-stack [name]` | (off) | Bind the whole studio session to a deployed CloudFormation stack — every invoke / serve started from the UI runs against the stack's real ARNs / Secret values. Bare flag auto-resolves a single-stack app; pass a name to pick the stack. Forwarded to each child command. |
 | `--assume-role <arn>` | (off) | IAM role ARN to assume for every invoke / serve started from the UI; the temporary credentials are forwarded into the containers. Forwarded to each child command. |
 | `--stack <glob...>` | (all) | Filter the DISPLAYED targets by stack glob (a target id is `Stack/Construct`, so `dev/*` keeps stack `dev`'s targets, `dev*` any stack starting `dev`). Space-separate multiple globs (a target matching ANY is shown). **Display-only — does NOT scope synth**: the whole app is still synthesized, so gate synth itself with the app's own `-c` context / a committed `cdk.context.json`. |
+| `--watch` | (off) | Spawn serves started from the UI (`start-api` / `start-alb` / `start-service`) with `--watch`, so they re-synth + rolling-reload on CDK source changes. Toggleable live from the Session bar (`PATCH /api/config`), applying to the next serve. No effect on single-shot invokes (each re-synths anyway); the target list is not re-synthed (restart studio to pick up newly-added resources). |
 
 `--from-cfn-stack` and `--assume-role` are **session-global**: they apply
 to every target you run from the UI, so they sit on `cdkl studio` itself

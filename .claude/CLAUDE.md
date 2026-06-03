@@ -243,6 +243,14 @@ compute-locally category for Lambda + API Gateway).
   gets the same single-shot [Invoke] composer a Lambda does (the
   dispatcher spawns `cdkl invoke-agentcore`), with per-run options
   `--ws` / `--sigv4` / `--bearer-token` / `--session-id` / `--env-vars`.
+  Issue #301 added `cdkl studio --watch`: serves started from the UI
+  (`start-api` / `start-alb` / `start-service`) are spawned with
+  `--watch` so they re-synth + rolling-reload on CDK source changes;
+  it is an editable session mode (the Session bar `watch` toggle ->
+  `PATCH /api/config`, applying to subsequently-started serves) and a
+  no-op for single-shot invokes (each invoke re-synths anyway). The
+  target list itself is not re-synthed (restart studio to pick up
+  newly-added resources).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -375,7 +383,10 @@ compute-locally category for Lambda + API Gateway).
   `Service(s) running:`), tracks the running set for `/api/running`, and
   SIGTERMs the child on `/api/stop` / studio shutdown with a generous
   grace so the serve command's OWN ECS-replica + docker-network teardown
-  completes before any SIGKILL), studio-proxy
+  completes before any SIGKILL. Under `cdkl studio --watch` it appends
+  `--watch` to each serve child — read off the mutable config per
+  `start()`, so a Session-bar toggle applies to the next serve),
+  studio-proxy
   (issue #282, slice C2 — a capturing reverse proxy in front of each
   HTTP serve endpoint: forwards every request verbatim to the upstream
   `start-api` child while emitting `invocation` start/end events

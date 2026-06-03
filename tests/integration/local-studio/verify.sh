@@ -13,6 +13,8 @@
 #   - asserts GET /api/targets lists the fixture's targets,
 #   - asserts GET /api/events opens a text/event-stream (SSE),
 #   - asserts the command is registered on the user-facing surface,
+#   - boots `cdkl studio --watch` and asserts a UI-started serve is spawned
+#     with --watch (the start-api watcher banner reaches the log store),
 #   - drives POST /api/run to invoke a Lambda in a RIE container (slice B),
 #   - drives POST /api/run to invoke an AgentCore runtime in Docker — both the
 #     HTTP POST /invocations path and the --ws streaming path (issue #303),
@@ -109,6 +111,62 @@ fi
 kill "${FLT_PID}" 2>/dev/null || true; wait "${FLT_PID}" 2>/dev/null || true
 rm -f "${FLT_LOG}"
 echo "    OK: --stack scoped the list to the matching target only"
+
+# ---------------------------------------------------------------------------
+# 1c. Watch mode (issue #301): `cdkl studio --watch` spawns serves started from
+#     the UI with `--watch`, so they hot-reload on source changes. Boot a
+#     short-lived studio WITH --watch, assert the boot log + GET /api/config
+#     report watch on, start an `api` serve, and assert the spawned
+#     `start-api --watch` child's watcher banner ("Watching ... for source
+#     changes") reaches the studio log store (proof the flag threaded through +
+#     the child entered watch mode end-to-end). Tear it down before the main
+#     boot. This boots a real RIE-backed serve, hence Docker.
+# ---------------------------------------------------------------------------
+echo "==> --watch: serves started from the UI are spawned with --watch"
+WAT_LOG=$(mktemp)
+${CDKL} studio --no-open --watch --studio-port "${PORT}" >"${WAT_LOG}" 2>&1 &
+WAT_PID=$!
+fail_watch() { echo "FAIL: $1"; echo "----- watch studio log -----"; cat "${WAT_LOG}"; echo "----------------------------"; kill "${WAT_PID}" 2>/dev/null || true; rm -f "${WAT_LOG}"; exit 1; }
+WAT_URL=""
+for _ in $(seq 1 60); do
+  if ! kill -0 "${WAT_PID}" 2>/dev/null; then fail_watch "watch studio exited during boot"; fi
+  WAT_URL=$(grep -oE "http://${HOST}:[0-9]+" "${WAT_LOG}" | head -1 || true)
+  if [[ -n "${WAT_URL}" ]] && curl -fsS "${WAT_URL}/api/targets" -o /dev/null 2>/dev/null; then break; fi
+  sleep 0.5
+done
+[[ -n "${WAT_URL}" ]] || fail_watch "could not parse watch studio URL"
+grep -qF 'Watch mode: ON' "${WAT_LOG}" || fail_watch "boot log missing 'Watch mode: ON'"
+echo "    OK: boot log reports 'Watch mode: ON'"
+curl -fsS "${WAT_URL}/api/config" -o "${BODY_FILE}"
+grep -qF '"watch":true' "${BODY_FILE}" || fail_watch "GET /api/config did not report watch:true"
+echo "    OK: GET /api/config reports watch:true"
+# Start an api serve and confirm the spawned start-api entered watch mode.
+WAT_SERVE=$(mktemp)
+WHTTP=$(curl -s -o "${WAT_SERVE}" -w '%{http_code}' --max-time 120 \
+  -X POST "${WAT_URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"LocalStudioFixture/MyHttpApi\",\"kind\":\"api\"}" || true)
+if [[ "${WHTTP}" != "200" ]]; then cat "${WAT_SERVE}"; rm -f "${WAT_SERVE}"; fail_watch "watch-mode serve start returned HTTP ${WHTTP}"; fi
+rm -f "${WAT_SERVE}"
+# The start-api --watch child logs "Watching <root> for source changes ..." when
+# its file watcher comes up; the studio serve-manager streams that into the log
+# store, searchable via /api/logs?q=. Retry — it lands around serve-ready.
+WAT_OK=""
+for _ in $(seq 1 40); do
+  curl -fsS "${WAT_URL}/api/logs?q=for%20source%20changes" -o "${BODY_FILE}" 2>/dev/null || true
+  if grep -qiF 'source changes' "${BODY_FILE}"; then WAT_OK=1; break; fi
+  sleep 0.5
+done
+if [[ -z "${WAT_OK}" ]]; then
+  curl -fsS "${WAT_URL}/api/stop" -H 'content-type: application/json' -d '{"targetId":"LocalStudioFixture/MyHttpApi"}' -o /dev/null 2>/dev/null || true
+  fail_watch "the spawned start-api never logged its watcher banner (--watch did not thread to the serve child)"
+fi
+echo "    OK: the studio-spawned start-api entered watch mode (--watch threaded end-to-end)"
+curl -fsS "${WAT_URL}/api/stop" -H 'content-type: application/json' -d '{"targetId":"LocalStudioFixture/MyHttpApi"}' -o /dev/null 2>/dev/null || true
+# Give the serve child a moment to tear its RIE container down before we kill studio.
+sleep 2
+kill "${WAT_PID}" 2>/dev/null || true; wait "${WAT_PID}" 2>/dev/null || true
+rm -f "${WAT_LOG}"
+echo "    OK: watch-mode studio torn down"
 
 # ---------------------------------------------------------------------------
 # 2. Boot studio; parse the bound URL from the boot log.
@@ -799,4 +857,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
