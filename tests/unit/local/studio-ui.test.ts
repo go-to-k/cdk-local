@@ -43,6 +43,25 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('INVOKE_KINDS.includes(ev.kind)');
   });
 
+  it('embeds a WebSocket console for served WebSocket APIs (issue #303)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The console renderer + its lifecycle helpers are present.
+    expect(html).toContain('function renderWsConsole');
+    expect(html).toContain('new WebSocket(wsUrl)');
+    // Wired into the serve workspace for a running serve with a ws:// endpoint.
+    expect(html).toContain("/^wss?:/.test(u)");
+    expect(html).toContain('ws.appendChild(renderWsConsole(wsEndpoint))');
+    // The socket lives in module state so a log-driven serve re-render does not
+    // drop the connection; navigation away AND a non-running re-render (serve
+    // stopped) close it so it can't linger against a dead serve.
+    expect(html).toContain('function closeActiveWs');
+    expect(html).toContain('closeActiveWs();'); // called on navigation + serve stop, not just defined
+    expect(html).toContain('if (!running) closeActiveWs();'); // stop-leak guard
+    // A received frame may be a binary Blob (the local emulator's
+    // PostToConnection path) — decode it to text rather than show a placeholder.
+    expect(html).toContain("typeof d.text === 'function'");
+  });
+
   it('renders the editable Session bar (issue #301 slice 3)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     expect(html).toContain('id="session-bar"');
