@@ -13,8 +13,10 @@ import {
   installStudioResilienceGuard,
   parseStudioPort,
   resolveBootAssemblyDir,
+  routeStudioRun,
   type EditableSessionBindings,
 } from '../../../src/cli/commands/local-studio.js';
+import type { StudioRunRequest } from '../../../src/local/studio-dispatch.js';
 import type { StudioServeState } from '../../../src/local/studio-serve-manager.js';
 
 describe('createLocalStudioCommand', () => {
@@ -459,5 +461,57 @@ describe('resolveServeBaseUrl (issue #322)', () => {
   it('returns undefined when there is no reachable http endpoint', () => {
     expect(resolveServeBaseUrl(state({ endpoints: ['ws://x'] }))).toBeUndefined();
     expect(resolveServeBaseUrl(state({}))).toBeUndefined();
+  });
+});
+
+describe('routeStudioRun (issue #372 — POST /api/run kind -> runner)', () => {
+  const req = (kind: StudioRunRequest['kind'], targetId = 'T'): StudioRunRequest =>
+    ({ targetId, kind }) as StudioRunRequest;
+
+  const deps = () => {
+    const run = vi.fn(async () => 'invoked');
+    const start = vi.fn(async () => 'served');
+    return {
+      run,
+      start,
+      build: (servable: string[] = []) => ({
+        dispatcher: { run },
+        serveManager: { start },
+        servableEcs: new Set(servable),
+      }),
+    };
+  };
+
+  it('routes the invoke kinds to the dispatcher', async () => {
+    for (const kind of ['lambda', 'agentcore'] as const) {
+      const d = deps();
+      await routeStudioRun(req(kind), d.build());
+      expect(d.run).toHaveBeenCalledOnce();
+      expect(d.start).not.toHaveBeenCalled();
+    }
+  });
+
+  it('routes the serve kinds (incl. cloudfront) to the serve manager', async () => {
+    for (const kind of ['api', 'alb', 'ecs-task', 'cloudfront'] as const) {
+      const d = deps();
+      await routeStudioRun(req(kind), d.build());
+      expect(d.start).toHaveBeenCalledOnce();
+      expect(d.run).not.toHaveBeenCalled();
+    }
+  });
+
+  it('routes a servable ecs service to the serve manager', async () => {
+    const d = deps();
+    await routeStudioRun(req('ecs', 'Stack/Svc'), d.build(['Stack/Svc']));
+    expect(d.start).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an ecs target that is not a servable service (a task def) without spawning', async () => {
+    const d = deps();
+    await expect(routeStudioRun(req('ecs', 'Stack/TaskDef'), d.build([]))).rejects.toThrow(
+      /not a servable ECS service/
+    );
+    expect(d.start).not.toHaveBeenCalled();
+    expect(d.run).not.toHaveBeenCalled();
   });
 });

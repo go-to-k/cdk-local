@@ -27,7 +27,8 @@
 #     GET /api/logs?q=, and per-invocation GET /api/invocations/<id>/logs,
 #   - starts a CloudFront serve (`start-cloudfront`, kind=cloudfront, issue
 #     #367), curls the served distribution origin through the studio capture
-#     proxy + asserts the default root object comes back, then stops it,
+#     proxy + asserts the default root object comes back AND that the request
+#     was captured on the timeline (issue #372), then stops it,
 #   - starts an ALB serve (`start-alb`), curls the front-door through the
 #     studio capture proxy + asserts the request is captured (kind=alb),
 #     and an ECS service serve (`start-service`) that runs pure compute
@@ -854,6 +855,24 @@ if [[ "${CFROOT_CODE}" != "200" ]] || ! grep -qF 'studio cloudfront root' "${CFR
 fi
 rm -f "${CFROOT}"
 echo "    OK: GET ${CF_SERVED}/ -> 200 root index.html"
+
+# The cloudfront serve is fronted by the studio capture proxy (capturesHttp),
+# so the GET / we just made must surface on the timeline as an `invocation`
+# row with the GET / label + the 200 status — proving the capture-proxy
+# plumbing works for the cloudfront kind, not just for api / alb (#372).
+echo "==> The cloudfront request was captured on the timeline (SSE)"
+for _ in $(seq 1 20); do
+  if grep -qF 'event: invocation' "${SSE_FILE}" && grep -qF '"label":"GET /"' "${SSE_FILE}"; then
+    break
+  fi
+  sleep 0.5
+done
+if ! grep -qF '"label":"GET /"' "${SSE_FILE}" || ! grep -qF '"status":200' "${SSE_FILE}"; then
+  echo "FAIL: SSE stream did not carry the captured cloudfront GET / (status 200)"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: GET / captured on the timeline with status 200"
 
 echo "==> POST /api/stop tears the cloudfront serve down"
 CFSTOP=$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 30 \
