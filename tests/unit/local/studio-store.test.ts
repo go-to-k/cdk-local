@@ -138,6 +138,22 @@ describe('createStudioStore', () => {
       expect(store.logsForInvocation('inv-1').map((l) => l.line)).toEqual(['mine']);
     });
 
+    it('binds an AgentCore invocation STRICTLY by container id (issue #309)', () => {
+      const bus = new StudioEventBus();
+      const store = createStudioStore(bus);
+      // Two sequential invokes of the SAME agent at the SAME timestamp — a
+      // time-window bind would cross-surface them, so strict container-id
+      // binding is required (the dispatcher keys agentcore logs by invocation
+      // id, exactly like a Lambda).
+      bus.emit('invocation', inv({ id: 'ac-1', kind: 'agentcore', target: 'Stack/Agent', ts: 100 }));
+      bus.emit('invocation', inv({ id: 'ac-2', kind: 'agentcore', target: 'Stack/Agent', ts: 100 }));
+      bus.emit('log', log({ line: 'first', containerId: 'ac-1', target: 'Stack/Agent', ts: 100 }));
+      bus.emit('log', log({ line: 'second', containerId: 'ac-2', target: 'Stack/Agent', ts: 100 }));
+
+      expect(store.logsForInvocation('ac-1').map((l) => l.line)).toEqual(['first']);
+      expect(store.logsForInvocation('ac-2').map((l) => l.line)).toEqual(['second']);
+    });
+
     it('binds a captured serve request best-effort by target + time window', () => {
       const bus = new StudioEventBus();
       const store = createStudioStore(bus, { bindGraceMs: 50 });

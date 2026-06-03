@@ -446,7 +446,27 @@ for needle in '"ok":true' '"status":200' '"echoed"' '"hello":"studio"' 'hello-fr
   fi
   echo "    OK: AgentCore run response has ${needle}"
 done
+# Per-invocation log binding for the AgentCore invoke (issue #309): an
+# agentcore invocation keys its logs to the invocation id (like a Lambda), so
+# GET /api/invocations/<id>/logs must bind STRICTLY by container id, not the
+# loose time-window fallback. Assert the endpoint returns this invocation's
+# bound logs (a JSON array) — exercising the agentcore branch of
+# logsForInvocation end-to-end.
+AC_INV=$(grep -oE '"invocationId":"[^"]+"' "${AC_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 rm -f "${AC_FILE}"
+if [[ -z "${AC_INV}" ]]; then echo "FAIL: no invocationId from the AgentCore invoke"; exit 1; fi
+AC_LOGS=$(curl -fsS "${URL}/api/invocations/${AC_INV}/logs" || true)
+# The endpoint returns { "logs": [ { containerId, target, line, ... } ] }. With
+# strict container-id binding the bound lines carry THIS invocation's id as
+# their containerId — assert the agent's own log lines (keyed to AC_INV) are
+# present, proving the agentcore branch bound by container id, not a loose
+# time window.
+if ! echo "${AC_LOGS}" | grep -qF "\"containerId\":\"${AC_INV}\""; then
+  echo "FAIL: GET /api/invocations/<agentcore-id>/logs did not bind this invocation's container-id logs"
+  echo "----- body -----"; echo "${AC_LOGS}" | head -c 500; echo; echo "----------------"
+  exit 1
+fi
+echo "    OK: the AgentCore invocation's logs bind by container id (issue #309)"
 
 # ---------------------------------------------------------------------------
 # 6e. POST /api/run with the AgentCore `--ws` per-run option (issue #303):

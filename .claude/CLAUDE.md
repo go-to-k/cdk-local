@@ -443,9 +443,10 @@ compute-locally category for Lambda + API Gateway).
   store: subscribes to the bus and retains a bounded, newest-wins window
   of invocations + log lines so the server can answer history on
   (re)connect, full-text log search across the session, and
-  per-invocation log binding at CloudWatch granularity (decision D5 — a
-  Lambda binds strictly by container id; a captured serve request binds
-  best-effort by target + time window). alb / ecs serve kinds still to
+  per-invocation log binding at CloudWatch granularity (decision D5 — the
+  single-shot invoke kinds (lambda + agentcore, issue #309) bind strictly
+  by container id; a captured serve request binds best-effort by target +
+  time window). alb / ecs serve kinds still to
   come), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
