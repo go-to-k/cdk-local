@@ -10,7 +10,7 @@ A CDK-native alternative to `sam local`, covering Lambda, API Gateway, ECS, ALB-
 
 ![cdkl start-api serving a local CDK app's HTTP API; curl in the right pane reaches the local Lambda](assets/cdkl-start-api.gif)
 
-Or drive it all from a browser with `cdkl studio` — pick a target, set its run options (a Lambda's env vars, an ALB's `--tls`, an AgentCore runtime's `--ws`) and session bindings (`--from-cfn-stack` / `--assume-role` / `--watch`), invoke or serve it, and watch every request, response, and log line land on one live timeline:
+Or drive it all from a browser with `cdkl studio` — pick a target, invoke or serve it, and watch every request, response, and log line land on one live timeline:
 
 ![cdkl studio — a local web console with a session bar (from-cfn-stack / assume-role / watch) and a per-target composer; setting an env-var option then invoking a Lambda streams its request, response, and logs onto a live timeline](assets/cdkl-studio.gif)
 
