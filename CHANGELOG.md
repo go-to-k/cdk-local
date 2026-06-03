@@ -1,3 +1,10 @@
+## [0.97.1](https://github.com/go-to-k/cdk-local/compare/v0.97.0...v0.97.1) (2026-06-03)
+
+
+### Performance Improvements
+
+* **studio:** reuse the boot synth for spawned children (avoid the double synth) ([#327](https://github.com/go-to-k/cdk-local/issues/327)) ([6be552d](https://github.com/go-to-k/cdk-local/commit/6be552d83144f6b725c1faed01b9c95c5d817a09))
+
 # [0.97.0](https://github.com/go-to-k/cdk-local/compare/v0.96.1...v0.97.0) (2026-06-03)
 
 
