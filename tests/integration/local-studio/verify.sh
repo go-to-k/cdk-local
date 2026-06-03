@@ -77,6 +77,38 @@ fi
 echo "    OK: command is registered unconditionally"
 
 # ---------------------------------------------------------------------------
+# 1b. Target-list filter (issue #301 slice 4): `cdkl studio --stack <glob>`
+#     scopes the DISPLAYED targets. Boot a short-lived studio filtered to the
+#     Lambda only and assert /api/targets shows it but NOT the HTTP API
+#     (no Docker — synth + HTTP only). Tear it down before the main boot.
+# ---------------------------------------------------------------------------
+echo "==> --stack <glob> filters the displayed target list"
+FLT_LOG=$(mktemp)
+${CDKL} studio --no-open --studio-port "${PORT}" --stack '*/MyHandler' >"${FLT_LOG}" 2>&1 &
+FLT_PID=$!
+FLT_URL=""
+for _ in $(seq 1 60); do
+  if ! kill -0 "${FLT_PID}" 2>/dev/null; then
+    echo "FAIL: filtered studio exited during boot"; cat "${FLT_LOG}"; rm -f "${FLT_LOG}"; exit 1
+  fi
+  FLT_URL=$(grep -oE "http://${HOST}:[0-9]+" "${FLT_LOG}" | head -1 || true)
+  if [[ -n "${FLT_URL}" ]] && curl -fsS "${FLT_URL}/api/targets" -o /dev/null 2>/dev/null; then break; fi
+  sleep 0.5
+done
+curl -fsS "${FLT_URL}/api/targets" -o "${BODY_FILE}"
+if ! grep -qF 'LocalStudioFixture/MyHandler' "${BODY_FILE}"; then
+  echo "FAIL: --stack '*/MyHandler' hid the matching Lambda"; cat "${BODY_FILE}"
+  kill "${FLT_PID}" 2>/dev/null || true; rm -f "${FLT_LOG}"; exit 1
+fi
+if grep -qF 'LocalStudioFixture/MyHttpApi' "${BODY_FILE}"; then
+  echo "FAIL: --stack '*/MyHandler' did NOT scope out the non-matching API"; cat "${BODY_FILE}"
+  kill "${FLT_PID}" 2>/dev/null || true; rm -f "${FLT_LOG}"; exit 1
+fi
+kill "${FLT_PID}" 2>/dev/null || true; wait "${FLT_PID}" 2>/dev/null || true
+rm -f "${FLT_LOG}"
+echo "    OK: --stack scoped the list to the matching target only"
+
+# ---------------------------------------------------------------------------
 # 2. Boot studio; parse the bound URL from the boot log.
 # ---------------------------------------------------------------------------
 echo "==> Booting cdkl studio"
@@ -700,4 +732,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"

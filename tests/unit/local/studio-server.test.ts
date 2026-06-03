@@ -4,7 +4,9 @@ import { StudioEventBus } from '../../../src/local/studio-events.js';
 import {
   startStudioServer,
   toStudioTargetGroups,
+  filterStudioTargetGroups,
   type RunningStudioServer,
+  type StudioTargetGroup,
 } from '../../../src/local/studio-server.js';
 import { createStudioStore } from '../../../src/local/studio-store.js';
 import type { TargetListing } from '../../../src/local/target-lister.js';
@@ -202,6 +204,65 @@ describe('toStudioTargetGroups', () => {
       lambdas: [{ qualifiedId: 'S:Fn' }],
     };
     expect(toStudioTargetGroups(listing)[0].entries[0]).toEqual({ id: 'S:Fn', qualifiedId: 'S:Fn' });
+  });
+});
+
+describe('filterStudioTargetGroups (issue #301 slice 4)', () => {
+  const groups: StudioTargetGroup[] = [
+    {
+      kind: 'lambda',
+      title: 'Lambda Functions',
+      entries: [
+        { id: 'Dev/Fn', qualifiedId: 'Dev:Fn' },
+        { id: 'Prod/Fn', qualifiedId: 'Prod:Fn' },
+      ],
+    },
+    { kind: 'api', title: 'APIs', entries: [{ id: 'Dev/Api', qualifiedId: 'Dev:Api' }] },
+  ];
+
+  it('returns the groups unchanged when no globs are given', () => {
+    expect(filterStudioTargetGroups(groups, undefined)).toBe(groups);
+    expect(filterStudioTargetGroups(groups, [])).toBe(groups);
+  });
+
+  it('keeps only entries whose id matches a `Stack/*` glob', () => {
+    const out = filterStudioTargetGroups(groups, ['Dev/*']);
+    expect(out[0].entries.map((e) => e.id)).toEqual(['Dev/Fn']);
+    expect(out[1].entries.map((e) => e.id)).toEqual(['Dev/Api']);
+  });
+
+  it('supports a stack-prefix glob (`dev*`-style) across groups', () => {
+    const out = filterStudioTargetGroups(groups, ['Prod*']);
+    expect(out[0].entries.map((e) => e.id)).toEqual(['Prod/Fn']);
+    expect(out[1].entries).toEqual([]); // no Prod api
+  });
+
+  it('matches a target whose id matches ANY of multiple globs', () => {
+    const out = filterStudioTargetGroups(groups, ['Dev/Api', 'Prod/*']);
+    const ids = out.flatMap((g) => g.entries.map((e) => e.id));
+    expect(ids.sort()).toEqual(['Dev/Api', 'Prod/Fn']);
+  });
+
+  it('treats `?` as a single-char wildcard and escapes regex specials', () => {
+    const g: StudioTargetGroup[] = [
+      {
+        kind: 'lambda',
+        title: 'L',
+        entries: [
+          { id: 'A.B/Fn1', qualifiedId: 'x' },
+          { id: 'AxB/Fn1', qualifiedId: 'y' },
+          { id: 'A.B/Fn2', qualifiedId: 'z' },
+        ],
+      },
+    ];
+    // The `.` is a literal (escaped); `?` matches the single digit.
+    const out = filterStudioTargetGroups(g, ['A.B/Fn?']);
+    expect(out[0].entries.map((e) => e.id).sort()).toEqual(['A.B/Fn1', 'A.B/Fn2']);
+  });
+
+  it('produces empty groups when nothing matches', () => {
+    const out = filterStudioTargetGroups(groups, ['Nope/*']);
+    expect(out.every((g) => g.entries.length === 0)).toBe(true);
   });
 });
 

@@ -23,6 +23,7 @@ import { createStudioStore, type StudioStore } from '../../local/studio-store.js
 import {
   startStudioServer,
   toStudioTargetGroups,
+  filterStudioTargetGroups,
   type RunningStudioServer,
 } from '../../local/studio-server.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
@@ -180,6 +181,11 @@ interface LocalStudioOptions {
   fromCfnStack?: string | boolean;
   /** `--assume-role <arn>`: explicit role ARN forwarded to every child command. */
   assumeRole?: string;
+  /**
+   * `--stack <glob...>`: DISPLAY-only filter — show only targets whose id
+   * matches one of the globs (e.g. `dev/*`). Does NOT scope synth.
+   */
+  stack?: string[];
 }
 
 /**
@@ -221,7 +227,19 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   const { stacks } = await synthesizer.synthesize(synthOpts);
 
   const listing = listTargets(stacks);
-  const targetGroups = toStudioTargetGroups(listing);
+  // `--stack <glob>` scopes the LISTED targets (display only — the whole app
+  // was already synthesized above; the filter never touches synth).
+  const targetGroups = filterStudioTargetGroups(toStudioTargetGroups(listing), options.stack);
+  if (options.stack && options.stack.length > 0) {
+    const shown = targetGroups.reduce((n, g) => n + g.entries.length, 0);
+    if (shown === 0) {
+      logger.warn(`--stack ${options.stack.join(' ')} matched no targets; the UI list is empty.`);
+    } else {
+      logger.info(
+        `--stack filter: showing ${shown} target(s) matching ${options.stack.join(' ')}.`
+      );
+    }
+  }
   const appLabel = stacks.map((s) => s.stackName).join(', ') || appCmd;
 
   // ECS target ids that are actually servable (services, not task
@@ -431,6 +449,15 @@ export function addStudioSpecificOptions(cmd: Command): Command {
       '--assume-role <arn>',
       'IAM role ARN to assume for every invoke / serve started from the UI (temp credentials ' +
         'forwarded into the containers). Forwarded to each child command.'
+    )
+  );
+  cmd.addOption(
+    new Option(
+      '--stack <glob...>',
+      'Filter the DISPLAYED targets by stack glob (e.g. "dev/*"); a target id is ' +
+        '"Stack/Construct". Display-only — does NOT scope synth (the whole app is still ' +
+        "synthesized; gate synth with the app's own -c context or a committed cdk.context.json). " +
+        'Space-separate multiple globs; a target matching ANY glob is shown.'
     )
   );
   return cmd;

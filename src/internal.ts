@@ -697,6 +697,7 @@ export {
 export {
   startStudioServer,
   toStudioTargetGroups,
+  filterStudioTargetGroups,
   type StudioServerOptions,
   type RunningStudioServer,
   type StudioTarget,
