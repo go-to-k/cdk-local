@@ -230,9 +230,17 @@ describe('toStudioTargetGroups', () => {
     };
     const groups = toStudioTargetGroups(listing);
 
-    // ECS Services and Task Definitions are SEPARATE groups (issue #352), so
-    // there are now two `ecs`-kind groups (services first, then task defs).
-    expect(groups.map((g) => g.kind)).toEqual(['lambda', 'api', 'ecs', 'ecs', 'agentcore', 'alb']);
+    // ECS Services and Task Definitions are SEPARATE groups (issue #352); the
+    // task-definitions group is the `ecs-task` kind (issue #366) — a [Run]
+    // control (run-task), distinct from the servable `ecs` services kind.
+    expect(groups.map((g) => g.kind)).toEqual([
+      'lambda',
+      'api',
+      'ecs',
+      'ecs-task',
+      'agentcore',
+      'alb',
+    ]);
     expect(groups.map((g) => g.title)).toEqual([
       'Lambda Functions',
       'APIs',
@@ -248,12 +256,11 @@ describe('toStudioTargetGroups', () => {
       qualifiedId: 'S:Api',
       surface: 'HTTP API v2',
     });
-    // The services group holds only the servable service; the task-definitions
-    // group holds only the non-servable task def.
+    // The `ecs` services group holds the servable service; the `ecs-task` group
+    // holds the task def (plain entry — no servable flag, the kind IS the run).
     expect(groups[2].entries.map((e) => e.id)).toEqual(['S:Svc']);
     expect(groups[2].entries.map((e) => e.servable)).toEqual([true]);
-    expect(groups[3].entries.map((e) => e.id)).toEqual(['S:Task']);
-    expect(groups[3].entries.map((e) => e.servable)).toEqual([false]);
+    expect(groups[3].entries).toEqual([{ id: 'S:Task', qualifiedId: 'S:Task' }]);
   });
 
   it('falls back to the qualified id when no display path exists', () => {

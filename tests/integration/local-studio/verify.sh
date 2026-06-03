@@ -339,6 +339,7 @@ for needle in \
   '"kind":"lambda"' \
   '"kind":"api"' \
   '"kind":"ecs"' \
+  '"kind":"ecs-task"' \
   '"title":"ECS Services"' \
   '"title":"ECS Task Definitions"' \
   '"kind":"agentcore"' \
@@ -1127,6 +1128,41 @@ curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/js
   -d "{\"targetId\":\"${ECS_TARGET}\"}" -o /dev/null || true
 sleep 3
 echo "    OK: ECS service stopped"
+
+# ---------------------------------------------------------------------------
+# 10a2. ECS TASK DEFINITION run (issue #366): a task definition is the
+#       `ecs-task` kind — a [Run] control that runs `cdkl run-task` as a
+#       long-running run (server task defs stream logs until stopped). POST
+#       /api/run with kind=ecs-task boots the fixture's MyTask container and the
+#       serve flips to running ONLY once the run-task `Task running (family=...)`
+#       onReady banner matched the serve-manager readyRe — proving the
+#       run-task dispatch + ready detection end-to-end. POST /api/stop tears the
+#       container down.
+# ---------------------------------------------------------------------------
+ECS_TASK_TARGET="LocalStudioFixture/MyTask"
+echo "==> POST /api/run runs an ECS task definition (kind=ecs-task -> run-task)"
+TASK_FILE=$(mktemp)
+HTTP_TASK=$(curl -s -o "${TASK_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TASK_TARGET}\",\"kind\":\"ecs-task\"}" || true)
+if [[ "${HTTP_TASK}" != "200" ]] || ! grep -qF '"status":"running"' "${TASK_FILE}"; then
+  echo "FAIL: POST /api/run (ecs-task) returned HTTP ${HTTP_TASK}"
+  echo "----- response -----"; cat "${TASK_FILE}"; echo "--------------------"
+  echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; echo "----------------------"
+  rm -f "${TASK_FILE}"; exit 1
+fi
+rm -f "${TASK_FILE}"
+# /api/running reflects the task run.
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! grep -qF "${ECS_TASK_TARGET}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running did not list the running task"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: task definition running via run-task (Task running banner matched)"
+echo "==> POST /api/stop tears the task run down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TASK_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: task run stopped"
 
 # ---------------------------------------------------------------------------
 # 10b. Image-override picker (issue #301): MyService's deployed image is a

@@ -370,6 +370,37 @@ describe('createStudioServeManager', () => {
     expect(mgr.list()[0].hostUrl).toBeUndefined();
   });
 
+  it('spawns `cdkl run-task <taskdef>` and resolves running on the Task running banner (issue #366)', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const p = mgr.start({ targetId: 'Stack/MyTask', kind: 'ecs-task' });
+    // run-task's onReady banner is the ready marker (a streaming run has no
+    // listening-port line).
+    child.stdout.emit(
+      'data',
+      'Task running (family=cdkl-fixture-task); streaming container logs. Stop with Ctrl-C.\n'
+    );
+    const state = await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv.slice(1, 3)).toEqual(['run-task', 'Stack/MyTask']);
+    expect(state.status).toBe('running');
+    // Pure compute — no host endpoint, no capture proxy.
+    expect(state.endpoints).toEqual([]);
+    expect(fp.upstreams).toEqual([]);
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
+  });
+
   it('threads imageOverride as an explicit --image-override <target>=<dockerfile>', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

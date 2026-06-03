@@ -369,12 +369,17 @@ compute-locally category for Lambda + API Gateway).
   `/api/config` immediately on a checkbox toggle / input change, issue
   #301); Lambdas + AgentCore runtimes get an
   [Invoke] composer (`INVOKE_KINDS`), serve
-  targets (api / alb / ecs) a [Start]/[Stop] control with a `running ●
-  :port` indicator (ecs services show `running` with no port — only the
-  servable ECS *services* are runnable, not the task definitions; issue
-  #352 lists ECS Services and ECS Task Definitions as SEPARATE target
-  groups, matching `cdkl list`, so the non-servable task defs no longer
-  share a group with the servable services). Once a serve is Started the
+  targets (api / alb / ecs / ecs-task) a [Start]/[Stop] control with a
+  `running ● :port` indicator (ecs services + ecs-task runs show
+  `running` with no port). Issue #352 lists ECS Services (the `ecs`
+  serve kind) and ECS Task Definitions as SEPARATE target groups,
+  matching `cdkl list`; issue #366 makes the task-definitions group the
+  `ecs-task` kind — a [Run] control (labeled Run, not Start) that runs
+  `cdkl run-task` as a long-running run (a server task def streams logs
+  until [Stop]; a batch task exits and the run flips to stopped). It
+  flips to `running` on the run-task `Task running (family=...)`
+  onReady banner (a streaming run has no listening-port line). Once a
+  serve is Started the
   composer's per-run option inputs are replaced by the running view, so a
   read-only "Started with" summary (issue #356 — `formatAppliedOptions`
   over the `serveApplied` map recorded at Start) surfaces the launch

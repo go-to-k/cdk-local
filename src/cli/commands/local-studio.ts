@@ -54,6 +54,7 @@ const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
   'api',
   'alb',
   'ecs',
+  'ecs-task',
   'agentcore',
 ];
 

@@ -257,8 +257,8 @@ const STUDIO_CSS = `
 `;
 
 const STUDIO_SCRIPT = `
-  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', agentcore: 'AgentCore' };
-  const SERVE_KINDS = ['api', 'alb', 'ecs']; // long-running serve targets
+  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', agentcore: 'AgentCore' };
+  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task']; // long-running serve targets (ecs-task = run-task)
   const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
@@ -649,9 +649,12 @@ const STUDIO_SCRIPT = `
     meta.dot.textContent = running ? (port ? '● ' + port : '● running') : starting ? '○ starting' : '';
     meta.dot.className = 'run-dot' + (starting ? ' starting' : '');
     meta.btnSlot.innerHTML = '';
+    // A task-def run (ecs-task) is labeled Run (it runs the task once), vs a
+    // service/api/alb which is Started (issue #366).
+    const startLabel = meta.kind === 'ecs-task' ? 'Run' : 'Start';
     const btn = running || starting
       ? el('button', 'stop-btn', 'Stop')
-      : el('button', 'invoke-btn', 'Start');
+      : el('button', 'invoke-btn', startLabel);
     btn.onclick = (e) => {
       e.stopPropagation();
       if (running || starting) stopServe(id); else startServe(id);
@@ -808,11 +811,15 @@ const STUDIO_SCRIPT = `
     const meta = serveMeta.get(id);
     const kind = meta ? meta.kind : 'api';
 
+    // A task-def run (ecs-task) is labeled Run, vs a service/api/alb Serve/Start
+    // (issue #366).
+    const isTaskRun = kind === 'ecs-task';
+    const startLabel = isTaskRun ? 'Run' : 'Start';
     const head = el('div', 'composer');
-    head.appendChild(el('div', 'target-name', 'Serve ' + id));
+    head.appendChild(el('div', 'target-name', (isTaskRun ? 'Run ' : 'Serve ') + id));
     const btn = running || starting
       ? el('button', null, 'Stop')
-      : el('button', null, starting ? 'Starting…' : 'Start');
+      : el('button', null, starting ? 'Starting…' : startLabel);
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
     let collectRaw = function () { return undefined; };
@@ -859,7 +866,9 @@ const STUDIO_SCRIPT = `
       ws.appendChild(startedSec);
     }
 
-    const isEcs = meta && meta.kind === 'ecs';
+    // Both an ecs service and an ecs-task run are pure compute: no host
+    // endpoint unless a --host-port was published (issue #366).
+    const isEcs = meta && (meta.kind === 'ecs' || meta.kind === 'ecs-task');
     const epSec = el('div', 'section');
     epSec.appendChild(el('h3', null, 'Endpoints'));
     if (running && st.endpoints.length) {

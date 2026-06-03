@@ -298,17 +298,21 @@ async function localRunTaskCommand(
       );
     }
 
-    // Double-^C exits 130 immediately.
+    // Tear the task containers + network down on SIGINT (Ctrl-C) AND SIGTERM
+    // (issue #366 — studio's serve-manager SIGTERMs a task-def Run to stop it;
+    // without a SIGTERM handler the process would die WITHOUT cleanup, orphaning
+    // the containers + network). A second stop signal force-exits immediately.
     sigintHandler = (): void => {
       sigintCount += 1;
       if (sigintCount >= 2) {
-        process.stderr.write('Force-exit on second ^C; container cleanup skipped.\n');
+        process.stderr.write('Force-exit on second stop signal; container cleanup skipped.\n');
         process.exit(130);
       }
       logger.info('Stopping task...');
       void cleanup().then(() => process.exit(130));
     };
     process.on('SIGINT', sigintHandler);
+    process.on('SIGTERM', sigintHandler);
 
     // `--assume-task-role` branches: bare flag (boolean `true`) uses the
     // task definition's resolved `TaskRoleArn`; otherwise the
@@ -402,6 +406,17 @@ async function localRunTaskCommand(
       };
     }
 
+    // Issue #366 — a stable "running" banner after every container is up. The
+    // studio serve-manager keys on it to flip a task-def Run to `running`
+    // (a streaming run has no other ready line). Non-detach only.
+    if (!options.detach) {
+      runOpts.onReady = (): void => {
+        logger.info(
+          `Task running (family=${task.family}); streaming container logs. Stop with Ctrl-C.`
+        );
+      };
+    }
+
     const result = await runEcsTask(task, runOpts, state);
 
     if (options.detach) {
@@ -426,7 +441,10 @@ async function localRunTaskCommand(
       process.exitCode = result.exitCode;
     }
   } finally {
-    if (sigintHandler) process.off('SIGINT', sigintHandler);
+    if (sigintHandler) {
+      process.off('SIGINT', sigintHandler);
+      process.off('SIGTERM', sigintHandler);
+    }
     if (stateProvider) stateProvider.dispose();
     if (!options.detach) await cleanup();
   }
