@@ -1751,7 +1751,12 @@ const STUDIO_SCRIPT = `
       }
       msg.textContent = '✓ applied';
       setTimeout(function () { msg.textContent = ''; }, 1200);
-      await loadConfig();
+      // Do NOT re-load from the server here (issue #349): the UI already shows
+      // exactly what was just PATCHed, and re-loading CLOBBERS the controls.
+      // assume-role has no bare server form, so a checked-but-empty assume-role
+      // PATCHes null; re-loading would read that back and immediately UN-check
+      // the box + hide the ARN input — so clicking the checkbox appeared to do
+      // nothing. loadConfig() runs once on init.
     } catch (err) {
       msg.textContent = 'Failed: ' + err;
     }
