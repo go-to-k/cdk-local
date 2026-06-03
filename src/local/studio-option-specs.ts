@@ -237,6 +237,36 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       help: 'Overlay the task container env vars — add KEY=VALUE rows or paste a JSON object.',
     },
   ],
+  // CloudFront distribution serve (start-cloudfront, issue #367). TLS mirrors
+  // alb; --origin points a distribution origin at a local directory when the
+  // BucketDeployment source can't be resolved automatically. The host/port are
+  // bound by the serve-manager (portArgs); --watch is the session-global flag.
+  cloudfront: [
+    { flag: '--tls', kind: 'boolean', label: 'TLS (terminate HTTPS locally)' },
+    {
+      flag: '--tls-cert',
+      kind: 'scalar',
+      label: 'TLS cert',
+      placeholder: './cert.pem',
+      showWhen: '--tls',
+    },
+    {
+      flag: '--tls-key',
+      kind: 'scalar',
+      label: 'TLS key',
+      placeholder: './key.pem',
+      showWhen: '--tls',
+    },
+    {
+      flag: '--origin',
+      kind: 'repeat-pair',
+      label: 'Origin source dir',
+      sep: '=',
+      leftPlaceholder: 'originId',
+      rightPlaceholder: './dist',
+      help: "Point a distribution origin at a local directory when cdk-local can't resolve its BucketDeployment source.",
+    },
+  ],
 };
 
 /** True when `value` is a non-empty trimmed string. */

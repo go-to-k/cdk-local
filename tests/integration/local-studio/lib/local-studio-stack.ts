@@ -5,6 +5,10 @@ import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Runtime as AgentCoreRuntimeConstruct, AgentRuntimeArtifact } from 'aws-cdk-lib/aws-bedrockagentcore';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
@@ -16,7 +20,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *
  * Hand-rolls one resource of each kind `cdkl studio` emits a group for, using
  * inline Lambda code + L1 resources where possible so the stack synthesizes
- * without AWS / context / VPC lookups and without any asset bundling:
+ * without AWS / context / VPC lookups (the only asset bundling is the
+ * CloudFront site `BucketDeployment` source + the AgentCore container):
  *
  *   - `AWS::Lambda::Function`  (`MyHandler`)      -> Lambda Functions group
  *   - `AWS::ApiGatewayV2::Api` + Route + Integration (HTTP API v2 wired to
@@ -28,6 +33,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     `AWS::ElasticLoadBalancingV2::TargetGroup` +
  *     `AWS::ElasticLoadBalancingV2::Listener`     -> Application Load Balancers
  *   - `AWS::BedrockAgentCore::Runtime` (`MyAgent`) -> AgentCore Runtimes
+ *   - `AWS::CloudFront::Distribution` (`SiteDist`) + S3 BucketDeployment ->
+ *     CloudFront Distributions (issue #367) — served end-to-end via start-cloudfront
  *
  * Enumeration is a pure synth-time read over the cloud assembly templates, so
  * the Lambda / API / ECS / ALB resources use placeholder ARNs / URIs and are
@@ -238,6 +245,42 @@ export class LocalStudioStack extends cdk.Stack {
         platform: Platform.LINUX_ARM64,
       }),
       environmentVariables: { GREETING: 'hello-from-studio-agent' },
+    });
+
+    // CloudFront distribution (issue #367) — a servable static-site target. An
+    // S3 bucket populated by a BucketDeployment of `../site` + a viewer-request
+    // CloudFront Function that rewrites an extension-less path to
+    // `<path>/index.html`. Driven end-to-end by `POST /api/run` kind=cloudfront:
+    // studio spawns `start-cloudfront`, which serves the local origin content.
+    const siteBucket = new s3.Bucket(this, 'SiteBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+    new s3deploy.BucketDeployment(this, 'DeploySite', {
+      sources: [s3deploy.Source.asset(path.join(__dirname, '../site'))],
+      destinationBucket: siteBucket,
+    });
+    const rewrite = new cloudfront.Function(this, 'RewriteFn', {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(
+        [
+          'function handler(event) {',
+          '  var request = event.request;',
+          "  if (request.uri.endsWith('/')) request.uri += 'index.html';",
+          '  return request;',
+          '}',
+        ].join('\n')
+      ),
+    });
+    // Construct id `SiteDist` -> studio target `LocalStudioFixture/SiteDist`.
+    new cloudfront.Distribution(this, 'SiteDist', {
+      defaultRootObject: 'index.html',
+      defaultBehavior: {
+        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
+        functionAssociations: [
+          { function: rewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+        ],
+      },
     });
   }
 }

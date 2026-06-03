@@ -55,6 +55,23 @@ describe('buildSharedChildArgs', () => {
     expect(buildSharedChildArgs({ assumeRole: '' })).toEqual([]);
   });
 
+  it('omits the state bindings when omitStateBindings is set (issue #367)', () => {
+    // start-cloudfront declares neither flag; the serve-manager opts out for it.
+    expect(
+      buildSharedChildArgs(
+        { fromCfnStack: 'MyStack', assumeRole: 'arn:aws:iam::123456789012:role/app' },
+        { omitStateBindings: true }
+      )
+    ).toEqual([]);
+    // Other shared flags still pass through.
+    expect(
+      buildSharedChildArgs(
+        { app: 'node app.ts', region: 'us-east-1', fromCfnStack: 'MyStack' },
+        { omitStateBindings: true }
+      )
+    ).toEqual(['--app', 'node app.ts', '--region', 'us-east-1']);
+  });
+
   describe('assembly-dir reuse (issue #324)', () => {
     it('forwards --app <app> by default (preferAssembly omitted)', () => {
       expect(

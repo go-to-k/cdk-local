@@ -109,6 +109,21 @@ describe('coerceRunRequest', () => {
     });
   });
 
+  it('accepts the cloudfront serve kind with its per-run options (issue #367)', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'Stack/SiteDist',
+        kind: 'cloudfront',
+        options: { '--tls': true, '--origin': [{ left: 'O1', right: './dist' }] },
+      })
+    ).toEqual({
+      targetId: 'Stack/SiteDist',
+      kind: 'cloudfront',
+      event: undefined,
+      options: { '--tls': true, '--origin': [{ left: 'O1', right: './dist' }] },
+    });
+  });
+
   it.each([null, 42, 'str', [1, 2]])('rejects non-object options %p', (options) => {
     expect(() => coerceRunRequest({ targetId: 'T', kind: 'alb', options })).toThrow(
       /"options" must be a JSON object/
