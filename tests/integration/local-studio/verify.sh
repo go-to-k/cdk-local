@@ -215,7 +215,17 @@ if ! grep -qF "LocalStudioFixture" "${BODY_FILE}"; then
   cat "${BODY_FILE}"
   exit 1
 fi
-echo "    OK: UI HTML served with the stack label"
+# The "All options" section (issue #301): the auto-derived flag catalog is
+# serialized into the page, and the raw extra-args builder is present.
+if ! grep -qF "window.__FLAG_CATALOG__" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not embed the auto-derived flag catalog (All options)"
+  exit 1
+fi
+if ! grep -qF "buildAllOptions" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the All options / raw extra-args builder"
+  exit 1
+fi
+echo "    OK: UI HTML served with the stack label + All options catalog"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
@@ -333,6 +343,31 @@ if ! grep -qF "${PROBE}" "${OPT_FILE}"; then
 fi
 rm -f "${OPT_FILE}"
 echo "    OK: --env-vars KEY/VALUE option threaded through to the Lambda container"
+
+# ---------------------------------------------------------------------------
+# 6b2. "All options" raw extra args (issue #301): POST /api/run with a
+#      `rawArgs` string. The server tokenizes it (quote-aware) and appends the
+#      tokens verbatim to the spawned `cdkl invoke` argv. Pass a BOGUS
+#      `--from-cfn-stack` (no deploy, creds-light): the child attempts to bind
+#      it, fails gracefully, and names the bogus stack in its logs — proof the
+#      raw string reached the child argv (UI raw-args -> /api/run -> tokenize ->
+#      child argv -> graceful fallback log).
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run threads a rawArgs string into the invoke argv"
+RAW_STACK="RAWARGSBOGUS301"
+RAW_RUN=$(mktemp)
+curl -s -o "${RAW_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"rawArgs\":\"--from-cfn-stack ${RAW_STACK}\"}" >/dev/null || true
+RAW_INV=$(grep -oE '"invocationId":"[^"]+"' "${RAW_RUN}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
+rm -f "${RAW_RUN}"
+if [[ -z "${RAW_INV}" ]]; then echo "FAIL: no invocationId after a rawArgs invoke"; exit 1; fi
+curl -fsS "${URL}/api/invocations/${RAW_INV}/logs" -o "${BODY_FILE}"
+if ! grep -qF "${RAW_STACK}" "${BODY_FILE}"; then
+  echo "FAIL: the rawArgs --from-cfn-stack did not reach the child (stack absent from logs)"
+  echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
+  exit 1
+fi
+echo "    OK: rawArgs string tokenized + threaded to the child invoke argv"
 
 # ---------------------------------------------------------------------------
 # 6c. Editable Session config (issue #301 slice 3): GET /api/config exposes
@@ -925,4 +960,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + ws-console + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"

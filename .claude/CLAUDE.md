@@ -338,7 +338,11 @@ compute-locally category for Lambda + API Gateway).
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module
   state so a log-driven serve re-render never drops the connection (issue
-  #303); the
+  #303); every composer (invoke + serve) carries a collapsed "All options"
+  `<details>` (`buildAllOptions`) with a raw extra-args input + the
+  read-only auto-derived flag catalog from studio-option-catalog, so the
+  curated controls handle common flags richly while every other flag the
+  underlying command accepts stays reachable (issue #301); the
   timeline carries both Lambda invocations and captured serve requests,
   the latter opening a read-only Request/Response detail; a log search box
   queries the store and a captured request's detail shows its bound logs),
@@ -377,6 +381,25 @@ compute-locally category for Lambda + API Gateway).
   invoke / serve, vs the session-global flags in studio-child-args; the
   `agentcore` kind (issue #303) declares `--ws` / `--sigv4` (boolean),
   `--bearer-token` / `--session-id` (scalar), and `--env-vars` (env-kv)),
+  studio-option-catalog (issue #301 — the AUTO-DERIVED full flag catalog
+  that backs the composer's collapsed "All options" section.
+  `buildFlagCatalog` introspects each runnable kind's Commander command
+  factory (`createLocalInvoke*` / `createLocalStart*`) and emits every
+  flag (name + description), minus the session-global flags
+  (`CATALOG_EXCLUDED_FLAGS`: `--from-cfn-stack` / `--assume-role` /
+  `--app` / `--profile` / `--region` / `-c`, handled by the Session bar)
+  and the auto-added `--help` / `--version`; the curated OPTION_SPECS is a
+  rich-control subset, this is the complete reference so the UI is never
+  strictly less capable than the headless CLI. Memoized; each factory is
+  re-handed the active embed config so host branding survives + the
+  derived descriptions reflect it. `tokenizeRawArgs` is the quote-aware
+  splitter for the section's raw extra-args input — the tokens are
+  appended verbatim (LAST, so they can override a curated flag) to the
+  spawned child argv by both studio-dispatch and studio-serve-manager;
+  studio spawns children WITHOUT a shell, so there is no injection
+  surface. `coerceRunRequest` validates the `rawArgs` string at the
+  `/api/run` boundary (tokenized eagerly so an unterminated quote is a
+  clean 400)),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host

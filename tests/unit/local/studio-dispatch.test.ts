@@ -516,6 +516,38 @@ describe('createStudioDispatcher', () => {
     expect(result.status).toBe(500);
     expect(result.error).toContain('agent container exited early');
   });
+
+  it('tokenizes raw extra args and appends them LAST to the spawned argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      idFactory: () => 'inv-raw',
+    });
+
+    const p = dispatcher.run({
+      targetId: 'Stack/Fn',
+      kind: 'lambda',
+      event: {},
+      rawArgs: '--timeout 30 --memory "512 mb"',
+    });
+    child.stdout.emit('data', '{"ok":true}');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    // Quote-aware tokenization: "512 mb" stays one argv element.
+    expect(argv).toContain('--timeout');
+    expect(argv).toContain('30');
+    expect(argv).toContain('--memory');
+    expect(argv).toContain('512 mb');
+    // Raw args land at the very end of the argv (override semantics).
+    expect(argv.slice(-4)).toEqual(['--timeout', '30', '--memory', '512 mb']);
+  });
 });
 
 /** Count leftover `cdkl-studio-run-*` temp dirs (for cleanup assertions). */

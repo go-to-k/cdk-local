@@ -109,6 +109,24 @@ describe('coerceRunRequest', () => {
     ).toThrow(/not valid JSON/);
   });
 
+  it('threads a well-formed rawArgs string through', () => {
+    expect(
+      coerceRunRequest({ targetId: 'T', kind: 'api', rawArgs: '--warm --port 9000' })
+    ).toEqual({ targetId: 'T', kind: 'api', event: undefined, rawArgs: '--warm --port 9000' });
+  });
+
+  it('rejects a non-string rawArgs', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'T', kind: 'api', rawArgs: ['--warm'] })
+    ).toThrow(/"rawArgs" must be a string/);
+  });
+
+  it('rejects rawArgs with an unterminated quote at the boundary', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'T', kind: 'api', rawArgs: '--name "oops' })
+    ).toThrow(/unterminated/i);
+  });
+
   it('accepts an agentcore request with its per-run options', () => {
     expect(
       coerceRunRequest({

@@ -29,6 +29,36 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
+  it('embeds the auto-derived full flag catalog for the "All options" section (issue #301)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The full per-kind catalog is serialized for the UI.
+    expect(html).toContain('window.__FLAG_CATALOG__ =');
+    // It carries each runnable kind's headless command + real flags.
+    expect(html).toContain('"command":"start-api"');
+    expect(html).toContain('"command":"invoke-agentcore"');
+    // Session-global flags are excluded from the per-target catalog.
+    expect(html).not.toMatch(/__FLAG_CATALOG__ =[^;]*"--from-cfn-stack"/);
+    // `<` is escaped so a flag description can never close the <script>.
+    expect(html).not.toMatch(/__FLAG_CATALOG__ = [^;]*<\//);
+  });
+
+  it('renders the collapsed "All options" section with a raw extra-args input', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The builder + the collapsed <details>, the raw-args input, and the
+    // read-only catalog reference are all present in the embedded script.
+    expect(html).toContain('function buildAllOptions');
+    expect(html).toContain("el('details', 'all-options')");
+    expect(html).toContain("el('input', 'raw-args')");
+    expect(html).toContain('FLAG_CATALOG = window.__FLAG_CATALOG__');
+    // Raw args are collected and threaded onto the run/serve body.
+    expect(html).toContain('body.rawArgs = rawArgs');
+    expect(html).toContain('collectRaw');
+    // A no-curated-control kind (api) collects nothing, so the option values
+    // are omitted (undefined), keeping the run/serve body byte-identical to
+    // before this section existed.
+    expect(html).toContain('Object.keys(out).length ? out : undefined');
+  });
+
   it('makes AgentCore a single-shot invoke target with its own options (issue #303)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     // AgentCore is wired as an invoke kind (event composer), alongside lambda.
