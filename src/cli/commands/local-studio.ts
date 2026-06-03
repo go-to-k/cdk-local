@@ -32,6 +32,7 @@ import {
   resolveEnvVars,
   type OptionValues,
 } from '../../local/studio-option-specs.js';
+import { tokenizeRawArgs } from '../../local/studio-option-catalog.js';
 import {
   createStudioServeManager,
   type StudioServeManager,
@@ -56,7 +57,7 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
   if (typeof body !== 'object' || body === null) {
     throw new Error('Request body must be a JSON object.');
   }
-  const { targetId, kind, event, options } = body as Record<string, unknown>;
+  const { targetId, kind, event, options, rawArgs } = body as Record<string, unknown>;
   if (typeof targetId !== 'string' || targetId.trim() === '') {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
@@ -75,11 +76,22 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     buildPerRunArgs(kind as StudioTargetKind, runOptions);
     resolveEnvVars(kind as StudioTargetKind, runOptions);
   }
+  let runRawArgs: string | undefined;
+  if (rawArgs !== undefined) {
+    if (typeof rawArgs !== 'string') {
+      throw new Error('Request body "rawArgs" must be a string.');
+    }
+    // Tokenize NOW so an unterminated quote fails as a clean 400 at the
+    // boundary rather than mid-spawn.
+    tokenizeRawArgs(rawArgs);
+    runRawArgs = rawArgs;
+  }
   return {
     targetId,
     kind: kind as StudioTargetKind,
     event,
     ...(runOptions !== undefined ? { options: runOptions } : {}),
+    ...(runRawArgs !== undefined ? { rawArgs: runRawArgs } : {}),
   };
 }
 

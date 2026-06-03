@@ -7,6 +7,7 @@ import {
 } from './studio-proxy.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, type OptionValues } from './studio-option-specs.js';
+import { tokenizeRawArgs } from './studio-option-catalog.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -16,6 +17,12 @@ export interface StudioServeRequest {
   kind: StudioTargetKind;
   /** Per-run option values (issue #301 slice 2), keyed by option flag. */
   options?: OptionValues;
+  /**
+   * Raw extra args from the "All options" section — tokenized (quote-aware)
+   * and appended verbatim to the spawned serve child, so a flag the curated
+   * controls don't expose can still be passed.
+   */
+  rawArgs?: string;
 }
 
 /** A request to stop a running served target. */
@@ -254,6 +261,9 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       // changes. Read off the (mutable) config per start so a Session-bar
       // toggle applies to the next serve.
       ...(config.watch === true ? ['--watch'] : []),
+      // Raw extra args go LAST so a user can override an earlier flag if they
+      // mean to (Commander takes the last value for a scalar flag).
+      ...tokenizeRawArgs(req.rawArgs),
     ];
   }
 

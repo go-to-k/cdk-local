@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
+import { tokenizeRawArgs } from './studio-option-catalog.js';
 
 /**
  * The single-shot invoke kinds this dispatcher drives, mapped to the `cdkl`
@@ -31,6 +32,12 @@ export interface StudioRunRequest {
   event: unknown;
   /** Per-run option values (issue #301 slice 2), keyed by option flag. */
   options?: OptionValues;
+  /**
+   * Raw extra args from the "All options" section — tokenized (quote-aware)
+   * and appended verbatim to the spawned child, after the curated per-run
+   * args, so a flag the curated controls don't expose can still be passed.
+   */
+  rawArgs?: string;
 }
 
 /** The outcome of a single-shot run, returned from `/api/run`. */
@@ -171,6 +178,10 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         writeFileSync(envFile, JSON.stringify(envVars));
         args.push('--env-vars', envFile);
       }
+
+      // Raw extra args go LAST so a user can override a curated flag if they
+      // really mean to (Commander takes the last value for a scalar flag).
+      args.push(...tokenizeRawArgs(req.rawArgs));
 
       const { code, stdout, stderr } = await runChild(
         spawnFn,

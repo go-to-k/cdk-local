@@ -26,6 +26,7 @@
  * the primary surface — the timeline is secondary history.
  */
 
+import { buildFlagCatalog } from './studio-option-catalog.js';
 import { OPTION_SPECS } from './studio-option-specs.js';
 
 const STUDIO_CSS = `
@@ -177,6 +178,20 @@ const STUDIO_CSS = `
   .pair-add { align-self: flex-start; background: #1d1d1d; color: #7bd88f; border: 1px solid #2f4030;
     border-radius: 3px; cursor: pointer; padding: 3px 9px; font: 12px ui-monospace, monospace; }
   .pair-add:hover { background: #243024; }
+  details.all-options { margin: 8px 0; border-top: 1px solid #2a2a2a; padding-top: 6px; }
+  details.all-options > summary { color: #8a8a8a; font-size: 12px; cursor: pointer; user-select: none; }
+  details.all-options > summary:hover { color: #bbb; }
+  .all-options .opt-row { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin: 6px 0; }
+  .all-options input.raw-args {
+    width: 100%; box-sizing: border-box; background: #111; color: #ddd; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace;
+  }
+  .all-options input.raw-args:focus { outline: none; border-color: #4ec97a; }
+  .opt-hint { color: #777; font-size: 11px; }
+  .flag-catalog { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+  .flag-row { display: flex; gap: 8px; align-items: baseline; font-size: 11px; }
+  .flag-name { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
+  .flag-desc { color: #999; }
   .envkv-modes { display: flex; gap: 0; }
   .envkv-mode { background: #1a1a1a; color: #999; border: 1px solid #333; cursor: pointer;
     padding: 3px 12px; font: 11px ui-monospace, monospace; }
@@ -218,9 +233,14 @@ const STUDIO_SCRIPT = `
 
   function buildOptions(kind) {
     const specs = OPTION_SPECS[kind] || [];
-    if (!specs.length) return { node: null, collect: function () { return undefined; } };
+    // The composer always shows an "All options" section (raw extra args + the
+    // auto-derived flag reference), even for kinds with no curated controls.
+    const wrap = el('div', 'options-wrap');
     const sec = el('div', 'section options');
-    sec.appendChild(el('h3', null, 'Options'));
+    if (specs.length) {
+      sec.appendChild(el('h3', null, 'Options'));
+      wrap.appendChild(sec);
+    }
     const getters = [];
     const bools = {};
 
@@ -336,12 +356,62 @@ const STUDIO_SCRIPT = `
       }
       sec.appendChild(row);
     });
+    const allOpts = buildAllOptions(kind);
+    wrap.appendChild(allOpts.node);
     return {
-      node: sec,
+      node: wrap,
       collect: function () {
         const out = {};
         getters.forEach(function (g) { const kv = g(); out[kv[0]] = kv[1]; });
-        return out;
+        // Omit-when-empty: a kind with no curated controls (e.g. api) collects
+        // nothing, so return undefined rather than {} to keep the run/serve
+        // body identical to before this section existed.
+        return Object.keys(out).length ? out : undefined;
+      },
+      collectRaw: allOpts.collectRaw,
+    };
+  }
+
+  // The collapsed "All options" section: a raw extra-args input (appended
+  // verbatim to the spawned child) + the auto-derived, read-only catalog of
+  // every flag the underlying command accepts. The curated controls above
+  // cover the common flags with rich UI; this exposes the rest so the studio
+  // UI is never strictly less capable than the headless CLI (issue #301).
+  const FLAG_CATALOG = window.__FLAG_CATALOG__ || {};
+
+  function buildAllOptions(kind) {
+    const cat = FLAG_CATALOG[kind] || { command: '', flags: [] };
+    const det = el('details', 'all-options');
+    det.appendChild(el('summary', null, 'All options'));
+
+    const rawRow = el('div', 'opt-row opt-col');
+    rawRow.appendChild(el('span', 'opt-label', 'Raw extra args'));
+    const rawIn = el('input', 'raw-args');
+    rawIn.placeholder = '--flag value --other "with spaces"';
+    rawRow.appendChild(rawIn);
+    const hint = cat.command
+      ? 'Appended verbatim to the spawned ' + cat.command + ' command. Quote values with spaces.'
+      : 'Appended verbatim to the spawned command. Quote values with spaces.';
+    rawRow.appendChild(el('div', 'opt-hint', hint));
+    det.appendChild(rawRow);
+
+    if (cat.flags.length) {
+      const ref = el('div', 'flag-catalog');
+      ref.appendChild(el('div', 'opt-label', 'Available flags'));
+      cat.flags.forEach(function (f) {
+        const row = el('div', 'flag-row');
+        row.appendChild(el('code', 'flag-name', f.flags));
+        if (f.description) row.appendChild(el('span', 'flag-desc', f.description));
+        ref.appendChild(row);
+      });
+      det.appendChild(ref);
+    }
+
+    return {
+      node: det,
+      collectRaw: function () {
+        const v = rawIn.value.trim();
+        return v === '' ? undefined : v;
       },
     };
   }
@@ -467,7 +537,7 @@ const STUDIO_SCRIPT = `
     }
   }
 
-  async function startServe(id, options) {
+  async function startServe(id, options, rawArgs) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
@@ -477,6 +547,7 @@ const STUDIO_SCRIPT = `
     try {
       const body = { targetId: id, kind };
       if (options) body.options = options;
+      if (rawArgs) body.rawArgs = rawArgs;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -533,7 +604,8 @@ const STUDIO_SCRIPT = `
       : el('button', null, starting ? 'Starting…' : 'Start');
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
-    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts()); };
+    let collectRaw = function () { return undefined; };
+    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts(), collectRaw()); };
     head.appendChild(btn);
     if (errMsg) {
       const m = el('div', 'err', errMsg);
@@ -545,6 +617,7 @@ const STUDIO_SCRIPT = `
       const opt = buildOptions(kind);
       if (opt.node) ws.appendChild(opt.node);
       collectOpts = opt.collect;
+      collectRaw = opt.collectRaw;
     }
 
     const isEcs = meta && meta.kind === 'ecs';
@@ -744,7 +817,7 @@ const STUDIO_SCRIPT = `
     ws.appendChild(composer);
     ws.appendChild(result);
 
-    active = { id, kind, ta, btn, msg, result, collectOpts: opt.collect };
+    active = { id, kind, ta, btn, msg, result, collectOpts: opt.collect, collectRaw: opt.collectRaw };
     btn.onclick = () => runInvoke();
     shownInvId = null;
     shownDetailId = null;
@@ -769,6 +842,8 @@ const STUDIO_SCRIPT = `
       const body = { targetId: id, kind, event };
       const options = active.collectOpts ? active.collectOpts() : undefined;
       if (options) body.options = options;
+      const rawArgs = active.collectRaw ? active.collectRaw() : undefined;
+      if (rawArgs) body.rawArgs = rawArgs;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1138,6 +1213,9 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   // render controls from. `<` is escaped so a value can never close the
   // surrounding <script> tag.
   const optionSpecsJson = JSON.stringify(OPTION_SPECS).replace(/</g, '\\u003c');
+  // The auto-derived full flag catalog per runnable kind — the "All options"
+  // section renders it as a read-only reference beside the raw extra-args input.
+  const flagCatalogJson = JSON.stringify(buildFlagCatalog()).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1175,6 +1253,7 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   </section>
 </main>
 <script>window.__OPTION_SPECS__ = ${optionSpecsJson};</script>
+<script>window.__FLAG_CATALOG__ = ${flagCatalogJson};</script>
 <script>${STUDIO_SCRIPT}</script>
 </body>
 </html>`;
