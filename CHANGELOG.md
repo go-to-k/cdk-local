@@ -1,3 +1,10 @@
+# [0.90.0](https://github.com/go-to-k/cdk-local/compare/v0.89.0...v0.90.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** --watch — hot-reload serves started from the UI ([#301](https://github.com/go-to-k/cdk-local/issues/301)) ([#310](https://github.com/go-to-k/cdk-local/issues/310)) ([f2d375a](https://github.com/go-to-k/cdk-local/commit/f2d375ab45251c7657c9d615995c2366f6081ece))
+
 # [0.89.0](https://github.com/go-to-k/cdk-local/compare/v0.88.0...v0.89.0) (2026-06-03)
 
 
