@@ -1,3 +1,10 @@
+# [0.87.0](https://github.com/go-to-k/cdk-local/compare/v0.86.0...v0.87.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** editable Session bar — live-edit from-cfn-stack / assume-role ([#301](https://github.com/go-to-k/cdk-local/issues/301)) ([#306](https://github.com/go-to-k/cdk-local/issues/306)) ([6bb32cd](https://github.com/go-to-k/cdk-local/commit/6bb32cdd4c96b0e1370f14d3201d7afe2f9e95eb))
+
 # [0.86.0](https://github.com/go-to-k/cdk-local/compare/v0.85.0...v0.86.0) (2026-06-02)
 
 
