@@ -55,6 +55,14 @@ export class CdklDemoStack extends cdk.Stack {
       methods: [HttpMethod.GET],
       integration: new HttpLambdaIntegration('HelloIntegration', echo),
     });
+    // POST /echo — echoes the request headers + body so the studio request
+    // composer demo (assets/demo-gif/record-studio.mjs) can show a request
+    // body + a header being sent and reflected in the response.
+    httpApi.addRoutes({
+      path: '/echo',
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration('EchoIntegration', echo),
+    });
 
     // REST API v1 → GreetHandler — a second API kind for the picker.
     const restApi = new apigw.RestApi(this, 'MyRestApi', { restApiName: 'cdkl-demo-rest' });

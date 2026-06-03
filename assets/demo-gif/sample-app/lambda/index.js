@@ -8,10 +8,18 @@ exports.handler = async (event) => {
   // calls the event has no `requestContext`, so we return the payload
   // verbatim alongside the raw event for visibility.
   if (event && event.requestContext) {
+    // POST /echo reflects what the caller sent (used by the studio request
+    // composer demo to show a body + header round-tripping); other routes
+    // return the plain greeting.
+    const method = event.requestContext.http && event.requestContext.http.method;
+    const isEcho = (event.rawPath || '').endsWith('/echo') || method === 'POST';
+    const out = isEcho
+      ? { message: payload.message, youSent: { headers: event.headers, body: event.body } }
+      : payload;
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(out),
     };
   }
   return { ...payload, receivedEvent: event };

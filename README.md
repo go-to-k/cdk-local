@@ -12,7 +12,7 @@ A CDK-native alternative to `sam local`, covering Lambda, API Gateway, ECS, ALB-
 
 Or drive it all from a browser with `cdkl studio` — pick a target, invoke or serve it, and watch every request, response, and log line land on one live timeline:
 
-![cdkl studio — a local web console with a session bar (watch / from-cfn-stack / assume-role) and a per-target composer; setting an env-var option then invoking a Lambda streams its request, response, and logs onto a live timeline](assets/cdkl-studio.gif)
+![cdkl studio — a local web console: start an API in the per-target composer, compose an HTTP request (method / path / headers / body) against it, Send it, and the inline response plus the captured request and streamed container logs land on a live timeline](assets/cdkl-studio.gif)
 
 ## Quick start
 
