@@ -272,7 +272,14 @@ if ! grep -qF "function renderRequestComposer" "${BODY_FILE}" || ! grep -qF "fet
   echo "FAIL: GET / did not include the in-workspace HTTP request composer"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer"
+# Proxy-vs-child port clarity (issue #325): the Endpoints hint names the proxy
+# URLs as the capture target and the Logs note flags the child internal port.
+if ! grep -qF "the serve child internal port" "${BODY_FILE}" \
+  || ! grep -qF "any 127.0.0.1 port below is the serve child internal port" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the proxy-vs-child port clarity hints (issue #325)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.

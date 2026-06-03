@@ -146,6 +146,18 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('not captured on the timeline');
   });
 
+  it('clarifies the curl-able proxy port vs the child internal port (issue #325)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The Endpoints hint names the proxy URLs as the request target and warns
+    // that the Logs port is the child internal one.
+    expect(html).toContain('curl these — captured on the timeline.');
+    expect(html).toContain('the serve child internal port');
+    // The Logs panel carries a note that its 127.0.0.1 port is internal and
+    // the Endpoints above are the address to use.
+    expect(html).toContain('any 127.0.0.1 port below is the serve child internal port');
+    expect(html).toContain('use the Endpoints above');
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.
