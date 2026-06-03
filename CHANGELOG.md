@@ -1,3 +1,10 @@
+# [0.95.0](https://github.com/go-to-k/cdk-local/compare/v0.94.0...v0.95.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** add an "All options" section (auto-derived flag catalog + raw extra args) ([#317](https://github.com/go-to-k/cdk-local/issues/317)) ([cd0e355](https://github.com/go-to-k/cdk-local/commit/cd0e35578132de08b3fc9ff96c572d0e6d45bd40))
+
 # [0.94.0](https://github.com/go-to-k/cdk-local/compare/v0.93.0...v0.94.0) (2026-06-03)
 
 
