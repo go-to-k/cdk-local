@@ -1,3 +1,10 @@
+## [0.103.2](https://github.com/go-to-k/cdk-local/compare/v0.103.1...v0.103.2) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** survive stray errors + remember the Headers editor mode ([#347](https://github.com/go-to-k/cdk-local/issues/347)) ([3ffd0fa](https://github.com/go-to-k/cdk-local/commit/3ffd0fac87638dbfa6fcbe28aa070bbbdaf5ac7f))
+
 ## [0.103.1](https://github.com/go-to-k/cdk-local/compare/v0.103.0...v0.103.1) (2026-06-03)
 
 
