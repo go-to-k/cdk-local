@@ -50,7 +50,7 @@ const STUDIO_CSS = `
   #session-bar .sess-bind { color: #bbb; display: inline-flex; align-items: center; gap: 4px; }
   #session-bar input[type=text] {
     background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
-    padding: 3px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 180px;
+    padding: 3px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 240px;
   }
   #session-bar input:focus { outline: none; border-color: #4ec97a; }
   #session-bar button {
@@ -99,7 +99,10 @@ const STUDIO_CSS = `
   }
   /* Zebra-stripe rows so each target box reads as its own block (the borderless
      rows otherwise blur together); the kind label stays readable on both. */
-  .group-body .target:nth-child(2n) { background: #1b1b1b; }
+  /* Zebra: alternate rows get a clearly lighter background than the base
+     (#1a1a1a) so adjacent target boxes read as distinct — a 1-step shade was
+     imperceptible. The kind label (#8f8f8f) still reads on both shades. */
+  .group-body .target:nth-child(2n) { background: #242424; }
   .target.runnable { cursor: pointer; }
   .target.runnable:hover { background: #292929; }
   .target.sel, .group-body .target.sel:nth-child(2n) { background: #2a3550; }
@@ -160,6 +163,12 @@ const STUDIO_CSS = `
   .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
+  .log-head { display: flex; align-items: center; justify-content: space-between; }
+  .log-clear {
+    background: #1d1d1d; color: #bbb; border: 1px solid #333; border-radius: 3px;
+    padding: 2px 10px; font-size: 11px; cursor: pointer; margin: 0;
+  }
+  .log-clear:hover { background: #262626; color: #ddd; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
   .section h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
@@ -826,7 +835,18 @@ const STUDIO_SCRIPT = `
 
     const logs = logsById.get(id) || [];
     const logSec = el('div', 'section');
-    logSec.appendChild(el('h3', null, 'Logs'));
+    // Logs header carries a Clear button (issue #338): hammering a serve piles
+    // up log lines, so let the user empty the panel (display-only — the
+    // server-side store / history is untouched).
+    const logHead = el('div', 'log-head');
+    logHead.appendChild(el('h3', null, 'Logs'));
+    const logClear = el('button', 'log-clear', 'Clear');
+    logClear.onclick = function () {
+      logsById.set(id, []);
+      renderServeWorkspace(id);
+    };
+    logHead.appendChild(logClear);
+    logSec.appendChild(logHead);
     // A proxy-fronted serve (api / alb) streams its child start-* logs here,
     // which advertise the child internal 127.0.0.1 port — a DIFFERENT port
     // than the capture-proxy URL in Endpoints above. Flag it so the child
