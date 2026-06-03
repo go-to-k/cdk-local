@@ -338,7 +338,14 @@ compute-locally category for Lambda + API Gateway).
   bindings); collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
-  workspace composer / timeline; Lambdas + AgentCore runtimes get an
+  workspace composer / timeline. The targets pane (issue #301) groups
+  targets into collapsible sections (collapsed by default so a big Lambda
+  list does not push the APIs below the fold; a running serve auto-expands
+  its group so its `:port` stays visible), zebra-stripes the rows, and has
+  a full-text filter box (`applyTargetFilter`) beside the TARGETS heading.
+  The Session bar applies on change (no Save button — `applyConfig` PATCHes
+  `/api/config` immediately on a checkbox toggle / input change, issue
+  #301); Lambdas + AgentCore runtimes get an
   [Invoke] composer (`INVOKE_KINDS`), serve
   targets (api / alb / ecs) a [Start]/[Stop] control with a `running ●
   :port` indicator (ecs services show `running` with no port — only the

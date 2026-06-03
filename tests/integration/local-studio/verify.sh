@@ -230,7 +230,17 @@ if ! grep -qF "buildImageOverridePicker" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the image-override Dockerfile picker"
   exit 1
 fi
-echo "    OK: UI HTML served with the stack label + All options catalog + image-override picker"
+# Target-pane UX (issue #301): collapsible/filterable groups + apply-on-change
+# Session bar (no Save button).
+if ! grep -qF 'id="target-search"' "${BODY_FILE}" || ! grep -qF "function applyTargetFilter" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the target filter / collapsible groups"
+  exit 1
+fi
+if ! grep -qF "function applyConfig" "${BODY_FILE}" || grep -qF 'id="sess-save"' "${BODY_FILE}"; then
+  echo "FAIL: GET / Session bar is not apply-on-change (Save button still present?)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
