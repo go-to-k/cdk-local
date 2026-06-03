@@ -66,15 +66,18 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
   return [
     { kind: 'lambda', title: 'Lambda Functions', entries: map(listing.lambdas) },
     { kind: 'api', title: 'APIs', entries: map(listing.apis) },
+    // ECS services and task definitions are SEPARATE groups (issue #352),
+    // matching `cdkl list`: services are servable (`start-service` -> Start),
+    // task definitions are single-shot (`run-task`). They were previously
+    // lumped into one "ECS Services / Tasks" group, which obscured that task
+    // definitions are not a serve target. The services group stays FIRST so
+    // `annotatePinnedEcsTargets` (which finds the first `ecs`-kind group)
+    // annotates the servable services.
+    { kind: 'ecs', title: 'ECS Services', entries: map(listing.ecsServices, { servable: true }) },
     {
       kind: 'ecs',
-      title: 'ECS Services / Tasks',
-      // ECS services are servable (`start-service`); task definitions are
-      // run-task (single-shot), not a serve target.
-      entries: [
-        ...map(listing.ecsServices, { servable: true }),
-        ...map(listing.ecsTaskDefinitions, { servable: false }),
-      ],
+      title: 'ECS Task Definitions',
+      entries: map(listing.ecsTaskDefinitions, { servable: false }),
     },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
     { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
