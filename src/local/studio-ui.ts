@@ -261,6 +261,7 @@ const STUDIO_SCRIPT = `
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
   const logsById = new Map();      // invocationId / serve targetId -> [log lines]
+  let lastHeaderMode = 'kv';       // remember the request-composer Headers editor mode (issue #345)
   let serveLogId = null;           // serve target whose LOGS <pre> is live (issue #334)
   let serveLogPre = null;          // the live serve LOGS <pre>, updated surgically on log events
   const targetEls = new Map();     // targetId -> left-pane element
@@ -946,20 +947,27 @@ const STUDIO_SCRIPT = `
     wrap.appendChild(ta);
 
     let mode = 'kv';
-    kvBtn.onclick = function () {
-      mode = 'kv';
-      kvBtn.className = 'envkv-mode active';
-      jsonBtn.className = 'envkv-mode';
-      kvPane.style.display = '';
-      ta.style.display = 'none';
-    };
-    jsonBtn.onclick = function () {
-      mode = 'json';
-      jsonBtn.className = 'envkv-mode active';
-      kvBtn.className = 'envkv-mode';
-      ta.style.display = '';
-      kvPane.style.display = 'none';
-    };
+    // Switch mode + remember it session-wide so a later composer (incl.
+    // re-invoke) opens in the SAME mode instead of snapping back to KV
+    // (issue #345).
+    function setMode(m) {
+      mode = m;
+      lastHeaderMode = m;
+      if (m === 'json') {
+        jsonBtn.className = 'envkv-mode active';
+        kvBtn.className = 'envkv-mode';
+        ta.style.display = '';
+        kvPane.style.display = 'none';
+      } else {
+        kvBtn.className = 'envkv-mode active';
+        jsonBtn.className = 'envkv-mode';
+        kvPane.style.display = '';
+        ta.style.display = 'none';
+      }
+    }
+    kvBtn.onclick = function () { setMode('kv'); };
+    jsonBtn.onclick = function () { setMode('json'); };
+    setMode(lastHeaderMode);
 
     function parseJson() {
       const t = ta.value.trim();
@@ -997,6 +1005,9 @@ const STUDIO_SCRIPT = `
       prefill: function (headersObj) {
         if (!headersObj || typeof headersObj !== 'object') return;
         Object.keys(headersObj).forEach(function (k) { addRow(k, String(headersObj[k])); });
+        // Seed the JSON pane too so the data shows in whichever mode is active
+        // (issue #345) — a re-invoke opens in the user's last-used mode.
+        ta.value = JSON.stringify(headersObj, null, 2);
       },
     };
   }

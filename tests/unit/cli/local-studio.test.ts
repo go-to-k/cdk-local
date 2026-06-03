@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   applyConfigPatch,
   coerceRunRequest,
@@ -10,6 +10,7 @@ import {
   coerceReinvokeRequest,
   resolveServeBaseUrl,
   createLocalStudioCommand,
+  installStudioResilienceGuard,
   parseStudioPort,
   resolveBootAssemblyDir,
   type EditableSessionBindings,
@@ -376,6 +377,38 @@ describe('coerceReinvokeRequest (issue #284)', () => {
 
   it('rejects when the payload key is absent (vs an explicit null)', () => {
     expect(() => coerceReinvokeRequest({ invocationId: 'src-1' })).toThrow(/must include a "payload"/);
+  });
+});
+
+describe('installStudioResilienceGuard (issue #346)', () => {
+  const fakeLogger = (): { warn: ReturnType<typeof vi.fn> } => ({ warn: vi.fn() });
+
+  it('installs + removes uncaughtException / unhandledRejection listeners', () => {
+    const before = {
+      ue: process.listenerCount('uncaughtException'),
+      ur: process.listenerCount('unhandledRejection'),
+    };
+    const uninstall = installStudioResilienceGuard(fakeLogger() as never);
+    expect(process.listenerCount('uncaughtException')).toBe(before.ue + 1);
+    expect(process.listenerCount('unhandledRejection')).toBe(before.ur + 1);
+    uninstall();
+    expect(process.listenerCount('uncaughtException')).toBe(before.ue);
+    expect(process.listenerCount('unhandledRejection')).toBe(before.ur);
+  });
+
+  it('logs (and does not rethrow) when its listener handles an error', () => {
+    const logger = fakeLogger();
+    const uninstall = installStudioResilienceGuard(logger as never);
+    try {
+      // Invoke the just-installed listener DIRECTLY (not via process.emit, which
+      // could disturb the test runner) with an Error.
+      const listener = process.listeners('uncaughtException').at(-1) as (e: unknown) => void;
+      expect(() => listener(new Error('boom'))).not.toThrow();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn.mock.calls[0][0]).toMatch(/studio caught an unexpected error.*boom/s);
+    } finally {
+      uninstall();
+    }
   });
 });
 

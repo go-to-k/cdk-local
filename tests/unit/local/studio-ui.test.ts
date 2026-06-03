@@ -231,6 +231,16 @@ describe('renderStudioHtml', () => {
     expect(html).not.toContain('Headers (one per line: Name: value)');
   });
 
+  it('remembers the last-used Headers editor mode across composers (issue #345)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The editor opens in the remembered mode + records the mode on toggle.
+    expect(html).toContain('let lastHeaderMode');
+    expect(html).toContain('lastHeaderMode = m;');
+    expect(html).toContain('setMode(lastHeaderMode)');
+    // Re-invoke prefill seeds the JSON pane too, so the data shows in either mode.
+    expect(html).toContain('ta.value = JSON.stringify(headersObj');
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.
