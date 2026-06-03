@@ -1,3 +1,10 @@
+## [0.103.1](https://github.com/go-to-k/cdk-local/compare/v0.103.0...v0.103.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** give --assume-role a checkbox so the Session bar is symmetric ([#344](https://github.com/go-to-k/cdk-local/issues/344)) ([663e73d](https://github.com/go-to-k/cdk-local/commit/663e73dcb9661ed197df1b579f374daa6cb404f0))
+
 # [0.103.0](https://github.com/go-to-k/cdk-local/compare/v0.102.2...v0.103.0) (2026-06-03)
 
 
