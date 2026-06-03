@@ -14,6 +14,7 @@
 #   - ECS Task Definitions -> cdkl run-task <target>         (MyTask)
 #   - AgentCore Runtimes ->  cdkl invoke-agentcore <target>  (MyAgent)
 #   - Application Load Balancers -> cdkl start-alb <target...> (MyAlb)
+#   - CloudFront Distributions -> cdkl start-cloudfront <target> (MyDistribution)
 #
 # Also locks down:
 #   - `cdkl ls` (alias) produces the same output as `cdkl list`.
@@ -50,7 +51,8 @@ for header in \
   'ECS Services  ->  cdkl start-service <target...>' \
   'ECS Task Definitions  ->  cdkl run-task <target>' \
   'AgentCore Runtimes  ->  cdkl invoke-agentcore <target>' \
-  'Application Load Balancers  ->  cdkl start-alb <target...>'
+  'Application Load Balancers  ->  cdkl start-alb <target...>' \
+  'CloudFront Distributions  ->  cdkl start-cloudfront <target>'
 do
   if ! grep -qF "${header}" "${OUT_FILE}"; then
     echo "FAIL: missing group header: ${header}"
@@ -72,7 +74,8 @@ for line in \
   '  LocalListFixture/MyService' \
   '  LocalListFixture/MyTask' \
   '  LocalListFixture/MyAgent' \
-  '  LocalListFixture/MyAlb'
+  '  LocalListFixture/MyAlb' \
+  '  LocalListFixture/MyDistribution'
 do
   if ! grep -qF "${line}" "${OUT_FILE}"; then
     echo "FAIL: missing target line: '${line}'"

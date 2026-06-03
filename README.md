@@ -55,7 +55,7 @@ The locally executable resources are listed under [Supported resources](#support
 
 Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
 
-Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `run-task` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
+Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ```bash
 cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
@@ -63,6 +63,7 @@ cdkl run-task MyStack/Task                     # ECS task, run once
 cdkl start-service MyStack/Worker              # ECS service replicas (no load balancer)
 cdkl start-alb MyStack/WebAlb                  # ECS behind an ALB (front-door per listener)
 cdkl start-api MyStack/Api                     # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
+cdkl start-cloudfront MyStack/SiteDist         # CloudFront Functions + S3 origin routing (static site / SPA)
 cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
 cdkl list                                      # every runnable target, grouped by command (alias: ls)
 cdkl studio                                    # interactive web console over every target
@@ -82,6 +83,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its depl
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (a privileged port like 80 auto-remaps to a free high host port with a WARN; `--host-port <container>=<host>` pins a specific one). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
+- **`start-cloudfront`** serves a CloudFront distribution's `viewer-request` -> S3 origin -> `viewer-response` pipeline locally: it runs the distribution's CloudFront Functions (the same inline rewrite JS, in-process) over the S3 origin content resolved from the BucketDeployment source in the cloud assembly, so a URL-rewrite / routing / SPA-fallback change is verifiable in seconds instead of a deploy. Serves S3 origins only; custom origins and Lambda@Edge are not run (warn-and-skip). `--origin <id>=<dir>` points an origin at a local directory when the source can't be resolved automatically; `--tls` terminates real HTTPS; `--watch` re-synths + swaps the routing model on save.
 - **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
 - **`studio`** opens a local web console over the same synthesized targets — a point-and-click front over the same CLI runners. Takes no target (it lists them all). Flags + in-UI controls: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
@@ -214,6 +216,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | ECS services | `start-service` |
 | Cloud Map / Service Connect registry | service discovery between local replicas |
 | ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets, authenticate-cognito / authenticate-oidc (local Bearer-JWT enforcement), WebSocket Upgrade |
+| CloudFront distributions (S3 origin + CloudFront Functions) | `start-cloudfront` — viewer-request / viewer-response Functions over S3 origin routing, default root object, custom error responses (SPA fallback), `--tls`, `--watch` |
 | Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP / MCP / A2A / AGUI |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.

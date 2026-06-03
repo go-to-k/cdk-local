@@ -16,6 +16,7 @@ const empty: TargetListing = {
   ecsTaskDefinitions: [],
   agentCoreRuntimes: [],
   loadBalancers: [],
+  cloudFrontDistributions: [],
 };
 
 describe('formatTargetListing', () => {
@@ -31,6 +32,7 @@ describe('formatTargetListing', () => {
       ecsTaskDefinitions: [entry('App/TaskDef', 'App:TaskDef')],
       agentCoreRuntimes: [entry('App/ChatAgent', 'App:ChatAgent')],
       loadBalancers: [entry('App/WebLB', 'App:WebLB')],
+      cloudFrontDistributions: [entry('App/SiteDist', 'App:SiteDist')],
     };
     const out = formatTargetListing(listing, 'cdkl');
     expect(out).toContain('Lambda Functions  ->  cdkl invoke <target>');
@@ -39,6 +41,7 @@ describe('formatTargetListing', () => {
     expect(out).toContain('ECS Task Definitions  ->  cdkl run-task <target>');
     expect(out).toContain('AgentCore Runtimes  ->  cdkl invoke-agentcore <target>');
     expect(out).toContain('Application Load Balancers  ->  cdkl start-alb <target...>');
+    expect(out).toContain('CloudFront Distributions  ->  cdkl start-cloudfront <target>');
   });
 
   it('appends the API surface kind to each API line', () => {

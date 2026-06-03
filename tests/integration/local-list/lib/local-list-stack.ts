@@ -4,6 +4,7 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import { Construct } from 'constructs';
 
 /**
@@ -23,6 +24,7 @@ import { Construct } from 'constructs';
  *     `AWS::ElasticLoadBalancingV2::TargetGroup` +
  *     `AWS::ElasticLoadBalancingV2::Listener`     -> Application Load Balancers
  *   - `AWS::BedrockAgentCore::Runtime` (`MyAgent`) -> AgentCore Runtimes
+ *   - `AWS::CloudFront::Distribution` (`MyDistribution`) -> CloudFront Distributions
  *
  * The test never executes any of these — `cdkl list` is a pure synth-time
  * read over the cloud assembly templates, so placeholder ARNs / URIs are
@@ -121,6 +123,28 @@ export class LocalListStack extends cdk.Stack {
         containerConfiguration: {
           containerUri:
             '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkl-list-fixture-agent:latest',
+        },
+      },
+    });
+
+    // CloudFront distribution — L1 only so no bucket/asset resolution is
+    // needed. `cdkl list` reads the resource type + path metadata only, so a
+    // placeholder origin is fine; it surfaces under the
+    // `CloudFront Distributions -> cdkl start-cloudfront` group (issue #363).
+    new cloudfront.CfnDistribution(this, 'MyDistribution', {
+      distributionConfig: {
+        enabled: true,
+        defaultRootObject: 'index.html',
+        origins: [
+          {
+            id: 'placeholder-s3',
+            domainName: 'placeholder.s3.us-east-1.amazonaws.com',
+            s3OriginConfig: { originAccessIdentity: '' },
+          },
+        ],
+        defaultCacheBehavior: {
+          targetOriginId: 'placeholder-s3',
+          viewerProtocolPolicy: 'allow-all',
         },
       },
     });

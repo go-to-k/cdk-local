@@ -319,9 +319,10 @@ describe('countTargets', () => {
       Svc: { Type: 'AWS::ECS::Service', Properties: {} },
       Td: { Type: 'AWS::ECS::TaskDefinition', Properties: {} },
       Agent: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      Dist: { Type: 'AWS::CloudFront::Distribution', Properties: {} },
     });
     const listing = listTargets([stack]);
-    expect(countTargets(listing)).toBe(4);
+    expect(countTargets(listing)).toBe(5);
   });
 
   it('returns 0 for an app with no runnable targets', () => {
@@ -337,6 +338,7 @@ describe('countTargets', () => {
       ecsTaskDefinitions: [],
       agentCoreRuntimes: [],
       loadBalancers: [],
+      cloudFrontDistributions: [],
     });
   });
 
@@ -354,5 +356,23 @@ describe('countTargets', () => {
     });
     const listing = listTargets([stack]);
     expect(listing.loadBalancers.map((e) => e.logicalId).sort()).toEqual(['DefaultLB', 'WebLB']);
+  });
+
+  it('enumerates CloudFront distributions (start-cloudfront)', () => {
+    const stack = buildStack('App', {
+      SiteDist: withPath(
+        { Type: 'AWS::CloudFront::Distribution', Properties: {} },
+        'App/SiteDist/Resource'
+      ),
+    });
+    const listing = listTargets([stack]);
+    expect(listing.cloudFrontDistributions).toEqual([
+      {
+        logicalId: 'SiteDist',
+        stackName: 'App',
+        qualifiedId: 'App:SiteDist',
+        displayPath: 'App/SiteDist',
+      },
+    ]);
   });
 });
