@@ -1,3 +1,10 @@
+## [0.102.2](https://github.com/go-to-k/cdk-local/compare/v0.102.1...v0.102.2) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** keep the serve composer alive across streamed log events ([#341](https://github.com/go-to-k/cdk-local/issues/341)) ([c2d0978](https://github.com/go-to-k/cdk-local/commit/c2d0978112500d110d8afcdf820ef31599aac640))
+
 ## [0.102.1](https://github.com/go-to-k/cdk-local/compare/v0.102.0...v0.102.1) (2026-06-03)
 
 
