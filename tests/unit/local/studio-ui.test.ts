@@ -29,6 +29,20 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
+  it('makes AgentCore a single-shot invoke target with its own options (issue #303)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // AgentCore is wired as an invoke kind (event composer), alongside lambda.
+    expect(html).toContain("INVOKE_KINDS = ['lambda', 'agentcore']");
+    // Its per-run options are embedded in the serialized OPTION_SPECS table.
+    expect(html).toContain('"--ws"');
+    expect(html).toContain('"--sigv4"');
+    expect(html).toContain('"--session-id"');
+    // A timeline row for ANY invoke kind (Lambda OR AgentCore) reloads into the
+    // re-invoke composer — gated on INVOKE_KINDS, not a lambda-only check, so an
+    // AgentCore row is not mis-routed to the read-only captured-request detail.
+    expect(html).toContain('INVOKE_KINDS.includes(ev.kind)');
+  });
+
   it('renders the editable Session bar (issue #301 slice 3)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     expect(html).toContain('id="session-bar"');

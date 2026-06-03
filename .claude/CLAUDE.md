@@ -238,7 +238,11 @@ compute-locally category for Lambda + API Gateway).
   a DISPLAY-only glob filter over the listed targets (a target id is
   `Stack/Construct`, so `dev/*` scopes to stack `dev`) — it does NOT
   scope synth (the whole app is still synthesized; gate synth with the
-  app's own `-c` context / a committed `cdk.context.json`).
+  app's own `-c` context / a committed `cdk.context.json`). Issue #303
+  made AgentCore runtimes runnable from the UI: an `agentcore` target
+  gets the same single-shot [Invoke] composer a Lambda does (the
+  dispatcher spawns `cdkl invoke-agentcore`), with per-run options
+  `--ws` / `--sigv4` / `--bearer-token` / `--session-id` / `--env-vars`.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -317,7 +321,8 @@ compute-locally category for Lambda + API Gateway).
   bindings); collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
-  workspace composer / timeline; Lambdas get an [Invoke] composer, serve
+  workspace composer / timeline; Lambdas + AgentCore runtimes get an
+  [Invoke] composer (`INVOKE_KINDS`), serve
   targets (api / alb / ecs) a [Start]/[Stop] control with a `running ●
   :port` indicator (ecs services show `running` with no port — only the
   servable ECS *services* are runnable, not the task definitions); the
@@ -325,11 +330,16 @@ compute-locally category for Lambda + API Gateway).
   the latter opening a read-only Request/Response detail; a log search box
   queries the store and a captured request's detail shows its bound logs),
   studio-dispatch
-  (issue #282 — the single-shot `POST /api/run` handler
-  for the `lambda` kind: runs a target from the studio UI by
-  spawning the SAME `cdkl invoke` the headless command runs as a child
-  process — studio is a control plane over the CLI — streaming its
-  stdout/stderr to the event bus and returning the parsed Lambda
+  (issue #282 / #303 — the single-shot `POST /api/run` handler
+  for the invoke kinds: runs a target from the studio UI by
+  spawning the SAME headless command the CLI runs as a child process —
+  `cdkl invoke` for a `lambda`, `cdkl invoke-agentcore` for an
+  `agentcore` (`INVOKE_VERBS`) — studio being a control plane over the
+  CLI — streaming its stdout/stderr to the event bus and returning the
+  response. `extractResponse` recovers the response per kind: a Lambda's
+  is the LAST JSON-parseable stdout line (container logs interleave on
+  stdout); an AgentCore agent streams its WHOLE output to stdout (HTTP
+  SSE / MCP-A2A JSON-RPC / `--ws` frames), so the entire stdout IS the
   response. The child is spawned with `CDKL_LOG_LEVEL=warn` so
   cdk-local's OWN synth / orchestration progress (toolkit "Successfully
   synthesized to ...", asset-bundling, info-level status — honored by
@@ -351,7 +361,9 @@ compute-locally category for Lambda + API Gateway).
   `--flag left=right` per row), env-kv -> KV / JSON editor whose rows are
   materialized by `resolveEnvVars` into a SAM-shape `{ Parameters: {...} }`
   temp file passed as `--env-vars <file>`. Per-target options vary per
-  invoke / serve, vs the session-global flags in studio-child-args),
+  invoke / serve, vs the session-global flags in studio-child-args; the
+  `agentcore` kind (issue #303) declares `--ws` / `--sigv4` (boolean),
+  `--bearer-token` / `--session-id` (scalar), and `--env-vars` (env-kv)),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host

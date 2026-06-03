@@ -305,11 +305,12 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     appLabel,
     cliName: getEmbedConfig().cliName,
     store,
-    // `/api/run`: a Lambda is a single-shot invoke; api / alb / ecs are
-    // long-running serve starts (the serve manager rejects any other kind).
+    // `/api/run`: a Lambda or an AgentCore runtime is a single-shot invoke;
+    // api / alb / ecs are long-running serve starts (the serve manager rejects
+    // any other kind).
     onRun: (body) => {
       const req = coerceRunRequest(body);
-      if (req.kind === 'lambda') return dispatcher.run(req);
+      if (req.kind === 'lambda' || req.kind === 'agentcore') return dispatcher.run(req);
       if (req.kind === 'ecs' && !servableEcs.has(req.targetId)) {
         return Promise.reject(
           new Error(

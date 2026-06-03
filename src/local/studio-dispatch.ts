@@ -6,11 +6,26 @@ import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
 
+/**
+ * The single-shot invoke kinds this dispatcher drives, mapped to the `cdkl`
+ * subcommand each spawns. `lambda` -> `cdkl invoke`; `agentcore` ->
+ * `cdkl invoke-agentcore` (issue #301 / #303). Serve kinds (api / alb / ecs)
+ * are NOT here — they are long-running and handled by the serve manager.
+ */
+const INVOKE_VERBS: Partial<Record<StudioTargetKind, string>> = {
+  lambda: 'invoke',
+  agentcore: 'invoke-agentcore',
+};
+
 /** A request to run a target, as the studio UI posts it to `/api/run`. */
 export interface StudioRunRequest {
   /** Target id the user picked (display path or stack-qualified id). */
   targetId: string;
-  /** Target kind. Slice B handles `'lambda'` (single-shot invoke) only. */
+  /**
+   * Target kind. This dispatcher drives the single-shot invoke kinds —
+   * `'lambda'` (`cdkl invoke`) and `'agentcore'` (`cdkl invoke-agentcore`).
+   * Serve kinds (api / alb / ecs) go to the serve manager instead.
+   */
   kind: StudioTargetKind;
   /** The event payload to invoke with. */
   event: unknown;
@@ -66,18 +81,25 @@ export interface StudioDispatcher {
 let idCounter = 0;
 
 /**
- * Build the studio run dispatcher. Slice B drives a single-shot Lambda
- * invoke by spawning the SAME `cdkl invoke` the headless command runs —
- * studio is a control plane over the CLI, so re-using the whole command
- * (rather than re-wiring its internals) guarantees byte-for-byte parity
- * and keeps all of `cdkl invoke`'s process-global behavior
+ * Build the studio run dispatcher. It drives a single-shot invoke by
+ * spawning the SAME headless command the CLI runs — `cdkl invoke` for a
+ * `lambda` target, `cdkl invoke-agentcore` for an `agentcore` target —
+ * because studio is a control plane over the CLI; re-using the whole
+ * command (rather than re-wiring its internals) guarantees byte-for-byte
+ * parity and keeps all of the command's process-global behavior
  * (`process.exit`, env mutation, stdin) isolated in a child process.
  *
- * The child's stdout is the Lambda response payload; its stderr (status
- * + container logs) is streamed line-by-line onto the bus as `log`
- * events. An `invocation` start event is emitted before spawn and an end
- * event (with response + status + duration) after exit, both keyed by
- * the same correlation id so the UI threads them into one timeline row.
+ * The child's stdout carries the response (the Lambda return value, or the
+ * AgentCore agent's streamed output); its stderr (status + diagnostics) is
+ * streamed line-by-line onto the bus as `log` events. An `invocation` start
+ * event is emitted before spawn and an end event (with response + status +
+ * duration) after exit, both keyed by the same correlation id so the UI
+ * threads them into one timeline row.
+ *
+ * The two kinds differ only in how the response is recovered from stdout
+ * (a Lambda RIE prints exactly one JSON response line interleaved with
+ * container logs; an AgentCore agent streams its whole output to stdout) —
+ * see {@link extractResponse}.
  */
 export function createStudioDispatcher(config: StudioDispatchConfig): StudioDispatcher {
   const spawnFn = config.spawnFn ?? nodeSpawn;
@@ -94,10 +116,12 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
     const invocationId = idFactory();
     const startedAt = clock();
 
-    if (req.kind !== 'lambda') {
-      // Serve targets (API / ALB / ECS) arrive in slice C; reject clearly
-      // rather than silently mis-dispatching.
-      const error = `Running '${req.kind}' targets from studio is not supported yet (Lambda only).`;
+    const verb = INVOKE_VERBS[req.kind];
+    if (verb === undefined) {
+      // Serve targets (api / alb / ecs) are long-running and dispatched by
+      // the serve manager, not here; reject clearly rather than silently
+      // mis-dispatching.
+      const error = `'${req.kind}' targets are not single-shot invokes (served via start-* instead).`;
       config.bus.emit('invocation', {
         id: invocationId,
         ts: startedAt,
@@ -130,18 +154,18 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       writeFileSync(eventFile, JSON.stringify(req.event ?? {}));
 
       const args = [
-        'invoke',
+        verb,
         req.targetId,
         '--event',
         eventFile,
         ...buildSharedChildArgs(config),
-        ...buildPerRunArgs('lambda', req.options),
+        ...buildPerRunArgs(req.kind, req.options),
       ];
 
       // The `--env-vars` per-run option takes a FILE — materialize the UI's
       // KV rows / JSON into a SAM-shape temp file (in the same auto-cleaned
       // dir as the event) and point the child at it.
-      const envVars = resolveEnvVars('lambda', req.options);
+      const envVars = resolveEnvVars(req.kind, req.options);
       if (envVars) {
         const envFile = join(dir, 'env-vars.json');
         writeFileSync(envFile, JSON.stringify(envVars));
@@ -161,44 +185,14 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
 
       const durationMs = clock() - startedAt;
       const ok = code === 0;
-      const failure = stderr.trim() || `cdkl invoke exited ${code}`;
+      const failure = stderr.trim() || `cdkl ${verb} exited ${code}`;
 
-      // `cdkl invoke` interleaves synth progress + streamed container logs on
-      // stdout and writes the Lambda response there too. The RIE response is
-      // always a single line of valid JSON (the serialized handler return
-      // value or error object), whereas progress / container lines
-      // (`Synthesizing…`, `Starting container…`, `START/END/REPORT`) are NOT
-      // JSON — so the response is the LAST JSON-parseable stdout line, which is
-      // robust against a container log line flushing AFTER the response. Every
-      // other stdout line is surfaced as a log event. Falls back to the last
-      // line when nothing parses (an unusual non-JSON / empty response).
-      const stdoutLines = stdout
-        .split('\n')
-        .map((l) => l.replace(/\r$/, '').trimEnd())
-        .filter((l) => l.trim().length > 0);
+      const { response, raw, stdoutLogLines } = extractResponse(req.kind, stdout, ok, failure);
 
-      let responseIdx = -1;
-      let response: unknown;
-      if (ok) {
-        for (let i = stdoutLines.length - 1; i >= 0; i -= 1) {
-          const parsed = tryParseJson(stdoutLines[i] ?? '');
-          if (parsed.ok) {
-            responseIdx = i;
-            response = parsed.value;
-            break;
-          }
-        }
-        if (responseIdx === -1 && stdoutLines.length > 0) {
-          responseIdx = stdoutLines.length - 1;
-          response = stdoutLines[responseIdx];
-        }
-      } else {
-        response = failure;
-      }
-
-      // Every stdout line that is not the response line is a log line.
-      stdoutLines.forEach((line, i) => {
-        if (i === responseIdx) return;
+      // Surface the stdout lines that are NOT the response as log events
+      // (Lambda container logs; AgentCore has none — its whole stdout is the
+      // response, so stdoutLogLines is empty there).
+      stdoutLogLines.forEach((line) => {
         config.bus.emit('log', {
           ts: clock(),
           containerId: invocationId,
@@ -208,7 +202,6 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         });
       });
 
-      const raw = responseIdx >= 0 ? (stdoutLines[responseIdx] ?? '') : '';
       const status = ok ? 200 : 500;
 
       config.bus.emit('invocation', {
@@ -317,6 +310,77 @@ function runChild(
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+/** The response recovered from a child's stdout, plus the leftover log lines. */
+interface ExtractedResponse {
+  /** The response value to thread into the timeline (parsed JSON or raw text). */
+  response: unknown;
+  /** The single raw stdout line / text the response was recovered from. */
+  raw: string;
+  /** Stdout lines that are NOT the response — surfaced as `log` events. */
+  stdoutLogLines: string[];
+}
+
+/**
+ * Recover the response from a child's accumulated stdout, per target kind.
+ * On failure (`ok === false`) the response is the `failure` summary for every
+ * kind and no stdout is treated as the response.
+ *
+ * - **lambda**: `cdkl invoke` interleaves container logs (`START`/`END`/
+ *   `REPORT`, handler `console.log`) with the RIE response on stdout. The
+ *   response is always a single line of valid JSON, so it is the LAST
+ *   JSON-parseable stdout line (robust against a container log line flushing
+ *   AFTER the response); every other line is a log. Falls back to the last
+ *   line when nothing parses (an unusual non-JSON / empty response).
+ * - **agentcore**: `cdkl invoke-agentcore` streams the agent's WHOLE output to
+ *   stdout (HTTP SSE chunks / MCP-A2A JSON-RPC result / `--ws` frames) and
+ *   nothing else (synth progress is silenced to stderr by `CDKL_LOG_LEVEL`),
+ *   so the entire stdout IS the response — parsed as JSON when it parses
+ *   whole (a single MCP result), else kept as the raw streamed text. There
+ *   are no separate stdout log lines.
+ */
+function extractResponse(
+  kind: StudioTargetKind,
+  stdout: string,
+  ok: boolean,
+  failure: string
+): ExtractedResponse {
+  if (kind === 'agentcore') {
+    const text = stdout.trim();
+    if (!ok) return { response: failure, raw: '', stdoutLogLines: [] };
+    const parsed = tryParseJson(text);
+    return { response: parsed.ok ? parsed.value : text, raw: text, stdoutLogLines: [] };
+  }
+
+  // lambda (and any other future single-line-JSON-response kind)
+  const stdoutLines = stdout
+    .split('\n')
+    .map((l) => l.replace(/\r$/, '').trimEnd())
+    .filter((l) => l.trim().length > 0);
+
+  if (!ok) {
+    return { response: failure, raw: '', stdoutLogLines: stdoutLines };
+  }
+
+  let responseIdx = -1;
+  let response: unknown;
+  for (let i = stdoutLines.length - 1; i >= 0; i -= 1) {
+    const parsed = tryParseJson(stdoutLines[i] ?? '');
+    if (parsed.ok) {
+      responseIdx = i;
+      response = parsed.value;
+      break;
+    }
+  }
+  if (responseIdx === -1 && stdoutLines.length > 0) {
+    responseIdx = stdoutLines.length - 1;
+    response = stdoutLines[responseIdx];
+  }
+
+  const raw = responseIdx >= 0 ? (stdoutLines[responseIdx] ?? '') : '';
+  const stdoutLogLines = stdoutLines.filter((_, i) => i !== responseIdx);
+  return { response, raw, stdoutLogLines };
 }
 
 /** Try to JSON-parse `raw`; `ok` distinguishes a parsed value from a failure. */

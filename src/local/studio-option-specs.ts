@@ -143,6 +143,43 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
     },
     { flag: '--no-verify-auth', kind: 'boolean', label: 'Disable auth guard' },
   ],
+  agentcore: [
+    {
+      flag: '--ws',
+      kind: 'boolean',
+      label: 'Stream over WebSocket (/ws)',
+      help: "Stream over the agent's bidirectional /ws endpoint instead of POST /invocations (one-shot from studio: the event is the first frame, received frames are the response). Ignored for an MCP runtime.",
+    },
+    {
+      flag: '--sigv4',
+      kind: 'boolean',
+      label: 'Sign request with SigV4',
+      help: 'Sign the invocation with AWS SigV4 (service bedrock-agentcore) using the resolved credentials. Ignored on a JWT-protected runtime.',
+    },
+    {
+      flag: '--bearer-token',
+      kind: 'scalar',
+      label: 'Bearer token',
+      placeholder: 'eyJ...',
+      help: "Bearer JWT to present when the runtime declares a customJwtAuthorizer (verified against the runtime's OIDC discovery URL, then forwarded).",
+    },
+    {
+      flag: '--session-id',
+      kind: 'scalar',
+      label: 'Session id',
+      placeholder: 'auto (random UUID)',
+      help: 'AgentCore runtime session id header value. Defaults to a random UUID when blank.',
+    },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay container env vars — add KEY=VALUE rows or paste a JSON object.',
+    },
+  ],
   ecs: [
     {
       flag: '--max-tasks',
