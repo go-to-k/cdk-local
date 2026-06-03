@@ -123,12 +123,14 @@ export function createStudioStore(
     logsForInvocation: (id): StudioLogEvent[] => {
       const inv = invocations.get(id);
       if (!inv) return [];
-      // Bind by KIND, not by "did the strict filter match anything". A
-      // Lambda's lines are keyed to the invocation id, so bind STRICTLY by
-      // container id — even when the invocation emitted none (an empty
-      // result is correct; falling back to a time window would surface a
-      // DIFFERENT invocation's logs of the same function).
-      if (inv.kind === 'lambda') {
+      // Bind by KIND, not by "did the strict filter match anything". The
+      // single-shot invoke kinds (lambda + agentcore, issue #303) key every
+      // log line to the invocation id (the dispatcher's runChild emits each
+      // with `containerId: invocationId`), so bind STRICTLY by container id —
+      // even when the invocation emitted none (an empty result is correct;
+      // falling back to a time window would surface a DIFFERENT invocation's
+      // logs of the same target, e.g. two sequential invokes of one agent).
+      if (inv.kind === 'lambda' || inv.kind === 'agentcore') {
         return logs.filter((l) => l.containerId === id);
       }
       // A captured serve request's logs are keyed to the long-running serve
