@@ -302,7 +302,14 @@ if ! grep -qF 'serveLogPre.textContent = arr.join(' "${BODY_FILE}" \
   echo "FAIL: GET / did not include the composer send-flow fixes (issues #334 / #335 / #336)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes"
+# Headers KV / JSON editor (issue #337): the request composer's Headers field
+# is the KV/JSON editor, not a one-per-line textarea.
+if ! grep -qF 'function buildHeaderEditor()' "${BODY_FILE}" \
+  || ! grep -qF 'headers: headerEditor.collect()' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the headers KV/JSON editor (issue #337)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.

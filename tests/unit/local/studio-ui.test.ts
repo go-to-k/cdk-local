@@ -210,6 +210,17 @@ describe('renderStudioHtml', () => {
     expect(html).toContain("el('button', 'reinvoke-btn', 'Re-invoke')");
   });
 
+  it('renders a KV / JSON headers editor in the request composer (issue #337)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The editor builder + its KV/JSON modes + the collect/jsonError wiring.
+    expect(html).toContain('function buildHeaderEditor()');
+    expect(html).toContain('const headerEditor = buildHeaderEditor()');
+    expect(html).toContain('headers: headerEditor.collect()');
+    expect(html).toContain('headerEditor.jsonError()');
+    // The old one-per-line textarea label is gone.
+    expect(html).not.toContain('Headers (one per line: Name: value)');
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.
