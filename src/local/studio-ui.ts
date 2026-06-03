@@ -29,6 +29,7 @@ const STUDIO_CSS = `
   body {
     margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     color: #e6e6e6; background: #1a1a1a; height: 100vh; overflow: hidden;
+    display: flex; flex-direction: column;
   }
   header {
     padding: 8px 14px; background: #111; border-bottom: 1px solid #333;
@@ -36,9 +37,30 @@ const STUDIO_CSS = `
   }
   header .brand { font-weight: 700; color: #fff; }
   header .meta { color: #888; font-size: 12px; }
+  #session-bar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 5px 14px; background: #141414; border-bottom: 1px solid #2a2a2a;
+    font-size: 12px;
+  }
+  #session-bar .sess-title { color: #888; text-transform: uppercase; font-size: 11px; }
+  #session-bar .sess-bind { color: #bbb; display: inline-flex; align-items: center; gap: 4px; }
+  #session-bar input[type=text] {
+    background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
+    padding: 3px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 180px;
+  }
+  #session-bar input:focus { outline: none; border-color: #4ec97a; }
+  #session-bar button {
+    background: #2a3a2c; color: #7bd88f; border: 1px solid #2f4030; border-radius: 3px;
+    cursor: pointer; padding: 3px 12px; font: 12px ui-monospace, monospace;
+  }
+  #session-bar button:hover { background: #314b34; }
+  #session-bar #sess-msg { color: #7bd88f; min-width: 40px; }
+  #session-bar .sess-synth { color: #777; margin-left: auto; }
   main {
     display: grid; grid-template-columns: 280px 5px 1fr 5px 320px;
-    height: calc(100vh - 38px);
+    /* Body is a flex column (header + session-bar + main); main fills the
+       rest so the height is computed — no magic constant, wrap-safe. */
+    flex: 1; min-height: 0;
   }
   .pane { overflow: auto; }
   .splitter { background: #2a2a2a; cursor: col-resize; }
@@ -860,11 +882,78 @@ const STUDIO_SCRIPT = `
     wire('split-right', (dx, l0, r0) => { right = clamp(r0 - dx); });
   }
 
+  // Session config (issue #301 slice 3): synth-time context is read-only;
+  // the run-time bindings (from-cfn-stack / assume-role) are editable and
+  // apply to subsequent invokes / serves.
+  async function loadConfig() {
+    try {
+      const res = await fetch('/api/config');
+      const c = await res.json();
+      const cfn = document.getElementById('sess-cfn');
+      const cfnName = document.getElementById('sess-cfn-name');
+      const role = document.getElementById('sess-role');
+      const on = c.fromCfnStack !== undefined && c.fromCfnStack !== false;
+      cfn.checked = on;
+      cfnName.value = typeof c.fromCfnStack === 'string' ? c.fromCfnStack : '';
+      cfnName.style.display = on ? '' : 'none';
+      role.value = c.assumeRole || '';
+      const s = c.synth || {};
+      const parts = [];
+      if (s.profile) parts.push('profile=' + s.profile);
+      if (s.region) parts.push('region=' + s.region);
+      if (s.app) parts.push('app=' + s.app);
+      document.getElementById('sess-synth').textContent = parts.length ? '(' + parts.join(' \\u00b7 ') + ')' : '';
+    } catch (err) {
+      /* best-effort; the session bar is non-critical */
+    }
+  }
+
+  async function saveConfig() {
+    const cfn = document.getElementById('sess-cfn');
+    const cfnName = document.getElementById('sess-cfn-name');
+    const role = document.getElementById('sess-role');
+    const msg = document.getElementById('sess-msg');
+    const body = {
+      fromCfnStack: cfn.checked ? cfnName.value.trim() || true : null,
+      assumeRole: role.value.trim() || null,
+    };
+    msg.textContent = 'Saving...';
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(function () { return {}; });
+        msg.textContent = 'Error: ' + (e.error || ('HTTP ' + res.status));
+        return;
+      }
+      msg.textContent = 'Saved';
+      setTimeout(function () { msg.textContent = ''; }, 1500);
+      await loadConfig();
+    } catch (err) {
+      msg.textContent = 'Failed: ' + err;
+    }
+  }
+
+  function wireSession() {
+    const cfn = document.getElementById('sess-cfn');
+    const cfnName = document.getElementById('sess-cfn-name');
+    cfn.addEventListener('change', function () {
+      cfnName.style.display = cfn.checked ? '' : 'none';
+      if (cfn.checked) cfnName.focus();
+    });
+    document.getElementById('sess-save').onclick = saveConfig;
+  }
+
   loadTargets().then(loadRunning);
   loadHistory();
+  loadConfig();
   connect();
   initSplitters();
   wireLogSearch();
+  wireSession();
 `;
 
 /**
@@ -893,6 +982,16 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <span class="meta">${safeApp}</span>
   <span id="conn" class="down">● connecting</span>
 </header>
+<div id="session-bar">
+  <span class="sess-title">Session</span>
+  <label class="sess-bind"><input type="checkbox" id="sess-cfn" /> from-cfn-stack</label>
+  <input id="sess-cfn-name" type="text" placeholder="stack name (blank = auto)" style="display:none" />
+  <label class="sess-bind" for="sess-role">assume-role</label>
+  <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" />
+  <button id="sess-save" type="button">Save</button>
+  <span id="sess-msg"></span>
+  <span id="sess-synth" class="sess-synth"></span>
+</div>
 <main>
   <section class="pane" id="targets"><h2>Targets</h2></section>
   <div class="splitter" id="split-left"></div>

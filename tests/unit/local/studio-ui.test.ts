@@ -29,6 +29,15 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
+  it('renders the editable Session bar (issue #301 slice 3)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    expect(html).toContain('id="session-bar"');
+    expect(html).toContain('id="sess-cfn"'); // from-cfn-stack toggle
+    expect(html).toContain('id="sess-role"'); // assume-role input
+    expect(html).toContain('id="sess-save"'); // Save button
+    expect(html).toContain('/api/config'); // reads + writes the config endpoint
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.

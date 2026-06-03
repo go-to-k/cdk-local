@@ -227,7 +227,13 @@ compute-locally category for Lambda + API Gateway).
   slice 1 added the session-global `--from-cfn-stack [name]` /
   `--assume-role <arn>` flags to `cdkl studio`: they bind the whole
   session and are forwarded verbatim to every spawned child (built in
-  `src/local/studio-child-args.ts`).
+  `src/local/studio-child-args.ts`). Issue #301 slice 3 made the
+  run-time bindings (`from-cfn-stack` / `assume-role`) editable from the
+  UI Session bar: the `childConfig` the dispatcher + serve-manager read
+  per-run is mutable, `GET /api/config` exposes it (with the read-only
+  synth-time `profile` / `region` / `app`), and `PATCH /api/config`
+  (`applyConfigPatch`) edits the bindings so the change applies to
+  subsequent runs without a restart.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -298,10 +304,12 @@ compute-locally category for Lambda + API Gateway).
   UI at `/`, the synthesized target list at `/api/targets`, an SSE
   stream of the event bus at `/api/events`, `POST /api/run` (single-shot
   invoke / serve start), `POST /api/stop` (serve stop),
-  `GET /api/running` (running serve snapshot), and the slice-C3 store
+  `GET /api/running` (running serve snapshot), the slice-C3 store
   endpoints `GET /api/history` / `GET /api/logs?q=` (full-text log
-  search) / `GET /api/invocations/<id>/logs` (per-request log binding);
-  collision-bumps the port),
+  search) / `GET /api/invocations/<id>/logs` (per-request log binding),
+  and the slice-3 session config `GET /api/config` (read-only synth
+  context + editable bindings) / `PATCH /api/config` (edit the run-time
+  bindings); collision-bumps the port),
   studio-ui (the framework-free web UI embedded as a string so it ships
   inside the npm package with no asset-copy build step; 3-pane: targets /
   workspace composer / timeline; Lambdas get an [Invoke] composer, serve

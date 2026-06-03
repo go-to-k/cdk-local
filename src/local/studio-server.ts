@@ -119,6 +119,20 @@ export interface StudioServerOptions {
    * empty results.
    */
   store?: StudioStore;
+  /**
+   * Session config snapshot served at `GET /api/config` (issue #301 slice 3)
+   * — the read-only synth-time context (profile / region / app) plus the
+   * editable run-time bindings (from-cfn-stack / assume-role). When omitted
+   * the endpoint returns an empty config.
+   */
+  getConfig?: () => unknown;
+  /**
+   * Handler for `PATCH /api/config` — update the editable run-time bindings
+   * (from-cfn-stack / assume-role); the change applies to subsequent runs.
+   * Returns the updated config. When omitted, `/api/config` is read-only and
+   * a PATCH answers 501.
+   */
+  patchConfig?: (body: unknown) => Promise<unknown>;
 }
 
 /** A running studio server. */
@@ -220,6 +234,16 @@ function handleRequest(
     const logs = options.store ? options.store.logsForInvocation(id) : [];
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({ logs }));
+    return;
+  }
+  if (req.method === 'GET' && path === '/api/config') {
+    const config = options.getConfig ? options.getConfig() : {};
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(config));
+    return;
+  }
+  if (req.method === 'PATCH' && path === '/api/config') {
+    void handleDispatch(req, res, options.patchConfig);
     return;
   }
   if (req.method === 'GET' && path === '/api/events') {

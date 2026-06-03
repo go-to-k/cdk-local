@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  applyConfigPatch,
   coerceRunRequest,
   coerceStopRequest,
   createLocalStudioCommand,
   parseStudioPort,
+  type EditableSessionBindings,
 } from '../../../src/cli/commands/local-studio.js';
 
 describe('createLocalStudioCommand', () => {
@@ -105,6 +107,45 @@ describe('coerceRunRequest', () => {
     expect(() =>
       coerceRunRequest({ targetId: 'T', kind: 'lambda', options: { '--env-vars': '{bad' } })
     ).toThrow(/not valid JSON/);
+  });
+});
+
+describe('applyConfigPatch', () => {
+  it('sets a named from-cfn-stack + an assume-role ARN', () => {
+    const cfg: EditableSessionBindings = {};
+    applyConfigPatch({ fromCfnStack: 'MyStack', assumeRole: 'arn:aws:iam::1:role/r' }, cfg);
+    expect(cfg).toEqual({ fromCfnStack: 'MyStack', assumeRole: 'arn:aws:iam::1:role/r' });
+  });
+
+  it('sets a bare from-cfn-stack (true)', () => {
+    const cfg: EditableSessionBindings = {};
+    applyConfigPatch({ fromCfnStack: true }, cfg);
+    expect(cfg.fromCfnStack).toBe(true);
+  });
+
+  it('clears a binding on null / false / empty-string', () => {
+    const cfg: EditableSessionBindings = { fromCfnStack: 'X', assumeRole: 'arn:...' };
+    applyConfigPatch({ fromCfnStack: null, assumeRole: '' }, cfg);
+    expect('fromCfnStack' in cfg).toBe(false);
+    expect('assumeRole' in cfg).toBe(false);
+  });
+
+  it('only touches the keys present in the body (partial update)', () => {
+    const cfg: EditableSessionBindings = { fromCfnStack: 'Keep', assumeRole: 'arn:keep' };
+    applyConfigPatch({ assumeRole: 'arn:new' }, cfg);
+    expect(cfg).toEqual({ fromCfnStack: 'Keep', assumeRole: 'arn:new' });
+  });
+
+  it.each([null, 42, 'str', [1]])('rejects a non-object body %p', (body) => {
+    expect(() => applyConfigPatch(body, {})).toThrow(/must be a JSON object/);
+  });
+
+  it('rejects a non-string/boolean from-cfn-stack value', () => {
+    expect(() => applyConfigPatch({ fromCfnStack: 42 }, {})).toThrow(/"fromCfnStack" must be/);
+  });
+
+  it('rejects a non-string assume-role value', () => {
+    expect(() => applyConfigPatch({ assumeRole: 42 }, {})).toThrow(/"assumeRole" must be/);
   });
 });
 
