@@ -1,3 +1,10 @@
+## [0.103.4](https://github.com/go-to-k/cdk-local/compare/v0.103.3...v0.103.4) (2026-06-03)
+
+
+### Bug Fixes
+
+* **start-alb:** auto-remap privileged listener ports instead of crashing ([#353](https://github.com/go-to-k/cdk-local/issues/353)) ([7d4a297](https://github.com/go-to-k/cdk-local/commit/7d4a297f377eb820b2bde77b8ca9142e0ccd8a2f))
+
 ## [0.103.3](https://github.com/go-to-k/cdk-local/compare/v0.103.2...v0.103.3) (2026-06-03)
 
 
