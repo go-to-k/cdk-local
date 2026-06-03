@@ -1,3 +1,10 @@
+# [0.99.0](https://github.com/go-to-k/cdk-local/compare/v0.98.0...v0.99.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** exclude custom-resource / provider Lambdas from the target list by default ([#329](https://github.com/go-to-k/cdk-local/issues/329)) ([d02a2a7](https://github.com/go-to-k/cdk-local/commit/d02a2a7a958a5049b1be8d1624cc07df9c0d0541))
+
 # [0.98.0](https://github.com/go-to-k/cdk-local/compare/v0.97.1...v0.98.0) (2026-06-03)
 
 
