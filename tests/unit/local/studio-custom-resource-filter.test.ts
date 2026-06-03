@@ -71,7 +71,7 @@ const groups = (): StudioTargetGroup[] => [
   },
   {
     kind: 'ecs',
-    title: 'ECS Services / Tasks',
+    title: 'ECS Services',
     entries: [lambda('MyStack/Service')],
   },
   {

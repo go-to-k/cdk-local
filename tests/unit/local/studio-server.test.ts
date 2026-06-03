@@ -178,7 +178,7 @@ describe('annotatePinnedEcsTargets', () => {
   const groups = (): StudioTargetGroup[] => [
     {
       kind: 'ecs',
-      title: 'ECS Services / Tasks',
+      title: 'ECS Services',
       entries: [
         { id: 'S/Pinned', qualifiedId: 'S:Pinned', servable: true },
         { id: 'S/Asset', qualifiedId: 'S:Asset', servable: true },
@@ -220,7 +220,7 @@ describe('annotatePinnedEcsTargets', () => {
 });
 
 describe('toStudioTargetGroups', () => {
-  it('projects a TargetListing into the five studio groups', () => {
+  it('projects a TargetListing into the studio groups', () => {
     const listing: TargetListing = {
       ...emptyListing(),
       lambdas: [{ qualifiedId: 'S:Fn', displayPath: 'S/Fn' }],
@@ -230,7 +230,17 @@ describe('toStudioTargetGroups', () => {
     };
     const groups = toStudioTargetGroups(listing);
 
-    expect(groups.map((g) => g.kind)).toEqual(['lambda', 'api', 'ecs', 'agentcore', 'alb']);
+    // ECS Services and Task Definitions are SEPARATE groups (issue #352), so
+    // there are now two `ecs`-kind groups (services first, then task defs).
+    expect(groups.map((g) => g.kind)).toEqual(['lambda', 'api', 'ecs', 'ecs', 'agentcore', 'alb']);
+    expect(groups.map((g) => g.title)).toEqual([
+      'Lambda Functions',
+      'APIs',
+      'ECS Services',
+      'ECS Task Definitions',
+      'AgentCore Runtimes',
+      'Load Balancers',
+    ]);
     expect(groups[0].entries).toEqual([{ id: 'S/Fn', qualifiedId: 'S:Fn' }]);
     // API surface kind is carried onto the entry.
     expect(groups[1].entries[0]).toEqual({
@@ -238,10 +248,12 @@ describe('toStudioTargetGroups', () => {
       qualifiedId: 'S:Api',
       surface: 'HTTP API v2',
     });
-    // ECS services and task definitions fold into the one `ecs` group, but
-    // only the SERVICE is servable (start-service); the task def is not.
-    expect(groups[2].entries.map((e) => e.id)).toEqual(['S:Svc', 'S:Task']);
-    expect(groups[2].entries.map((e) => e.servable)).toEqual([true, false]);
+    // The services group holds only the servable service; the task-definitions
+    // group holds only the non-servable task def.
+    expect(groups[2].entries.map((e) => e.id)).toEqual(['S:Svc']);
+    expect(groups[2].entries.map((e) => e.servable)).toEqual([true]);
+    expect(groups[3].entries.map((e) => e.id)).toEqual(['S:Task']);
+    expect(groups[3].entries.map((e) => e.servable)).toEqual([false]);
   });
 
   it('falls back to the qualified id when no display path exists', () => {
@@ -352,7 +364,7 @@ describe('startStudioServer', () => {
       targetGroups: [
         {
           kind: 'ecs',
-          title: 'ECS Services / Tasks',
+          title: 'ECS Services',
           entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true, pinned: true }],
         },
       ],

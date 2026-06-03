@@ -334,6 +334,8 @@ for needle in \
   '"kind":"lambda"' \
   '"kind":"api"' \
   '"kind":"ecs"' \
+  '"title":"ECS Services"' \
+  '"title":"ECS Task Definitions"' \
   '"kind":"agentcore"' \
   '"kind":"alb"' \
   'LocalStudioFixture/MyHandler'
