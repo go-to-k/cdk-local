@@ -104,7 +104,7 @@ cdkl studio --stack 'dev/*'                  # scope the displayed target list (
 
 `--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too.
 
-Each target's composer surfaces its per-run options as controls — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token` — plus an **All options** panel listing the underlying command's full flag set with a raw extra-args input for anything not surfaced as a control.
+Each target's composer surfaces its per-run options as controls — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token` — plus an **All options** panel listing the underlying command's full flag set with a raw extra-args input for anything not surfaced as a control. An ECS service whose image is pinned to a deployed registry (local edits don't take effect) also gets a Dockerfile picker that rebuilds it from local source.
 
 ### Deployed stack binding — `--from-cfn-stack`
 

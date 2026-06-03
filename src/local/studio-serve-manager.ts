@@ -23,6 +23,13 @@ export interface StudioServeRequest {
    * controls don't expose can still be passed.
    */
   rawArgs?: string;
+  /**
+   * Dockerfile path picked for a pinned `ecs` service (issue #301) — appended
+   * as `--image-override <path>` so `start-service` rebuilds the
+   * deployed-registry-pinned image from local source. Bare (picker) form: the
+   * single booted service is the override target. Ignored when blank.
+   */
+  imageOverride?: string;
 }
 
 /** A request to stop a running served target. */
@@ -255,6 +262,15 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...spec.portArgs,
       ...buildSharedChildArgs(config),
       ...buildPerRunArgs(req.kind, req.options),
+      // Image-override picker (issue #301): a pinned ecs service rebuilds from
+      // the chosen local Dockerfile. The EXPLICIT `<target>=<dockerfile>` form
+      // is used (not the bare picker form) because studio spawns the child
+      // WITHOUT a TTY — the engine skips bare picker-form paths when
+      // non-interactive, but the explicit form maps deterministically. The
+      // target key is the same id passed as the start-service target arg.
+      ...(req.imageOverride && req.imageOverride.trim() !== ''
+        ? ['--image-override', req.targetId + '=' + req.imageOverride.trim()]
+        : []),
       // `cdkl studio --watch` (issue #301): every serve kind (start-api /
       // start-alb / start-service) implements `--watch` rolling reload, so
       // forwarding the bare flag makes a UI-started serve hot-reload on source

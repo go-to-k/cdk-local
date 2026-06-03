@@ -1,0 +1,15 @@
+# Image-override fixture for the studio pinned-service Dockerfile picker
+# (issue #301). MyService's deployed image is a public-registry pin
+# (`public.ecr.aws/docker/library/python:3.12-alpine`) — local source edits do
+# NOT take effect for it. Picking THIS Dockerfile in the studio composer
+# threads `--image-override LocalStudioFixture/MyService=./Dockerfile.override`
+# to the spawned `start-service`, which rebuilds the service from here.
+#
+# The task definition's command (`python -m http.server 80`) serves the image
+# WORKDIR, so dropping a sentinel index.html in a WORKDIR distinguishes a local
+# override build (serves the sentinel) from the pinned image (serves the root
+# directory listing). The verify.sh curls for the sentinel to prove the
+# override applied end-to-end.
+FROM public.ecr.aws/docker/library/python:3.12-alpine
+RUN mkdir -p /srv && printf 'studio-image-override-301\n' > /srv/index.html
+WORKDIR /srv

@@ -59,6 +59,20 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('Object.keys(out).length ? out : undefined');
   });
 
+  it('renders an image-override Dockerfile picker for a pinned ecs service (issue #301)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The picker builder + its select are present.
+    expect(html).toContain('function buildImageOverridePicker');
+    expect(html).toContain("el('select', 'image-override-select')");
+    // Gated on the serve target being a pinned ecs service.
+    expect(html).toContain("meta.kind === 'ecs' && meta.pinned");
+    // The picked Dockerfile is threaded onto the serve body.
+    expect(html).toContain('body.imageOverride = imageOverride');
+    // The picker is populated from the boot-scanned dockerfiles carried on the
+    // target list payload.
+    expect(html).toContain('studioDockerfiles = Array.isArray(data.dockerfiles)');
+  });
+
   it('makes AgentCore a single-shot invoke target with its own options (issue #303)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     // AgentCore is wired as an invoke kind (event composer), alongside lambda.

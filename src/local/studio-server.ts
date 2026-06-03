@@ -25,6 +25,15 @@ export interface StudioTarget {
    * serve target): only services carry `servable: true`.
    */
   servable?: boolean;
+  /**
+   * Set on a servable `ecs` service whose image is a deployed-registry pin
+   * (ECR / public) rather than a local CDK asset (issue #301). Local source
+   * edits do NOT take effect for a pinned image, so the serve composer offers
+   * a Dockerfile picker that threads `--image-override` to the spawned
+   * `start-service`. A local-asset service (which already hot-reloads under
+   * `--watch`) is not marked and gets no picker.
+   */
+  pinned?: boolean;
 }
 
 /** A category of targets, grouped by the studio kind that runs them. */
@@ -72,6 +81,37 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
   ];
 }
 
+/**
+ * Annotate the servable `ecs` service entries of `groups` with `pinned: true`
+ * when `classify(targetId)` returns true (issue #301). `classify` decides
+ * pinned (deployed-registry image) vs local CDK asset for one service id; the
+ * caller supplies it (studio's boot does `resolveEcsServiceTarget` +
+ * `isLocalCdkAssetImage`, swallowing resolution failures as "not pinned").
+ * Mutates the entries in place and returns whether ANY service was pinned, so
+ * the caller can skip the (otherwise pointless) Dockerfile scan for an
+ * all-local-asset app. Non-ecs groups and non-servable entries (task defs) are
+ * left untouched. Exported so a host CLI building its own studio can reuse the
+ * same pinned-target annotation, and so the boot logic is unit-testable
+ * without a real synth.
+ */
+export function annotatePinnedEcsTargets(
+  groups: StudioTargetGroup[],
+  classify: (targetId: string) => boolean
+): boolean {
+  let anyPinned = false;
+  for (const group of groups) {
+    if (group.kind !== 'ecs') continue;
+    for (const entry of group.entries) {
+      if (!entry.servable) continue;
+      if (classify(entry.id)) {
+        entry.pinned = true;
+        anyPinned = true;
+      }
+    }
+  }
+  return anyPinned;
+}
+
 /** Compile a `*` / `?` glob to an anchored RegExp matched against a target id. */
 function globToRegExp(glob: string): RegExp {
   const escaped = glob
@@ -112,6 +152,13 @@ export interface StudioServerOptions {
   bus: StudioEventBus;
   /** Target groups to serve at `GET /api/targets`. */
   targetGroups: StudioTargetGroup[];
+  /**
+   * Dockerfiles discovered under the app directory at boot (issue #301),
+   * served alongside the target groups at `GET /api/targets`. The serve
+   * composer of a pinned `ecs` service offers them in an image-override
+   * picker. Empty / omitted => no picker options.
+   */
+  dockerfiles?: string[];
   /** Header label for the running app / stack context. */
   appLabel: string;
   /** CLI brand name (`cdkl`, or a host rebrand). */
@@ -189,7 +236,10 @@ export async function startStudioServer(
   const host = options.host ?? '127.0.0.1';
   const maxBump = options.maxPortBump ?? 20;
   const html = renderStudioHtml(options.appLabel, options.cliName);
-  const targetsJson = JSON.stringify({ groups: options.targetGroups });
+  const targetsJson = JSON.stringify({
+    groups: options.targetGroups,
+    dockerfiles: options.dockerfiles ?? [],
+  });
 
   const server = createServer((req, res) =>
     handleRequest(req, res, options.bus, html, targetsJson, options)

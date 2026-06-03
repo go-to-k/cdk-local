@@ -24,6 +24,7 @@ import {
   startStudioServer,
   toStudioTargetGroups,
   filterStudioTargetGroups,
+  annotatePinnedEcsTargets,
   type RunningStudioServer,
 } from '../../local/studio-server.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
@@ -33,6 +34,9 @@ import {
   type OptionValues,
 } from '../../local/studio-option-specs.js';
 import { tokenizeRawArgs } from '../../local/studio-option-catalog.js';
+import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
+import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
+import { discoverDockerfiles } from '../../local/image-override-engine.js';
 import {
   createStudioServeManager,
   type StudioServeManager,
@@ -57,7 +61,10 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
   if (typeof body !== 'object' || body === null) {
     throw new Error('Request body must be a JSON object.');
   }
-  const { targetId, kind, event, options, rawArgs } = body as Record<string, unknown>;
+  const { targetId, kind, event, options, rawArgs, imageOverride } = body as Record<
+    string,
+    unknown
+  >;
   if (typeof targetId !== 'string' || targetId.trim() === '') {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
@@ -86,12 +93,20 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     tokenizeRawArgs(rawArgs);
     runRawArgs = rawArgs;
   }
+  let runImageOverride: string | undefined;
+  if (imageOverride !== undefined) {
+    if (typeof imageOverride !== 'string') {
+      throw new Error('Request body "imageOverride" must be a string.');
+    }
+    if (imageOverride.trim() !== '') runImageOverride = imageOverride;
+  }
   return {
     targetId,
     kind: kind as StudioTargetKind,
     event,
     ...(runOptions !== undefined ? { options: runOptions } : {}),
     ...(runRawArgs !== undefined ? { rawArgs: runRawArgs } : {}),
+    ...(runImageOverride !== undefined ? { imageOverride: runImageOverride } : {}),
   };
 }
 
@@ -282,6 +297,33 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
       .flatMap((g) => g.entries.filter((e) => e.servable).map((e) => e.id))
   );
 
+  // Mark servable ECS services whose image is a deployed-registry pin (ECR /
+  // public) rather than a local CDK asset (issue #301). A pinned image does
+  // NOT pick up local source edits, so the UI offers an image-override
+  // Dockerfile picker for those services; a local-asset service already
+  // hot-reloads under `--watch` and gets no picker.
+  //
+  // Classification is BEST-EFFORT and deliberately STATE-FREE: it reads the
+  // synthed template only (no deployed-state fetch, no AWS calls at boot), so
+  // it is cheap, but under `--from-cfn-stack` an ECR image expressed as an
+  // unresolved intrinsic could be hinted differently than the actual
+  // start-service verdict. The hint only governs whether the UI surfaces the
+  // picker; a mis-hinted service can still be overridden via the "All options"
+  // raw-args `--image-override`. Per-target resolution failures are non-fatal
+  // (the service stays unmarked). Dockerfiles are scanned once, only when at
+  // least one service is pinned, so an all-local app pays nothing.
+  const anyPinned = annotatePinnedEcsTargets(targetGroups, (id) => {
+    try {
+      return !isLocalCdkAssetImage(resolveEcsServiceTarget(id, stacks));
+    } catch (err) {
+      logger.debug(
+        `studio: could not classify pin status for '${id}': ${err instanceof Error ? err.message : String(err)}`
+      );
+      return false;
+    }
+  });
+  const dockerfiles = anyPinned ? discoverDockerfiles(process.cwd()) : [];
+
   const bus = new StudioEventBus();
   // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
   // bin); both the invoke dispatcher and the serve manager spawn it again
@@ -335,6 +377,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     port,
     bus,
     targetGroups,
+    dockerfiles,
     appLabel,
     cliName: getEmbedConfig().cliName,
     store,

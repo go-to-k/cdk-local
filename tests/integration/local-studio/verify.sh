@@ -225,7 +225,12 @@ if ! grep -qF "buildAllOptions" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the All options / raw extra-args builder"
   exit 1
 fi
-echo "    OK: UI HTML served with the stack label + All options catalog"
+# The pinned-service image-override Dockerfile picker (issue #301).
+if ! grep -qF "buildImageOverridePicker" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the image-override Dockerfile picker"
+  exit 1
+fi
+echo "    OK: UI HTML served with the stack label + All options catalog + image-override picker"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
@@ -750,6 +755,21 @@ if ! grep -qF '"MyService"' "${BODY_FILE}" && ! grep -qF 'MyService' "${BODY_FIL
 fi
 echo "    OK: ecs service is listed (servable), task definition listed (not servable)"
 
+# Image-override discoverability (issue #301): MyService's image is a
+# public-registry pin (not a local CDK asset), so studio marks it
+# `"pinned":true` and exposes the boot-discovered Dockerfiles (including the
+# fixture's ./Dockerfile.override) so the composer can offer the picker.
+echo "==> /api/targets marks the pinned ecs service + lists discovered Dockerfiles"
+if ! grep -qF '"pinned":true' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets did not mark the public-image ECS service as pinned"
+  cat "${BODY_FILE}"; exit 1
+fi
+if ! grep -qF 'Dockerfile.override' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets did not surface the discovered ./Dockerfile.override"
+  cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: pinned ecs service flagged + Dockerfile.override discovered"
+
 ALB_TARGET="LocalStudioFixture/MyAlb"
 echo "==> POST /api/run starts an ALB serve (boots the ECS service + front-door)"
 # Re-arm the SSE listener to capture the ALB request invocation.
@@ -870,6 +890,54 @@ sleep 3
 echo "    OK: ECS service stopped"
 
 # ---------------------------------------------------------------------------
+# 10b. Image-override picker (issue #301): MyService's deployed image is a
+#      public-registry pin, so local source edits do not take effect. Studio
+#      threads the picked Dockerfile as
+#      `--image-override LocalStudioFixture/MyService=./Dockerfile.override`
+#      (the EXPLICIT form — studio's child has no TTY, so the bare picker form
+#      would be skipped). The override Dockerfile builds an image whose WORKDIR
+#      holds a sentinel index.html; the task-def command `python -m http.server
+#      80` then serves the sentinel. Curling it proves the override BUILT +
+#      RAN locally (the pinned image would serve a root directory listing,
+#      never this sentinel) — the picker -> /api/run -> --image-override ->
+#      start-service rebuild path end-to-end.
+# ---------------------------------------------------------------------------
+IO_HOST_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+echo "==> POST /api/run with imageOverride rebuilds the pinned service from a local Dockerfile"
+IO_FILE=$(mktemp)
+HTTP_IO=$(curl -s -o "${IO_FILE}" -w '%{http_code}' --max-time 300 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"imageOverride\":\"./Dockerfile.override\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${IO_HOST_PORT}\"}]}}" || true)
+if [[ "${HTTP_IO}" != "200" ]] || ! grep -qF '"status":"running"' "${IO_FILE}"; then
+  echo "FAIL: POST /api/run (image-override) returned HTTP ${HTTP_IO}"
+  echo "----- response -----"; cat "${IO_FILE}"; echo "--------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  rm -f "${IO_FILE}"; exit 1
+fi
+rm -f "${IO_FILE}"
+# The override build + boot can take a while (docker build of one extra layer
+# on top of the already-pulled base, then the replica boots). Retry the curl.
+IO_BODY=""
+for _ in $(seq 1 60); do
+  IO_BODY=$(curl -fsS --max-time 3 "http://127.0.0.1:${IO_HOST_PORT}/" 2>/dev/null || true)
+  if echo "${IO_BODY}" | grep -qF 'studio-image-override-301'; then break; fi
+  sleep 1
+done
+if ! echo "${IO_BODY}" | grep -qF 'studio-image-override-301'; then
+  echo "FAIL: image-override did not apply (sentinel absent from the served replica)"
+  echo "----- served body -----"; echo "${IO_BODY}" | head -c 1000; echo "-----------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: image-override threaded; the pinned service ran the LOCAL Dockerfile build (sentinel served)"
+
+echo "==> POST /api/stop tears the image-override service down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: image-override service stopped"
+
+# ---------------------------------------------------------------------------
 # 11. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
@@ -960,4 +1028,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"

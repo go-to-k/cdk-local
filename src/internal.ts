@@ -705,6 +705,7 @@ export {
   startStudioServer,
   toStudioTargetGroups,
   filterStudioTargetGroups,
+  annotatePinnedEcsTargets,
   type StudioServerOptions,
   type RunningStudioServer,
   type StudioTarget,
