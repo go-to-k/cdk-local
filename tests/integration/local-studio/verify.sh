@@ -204,7 +204,7 @@ echo "    OK: studio is running at ${URL}"
 # ---------------------------------------------------------------------------
 echo "==> GET / serves the studio UI"
 curl -fsS "${URL}/" -o "${BODY_FILE}"
-if ! grep -qF "cdkl studio" "${BODY_FILE}"; then
+if ! grep -qF "CDK Local Studio" "${BODY_FILE}"; then
   echo "FAIL: GET / did not return the studio UI"
   cat "${BODY_FILE}"
   exit 1
