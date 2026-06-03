@@ -1,3 +1,10 @@
+# [0.101.0](https://github.com/go-to-k/cdk-local/compare/v0.100.0...v0.101.0) (2026-06-03)
+
+
+### Features
+
+* **invoke:** add --response-file so studio reads the raw response (not stdout) ([#331](https://github.com/go-to-k/cdk-local/issues/331)) ([488d941](https://github.com/go-to-k/cdk-local/commit/488d9419dcdd0830b0d816d781144240ac7644e5))
+
 # [0.100.0](https://github.com/go-to-k/cdk-local/compare/v0.99.0...v0.100.0) (2026-06-03)
 
 
