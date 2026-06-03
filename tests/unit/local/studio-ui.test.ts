@@ -148,6 +148,26 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('.log-clear');
   });
 
+  it('preserves the serve composer across streamed log events (issue #334)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // A live LOGS <pre> ref is held and updated surgically on log events,
+    // instead of re-rendering the whole serve workspace (which wiped the
+    // composer inputs + the last response).
+    expect(html).toContain('serveLogPre');
+    expect(html).toContain('serveLogId');
+    expect(html).toContain('serveLogPre.textContent = arr.join(');
+    // The log handler no longer full-re-renders a shown serve.
+    expect(html).not.toContain('if (shownServeId === ev.containerId) renderServeWorkspace(ev.containerId)');
+  });
+
+  it('deselects the timeline and offers a back-to-composer affordance (issues #335 / #336)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // selectTarget + a fresh Send clear any stale `.row.sel`.
+    expect(html).toContain("document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'))");
+    // The captured-request detail offers a New request button back to the composer.
+    expect(html).toContain("el('button', 'reinvoke-btn', 'New request')");
+  });
+
   it('renders an in-workspace HTTP request composer for a running serve (issue #322)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     // The composer builder + its Send wiring to the same-origin relay.

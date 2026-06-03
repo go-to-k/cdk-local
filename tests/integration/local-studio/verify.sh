@@ -294,7 +294,15 @@ if ! grep -qF '.group-body .target:nth-child(2n) { background: #242424; }' "${BO
   echo "FAIL: GET / did not include the visual UX fixes (issues #333 / #338 / #339)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes"
+# Composer send-flow (issues #334 / #335 / #336): surgical serve-log update,
+# timeline deselect, and the New request back affordance.
+if ! grep -qF 'serveLogPre.textContent = arr.join(' "${BODY_FILE}" \
+  || ! grep -qF "el('button', 'reinvoke-btn', 'New request')" "${BODY_FILE}" \
+  || ! grep -qF "document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'))" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the composer send-flow fixes (issues #334 / #335 / #336)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.

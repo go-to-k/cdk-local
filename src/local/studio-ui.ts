@@ -260,6 +260,8 @@ const STUDIO_SCRIPT = `
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
   const logsById = new Map();      // invocationId / serve targetId -> [log lines]
+  let serveLogId = null;           // serve target whose LOGS <pre> is live (issue #334)
+  let serveLogPre = null;          // the live serve LOGS <pre>, updated surgically on log events
   const targetEls = new Map();     // targetId -> left-pane element
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
@@ -674,6 +676,10 @@ const STUDIO_SCRIPT = `
     // navigation drops it — see renderWsConsole).
     closeActiveWs();
     highlightTarget(id);
+    // Navigating to a composer leaves no timeline row "selected" — a stale
+    // row.sel from a previously-clicked event is confusing once the middle
+    // pane has moved on (issue #336).
+    document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'));
     shownDetailId = null;
     if (SERVE_KINDS.includes(kind)) {
       shownServeId = id;
@@ -734,6 +740,10 @@ const STUDIO_SCRIPT = `
   function renderServeWorkspace(id, errMsg) {
     const ws = document.getElementById('workspace');
     ws.innerHTML = '';
+    // Drop the live LOGS <pre> ref — it is re-established below if this render
+    // produces one, so a stale detached node never receives surgical updates.
+    serveLogId = null;
+    serveLogPre = null;
     const st = serveState.get(id) || { status: 'stopped', endpoints: [] };
     const running = st.status === 'running';
     const starting = st.status === 'starting';
@@ -842,8 +852,10 @@ const STUDIO_SCRIPT = `
     logHead.appendChild(el('h3', null, 'Logs'));
     const logClear = el('button', 'log-clear', 'Clear');
     logClear.onclick = function () {
+      // Surgical clear (issue #334): empty the buffer + the live <pre> without
+      // a full re-render that would wipe the request composer's fields.
       logsById.set(id, []);
-      renderServeWorkspace(id);
+      if (serveLogPre) serveLogPre.textContent = '(none)';
     };
     logHead.appendChild(logClear);
     logSec.appendChild(logHead);
@@ -860,8 +872,13 @@ const STUDIO_SCRIPT = `
         )
       );
     }
-    logSec.appendChild(el('pre', null, logs.length ? logs.join('\\n') : '(none)'));
+    const logPre = el('pre', null, logs.length ? logs.join('\\n') : '(none)');
+    logSec.appendChild(logPre);
     ws.appendChild(logSec);
+    // Register the live LOGS <pre> so streamed log events update it surgically
+    // (issue #334) instead of re-rendering the whole serve workspace.
+    serveLogId = id;
+    serveLogPre = logPre;
   }
 
   // In-workspace HTTP request composer for a running serve (issue #322):
@@ -958,6 +975,9 @@ const STUDIO_SCRIPT = `
       btn.disabled = true;
       btn.textContent = 'Sending…';
       result.innerHTML = '';
+      // Sending a fresh request leaves no prior timeline row "selected" — the
+      // new request becomes the current focus (issue #336).
+      document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'));
       try {
         const payload = {
           targetId: id,
@@ -1383,6 +1403,14 @@ const STUDIO_SCRIPT = `
       reBtn.title = 'Start the serve to re-invoke this request.';
     }
     head.appendChild(reBtn);
+    // Back to the serve's request composer for a FRESH request (issue #335) —
+    // so the user does not have to re-select the target in the left pane after
+    // inspecting a timeline detail.
+    const newReqBtn = el('button', 'reinvoke-btn', 'New request');
+    newReqBtn.onclick = function () {
+      selectTarget(ev.target, ev.kind);
+    };
+    head.appendChild(newReqBtn);
     ws.appendChild(head);
 
     const reqSec = el('div', 'section');
@@ -1492,7 +1520,13 @@ const STUDIO_SCRIPT = `
       arr.push(ev.line);
       logsById.set(ev.containerId, arr);
       if (shownInvId === ev.containerId) renderResult(ev.containerId);
-      if (shownServeId === ev.containerId) renderServeWorkspace(ev.containerId);
+      // A serve's log lines stream continuously; a FULL re-render per line
+      // would wipe the in-progress request composer (its typed-in fields + the
+      // last response). Update only the live LOGS <pre> surgically instead
+      // (issue #334). A status change still re-renders via onServeEvent.
+      if (shownServeId === ev.containerId && serveLogId === ev.containerId && serveLogPre) {
+        serveLogPre.textContent = arr.join('\\n');
+      }
     });
   }
 
