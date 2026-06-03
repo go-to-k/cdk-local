@@ -1,3 +1,10 @@
+# [0.92.0](https://github.com/go-to-k/cdk-local/compare/v0.91.0...v0.92.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** brand as "CDK Local Studio" + slim tagline + refresh the GIF ([#313](https://github.com/go-to-k/cdk-local/issues/313)) ([836267f](https://github.com/go-to-k/cdk-local/commit/836267fd580cd92269822ba860ccd5f60a88da22))
+
 # [0.91.0](https://github.com/go-to-k/cdk-local/compare/v0.90.0...v0.91.0) (2026-06-03)
 
 
