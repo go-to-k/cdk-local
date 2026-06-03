@@ -670,6 +670,58 @@ export {
 } from './cli/commands/local-start-service.js';
 
 /**
+ * `start-cloudfront` (issue #363) command surface: the per-command option
+ * block (`--port` / `--host` / `--origin` / `--tls` / `--tls-cert` /
+ * `--tls-key` / `--watch`), the distribution target resolver, and the
+ * `--origin` override parser. A host CLI (e.g. cdkd's `local
+ * start-cloudfront`) composes `addStartCloudFrontSpecificOptions(cmd)` on top
+ * of the shared common / app / context block and calls `resolveCloudFrontTarget`
+ * to map a target string to its distribution logical id.
+ */
+export {
+  addStartCloudFrontSpecificOptions,
+  resolveCloudFrontTarget,
+  parseOriginOverrides,
+  LocalStartCloudFrontError,
+} from './cli/commands/local-start-cloudfront.js';
+
+/**
+ * `start-cloudfront` runtime layer (issue #363): the distribution resolver
+ * (synthesized `AWS::CloudFront::Distribution` -> behaviors / CloudFront
+ * Functions / S3 origins / custom error responses), the in-process CloudFront
+ * Function `node:vm` runtime, the S3 static-origin server, and the local
+ * HTTP/HTTPS distribution server. Exposed for host CLIs that drive the same
+ * local-CloudFront serving without re-importing the command factory.
+ */
+export {
+  resolveCloudFrontDistribution,
+  isCloudFrontDistribution,
+  CLOUDFRONT_DISTRIBUTION_TYPE,
+  type ResolvedDistribution,
+  type ResolvedBehavior,
+  type ResolvedOrigin,
+  type ResolvedCloudFrontFunction,
+} from './local/cloudfront-resolver.js';
+export {
+  compileCloudFrontFunction,
+  runViewerRequest,
+  runViewerResponse,
+  type CompiledCloudFrontFunction,
+  type CfRequest,
+  type CfResponse,
+} from './local/cloudfront-function-runtime.js';
+export {
+  serveFromStaticOrigin,
+  type StaticOriginResult,
+  type ResolvedCustomErrorResponse,
+} from './local/cloudfront-static-origin.js';
+export {
+  startCloudFrontServer,
+  matchBehavior,
+  type StartedCloudFrontServer,
+} from './local/cloudfront-server.js';
+
+/**
  * Shared `--profile` plumbing helpers (issue #245). Every STS-touching
  * call site across `cdkl` commands now goes through these two helpers
  * so a host CLI (e.g. cdkd) wrapping the same factories inherits the

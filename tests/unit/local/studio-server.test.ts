@@ -172,6 +172,7 @@ const emptyListing = (): TargetListing => ({
   ecsTaskDefinitions: [],
   agentCoreRuntimes: [],
   loadBalancers: [],
+  cloudFrontDistributions: [],
 });
 
 describe('annotatePinnedEcsTargets', () => {

@@ -185,6 +185,34 @@ AWS managed services.
   `POST /` paths logs a one-line WARN and proceeds single-shot
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
+- CloudFront distributions — the `viewer-request` -> S3 origin ->
+  `viewer-response` pipeline served locally (`cdkl start-cloudfront`,
+  issue #363). The distribution's `AWS::CloudFront::Function`s (inline
+  rewrite JS — URL rewrites, trailing-slash normalization, SPA fallback,
+  header tweaks) are your own application compute and run in-process in a
+  `node:vm` sandbox (`cloudfront-js-1.0` / `2.0`, async handlers awaited);
+  the S3 origin content is the BucketDeployment source asset resolved out
+  of the cloud assembly (walk the origin's bucket -> its
+  `Custom::CDKBucketDeployment` -> `SourceObjectKeys` -> the staged asset
+  dir), served with `DefaultRootObject` (root only — sub-paths are NOT
+  auto-indexed, matching CloudFront) and `CustomErrorResponses` (the SPA
+  fallback). Path patterns route across `DefaultCacheBehavior` +
+  `CacheBehaviors[]` (the existing ALB `*`/`?` glob matcher). A
+  viewer-request function returning a `statusCode` short-circuits with a
+  generated response (redirect / fixed body); otherwise the rewritten
+  request continues to the origin, then the viewer-response function runs
+  over the origin response. `--watch` re-synths + atomically swaps the
+  in-memory routing model under the live socket (no Docker, so a reload
+  is just re-synth + re-resolve). `--tls` terminates real HTTPS (reusing
+  the ALB front-door's self-signed cert path); `--origin <id>=<dir>`
+  points an origin at a local directory when BucketDeployment resolution
+  cannot (content uploaded out of band, non-CDK bucket). S3 origins
+  ONLY: a custom (non-S3) origin, a `LambdaFunctionAssociations`
+  Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
+  origin API are WARN-and-skip (custom / unresolved origins return 502).
+  Single distribution per invocation (interactive picker when the target
+  is omitted in a TTY). `cdkl studio` integration is tracked separately
+  (issue #367)
 
 ### Calls real AWS (managed services)
 
@@ -212,9 +240,17 @@ compute-locally category for Lambda + API Gateway).
 - `src/cli/` — Commander command factories (`createLocalInvokeCommand`,
   `createLocalInvokeAgentCoreCommand`, `createLocalStartApiCommand`,
   `createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
-  `createLocalStartAlbCommand`, `createLocalListCommand`,
+  `createLocalStartAlbCommand`, `createLocalStartCloudFrontCommand`,
+  `createLocalListCommand`,
   `createLocalStudioCommand`) + shared option
-  helpers. `start-service` and `start-alb` share one neutral orchestration
+  helpers. `createLocalStartCloudFrontCommand` (`cdkl start-cloudfront`,
+  issue #363) is a thin, lean command (NOT through the ECS/Docker
+  `runEcsServiceEmulator` — no containers / Cloud Map): it synths,
+  resolves one `AWS::CloudFront::Distribution` to an in-memory routing
+  model, and serves its viewer-request -> S3 origin -> viewer-response
+  pipeline in-process. `--watch` re-synths + swaps the routing model
+  under the live socket; `--tls` reuses `front-door-tls`; `--origin
+  <id>=<dir>` is the BucketDeployment-source escape hatch. `start-service` and `start-alb` share one neutral orchestration
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
@@ -319,6 +355,23 @@ compute-locally category for Lambda + API Gateway).
   WebSocket `Upgrade` requests run through the same route + auth
   pipeline, then bridge the raw TCP socket to the picked ECS replica
   with `Upgrade` / `Sec-WebSocket-*` headers preserved),
+  cloudfront-resolver (issue #363 — resolves an
+  `AWS::CloudFront::Distribution` to a `ResolvedDistribution`: behaviors
+  (default + `CacheBehaviors[]`) -> path pattern + viewer-request /
+  viewer-response CloudFront Functions, origins (S3 origin -> local
+  BucketDeployment source dir via the asset manifest, custom / unresolved
+  origins flagged), and custom error responses; the `start-cloudfront`
+  entry), cloudfront-function-runtime (compiles + runs an inline
+  CloudFront Function in a `node:vm` sandbox, builds the
+  viewer-request / viewer-response event from an HTTP request, and
+  interprets the handler's return as continue-to-origin vs short-circuit
+  response), cloudfront-static-origin (serves a URI from the resolved S3
+  origin dir(s): default-root-object at `/`, path-traversal guard, MIME
+  by extension, `CustomErrorResponses` SPA fallback), cloudfront-server
+  (the local HTTP/HTTPS server behind `start-cloudfront`: per-request
+  behavior match -> viewer-request fn -> S3 static origin ->
+  viewer-response fn, with a mutable distribution cell so `--watch`
+  swaps the routing model under the live socket),
   studio-custom-resource-filter (issue #323 —
   `isCustomResourceLambdaTarget` / `filterStudioCustomResources`:
   recognizes CDK custom-resource / provider-framework Lambdas by their
@@ -717,7 +770,7 @@ vp run runtime:smoke
 - `cdk-local` is the **npm package** name (what users import / install).
 - When referring to the project in prose, use "cdk-local".
 - When referring to the CLI command in code blocks / examples, use
-  `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / list`.
+  `cdkl invoke / invoke-agentcore / start-api / run-task / start-service / start-alb / start-cloudfront / list`.
 - Do NOT name, recommend, or compare against any third-party product
   in committed artifacts (README, docs, JSDoc, CONTRIBUTING). No
   comparison tables, no "pair with" / "use alongside" recommendations,

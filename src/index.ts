@@ -31,6 +31,10 @@ export {
   type CreateLocalStartAlbCommandOptions,
 } from './cli/commands/local-start-alb.js';
 export {
+  createLocalStartCloudFrontCommand,
+  type CreateLocalStartCloudFrontCommandOptions,
+} from './cli/commands/local-start-cloudfront.js';
+export {
   createLocalListCommand,
   formatTargetListing,
   type CreateLocalListCommandOptions,

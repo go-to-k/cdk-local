@@ -60,6 +60,8 @@ export interface TargetListing {
   agentCoreRuntimes: TargetEntry[];
   /** Application `AWS::ElasticLoadBalancingV2::LoadBalancer` — `cdkl start-alb`. */
   loadBalancers: TargetEntry[];
+  /** `AWS::CloudFront::Distribution` — `cdkl start-cloudfront`. */
+  cloudFrontDistributions: TargetEntry[];
 }
 
 function makeEntry(
@@ -197,6 +199,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
     agentCoreRuntimes: sortEntries(scanByType(stacks, AGENTCORE_RUNTIME_TYPE)),
     loadBalancers: sortEntries(scanApplicationLoadBalancers(stacks)),
+    cloudFrontDistributions: sortEntries(scanByType(stacks, 'AWS::CloudFront::Distribution')),
   };
 }
 
@@ -234,6 +237,7 @@ export function countTargets(listing: TargetListing): number {
     listing.ecsServices.length +
     listing.ecsTaskDefinitions.length +
     listing.agentCoreRuntimes.length +
-    listing.loadBalancers.length
+    listing.loadBalancers.length +
+    listing.cloudFrontDistributions.length
   );
 }

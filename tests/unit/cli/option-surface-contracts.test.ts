@@ -30,6 +30,10 @@ import {
   addStudioSpecificOptions,
   createLocalStudioCommand,
 } from '../../../src/cli/commands/local-studio.js';
+import {
+  addStartCloudFrontSpecificOptions,
+  createLocalStartCloudFrontCommand,
+} from '../../../src/cli/commands/local-start-cloudfront.js';
 
 /**
  * Return the sorted long-flag set for a Commander command. Mirrors the
@@ -273,6 +277,32 @@ describe('start-api option surface contract (addStartApiSpecificOptions)', () =>
       new Set([
         ...commonAppContextRegionFlags(),
         ...longFlagsOf(addStartApiSpecificOptions(new Command())),
+      ])
+    ).sort();
+    expect(full).toEqual(expected);
+  });
+});
+
+describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOptions)', () => {
+  it('addStartCloudFrontSpecificOptions registers exactly the known start-cloudfront-only flags', () => {
+    const flags = longFlagsOf(addStartCloudFrontSpecificOptions(new Command()));
+    expect(flags).toEqual([
+      '--host',
+      '--origin',
+      '--port',
+      '--tls',
+      '--tls-cert',
+      '--tls-key',
+      '--watch',
+    ]);
+  });
+
+  it('createLocalStartCloudFrontCommand surface equals common + start-cloudfront-specific (no inline drift)', () => {
+    const full = longFlagsOf(createLocalStartCloudFrontCommand());
+    const expected = Array.from(
+      new Set([
+        ...commonAppContextRegionFlags(),
+        ...longFlagsOf(addStartCloudFrontSpecificOptions(new Command())),
       ])
     ).sort();
     expect(full).toEqual(expected);

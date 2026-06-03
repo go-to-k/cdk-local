@@ -1450,6 +1450,96 @@ remote, or use a permissive loopback CIDR for local smoke tests.
   frontable ECS service behind it, port bind failure) OR uncaught exception.
 - `130` — exited via SIGINT (`^C`).
 
+## `cdkl start-cloudfront` (serve a CloudFront distribution locally)
+
+`cdkl start-cloudfront <target>` reproduces a CloudFront distribution's
+**viewer-request → S3 origin → viewer-response** pipeline on a local HTTP
+(or HTTPS) server, so a URL-rewrite / routing / SPA-fallback change is
+verifiable in seconds instead of a deploy. A CloudFront Function is your
+own application compute — a few lines of rewrite JS — and this command
+runs it wired to the actual S3 origin content (default root object, the
+real keys, index / error-page fallback), which is exactly the end-to-end
+connection a unit test of the function alone cannot exercise. No Docker is
+needed: the functions run in-process and the origin is served from local
+files.
+
+This serves the static-site / SPA shape — an **S3 origin** plus
+CloudFront Functions. It does NOT emulate the managed CloudFront service:
+custom (non-S3) origins, Lambda@Edge (`LambdaFunctionAssociations`), the
+KeyValueStore, and the 2.0 `cf.fetch` origin API are out of scope
+(warn-and-skip).
+
+### Resolution model
+
+`start-cloudfront` resolves the distribution you name →
+its `DistributionConfig`:
+
+- **Behaviors** — `DefaultCacheBehavior` + each `CacheBehaviors[]` entry.
+  A request is matched against the `CacheBehaviors[]` path patterns (the
+  ALB `*` / `?` glob) in declared order, falling back to the default
+  behavior.
+- **CloudFront Functions** — each behavior's `FunctionAssociations[]`
+  (`{Fn::GetAtt: [<fn>, FunctionARN]}`) → the `AWS::CloudFront::Function`'s
+  inline `FunctionCode`, compiled once and run per request in a `node:vm`
+  sandbox (`cloudfront-js-1.0` / `2.0`; async handlers awaited). A
+  viewer-request function returning a `statusCode` short-circuits with a
+  generated response (redirect / fixed body); otherwise the rewritten
+  request continues to the origin. A viewer-response function then runs
+  over the origin response.
+- **S3 origin → local content** — the behavior's `TargetOriginId` → the
+  origin's bucket (`{Fn::GetAtt: [<bucket>, RegionalDomainName]}`) → the
+  `Custom::CDKBucketDeployment` custom resource whose
+  `DestinationBucketName` is that bucket → its `SourceObjectKeys` → the
+  staged asset directory in the cloud assembly (the same files that would
+  be uploaded). `DefaultRootObject` is applied at `/` only — CloudFront
+  does NOT auto-index sub-paths (that is what a rewrite function does).
+  `CustomErrorResponses` (e.g. `403 → /index.html`) provide the SPA
+  fallback for a missing key.
+
+### Target resolution
+
+- `Stack/Dist` (display path), an ancestor prefix, or `Stack:LogicalId`;
+  single-stack apps may omit the stack prefix. Omit `<target>` in a TTY to
+  pick interactively.
+- The target MUST resolve to an `AWS::CloudFront::Distribution`. One
+  distribution per invocation.
+
+### Options
+
+On top of the [common flags](#common-flags):
+
+| Flag | Default | Behavior |
+| --- | --- | --- |
+| `--port <port>` | `0` (auto-allocate) | Host port for the local server. |
+| `--host <host>` | `127.0.0.1` | Bind address. |
+| `--origin <originId=dir>` | — | Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the origin's BucketDeployment source automatically (content uploaded out of band, or a non-CDK bucket). |
+| `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
+| `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
+| `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
+| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). |
+
+```bash
+# Serve a static-site distribution; pick interactively in a TTY
+cdkl start-cloudfront
+# or name it:
+cdkl start-cloudfront MyStack/SiteDist --port 8080
+# then: curl http://127.0.0.1:8080/        (default root object)
+#       curl http://127.0.0.1:8080/foo/    (viewer-request rewrites -> /foo/index.html)
+
+# Iterate on the rewrite function with hot reload
+cdkl start-cloudfront MyStack/SiteDist --port 8080 --watch
+
+# Point an origin at a local build dir when the source can't be resolved
+cdkl start-cloudfront MyStack/SiteDist --origin SiteOrigin=./dist
+```
+
+### `cdkl start-cloudfront` exit codes
+
+- `0` — server started cleanly and shut down on SIGTERM.
+- `1` — startup failure (target not a distribution, port bind failure,
+  TLS material error) OR uncaught exception.
+- `130` — exited via SIGINT (`^C`).
+
 ## `cdkl studio` (interactive web console)
 
 `cdkl studio` is the interactive counterpart to the headless `invoke` /

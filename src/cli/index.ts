@@ -7,6 +7,7 @@ import { createLocalStartApiCommand } from './commands/local-start-api.js';
 import { createLocalRunTaskCommand } from './commands/local-run-task.js';
 import { createLocalStartServiceCommand } from './commands/local-start-service.js';
 import { createLocalStartAlbCommand } from './commands/local-start-alb.js';
+import { createLocalStartCloudFrontCommand } from './commands/local-start-cloudfront.js';
 import { createLocalListCommand } from './commands/local-list.js';
 import { createLocalStudioCommand } from './commands/local-studio.js';
 
@@ -24,6 +25,7 @@ program.addCommand(createLocalStartApiCommand());
 program.addCommand(createLocalRunTaskCommand());
 program.addCommand(createLocalStartServiceCommand());
 program.addCommand(createLocalStartAlbCommand());
+program.addCommand(createLocalStartCloudFrontCommand());
 program.addCommand(createLocalListCommand());
 program.addCommand(createLocalStudioCommand());
 
