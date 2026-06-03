@@ -728,7 +728,27 @@ export {
   type StudioRunRequest,
   type StudioRunResult,
 } from './local/studio-dispatch.js';
-export { coerceRunRequest, coerceStopRequest } from './cli/commands/local-studio.js';
+export {
+  coerceRunRequest,
+  coerceStopRequest,
+  coerceServeRequest,
+  resolveServeBaseUrl,
+  type StudioServeRequestPayload,
+} from './cli/commands/local-studio.js';
+
+/**
+ * `cdkl studio` request relay (issue #322). A host CLI embedding studio wires
+ * `relayServeRequest` as the `startStudioServer` `onServeRequest` handler so
+ * the browser's in-workspace HTTP composer can exercise a running serve via a
+ * same-origin `POST /api/request` (avoiding a cross-origin fetch to the served
+ * port). For api / alb the base URL is the capture-proxy endpoint (captured on
+ * the timeline); for ecs published via `--host-port` it is the replica host URL.
+ */
+export {
+  relayServeRequest,
+  type ServeRequestInput,
+  type ServeRequestResult,
+} from './local/studio-request-relay.js';
 
 /**
  * `cdkl studio` serve manager (issue #282, slice C1). A host CLI

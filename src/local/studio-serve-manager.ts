@@ -48,6 +48,15 @@ export interface StudioServeState {
   status: 'starting' | 'running' | 'stopped' | 'error';
   /** Served endpoint URLs, populated once running. */
   endpoints: string[];
+  /**
+   * Direct host URL for an `ecs` serve published via `--host-port` (issue
+   * #322). Unlike `endpoints` (api / alb capture-proxy URLs), this is the
+   * replica's own host port with NO proxy in front — so the in-workspace
+   * request composer can target it, but a request to it is NOT captured on
+   * the timeline. Absent for api / alb (use `endpoints`) and for an ecs
+   * serve started without `--host-port`.
+   */
+  hostUrl?: string;
   /** Child process id. */
   pid?: number;
   /** Wall-clock epoch ms when the serve started. */
@@ -239,6 +248,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       startedAt: e.startedAt,
     };
     if (e.pid !== undefined) s.pid = e.pid;
+    if (e.hostUrl !== undefined) s.hostUrl = e.hostUrl;
     return s;
   }
 
@@ -251,6 +261,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       endpoints: [...e.endpoints],
     };
     if (e.pid !== undefined) ev.pid = e.pid;
+    if (e.hostUrl !== undefined) ev.hostUrl = e.hostUrl;
     if (message !== undefined) ev.message = message;
     config.bus.emit('serve', ev);
   }
@@ -319,6 +330,19 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       proxies: [],
     };
     if (child.pid !== undefined) entry.pid = child.pid;
+    // An ecs serve published via `--host-port` is reachable on the host (issue
+    // #322); surface its host URL so the in-workspace request composer can
+    // target it (the first mapping's host port). No proxy fronts it, so a
+    // request to it is not captured on the timeline.
+    if (req.kind === 'ecs') {
+      const hp = req.options?.['--host-port'];
+      if (Array.isArray(hp)) {
+        const first = hp.find(
+          (r) => r && typeof r === 'object' && typeof r.right === 'string' && r.right.trim() !== ''
+        );
+        if (first) entry.hostUrl = 'http://127.0.0.1:' + first.right.trim();
+      }
+    }
     entries.set(req.targetId, entry);
     emitServe(entry);
 

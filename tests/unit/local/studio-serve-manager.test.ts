@@ -323,6 +323,52 @@ describe('createStudioServeManager', () => {
     expect(argv[i + 1]).toBe('443=8443');
   });
 
+  it('surfaces a hostUrl for an ecs serve published via --host-port (issue #322)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'Stack/MyService',
+      kind: 'ecs',
+      options: { '--host-port': [{ left: '80', right: '8080' }] },
+    });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+
+    // ecs has no capture-proxy endpoint, but the published host port is the
+    // composer's reachable target.
+    expect(mgr.list()[0].endpoints).toEqual([]);
+    expect(mgr.list()[0].hostUrl).toBe('http://127.0.0.1:8080');
+  });
+
+  it('does not set hostUrl for an ecs serve without --host-port', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const p = mgr.start({ targetId: 'Stack/MyService', kind: 'ecs' });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+    expect(mgr.list()[0].hostUrl).toBeUndefined();
+  });
+
   it('threads imageOverride as an explicit --image-override <target>=<dockerfile>', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

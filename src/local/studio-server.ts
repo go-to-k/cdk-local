@@ -184,6 +184,13 @@ export interface StudioServerOptions {
    */
   onStop?: (body: unknown) => Promise<unknown>;
   /**
+   * Handler for `POST /api/request` (issue #322) — relay a composed HTTP
+   * request to a RUNNING serve target's endpoint, server-side, and return the
+   * response. The browser composer posts here (same-origin) so it never hits
+   * the served port cross-origin. When omitted, `/api/request` answers 501.
+   */
+  onServeRequest?: (body: unknown) => Promise<unknown>;
+  /**
    * Snapshot of the currently-running serve targets, served at
    * `GET /api/running`. When omitted, the endpoint returns an empty
    * list (the observe-only shell never runs anything).
@@ -332,6 +339,10 @@ function handleRequest(
   }
   if (req.method === 'POST' && path === '/api/run') {
     void handleDispatch(req, res, options.onRun);
+    return;
+  }
+  if (req.method === 'POST' && path === '/api/request') {
+    void handleDispatch(req, res, options.onServeRequest);
     return;
   }
   if (req.method === 'POST' && path === '/api/stop') {

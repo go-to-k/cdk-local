@@ -330,7 +330,12 @@ compute-locally category for Lambda + API Gateway).
   at `/api/targets`, an SSE
   stream of the event bus at `/api/events`, `POST /api/run` (single-shot
   invoke / serve start), `POST /api/stop` (serve stop),
-  `GET /api/running` (running serve snapshot), the slice-C3 store
+  `GET /api/running` (running serve snapshot), `POST /api/request`
+  (issue #322 — relay a composed HTTP request to a running serve via
+  `studio-request-relay` so the browser composer reaches the served port
+  same-origin; api / alb go through the capture proxy and land on the
+  timeline, an ecs `--host-port` serve hits the replica host URL directly),
+  the slice-C3 store
   endpoints `GET /api/history` / `GET /api/logs?q=` (full-text log
   search) / `GET /api/invocations/<id>/logs` (per-request log binding),
   and the slice-3 session config `GET /api/config` (read-only synth

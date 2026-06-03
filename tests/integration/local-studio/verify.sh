@@ -240,7 +240,12 @@ if ! grep -qF "function applyConfig" "${BODY_FILE}" || grep -qF 'id="sess-save"'
   echo "FAIL: GET / Session bar is not apply-on-change (Save button still present?)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX"
+# In-workspace HTTP request composer (issue #322).
+if ! grep -qF "function renderRequestComposer" "${BODY_FILE}" || ! grep -qF "fetch('/api/request'" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the in-workspace HTTP request composer"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
@@ -855,6 +860,30 @@ fi
 echo "    OK: the ALB request was captured (GET / invocation, kind=alb) on the timeline"
 kill "${SSE_PID}" 2>/dev/null || true; SSE_PID=""
 
+# In-workspace HTTP request composer (issue #322): POST /api/request relays a
+# composed GET / through studio's OWN server to the running ALB serve's
+# capture-proxy endpoint, and returns the upstream response. A 200 with the
+# fixture's body proves the relay path (browser composer -> /api/request ->
+# studio server -> proxy -> ECS replica -> response) end-to-end.
+echo "==> POST /api/request relays a composed request to the running ALB serve"
+REQ_FILE=$(mktemp)
+HTTP_REQ=$(curl -s -o "${REQ_FILE}" -w '%{http_code}' --max-time 30 \
+  -X POST "${URL}/api/request" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ALB_TARGET}\",\"method\":\"GET\",\"path\":\"/\"}" || true)
+if [[ "${HTTP_REQ}" != "200" ]]; then
+  echo "FAIL: POST /api/request returned HTTP ${HTTP_REQ}"
+  cat "${REQ_FILE}"; rm -f "${REQ_FILE}"; exit 1
+fi
+# The relay result is { status, headers, body, ... }; the upstream GET / is a
+# 200 from the fixture replica.
+if ! grep -qF '"status":200' "${REQ_FILE}"; then
+  echo "FAIL: the relayed request did not report the upstream 200"
+  echo "----- relay result -----"; head -c 1000 "${REQ_FILE}"; echo; echo "------------------------"
+  rm -f "${REQ_FILE}"; exit 1
+fi
+rm -f "${REQ_FILE}"
+echo "    OK: composed request relayed through studio to the ALB serve (upstream 200)"
+
 echo "==> POST /api/stop tears the ALB serve down"
 curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ALB_TARGET}\"}" -o /dev/null || true
@@ -1058,4 +1087,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"

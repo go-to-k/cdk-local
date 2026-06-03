@@ -142,6 +142,21 @@ const STUDIO_CSS = `
     border: 0; border-radius: 3px; cursor: pointer; font: inherit; font-weight: 700;
   }
   .composer button:hover { background: #339152; }
+  .req-composer .req-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .req-composer .req-method { background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
+    padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; }
+  .req-composer .req-path { flex: 1; min-width: 0; background: #111; color: #ddd; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; }
+  .req-composer textarea { width: 100%; box-sizing: border-box; min-height: 48px; resize: vertical;
+    background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px; padding: 5px;
+    font: 12px/1.5 ui-monospace, Menlo, monospace; margin-bottom: 6px; }
+  .req-composer .req-body { min-height: 70px; }
+  .req-composer select:focus, .req-composer input:focus, .req-composer textarea:focus {
+    outline: none; border-color: #4ec97a; }
+  .req-composer .req-send { display: flex; align-items: center; gap: 10px; }
+  .req-composer .req-send button { margin-top: 0; padding: 4px 16px; }
+  .req-composer .req-status { margin-top: 8px; font: 12px ui-monospace, Menlo, monospace; }
+  .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
@@ -761,6 +776,12 @@ const STUDIO_SCRIPT = `
         const link = href(url);
         epSec.appendChild(link);
       }
+    } else if (running && isEcs && st.hostUrl) {
+      // An ecs service published via --host-port IS reachable on the host
+      // (issue #322); show its host URL. No proxy fronts it, so requests are
+      // not captured on the timeline.
+      epSec.appendChild(href(st.hostUrl));
+      epSec.appendChild(el('div', 'opt-hint', '(direct host port — not captured on the timeline)'));
     } else if (running && isEcs) {
       // A pure-compute ECS service has no host endpoint — it just runs the
       // replicas (reach them container-to-container via Cloud Map).
@@ -769,6 +790,18 @@ const STUDIO_SCRIPT = `
       epSec.appendChild(el('pre', null, starting ? '(starting…)' : '(not running)'));
     }
     ws.appendChild(epSec);
+
+    // In-workspace HTTP request composer for a running api / alb (or ecs with
+    // --host-port) serve (issue #322): compose a request and Send it; studio
+    // relays it server-side (same-origin) so it works cross-port and, for
+    // api / alb, lands on the timeline via the capture proxy.
+    const httpBase = running
+      ? (st.endpoints || []).find((u) => /^https?:/.test(u)) || (isEcs ? st.hostUrl : null)
+      : null;
+    if (httpBase) {
+      const captured = (st.endpoints || []).indexOf(httpBase) >= 0;
+      ws.appendChild(renderRequestComposer(id, httpBase, captured));
+    }
 
     // A served WebSocket API exposes a ws:// endpoint — attach a WebSocket
     // console so the browser can connect + exchange frames (issue #303).
@@ -782,6 +815,111 @@ const STUDIO_SCRIPT = `
     logSec.appendChild(el('h3', null, 'Logs'));
     logSec.appendChild(el('pre', null, logs.length ? logs.join('\\n') : '(none)'));
     ws.appendChild(logSec);
+  }
+
+  // In-workspace HTTP request composer for a running serve (issue #322):
+  // Method + Path + Headers + Body -> Send. The request is relayed by studio's
+  // OWN server (POST /api/request) so it reaches the served port without a
+  // cross-origin fetch; for an api / alb serve it flows through the capture
+  // proxy and lands on the timeline.
+  const REQ_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+  function parseHeaderLines(text) {
+    const out = {};
+    String(text || '').split('\\n').forEach(function (line) {
+      const i = line.indexOf(':');
+      if (i <= 0) return;
+      const k = line.slice(0, i).trim();
+      if (k) out[k] = line.slice(i + 1).trim();
+    });
+    return out;
+  }
+
+  function renderRequestComposer(id, baseUrl, captured) {
+    const sec = el('div', 'section req-composer');
+    sec.appendChild(el('h3', null, 'Request'));
+    const row = el('div', 'req-row');
+    const method = el('select', 'req-method');
+    REQ_METHODS.forEach(function (m) {
+      const o = el('option', null, m);
+      o.value = m;
+      method.appendChild(o);
+    });
+    row.appendChild(method);
+    const path = el('input', 'req-path');
+    path.value = '/';
+    path.placeholder = '/path?query';
+    row.appendChild(path);
+    sec.appendChild(row);
+
+    sec.appendChild(el('div', 'opt-label', 'Headers (one per line: Name: value)'));
+    const headers = el('textarea', 'req-headers');
+    headers.placeholder = 'Authorization: Bearer demo';
+    headers.spellcheck = false;
+    sec.appendChild(headers);
+
+    sec.appendChild(el('div', 'opt-label', 'Body'));
+    const bodyTa = el('textarea', 'req-body');
+    bodyTa.placeholder = '{ }';
+    bodyTa.spellcheck = false;
+    sec.appendChild(bodyTa);
+
+    const sendRow = el('div', 'req-send');
+    const btn = el('button', null, 'Send');
+    sendRow.appendChild(btn);
+    sendRow.appendChild(
+      el('span', 'opt-hint', captured
+        ? 'Relayed via studio to ' + baseUrl + ' — captured on the timeline.'
+        : 'Relayed direct to ' + baseUrl + ' (ecs host port) — not captured.')
+    );
+    sec.appendChild(sendRow);
+    const msg = el('div', 'err');
+    sec.appendChild(msg);
+    const result = el('div', 'req-result');
+    sec.appendChild(result);
+
+    btn.onclick = async function () {
+      msg.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      result.innerHTML = '';
+      try {
+        const payload = {
+          targetId: id,
+          method: method.value,
+          path: path.value || '/',
+          headers: parseHeaderLines(headers.value),
+        };
+        if (bodyTa.value !== '') payload.body = bodyTa.value;
+        const res = await fetch('/api/request', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msg.textContent = 'Request failed: ' + (data.error || ('HTTP ' + res.status));
+          return;
+        }
+        const statusLine = el('div', 'req-status');
+        const cls = data.status >= 200 && data.status < 300 ? 'ok' : 'bad';
+        statusLine.appendChild(
+          el('span', cls, data.status + (data.durationMs != null ? ' · ' + data.durationMs + 'ms' : ''))
+        );
+        result.appendChild(statusLine);
+        const hdrs = Object.keys(data.headers || {})
+          .map(function (k) { return k + ': ' + data.headers[k]; })
+          .join('\\n');
+        if (hdrs) result.appendChild(el('pre', 'req-resp-headers', hdrs));
+        result.appendChild(el('pre', null, data.body != null ? data.body : ''));
+      } catch (err) {
+        msg.textContent = 'Request failed: ' + err;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Send';
+      }
+    };
+    return sec;
   }
 
   // Build an <a> that opens an http(s) endpoint in a new tab; ws:// URLs
@@ -1219,7 +1357,7 @@ const STUDIO_SCRIPT = `
     if (ev.status === 'stopped' || ev.status === 'error') {
       serveState.set(ev.target, { status: ev.status, endpoints: [] });
     } else {
-      serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [] });
+      serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [], hostUrl: ev.hostUrl });
     }
     updateServeRow(ev.target);
   }
