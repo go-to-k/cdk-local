@@ -374,7 +374,12 @@ compute-locally category for Lambda + API Gateway).
   servable ECS *services* are runnable, not the task definitions; issue
   #352 lists ECS Services and ECS Task Definitions as SEPARATE target
   groups, matching `cdkl list`, so the non-servable task defs no longer
-  share a group with the servable services); a served
+  share a group with the servable services). Once a serve is Started the
+  composer's per-run option inputs are replaced by the running view, so a
+  read-only "Started with" summary (issue #356 — `formatAppliedOptions`
+  over the `serveApplied` map recorded at Start) surfaces the launch
+  config the serve is running with (e.g. a chosen `--max-tasks` stays
+  visible instead of silently vanishing). A served
   API Gateway WebSocket API additionally gets a WebSocket console
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module

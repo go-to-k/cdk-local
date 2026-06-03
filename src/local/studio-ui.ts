@@ -243,6 +243,8 @@ const STUDIO_CSS = `
   .flag-row { display: flex; gap: 8px; align-items: baseline; font-size: 11px; }
   .flag-name { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
   .flag-desc { color: #999; }
+  .started-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+  .started-flag { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
   .envkv-modes { display: flex; gap: 0; }
   .envkv-mode { background: #1a1a1a; color: #999; border: 1px solid #333; cursor: pointer;
     padding: 3px 12px; font: 11px ui-monospace, monospace; }
@@ -267,6 +269,11 @@ const STUDIO_SCRIPT = `
   const targetEls = new Map();     // targetId -> left-pane element
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
+  // serve targetId -> the launch config it was last Started with (issue #356):
+  // { options, rawArgs, imageOverride }. Kept separate from serveState so the
+  // SSE-driven serveState rewrites (status / endpoints) never clobber it, and
+  // surfaced as a read-only "Started with" summary while the serve runs.
+  const serveApplied = new Map();
   let active = null;               // { id, kind, ta, btn, msg, result }
   let shownInvId = null;           // lambda invocation whose result is in the workspace
   let shownServeId = null;         // serve target whose workspace is shown
@@ -694,11 +701,53 @@ const STUDIO_SCRIPT = `
     }
   }
 
+  // Format the launch config a serve was Started with (issue #356) into a list
+  // of human-readable flag lines for the read-only "Started with" summary.
+  // applied.options is the per-run values object (flag -> value) where value is
+  // a boolean (checkbox), a string (scalar), or an array of left/right pairs
+  // (repeat-pair / env-kv). Unset / false / blank entries are omitted.
+  function formatAppliedOptions(applied) {
+    const lines = [];
+    const options = applied && applied.options;
+    if (options) {
+      Object.keys(options).forEach(function (flag) {
+        const val = options[flag];
+        if (val === true) {
+          lines.push(flag);
+        } else if (val === false || val == null) {
+          /* unset boolean / null — omit */
+        } else if (Array.isArray(val)) {
+          val.forEach(function (pair) {
+            const left = pair && pair.left != null ? String(pair.left).trim() : '';
+            const right = pair && pair.right != null ? String(pair.right).trim() : '';
+            if (left === '' && right === '') return;
+            lines.push(flag + ' ' + left + '=' + right);
+          });
+        } else {
+          const s = String(val).trim();
+          if (s !== '') lines.push(flag + ' ' + s);
+        }
+      });
+    }
+    if (applied && applied.imageOverride) {
+      lines.push('--image-override ' + applied.imageOverride);
+    }
+    if (applied && applied.rawArgs) {
+      const raw = String(applied.rawArgs).trim();
+      if (raw !== '') lines.push(raw);
+    }
+    return lines;
+  }
+
   async function startServe(id, options, rawArgs, imageOverride) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
     const kind = meta ? meta.kind : 'api';
+    // Remember what this serve was Started with so the running workspace can
+    // show a read-only "Started with" summary (issue #356) — the per-run
+    // option inputs are gone once the composer is replaced by the running view.
+    serveApplied.set(id, { options: options, rawArgs: rawArgs, imageOverride: imageOverride });
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
@@ -790,6 +839,24 @@ const STUDIO_SCRIPT = `
       if (opt.node) ws.appendChild(opt.node);
       collectOpts = opt.collect;
       collectRaw = opt.collectRaw;
+    }
+
+    if (running || starting) {
+      // Issue #356: the per-run option inputs are gone once the composer is
+      // replaced by this running view, so surface what the serve was Started
+      // with as a read-only summary (so e.g. a chosen --max-tasks stays
+      // visible instead of silently vanishing after Start).
+      const lines = formatAppliedOptions(serveApplied.get(id));
+      const startedSec = el('div', 'section started-with');
+      startedSec.appendChild(el('h3', null, 'Started with'));
+      if (lines.length) {
+        const list = el('div', 'started-list');
+        lines.forEach(function (ln) { list.appendChild(el('code', 'started-flag', ln)); });
+        startedSec.appendChild(list);
+      } else {
+        startedSec.appendChild(el('div', 'opt-hint', '(defaults — no options set)'));
+      }
+      ws.appendChild(startedSec);
     }
 
     const isEcs = meta && meta.kind === 'ecs';
