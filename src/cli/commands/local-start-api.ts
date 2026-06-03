@@ -62,6 +62,8 @@ import type { DockerImageAssetSource } from '../../types/assets.js';
 import { discoverRoutes, type DiscoveredRoute } from '../../local/route-discovery.js';
 import {
   discoverWebSocketApis,
+  filterWebSocketApisByIdentifiers,
+  availableWebSocketApiIdentifiers,
   type DiscoveredWebSocketApi,
 } from '../../local/websocket-route-discovery.js';
 import {
@@ -587,7 +589,9 @@ async function localStartApiCommand(
         logger.warn(`WebSocket discovery: ${e}`);
       }
     }
-    const webSocketApis = wsDiscovery.apis;
+    // `let` so the target-subset filter (issue #311) can narrow it to the
+    // WS APIs the explicit `<target...>` named.
+    let webSocketApis = wsDiscovery.apis;
     if (routes.length === 0 && webSocketApis.length === 0) {
       throw new Error(
         `No supported API routes were discovered. ${getEmbedConfig().cliName} start-api supports AWS::ApiGateway::* (REST v1), AWS::ApiGatewayV2::* (HTTP + WebSocket), and AWS::Lambda::Url (Function URL) with AWS_PROXY integrations only.`
@@ -637,19 +641,24 @@ async function localStartApiCommand(
     // plus the identifiers that matched nothing. Available identifiers are
     // computed once inside it (not per-id) for the O(N·M) bound.
     if (apiFilters.length > 0) {
-      const { filtered, unmatched } = resolveApiTargetSubset(
+      const { filtered, filteredWebSocketApis, unmatched } = resolveApiTargetSubset(
         routesWithAuth,
         apiFilters,
-        targetStacks.map((s) => s.stackName)
+        targetStacks.map((s) => s.stackName),
+        webSocketApis
       );
       // Surface any individual identifier that matched nothing (the union
-      // still has routes from its siblings, so the run continues) — a
-      // single typo in a multi-target list otherwise silently serves a
+      // still has routes / WS APIs from its siblings, so the run continues) —
+      // a single typo in a multi-target list otherwise silently serves a
       // smaller set than the user asked for. Gated one-shot per identifier
       // (`unmatchedTargetWarned`) so a `--watch` hot reload doesn't re-warn
       // the same typo on every file change.
       if (unmatched.length > 0) {
-        const available = availableApiIdentifiers(routesWithAuth).join(', ') || '(none)';
+        const available =
+          [
+            ...availableApiIdentifiers(routesWithAuth),
+            ...availableWebSocketApiIdentifiers(webSocketApis),
+          ].join(', ') || '(none)';
         for (const id of unmatched) {
           if (unmatchedTargetWarned.has(id)) continue;
           unmatchedTargetWarned.add(id);
@@ -659,6 +668,9 @@ async function localStartApiCommand(
         }
       }
       routesWithAuth = filtered;
+      // Issue #311: narrow the served WS APIs to the target subset too (they
+      // were previously served in full regardless of the target).
+      webSocketApis = filteredWebSocketApis;
     }
 
     // PR 8c: per-API CORS config. HTTP API v2's `CorsConfiguration` +
@@ -1499,9 +1511,16 @@ export function allStacksConflicts(
  * once per typo without re-running the per-id filter).
  */
 export interface ApiTargetSubset {
-  /** The UNION of routes matching any supplied identifier. Non-empty. */
+  /** The UNION of routes matching any supplied identifier. */
   readonly filtered: RouteWithAuth[];
-  /** Identifiers that matched zero routes — order preserved from input. */
+  /**
+   * The UNION of WebSocket APIs matching any supplied identifier (issue
+   * #311). Empty when no WS API was passed / matched. At least one of
+   * `filtered` / `filteredWebSocketApis` is non-empty (else the resolver
+   * throws "did not match any discovered API").
+   */
+  readonly filteredWebSocketApis: DiscoveredWebSocketApi[];
+  /** Identifiers that matched zero routes AND zero WS APIs — input order. */
   readonly unmatched: string[];
 }
 
@@ -1532,7 +1551,8 @@ export interface ApiTargetSubset {
 export function resolveApiTargetSubset(
   routes: readonly RouteWithAuth[],
   identifiers: readonly string[],
-  stackNames: readonly string[]
+  stackNames: readonly string[],
+  webSocketApis: readonly DiscoveredWebSocketApi[] = []
 ): ApiTargetSubset {
   // Strict multi-stack rejection for the bare-logical-id form (no `:`,
   // no `/`). A bare id in a multi-stack app is ambiguous, because two
@@ -1554,23 +1574,33 @@ export function resolveApiTargetSubset(
   }
 
   const filtered = filterRoutesByApiIdentifiers(routes, identifiers);
-  if (filtered.length === 0) {
-    const available = availableApiIdentifiers(routes).join(', ') || '(none)';
+  // Issue #311: WebSocket APIs are filtered by the SAME identifiers as routes
+  // (previously they were always served as a group, so an explicit target
+  // that named a WS API matched no route and threw). A WS-only target now
+  // resolves to its API, and an HTTP / REST target no longer drags unrelated
+  // WS APIs along.
+  const filteredWebSocketApis = filterWebSocketApisByIdentifiers(webSocketApis, identifiers);
+  if (filtered.length === 0 && filteredWebSocketApis.length === 0) {
+    const available =
+      [...availableApiIdentifiers(routes), ...availableWebSocketApiIdentifiers(webSocketApis)].join(
+        ', '
+      ) || '(none)';
     throw new Error(
       `Target(s) [${identifiers.join(', ')}] did not match any discovered API. Available identifiers: ${available}.`
     );
   }
 
-  // Surface any individual identifier that matched nothing (the union
-  // still has routes from its siblings, so the run continues) — a single
-  // typo in a multi-target list otherwise silently serves a smaller set
-  // than the user asked for. `availableApiIdentifiers(routes)` is hoisted
-  // out of this loop (computed once below) for the caller's warning.
+  // Surface any individual identifier that matched nothing — neither a route
+  // NOR a WS API (the union still has the matched siblings, so the run
+  // continues) — a single typo in a multi-target list otherwise silently
+  // serves a smaller set than the user asked for.
   const unmatched = identifiers.filter(
-    (id) => filterRoutesByApiIdentifiers(routes, [id]).length === 0
+    (id) =>
+      filterRoutesByApiIdentifiers(routes, [id]).length === 0 &&
+      filterWebSocketApisByIdentifiers(webSocketApis, [id]).length === 0
   );
 
-  return { filtered, unmatched };
+  return { filtered, filteredWebSocketApis, unmatched };
 }
 
 /**

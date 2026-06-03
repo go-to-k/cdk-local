@@ -57,6 +57,13 @@ export {
   discoverWebSocketApis,
   discoverWebSocketApisOrThrow,
   parseSelectionExpressionPath,
+  // Consumed by cdkd / `cdkl studio` to serve a SINGLE WebSocket API:
+  // `start-api`'s target subset resolver filters WebSocket APIs by the same
+  // id forms it accepts for routes, so a host can pass a WS API's construct
+  // path as an explicit target (issue #311).
+  webSocketApiMatchesIdentifier,
+  filterWebSocketApisByIdentifiers,
+  availableWebSocketApiIdentifiers,
   type DiscoveredWebSocketApi,
   type WebSocketRouteEntry,
 } from './local/websocket-route-discovery.js';
