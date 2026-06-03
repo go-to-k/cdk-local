@@ -1,3 +1,10 @@
+# [0.105.0](https://github.com/go-to-k/cdk-local/compare/v0.104.1...v0.105.0) (2026-06-03)
+
+
+### Features
+
+* **cloudfront:** serve a CloudFront distribution locally (start-cloudfront) ([#370](https://github.com/go-to-k/cdk-local/issues/370)) ([622f412](https://github.com/go-to-k/cdk-local/commit/622f4124491848baa72e59e9f6de6a7f4f682f5f))
+
 ## [0.104.1](https://github.com/go-to-k/cdk-local/compare/v0.104.0...v0.104.1) (2026-06-03)
 
 
