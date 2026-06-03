@@ -44,6 +44,19 @@ describe('isCustomResourceLambdaTarget', () => {
     expect(isCustomResourceLambdaTarget(lambda('MyStack/Provider/FRAMEWORK-ONEVENT'))).toBe(true);
   });
 
+  // Issue #359: the generic `Custom::` catch-all covers any provider Lambda
+  // whose construct path uses a `Custom::`-prefixed node that is NOT one of the
+  // name-specific patterns above. None of `framework-*`, `/provider/`,
+  // `logretention`, `customresourceprovider`, etc. is a substring of this id —
+  // only `custom::` matches it.
+  it.each([
+    'MyStack/Custom::MyWidget/Resource',
+    'MyStack/Custom::AcmeNotifier/Handler',
+    'MyStack/Custom::VpcRestrictDefaultSG/Resource',
+  ])('matches a generic Custom:: provider node: %s', (id) => {
+    expect(isCustomResourceLambdaTarget(lambda(id))).toBe(true);
+  });
+
   it('does NOT match a normal app Lambda', () => {
     expect(isCustomResourceLambdaTarget(lambda('MyStack/EchoHandler'))).toBe(false);
   });

@@ -324,9 +324,11 @@ compute-locally category for Lambda + API Gateway).
   recognizes CDK custom-resource / provider-framework Lambdas by their
   construct path (provider-framework `framework-on*`, `LogRetention`,
   `BucketNotificationsHandler`, `AwsCustomResource`, CDK bucket
-  deployment, the `AWS679...` singleton, etc.) so `cdkl studio` hides
-  them from the target list by default — `--include-custom-resources`
-  opts back in),
+  deployment, the `AWS679...` singleton, plus a GENERIC `custom::`
+  catch-all — issue #359 — that covers any provider Lambda whose
+  `aws:cdk:path` uses a `Custom::`-prefixed node the name-specific
+  patterns miss) so `cdkl studio` hides them from the target list by
+  default — `--include-custom-resources` opts back in),
   studio-events (issue #282 — the typed in-process event bus every
   `cdkl studio` observation flows through (`invocation` / `log` /
   `serve` events); the studio HTTP server

@@ -136,9 +136,14 @@ if ! grep -qF 'framework-onEvent' "${BODY_FILE}"; then
   echo "FAIL: --include-custom-resources did NOT surface the provider Lambda"; cat "${BODY_FILE}"
   kill "${INC_PID}" 2>/dev/null || true; rm -f "${INC_LOG}"; exit 1
 fi
+# Issue #359: the generic `Custom::`-path provider Lambda is also surfaced.
+if ! grep -qF 'Custom::AcmeWidgetProvider' "${BODY_FILE}"; then
+  echo "FAIL: --include-custom-resources did NOT surface the generic Custom:: provider Lambda"; cat "${BODY_FILE}"
+  kill "${INC_PID}" 2>/dev/null || true; rm -f "${INC_LOG}"; exit 1
+fi
 kill "${INC_PID}" 2>/dev/null || true; wait "${INC_PID}" 2>/dev/null || true
 rm -f "${INC_LOG}"
-echo "    OK: --include-custom-resources surfaced the provider Lambda"
+echo "    OK: --include-custom-resources surfaced the provider Lambdas (framework-onEvent + generic Custom::)"
 
 # ---------------------------------------------------------------------------
 # 1c. Watch mode (issue #301): `cdkl studio --watch` spawns serves started from
@@ -355,7 +360,14 @@ if grep -qF 'framework-onEvent' "${BODY_FILE}"; then
   echo "FAIL: /api/targets included the custom-resource provider Lambda by default"
   cat "${BODY_FILE}"; exit 1
 fi
-echo "    OK: custom-resource provider Lambda excluded from the default target list"
+# Issue #359: the generic `Custom::`-path provider Lambda
+# (`.../Custom::AcmeWidgetProvider/Handler`, matched only by the `custom::`
+# catch-all) is likewise excluded by default.
+if grep -qF 'Custom::AcmeWidgetProvider' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets included the generic Custom:: provider Lambda by default"
+  cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: custom-resource provider Lambdas (framework-onEvent + generic Custom::) excluded from the default target list"
 
 # ---------------------------------------------------------------------------
 # 5. GET /api/events opens a Server-Sent-Events stream.
