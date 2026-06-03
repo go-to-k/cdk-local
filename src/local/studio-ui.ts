@@ -46,7 +46,6 @@ const STUDIO_CSS = `
     padding: 5px 14px; background: #141414; border-bottom: 1px solid #2a2a2a;
     font-size: 12px;
   }
-  #session-bar .sess-title { color: #888; text-transform: uppercase; font-size: 11px; }
   #session-bar .sess-bind { color: #bbb; display: inline-flex; align-items: center; gap: 4px; }
   #session-bar input[type=text] {
     background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
@@ -1154,12 +1153,11 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <span id="conn" class="down">● connecting</span>
 </header>
 <div id="session-bar">
-  <span class="sess-title">Session</span>
+  <label class="sess-bind"><input type="checkbox" id="sess-watch" /> watch</label>
   <label class="sess-bind"><input type="checkbox" id="sess-cfn" /> from-cfn-stack</label>
   <input id="sess-cfn-name" type="text" placeholder="stack name (blank = auto)" style="display:none" />
   <label class="sess-bind" for="sess-role">assume-role</label>
   <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" />
-  <label class="sess-bind"><input type="checkbox" id="sess-watch" /> watch</label>
   <button id="sess-save" type="button">Save</button>
   <span id="sess-msg"></span>
   <span id="sess-synth" class="sess-synth"></span>
