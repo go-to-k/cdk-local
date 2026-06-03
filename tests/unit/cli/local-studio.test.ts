@@ -163,6 +163,27 @@ describe('applyConfigPatch', () => {
   it('rejects a non-string assume-role value', () => {
     expect(() => applyConfigPatch({ assumeRole: 42 }, {})).toThrow(/"assumeRole" must be/);
   });
+
+  it('sets / clears the watch mode (true sets, false|null clears)', () => {
+    const cfg: EditableSessionBindings = {};
+    applyConfigPatch({ watch: true }, cfg);
+    expect(cfg.watch).toBe(true);
+    applyConfigPatch({ watch: false }, cfg);
+    expect('watch' in cfg).toBe(false);
+    applyConfigPatch({ watch: true }, cfg);
+    applyConfigPatch({ watch: null }, cfg);
+    expect('watch' in cfg).toBe(false);
+  });
+
+  it('rejects a non-boolean watch value', () => {
+    expect(() => applyConfigPatch({ watch: 'yes' }, {})).toThrow(/"watch" must be a boolean/);
+  });
+
+  it('leaves watch untouched when the key is absent from the patch', () => {
+    const cfg: EditableSessionBindings = { watch: true };
+    applyConfigPatch({ assumeRole: 'arn:x' }, cfg);
+    expect(cfg.watch).toBe(true);
+  });
 });
 
 describe('coerceStopRequest', () => {

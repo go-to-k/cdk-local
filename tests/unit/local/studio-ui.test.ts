@@ -48,6 +48,7 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('id="session-bar"');
     expect(html).toContain('id="sess-cfn"'); // from-cfn-stack toggle
     expect(html).toContain('id="sess-role"'); // assume-role input
+    expect(html).toContain('id="sess-watch"'); // watch-mode toggle (issue #301)
     expect(html).toContain('id="sess-save"'); // Save button
     expect(html).toContain('/api/config'); // reads + writes the config endpoint
   });

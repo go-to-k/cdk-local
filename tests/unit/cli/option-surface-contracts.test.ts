@@ -141,6 +141,7 @@ describe('studio option surface contract (addStudioSpecificOptions)', () => {
       '--no-open',
       '--stack',
       '--studio-port',
+      '--watch',
     ]);
   });
 

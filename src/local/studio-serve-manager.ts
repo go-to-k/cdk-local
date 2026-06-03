@@ -46,6 +46,15 @@ export interface StudioServeManagerConfig extends SharedChildConfig {
   cliEntry: string;
   /** The shared event bus; serve + log events are emitted onto it. */
   bus: StudioEventBus;
+  /**
+   * When true, append `--watch` to each spawned serve child (`start-api` /
+   * `start-alb` / `start-service`) so a serve started from the studio UI
+   * re-synths + rolling-reloads on CDK source changes — `cdkl studio --watch`
+   * (issue #301). Read per-`start()` off this (mutable) config object, so a
+   * `PATCH /api/config` toggle applies to subsequently-started serves. Has NO
+   * effect on single-shot invokes (the dispatcher re-synths every run anyway).
+   */
+  watch?: boolean;
   /** Working directory for the child serve (defaults to `process.cwd()`). */
   cwd?: string;
   /** Node binary to spawn (defaults to `process.execPath`; injectable for tests). */
@@ -239,6 +248,12 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...spec.portArgs,
       ...buildSharedChildArgs(config),
       ...buildPerRunArgs(req.kind, req.options),
+      // `cdkl studio --watch` (issue #301): every serve kind (start-api /
+      // start-alb / start-service) implements `--watch` rolling reload, so
+      // forwarding the bare flag makes a UI-started serve hot-reload on source
+      // changes. Read off the (mutable) config per start so a Session-bar
+      // toggle applies to the next serve.
+      ...(config.watch === true ? ['--watch'] : []),
     ];
   }
 

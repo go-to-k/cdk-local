@@ -107,12 +107,19 @@ export interface SessionConfigSnapshot {
   fromCfnStack?: string | boolean | undefined;
   /** Editable run-time binding — `--assume-role <arn>`. */
   assumeRole?: string | undefined;
+  /**
+   * Editable session mode — `--watch`: when true, serves started from the UI
+   * are spawned with `--watch` so they hot-reload on CDK source changes
+   * (issue #301). Has no effect on single-shot invokes.
+   */
+  watch?: boolean | undefined;
 }
 
 /** The editable run-time bindings {@link applyConfigPatch} mutates in place. */
 export interface EditableSessionBindings {
   fromCfnStack?: string | boolean;
   assumeRole?: string;
+  watch?: boolean;
 }
 
 /**
@@ -141,6 +148,12 @@ export function applyConfigPatch(body: unknown, target: EditableSessionBindings)
     if (v === null || v === '') delete target.assumeRole;
     else if (typeof v === 'string') target.assumeRole = v;
     else throw new Error('"assumeRole" must be a string or null.');
+  }
+  if ('watch' in b) {
+    const v = b['watch'];
+    if (v === null || v === false) delete target.watch;
+    else if (v === true) target.watch = true;
+    else throw new Error('"watch" must be a boolean or null.');
   }
 }
 
@@ -186,6 +199,11 @@ interface LocalStudioOptions {
    * matches one of the globs (e.g. `dev/*`). Does NOT scope synth.
    */
   stack?: string[];
+  /**
+   * `--watch`: spawn serves started from the UI with `--watch` so they
+   * hot-reload on CDK source changes. No effect on single-shot invokes.
+   */
+  watch?: boolean;
 }
 
 /**
@@ -274,6 +292,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     context?: Record<string, string>;
     fromCfnStack?: string | boolean;
     assumeRole?: string;
+    watch?: boolean;
   } = {
     cliEntry,
     bus,
@@ -284,6 +303,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     ...(Object.keys(context).length > 0 ? { context } : {}),
     ...(options.fromCfnStack !== undefined ? { fromCfnStack: options.fromCfnStack } : {}),
     ...(options.assumeRole ? { assumeRole: options.assumeRole } : {}),
+    ...(options.watch ? { watch: true } : {}),
   };
   const dispatcher = createStudioDispatcher(childConfig);
   const serveManager = createStudioServeManager(childConfig);
@@ -292,6 +312,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     synth: { profile: childConfig.profile, region: childConfig.region, app: childConfig.app },
     fromCfnStack: childConfig.fromCfnStack,
     assumeRole: childConfig.assumeRole,
+    watch: childConfig.watch,
   });
   // Retain a bounded window of invocations + logs so the browser can render
   // history on (re)connect, search logs full-text, and bind a request's
@@ -337,6 +358,9 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
 
   const cliName = getEmbedConfig().cliName;
   logger.info(`${cliName} studio is running at ${server.url}`);
+  if (childConfig.watch) {
+    logger.info('Watch mode: ON — serves started from the UI hot-reload on CDK source changes.');
+  }
   logger.info('Press Ctrl-C to stop.');
 
   // Auto-open the browser only in an interactive terminal (never in CI /
@@ -459,6 +483,15 @@ export function addStudioSpecificOptions(cmd: Command): Command {
         '"Stack/Construct". Display-only — does NOT scope synth (the whole app is still ' +
         "synthesized; gate synth with the app's own -c context or a committed cdk.context.json). " +
         'Space-separate multiple globs; a target matching ANY glob is shown.'
+    )
+  );
+  cmd.addOption(
+    new Option(
+      '--watch',
+      'Spawn serves started from the UI (start-api / start-alb / start-service) with --watch, so ' +
+        'they re-synth + rolling-reload on CDK source changes. Toggleable from the Session bar. No ' +
+        'effect on single-shot invokes (each invoke re-synths anyway); the target list is not ' +
+        're-synthed (restart studio to pick up newly-added resources).'
     )
   );
   return cmd;
