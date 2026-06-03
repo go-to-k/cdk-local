@@ -1,3 +1,10 @@
+# [0.106.0](https://github.com/go-to-k/cdk-local/compare/v0.105.0...v0.106.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** run CloudFront distributions from cdkl studio (start-cloudfront) ([#371](https://github.com/go-to-k/cdk-local/issues/371)) ([85c9df9](https://github.com/go-to-k/cdk-local/commit/85c9df901a80c75ef733262bfe7b614f3428e9d9))
+
 # [0.105.0](https://github.com/go-to-k/cdk-local/compare/v0.104.1...v0.105.0) (2026-06-03)
 
 
