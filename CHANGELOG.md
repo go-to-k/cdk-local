@@ -1,3 +1,10 @@
+## [0.102.1](https://github.com/go-to-k/cdk-local/compare/v0.102.0...v0.102.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** visual polish — zebra contrast, wider session inputs, LOGS clear ([#340](https://github.com/go-to-k/cdk-local/issues/340)) ([2f25581](https://github.com/go-to-k/cdk-local/commit/2f25581fa276a6ff38e7bdffa59212614126730f))
+
 # [0.102.0](https://github.com/go-to-k/cdk-local/compare/v0.101.0...v0.102.0) (2026-06-03)
 
 
