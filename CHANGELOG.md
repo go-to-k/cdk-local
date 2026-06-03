@@ -1,3 +1,10 @@
+# [0.89.0](https://github.com/go-to-k/cdk-local/compare/v0.88.0...v0.89.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** make AgentCore runtimes runnable from the UI ([#303](https://github.com/go-to-k/cdk-local/issues/303)) ([#308](https://github.com/go-to-k/cdk-local/issues/308)) ([972e200](https://github.com/go-to-k/cdk-local/commit/972e20078a84232b8e800a28ae2b37c92051a5a2))
+
 # [0.88.0](https://github.com/go-to-k/cdk-local/compare/v0.87.0...v0.88.0) (2026-06-03)
 
 
