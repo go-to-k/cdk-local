@@ -1,3 +1,10 @@
+## [0.96.1](https://github.com/go-to-k/cdk-local/compare/v0.96.0...v0.96.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** bind AgentCore invocation logs strictly by container id ([#321](https://github.com/go-to-k/cdk-local/issues/321)) ([bf408e2](https://github.com/go-to-k/cdk-local/commit/bf408e233dcc0654bcdf8e39e8a7617bea8b8b32))
+
 # [0.96.0](https://github.com/go-to-k/cdk-local/compare/v0.95.0...v0.96.0) (2026-06-03)
 
 
