@@ -1,3 +1,10 @@
+## [0.103.6](https://github.com/go-to-k/cdk-local/compare/v0.103.5...v0.103.6) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** hide custom-resource Lambdas with a generic Custom:: path ([#360](https://github.com/go-to-k/cdk-local/issues/360)) ([d811bee](https://github.com/go-to-k/cdk-local/commit/d811bee02d3531a586f9f712341e278a0308d666))
+
 ## [0.103.5](https://github.com/go-to-k/cdk-local/compare/v0.103.4...v0.103.5) (2026-06-03)
 
 
