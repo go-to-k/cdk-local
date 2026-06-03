@@ -72,6 +72,36 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
   ];
 }
 
+/** Compile a `*` / `?` glob to an anchored RegExp matched against a target id. */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * Filter the studio target groups to the entries whose id matches ANY of
+ * the `--stack` globs (issue #301 slice 4). A target id is `Stack/Construct`,
+ * so `dev/*` keeps stack `dev`'s targets and `dev*` keeps any stack whose
+ * name starts `dev`. This is **display-only** — it scopes the targets LISTED
+ * in the UI, NOT the synth (the whole CDK app is still synthesized; use the
+ * app's own `-c` context gating / a committed `cdk.context.json` to scope
+ * synth). No globs returns the groups unchanged.
+ */
+export function filterStudioTargetGroups(
+  groups: StudioTargetGroup[],
+  globs: string[] | undefined
+): StudioTargetGroup[] {
+  if (!globs || globs.length === 0) return groups;
+  const matchers = globs.map(globToRegExp);
+  return groups.map((g) => ({
+    ...g,
+    entries: g.entries.filter((e) => matchers.some((r) => r.test(e.id))),
+  }));
+}
+
 /** Inputs to {@link startStudioServer}. */
 export interface StudioServerOptions {
   /** Preferred listen port; bumps on collision (decision: collision-safe). */

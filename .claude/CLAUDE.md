@@ -233,7 +233,12 @@ compute-locally category for Lambda + API Gateway).
   per-run is mutable, `GET /api/config` exposes it (with the read-only
   synth-time `profile` / `region` / `app`), and `PATCH /api/config`
   (`applyConfigPatch`) edits the bindings so the change applies to
-  subsequent runs without a restart.
+  subsequent runs without a restart. Issue #301 slice 4 added
+  `--stack <glob...>` (`filterStudioTargetGroups` in studio-server):
+  a DISPLAY-only glob filter over the listed targets (a target id is
+  `Stack/Construct`, so `dev/*` scopes to stack `dev`) — it does NOT
+  scope synth (the whole app is still synthesized; gate synth with the
+  app's own `-c` context / a committed `cdk.context.json`).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.

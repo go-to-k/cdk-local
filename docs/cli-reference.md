@@ -1496,6 +1496,7 @@ The console is a three-pane layout:
 | `--no-open` | (auto-opens) | Do not auto-open the browser when studio starts (TTY only). |
 | `--from-cfn-stack [name]` | (off) | Bind the whole studio session to a deployed CloudFormation stack — every invoke / serve started from the UI runs against the stack's real ARNs / Secret values. Bare flag auto-resolves a single-stack app; pass a name to pick the stack. Forwarded to each child command. |
 | `--assume-role <arn>` | (off) | IAM role ARN to assume for every invoke / serve started from the UI; the temporary credentials are forwarded into the containers. Forwarded to each child command. |
+| `--stack <glob...>` | (all) | Filter the DISPLAYED targets by stack glob (a target id is `Stack/Construct`, so `dev/*` keeps stack `dev`'s targets, `dev*` any stack starting `dev`). Space-separate multiple globs (a target matching ANY is shown). **Display-only — does NOT scope synth**: the whole app is still synthesized, so gate synth itself with the app's own `-c` context / a committed `cdk.context.json`. |
 
 `--from-cfn-stack` and `--assume-role` are **session-global**: they apply
 to every target you run from the UI, so they sit on `cdkl studio` itself
