@@ -309,7 +309,14 @@ if ! grep -qF 'function buildHeaderEditor()' "${BODY_FILE}" \
   echo "FAIL: GET / did not include the headers KV/JSON editor (issue #337)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor"
+# Session-bar symmetry (issue #343): assume-role is checkbox-gated like
+# from-cfn-stack.
+if ! grep -qF 'id="sess-role-on"' "${BODY_FILE}" \
+  || ! grep -qF 'assumeRole: roleOn.checked ?' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the assume-role checkbox (issue #343)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
