@@ -1,3 +1,10 @@
+# [0.103.0](https://github.com/go-to-k/cdk-local/compare/v0.102.2...v0.103.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** KV / JSON toggle for the request composer's Headers ([#342](https://github.com/go-to-k/cdk-local/issues/342)) ([8d3942a](https://github.com/go-to-k/cdk-local/commit/8d3942acbf541963de047423d43cd58f3b206766))
+
 ## [0.102.2](https://github.com/go-to-k/cdk-local/compare/v0.102.1...v0.102.2) (2026-06-03)
 
 
