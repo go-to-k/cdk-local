@@ -1,3 +1,10 @@
+# [0.93.0](https://github.com/go-to-k/cdk-local/compare/v0.92.0...v0.93.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** in-browser WebSocket console for served WebSocket APIs ([#303](https://github.com/go-to-k/cdk-local/issues/303)) ([#315](https://github.com/go-to-k/cdk-local/issues/315)) ([a3b0275](https://github.com/go-to-k/cdk-local/commit/a3b0275eed2ab60a42503efba416ea3323391119))
+
 # [0.92.0](https://github.com/go-to-k/cdk-local/compare/v0.91.0...v0.92.0) (2026-06-03)
 
 
