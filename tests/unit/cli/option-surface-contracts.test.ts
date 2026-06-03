@@ -173,6 +173,7 @@ describe('invoke option surface contract (addInvokeSpecificOptions)', () => {
       '--layer-role-arn',
       '--no-build',
       '--no-pull',
+      '--response-file',
       '--stack-region',
     ]);
   });

@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
@@ -166,6 +166,13 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       const eventFile = join(dir, 'event.json');
       writeFileSync(eventFile, JSON.stringify(req.event ?? {}));
 
+      // Issue #291: `cdkl invoke` writes the raw Lambda response to this file,
+      // so we recover it authoritatively instead of guessing the last
+      // JSON-parseable stdout line (a handler's own trailing `console.log(JSON)`
+      // could otherwise be mistaken for the response). Only `cdkl invoke`
+      // (lambda) accepts `--response-file`; agentcore streams its whole stdout.
+      const responseFilePath = req.kind === 'lambda' ? join(dir, 'response.json') : undefined;
+
       const args = [
         verb,
         req.targetId,
@@ -176,6 +183,7 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         // reads `--app <assemblyDir>` and skips its own synth.
         ...buildSharedChildArgs(config, { preferAssembly: true }),
         ...buildPerRunArgs(req.kind, req.options),
+        ...(responseFilePath ? ['--response-file', responseFilePath] : []),
       ];
 
       // The `--env-vars` per-run option takes a FILE — materialize the UI's
@@ -207,7 +215,26 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       const ok = code === 0;
       const failure = stderr.trim() || `cdkl ${verb} exited ${code}`;
 
-      const { response, raw, stdoutLogLines } = extractResponse(req.kind, stdout, ok, failure);
+      // Issue #291: read the machine-readable response file the child wrote.
+      // Absent / empty (older `cdkl invoke`, or a crash before the write) falls
+      // back to the last-JSON-line stdout heuristic inside extractResponse.
+      let fileResponse: string | undefined;
+      if (responseFilePath) {
+        try {
+          const content = readFileSync(responseFilePath, 'utf8');
+          if (content.length > 0) fileResponse = content;
+        } catch {
+          // No file — fall back to stdout parsing.
+        }
+      }
+
+      const { response, raw, stdoutLogLines } = extractResponse(
+        req.kind,
+        stdout,
+        ok,
+        failure,
+        fileResponse
+      );
 
       // Surface the stdout lines that are NOT the response as log events
       // (Lambda container logs; AgentCore has none — its whole stdout is the
@@ -364,7 +391,8 @@ function extractResponse(
   kind: StudioTargetKind,
   stdout: string,
   ok: boolean,
-  failure: string
+  failure: string,
+  fileResponse?: string
 ): ExtractedResponse {
   if (kind === 'agentcore') {
     const text = stdout.trim();
@@ -381,6 +409,18 @@ function extractResponse(
 
   if (!ok) {
     return { response: failure, raw: '', stdoutLogLines: stdoutLines };
+  }
+
+  // Issue #291: when `cdkl invoke` wrote the machine-readable response file,
+  // use it as the authoritative response — no stdout guessing. The response is
+  // ALSO echoed on stdout, so drop the line equal to it from the log lines (so
+  // it is not shown twice). This eliminates the last-JSON-line heuristic's one
+  // failure mode: a handler whose own trailing `console.log` is a JSON value.
+  if (fileResponse !== undefined) {
+    const trimmed = fileResponse.trim();
+    const parsed = tryParseJson(trimmed);
+    const stdoutLogLines = stdoutLines.filter((l) => l.trim() !== trimmed);
+    return { response: parsed.ok ? parsed.value : fileResponse, raw: fileResponse, stdoutLogLines };
   }
 
   let responseIdx = -1;

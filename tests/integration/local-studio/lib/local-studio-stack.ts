@@ -47,9 +47,14 @@ export class LocalStudioStack extends cdk.Stack {
       handler: 'index.handler',
       // Echoes the STUDIO_ENV_PROBE env var into the body so the per-target
       // `--env-vars` option (issue #301 slice 2) is observable end-to-end;
-      // defaults to 'ok' so the other assertions are unaffected.
+      // defaults to 'ok' so the other assertions are unaffected. Also emits a
+      // trailing `console.log(JSON)` line — the exact shape that would fool
+      // studio's last-JSON-line stdout heuristic — so the invoke assertion
+      // proves studio recovers the REAL return value via --response-file and
+      // not this log line (issue #291).
       code: lambda.Code.fromInline(
-        "exports.handler = async () => ({ statusCode: 200, body: process.env.STUDIO_ENV_PROBE || 'ok' });"
+        "exports.handler = async () => { console.log(JSON.stringify({ cdklResponseTrap: 'not-the-response' })); " +
+          "return { statusCode: 200, body: process.env.STUDIO_ENV_PROBE || 'ok' }; };"
       ),
     });
 
