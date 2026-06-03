@@ -52,8 +52,11 @@ describe('renderStudioHtml', () => {
     expect(html).toContain("/^wss?:/.test(u)");
     expect(html).toContain('ws.appendChild(renderWsConsole(wsEndpoint))');
     // The socket lives in module state so a log-driven serve re-render does not
-    // drop the connection; explicit navigation closes it.
+    // drop the connection; navigation away AND a non-running re-render (serve
+    // stopped) close it so it can't linger against a dead serve.
     expect(html).toContain('function closeActiveWs');
+    expect(html).toContain('closeActiveWs();'); // called on navigation + serve stop, not just defined
+    expect(html).toContain('if (!running) closeActiveWs();'); // stop-leak guard
     // A received frame may be a binary Blob (the local emulator's
     // PostToConnection path) — decode it to text rather than show a placeholder.
     expect(html).toContain("typeof d.text === 'function'");

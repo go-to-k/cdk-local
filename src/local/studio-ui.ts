@@ -517,6 +517,12 @@ const STUDIO_SCRIPT = `
     const st = serveState.get(id) || { status: 'stopped', endpoints: [] };
     const running = st.status === 'running';
     const starting = st.status === 'starting';
+    // A NON-running render (serve stopped / starting) tears down any open
+    // WebSocket-console socket: its endpoint is gone, and leaving it open would
+    // show "● connected" against a dead serve if the same target is restarted.
+    // A RUNNING re-render (a streamed log line) keeps the socket alive — the
+    // console re-syncs from module state, so the connection survives.
+    if (!running) closeActiveWs();
 
     const meta = serveMeta.get(id);
     const kind = meta ? meta.kind : 'api';
@@ -659,9 +665,12 @@ const STUDIO_SCRIPT = `
     wsSyncUi();
     sock.onopen = function () { if (activeWs === sock) { wsAppend('--', 'connected'); wsSyncUi(); } };
     sock.onmessage = function (e) {
+      if (activeWs !== sock) return; // ignore a late frame from a replaced socket
       // A frame arrives as a string (text) or — the local emulator's
       // PostToConnection path sends binary — a Blob / ArrayBuffer. Decode the
       // binary forms to text so the console shows the payload, not a placeholder.
+      // (A binary Blob decodes async via .text(), so two rapid binary frames
+      // could append slightly out of receive order — fine for a dev console.)
       const d = e.data;
       if (typeof d === 'string') wsAppend('<-', d);
       else if (d && typeof d.text === 'function') d.text().then(function (t) { wsAppend('<-', t); });
