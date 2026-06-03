@@ -256,7 +256,17 @@ compute-locally category for Lambda + API Gateway).
   an image-override Dockerfile picker, and the app dir is scanned once
   (`discoverDockerfiles`, only when something is pinned) for the picker's
   options. The picker threads `--image-override <target>=<dockerfile>`
-  through `coerceRunRequest` (validated) + the serve manager.
+  through `coerceRunRequest` (validated) + the serve manager. Issue #354:
+  when studio is booted with `--from-cfn-stack`, the boot pin
+  classification threads the deployed-state image-resolution context per
+  owning stack (`prepareEcsImageContexts` -> `buildEcsImageResolutionContext`
+  -> `makePinClassifier` -> `resolveEcsServiceTarget(id, stacks, ctx)`), so a
+  service pinned to an INTRINSIC ECR URI (only resolvable under
+  `--from-cfn-stack`, e.g. `ContainerImage.fromEcrRepository(repo)`) is
+  detected as pinned — matching `cdkl start-service --from-cfn-stack`; a
+  service that cannot be classified now WARNs instead of silently going
+  unmarked. Boot-time only: a runtime Session-bar `--from-cfn-stack` change
+  does NOT re-classify (restart studio to re-detect).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.

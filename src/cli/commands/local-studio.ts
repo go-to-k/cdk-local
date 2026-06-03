@@ -42,6 +42,16 @@ import { relayServeRequest } from '../../local/studio-request-relay.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
 import { discoverDockerfiles } from '../../local/image-override-engine.js';
+import { parseEcsTarget, type EcsImageResolutionContext } from '../../local/ecs-task-resolver.js';
+import { matchStacks } from '../stack-matcher.js';
+import {
+  createLocalStateProvider,
+  resolveCfnFallbackRegion,
+  isCfnFlagPresent,
+  rejectExplicitCfnStackWithMultipleStacks,
+} from './local-state-source.js';
+import { buildEcsImageResolutionContext } from './local-run-task.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
   createStudioServeManager,
   type StudioServeManager,
@@ -339,6 +349,173 @@ export function resolveBootAssemblyDir(appCmd: string, output: string): string |
   return undefined;
 }
 
+/**
+ * Resolve the {@link StackInfo} an ECS-service target id belongs to.
+ *
+ * A studio ECS target id is a CDK display path (`Stack/Construct/...`) or a
+ * `Stack:LogicalId` form (the same shapes {@link resolveEcsServiceTarget}
+ * accepts). We only need the owning stack so we can build that stack's
+ * {@link EcsImageResolutionContext}. Returns `undefined` when the id has no
+ * stack segment (single-stack app uses the lone stack) or the segment matches
+ * no / multiple stacks — the caller then resolves without an image context,
+ * which is exactly the no-`--from-cfn-stack` behavior.
+ *
+ * Exported for unit testing.
+ */
+export function resolveEcsServiceStack(
+  targetId: string,
+  stacks: StackInfo[]
+): StackInfo | undefined {
+  const parsed = parseEcsTarget(targetId);
+  if (parsed.stackPattern === null) {
+    return stacks.length === 1 ? stacks[0] : undefined;
+  }
+  const matched = matchStacks(stacks, [parsed.stackPattern]);
+  return matched.length === 1 ? matched[0] : undefined;
+}
+
+/** The subset of studio options the pin classifier forwards to the state-source helpers. */
+export type LocalStateSourceLikeOptions = {
+  fromCfnStack?: string | boolean;
+  region?: string;
+  profile?: string;
+  stackRegion?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * Pre-build the per-stack {@link EcsImageResolutionContext} map the boot-time
+ * pin classifier needs (issue #354). `buildEcsImageResolutionContext` is
+ * async (it may load deployed state / call STS), but the classify callback
+ * `annotatePinnedEcsTargets` invokes is synchronous, so the contexts must be
+ * materialized BEFORE classification.
+ *
+ * When `--from-cfn-stack` is NOT set, returns an empty map and the classifier
+ * resolves against the synthed template only (the historical behavior). When
+ * it IS set, for every distinct stack that owns a servable ECS service id this
+ * builds a `LocalStateProvider` bound to THAT stack (so a multi-stack app with
+ * bare `--from-cfn-stack` reads each stack's own CFn counterpart — the CFn
+ * provider is stack-bound at construction, `load()` ignores its stack-name
+ * argument), then builds + caches that stack's image-resolution context once.
+ * Each per-stack provider is disposed before returning.
+ *
+ * A per-stack build failure is logged as a WARN and that stack maps to
+ * `undefined` (resolve without an image context) rather than aborting boot.
+ *
+ * Exported for unit testing.
+ */
+export async function prepareEcsImageContexts(args: {
+  serviceIds: string[];
+  stacks: StackInfo[];
+  options: LocalStateSourceLikeOptions;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<Map<string, EcsImageResolutionContext | undefined>> {
+  const { serviceIds, stacks, options, logger } = args;
+  const contextByStack = new Map<string, EcsImageResolutionContext | undefined>();
+  if (!isCfnFlagPresent(options)) return contextByStack;
+
+  // The distinct owning stacks of the servable services, each built at most
+  // once. An explicit `--from-cfn-stack <name>` binds the SINGLE named CFn
+  // stack, so reject it up front when more than one stack owns a service (it
+  // would silently mis-map logical IDs across siblings — same guard the
+  // multi-stack serve commands apply); bare `--from-cfn-stack` is fine.
+  const owningStacks: StackInfo[] = [];
+  const seen = new Set<string>();
+  for (const id of serviceIds) {
+    // A malformed service id must NOT abort studio boot — skip it (the
+    // classifier WARNs + leaves it unmarked too). In practice servable ids are
+    // well-formed CDK display paths, so this is a defensive guard.
+    let stack: StackInfo | undefined;
+    try {
+      stack = resolveEcsServiceStack(id, stacks);
+    } catch {
+      continue;
+    }
+    if (stack && !seen.has(stack.stackName)) {
+      seen.add(stack.stackName);
+      owningStacks.push(stack);
+    }
+  }
+  rejectExplicitCfnStackWithMultipleStacks(options, owningStacks.length);
+
+  for (const stack of owningStacks) {
+    const stateProvider = createLocalStateProvider(
+      options,
+      stack.stackName,
+      await resolveCfnFallbackRegion(options, stack.region)
+    );
+    try {
+      // buildEcsImageResolutionContext reads `region` / `profile` off the bag
+      // for the pseudo-parameter / state-load resolution; the studio options
+      // carry both. The cast bridges to run-task's wider options shape (the
+      // extra required fields like `cluster` are not read by this code path).
+      const ctx = await buildEcsImageResolutionContext(
+        stack,
+        stateProvider,
+        options as unknown as Parameters<typeof buildEcsImageResolutionContext>[2]
+      );
+      contextByStack.set(stack.stackName, ctx);
+    } catch (err) {
+      logger.warn(
+        `studio: could not build deployed-state image context for stack '${stack.stackName}'; ` +
+          `ECS services in it resolve against the synthed template only. ${
+            err instanceof Error ? err.message : String(err)
+          }`
+      );
+      contextByStack.set(stack.stackName, undefined);
+    } finally {
+      stateProvider?.dispose();
+    }
+  }
+  return contextByStack;
+}
+
+/**
+ * Build the boot-time ECS pin classifier `annotatePinnedEcsTargets` calls per
+ * servable service (issue #354). When `--from-cfn-stack` is set, a service
+ * whose container image is an INTRINSIC ECR URI (e.g.
+ * `ContainerImage.fromEcrRepository(repo)`) is only resolvable WITH the
+ * deployed-state image-resolution context — without it the resolver throws
+ * and the service was silently left unmarked, so the UI never offered the
+ * image-override picker even though `cdkl start-service --from-cfn-stack`
+ * detects the very same pin. This threads each service's owning-stack
+ * {@link EcsImageResolutionContext} (pre-built by
+ * {@link prepareEcsImageContexts}) into {@link resolveEcsServiceTarget} so
+ * the pin resolves, and surfaces a WARN (not a silent DEBUG swallow) when a
+ * service still cannot be classified.
+ *
+ * NOTE: the target list + these pinned flags are computed ONCE at boot. A
+ * run-time Session-bar `--from-cfn-stack` change (`PATCH /api/config`) does
+ * NOT re-classify — restart studio to re-detect pins under a new binding.
+ *
+ * Returns a `(id) => boolean` callback (true = pinned). Exported for testing.
+ */
+export function makePinClassifier(args: {
+  stacks: StackInfo[];
+  contextByStack: Map<string, EcsImageResolutionContext | undefined>;
+  logger: ReturnType<typeof getLogger>;
+}): (id: string) => boolean {
+  const { stacks, contextByStack, logger } = args;
+  return (id: string): boolean => {
+    try {
+      const stack = resolveEcsServiceStack(id, stacks);
+      const context = stack ? contextByStack.get(stack.stackName) : undefined;
+      return !isLocalCdkAssetImage(resolveEcsServiceTarget(id, stacks, context));
+    } catch (err) {
+      // Replaces the prior silent DEBUG swallow (issue #354): a service that
+      // cannot be pin-classified is surfaced, not invisibly left unmarked, so
+      // a misconfigured / unresolvable image is visible at boot.
+      logger.warn(
+        `studio: could not classify image-pin status for ECS service '${id}'; leaving it unmarked ` +
+          `(the image-override picker will not be offered). ${
+            err instanceof Error ? err.message : String(err)
+          }`
+      );
+      return false;
+    }
+  };
+}
+
 interface LocalStudioOptions {
   app?: string;
   output: string;
@@ -374,6 +551,13 @@ interface LocalStudioOptions {
    * Lambdas in the target list (hidden by default).
    */
   includeCustomResources?: boolean;
+  /**
+   * Host-injected extra state-source flag fields (parity with `run-task`'s
+   * options bag) — read by {@link createLocalStateProvider} /
+   * {@link prepareEcsImageContexts} for the boot-time ECS pin classification
+   * under `--from-cfn-stack` (issue #354).
+   */
+  [key: string]: unknown;
 }
 
 /**
@@ -473,25 +657,37 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   // Dockerfile picker for those services; a local-asset service already
   // hot-reloads under `--watch` and gets no picker.
   //
-  // Classification is BEST-EFFORT and deliberately STATE-FREE: it reads the
-  // synthed template only (no deployed-state fetch, no AWS calls at boot), so
-  // it is cheap, but under `--from-cfn-stack` an ECR image expressed as an
-  // unresolved intrinsic could be hinted differently than the actual
-  // start-service verdict. The hint only governs whether the UI surfaces the
+  // Classification reads the synthed template by default. Under
+  // `--from-cfn-stack` (set at boot via the CLI flag), an ECR image expressed
+  // as an INTRINSIC URI (e.g. `ContainerImage.fromEcrRepository(repo)`) is
+  // ONLY resolvable with the deployed-state image-resolution context — the
+  // same context `cdkl run-task` / `start-service --from-cfn-stack` build. So
+  // we build a `LocalStateProvider` once at boot and thread each service's
+  // owning-stack `EcsImageResolutionContext` into the resolver; without it the
+  // service would silently stay unmarked even though start-service detects the
+  // pin (issue #354). The hint only governs whether the UI surfaces the
   // picker; a mis-hinted service can still be overridden via the "All options"
-  // raw-args `--image-override`. Per-target resolution failures are non-fatal
-  // (the service stays unmarked). Dockerfiles are scanned once, only when at
-  // least one service is pinned, so an all-local app pays nothing.
-  const anyPinned = annotatePinnedEcsTargets(targetGroups, (id) => {
-    try {
-      return !isLocalCdkAssetImage(resolveEcsServiceTarget(id, stacks));
-    } catch (err) {
-      logger.debug(
-        `studio: could not classify pin status for '${id}': ${err instanceof Error ? err.message : String(err)}`
-      );
-      return false;
-    }
+  // raw-args `--image-override`. A service that still cannot be classified is
+  // WARN-logged (not silently swallowed). Dockerfiles are scanned once, only
+  // when at least one service is pinned, so an all-local app pays nothing.
+  //
+  // NOTE: the target list + pinned flags are boot-time only. A run-time
+  // Session-bar `--from-cfn-stack` change (`PATCH /api/config`) does NOT
+  // re-classify — restart studio to re-detect pins under a new binding.
+  // Pre-build each owning stack's deployed-state image-resolution context
+  // (only under `--from-cfn-stack`; each per-stack state provider is created
+  // + disposed inside the helper), then classify every servable service with
+  // its stack's context threaded into the resolver.
+  const contextByStack = await prepareEcsImageContexts({
+    serviceIds: [...servableEcs],
+    stacks,
+    options,
+    logger,
   });
+  const anyPinned = annotatePinnedEcsTargets(
+    targetGroups,
+    makePinClassifier({ stacks, contextByStack, logger })
+  );
   const dockerfiles = anyPinned ? discoverDockerfiles(process.cwd()) : [];
 
   const bus = new StudioEventBus();
