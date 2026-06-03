@@ -970,6 +970,10 @@ const STUDIO_SCRIPT = `
 export function renderStudioHtml(appLabel: string, cliName: string): string {
   const safeApp = escapeHtml(appLabel);
   const safeCli = escapeHtml(cliName);
+  // Header title. The default `cdkl` binary brands as the friendlier product
+  // name "CDK Local Studio"; a host CLI that rebrands `cdkl` keeps its own
+  // "<cliName> studio" so the embed stays on-brand for the host.
+  const brand = cliName === 'cdkl' ? 'CDK Local Studio' : `${safeCli} studio`;
   // The per-target option descriptors, serialized for the embedded UI to
   // render controls from. `<` is escaped so a value can never close the
   // surrounding <script> tag.
@@ -979,12 +983,12 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${safeCli} studio</title>
+<title>${brand}</title>
 <style>${STUDIO_CSS}</style>
 </head>
 <body>
 <header>
-  <span class="brand">${safeCli} studio</span>
+  <span class="brand">${brand}</span>
   <span class="meta">${safeApp}</span>
   <span id="conn" class="down">● connecting</span>
 </header>

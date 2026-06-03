@@ -5,7 +5,7 @@ describe('renderStudioHtml', () => {
   it('renders a full HTML document branded with the CLI name', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     expect(html).toContain('<!doctype html>');
-    expect(html).toContain('cdkl studio');
+    expect(html).toContain('CDK Local Studio'); // default cdkl brands as the product name
     expect(html).toContain('MyStack');
     // The three panes are present (targets / workspace / timeline).
     expect(html).toContain('id="targets"');
