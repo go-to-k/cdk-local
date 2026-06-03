@@ -256,11 +256,17 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
   }
 
   function buildArgs(req: StudioServeRequest, spec: ServeKindSpec): string[] {
+    // A `--watch` serve MUST re-synth on source changes, so it keeps
+    // `--app <app>`; a non-watch serve reuses the boot-synthesized cloud
+    // assembly studio captured (issue #324) and skips its own synth. Read
+    // `config.watch` per start (mutable — a Session-bar toggle applies to
+    // the next serve), matching the `--watch` flag append below.
+    const preferAssembly = config.watch !== true;
     return [
       spec.command,
       req.targetId,
       ...spec.portArgs,
-      ...buildSharedChildArgs(config),
+      ...buildSharedChildArgs(config, { preferAssembly }),
       ...buildPerRunArgs(req.kind, req.options),
       // Image-override picker (issue #301): a pinned ecs service rebuilds from
       // the chosen local Dockerfile. The EXPLICIT `<target>=<dockerfile>` form

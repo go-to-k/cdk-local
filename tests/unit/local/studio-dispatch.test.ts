@@ -198,6 +198,34 @@ describe('createStudioDispatcher', () => {
     expect(argv).toContain('env=prod');
   });
 
+  it('forwards --app <assemblyDir> (not the app command) for a single-shot invoke (issue #324)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      app: 'node bin/app.ts',
+      assemblyDir: '/abs/cdk.out',
+      idFactory: () => 'inv-asm',
+    });
+
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{}');
+    child.emit('close', 0);
+    await p;
+
+    // An invoke never re-synths, so it reuses the once-synthesized assembly
+    // dir rather than re-running the app command.
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--app');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(argv[i + 1]).toBe('/abs/cdk.out');
+    expect(argv).not.toContain('node bin/app.ts');
+  });
+
   it('threads --from-cfn-stack <name> + --assume-role <arn> into the child argv', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

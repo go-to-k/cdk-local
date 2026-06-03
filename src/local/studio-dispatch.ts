@@ -171,7 +171,10 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         req.targetId,
         '--event',
         eventFile,
-        ...buildSharedChildArgs(config),
+        // Single-shot invokes never re-synth, so reuse the boot-synthesized
+        // cloud assembly when studio captured one (issue #324): the child
+        // reads `--app <assemblyDir>` and skips its own synth.
+        ...buildSharedChildArgs(config, { preferAssembly: true }),
         ...buildPerRunArgs(req.kind, req.options),
       ];
 

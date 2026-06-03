@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Command, Option } from 'commander';
 import {
   appOptions,
@@ -201,6 +203,42 @@ export function parseStudioPort(raw: string): number {
   return port;
 }
 
+/**
+ * Resolve the on-disk cloud-assembly directory the boot synth produced, so
+ * studio can forward `--app <assemblyDir>` to NON-watch children and skip a
+ * redundant re-synth (issue #324). Returns the absolute path when a
+ * reusable assembly directory exists, else `undefined` (children then fall
+ * back to forwarding the app command).
+ *
+ * Two cases yield a reusable dir:
+ *   1. `--app` is itself a pre-synthesized assembly directory — `synthesize`
+ *      read it in place (no `--output` write), so we reuse that very dir.
+ *   2. `--app` is a CDK app command — the synth wrote the assembly to
+ *      `--output` (default `cdk.out`), so we reuse that.
+ *
+ * The existence check is defensive: if neither path is a directory on disk
+ * (an unusual synth setup), we return `undefined` rather than hand a child
+ * a `--app` that points at nothing.
+ *
+ * Exported for unit testing.
+ */
+export function resolveBootAssemblyDir(appCmd: string, output: string): string | undefined {
+  const isDir = (p: string): boolean => {
+    try {
+      return existsSync(p) && statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  // Case 1: --app already points at a pre-synthesized assembly directory.
+  const appPath = resolve(appCmd);
+  if (isDir(appPath)) return appPath;
+  // Case 2: a CDK app command synthed into the --output directory.
+  const outPath = resolve(output);
+  if (isDir(outPath)) return outPath;
+  return undefined;
+}
+
 interface LocalStudioOptions {
   app?: string;
   output: string;
@@ -270,6 +308,17 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     ...(Object.keys(context).length > 0 && { context }),
   };
   const { stacks } = await synthesizer.synthesize(synthOpts);
+
+  // The boot synth persisted the cloud assembly to `--output` (default
+  // `cdk.out`). Capture it so NON-watch children studio spawns
+  // (`cdkl invoke` / `start-api` / ...) read `--app <assemblyDir>` and skip
+  // a redundant re-synth (issue #324). Guard on the dir actually existing —
+  // when `--app` already pointed at a pre-synthesized assembly dir,
+  // `synthesize` reads it in place and `--output` is never written, so we
+  // reuse that same dir; otherwise (and only then) fall back to forwarding
+  // the app command, never a non-existent path. A `--watch` serve still
+  // re-synths (it forwards `--app <appCmd>` — decided per spawn).
+  const assemblyDir = resolveBootAssemblyDir(appCmd, options.output);
 
   const listing = listTargets(stacks);
   // `--stack <glob>` scopes the LISTED targets (display only — the whole app
@@ -341,6 +390,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     bus: StudioEventBus;
     cwd: string;
     app?: string;
+    assemblyDir?: string;
     profile?: string;
     region?: string;
     context?: Record<string, string>;
@@ -352,6 +402,7 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     bus,
     cwd: process.cwd(),
     ...(appCmd ? { app: appCmd } : {}),
+    ...(assemblyDir ? { assemblyDir } : {}),
     ...(options.profile ? { profile: options.profile } : {}),
     ...(options.region ? { region: options.region } : {}),
     ...(Object.keys(context).length > 0 ? { context } : {}),

@@ -55,6 +55,43 @@ describe('buildSharedChildArgs', () => {
     expect(buildSharedChildArgs({ assumeRole: '' })).toEqual([]);
   });
 
+  describe('assembly-dir reuse (issue #324)', () => {
+    it('forwards --app <app> by default (preferAssembly omitted)', () => {
+      expect(
+        buildSharedChildArgs({ app: 'node app.ts', assemblyDir: '/abs/cdk.out' })
+      ).toEqual(['--app', 'node app.ts']);
+    });
+
+    it('forwards --app <assemblyDir> when preferAssembly is true and a dir is set', () => {
+      expect(
+        buildSharedChildArgs(
+          { app: 'node app.ts', assemblyDir: '/abs/cdk.out' },
+          { preferAssembly: true }
+        )
+      ).toEqual(['--app', '/abs/cdk.out']);
+    });
+
+    it('falls back to --app <app> when preferAssembly is true but no assemblyDir is set', () => {
+      expect(
+        buildSharedChildArgs({ app: 'node app.ts' }, { preferAssembly: true })
+      ).toEqual(['--app', 'node app.ts']);
+    });
+
+    it('forwards --app <app> when preferAssembly is false even with an assemblyDir', () => {
+      expect(
+        buildSharedChildArgs(
+          { app: 'node app.ts', assemblyDir: '/abs/cdk.out' },
+          { preferAssembly: false }
+        )
+      ).toEqual(['--app', 'node app.ts']);
+    });
+
+    it('keeps the assemblyDir off the argv when neither app nor preferAssembly applies', () => {
+      // assemblyDir alone (no preferAssembly) does not leak onto the argv.
+      expect(buildSharedChildArgs({ assemblyDir: '/abs/cdk.out' })).toEqual([]);
+    });
+  });
+
   it('composes every flag in a stable order', () => {
     expect(
       buildSharedChildArgs({
