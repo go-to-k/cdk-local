@@ -1,3 +1,10 @@
+## [0.103.8](https://github.com/go-to-k/cdk-local/compare/v0.103.7...v0.103.8) (2026-06-03)
+
+
+### Bug Fixes
+
+* **studio:** add env-vars to the start-alb / start-service serve composers ([#362](https://github.com/go-to-k/cdk-local/issues/362)) ([c265a3c](https://github.com/go-to-k/cdk-local/commit/c265a3c1396688bb5d0aaecd63a6d48201203927))
+
 ## [0.103.7](https://github.com/go-to-k/cdk-local/compare/v0.103.6...v0.103.7) (2026-06-03)
 
 
