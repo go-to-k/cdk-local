@@ -5,6 +5,7 @@ import {
   startStudioServer,
   toStudioTargetGroups,
   filterStudioTargetGroups,
+  annotatePinnedEcsTargets,
   type RunningStudioServer,
   type StudioTargetGroup,
 } from '../../../src/local/studio-server.js';
@@ -173,6 +174,51 @@ const emptyListing = (): TargetListing => ({
   loadBalancers: [],
 });
 
+describe('annotatePinnedEcsTargets', () => {
+  const groups = (): StudioTargetGroup[] => [
+    {
+      kind: 'ecs',
+      title: 'ECS Services / Tasks',
+      entries: [
+        { id: 'S/Pinned', qualifiedId: 'S:Pinned', servable: true },
+        { id: 'S/Asset', qualifiedId: 'S:Asset', servable: true },
+        { id: 'S/Task', qualifiedId: 'S:Task', servable: false },
+      ],
+    },
+    { kind: 'lambda', title: 'Lambda', entries: [{ id: 'S/Fn', qualifiedId: 'S:Fn' }] },
+  ];
+
+  it('marks only the servable ecs services the classifier returns true for', () => {
+    const g = groups();
+    const anyPinned = annotatePinnedEcsTargets(g, (id) => id === 'S/Pinned');
+    expect(anyPinned).toBe(true);
+    const ecs = g[0].entries;
+    expect(ecs[0].pinned).toBe(true); // S/Pinned
+    expect(ecs[1].pinned).toBeUndefined(); // S/Asset (classifier false)
+    expect(ecs[2].pinned).toBeUndefined(); // S/Task (not servable — never classified)
+  });
+
+  it('never classifies a non-servable entry (task definition)', () => {
+    const seen: string[] = [];
+    annotatePinnedEcsTargets(groups(), (id) => {
+      seen.push(id);
+      return false;
+    });
+    // The non-servable task def + the lambda are never passed to classify.
+    expect(seen).toEqual(['S/Pinned', 'S/Asset']);
+  });
+
+  it('returns false (skip the Dockerfile scan) when nothing is pinned', () => {
+    expect(annotatePinnedEcsTargets(groups(), () => false)).toBe(false);
+  });
+
+  it('leaves non-ecs groups untouched', () => {
+    const g = groups();
+    annotatePinnedEcsTargets(g, () => true);
+    expect(g[1].entries[0].pinned).toBeUndefined();
+  });
+});
+
 describe('toStudioTargetGroups', () => {
   it('projects a TargetListing into the five studio groups', () => {
     const listing: TargetListing = {
@@ -285,6 +331,36 @@ describe('startStudioServer', () => {
     const data = (await res.json()) as { groups: { kind: string; entries: unknown[] }[] };
     const lambda = data.groups.find((g) => g.kind === 'lambda');
     expect(lambda?.entries).toEqual([{ id: 'MyStack/Handler', qualifiedId: 'MyStack:Handler' }]);
+  });
+
+  it('serves the discovered dockerfiles alongside the target groups (issue #301)', async () => {
+    const server = await boot({ dockerfiles: ['./Dockerfile', './svc/Dockerfile.dev'] });
+    const res = await http(`${server.url}/api/targets`);
+    const data = (await res.json()) as { groups: unknown[]; dockerfiles: string[] };
+    expect(data.dockerfiles).toEqual(['./Dockerfile', './svc/Dockerfile.dev']);
+  });
+
+  it('defaults dockerfiles to an empty array when none were discovered', async () => {
+    const server = await boot();
+    const res = await http(`${server.url}/api/targets`);
+    const data = (await res.json()) as { dockerfiles: string[] };
+    expect(data.dockerfiles).toEqual([]);
+  });
+
+  it('passes a pinned ecs service flag through the target list', async () => {
+    const server = await boot({
+      targetGroups: [
+        {
+          kind: 'ecs',
+          title: 'ECS Services / Tasks',
+          entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true, pinned: true }],
+        },
+      ],
+    });
+    const res = await http(`${server.url}/api/targets`);
+    const data = (await res.json()) as { groups: { kind: string; entries: { pinned?: boolean }[] }[] };
+    const ecs = data.groups.find((g) => g.kind === 'ecs');
+    expect(ecs?.entries[0].pinned).toBe(true);
   });
 
   it('404s an unknown path', async () => {

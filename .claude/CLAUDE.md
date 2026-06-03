@@ -250,7 +250,13 @@ compute-locally category for Lambda + API Gateway).
   `PATCH /api/config`, applying to subsequently-started serves) and a
   no-op for single-shot invokes (each invoke re-synths anyway). The
   target list itself is not re-synthed (restart studio to pick up
-  newly-added resources).
+  newly-added resources). Issue #301 also classifies each servable ECS
+  service at boot (`resolveEcsServiceTarget` + `isLocalCdkAssetImage`):
+  a deployed-registry-pinned service is marked `pinned` so the UI offers
+  an image-override Dockerfile picker, and the app dir is scanned once
+  (`discoverDockerfiles`, only when something is pinned) for the picker's
+  options. The picker threads `--image-override <target>=<dockerfile>`
+  through `coerceRunRequest` (validated) + the serve manager.
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -318,7 +324,10 @@ compute-locally category for Lambda + API Gateway).
   `serve` events); the studio HTTP server
   subscribes and forwards to the browser over SSE), studio-server
   (the localhost HTTP server behind `cdkl studio`: serves the embedded
-  UI at `/`, the synthesized target list at `/api/targets`, an SSE
+  UI at `/`, the synthesized target list (+ the boot-discovered
+  Dockerfiles + a `pinned` flag per ecs service — set by
+  `annotatePinnedEcsTargets` — for the image-override picker, issue #301)
+  at `/api/targets`, an SSE
   stream of the event bus at `/api/events`, `POST /api/run` (single-shot
   invoke / serve start), `POST /api/stop` (serve stop),
   `GET /api/running` (running serve snapshot), the slice-C3 store
@@ -342,7 +351,15 @@ compute-locally category for Lambda + API Gateway).
   `<details>` (`buildAllOptions`) with a raw extra-args input + the
   read-only auto-derived flag catalog from studio-option-catalog, so the
   curated controls handle common flags richly while every other flag the
-  underlying command accepts stays reachable (issue #301); the
+  underlying command accepts stays reachable (issue #301); a PINNED ecs
+  service (deployed-registry image, marked `pinned` in the target list)
+  additionally gets an image-override Dockerfile picker
+  (`buildImageOverridePicker`) populated from the boot-scanned Dockerfiles,
+  threading `--image-override <target>=<dockerfile>` (the explicit form —
+  studio's child has no TTY, so the bare picker form would be skipped) onto
+  the serve body so `start-service` rebuilds the pinned image from local
+  source; a local-asset service (which already hot-reloads under `--watch`)
+  gets no picker (issue #301); the
   timeline carries both Lambda invocations and captured serve requests,
   the latter opening a read-only Request/Response detail; a log search box
   queries the store and a captured request's detail shows its bound logs),

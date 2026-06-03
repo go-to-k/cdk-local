@@ -178,6 +178,9 @@ const STUDIO_CSS = `
   .pair-add { align-self: flex-start; background: #1d1d1d; color: #7bd88f; border: 1px solid #2f4030;
     border-radius: 3px; cursor: pointer; padding: 3px 9px; font: 12px ui-monospace, monospace; }
   .pair-add:hover { background: #243024; }
+  .options select { flex: 1; background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
+    padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
+  .options select:focus { outline: none; border-color: #4ec97a; }
   details.all-options { margin: 8px 0; border-top: 1px solid #2a2a2a; padding-top: 6px; }
   details.all-options > summary { color: #8a8a8a; font-size: 12px; cursor: pointer; user-select: none; }
   details.all-options > summary:hover { color: #bbb; }
@@ -217,6 +220,7 @@ const STUDIO_SCRIPT = `
   let shownInvId = null;           // lambda invocation whose result is in the workspace
   let shownServeId = null;         // serve target whose workspace is shown
   let shownDetailId = null;        // captured request whose read-only detail is shown
+  let studioDockerfiles = [];      // Dockerfiles scanned at boot (pinned-ecs image-override picker)
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -416,11 +420,48 @@ const STUDIO_SCRIPT = `
     };
   }
 
+  // Image-override picker for a pinned ECS service (issue #301): a select of
+  // the Dockerfiles discovered at boot. Picking one threads an
+  // --image-override flag to start-service so the deployed-registry-pinned
+  // image is rebuilt from local source. Default "(keep pinned image)" => no
+  // override.
+  function buildImageOverridePicker() {
+    const sec = el('div', 'section options');
+    sec.appendChild(el('h3', null, 'Image override'));
+    const row = el('div', 'opt-row');
+    row.appendChild(el('span', 'opt-label', 'Local Dockerfile'));
+    const sel = el('select', 'image-override-select');
+    const none = el('option', null, '(keep pinned image)');
+    none.value = '';
+    sel.appendChild(none);
+    studioDockerfiles.forEach(function (df) {
+      const o = el('option', null, df);
+      o.value = df;
+      sel.appendChild(o);
+    });
+    row.appendChild(sel);
+    sec.appendChild(row);
+    const hint = studioDockerfiles.length
+      ? 'This image is pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild it locally.'
+      : 'This image is pinned to a deployed registry, but no Dockerfile was found under the app directory.';
+    sec.appendChild(el('div', 'opt-hint', hint));
+    return {
+      node: sec,
+      collect: function () {
+        const v = sel.value.trim();
+        return v === '' ? undefined : v;
+      },
+    };
+  }
+
   async function loadTargets() {
     const pane = document.getElementById('targets');
     try {
       const res = await fetch('/api/targets');
       const data = await res.json();
+      // Dockerfiles discovered at boot — offered in a pinned ecs service's
+      // image-override picker (issue #301).
+      studioDockerfiles = Array.isArray(data.dockerfiles) ? data.dockerfiles : [];
       pane.querySelectorAll('.group-title,.target,.empty').forEach((n) => n.remove());
       let total = 0;
       for (const group of data.groups) {
@@ -454,7 +495,7 @@ const STUDIO_SCRIPT = `
             t.appendChild(btnSlot);
             t.onclick = () => selectTarget(entry.id, group.kind);
             targetEls.set(entry.id, t);
-            serveMeta.set(entry.id, { dot, btnSlot, kind: group.kind });
+            serveMeta.set(entry.id, { dot, btnSlot, kind: group.kind, pinned: entry.pinned === true });
             updateServeRow(entry.id);
           }
           pane.appendChild(t);
@@ -537,7 +578,7 @@ const STUDIO_SCRIPT = `
     }
   }
 
-  async function startServe(id, options, rawArgs) {
+  async function startServe(id, options, rawArgs, imageOverride) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
@@ -548,6 +589,7 @@ const STUDIO_SCRIPT = `
       const body = { targetId: id, kind };
       if (options) body.options = options;
       if (rawArgs) body.rawArgs = rawArgs;
+      if (imageOverride) body.imageOverride = imageOverride;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -605,7 +647,8 @@ const STUDIO_SCRIPT = `
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
     let collectRaw = function () { return undefined; };
-    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts(), collectRaw()); };
+    let collectImageOverride = function () { return undefined; };
+    btn.onclick = () => { if (running || starting) stopServe(id); else startServe(id, collectOpts(), collectRaw(), collectImageOverride()); };
     head.appendChild(btn);
     if (errMsg) {
       const m = el('div', 'err', errMsg);
@@ -614,6 +657,15 @@ const STUDIO_SCRIPT = `
     ws.appendChild(head);
 
     if (!running && !starting) {
+      // A pinned ECS service (deployed-registry image) does not pick up local
+      // source edits — offer an image-override Dockerfile picker so it can be
+      // rebuilt locally (issue #301). Local-asset services hot-reload under
+      // --watch and get no picker.
+      if (meta && meta.kind === 'ecs' && meta.pinned) {
+        const io = buildImageOverridePicker();
+        ws.appendChild(io.node);
+        collectImageOverride = io.collect;
+      }
       const opt = buildOptions(kind);
       if (opt.node) ws.appendChild(opt.node);
       collectOpts = opt.collect;

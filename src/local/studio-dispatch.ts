@@ -38,6 +38,12 @@ export interface StudioRunRequest {
    * args, so a flag the curated controls don't expose can still be passed.
    */
   rawArgs?: string;
+  /**
+   * Dockerfile path for a pinned `ecs` serve target's image-override picker
+   * (issue #301). Serve-only — the single-shot invoke kinds ignore it; it
+   * rides on the shared coerced request so the serve manager can read it.
+   */
+  imageOverride?: string;
 }
 
 /** The outcome of a single-shot run, returned from `/api/run`. */

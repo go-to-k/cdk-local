@@ -127,6 +127,31 @@ describe('coerceRunRequest', () => {
     ).toThrow(/unterminated/i);
   });
 
+  it('threads a well-formed imageOverride string through', () => {
+    expect(
+      coerceRunRequest({ targetId: 'Stack/Svc', kind: 'ecs', imageOverride: './Dockerfile' })
+    ).toEqual({
+      targetId: 'Stack/Svc',
+      kind: 'ecs',
+      event: undefined,
+      imageOverride: './Dockerfile',
+    });
+  });
+
+  it('omits a blank imageOverride', () => {
+    expect(coerceRunRequest({ targetId: 'Stack/Svc', kind: 'ecs', imageOverride: '   ' })).toEqual({
+      targetId: 'Stack/Svc',
+      kind: 'ecs',
+      event: undefined,
+    });
+  });
+
+  it('rejects a non-string imageOverride', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'Stack/Svc', kind: 'ecs', imageOverride: 42 })
+    ).toThrow(/"imageOverride" must be a string/);
+  });
+
   it('accepts an agentcore request with its per-run options', () => {
     expect(
       coerceRunRequest({

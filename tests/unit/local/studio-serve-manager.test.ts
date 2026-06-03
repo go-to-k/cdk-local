@@ -274,6 +274,58 @@ describe('createStudioServeManager', () => {
     expect(argv[i + 1]).toBe('443=8443');
   });
 
+  it('threads imageOverride as an explicit --image-override <target>=<dockerfile>', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'Stack/MyService',
+      kind: 'ecs',
+      imageOverride: './Dockerfile.local',
+    });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i = argv.indexOf('--image-override');
+    expect(i).toBeGreaterThan(-1);
+    // Explicit form keyed by the SAME target id passed as the start-service
+    // target arg (the bare picker form would be skipped non-interactively).
+    expect(argv[i + 1]).toBe('Stack/MyService=./Dockerfile.local');
+  });
+
+  it('omits --image-override when imageOverride is blank', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'Stack/MyService', kind: 'ecs', imageOverride: '   ' });
+    child.stdout.emit('data', 'Service(s) running:\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).not.toContain('--image-override');
+  });
+
   it('tokenizes raw extra args and appends them to the spawned serve argv', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
