@@ -83,10 +83,28 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its depl
 - **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (`--host-port <container>=<host>` remaps; handy for privileged ports on macOS). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
 - **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
-- **`studio`** opens a local web console over the same synthesized targets: pick a Lambda or an AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs — a point-and-click front over the same CLI runners. It takes no target (it lists them all); `--no-open` skips the browser launch and `--studio-port` pins the port. Add `--from-cfn-stack` (and `--assume-role`) to bind the whole session to a deployed stack — every invoke / serve from the UI then runs against its real ARNs / Secrets. Each target's composer also exposes its per-run options as controls (ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, a Lambda's `--env-vars` as KEY/VALUE or JSON, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token`). In a big multi-stack app, `--stack 'dev/*'` scopes the displayed target list. `--watch` (toggleable from the Session bar) spawns serves started from the UI with `--watch`, so they hot-reload on source changes.
+- **`studio`** opens a local web console over the same synthesized targets — a point-and-click front over the same CLI runners. Takes no target (it lists them all). Flags + in-UI controls: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
+
+### Web console — `cdkl studio`
+
+`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all.
+
+```bash
+cdkl studio                                  # open the console (launches your browser)
+cdkl studio --no-open                        # don't launch a browser; just print the URL
+cdkl studio --studio-port 8200               # pin the port (default: auto-assigned)
+cdkl studio --from-cfn-stack                 # bind the whole session to the deployed stack
+cdkl studio --from-cfn-stack --assume-role   # ...and run every target as its deployed role
+cdkl studio --watch                          # serves started from the UI hot-reload on source changes
+cdkl studio --stack 'dev/*'                  # scope the displayed target list (multi-stack apps)
+```
+
+`--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too.
+
+Each target's composer surfaces its per-run options as controls — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token` — plus an **All options** panel listing the underlying command's full flag set with a raw extra-args input for anything not surfaced as a control.
 
 ### Deployed stack binding — `--from-cfn-stack`
 
