@@ -129,8 +129,23 @@ describe('renderStudioHtml', () => {
     // Collapsible groups (collapsed by default) + the toggle.
     expect(html).toContain('function toggleGroup');
     expect(html).toContain("el('div', 'group-body collapsed')");
-    // Zebra striping via the group-body nth-child rule.
-    expect(html).toContain('.group-body .target:nth-child(2n)');
+    // Zebra striping via the group-body nth-child rule, with a clearly
+    // distinct shade (issue #333 — the previous #1b1b1b was 1 step off the
+    // #1a1a1a base and imperceptible).
+    expect(html).toContain('.group-body .target:nth-child(2n) { background: #242424; }');
+  });
+
+  it('widens the Session-bar inputs so the placeholder is not truncated (issue #339)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    expect(html).toContain('#session-bar input[type=text]');
+    expect(html).toContain('min-width: 240px;');
+  });
+
+  it('renders a Clear button on the serve LOGS panel (issue #338)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    expect(html).toContain("el('button', 'log-clear', 'Clear')");
+    expect(html).toContain("logsById.set(id, []);");
+    expect(html).toContain('.log-clear');
   });
 
   it('renders an in-workspace HTTP request composer for a running serve (issue #322)', () => {

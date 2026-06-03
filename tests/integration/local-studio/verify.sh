@@ -286,7 +286,15 @@ if ! grep -qF "url = '/api/reinvoke'" "${BODY_FILE}" \
   echo "FAIL: GET / did not include the re-invoke wiring (issue #284)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring"
+# Visual UX fixes: zebra shade (issue #333), wider session inputs (issue #339),
+# LOGS Clear button (issue #338).
+if ! grep -qF '.group-body .target:nth-child(2n) { background: #242424; }' "${BODY_FILE}" \
+  || ! grep -qF 'min-width: 240px;' "${BODY_FILE}" \
+  || ! grep -qF "el('button', 'log-clear', 'Clear')" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the visual UX fixes (issues #333 / #338 / #339)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
