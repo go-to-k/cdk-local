@@ -1,3 +1,10 @@
+# [0.98.0](https://github.com/go-to-k/cdk-local/compare/v0.97.1...v0.98.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** in-workspace HTTP request composer for served api / alb / ecs ([#328](https://github.com/go-to-k/cdk-local/issues/328)) ([40896b2](https://github.com/go-to-k/cdk-local/commit/40896b294e288cfc79f267a6795c060902e4b0ef))
+
 ## [0.97.1](https://github.com/go-to-k/cdk-local/compare/v0.97.0...v0.97.1) (2026-06-03)
 
 
