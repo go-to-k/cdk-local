@@ -165,9 +165,17 @@ function resolveBehaviors(
   for (const b of extra) {
     if (!b || typeof b !== 'object') continue;
     const behavior = b as Record<string, unknown>;
-    const pattern =
-      typeof behavior['PathPattern'] === 'string' ? (behavior['PathPattern'] as string) : '*';
-    behaviors.push(resolveBehavior(behavior, pattern, functions, distLogicalId));
+    // CFn requires a literal `PathPattern` on every non-default behavior. A
+    // missing / non-literal (intrinsic) value is malformed: defaulting it to a
+    // catch-all `*` would silently shadow the default behavior for ALL
+    // requests, so skip it with a WARN instead.
+    if (typeof behavior['PathPattern'] !== 'string') {
+      getLogger().warn(
+        `Distribution '${distLogicalId}': a cache behavior has no literal PathPattern; cdk-local cannot route it and is skipping it.`
+      );
+      continue;
+    }
+    behaviors.push(resolveBehavior(behavior, behavior['PathPattern'], functions, distLogicalId));
   }
   return behaviors;
 }

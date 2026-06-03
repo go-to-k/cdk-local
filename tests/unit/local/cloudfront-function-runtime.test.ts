@@ -77,6 +77,22 @@ describe('runViewerRequest', () => {
     const fn = compile("function handler(event){ throw new Error('boom'); }");
     await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(/CloudFront Function 'Fn'.*boom/);
   });
+
+  it('tolerates a handler that writes a bare-string header value', async () => {
+    const fn = compile(
+      "function handler(event){ var r=event.request; r.headers['x-test']='bare'; return r; }"
+    );
+    const out = await runViewerRequest(fn, reqEvent('/'));
+    expect(out.kind).toBe('continue');
+    if (out.kind === 'continue') expect(out.request.headers['x-test']?.value).toBe('bare');
+  });
+
+  it('aborts a runaway synchronous handler via the vm timeout', async () => {
+    const fn = compile('function handler(event){ while (true) {} }');
+    await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(
+      /CloudFront Function 'Fn'/
+    );
+  }, 15000);
 });
 
 describe('runViewerResponse', () => {

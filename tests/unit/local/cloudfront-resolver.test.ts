@@ -197,6 +197,29 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
     const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
     expect(resolved.behaviors.map((b) => b.pathPattern)).toEqual([undefined, '/api/*']);
   });
+
+  it('skips a CacheBehaviors[] entry with a non-literal PathPattern (no silent catch-all)', () => {
+    const template = s3DistributionTemplate();
+    const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
+      'DistributionConfig'
+    ]!;
+    // An intrinsic / missing PathPattern would default to '*' and shadow the
+    // default behavior; it must be skipped instead.
+    dc['CacheBehaviors'] = [{ PathPattern: { Ref: 'Something' }, TargetOriginId: 'origin1' }];
+    const stack = buildStack(template, HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.behaviors.map((b) => b.pathPattern)).toEqual([undefined]);
+  });
+
+  it('throws on a distribution with no DistributionConfig', () => {
+    const template: CloudFormationTemplate = {
+      Resources: { Dist: { Type: 'AWS::CloudFront::Distribution', Properties: {} } },
+    };
+    const stack = buildStack(template);
+    expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+      /has no DistributionConfig/
+    );
+  });
 });
 
 describe('intrinsic helpers', () => {

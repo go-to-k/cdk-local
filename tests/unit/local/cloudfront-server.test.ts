@@ -104,6 +104,28 @@ describe('startCloudFrontServer — pipeline', () => {
       server.update(distribution());
     }
   });
+
+  it('skips an invalid function-returned header instead of 500-ing the response', async () => {
+    const badHeaderFn = compileCloudFrontFunction(
+      'BadHeaderFn',
+      "function handler(event){ var r=event.response; r.headers['x-bad'] = { value: 'a\\r\\nInjected: 1' }; r.headers['x-good'] = { value: 'ok' }; return r; }",
+      'cloudfront-js-2.0'
+    );
+    const withBad = distribution();
+    withBad.behaviors = [
+      { targetOriginId: 'o1', hasLambdaEdge: false, viewerResponse: badHeaderFn },
+    ];
+    server.update(withBad);
+    try {
+      const res = await fetch(`${server.url}/`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-good')).toBe('ok');
+      // The CRLF in the bad value is stripped, never reflected as a real header.
+      expect(res.headers.get('injected')).toBeNull();
+    } finally {
+      server.update(distribution());
+    }
+  });
 });
 
 describe('matchBehavior', () => {

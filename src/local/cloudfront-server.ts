@@ -136,7 +136,7 @@ async function handleRequest(
   if (behavior.viewerRequest) {
     const outcome = await runViewerRequest(behavior.viewerRequest, requestEvent);
     if (outcome.kind === 'response') {
-      writeCfResponse(res, outcome.response);
+      writeCfResponse(res, outcome.response, logger);
       return;
     }
     effectiveUri = outcome.request.uri;
@@ -165,8 +165,31 @@ async function handleRequest(
   }
 
   res.statusCode = finalStatus;
-  for (const [name, value] of Object.entries(finalHeaders)) res.setHeader(name, value);
+  setHeadersSafely(res, finalHeaders, logger);
   res.end(originResult.body);
+}
+
+/**
+ * Set response headers, skipping any whose name / value Node rejects (invalid
+ * HTTP token, CR/LF injection) rather than throwing an opaque 500. A CloudFront
+ * Function can return an arbitrary header map; a malformed entry should fail
+ * loudly on that one header, not the whole response. CR/LF is stripped from
+ * values defensively before the set.
+ */
+function setHeadersSafely(
+  res: ServerResponse,
+  headers: Record<string, string>,
+  logger: ReturnType<typeof getLogger>
+): void {
+  for (const [name, value] of Object.entries(headers)) {
+    try {
+      res.setHeader(name, value.replace(/[\r\n]/g, ''));
+    } catch (err) {
+      logger.warn(
+        `Skipping invalid response header '${name}': ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 }
 
 /** The origin-serve result before viewer-response runs. */
@@ -238,11 +261,13 @@ export function matchBehavior(
   return fallback;
 }
 
-function writeCfResponse(res: ServerResponse, response: CfResponse): void {
+function writeCfResponse(
+  res: ServerResponse,
+  response: CfResponse,
+  logger: ReturnType<typeof getLogger>
+): void {
   res.statusCode = response.statusCode;
-  for (const [name, value] of Object.entries(cfHeadersToPlain(response.headers, {}))) {
-    res.setHeader(name, value);
-  }
+  setHeadersSafely(res, cfHeadersToPlain(response.headers, {}), logger);
   const body = cfResponseBody(response);
   res.end(body);
 }

@@ -1,6 +1,17 @@
 import * as vm from 'node:vm';
 
 /**
+ * Hard cap on a single CloudFront Function's synchronous run. The deployed
+ * runtime caps CPU at ~1ms; locally we are generous but still bound it so a
+ * runaway `while (true) {}` in a function fails that one request with a clear
+ * error instead of wedging the single-threaded local server for every
+ * subsequent request. `vm`'s timeout only interrupts synchronous code — an
+ * `await`-based hang in a 2.0 async handler is not caught (it has no local
+ * analogue), which is acceptable for a dev tool.
+ */
+const FUNCTION_TIMEOUT_MS = 5000;
+
+/**
  * Run a synthesized `AWS::CloudFront::Function`'s inline JavaScript locally
  * (issue #363). A CloudFront Function is the user's own application compute —
  * a small `viewer-request` / `viewer-response` handler doing URL rewrites,
@@ -74,9 +85,16 @@ export interface CompiledCloudFrontFunction {
   logicalId: string;
   /** Declared runtime (`cloudfront-js-1.0` / `cloudfront-js-2.0`). */
   runtime: string;
-  /** Compiled script that, when run, evaluates to the `handler` function. */
+  /**
+   * Compiled script that runs the user's code (defining `handler`) and then
+   * invokes `handler(__cfEvent)`, returning its result. Running the INVOCATION
+   * inside the vm — not just the handler extraction — is what lets the
+   * {@link FUNCTION_TIMEOUT_MS} bound a runaway synchronous handler.
+   */
   script: vm.Script;
 }
+
+const EVENT_GLOBAL = '__cfEvent';
 
 /**
  * Compile a CloudFront Function's inline code once. Throws a clear error when
@@ -90,10 +108,11 @@ export function compileCloudFrontFunction(
 ): CompiledCloudFrontFunction {
   let script: vm.Script;
   try {
-    // The trailing `handler` expression makes the script evaluate to the
-    // declared handler function (a `function handler(){}` declaration is
-    // hoisted; a `var handler = ...` assignment is also in scope).
-    script = new vm.Script(`${code}\n;typeof handler === 'function' ? handler : undefined`, {
+    // The user code defines `handler`; the trailing call invokes it with the
+    // per-request event injected as a context global. Compiling the call into
+    // the same script means `runInContext`'s `timeout` covers the handler's
+    // synchronous execution, not just its definition.
+    script = new vm.Script(`${code}\n;handler(${EVENT_GLOBAL})`, {
       filename: `cloudfront-function-${logicalId}.js`,
     });
   } catch (err) {
@@ -101,9 +120,21 @@ export function compileCloudFrontFunction(
       `CloudFront Function '${logicalId}' failed to compile: ${err instanceof Error ? err.message : String(err)}`
     );
   }
-  // Probe once that a `handler` is actually defined.
-  const probe = script.runInContext(vm.createContext({ console }));
-  if (typeof probe !== 'function') {
+  // Probe once that a `handler` is actually defined, surfacing a
+  // missing-handler error at boot rather than a silent no-op per request.
+  let hasHandler: unknown;
+  try {
+    const probeContext = vm.createContext({ console });
+    hasHandler = new vm.Script(`${code}\n;typeof handler === 'function'`).runInContext(
+      probeContext,
+      { timeout: FUNCTION_TIMEOUT_MS }
+    );
+  } catch (err) {
+    throw new Error(
+      `CloudFront Function '${logicalId}' failed to compile: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (hasHandler !== true) {
     throw new Error(
       `CloudFront Function '${logicalId}' does not declare a 'handler' function. ` +
         'A CloudFront Function must export `function handler(event) { ... }`.'
@@ -114,27 +145,25 @@ export function compileCloudFrontFunction(
 
 /**
  * Invoke a compiled function's `handler(event)` in a fresh sandbox and return
- * its result. A `cloudfront-js-2.0` async handler's promise is awaited. Any
- * error thrown by the handler is wrapped with the function's logical id.
+ * its result. The synchronous portion is bounded by {@link FUNCTION_TIMEOUT_MS}
+ * (a runaway `while (true) {}` fails this one request instead of wedging the
+ * server); a `cloudfront-js-2.0` async handler's promise is awaited. Any error
+ * thrown by the handler is wrapped with the function's logical id.
  */
 export async function invokeCloudFrontFunction(
   fn: CompiledCloudFrontFunction,
   event: CfViewerRequestEvent | CfViewerResponseEvent
 ): Promise<unknown> {
-  const context = vm.createContext({ console });
-  let handler: unknown;
+  const context = vm.createContext({ console, [EVENT_GLOBAL]: event });
+  let result: unknown;
   try {
-    handler = fn.script.runInContext(context);
+    result = fn.script.runInContext(context, { timeout: FUNCTION_TIMEOUT_MS });
   } catch (err) {
     throw new Error(
-      `CloudFront Function '${fn.logicalId}' failed while loading: ${err instanceof Error ? err.message : String(err)}`
+      `CloudFront Function '${fn.logicalId}' threw at request time: ${err instanceof Error ? err.message : String(err)}`
     );
   }
-  if (typeof handler !== 'function') {
-    throw new Error(`CloudFront Function '${fn.logicalId}' has no callable 'handler'.`);
-  }
   try {
-    const result = (handler as (e: unknown) => unknown)(event);
     return result instanceof Promise ? await result : result;
   } catch (err) {
     throw new Error(
