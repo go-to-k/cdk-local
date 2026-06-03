@@ -65,6 +65,33 @@ describe('buildPerRunArgs', () => {
     ).toEqual(['--ws', '--bearer-token', 'eyJabc', '--session-id', 'sess-1']);
   });
 
+  it('builds CloudFront args: --tls + showWhen-gated certs + --origin repeat-pair (issue #367)', () => {
+    expect(
+      buildPerRunArgs('cloudfront', {
+        '--tls': true,
+        '--tls-cert': './c.pem',
+        '--tls-key': './k.pem',
+        '--origin': [
+          { left: 'O1', right: './dist' },
+          { left: 'O2', right: './admin' },
+        ],
+      })
+    ).toEqual([
+      '--tls',
+      '--tls-cert',
+      './c.pem',
+      '--tls-key',
+      './k.pem',
+      '--origin',
+      'O1=./dist',
+      '--origin',
+      'O2=./admin',
+    ]);
+    // The cert scalars are gated on --tls.
+    expect(buildPerRunArgs('cloudfront', { '--tls-cert': './c.pem' })).toEqual([]);
+    expect(OPTION_SPECS.cloudfront?.some((s) => s.flag === '--origin')).toBe(true);
+  });
+
   it('emits NO direct arg for env-kv (materialized separately)', () => {
     expect(buildPerRunArgs('lambda', { '--env-vars': [{ left: 'K', right: 'V' }] })).toEqual([]);
     expect(buildPerRunArgs('lambda', { '--env-vars': '{"K":"V"}' })).toEqual([]);

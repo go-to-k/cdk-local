@@ -61,6 +61,18 @@ export interface BuildSharedChildArgsOptions {
    * to false (forward `--app <app>` — the pre-#324 behavior).
    */
   preferAssembly?: boolean;
+  /**
+   * When true, do NOT forward the session's `--from-cfn-stack` /
+   * `--assume-role` bindings to the child (issue #367). These bind a child to
+   * deployed CloudFormation state / an IAM role for the containers it runs;
+   * `cdkl start-cloudfront` runs no container and makes no AWS call (it serves
+   * the distribution's local BucketDeployment source + CloudFront Functions),
+   * so it does NOT declare those flags — forwarding them would make Commander
+   * reject the child with "unknown option". The serve-manager sets this for
+   * the `cloudfront` kind. Defaults to false (forward them — every other
+   * child command accepts both forms).
+   */
+  omitStateBindings?: boolean;
 }
 
 /**
@@ -87,15 +99,20 @@ export function buildSharedChildArgs(
   for (const [k, v] of Object.entries(config.context ?? {})) {
     args.push('-c', `${k}=${v}`);
   }
-  // `--from-cfn-stack`: bare flag (true) vs named stack (string).
-  if (config.fromCfnStack === true) {
-    args.push('--from-cfn-stack');
-  } else if (typeof config.fromCfnStack === 'string' && config.fromCfnStack !== '') {
-    args.push('--from-cfn-stack', config.fromCfnStack);
-  }
-  // `--assume-role <arn>`: explicit ARN only.
-  if (typeof config.assumeRole === 'string' && config.assumeRole !== '') {
-    args.push('--assume-role', config.assumeRole);
+  // `--from-cfn-stack` / `--assume-role` bind a child to deployed state / an
+  // IAM role. A kind whose child command does not declare them (cloudfront —
+  // issue #367) opts out so Commander does not reject the spawn.
+  if (!opts.omitStateBindings) {
+    // `--from-cfn-stack`: bare flag (true) vs named stack (string).
+    if (config.fromCfnStack === true) {
+      args.push('--from-cfn-stack');
+    } else if (typeof config.fromCfnStack === 'string' && config.fromCfnStack !== '') {
+      args.push('--from-cfn-stack', config.fromCfnStack);
+    }
+    // `--assume-role <arn>`: explicit ARN only.
+    if (typeof config.assumeRole === 'string' && config.assumeRole !== '') {
+      args.push('--assume-role', config.assumeRole);
+    }
   }
   return args;
 }

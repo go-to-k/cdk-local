@@ -92,7 +92,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 ### Web console — `cdkl studio`
 
-`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all.
+`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all.
 
 ```bash
 cdkl studio                                  # open the console (launches your browser)

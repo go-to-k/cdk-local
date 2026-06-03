@@ -211,8 +211,11 @@ AWS managed services.
   Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
   origin API are WARN-and-skip (custom / unresolved origins return 502).
   Single distribution per invocation (interactive picker when the target
-  is omitted in a TTY). `cdkl studio` integration is tracked separately
-  (issue #367)
+  is omitted in a TTY). Also runnable from `cdkl studio` as the
+  `cloudfront` serve kind (issue #367) — a [Start]/[Stop] control with a
+  capture proxy, like `api` / `alb`; the session-global
+  `--from-cfn-stack` / `--assume-role` bindings are NOT forwarded to it
+  (start-cloudfront declares neither — it makes no AWS call)
 
 ### Calls real AWS (managed services)
 
@@ -432,7 +435,8 @@ compute-locally category for Lambda + API Gateway).
   `/api/config` immediately on a checkbox toggle / input change, issue
   #301); Lambdas + AgentCore runtimes get an
   [Invoke] composer (`INVOKE_KINDS`), serve
-  targets (api / alb / ecs / ecs-task) a [Start]/[Stop] control with a
+  targets (api / alb / ecs / ecs-task / cloudfront) a [Start]/[Stop] control
+  with a
   `running ● :port` indicator (ecs services + ecs-task runs show
   `running` with no port). Issue #352 lists ECS Services (the `ecs`
   serve kind) and ECS Task Definitions as SEPARATE target groups,
@@ -506,7 +510,10 @@ compute-locally category for Lambda + API Gateway).
   `--profile` / `--region` / `-c` / `--from-cfn-stack` / `--assume-role`)
   into the argv fragment both studio-dispatch and studio-serve-manager
   forward to their spawned child commands, so the two spawn sites cannot
-  drift),
+  drift. The `omitStateBindings` option (issue #367) suppresses
+  `--from-cfn-stack` / `--assume-role` for a child that does not declare
+  them — the serve-manager sets it for the `cloudfront` kind, since
+  `start-cloudfront` makes no AWS call and would reject the flags),
   studio-option-specs (issue #301 slice 2 — the per-target run-option
   descriptor table (`OPTION_SPECS`) that is the single source the UI
   renders controls from (serialized into the page) AND the server builds
@@ -542,12 +549,14 @@ compute-locally category for Lambda + API Gateway).
   clean 400)),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
-  `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) expose host
+  `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) +
+  `cloudfront` (`start-cloudfront`, issue #367) expose host
   HTTP endpoints each fronted by a studio-proxy so the `endpoints` handed
   to the UI are the proxy URLs (slice C2 capture), while `ecs`
   (`start-service`) is pure compute — no host port, no capture, just the
   running replicas + their streamed logs. Resolves running on the kind's
   ready line (`Server listening on <url>` / `ALB front-door: <url>` /
+  `CloudFront distribution serving on <url>` /
   `Service(s) running:`), tracks the running set for `/api/running`, and
   SIGTERMs the child on `/api/stop` / studio shutdown with a generous
   grace so the serve command's OWN ECS-replica + docker-network teardown

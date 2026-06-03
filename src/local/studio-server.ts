@@ -39,7 +39,7 @@ export interface StudioTarget {
 /** A category of targets, grouped by the studio kind that runs them. */
 export interface StudioTargetGroup {
   /** Studio kind discriminator shared with {@link StudioInvocationEvent}. */
-  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'agentcore';
+  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'cloudfront' | 'agentcore';
   /** Human-readable group heading. */
   title: string;
   entries: StudioTarget[];
@@ -77,6 +77,13 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     { kind: 'ecs-task', title: 'ECS Task Definitions', entries: map(listing.ecsTaskDefinitions) },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
     { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
+    // CloudFront distributions are a serve target (start-cloudfront -> Start),
+    // like api / alb — they expose a host HTTP endpoint (issue #367 / #363).
+    {
+      kind: 'cloudfront',
+      title: 'CloudFront Distributions',
+      entries: map(listing.cloudFrontDistributions),
+    },
   ];
 }
 

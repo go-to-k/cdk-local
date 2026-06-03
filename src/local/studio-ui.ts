@@ -257,8 +257,8 @@ const STUDIO_CSS = `
 `;
 
 const STUDIO_SCRIPT = `
-  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', agentcore: 'AgentCore' };
-  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task']; // long-running serve targets (ecs-task = run-task)
+  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore' };
+  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront']; // long-running serve targets (ecs-task = run-task)
   const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event

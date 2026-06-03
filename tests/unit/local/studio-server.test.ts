@@ -228,12 +228,14 @@ describe('toStudioTargetGroups', () => {
       apis: [{ qualifiedId: 'S:Api', displayPath: 'S/Api', kind: 'HTTP API v2' }],
       ecsServices: [{ qualifiedId: 'S:Svc' }],
       ecsTaskDefinitions: [{ qualifiedId: 'S:Task' }],
+      cloudFrontDistributions: [{ qualifiedId: 'S:Dist', displayPath: 'S/Dist' }],
     };
     const groups = toStudioTargetGroups(listing);
 
     // ECS Services and Task Definitions are SEPARATE groups (issue #352); the
     // task-definitions group is the `ecs-task` kind (issue #366) — a [Run]
     // control (run-task), distinct from the servable `ecs` services kind.
+    // CloudFront distributions are a serve target (issue #367).
     expect(groups.map((g) => g.kind)).toEqual([
       'lambda',
       'api',
@@ -241,6 +243,7 @@ describe('toStudioTargetGroups', () => {
       'ecs-task',
       'agentcore',
       'alb',
+      'cloudfront',
     ]);
     expect(groups.map((g) => g.title)).toEqual([
       'Lambda Functions',
@@ -249,6 +252,7 @@ describe('toStudioTargetGroups', () => {
       'ECS Task Definitions',
       'AgentCore Runtimes',
       'Load Balancers',
+      'CloudFront Distributions',
     ]);
     expect(groups[0].entries).toEqual([{ id: 'S/Fn', qualifiedId: 'S:Fn' }]);
     // API surface kind is carried onto the entry.
@@ -262,6 +266,8 @@ describe('toStudioTargetGroups', () => {
     expect(groups[2].entries.map((e) => e.id)).toEqual(['S:Svc']);
     expect(groups[2].entries.map((e) => e.servable)).toEqual([true]);
     expect(groups[3].entries).toEqual([{ id: 'S:Task', qualifiedId: 'S:Task' }]);
+    // CloudFront distributions are a plain serve entry (no servable flag).
+    expect(groups[6].entries).toEqual([{ id: 'S/Dist', qualifiedId: 'S:Dist' }]);
   });
 
   it('falls back to the qualified id when no display path exists', () => {

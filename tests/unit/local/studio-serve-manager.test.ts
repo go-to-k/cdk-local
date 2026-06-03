@@ -401,6 +401,84 @@ describe('createStudioServeManager', () => {
     expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
   });
 
+  it('spawns `cdkl start-cloudfront <dist> --port 0` and resolves running on its banner (issue #367)', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const p = mgr.start({
+      targetId: 'Stack/SiteDist',
+      kind: 'cloudfront',
+      options: { '--tls': true, '--origin': [{ left: 'O1', right: './dist' }] },
+    });
+    child.stdout.emit('data', 'CloudFront distribution serving on http://127.0.0.1:51234  (SiteDist)\n');
+    const state = await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv.slice(1, 6)).toEqual(['start-cloudfront', 'Stack/SiteDist', '--port', '0', '--host']);
+    expect(argv).toContain('--tls');
+    const oi = argv.indexOf('--origin');
+    expect(oi).toBeGreaterThan(-1);
+    expect(argv[oi + 1]).toBe('O1=./dist');
+    // It exposes a host HTTP endpoint, so it is fronted by a capture proxy.
+    expect(state.status).toBe('running');
+    expect(state.endpoints).toEqual([PROXIED]);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
+  });
+
+  it('does NOT forward --from-cfn-stack / --assume-role to a cloudfront serve (issue #367)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+      // Session bindings set — start-cloudfront declares neither flag, so they
+      // must NOT reach the child (it would reject with "unknown option").
+      fromCfnStack: 'MyStack',
+      assumeRole: 'arn:aws:iam::123456789012:role/app',
+    });
+    const p = mgr.start({ targetId: 'Stack/SiteDist', kind: 'cloudfront' });
+    child.stdout.emit('data', 'CloudFront distribution serving on http://127.0.0.1:51234  (SiteDist)\n');
+    await p;
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).not.toContain('--from-cfn-stack');
+    expect(argv).not.toContain('--assume-role');
+  });
+
+  it('DOES forward --from-cfn-stack to an api serve (kind-specific omit only) (issue #367)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+      fromCfnStack: 'MyStack',
+    });
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).toContain('--from-cfn-stack');
+  });
+
   it('threads imageOverride as an explicit --image-override <target>=<dockerfile>', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

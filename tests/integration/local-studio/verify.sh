@@ -25,6 +25,9 @@
 #     `serve` SSE event fired, then POST /api/stop tears it down,
 #   - asserts the store (slice C3) serves GET /api/history, full-text
 #     GET /api/logs?q=, and per-invocation GET /api/invocations/<id>/logs,
+#   - starts a CloudFront serve (`start-cloudfront`, kind=cloudfront, issue
+#     #367), curls the served distribution origin through the studio capture
+#     proxy + asserts the default root object comes back, then stops it,
 #   - starts an ALB serve (`start-alb`), curls the front-door through the
 #     studio capture proxy + asserts the request is captured (kind=alb),
 #     and an ECS service serve (`start-service`) that runs pure compute
@@ -344,6 +347,9 @@ for needle in \
   '"title":"ECS Task Definitions"' \
   '"kind":"agentcore"' \
   '"kind":"alb"' \
+  '"kind":"cloudfront"' \
+  '"title":"CloudFront Distributions"' \
+  'LocalStudioFixture/SiteDist' \
   'LocalStudioFixture/MyHandler'
 do
   if ! grep -qF "${needle}" "${BODY_FILE}"; then
@@ -799,6 +805,74 @@ if grep -qF "${API_TARGET}" "${BODY_FILE}"; then
   exit 1
 fi
 echo "    OK: serve stopped; /api/running is empty"
+
+# ---------------------------------------------------------------------------
+# 7a-cf. POST /api/run STARTS a `start-cloudfront` serve (issue #367); curl the
+#        served origin through the capture proxy; assert running + the
+#        viewer-request rewrite; stop it.
+# ---------------------------------------------------------------------------
+CF_TARGET="LocalStudioFixture/SiteDist"
+echo "==> POST /api/run starts a cloudfront serve for ${CF_TARGET}"
+curl -sN --max-time 200 "${URL}/api/events" >"${SSE_FILE}" 2>/dev/null &
+SSE_PID=$!
+sleep 1
+CF_FILE=$(mktemp)
+CF_CODE=$(curl -s -o "${CF_FILE}" -w '%{http_code}' --max-time 120 \
+  -X POST "${URL}/api/run" \
+  -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${CF_TARGET}\",\"kind\":\"cloudfront\"}" || true)
+if [[ "${CF_CODE}" != "200" ]]; then
+  echo "FAIL: POST /api/run (cloudfront serve) returned HTTP ${CF_CODE}"
+  echo "----- serve response -----"; cat "${CF_FILE}"; echo "--------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${CF_FILE}"
+  exit 1
+fi
+for needle in '"status":"running"' '"kind":"cloudfront"'; do
+  if ! grep -qF "${needle}" "${CF_FILE}"; then
+    echo "FAIL: cloudfront serve response missing: ${needle}"
+    echo "----- serve response -----"; cat "${CF_FILE}"; echo "--------------------------"
+    rm -f "${CF_FILE}"
+    exit 1
+  fi
+done
+CF_SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${CF_FILE}" | head -1 || true)
+rm -f "${CF_FILE}"
+if [[ -z "${CF_SERVED}" ]]; then
+  echo "FAIL: could not parse the served cloudfront endpoint from the run response"
+  exit 1
+fi
+echo "    OK: cloudfront serve started at ${CF_SERVED}"
+
+echo "==> The served distribution returns the default root object + runs the rewrite"
+CFROOT=$(mktemp)
+CFROOT_CODE=$(curl -s -o "${CFROOT}" -w '%{http_code}' --max-time 60 "${CF_SERVED}/" || true)
+if [[ "${CFROOT_CODE}" != "200" ]] || ! grep -qF 'studio cloudfront root' "${CFROOT}"; then
+  echo "FAIL: cloudfront / did not return the root index.html (HTTP ${CFROOT_CODE})"
+  echo "----- body -----"; cat "${CFROOT}"; echo "----------------"
+  rm -f "${CFROOT}"; exit 1
+fi
+rm -f "${CFROOT}"
+echo "    OK: GET ${CF_SERVED}/ -> 200 root index.html"
+
+echo "==> POST /api/stop tears the cloudfront serve down"
+CFSTOP=$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 30 \
+  -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${CF_TARGET}\"}" || true)
+if [[ "${CFSTOP}" != "200" ]]; then
+  echo "FAIL: POST /api/stop (cloudfront) returned HTTP ${CFSTOP}"; cat "${BODY_FILE}"; exit 1
+fi
+kill "${SSE_PID}" 2>/dev/null || true
+SSE_PID=""
+for _ in $(seq 1 20); do
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null || true
+  if ! grep -qF "${CF_TARGET}" "${BODY_FILE}"; then break; fi
+  sleep 0.5
+done
+if grep -qF "${CF_TARGET}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running still lists ${CF_TARGET} after stop"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: cloudfront serve stopped; /api/running is empty"
 
 # ---------------------------------------------------------------------------
 # 7b. WebSocket console (issue #303): studio serves a WebSocket API

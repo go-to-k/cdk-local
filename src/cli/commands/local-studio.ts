@@ -65,6 +65,7 @@ const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
   'alb',
   'ecs',
   'ecs-task',
+  'cloudfront',
   'agentcore',
 ];
 
