@@ -1,3 +1,10 @@
+# [0.91.0](https://github.com/go-to-k/cdk-local/compare/v0.90.0...v0.91.0) (2026-06-03)
+
+
+### Features
+
+* **start-api:** accept a WebSocket API as an explicit target ([#311](https://github.com/go-to-k/cdk-local/issues/311)) ([#314](https://github.com/go-to-k/cdk-local/issues/314)) ([12ea0c9](https://github.com/go-to-k/cdk-local/commit/12ea0c9d09f80aa3baae347b6b5ea343dab1030a))
+
 # [0.90.0](https://github.com/go-to-k/cdk-local/compare/v0.89.0...v0.90.0) (2026-06-03)
 
 
