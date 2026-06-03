@@ -245,6 +245,55 @@ describe('createStudioServeManager', () => {
     expect((spawnFn.mock.calls[1] as unknown as [string, string[]])[1]).toContain('--watch');
   });
 
+  it('forwards --app <assemblyDir> for a non-watch serve but --app <app> when watching (issue #324)', async () => {
+    const bus = new StudioEventBus();
+    const fp = fakeProxies();
+
+    // Mutable config the manager reads per start: same object the studio
+    // childConfig PATCH /api/config edits in place.
+    const config: {
+      cliEntry: string;
+      bus: StudioEventBus;
+      app?: string;
+      assemblyDir?: string;
+      watch?: boolean;
+    } & Record<string, unknown> = {
+      cliEntry: '/path/to/cli.js',
+      bus,
+      app: 'node app.ts',
+      assemblyDir: '/abs/cdk.out',
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    };
+    const child1 = makeFakeChild();
+    const child2 = makeFakeChild();
+    const spawnFn = vi
+      .fn()
+      .mockReturnValueOnce(child1 as never)
+      .mockReturnValueOnce(child2 as never);
+    config['spawnFn'] = spawnFn;
+    const mgr = createStudioServeManager(config as never);
+
+    // Non-watch (default): reuse the boot-synthesized assembly dir.
+    const p1 = mgr.start({ targetId: 'A', kind: 'api' });
+    child1.stdout.emit('data', LISTENING);
+    await p1;
+    const argv1 = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const i1 = argv1.indexOf('--app');
+    expect(i1).toBeGreaterThanOrEqual(0);
+    expect(argv1[i1 + 1]).toBe('/abs/cdk.out');
+
+    // Watch ON: keep the app command so the serve re-synths on change.
+    config.watch = true;
+    const p2 = mgr.start({ targetId: 'B', kind: 'api' });
+    child2.stdout.emit('data', LISTENING);
+    await p2;
+    const argv2 = (spawnFn.mock.calls[1] as unknown as [string, string[]])[1];
+    const i2 = argv2.indexOf('--app');
+    expect(i2).toBeGreaterThanOrEqual(0);
+    expect(argv2[i2 + 1]).toBe('node app.ts');
+  });
+
   it('threads per-run options (boolean + repeat-pair) into the serve child argv', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

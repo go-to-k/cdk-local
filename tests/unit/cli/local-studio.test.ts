@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   applyConfigPatch,
@@ -5,6 +8,7 @@ import {
   coerceStopRequest,
   createLocalStudioCommand,
   parseStudioPort,
+  resolveBootAssemblyDir,
   type EditableSessionBindings,
 } from '../../../src/cli/commands/local-studio.js';
 
@@ -244,4 +248,39 @@ describe('coerceStopRequest', () => {
       expect(() => coerceStopRequest(body)).toThrow(/non-empty "targetId"/);
     }
   );
+});
+
+describe('resolveBootAssemblyDir (issue #324)', () => {
+  it('returns the resolved --output dir for an app-command synth that wrote it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-studio-asm-'));
+    const out = join(dir, 'cdk.out');
+    mkdirSync(out);
+    try {
+      // app command is not a directory; the synth wrote `out`.
+      expect(resolveBootAssemblyDir('node bin/app.ts', out)).toBe(out);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns the --app dir when it is already a pre-synthesized assembly directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-studio-asm-'));
+    const appDir = join(dir, 'pre-synthed');
+    mkdirSync(appDir);
+    try {
+      // --app points at an assembly dir; --output was never written.
+      expect(resolveBootAssemblyDir(appDir, join(dir, 'cdk.out'))).toBe(appDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when neither --app nor --output is a directory on disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkl-studio-asm-'));
+    try {
+      expect(resolveBootAssemblyDir('node bin/app.ts', join(dir, 'missing'))).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
