@@ -127,6 +127,7 @@ const STUDIO_CSS = `
   .row.sel { background: #2a3550; }
   .row .ts { color: #777; }
   .row .label { color: #ddd; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .row.reinvoke .label::before { content: '\\21A9 '; color: #6aa0ff; margin-right: 2px; }
   .row .status { color: #7bd88f; }
   .row .status.err { color: #e0707a; }
   #workspace { padding: 0 0 24px; }
@@ -158,6 +159,7 @@ const STUDIO_CSS = `
   .req-composer .req-status { margin-top: 8px; font: 12px ui-monospace, Menlo, monospace; }
   .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
+  .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
   .section h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
@@ -256,6 +258,7 @@ const STUDIO_SCRIPT = `
   let shownInvId = null;           // lambda invocation whose result is in the workspace
   let shownServeId = null;         // serve target whose workspace is shown
   let shownDetailId = null;        // captured request whose read-only detail is shown
+  let pendingReqPrefill = null;    // {method,path,headers,body} to seed the next serve request composer (re-invoke)
   let studioDockerfiles = [];      // Dockerfiles scanned at boot (pinned-ecs image-override picker)
 
   function el(tag, cls, text) {
@@ -888,6 +891,34 @@ const STUDIO_SCRIPT = `
     bodyTa.spellcheck = false;
     sec.appendChild(bodyTa);
 
+    // Re-invoke prefill (issue #284): seed the fields from a captured request
+    // when the user clicked [Re-invoke] on a served-request detail. The prefill
+    // is address-tagged with its target; consume it UNCONDITIONALLY (so a stray
+    // one from a since-stopped serve never lingers) but only APPLY it when the
+    // target matches this composer.
+    if (pendingReqPrefill) {
+      const pending = pendingReqPrefill;
+      pendingReqPrefill = null;
+      if (pending.targetId === id && pending.req && typeof pending.req === 'object') {
+        const pf = pending.req;
+        if (pf.method) method.value = String(pf.method).toUpperCase();
+        if (pf.path != null) path.value = pf.path;
+        if (pf.headers && typeof pf.headers === 'object') {
+          // Drop hop-by-hop / transport headers the proxy captured verbatim
+          // (host / content-length / etc.) — they are noise in the editor and
+          // the relay sets them itself.
+          const SKIP = ['host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding'];
+          headers.value = Object.keys(pf.headers)
+            .filter(function (k) { return SKIP.indexOf(k.toLowerCase()) === -1; })
+            .map(function (k) { return k + ': ' + pf.headers[k]; })
+            .join('\\n');
+        }
+        if (pf.body != null) {
+          bodyTa.value = typeof pf.body === 'string' ? pf.body : JSON.stringify(pf.body);
+        }
+      }
+    }
+
     const sendRow = el('div', 'req-send');
     const btn = el('button', null, 'Send');
     sendRow.appendChild(btn);
@@ -1088,21 +1119,31 @@ const STUDIO_SCRIPT = `
     return sec;
   }
 
-  function renderComposer(id, kind, eventText) {
+  function renderComposer(id, kind, eventText, reinvokeOf) {
     const ws = document.getElementById('workspace');
     ws.innerHTML = '';
 
     const composer = el('div', 'composer');
-    composer.appendChild(el('div', 'target-name', 'Invoke ' + id));
+    composer.appendChild(el('div', 'target-name', (reinvokeOf ? 'Re-invoke ' : 'Invoke ') + id));
     const ta = el('textarea');
     ta.value = eventText;
     ta.spellcheck = false;
     composer.appendChild(ta);
-    // Per-run options (e.g. env vars) below the event, above Invoke.
-    const opt = buildOptions(kind);
-    if (opt.node) composer.appendChild(opt.node);
+    // A re-invoke (issue #284) re-runs the EDITED event against the same
+    // target; per-run options are not carried over, so the options section is
+    // omitted (the payload is the thing being tweaked). A fresh invoke keeps
+    // the per-run options (e.g. env vars) below the event, above Invoke.
+    let opt = { collect: undefined, collectRaw: undefined };
+    if (reinvokeOf) {
+      composer.appendChild(
+        el('div', 'opt-hint', 'Re-invoke runs the edited event through the same target (per-run options use defaults).')
+      );
+    } else {
+      opt = buildOptions(kind);
+      if (opt.node) composer.appendChild(opt.node);
+    }
     composer.appendChild(document.createElement('br'));
-    const btn = el('button', null, 'Invoke');
+    const btn = el('button', null, reinvokeOf ? 'Re-invoke' : 'Invoke');
     const msg = el('div', 'err');
     composer.appendChild(btn);
     composer.appendChild(msg);
@@ -1112,7 +1153,17 @@ const STUDIO_SCRIPT = `
     ws.appendChild(composer);
     ws.appendChild(result);
 
-    active = { id, kind, ta, btn, msg, result, collectOpts: opt.collect, collectRaw: opt.collectRaw };
+    active = {
+      id,
+      kind,
+      ta,
+      btn,
+      msg,
+      result,
+      collectOpts: opt.collect,
+      collectRaw: opt.collectRaw,
+      reinvokeOf: reinvokeOf || null,
+    };
     btn.onclick = () => runInvoke();
     shownInvId = null;
     shownDetailId = null;
@@ -1129,17 +1180,29 @@ const STUDIO_SCRIPT = `
       msg.textContent = 'Invalid JSON: ' + err.message;
       return;
     }
+    const isReinvoke = !!active.reinvokeOf;
     msg.textContent = '';
     btn.disabled = true;
-    btn.textContent = 'Invoking...';
+    btn.textContent = isReinvoke ? 'Re-invoking...' : 'Invoking...';
     result.innerHTML = '';
     try {
-      const body = { targetId: id, kind, event };
-      const options = active.collectOpts ? active.collectOpts() : undefined;
-      if (options) body.options = options;
-      const rawArgs = active.collectRaw ? active.collectRaw() : undefined;
-      if (rawArgs) body.rawArgs = rawArgs;
-      const res = await fetch('/api/run', {
+      // A re-invoke (issue #284) re-runs a recorded row by id with the edited
+      // payload through POST /api/reinvoke; a fresh invoke runs the target by
+      // POST /api/run with the composed options.
+      let url;
+      let body;
+      if (isReinvoke) {
+        url = '/api/reinvoke';
+        body = { invocationId: active.reinvokeOf, payload: event };
+      } else {
+        url = '/api/run';
+        body = { targetId: id, kind, event };
+        const options = active.collectOpts ? active.collectOpts() : undefined;
+        if (options) body.options = options;
+        const rawArgs = active.collectRaw ? active.collectRaw() : undefined;
+        if (rawArgs) body.rawArgs = rawArgs;
+      }
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -1150,13 +1213,14 @@ const STUDIO_SCRIPT = `
         renderResult(shownInvId);
       }
       if (!res.ok || data.ok === false) {
-        msg.textContent = 'Invoke failed: ' + (data.error || ('HTTP ' + res.status));
+        const verb = isReinvoke ? 'Re-invoke' : 'Invoke';
+        msg.textContent = verb + ' failed: ' + (data.error || ('HTTP ' + res.status));
       }
     } catch (err) {
       msg.textContent = 'Request failed: ' + err;
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Invoke';
+      btn.textContent = isReinvoke ? 'Re-invoke' : 'Invoke';
     }
   }
 
@@ -1214,6 +1278,12 @@ const STUDIO_SCRIPT = `
     const d = new Date(merged.ts);
     row.querySelector('.ts').textContent = d.toLocaleTimeString();
     row.querySelector('.label').textContent = (merged.target || '') + '  ' + (merged.label || '');
+    // A re-invoke (issue #284) row is visually linked to its source: a CSS
+    // marker on the label + a tooltip naming the source invocation.
+    if (merged.reinvokeOf) {
+      row.classList.add('reinvoke');
+      row.title = 'Re-invoke of ' + merged.reinvokeOf;
+    }
     const statusEl = row.querySelector('.status');
     statusEl.textContent =
       merged.status != null
@@ -1236,10 +1306,11 @@ const STUDIO_SCRIPT = `
     highlightTarget(ev.target);
     if (INVOKE_KINDS.includes(ev.kind)) {
       // A single-shot invocation row (Lambda or AgentCore) reloads into the
-      // re-invokable composer.
+      // re-invokable composer, pre-filled with the captured event and wired to
+      // POST /api/reinvoke (issue #284) so the new row links to this source.
       shownDetailId = null;
       shownServeId = null;
-      renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : '{}');
+      renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : '{}', id);
       shownInvId = id;
       renderResult(id);
     } else {
@@ -1262,6 +1333,36 @@ const STUDIO_SCRIPT = `
 
     const head = el('div', 'composer');
     head.appendChild(el('div', 'target-name', (ev.label || 'request') + '  —  ' + (ev.target || '')));
+    // Re-invoke (issue #284): a captured served request is re-sent through the
+    // live front door by reusing that serve's request composer. Clicking
+    // navigates to the running serve and pre-fills it with this request; the
+    // serve must be running (restart it first if it has stopped).
+    const serveSt = serveState.get(ev.target);
+    const serveRunning = serveSt && serveSt.status === 'running';
+    const reBtn = el('button', 'reinvoke-btn', 'Re-invoke');
+    if (serveRunning) {
+      reBtn.onclick = function () {
+        // Re-check running at CLICK time: the serve may have stopped since the
+        // detail was rendered (the button is not re-rendered on a stop). If so,
+        // do NOT seed a prefill (it would otherwise leak into the next serve
+        // composer). The prefill is address-tagged with the target so a stray
+        // one is dropped on mismatch (see renderRequestComposer).
+        const cur = serveState.get(ev.target);
+        if (!cur || cur.status !== 'running') {
+          renderCapturedDetail(id); // re-render to reflect the now-stopped state
+          return;
+        }
+        pendingReqPrefill =
+          ev.request && typeof ev.request === 'object'
+            ? { targetId: ev.target, req: ev.request }
+            : null;
+        selectTarget(ev.target, ev.kind);
+      };
+    } else {
+      reBtn.disabled = true;
+      reBtn.title = 'Start the serve to re-invoke this request.';
+    }
+    head.appendChild(reBtn);
     ws.appendChild(head);
 
     const reqSec = el('div', 'section');

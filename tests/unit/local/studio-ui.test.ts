@@ -158,6 +158,23 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('use the Endpoints above');
   });
 
+  it('wires the re-invoke flow into the composer + timeline (issue #284)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // The composer takes a reinvoke source and posts to /api/reinvoke.
+    expect(html).toContain('function renderComposer(id, kind, eventText, reinvokeOf)');
+    expect(html).toContain("url = '/api/reinvoke'");
+    expect(html).toContain('invocationId: active.reinvokeOf, payload: event');
+    // A past invoke row reloads into the re-invokable composer with its source id.
+    expect(html).toContain('renderComposer(ev.target, ev.kind, ev.request != null ? fmt(ev.request) : ');
+    // Re-invoked rows are visually linked to the source.
+    expect(html).toContain("row.classList.add('reinvoke')");
+    expect(html).toContain('.row.reinvoke .label::before');
+    // The captured serve detail offers a Re-invoke that reuses the request
+    // composer via the prefill.
+    expect(html).toContain('pendingReqPrefill');
+    expect(html).toContain("el('button', 'reinvoke-btn', 'Re-invoke')");
+  });
+
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {
     const html = renderStudioHtml('<script>alert(1)</script>', '"&<>');
     // The raw markup must never appear verbatim in the document.

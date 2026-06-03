@@ -31,6 +31,7 @@ import {
 } from '../../local/studio-server.js';
 import { filterStudioCustomResources } from '../../local/studio-custom-resource-filter.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
+import { reinvoke } from '../../local/studio-reinvoke.js';
 import {
   buildPerRunArgs,
   resolveEnvVars,
@@ -195,6 +196,35 @@ export function coerceServeRequest(body: unknown): StudioServeRequestPayload {
     out.body = reqBody;
   }
   return out;
+}
+
+/** Validated `POST /api/reinvoke` body (issue #284). */
+export interface StudioReinvokePayload {
+  /** Id of the recorded invocation to re-run. */
+  invocationId: string;
+  /** The (possibly edited) payload to re-invoke with. */
+  payload: unknown;
+}
+
+/**
+ * Validate the `POST /api/reinvoke` body at the HTTP boundary (issue #284):
+ * a non-empty `invocationId` string and a `payload` (the edited event — any
+ * JSON value, including `null`, but the key must be present so an omitted
+ * payload is a clean 4xx rather than a silent re-invoke with `undefined`).
+ */
+export function coerceReinvokeRequest(body: unknown): StudioReinvokePayload {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('Request body must be a JSON object.');
+  }
+  const record = body as Record<string, unknown>;
+  const { invocationId } = record;
+  if (typeof invocationId !== 'string' || invocationId.trim() === '') {
+    throw new Error('Request body must include a non-empty "invocationId" string.');
+  }
+  if (!('payload' in record)) {
+    throw new Error('Request body must include a "payload" (the edited event).');
+  }
+  return { invocationId, payload: record['payload'] };
 }
 
 /** The session config served at `GET /api/config` (issue #301 slice 3). */
@@ -566,6 +596,15 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
         ...(req.body !== undefined ? { body: req.body } : {}),
       });
       return result;
+    },
+    // `/api/reinvoke`: re-run a past Lambda / AgentCore row with an edited
+    // payload (issue #284). Resolves the source target from the store and
+    // re-dispatches through the SAME single-shot dispatcher, threading
+    // `reinvokeOf` so the new timeline row links to its source. A served
+    // request is re-sent client-side via the request composer instead.
+    onReinvoke: (body) => {
+      const { invocationId, payload } = coerceReinvokeRequest(body);
+      return reinvoke({ invocationId, payload }, { store, dispatcher });
     },
     getRunning: () => ({ running: serveManager.list() }),
     getConfig: () => sessionConfigSnapshot(),

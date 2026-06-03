@@ -44,6 +44,13 @@ export interface StudioRunRequest {
    * rides on the shared coerced request so the serve manager can read it.
    */
   imageOverride?: string;
+  /**
+   * Issue #284: when this run is a re-invoke of a past timeline row, the
+   * source invocation id. Threaded verbatim into the emitted `invocation`
+   * start + end events as `reinvokeOf` so the UI links the new row to its
+   * source. Absent for a fresh invoke.
+   */
+  reinvokeOf?: string;
 }
 
 /** The outcome of a single-shot run, returned from `/api/run`. */
@@ -156,6 +163,7 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
       kind: req.kind,
       label: 'invoke',
       request: req.event,
+      ...(req.reinvokeOf ? { reinvokeOf: req.reinvokeOf } : {}),
     });
 
     // `dir` is created inside the try so a `writeFileSync` / `JSON.stringify`
@@ -261,6 +269,7 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         response,
         status,
         durationMs,
+        ...(req.reinvokeOf ? { reinvokeOf: req.reinvokeOf } : {}),
       });
 
       const result: StudioRunResult = { invocationId, ok, status, durationMs };
