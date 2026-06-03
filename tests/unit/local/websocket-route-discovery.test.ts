@@ -3,6 +3,10 @@ import {
   discoverWebSocketApis,
   discoverWebSocketApisOrThrow,
   parseSelectionExpressionPath,
+  webSocketApiMatchesIdentifier,
+  filterWebSocketApisByIdentifiers,
+  availableWebSocketApiIdentifiers,
+  type DiscoveredWebSocketApi,
 } from '../../../src/local/websocket-route-discovery.js';
 import { RouteDiscoveryError } from '../../../src/utils/error-handler.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -623,5 +627,41 @@ describe('discoverWebSocketApis B2 authorizer admission guard', () => {
     });
     const { apis } = discoverWebSocketApis([stack]);
     expect(apis[0]!.unsupported).toBeUndefined();
+  });
+});
+
+describe('WebSocket API target matchers (issue #311)', () => {
+  const mk = (over: Partial<DiscoveredWebSocketApi>): DiscoveredWebSocketApi => ({
+    apiLogicalId: over.apiLogicalId ?? 'WsApi',
+    apiStackName: over.apiStackName ?? 'Stack',
+    declaredAt: `${over.apiStackName ?? 'Stack'}/${over.apiLogicalId ?? 'WsApi'}`,
+    routeSelectionExpression: '$request.body.action',
+    stage: 'prod',
+    routes: [],
+    ...(over.apiCdkPath !== undefined && { apiCdkPath: over.apiCdkPath }),
+  });
+
+  it('matches by bare logical id, stack-qualified id, and cdk path (exact + prefix)', () => {
+    const api = mk({ apiLogicalId: 'WsApi', apiStackName: 'Stack', apiCdkPath: 'Stack/WsApi' });
+    expect(webSocketApiMatchesIdentifier(api, 'WsApi')).toBe(true);
+    expect(webSocketApiMatchesIdentifier(api, 'Stack:WsApi')).toBe(true);
+    expect(webSocketApiMatchesIdentifier(api, 'Stack/WsApi')).toBe(true);
+    expect(webSocketApiMatchesIdentifier(api, 'Stack')).toBe(true); // prefix of the cdk path
+    expect(webSocketApiMatchesIdentifier(api, 'Other')).toBe(false);
+  });
+
+  it('filters to the union of identifiers; empty identifiers returns all', () => {
+    const a = mk({ apiLogicalId: 'A', apiCdkPath: 'Stack/A' });
+    const b = mk({ apiLogicalId: 'B', apiCdkPath: 'Stack/B' });
+    expect(filterWebSocketApisByIdentifiers([a, b], ['Stack/A'])).toEqual([a]);
+    expect(filterWebSocketApisByIdentifiers([a, b], ['A', 'B'])).toEqual([a, b]);
+    expect(filterWebSocketApisByIdentifiers([a, b], [])).toEqual([a, b]);
+    expect(filterWebSocketApisByIdentifiers([a, b], ['Nope'])).toEqual([]);
+  });
+
+  it('enumerates the primary form (cdk path when present, else logical id), de-duped', () => {
+    const a = mk({ apiLogicalId: 'A', apiCdkPath: 'Stack/A' });
+    const b = mk({ apiLogicalId: 'B' }); // no cdk path -> bare id
+    expect(availableWebSocketApiIdentifiers([a, b, a])).toEqual(['Stack/A', 'B']);
   });
 });

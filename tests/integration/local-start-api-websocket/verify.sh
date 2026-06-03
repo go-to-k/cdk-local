@@ -74,8 +74,70 @@ cleanup() {
   fi
   rm -f "${LOG_FILE}"
   rm -f "$(pwd)/.ws-client.mjs"
+  rm -f "$(pwd)/.et-client.mjs"
 }
 trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# Explicit WebSocket-API target (issue #311): `cdkl start-api <WsApi target>`
+# serves ONLY that WebSocket API. Pre-PR this threw "did not match any
+# discovered API" because the target-subset filter ignored WebSocket APIs
+# (they were always served as a group, never selectable). Boot the explicit
+# target on a separate port, assert it serves + a client round-trips, then
+# tear it down before the main no-target suite.
+# ---------------------------------------------------------------------------
+ET_TARGET="CdkLocalStartApiWebSocket/WsApi"
+ET_PORT=$(( PORT + 1 ))
+ET_LOG="$(mktemp)"
+echo "==> Explicit WS target: cdkl start-api '${ET_TARGET}' on port ${ET_PORT}"
+${CDKL} start-api "${ET_TARGET}" \
+  --port "${ET_PORT}" \
+  --container-host "${CONTAINER_HOST}" \
+  --no-pull \
+  >"${ET_LOG}" 2>&1 &
+ET_PID=$!
+ET_READY=0
+for _ in $(seq 1 60); do
+  if grep -q "Server listening on ws" "${ET_LOG}" 2>/dev/null; then ET_READY=1; break; fi
+  if grep -qi "did not match any discovered API" "${ET_LOG}" 2>/dev/null; then
+    echo "FAIL: explicit WS target '${ET_TARGET}' was rejected (the #311 regression)"
+    cat "${ET_LOG}"; kill "${ET_PID}" 2>/dev/null || true; rm -f "${ET_LOG}"; exit 1
+  fi
+  if ! kill -0 "${ET_PID}" 2>/dev/null; then
+    echo "FAIL: explicit WS-target server exited during boot"; cat "${ET_LOG}"; rm -f "${ET_LOG}"; exit 1
+  fi
+  sleep 0.5
+done
+if [[ "${ET_READY}" -ne 1 ]]; then
+  echo "FAIL: explicit WS-target serve did not come up within 30s"; cat "${ET_LOG}"
+  kill "${ET_PID}" 2>/dev/null || true; rm -f "${ET_LOG}"; exit 1
+fi
+ET_WS_URL=$(grep -E "^Server listening on ws" "${ET_LOG}" | head -1 | sed -E 's/^Server listening on (ws[s]?:\/\/[^[:space:]]+).*/\1/')
+echo "    OK: explicit WS target serves at ${ET_WS_URL}"
+# One client round-trip through the explicitly-targeted serve (the `sendMessage`
+# route echoes the frame's `text` back via PostToConnection).
+cat > "$(pwd)/.et-client.mjs" <<'NODE'
+import { WebSocket } from 'ws';
+const ws = new WebSocket(process.argv[2]);
+let got = '';
+const done = (code, msg) => { if (msg) console.error(msg); process.exit(code); };
+ws.on('open', () => ws.send(JSON.stringify({ action: 'sendMessage', text: 'hi-explicit-311' })));
+ws.on('message', (d) => { got = d.toString(); ws.close(); });
+ws.on('error', (e) => done(1, 'client error: ' + e.message));
+ws.on('close', () => got.includes('hi-explicit-311') ? (console.log('PASS:', got), done(0)) : done(1, 'no echo: ' + got));
+setTimeout(() => done(1, 'timeout waiting for echo'), 30000);
+NODE
+if ! node "$(pwd)/.et-client.mjs" "${ET_WS_URL}"; then
+  echo "FAIL: explicit WS-target client round-trip"; cat "${ET_LOG}"
+  kill "${ET_PID}" 2>/dev/null || true; rm -f "${ET_LOG}" "$(pwd)/.et-client.mjs"; exit 1
+fi
+rm -f "$(pwd)/.et-client.mjs"
+kill -TERM "${ET_PID}" 2>/dev/null || true
+for _ in $(seq 1 20); do kill -0 "${ET_PID}" 2>/dev/null || break; sleep 0.5; done
+kill -KILL "${ET_PID}" 2>/dev/null || true; wait "${ET_PID}" 2>/dev/null || true
+docker ps --filter "name=cdkl-" -q | xargs -r docker rm -f >/dev/null 2>&1 || true
+rm -f "${ET_LOG}"
+echo "    OK: explicit WS-target client round-trip echoed 'hi-explicit-311'"
 
 echo "==> Starting cdkl start-api on port ${PORT}"
 ${CDKL} start-api \

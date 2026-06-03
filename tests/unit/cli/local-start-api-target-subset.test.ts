@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import type { RouteWithAuth } from '../../../src/local/authorizer-resolver.js';
 import type { DiscoveredRoute } from '../../../src/local/route-discovery.js';
+import type { DiscoveredWebSocketApi } from '../../../src/local/websocket-route-discovery.js';
 import { resolveApiTargetSubset } from '../../../src/cli/commands/local-start-api.js';
 
 // Mirror of `tests/unit/local/api-server-grouping.test.ts`'s `makeRoute`:
@@ -20,6 +21,20 @@ function makeRoute(partial: Partial<DiscoveredRoute>): RouteWithAuth {
     ...(partial.apiCdkPath !== undefined && { apiCdkPath: partial.apiCdkPath }),
   };
   return { route, authorizer: undefined };
+}
+
+// Minimal `DiscoveredWebSocketApi` — the subset resolver only reads the
+// identity fields (apiLogicalId / apiStackName / apiCdkPath) for matching.
+function makeWsApi(partial: Partial<DiscoveredWebSocketApi>): DiscoveredWebSocketApi {
+  return {
+    apiLogicalId: partial.apiLogicalId ?? 'WsApi',
+    apiStackName: partial.apiStackName ?? 'Stack',
+    declaredAt: partial.declaredAt ?? `${partial.apiStackName ?? 'Stack'}/${partial.apiLogicalId ?? 'WsApi'}`,
+    routeSelectionExpression: partial.routeSelectionExpression ?? '$request.body.action',
+    stage: partial.stage ?? 'prod',
+    routes: partial.routes ?? [],
+    ...(partial.apiCdkPath !== undefined && { apiCdkPath: partial.apiCdkPath }),
+  };
 }
 
 describe('resolveApiTargetSubset (variadic start-api subset resolution)', () => {
@@ -100,5 +115,45 @@ describe('resolveApiTargetSubset (variadic start-api subset resolution)', () => 
     const slash = resolveApiTargetSubset(routes, ['WebStack/MyApi'], ['WebStack', 'AdminStack']);
     expect(slash.filtered).toHaveLength(1);
     expect(slash.unmatched).toEqual([]);
+  });
+
+  // --- WebSocket APIs as explicit targets (issue #311) ---
+
+  it('resolves a WebSocket-API-only target (no route match) without throwing', () => {
+    const ws = makeWsApi({ apiLogicalId: 'WsApi', apiCdkPath: 'Stack/WsApi' });
+    const routes = [makeRoute({ source: 'http-api', apiLogicalId: 'MyHttpApi' })];
+    const r = resolveApiTargetSubset(routes, ['Stack/WsApi'], ['Stack'], [ws]);
+    expect(r.filtered).toHaveLength(0); // no route matched
+    expect(r.filteredWebSocketApis).toEqual([ws]); // the WS API matched
+    expect(r.unmatched).toEqual([]);
+  });
+
+  it('narrows WebSocket APIs to the target subset (an HTTP target drops WS APIs)', () => {
+    const ws = makeWsApi({ apiLogicalId: 'WsApi', apiCdkPath: 'Stack/WsApi' });
+    const routes = [makeRoute({ source: 'http-api', apiLogicalId: 'MyHttpApi' })];
+    const r = resolveApiTargetSubset(routes, ['MyHttpApi'], ['Stack'], [ws]);
+    expect(r.filtered).toHaveLength(1);
+    expect(r.filteredWebSocketApis).toEqual([]); // WS API NOT dragged along
+  });
+
+  it('lists WebSocket API identifiers in the empty-union error', () => {
+    const ws = makeWsApi({ apiLogicalId: 'WsApi', apiCdkPath: 'Stack/WsApi' });
+    const routes = [makeRoute({ source: 'http-api', apiLogicalId: 'MyHttpApi' })];
+    expect(() => resolveApiTargetSubset(routes, ['Nope'], ['Stack'], [ws])).toThrow(/Stack\/WsApi/);
+  });
+
+  it('treats a matched WebSocket id as matched in the unmatched scan', () => {
+    const ws = makeWsApi({ apiLogicalId: 'WsApi', apiCdkPath: 'Stack/WsApi' });
+    const routes = [makeRoute({ source: 'http-api', apiLogicalId: 'MyHttpApi' })];
+    // 'MyHttpApi' matches a route, 'Stack/WsApi' matches the WS API, 'Typo' neither.
+    const r = resolveApiTargetSubset(
+      routes,
+      ['MyHttpApi', 'Stack/WsApi', 'Typo'],
+      ['Stack'],
+      [ws]
+    );
+    expect(r.unmatched).toEqual(['Typo']);
+    expect(r.filtered).toHaveLength(1);
+    expect(r.filteredWebSocketApis).toEqual([ws]);
   });
 });

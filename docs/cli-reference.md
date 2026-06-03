@@ -833,7 +833,18 @@ to serve every API (bare in a non-TTY) or to open the multi-select picker
 4. **CDK Construct path prefix** — `MyStack/MyHttpApi`.
 
 For Function URLs, the path forms reference the **backing Lambda's**
-`aws:cdk:path`, not the auto-generated URL resource.
+`aws:cdk:path`, not the auto-generated URL resource. A **WebSocket API**
+is targetable by the same id forms (the `AWS::ApiGatewayV2::Api`
+resource's logical id / stack-qualified id / construct path), so
+`cdkl start-api MyStack/MyWsApi` serves exactly that WebSocket API.
+
+The target filter applies to **WebSocket APIs too**: an explicit target
+serves only the named APIs (REST / HTTP / Function URL / WebSocket
+alike), and bare `start-api` (no target) serves every API including all
+WebSocket APIs. (Previously WebSocket APIs were always served as a group
+regardless of the target — so targeting an HTTP API also booted unrelated
+WebSocket APIs, and a WebSocket-API target errored with "did not match any
+discovered API". Both are fixed.)
 
 When several targets are passed and they span **different stacks**, the
 single-stack synth optimization is skipped and every stack is

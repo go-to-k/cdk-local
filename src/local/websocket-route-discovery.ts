@@ -469,3 +469,64 @@ function readApiCdkPath(logicalId: string, template: CloudFormationTemplate): st
   const path = readCdkPath(resource);
   return path === '' ? undefined : path;
 }
+
+/**
+ * Match a single user-supplied identifier against a discovered WebSocket
+ * API, mirroring `routeMatchesIdentifier` in `api-server-grouping.ts` so the
+ * `cdkl start-api <target>` selector accepts the SAME id forms for a
+ * WebSocket API it accepts for a route-based one:
+ *   - the bare logical id of the `AWS::ApiGatewayV2::Api` resource,
+ *   - the stack-qualified `<StackName>:<LogicalId>` form,
+ *   - the CDK Construct path (exact, or as a `<path>/...` prefix so a
+ *     parent-construct id selects the API beneath it).
+ *
+ * Consumed by `resolveApiTargetSubset` (and `cdkl studio`, which serves a
+ * single WebSocket API by passing its construct-path target to `start-api`).
+ */
+export function webSocketApiMatchesIdentifier(
+  api: DiscoveredWebSocketApi,
+  identifier: string
+): boolean {
+  if (api.apiLogicalId === identifier) return true;
+  if (api.apiStackName && identifier === `${api.apiStackName}:${api.apiLogicalId}`) return true;
+  if (api.apiCdkPath) {
+    if (identifier === api.apiCdkPath) return true;
+    if (api.apiCdkPath.startsWith(`${identifier}/`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Filter the WebSocket API list to the UNION of the supplied identifiers
+ * (the variadic `cdkl start-api <target...>` shape). An empty `identifiers`
+ * list returns every API unchanged — the "serve all" default. Mirrors
+ * `filterRoutesByApiIdentifiers` for the route surface.
+ */
+export function filterWebSocketApisByIdentifiers(
+  apis: readonly DiscoveredWebSocketApi[],
+  identifiers: readonly string[]
+): DiscoveredWebSocketApi[] {
+  if (identifiers.length === 0) return [...apis];
+  return apis.filter((api) => identifiers.some((id) => webSocketApiMatchesIdentifier(api, id)));
+}
+
+/**
+ * Enumerate every distinct WebSocket API identifier, in discovery order,
+ * in its PRIMARY form (CDK Construct path when available, else bare logical
+ * id) — folded into the "available identifiers" hint when a `start-api`
+ * target matches nothing. Mirrors `availableApiIdentifiers` for routes.
+ */
+export function availableWebSocketApiIdentifiers(
+  apis: readonly DiscoveredWebSocketApi[]
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const api of apis) {
+    const primary = api.apiCdkPath ?? api.apiLogicalId;
+    if (!seen.has(primary)) {
+      seen.add(primary);
+      out.push(primary);
+    }
+  }
+  return out;
+}
