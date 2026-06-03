@@ -358,6 +358,19 @@ for needle in '"ok":true' '"status":200' '"statusCode":200'; do
   fi
   echo "    OK: run response has ${needle}"
 done
+# Issue #291: the handler also console.logs `{"cdklResponseTrap":...}` AFTER
+# the response — the exact shape the old last-JSON-line heuristic would
+# mis-pick. studio now reads the response from the child's --response-file, so
+# the recovered response must be the real return value and must NOT contain the
+# trap marker. (The trap line still appears in the LOGS stream, just not as the
+# response.)
+RESPONSE_FIELD=$(grep -oE '"response":\{[^}]*\}' "${RUN_FILE}" | head -1 || true)
+if echo "${RESPONSE_FIELD}" | grep -qF 'cdklResponseTrap'; then
+  echo "FAIL: /api/run picked the trailing console.log(JSON) as the response (issue #291 regression)"
+  echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
+  exit 1
+fi
+echo "    OK: response recovered via --response-file, not the trailing console.log(JSON) trap"
 # Capture the Lambda invocation id for the slice-C3 per-invocation log
 # binding assertion below.
 LAMBDA_INV_ID=$(grep -oE '"invocationId":"[^"]+"' "${RUN_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')

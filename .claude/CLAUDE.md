@@ -394,10 +394,14 @@ compute-locally category for Lambda + API Gateway).
   `agentcore` (`INVOKE_VERBS`) — studio being a control plane over the
   CLI — streaming its stdout/stderr to the event bus and returning the
   response. `extractResponse` recovers the response per kind: a Lambda's
-  is the LAST JSON-parseable stdout line (container logs interleave on
-  stdout); an AgentCore agent streams its WHOLE output to stdout (HTTP
-  SSE / MCP-A2A JSON-RPC / `--ws` frames), so the entire stdout IS the
-  response. The child is spawned with `CDKL_LOG_LEVEL=warn` so
+  is read from the `--response-file` the dispatcher passes to `cdkl
+  invoke` (issue #291 — `cdkl invoke` writes ONLY the raw RIE response
+  payload there, so a handler's own trailing `console.log(JSON)` can
+  no longer be mistaken for the response), falling back to the LAST
+  JSON-parseable stdout line when the file is absent (older `cdkl
+  invoke` / a crash before the write); an AgentCore agent streams
+  its WHOLE output to stdout (HTTP SSE / MCP-A2A JSON-RPC / `--ws`
+  frames), so the entire stdout IS the response. The child is spawned with `CDKL_LOG_LEVEL=warn` so
   cdk-local's OWN synth / orchestration progress (toolkit "Successfully
   synthesized to ...", asset-bundling, info-level status — honored by
   `resolveConfiguredLogLevel` in `utils/logger.ts` + `CdklIoHost`) is

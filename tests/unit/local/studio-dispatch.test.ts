@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { readdirSync } from 'node:fs';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import { StudioEventBus, type StudioInvocationEvent, type StudioLogEvent } from '../../../src/local/studio-events.js';
@@ -346,6 +346,109 @@ describe('createStudioDispatcher', () => {
       'START RequestId: abc',
       'REPORT RequestId: abc Duration: 1ms',
     ]);
+  });
+
+  it('prefers the --response-file payload over a trailing console.log(JSON) line (issue #291)', async () => {
+    const bus = new StudioEventBus();
+    const { invocations, logs } = collect(bus);
+    const child = makeFakeChild();
+
+    // Capture the --response-file path the dispatcher passes and write the
+    // authoritative response there, simulating what `cdkl invoke` does.
+    let responsePath: string | undefined;
+    const spawnFn = vi.fn((_bin: string, argv: string[]) => {
+      const i = argv.indexOf('--response-file');
+      responsePath = i >= 0 ? argv[i + 1] : undefined;
+      return child as never;
+    });
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-rf',
+    });
+
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    // The child wrote the REAL response to the file.
+    expect(responsePath).toBeDefined();
+    writeFileSync(responsePath!, '{"statusCode":200,"body":"real"}');
+    // stdout echoes the response AND ends with a handler's own console.log of a
+    // JSON value — the exact case the last-JSON-line heuristic would mis-pick.
+    child.stdout.emit(
+      'data',
+      'START RequestId: abc\n' +
+        '{"statusCode":200,"body":"real"}\n' +
+        '{"debug":"trailing handler log that is also JSON"}\n'
+    );
+    child.emit('close', 0);
+    const result = await p;
+
+    // The file payload wins — NOT the trailing JSON log line.
+    expect(result.response).toEqual({ statusCode: 200, body: 'real' });
+    expect(result.raw).toBe('{"statusCode":200,"body":"real"}');
+    expect(invocations[1].response).toEqual({ statusCode: 200, body: 'real' });
+    // The echoed response line is dropped from the logs; the trailing JSON log
+    // line is kept (it is a real log, not the response).
+    const stdoutLogs = logs.filter((l) => l.stream === 'stdout').map((l) => l.line);
+    expect(stdoutLogs).toContain('{"debug":"trailing handler log that is also JSON"}');
+    expect(stdoutLogs).not.toContain('{"statusCode":200,"body":"real"}');
+    expect(stdoutLogs).toContain('START RequestId: abc');
+  });
+
+  it('passes --response-file for a lambda invoke but not for agentcore (issue #291)', async () => {
+    const bus = new StudioEventBus();
+    const lambdaChild = makeFakeChild();
+    const lambdaSpawn = vi.fn(() => lambdaChild as never);
+    const lambdaDispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: lambdaSpawn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-l',
+    });
+    const lp = lambdaDispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    lambdaChild.stdout.emit('data', '{"ok":true}');
+    lambdaChild.emit('close', 0);
+    await lp;
+    const lambdaArgv = (lambdaSpawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(lambdaArgv).toContain('--response-file');
+
+    const agentChild = makeFakeChild();
+    const agentSpawn = vi.fn(() => agentChild as never);
+    const agentDispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: agentSpawn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-a',
+    });
+    const ap = agentDispatcher.run({ targetId: 'T', kind: 'agentcore', event: {} });
+    agentChild.stdout.emit('data', '{"ok":true}');
+    agentChild.emit('close', 0);
+    await ap;
+    const agentArgv = (agentSpawn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(agentArgv).not.toContain('--response-file');
+  });
+
+  it('falls back to the stdout heuristic when the response file is absent (issue #291)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      // spawnFn does NOT write the response file — older `cdkl invoke` / a crash
+      // before the write. The dispatcher must fall back to last-JSON-line.
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-fb',
+    });
+    const p = dispatcher.run({ targetId: 'T', kind: 'lambda', event: {} });
+    child.stdout.emit('data', 'START RequestId: abc\n{"statusCode":200,"body":"fallback"}\n');
+    child.emit('close', 0);
+    const result = await p;
+    expect(result.response).toEqual({ statusCode: 200, body: 'fallback' });
   });
 
   it('rejects when spawn throws synchronously', async () => {

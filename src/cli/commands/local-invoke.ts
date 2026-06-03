@@ -134,6 +134,14 @@ interface LocalInvokeOptions {
    * when `--from-cfn-stack` is set.
    */
   stackRegion?: string;
+  /**
+   * Issue #291: machine-readable response channel. When set, the raw RIE
+   * response payload is written to this file (in addition to stdout) so a
+   * programmatic caller (e.g. `cdkl studio`'s dispatcher) recovers the
+   * response from the file instead of parsing it out of stdout, where it
+   * interleaves with synth progress + streamed container logs.
+   */
+  responseFile?: string;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -595,6 +603,13 @@ async function localInvokeCommand(
     // Settle a few hundred ms so logs fully flush before we tear down.
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     process.stdout.write(`${result.raw}\n`);
+    // Issue #291: also write the raw response to the machine-readable channel
+    // so a programmatic caller reads it from the file instead of guessing the
+    // last JSON-parseable stdout line (where a handler's own trailing
+    // `console.log(JSON)` could be mistaken for the response).
+    if (options.responseFile) {
+      writeFileSync(options.responseFile, result.raw);
+    }
   } finally {
     if (sigintHandler) process.off('SIGINT', sigintHandler);
     await cleanup();
@@ -1257,6 +1272,14 @@ export function addInvokeSpecificOptions(cmd: Command): Command {
       new Option(
         '--stack-region <region>',
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--response-file <path>',
+        'Also write the raw Lambda response payload to this file. Lets a programmatic ' +
+          'caller recover the response without parsing it out of stdout (where it interleaves ' +
+          'with synth progress + streamed container logs). stdout output is unchanged.'
       )
     );
 }
