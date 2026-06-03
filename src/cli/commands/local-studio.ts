@@ -30,7 +30,11 @@ import {
   type RunningStudioServer,
 } from '../../local/studio-server.js';
 import { filterStudioCustomResources } from '../../local/studio-custom-resource-filter.js';
-import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
+import {
+  createStudioDispatcher,
+  type StudioDispatcher,
+  type StudioRunRequest,
+} from '../../local/studio-dispatch.js';
 import { reinvoke } from '../../local/studio-reinvoke.js';
 import {
   buildPerRunArgs,
@@ -142,6 +146,38 @@ export function coerceStopRequest(body: unknown): StudioStopRequest {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
   return { targetId };
+}
+
+/** Dependencies {@link routeStudioRun} dispatches a `POST /api/run` against. */
+export interface StudioRunRouterDeps {
+  /** The single-shot invoke dispatcher (lambda / agentcore). */
+  dispatcher: Pick<StudioDispatcher, 'run'>;
+  /** The long-running serve lifecycle (api / alb / ecs / ecs-task / cloudfront). */
+  serveManager: Pick<StudioServeManager, 'start'>;
+  /** Target ids of the servable ECS *services* (task defs are not servable as `ecs`). */
+  servableEcs: ReadonlySet<string>;
+}
+
+/**
+ * Route a validated `POST /api/run` request to the right runner: the
+ * single-shot dispatcher for the invoke kinds (`lambda` / `agentcore`), or the
+ * serve manager for every serve kind (`api` / `alb` / `ecs` / `ecs-task` /
+ * `cloudfront`). An `ecs` target that is NOT a servable service (a raw curl
+ * could POST a task-def id with `kind: 'ecs'`) is rejected at the boundary with
+ * a clear message rather than spawning a doomed `start-service`. Extracted from
+ * the `onRun` closure so the kind→runner routing is unit-testable without
+ * booting the studio server.
+ */
+export function routeStudioRun(req: StudioRunRequest, deps: StudioRunRouterDeps): Promise<unknown> {
+  if (req.kind === 'lambda' || req.kind === 'agentcore') return deps.dispatcher.run(req);
+  if (req.kind === 'ecs' && !deps.servableEcs.has(req.targetId)) {
+    return Promise.reject(
+      new Error(
+        `'${req.targetId}' is not a servable ECS service (an ECS task definition runs via run-task, not start-service).`
+      )
+    );
+  }
+  return deps.serveManager.start(req);
 }
 
 /** A composed HTTP request to a running serve, as the studio UI posts it. */
@@ -751,20 +787,10 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     cliName: getEmbedConfig().cliName,
     store,
     // `/api/run`: a Lambda or an AgentCore runtime is a single-shot invoke;
-    // api / alb / ecs are long-running serve starts (the serve manager rejects
-    // any other kind).
-    onRun: (body) => {
-      const req = coerceRunRequest(body);
-      if (req.kind === 'lambda' || req.kind === 'agentcore') return dispatcher.run(req);
-      if (req.kind === 'ecs' && !servableEcs.has(req.targetId)) {
-        return Promise.reject(
-          new Error(
-            `'${req.targetId}' is not a servable ECS service (an ECS task definition runs via run-task, not start-service).`
-          )
-        );
-      }
-      return serveManager.start(req);
-    },
+    // api / alb / ecs / ecs-task / cloudfront are long-running serve starts.
+    // The kind→runner routing lives in `routeStudioRun` (unit-tested).
+    onRun: (body) =>
+      routeStudioRun(coerceRunRequest(body), { dispatcher, serveManager, servableEcs }),
     onStop: async (body) => {
       const req = coerceStopRequest(body);
       await serveManager.stop(req);
