@@ -1,3 +1,10 @@
+# [0.100.0](https://github.com/go-to-k/cdk-local/compare/v0.99.0...v0.100.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** clarify the curl-able serve port (proxy vs child internal) ([#330](https://github.com/go-to-k/cdk-local/issues/330)) ([c2d94b6](https://github.com/go-to-k/cdk-local/commit/c2d94b6a59c1e02ff9ddac73d3c0ab8ab0d9edd5))
+
 # [0.99.0](https://github.com/go-to-k/cdk-local/compare/v0.98.0...v0.99.0) (2026-06-03)
 
 
