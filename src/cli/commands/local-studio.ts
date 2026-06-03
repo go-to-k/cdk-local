@@ -29,6 +29,7 @@ import {
   annotatePinnedEcsTargets,
   type RunningStudioServer,
 } from '../../local/studio-server.js';
+import { filterStudioCustomResources } from '../../local/studio-custom-resource-filter.js';
 import { createStudioDispatcher, type StudioRunRequest } from '../../local/studio-dispatch.js';
 import {
   buildPerRunArgs,
@@ -337,6 +338,11 @@ interface LocalStudioOptions {
    * hot-reload on CDK source changes. No effect on single-shot invokes.
    */
   watch?: boolean;
+  /**
+   * `--include-custom-resources`: show CDK custom-resource / provider-framework
+   * Lambdas in the target list (hidden by default).
+   */
+  includeCustomResources?: boolean;
 }
 
 /**
@@ -391,7 +397,23 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   const listing = listTargets(stacks);
   // `--stack <glob>` scopes the LISTED targets (display only — the whole app
   // was already synthesized above; the filter never touches synth).
-  const targetGroups = filterStudioTargetGroups(toStudioTargetGroups(listing), options.stack);
+  const stackFiltered = filterStudioTargetGroups(toStudioTargetGroups(listing), options.stack);
+  // Hide CDK custom-resource / provider-framework Lambdas by default so the UI
+  // shows only the user's own functions (issue #323); `--include-custom-resources`
+  // surfaces them. Applied AFTER the `--stack` display filter.
+  const lambdasBefore = stackFiltered.find((g) => g.kind === 'lambda')?.entries.length ?? 0;
+  const targetGroups = filterStudioCustomResources(stackFiltered, {
+    include: options.includeCustomResources === true,
+  });
+  if (!options.includeCustomResources) {
+    const lambdasAfter = targetGroups.find((g) => g.kind === 'lambda')?.entries.length ?? 0;
+    const hidden = lambdasBefore - lambdasAfter;
+    if (hidden > 0) {
+      logger.info(
+        `Hid ${hidden} CDK custom-resource / provider Lambda(s); pass --include-custom-resources to show them.`
+      );
+    }
+  }
   if (options.stack && options.stack.length > 0) {
     const shown = targetGroups.reduce((n, g) => n + g.entries.length, 0);
     if (shown === 0) {
@@ -691,6 +713,15 @@ export function addStudioSpecificOptions(cmd: Command): Command {
         'they re-synth + rolling-reload on CDK source changes. Toggleable from the Session bar. No ' +
         'effect on single-shot invokes (each invoke re-synths anyway); the target list is not ' +
         're-synthed (restart studio to pick up newly-added resources).'
+    )
+  );
+  cmd.addOption(
+    new Option(
+      '--include-custom-resources',
+      'Show CDK custom-resource / provider-framework Lambdas in the target list (provider ' +
+        'framework onEvent/onTimeout/isComplete handlers, log-retention, bucket-notifications, ' +
+        'AwsCustomResource, BucketDeployment, etc.). Hidden by default so the list shows only ' +
+        'your own functions.'
     )
   );
   return cmd;

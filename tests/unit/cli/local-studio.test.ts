@@ -28,6 +28,15 @@ describe('createLocalStudioCommand', () => {
     const portOpt = cmd.options.find((o) => o.long === '--studio-port');
     expect(portOpt?.defaultValue).toBe('9999');
   });
+
+  it('exposes --include-custom-resources (boolean, default false)', () => {
+    const cmd = createLocalStudioCommand();
+    const longs = cmd.options.map((o) => o.long);
+    expect(longs).toContain('--include-custom-resources');
+    const opt = cmd.options.find((o) => o.long === '--include-custom-resources');
+    // A bare boolean flag has no default value set => undefined (falsy).
+    expect(opt?.defaultValue).toBeUndefined();
+  });
 });
 
 describe('parseStudioPort', () => {

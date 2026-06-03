@@ -138,6 +138,7 @@ describe('studio option surface contract (addStudioSpecificOptions)', () => {
     expect(flags).toEqual([
       '--assume-role',
       '--from-cfn-stack',
+      '--include-custom-resources',
       '--no-open',
       '--stack',
       '--studio-port',
