@@ -106,14 +106,31 @@ describe('renderStudioHtml', () => {
     expect(html).toContain("typeof d.text === 'function'");
   });
 
-  it('renders the editable Session bar (issue #301 slice 3)', () => {
+  it('renders the apply-on-change Session bar (issue #301)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     expect(html).toContain('id="session-bar"');
     expect(html).toContain('id="sess-cfn"'); // from-cfn-stack toggle
     expect(html).toContain('id="sess-role"'); // assume-role input
     expect(html).toContain('id="sess-watch"'); // watch-mode toggle (issue #301)
-    expect(html).toContain('id="sess-save"'); // Save button
     expect(html).toContain('/api/config'); // reads + writes the config endpoint
+    // No Save button — the bindings apply immediately on change.
+    expect(html).not.toContain('id="sess-save"');
+    expect(html).toContain('function applyConfig');
+    // The controls wire their change events to apply immediately.
+    expect(html).toContain("role.addEventListener('change', applyConfig)");
+    expect(html).toContain("document.getElementById('sess-watch').addEventListener('change', applyConfig)");
+  });
+
+  it('renders the collapsible / zebra / filterable target pane (issue #301)', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // Target filter box + the filter fn.
+    expect(html).toContain('id="target-search"');
+    expect(html).toContain('function applyTargetFilter');
+    // Collapsible groups (collapsed by default) + the toggle.
+    expect(html).toContain('function toggleGroup');
+    expect(html).toContain("el('div', 'group-body collapsed')");
+    // Zebra striping via the group-body nth-child rule.
+    expect(html).toContain('.group-body .target:nth-child(2n)');
   });
 
   it('HTML-escapes the interpolated app label and CLI name (no injection)', () => {

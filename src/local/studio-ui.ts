@@ -74,16 +74,37 @@ const STUDIO_CSS = `
     letter-spacing: 0.5px; color: #888; background: #151515;
     position: sticky; top: 0; border-bottom: 1px solid #2a2a2a; z-index: 1;
   }
-  .group-title { padding: 8px 12px 2px; color: #6aa9ff; font-size: 11px; }
-  .target {
-    padding: 6px 12px; border-bottom: 1px solid #222; display: flex;
-    align-items: center; gap: 8px;
+  .pane-head {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+    background: #151515; border-bottom: 1px solid #2a2a2a;
   }
+  .pane-head h2 { position: static; border-bottom: 0; background: transparent; flex: none; }
+  .pane-head #target-search {
+    flex: 1; min-width: 0; margin-right: 10px; background: #111; color: #ddd;
+    border: 1px solid #333; border-radius: 3px; padding: 3px 8px;
+    font: 11px ui-monospace, Menlo, monospace;
+  }
+  .pane-head #target-search:focus { outline: none; border-color: #4ec97a; }
+  .group-title {
+    padding: 7px 12px; color: #6aa9ff; font-size: 11px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px; background: #131313;
+  }
+  .group-title:hover { background: #1a1a1a; }
+  .group-title .caret { color: #777; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
+  .group-title.open .caret { transform: rotate(90deg); }
+  .group-title .count { color: #666; }
+  .group-body.collapsed { display: none; }
+  .target {
+    padding: 6px 12px; display: flex; align-items: center; gap: 8px;
+  }
+  /* Zebra-stripe rows so each target box reads as its own block (the borderless
+     rows otherwise blur together); the kind label stays readable on both. */
+  .group-body .target:nth-child(2n) { background: #1b1b1b; }
   .target.runnable { cursor: pointer; }
-  .target.runnable:hover { background: #202020; }
-  .target.sel { background: #2a3550; }
+  .target.runnable:hover { background: #292929; }
+  .target.sel, .group-body .target.sel:nth-child(2n) { background: #2a3550; }
   .target .name { color: #ddd; flex: 1; overflow: hidden; text-overflow: ellipsis; }
-  .target .kind { color: #777; font-size: 11px; }
+  .target .kind { color: #8f8f8f; font-size: 11px; }
   .target .invoke-btn {
     padding: 2px 10px; font: 11px ui-monospace, Menlo, monospace; font-weight: 700;
     color: #0d1f12; background: #4ec97a; border: 0; border-radius: 3px; cursor: pointer;
@@ -454,6 +475,41 @@ const STUDIO_SCRIPT = `
     };
   }
 
+  // Toggle one target group's body open/closed (groups are collapsed by
+  // default so a big Lambda list does not push the APIs below the fold).
+  function toggleGroup(titleEl, bodyEl) {
+    const open = bodyEl.classList.toggle('collapsed') === false;
+    titleEl.classList.toggle('open', open);
+  }
+
+  // Filter the target rows by a case-insensitive substring of the target id.
+  // While filtering, groups with a match auto-expand (so the hits are visible)
+  // and groups with none are hidden; clearing the box restores the
+  // collapsed-by-default view.
+  function applyTargetFilter(query) {
+    const q = (query || '').trim().toLowerCase();
+    const pane = document.getElementById('targets');
+    pane.querySelectorAll('.target-group').forEach(function (grp) {
+      const title = grp.querySelector('.group-title');
+      const body = grp.querySelector('.group-body');
+      let matches = 0;
+      body.querySelectorAll('.target').forEach(function (row) {
+        const hit = q === '' || (row.getAttribute('data-tid') || '').includes(q);
+        row.style.display = hit ? '' : 'none';
+        if (hit) matches += 1;
+      });
+      if (q === '') {
+        grp.style.display = '';
+        body.classList.add('collapsed');
+        title.classList.remove('open');
+      } else {
+        grp.style.display = matches ? '' : 'none';
+        body.classList.toggle('collapsed', matches === 0);
+        title.classList.toggle('open', matches > 0);
+      }
+    });
+  }
+
   async function loadTargets() {
     const pane = document.getElementById('targets');
     try {
@@ -462,11 +518,19 @@ const STUDIO_SCRIPT = `
       // Dockerfiles discovered at boot — offered in a pinned ecs service's
       // image-override picker (issue #301).
       studioDockerfiles = Array.isArray(data.dockerfiles) ? data.dockerfiles : [];
-      pane.querySelectorAll('.group-title,.target,.empty').forEach((n) => n.remove());
+      pane.querySelectorAll('.target-group,.empty').forEach((n) => n.remove());
       let total = 0;
       for (const group of data.groups) {
         if (!group.entries.length) continue;
-        pane.appendChild(el('div', 'group-title', group.title));
+        const grp = el('div', 'target-group');
+        const title = el('div', 'group-title');
+        title.appendChild(el('span', 'caret', '▶'));
+        title.appendChild(el('span', 'group-name', group.title));
+        title.appendChild(el('span', 'count', '(' + group.entries.length + ')'));
+        const body = el('div', 'group-body collapsed'); // collapsed by default
+        title.onclick = () => toggleGroup(title, body);
+        grp.appendChild(title);
+        grp.appendChild(body);
         for (const entry of group.entries) {
           total += 1;
           // Lambda + AgentCore targets are single-shot invokes; api / alb / ecs
@@ -476,6 +540,7 @@ const STUDIO_SCRIPT = `
           const isInvoke = INVOKE_KINDS.includes(group.kind);
           const runnable = isInvoke || isServe;
           const t = el('div', runnable ? 'target runnable' : 'target');
+          t.setAttribute('data-tid', String(entry.id).toLowerCase()); // for the filter
           const name = el('span', 'name', entry.id);
           name.title = entry.id; // full path on hover even when truncated
           t.appendChild(name);
@@ -498,10 +563,14 @@ const STUDIO_SCRIPT = `
             serveMeta.set(entry.id, { dot, btnSlot, kind: group.kind, pinned: entry.pinned === true });
             updateServeRow(entry.id);
           }
-          pane.appendChild(t);
+          body.appendChild(t);
         }
+        pane.appendChild(grp);
       }
       if (!total) pane.appendChild(el('div', 'empty', 'No runnable targets found.'));
+      // Re-apply any active filter (e.g. after a serve-event-driven reload).
+      const search = document.getElementById('target-search');
+      if (search && search.value) applyTargetFilter(search.value);
     } catch (err) {
       pane.appendChild(el('div', 'empty', 'Failed to load targets: ' + err));
     }
@@ -550,6 +619,18 @@ const STUDIO_SCRIPT = `
       if (running || starting) stopServe(id); else startServe(id);
     };
     meta.btnSlot.appendChild(btn);
+    // Keep a running / starting serve's row VISIBLE even though groups are
+    // collapsed by default — otherwise its dot + curl-able studio-proxy port
+    // would be hidden inside a collapsed group.
+    if (running || starting) {
+      const body = meta.dot.closest('.group-body');
+      const grp = meta.dot.closest('.target-group');
+      if (body) body.classList.remove('collapsed');
+      if (grp) {
+        const title = grp.querySelector('.group-title');
+        if (title) title.classList.add('open');
+      }
+    }
     // Refresh the workspace if it is showing this serve.
     if (shownServeId === id) renderServeWorkspace(id);
   }
@@ -1200,7 +1281,10 @@ const STUDIO_SCRIPT = `
     }
   }
 
-  async function saveConfig() {
+  // Apply the Session-bar bindings to the server immediately (no Save button) —
+  // a checkbox toggle / an input change PATCHes /api/config right away so the
+  // next invoke / serve picks it up. A brief "applied" flash confirms it.
+  async function applyConfig() {
     const cfn = document.getElementById('sess-cfn');
     const cfnName = document.getElementById('sess-cfn-name');
     const role = document.getElementById('sess-role');
@@ -1210,7 +1294,6 @@ const STUDIO_SCRIPT = `
       assumeRole: role.value.trim() || null,
       watch: document.getElementById('sess-watch').checked,
     };
-    msg.textContent = 'Saving...';
     try {
       const res = await fetch('/api/config', {
         method: 'PATCH',
@@ -1222,8 +1305,8 @@ const STUDIO_SCRIPT = `
         msg.textContent = 'Error: ' + (e.error || ('HTTP ' + res.status));
         return;
       }
-      msg.textContent = 'Saved';
-      setTimeout(function () { msg.textContent = ''; }, 1500);
+      msg.textContent = '✓ applied';
+      setTimeout(function () { msg.textContent = ''; }, 1200);
       await loadConfig();
     } catch (err) {
       msg.textContent = 'Failed: ' + err;
@@ -1233,11 +1316,22 @@ const STUDIO_SCRIPT = `
   function wireSession() {
     const cfn = document.getElementById('sess-cfn');
     const cfnName = document.getElementById('sess-cfn-name');
+    const role = document.getElementById('sess-role');
+    // from-cfn-stack toggle: show/hide the name input AND apply immediately.
     cfn.addEventListener('change', function () {
       cfnName.style.display = cfn.checked ? '' : 'none';
       if (cfn.checked) cfnName.focus();
+      applyConfig();
     });
-    document.getElementById('sess-save').onclick = saveConfig;
+    // Text inputs apply on change (blur / Enter), not on every keystroke.
+    cfnName.addEventListener('change', function () { if (cfn.checked) applyConfig(); });
+    role.addEventListener('change', applyConfig);
+    document.getElementById('sess-watch').addEventListener('change', applyConfig);
+  }
+
+  const targetSearch = document.getElementById('target-search');
+  if (targetSearch) {
+    targetSearch.addEventListener('input', () => applyTargetFilter(targetSearch.value));
   }
 
   loadTargets().then(loadRunning);
@@ -1288,12 +1382,16 @@ export function renderStudioHtml(appLabel: string, cliName: string): string {
   <input id="sess-cfn-name" type="text" placeholder="stack name (blank = auto)" style="display:none" />
   <label class="sess-bind" for="sess-role">assume-role</label>
   <input id="sess-role" type="text" placeholder="arn:aws:iam::…:role/…" />
-  <button id="sess-save" type="button">Save</button>
   <span id="sess-msg"></span>
   <span id="sess-synth" class="sess-synth"></span>
 </div>
 <main>
-  <section class="pane" id="targets"><h2>Targets</h2></section>
+  <section class="pane" id="targets">
+    <div class="pane-head">
+      <h2>Targets</h2>
+      <input id="target-search" type="search" placeholder="Filter targets…" autocomplete="off" spellcheck="false" />
+    </div>
+  </section>
   <div class="splitter" id="split-left"></div>
   <section class="pane" id="workspace"><div class="empty">Pick a Lambda to invoke, or an API to serve, on the left.</div></section>
   <div class="splitter" id="split-right"></div>
