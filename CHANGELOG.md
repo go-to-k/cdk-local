@@ -1,3 +1,10 @@
+# [0.88.0](https://github.com/go-to-k/cdk-local/compare/v0.87.0...v0.88.0) (2026-06-03)
+
+
+### Features
+
+* **studio:** --stack <glob> target-list filter ([#301](https://github.com/go-to-k/cdk-local/issues/301)) ([#307](https://github.com/go-to-k/cdk-local/issues/307)) ([0997e37](https://github.com/go-to-k/cdk-local/commit/0997e37d8fc07c6652329a9a513b3b56873476fb))
+
 # [0.87.0](https://github.com/go-to-k/cdk-local/compare/v0.86.0...v0.87.0) (2026-06-03)
 
 
