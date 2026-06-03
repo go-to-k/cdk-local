@@ -1,10 +1,15 @@
+import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
+import { Runtime as AgentCoreRuntimeConstruct, AgentRuntimeArtifact } from 'aws-cdk-lib/aws-bedrockagentcore';
+import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Fixture stack for `cdkl studio` target enumeration integ test.
@@ -24,10 +29,13 @@ import { Construct } from 'constructs';
  *     `AWS::ElasticLoadBalancingV2::Listener`     -> Application Load Balancers
  *   - `AWS::BedrockAgentCore::Runtime` (`MyAgent`) -> AgentCore Runtimes
  *
- * The test never executes any of these — `cdkl studio` is a pure synth-time
- * read over the cloud assembly templates, so placeholder ARNs / URIs are
- * fine. The fixture only exists so the integ can assert each group + target
- * label is emitted under the expected command.
+ * Enumeration is a pure synth-time read over the cloud assembly templates, so
+ * the Lambda / API / ECS / ALB resources use placeholder ARNs / URIs and are
+ * never executed by the list assertions. Two resources ARE driven end-to-end
+ * by `POST /api/run`, so they carry runnable artifacts: `MyHandler` (inline
+ * code, invoked in a RIE container) and `MyAgent` (a buildable AgentCore
+ * runtime whose `agent/` container is built + invoked through the studio
+ * dispatch — issue #303).
  */
 export class LocalStudioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -119,19 +127,20 @@ export class LocalStudioStack extends cdk.Stack {
       ],
     });
 
-    // AgentCore Runtime — L1 only so no role/network resolution is needed.
-    // The container URI / role ARN are placeholders: `cdkl studio` reads the
-    // resource type + path metadata only, never these properties.
-    new agentcore.CfnRuntime(this, 'MyAgent', {
-      agentRuntimeName: 'cdkl_list_fixture_agent',
-      roleArn: 'arn:aws:iam::123456789012:role/cdkl-studio-fixture-agent-role',
-      networkConfiguration: { networkMode: 'PUBLIC' },
-      agentRuntimeArtifact: {
-        containerConfiguration: {
-          containerUri:
-            '123456789012.dkr.ecr.us-east-1.amazonaws.com/cdkl-studio-fixture-agent:latest',
-        },
-      },
+    // AgentCore Runtime — a buildable L2 `Runtime` (issue #303). Its container
+    // (in `agent/`, a tiny dep-free Node server) serves the AgentCore HTTP
+    // contract on 8080 (GET /ping + POST /invocations, echoing the request +
+    // the injected GREETING) AND a bidirectional /ws endpoint, so the studio
+    // integ can drive a real single-shot invoke through the studio dispatch —
+    // both the plain `POST /invocations` path and the `--ws` path — and assert
+    // the agent's echoed response. The construct id stays `MyAgent` so the
+    // studio target id (`LocalStudioFixture/MyAgent`, the `/Resource`-stripped
+    // construct path) is unchanged for the enumeration assertion.
+    new AgentCoreRuntimeConstruct(this, 'MyAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      environmentVariables: { GREETING: 'hello-from-studio-agent' },
     });
   }
 }

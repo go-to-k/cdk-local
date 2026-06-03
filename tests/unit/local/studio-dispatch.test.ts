@@ -376,6 +376,120 @@ describe('createStudioDispatcher', () => {
 
     expect(countRunDirs()).toBe(before);
   });
+
+  // --- AgentCore (kind: 'agentcore') single-shot invoke (issue #301 / #303) ---
+
+  it('spawns `cdkl invoke-agentcore <target>` and returns the parsed JSON response', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-ac-1',
+    });
+
+    const p = dispatcher.run({ targetId: 'Stack/Agent', kind: 'agentcore', event: { prompt: 'hi' } });
+    // A single-JSON response (e.g. an MCP / A2A JSON-RPC result) parses whole.
+    child.stdout.emit('data', '{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n');
+    child.emit('close', 0);
+    const result = await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv.slice(1, 3)).toEqual(['invoke-agentcore', 'Stack/Agent']);
+    expect(argv).toContain('--event');
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe(200);
+    expect(result.response).toEqual({ jsonrpc: '2.0', id: 1, result: { tools: [] } });
+  });
+
+  it('keeps a multi-line streamed (SSE) AgentCore response as raw text with no stdout logs', async () => {
+    const bus = new StudioEventBus();
+    const { invocations, logs } = collect(bus);
+    const child = makeFakeChild();
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-ac-sse',
+    });
+
+    const p = dispatcher.run({ targetId: 'Agent', kind: 'agentcore', event: {} });
+    // Realistic HTTP-protocol streamed output: several SSE frames on stdout.
+    const sse = 'event: message\ndata: {"delta":"Hel"}\n\nevent: message\ndata: {"delta":"lo"}\n\n';
+    child.stdout.emit('data', sse);
+    child.emit('close', 0);
+    const result = await p;
+
+    // The whole stdout IS the response (it does not parse as one JSON value).
+    expect(result.response).toBe(sse.trim());
+    expect(invocations[1].response).toBe(sse.trim());
+    // AgentCore stdout is the response, never split into stdout log lines.
+    expect(logs.filter((l) => l.stream === 'stdout')).toHaveLength(0);
+  });
+
+  it('threads --ws / --sigv4 / --bearer-token / --session-id options into the AgentCore argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      idFactory: () => 'inv-ac-opts',
+    });
+
+    const p = dispatcher.run({
+      targetId: 'Agent',
+      kind: 'agentcore',
+      event: {},
+      options: {
+        '--ws': true,
+        '--sigv4': false,
+        '--bearer-token': 'eyJabc',
+        '--session-id': 'sess-42',
+      },
+    });
+    child.stdout.emit('data', '"ok"');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).toContain('--ws'); // boolean true -> bare flag
+    expect(argv).not.toContain('--sigv4'); // boolean false -> omitted
+    const b = argv.indexOf('--bearer-token');
+    expect(argv[b + 1]).toBe('eyJabc');
+    const s = argv.indexOf('--session-id');
+    expect(argv[s + 1]).toBe('sess-42');
+  });
+
+  it('marks a failed AgentCore invoke (non-zero exit) as 500 with the stderr error', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      idFactory: () => 'inv-ac-fail',
+    });
+
+    const p = dispatcher.run({ targetId: 'Agent', kind: 'agentcore', event: {} });
+    child.stderr.emit('data', 'agent container exited early\n');
+    child.emit('close', 1);
+    const result = await p;
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(500);
+    expect(result.error).toContain('agent container exited early');
+  });
 });
 
 /** Count leftover `cdkl-studio-run-*` temp dirs (for cleanup assertions). */

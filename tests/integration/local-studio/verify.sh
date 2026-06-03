@@ -14,6 +14,8 @@
 #   - asserts GET /api/events opens a text/event-stream (SSE),
 #   - asserts the command is registered on the user-facing surface,
 #   - drives POST /api/run to invoke a Lambda in a RIE container (slice B),
+#   - drives POST /api/run to invoke an AgentCore runtime in Docker — both the
+#     HTTP POST /invocations path and the --ws streaming path (issue #303),
 #   - drives POST /api/run to START a long-running `start-api` serve, curls
 #     the served route through it (the served endpoint is the studio
 #     CAPTURE PROXY — slice C2), asserts the request is captured on the
@@ -310,9 +312,74 @@ if ! grep -qF "${CFG_STACK}" "${BODY_FILE}"; then
   exit 1
 fi
 echo "    OK: edited Session binding '${CFG_STACK}' applied to the subsequent invoke"
-# Reset the binding so later serve sections are unaffected.
+# Reset the binding so later sections (AgentCore invoke + serves) are unaffected.
 curl -s -X PATCH "${URL}/api/config" -H 'content-type: application/json' \
   -d '{"fromCfnStack":null}' -o /dev/null || true
+
+# ---------------------------------------------------------------------------
+# 6d. POST /api/run invokes an AgentCore runtime (issue #303): the studio
+#     dispatch spawns `cdkl invoke-agentcore LocalStudioFixture/MyAgent`, which
+#     `docker build`s the `agent/` container (linux/arm64) and runs the HTTP
+#     `POST /invocations` contract on 8080. The agent echoes the event + the
+#     injected GREETING, so the round trip proves the new single-shot invoke
+#     path end-to-end (UI composer -> /api/run -> child invoke-agentcore ->
+#     Docker -> response). Generous timeout to cover the first-run image pull +
+#     build.
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run invokes the fixture AgentCore runtime in Docker (HTTP)"
+AC_FILE=$(mktemp)
+HTTP_AC=$(curl -s -o "${AC_FILE}" -w '%{http_code}' --max-time 360 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d '{"targetId":"LocalStudioFixture/MyAgent","kind":"agentcore","event":{"hello":"studio"}}' || true)
+if [[ "${HTTP_AC}" != "200" ]]; then
+  echo "FAIL: AgentCore /api/run returned HTTP ${HTTP_AC}"
+  echo "----- run response -----"; cat "${AC_FILE}"; echo "------------------------"
+  echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
+  rm -f "${AC_FILE}"; exit 1
+fi
+# The studio run result wraps the agent's JSON response: { ok:true, status:200,
+# response: { echoed: { hello: "studio" }, greeting: "hello-from-studio-agent", ... } }.
+for needle in '"ok":true' '"status":200' '"echoed"' '"hello":"studio"' 'hello-from-studio-agent'; do
+  if ! grep -qF "${needle}" "${AC_FILE}"; then
+    echo "FAIL: AgentCore /api/run response missing: ${needle}"
+    echo "----- run response -----"; cat "${AC_FILE}"; echo "------------------------"
+    rm -f "${AC_FILE}"; exit 1
+  fi
+  echo "    OK: AgentCore run response has ${needle}"
+done
+rm -f "${AC_FILE}"
+
+# ---------------------------------------------------------------------------
+# 6e. POST /api/run with the AgentCore `--ws` per-run option (issue #303):
+#     the dispatch spawns `cdkl invoke-agentcore ... --ws`, which streams over
+#     the agent's bidirectional /ws endpoint (one-shot from studio: the event
+#     is the first frame, the received frames are the response). The agent
+#     replies with a JSON frame echoing the event + a trailing `ws-frame-2`,
+#     so the studio response (the captured stream) carries both. The streamed
+#     frames are one raw string in the run result, so the agent's nested JSON
+#     is escaped inside it (`\"ws\":...`) — assert with escaping-robust
+#     substrings: the WS-only `ws-frame-2` frame (the HTTP path never emits
+#     it), the echoed `hello`, and the injected greeting.
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run drives an AgentCore --ws streaming invoke"
+WS_FILE=$(mktemp)
+HTTP_WS=$(curl -s -o "${WS_FILE}" -w '%{http_code}' --max-time 360 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d '{"targetId":"LocalStudioFixture/MyAgent","kind":"agentcore","event":{"hello":"ws"},"options":{"--ws":true}}' || true)
+if [[ "${HTTP_WS}" != "200" ]]; then
+  echo "FAIL: AgentCore --ws /api/run returned HTTP ${HTTP_WS}"
+  echo "----- run response -----"; cat "${WS_FILE}"; echo "------------------------"
+  rm -f "${WS_FILE}"; exit 1
+fi
+for needle in '"ok":true' 'ws-frame-2' 'hello' 'hello-from-studio-agent'; do
+  if ! grep -qF "${needle}" "${WS_FILE}"; then
+    echo "FAIL: AgentCore --ws response missing: ${needle}"
+    echo "----- run response -----"; cat "${WS_FILE}"; echo "------------------------"
+    rm -f "${WS_FILE}"; exit 1
+  fi
+  echo "    OK: AgentCore --ws response has ${needle}"
+done
+rm -f "${WS_FILE}"
 
 # ---------------------------------------------------------------------------
 # 7. POST /api/run STARTS a long-running `start-api` serve (slice C1); curl
@@ -732,4 +799,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + boot + UI + targets + SSE + invoke + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + boot + UI + targets + SSE + invoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + request capture + history/log-search + per-target-options + session-config + flag-threading + shutdown)"

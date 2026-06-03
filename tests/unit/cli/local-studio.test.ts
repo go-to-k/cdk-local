@@ -108,6 +108,22 @@ describe('coerceRunRequest', () => {
       coerceRunRequest({ targetId: 'T', kind: 'lambda', options: { '--env-vars': '{bad' } })
     ).toThrow(/not valid JSON/);
   });
+
+  it('accepts an agentcore request with its per-run options', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'Stack/Agent',
+        kind: 'agentcore',
+        event: { prompt: 'hi' },
+        options: { '--ws': true, '--bearer-token': 'eyJ' },
+      })
+    ).toEqual({
+      targetId: 'Stack/Agent',
+      kind: 'agentcore',
+      event: { prompt: 'hi' },
+      options: { '--ws': true, '--bearer-token': 'eyJ' },
+    });
+  });
 });
 
 describe('applyConfigPatch', () => {

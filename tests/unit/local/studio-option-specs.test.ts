@@ -53,6 +53,18 @@ describe('buildPerRunArgs', () => {
     expect(() => buildPerRunArgs('ecs', { '--tls': true })).toThrow(/Unknown option/);
   });
 
+  it('builds AgentCore args: boolean flags + scalar values (env-vars materialized separately)', () => {
+    expect(
+      buildPerRunArgs('agentcore', {
+        '--ws': true,
+        '--sigv4': false,
+        '--bearer-token': '  eyJabc  ',
+        '--session-id': 'sess-1',
+        '--env-vars': [{ left: 'K', right: 'V' }],
+      })
+    ).toEqual(['--ws', '--bearer-token', 'eyJabc', '--session-id', 'sess-1']);
+  });
+
   it('emits NO direct arg for env-kv (materialized separately)', () => {
     expect(buildPerRunArgs('lambda', { '--env-vars': [{ left: 'K', right: 'V' }] })).toEqual([]);
     expect(buildPerRunArgs('lambda', { '--env-vars': '{"K":"V"}' })).toEqual([]);
@@ -106,6 +118,12 @@ describe('resolveEnvVars', () => {
   it('treats an all-blank-keys KV array as no env vars', () => {
     expect(resolveEnvVars('lambda', { '--env-vars': [{ left: '', right: 'v' }] })).toBeUndefined();
   });
+
+  it('materializes AgentCore env-vars the same way (KV rows -> Parameters)', () => {
+    expect(
+      resolveEnvVars('agentcore', { '--env-vars': [{ left: 'MODEL', right: 'claude' }] })
+    ).toEqual({ Parameters: { MODEL: 'claude' } });
+  });
 });
 
 describe('OPTION_SPECS table', () => {
@@ -113,5 +131,12 @@ describe('OPTION_SPECS table', () => {
     expect(OPTION_SPECS.lambda?.map((s) => s.flag)).toEqual(['--env-vars']);
     expect(OPTION_SPECS.alb?.map((s) => s.flag)).toContain('--tls');
     expect(OPTION_SPECS.ecs?.map((s) => s.flag)).toEqual(['--max-tasks', '--host-port']);
+    expect(OPTION_SPECS.agentcore?.map((s) => s.flag)).toEqual([
+      '--ws',
+      '--sigv4',
+      '--bearer-token',
+      '--session-id',
+      '--env-vars',
+    ]);
   });
 });

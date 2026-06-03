@@ -5,13 +5,14 @@
  * the studio HTTP server (`startStudioServer`) at `GET /`.
  *
  * 3-pane shell (decision D6), framework-free vanilla JS (decision D7):
- *   - left   = target list (from `GET /api/targets`); each Lambda has an
- *     [Invoke] button, each API a [Start] / [Stop] serve control with a
- *     `running ● :port` indicator (slice C1), plus a selected-highlight.
- *   - center = the WORKSPACE for the selected target: for a Lambda, an
- *     event composer (textarea + Invoke button) with the latest run's
- *     Request / Response / Logs shown below; for an API, a Start/Stop
- *     control with the served endpoints + streaming logs.
+ *   - left   = target list (from `GET /api/targets`); each Lambda or
+ *     AgentCore runtime has an [Invoke] button, each API a [Start] / [Stop]
+ *     serve control with a `running ● :port` indicator (slice C1), plus a
+ *     selected-highlight.
+ *   - center = the WORKSPACE for the selected target: for a Lambda or an
+ *     AgentCore runtime, an event composer (textarea + Invoke button) with
+ *     the latest run's Request / Response / Logs shown below; for an API, a
+ *     Start/Stop control with the served endpoints + streaming logs.
  *   - right  = the timeline (history) of every invocation AND every
  *     captured serve request (slice C2); clicking a Lambda row reloads
  *     it into the composer, clicking a captured request row opens a
@@ -177,6 +178,7 @@ const STUDIO_CSS = `
 const STUDIO_SCRIPT = `
   const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', agentcore: 'AgentCore' };
   const SERVE_KINDS = ['api', 'alb', 'ecs']; // long-running serve targets
+  const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
   const logsById = new Map();      // invocationId / serve targetId -> [log lines]
@@ -343,21 +345,22 @@ const STUDIO_SCRIPT = `
         pane.appendChild(el('div', 'group-title', group.title));
         for (const entry of group.entries) {
           total += 1;
-          // Lambda targets are single-shot invokes; api / alb / ecs are
-          // long-running serves. Other kinds list but are not yet runnable.
+          // Lambda + AgentCore targets are single-shot invokes; api / alb / ecs
+          // are long-running serves. Other kinds list but are not yet runnable.
           // Within ecs, only services are servable (task defs are run-task).
           const isServe = SERVE_KINDS.includes(group.kind) && (group.kind !== 'ecs' || entry.servable === true);
-          const runnable = group.kind === 'lambda' || isServe;
+          const isInvoke = INVOKE_KINDS.includes(group.kind);
+          const runnable = isInvoke || isServe;
           const t = el('div', runnable ? 'target runnable' : 'target');
           const name = el('span', 'name', entry.id);
           name.title = entry.id; // full path on hover even when truncated
           t.appendChild(name);
           t.appendChild(el('span', 'kind', '(' + (KIND_LABEL[group.kind] || group.kind) + ')'));
-          if (group.kind === 'lambda') {
+          if (isInvoke) {
             const btn = el('button', 'invoke-btn', 'Invoke');
-            btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, 'lambda'); };
+            btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };
             t.appendChild(btn);
-            t.onclick = () => selectTarget(entry.id, 'lambda');
+            t.onclick = () => selectTarget(entry.id, group.kind);
             targetEls.set(entry.id, t);
           } else if (isServe) {
             // A serve target: a running-state dot + a Start/Stop button
