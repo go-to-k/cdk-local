@@ -1,3 +1,10 @@
+## [0.123.3](https://github.com/go-to-k/cdk-local/compare/v0.123.2...v0.123.3) (2026-06-04)
+
+
+### Bug Fixes
+
+* **studio:** make the request-composer Send button green ([#417](https://github.com/go-to-k/cdk-local/issues/417)) ([62d6250](https://github.com/go-to-k/cdk-local/commit/62d6250dd133ad7ca64ea20338455f36c1621b3d))
+
 ## [0.123.2](https://github.com/go-to-k/cdk-local/compare/v0.123.1...v0.123.2) (2026-06-04)
 
 
