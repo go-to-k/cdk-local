@@ -23,6 +23,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   - `DefaultRootObject: index.html` and a `403 -> /404.html (200)` custom
  *     error response (the SPA fallback for a missing key behind an
  *     OAC-fronted private bucket).
+ *   - A `ResponseHeadersPolicy` with a CORS config on the default behavior
+ *     (allow origin `http://127.0.0.1:5050`, method `GET`, header
+ *     `Authorization`) so the integ can assert `cdkl start-cloudfront`
+ *     reproduces CloudFront's edge CORS: an OPTIONS preflight answered with
+ *     `Access-Control-Allow-Origin` + a `GET` actual response carrying it.
  */
 export class LocalStartCloudFrontStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -69,10 +74,21 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
       ),
     });
 
+    const corsPolicy = new cloudfront.ResponseHeadersPolicy(this, 'CorsPolicy', {
+      corsBehavior: {
+        accessControlAllowCredentials: false,
+        accessControlAllowHeaders: ['Authorization'],
+        accessControlAllowMethods: ['GET'],
+        accessControlAllowOrigins: ['http://127.0.0.1:5050'],
+        originOverride: true,
+      },
+    });
+
     new cloudfront.Distribution(this, 'SiteDist', {
       defaultRootObject: 'index.html',
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(bucket),
+        responseHeadersPolicy: corsPolicy,
         functionAssociations: [
           { function: rewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
           { function: stampHeader, eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE },

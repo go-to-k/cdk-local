@@ -253,6 +253,40 @@ export function buildCorsConfigFromCloudFrontChain(
 }
 
 /**
+ * Resolve one cache behavior's `ResponseHeadersPolicyId` to its CORS config.
+ *
+ * `start-cloudfront` (cloudfront-resolver) calls this per behavior so the
+ * local CloudFront server reproduces the distribution's
+ * `AWS::CloudFront::ResponseHeadersPolicy` CORS — answering an OPTIONS
+ * preflight and adding `Access-Control-Allow-Origin` to actual responses, the
+ * same way CloudFront does at the edge. (The `start-api` path uses
+ * {@link buildCorsConfigFromCloudFrontChain}, which is keyed by the fronted
+ * Function URL logical id; this is the direct per-behavior form, so a
+ * distribution's `CacheBehaviors[]` can each carry their own policy.)
+ *
+ * Returns undefined unless the value is a `{ Ref: <logicalId> }` to a local
+ * `AWS::CloudFront::ResponseHeadersPolicy` whose `CorsConfig` has at least one
+ * value-bearing field (an AWS-managed-policy id literal, or a policy with only
+ * `SecurityHeadersConfig` / `CustomHeadersConfig`, yields undefined).
+ */
+export function resolveResponseHeadersPolicyCors(
+  template: CloudFormationTemplate,
+  responseHeadersPolicyId: unknown
+): CorsConfig | undefined {
+  const rhpId = pickRhpRefLogicalId(responseHeadersPolicyId);
+  if (!rhpId) return undefined;
+  const rhpResource = (template.Resources ?? {})[rhpId];
+  if (!rhpResource || rhpResource.Type !== 'AWS::CloudFront::ResponseHeadersPolicy') {
+    return undefined;
+  }
+  const rhpConfig = (rhpResource.Properties ?? {})['ResponseHeadersPolicyConfig'];
+  if (!rhpConfig || typeof rhpConfig !== 'object') return undefined;
+  const corsConfig = (rhpConfig as Record<string, unknown>)['CorsConfig'];
+  if (!corsConfig || typeof corsConfig !== 'object' || Array.isArray(corsConfig)) return undefined;
+  return parseCloudFrontCorsConfig(corsConfig as Record<string, unknown>);
+}
+
+/**
  * Determine whether a Function URL (`AWS::Lambda::Url`, identified by its
  * logical id) is fronted by a CloudFront Distribution origin that uses
  * Origin Access Control (OAC) to SIGN origin requests.
@@ -367,8 +401,12 @@ function pickFnUrlLogicalIdFromOriginDomainName(value: unknown): string | undefi
  * ID. CDK 2.x synthesizes this as `{ Ref: <id> }`. Returns undefined
  * for the AWS-managed-policy ID form (literal UUID string) since
  * cdk-local can't fetch those — and for any non-Ref shape.
+ *
+ * Exported so `start-cloudfront`'s per-behavior resolver
+ * (cloudfront-resolver) can resolve a behavior's `ResponseHeadersPolicyId`
+ * to its CORS config via {@link resolveResponseHeadersPolicyCors}.
  */
-function pickRhpRefLogicalId(value: unknown): string | undefined {
+export function pickRhpRefLogicalId(value: unknown): string | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const ref = (value as Record<string, unknown>)['Ref'];
   if (typeof ref !== 'string' || ref.length === 0) return undefined;
@@ -382,8 +420,12 @@ function pickRhpRefLogicalId(value: unknown): string | undefined {
  * see `buildCorsConfigFromCloudFrontChain` JSDoc for the field mapping.
  *
  * Returns undefined when every value-bearing field is missing.
+ *
+ * Exported so `start-cloudfront`'s per-behavior resolver
+ * (cloudfront-resolver) can parse a `ResponseHeadersPolicy`'s CORS block;
+ * see {@link resolveResponseHeadersPolicyCors}.
  */
-function parseCloudFrontCorsConfig(raw: Record<string, unknown>): CorsConfig | undefined {
+export function parseCloudFrontCorsConfig(raw: Record<string, unknown>): CorsConfig | undefined {
   const allowOrigins = pickItemsStringArray(raw['AccessControlAllowOrigins']);
   const allowMethods = pickItemsStringArray(raw['AccessControlAllowMethods']);
   const allowHeaders = pickItemsStringArray(raw['AccessControlAllowHeaders']);
@@ -556,6 +598,27 @@ export function applyCorsResponseHeaders(
   if (!apiLogicalId) return;
   const cors = corsConfigByApiId.get(apiLogicalId);
   if (!cors) return;
+  applyCorsResponseHeadersFromConfig(res, cors, requestOrigin);
+}
+
+/**
+ * Apply actual-response CORS headers from an already-resolved
+ * {@link CorsConfig} (no map lookup). The map-keyed
+ * {@link applyCorsResponseHeaders} delegates here so the two share one
+ * implementation; `start-cloudfront`'s server (cloudfront-server) calls this
+ * form directly with the matched behavior's
+ * `AWS::CloudFront::ResponseHeadersPolicy` CORS config.
+ *
+ * No-op when the request has no `Origin` header or the Origin is not in
+ * `AllowOrigins` (the browser would block the response anyway; we don't
+ * smuggle an unauthorized origin through). See {@link applyCorsResponseHeaders}
+ * for the header set + `Vary: Origin` / credentials rationale.
+ */
+export function applyCorsResponseHeadersFromConfig(
+  res: ServerResponse,
+  cors: CorsConfig,
+  requestOrigin: string | undefined
+): void {
   if (!requestOrigin) return;
   const originMatch = matchOrigin(requestOrigin, cors.AllowOrigins);
   if (!originMatch) return;

@@ -9,6 +9,7 @@ import {
   type CompiledCloudFrontFunction,
 } from './cloudfront-function-runtime.js';
 import type { ResolvedCustomErrorResponse } from './cloudfront-static-origin.js';
+import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handler.js';
 
 /**
  * Resolve a synthesized `AWS::CloudFront::Distribution` into the in-memory
@@ -51,6 +52,15 @@ export interface ResolvedBehavior {
    * — recorded so the boot path WARNs that it is not run locally.
    */
   hasLambdaEdge: boolean;
+  /**
+   * CORS config resolved from the behavior's `ResponseHeadersPolicyId` ->
+   * `AWS::CloudFront::ResponseHeadersPolicy` `CorsConfig`. When set, the
+   * server answers a matching OPTIONS preflight and adds
+   * `Access-Control-Allow-Origin` to actual responses, reproducing
+   * CloudFront's edge CORS. Absent for an AWS-managed policy id (literal,
+   * not fetchable) or a policy with no CORS block.
+   */
+  cors?: CorsConfig;
 }
 
 /** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
@@ -119,7 +129,7 @@ export function resolveCloudFrontDistribution(args: {
   const dc = distConfig as Record<string, unknown>;
 
   const functionsByLogicalId = compileDistributionFunctions(template);
-  const behaviors = resolveBehaviors(dc, functionsByLogicalId, logicalId);
+  const behaviors = resolveBehaviors(dc, functionsByLogicalId, logicalId, template);
   const origins = resolveOrigins(dc, template, stack, args.originOverrides ?? new Map());
   const customErrorResponses = resolveCustomErrorResponses(dc);
 
@@ -166,13 +176,14 @@ function compileDistributionFunctions(
 function resolveBehaviors(
   dc: Record<string, unknown>,
   functions: Map<string, CompiledCloudFrontFunction>,
-  distLogicalId: string
+  distLogicalId: string,
+  template: CloudFormationTemplate
 ): ResolvedBehavior[] {
   const behaviors: ResolvedBehavior[] = [];
   const def = dc['DefaultCacheBehavior'];
   if (def && typeof def === 'object') {
     behaviors.push(
-      resolveBehavior(def as Record<string, unknown>, undefined, functions, distLogicalId)
+      resolveBehavior(def as Record<string, unknown>, undefined, functions, distLogicalId, template)
     );
   }
   const extra = Array.isArray(dc['CacheBehaviors']) ? (dc['CacheBehaviors'] as unknown[]) : [];
@@ -189,7 +200,9 @@ function resolveBehaviors(
       );
       continue;
     }
-    behaviors.push(resolveBehavior(behavior, behavior['PathPattern'], functions, distLogicalId));
+    behaviors.push(
+      resolveBehavior(behavior, behavior['PathPattern'], functions, distLogicalId, template)
+    );
   }
   return behaviors;
 }
@@ -198,7 +211,8 @@ function resolveBehavior(
   behavior: Record<string, unknown>,
   pathPattern: string | undefined,
   functions: Map<string, CompiledCloudFrontFunction>,
-  distLogicalId: string
+  distLogicalId: string,
+  template: CloudFormationTemplate
 ): ResolvedBehavior {
   const resolved: ResolvedBehavior = {
     targetOriginId:
@@ -208,6 +222,11 @@ function resolveBehavior(
       : false,
   };
   if (pathPattern !== undefined) resolved.pathPattern = pathPattern;
+  // CloudFront CORS lives on the behavior's ResponseHeadersPolicy, not the
+  // origin — resolve it so the server reproduces the edge CORS (preflight +
+  // actual-response ACAO). Per behavior, so CacheBehaviors[] keep their own.
+  const cors = resolveResponseHeadersPolicyCors(template, behavior['ResponseHeadersPolicyId']);
+  if (cors) resolved.cors = cors;
   if (typeof behavior['ViewerProtocolPolicy'] === 'string') {
     resolved.viewerProtocolPolicy = behavior['ViewerProtocolPolicy'] as string;
   }

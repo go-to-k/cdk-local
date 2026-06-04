@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
@@ -207,6 +208,109 @@ describe('startCloudFrontServer — Lambda Function URL origin', () => {
     } finally {
       lambdaServer.update(lambdaDistribution());
     }
+  });
+});
+
+describe('startCloudFrontServer — ResponseHeadersPolicy CORS', () => {
+  let corsServer: StartedCloudFrontServer;
+
+  function corsDistribution(): ResolvedDistribution {
+    const def: ResolvedBehavior = {
+      targetOriginId: 'o1',
+      hasLambdaEdge: false,
+      cors: {
+        AllowOrigins: ['http://127.0.0.1:5050'],
+        AllowMethods: ['POST'],
+        AllowHeaders: ['*', 'Authorization'],
+        ExposeHeaders: [],
+      },
+    };
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      defaultRootObject: 'index.html',
+      behaviors: [def],
+      origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [dir] }]]),
+      customErrorResponses: [],
+    };
+  }
+
+  // Drive requests with raw http.request — undici's fetch strips the
+  // forbidden `Origin` / `Access-Control-Request-*` headers a preflight needs.
+  function raw(
+    path: string,
+    method: string,
+    headers: Record<string, string>
+  ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const u = new URL(`${corsServer.url}${path}`);
+      const req = httpRequest(
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () =>
+            resolvePromise({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            })
+          );
+        }
+      );
+      req.on('error', rejectPromise);
+      req.end();
+    });
+  }
+
+  beforeAll(async () => {
+    corsServer = await startCloudFrontServer({
+      distribution: corsDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+    });
+  });
+
+  afterAll(async () => {
+    await corsServer.close();
+  });
+
+  it('answers a matching OPTIONS preflight with 204 + CORS headers (at the edge, no origin hit)', async () => {
+    const res = await raw('/', 'OPTIONS', {
+      origin: 'http://127.0.0.1:5050',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'authorization',
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-origin']).toBe('http://127.0.0.1:5050');
+    expect(res.headers['access-control-allow-methods']).toBe('POST');
+    expect(res.headers['access-control-allow-headers']).toBe('authorization');
+    expect(res.body).toBe('');
+  });
+
+  it('adds Access-Control-Allow-Origin to an actual (non-preflight) response', async () => {
+    const res = await raw('/', 'GET', { origin: 'http://127.0.0.1:5050' });
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://127.0.0.1:5050');
+    expect(res.headers['vary']).toContain('Origin');
+    expect(res.body).toBe('<h1>root</h1>');
+  });
+
+  it('omits CORS headers for a request without an Origin (non-CORS)', async () => {
+    const res = await raw('/', 'GET', {});
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('does not short-circuit a preflight from a disallowed origin (falls through, no ACAO)', async () => {
+    const res = await raw('/', 'OPTIONS', {
+      origin: 'https://evil.example.com',
+      'access-control-request-method': 'POST',
+    });
+    // matchPreflight returned null -> the request fell through to the static
+    // origin, which serves the URI regardless of method; the disallowed origin
+    // gets no Access-Control-Allow-Origin.
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 });
 

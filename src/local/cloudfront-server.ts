@@ -23,6 +23,7 @@ import type {
 import { serveLambdaUrlOrigin } from './cloudfront-lambda-origin.js';
 import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
+import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handler.js';
 
 /**
  * Invoke a warm Lambda RIE container with a Function URL event, keyed by the
@@ -140,6 +141,23 @@ async function handleRequest(
     return;
   }
 
+  // CloudFront answers a CORS preflight at the edge from the behavior's
+  // ResponseHeadersPolicy — before the origin. Reproduce that: a matching
+  // OPTIONS preflight short-circuits with the canonical 204 + CORS headers.
+  // A non-matching / non-preflight OPTIONS falls through to the origin.
+  if (behavior.cors) {
+    const preflight = matchPreflight(
+      { method: req.method ?? 'GET', headers: nodeHeadersToRecord(req.headers) },
+      behavior.cors
+    );
+    if (preflight) {
+      res.statusCode = preflight.statusCode;
+      setHeadersSafely(res, preflight.headers, logger);
+      res.end();
+      return;
+    }
+  }
+
   // Build the viewer-request event and run the viewer-request function.
   let requestEvent = buildViewerRequestEvent({
     method: req.method ?? 'GET',
@@ -218,7 +236,33 @@ async function handleRequest(
       );
     }
   }
+  // Add the behavior's ResponseHeadersPolicy CORS headers to the actual
+  // response (Access-Control-Allow-Origin + Vary / credentials / expose),
+  // last so they win — CloudFront's CorsConfig.OriginOverride applies the
+  // policy over any header the origin set. No-op without a request Origin or
+  // an allowed one.
+  if (behavior.cors) {
+    const origin = req.headers.origin;
+    applyCorsResponseHeadersFromConfig(
+      res,
+      behavior.cors,
+      typeof origin === 'string' ? origin : undefined
+    );
+  }
   res.end(originResult.body);
+}
+
+/**
+ * Convert Node's `IncomingMessage.headers` (`Record<string, string | string[]>`)
+ * to the lowercased `Record<string, string[]>` shape `matchPreflight` expects.
+ */
+function nodeHeadersToRecord(headers: IncomingMessage['headers']): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    out[name.toLowerCase()] = Array.isArray(value) ? value : [value];
+  }
+  return out;
 }
 
 /** Read the full request body into a Buffer. */
