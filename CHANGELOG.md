@@ -1,3 +1,10 @@
+## [0.118.1](https://github.com/go-to-k/cdk-local/compare/v0.118.0...v0.118.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **studio:** unify serve-child logs onto stdout so the LOG panel keeps emission order ([#404](https://github.com/go-to-k/cdk-local/issues/404)) ([5ee744b](https://github.com/go-to-k/cdk-local/commit/5ee744b4f06fd6dbf1f6b8a7166561327516de55))
+
 # [0.118.0](https://github.com/go-to-k/cdk-local/compare/v0.117.0...v0.118.0) (2026-06-04)
 
 
