@@ -67,14 +67,16 @@ export interface FrontDoorLambdaRunnerOptions {
   /** Whether to attach `docker logs -f`. Default true. */
   streamLogs?: boolean;
   /**
-   * Pre-resolved container environment overlaid on the `AWS_LAMBDA_*` base
-   * (issue #380). The caller resolves the function's declared env vars +
-   * `--from-cfn-stack` state substitution + `--assume-role` / shell creds via
-   * the shared `resolveLambdaContainerEnv`, so a CDN-/ALB-fronted Lambda
-   * reaches the same deployed resources as a direct `cdkl invoke`. Overlaid
-   * AFTER the base so a caller-provided `AWS_*` cred / region wins, while the
-   * runner still owns the `AWS_LAMBDA_FUNCTION_*` identity vars. When absent,
-   * the runner forwards only the dev shell's AWS env (the pre-#380 behavior).
+   * Pre-resolved container environment (issue #380). The caller resolves the
+   * function's declared env vars + `--from-cfn-stack` state substitution +
+   * `--assume-role` / shell creds via the shared `resolveLambdaContainerEnv`,
+   * so a CDN-/ALB-fronted Lambda reaches the same deployed resources as a
+   * direct `cdkl invoke`. When present, this REPLACES the runner's env base
+   * entirely — `resolveLambdaContainerEnv` already emits the six
+   * `AWS_LAMBDA_FUNCTION_*` identity vars (from the same `ResolvedLambda`), so
+   * the caller owns the full env. When absent, the runner builds the
+   * `AWS_LAMBDA_*` base itself and forwards only the dev shell's AWS env (the
+   * pre-#380 behavior).
    */
   containerEnv?: Record<string, string>;
   /** Env keys carrying decrypted SecureStrings — kept off the `docker run` argv. */

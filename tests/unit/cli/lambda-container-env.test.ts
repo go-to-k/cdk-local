@@ -1,7 +1,24 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import { resolveLambdaContainerEnv } from '../../../src/cli/commands/local-invoke.js';
 import type { ResolvedLambda } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
+
+// Mock STS so the explicit `--assume-role <arn>` path resolves to deterministic
+// temp credentials without a real AWS call (the helper's `assumeLambdaExecutionRole`
+// dynamically imports @aws-sdk/client-sts).
+vi.mock('@aws-sdk/client-sts', () => ({
+  STSClient: class {
+    async send(): Promise<unknown> {
+      return {
+        Credentials: { AccessKeyId: 'AKIATEST', SecretAccessKey: 'secretTEST', SessionToken: 'tokTEST' },
+      };
+    }
+    destroy(): void {}
+  },
+  AssumeRoleCommand: class {
+    constructor(public input: unknown) {}
+  },
+}));
 
 // Contract test for the shared container-env resolver (issue #380) on its
 // no-state path: a Lambda with literal env vars and no `--from-cfn-stack` /
@@ -66,5 +83,22 @@ describe('resolveLambdaContainerEnv — no-state path', () => {
     // The intrinsic is dropped (no --from-cfn-stack to resolve it); the literal survives.
     expect(result.env['TABLE_NAME']).toBeUndefined();
     expect(result.env['OK']).toBe('literal');
+  });
+});
+
+describe('resolveLambdaContainerEnv — explicit --assume-role', () => {
+  it('injects the assumed-role STS credentials into the container env', async () => {
+    const result = await resolveLambdaContainerEnv(
+      zipLambda({ GREETING: 'hi' }),
+      { assumeRole: 'arn:aws:iam::123456789012:role/ExecRole', region: 'us-west-2' },
+      undefined
+    );
+    expect(result.assumeRoleApplied).toBe(true);
+    expect(result.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
+    expect(result.env['AWS_SECRET_ACCESS_KEY']).toBe('secretTEST');
+    expect(result.env['AWS_SESSION_TOKEN']).toBe('tokTEST');
+    expect(result.env['AWS_REGION']).toBe('us-west-2');
+    // The declared env var still rides alongside the creds.
+    expect(result.env['GREETING']).toBe('hi');
   });
 });

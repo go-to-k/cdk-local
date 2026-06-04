@@ -87,6 +87,29 @@ describe('createFrontDoorLambdaRunner', () => {
     expect(waitForRieReadyMock).toHaveBeenCalledWith('127.0.0.1', 54321, 30_000);
   });
 
+  it('uses a caller-provided containerEnv overlay + forwards sensitiveEnvKeys (issue #380)', async () => {
+    const containerEnv = {
+      AWS_LAMBDA_FUNCTION_NAME: 'EchoFn',
+      TABLE_NAME: 'deployed-table',
+      AWS_ACCESS_KEY_ID: 'AKIA',
+      SECRET_VALUE: 'shh',
+    };
+    const runner = createFrontDoorLambdaRunner(zipLambda(), {
+      containerHost: '127.0.0.1',
+      containerEnv,
+      sensitiveEnvKeys: new Set(['SECRET_VALUE']),
+    });
+    await runner.start();
+
+    const runArgs = runDetachedMock.mock.calls[0]![0];
+    // The overlay REPLACES the runner's default base (it already carries the
+    // AWS_LAMBDA_* identity vars from resolveLambdaContainerEnv).
+    expect(runArgs.env).toEqual(containerEnv);
+    expect(runArgs.env.TABLE_NAME).toBe('deployed-table');
+    // Sensitive keys are forwarded so they stay off the docker run argv.
+    expect(runArgs.sensitiveEnvKeys).toEqual(new Set(['SECRET_VALUE']));
+  });
+
   it('is idempotent — a second start() does not boot a second container', async () => {
     const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
     await runner.start();
