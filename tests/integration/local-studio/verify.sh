@@ -269,6 +269,13 @@ if ! grep -qF "buildImageOverridePicker" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the image-override Dockerfile picker"
   exit 1
 fi
+# Image-override picker legibility (issue #396): the readable construct-path
+# label class (io-label, unique to the picker row) + the attention caveat hint
+# class (io-hint). Both the CSS rule and the JS that applies it are in the page.
+if ! grep -qF 'io-label' "${BODY_FILE}" || ! grep -qF 'io-hint' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the legible image-override picker classes (issue #396)"
+  exit 1
+fi
 # Target-pane UX (issue #301): collapsible/filterable groups + apply-on-change
 # Session bar (no Save button).
 if ! grep -qF 'id="target-search"' "${BODY_FILE}" || ! grep -qF "function applyTargetFilter" "${BODY_FILE}"; then
