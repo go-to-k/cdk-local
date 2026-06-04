@@ -53,10 +53,22 @@ export interface ResolvedBehavior {
   hasLambdaEdge: boolean;
 }
 
-/** A resolved origin: an S3 origin with (or without) a local source directory. */
+/** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
 export type ResolvedOrigin =
   | { kind: 's3'; originId: string; localDirs: string[] }
   | { kind: 's3-unresolved'; originId: string; bucketLogicalId?: string }
+  | {
+      /**
+       * A Lambda Function URL custom origin (`origins.FunctionUrlOrigin`):
+       * served by invoking the backing Lambda locally (issue #376). The
+       * `functionLogicalId` is the `AWS::Lambda::Function` the Function URL
+       * fronts; `functionUrlLogicalId` is the `AWS::Lambda::Url` resource.
+       */
+      kind: 'lambda-url';
+      originId: string;
+      functionLogicalId: string;
+      functionUrlLogicalId: string;
+    }
   | { kind: 'custom'; originId: string; domainName: string };
 
 /** The fully resolved distribution `cdkl start-cloudfront` serves. */
@@ -78,6 +90,8 @@ export interface ResolvedDistribution {
 export const CLOUDFRONT_DISTRIBUTION_TYPE = 'AWS::CloudFront::Distribution';
 const CLOUDFRONT_FUNCTION_TYPE = 'AWS::CloudFront::Function';
 const S3_BUCKET_TYPE = 'AWS::S3::Bucket';
+const LAMBDA_URL_TYPE = 'AWS::Lambda::Url';
+const LAMBDA_FUNCTION_TYPE = 'AWS::Lambda::Function';
 
 /**
  * Resolve a distribution logical id within a stack into its routing model.
@@ -258,6 +272,14 @@ function resolveOrigins(
     const bucketLogicalId = pickBucketLogicalIdFromOrigin(origin, template);
     const isS3 = origin['S3OriginConfig'] !== undefined || bucketLogicalId !== undefined;
     if (!isS3) {
+      // A Lambda Function URL custom origin (origins.FunctionUrlOrigin) is the
+      // one custom origin cdk-local serves: the backing Lambda is the user's
+      // own application compute, run locally via RIE (issue #376).
+      const lambdaUrl = resolveLambdaUrlOrigin(origin, template, originId);
+      if (lambdaUrl) {
+        out.set(originId, lambdaUrl);
+        continue;
+      }
       out.set(originId, {
         kind: 'custom',
         originId,
@@ -377,6 +399,71 @@ function getAttLogicalId(value: unknown): string | undefined {
     return getAtt[0];
   }
   return undefined;
+}
+
+/**
+ * Resolve a Lambda Function URL custom origin (`origins.FunctionUrlOrigin`) to
+ * its backing `AWS::Lambda::Function` logical id, or `undefined` when the
+ * origin is not a Function URL (a generic custom HTTP origin). CDK synthesizes
+ * a FunctionUrlOrigin's `DomainName` from the Function URL by stripping the
+ * scheme + trailing slash:
+ * `Fn::Select[2, Fn::Split['/', Fn::GetAtt[<UrlLogicalId>, 'FunctionUrl']]]`.
+ * The `AWS::Lambda::Url` resource's `TargetFunctionArn` then points at the
+ * function (a `Ref` or `Fn::GetAtt[<fn>, 'Arn']`).
+ */
+function resolveLambdaUrlOrigin(
+  origin: Record<string, unknown>,
+  template: CloudFormationTemplate,
+  originId: string
+): Extract<ResolvedOrigin, { kind: 'lambda-url' }> | undefined {
+  const urlLogicalId = pickFunctionUrlLogicalIdFromOrigin(origin['DomainName']);
+  if (!urlLogicalId) return undefined;
+  const urlResource = (template.Resources ?? {})[urlLogicalId];
+  if (!urlResource || urlResource.Type !== LAMBDA_URL_TYPE) return undefined;
+  const functionLogicalId = pickTargetFunctionLogicalId(
+    (urlResource.Properties ?? {})['TargetFunctionArn']
+  );
+  if (!functionLogicalId) return undefined;
+  const fnResource = (template.Resources ?? {})[functionLogicalId];
+  if (!fnResource || fnResource.Type !== LAMBDA_FUNCTION_TYPE) return undefined;
+  return { kind: 'lambda-url', originId, functionLogicalId, functionUrlLogicalId: urlLogicalId };
+}
+
+/**
+ * Unwrap a FunctionUrlOrigin `DomainName` to its `AWS::Lambda::Url` logical id.
+ * Matches the exact synthesized shape
+ * `{Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<UrlLogicalId>, 'FunctionUrl']}]}]}`.
+ */
+export function pickFunctionUrlLogicalIdFromOrigin(value: unknown): string | undefined {
+  const select = asIntrinsic(value, 'Fn::Select');
+  if (!Array.isArray(select) || select.length !== 2 || select[0] !== 2) return undefined;
+  const split = asIntrinsic(select[1], 'Fn::Split');
+  if (!Array.isArray(split) || split.length !== 2 || split[0] !== '/') return undefined;
+  const getAtt = asIntrinsic(split[1], 'Fn::GetAtt');
+  if (
+    Array.isArray(getAtt) &&
+    getAtt.length === 2 &&
+    typeof getAtt[0] === 'string' &&
+    getAtt[1] === 'FunctionUrl'
+  ) {
+    return getAtt[0];
+  }
+  return undefined;
+}
+
+/**
+ * Unwrap an `AWS::Lambda::Url` `TargetFunctionArn` to the function logical id.
+ * CDK emits either a `Ref` (the function's name reference) or a
+ * `Fn::GetAtt[<fn>, 'Arn']`.
+ */
+export function pickTargetFunctionLogicalId(value: unknown): string | undefined {
+  return refLogicalId(value) ?? getAttLogicalId(value);
+}
+
+/** Read an intrinsic's payload (e.g. the `Fn::Select` array) from a wrapper object. */
+function asIntrinsic(value: unknown, key: string): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  return (value as Record<string, unknown>)[key];
 }
 
 function refLogicalId(value: unknown): string | undefined {

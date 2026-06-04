@@ -128,6 +128,88 @@ describe('startCloudFrontServer — pipeline', () => {
   });
 });
 
+describe('startCloudFrontServer — Lambda Function URL origin', () => {
+  let lambdaServer: StartedCloudFrontServer;
+  const invoked: Array<Record<string, unknown>> = [];
+
+  function lambdaDistribution(): ResolvedDistribution {
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      behaviors: [{ targetOriginId: 'fn', hasLambdaEdge: false, viewerResponse: headerFn }],
+      origins: new Map([
+        [
+          'fn',
+          { kind: 'lambda-url', originId: 'fn', functionLogicalId: 'Handler', functionUrlLogicalId: 'HandlerUrl' },
+        ],
+      ]),
+      customErrorResponses: [],
+    };
+  }
+
+  beforeAll(async () => {
+    const invokers = new Map<string, (event: Record<string, unknown>) => Promise<unknown>>([
+      [
+        'Handler',
+        async (event) => {
+          invoked.push(event);
+          return {
+            statusCode: 201,
+            headers: { 'content-type': 'text/plain' },
+            body: `method=${(event['requestContext'] as Record<string, Record<string, unknown>>)['http']!['method']}`,
+            cookies: ['sid=xyz; Path=/'],
+          };
+        },
+      ],
+    ]);
+    lambdaServer = await startCloudFrontServer({
+      distribution: lambdaDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+      lambdaInvokers: invokers,
+    });
+  });
+
+  afterAll(async () => {
+    await lambdaServer.close();
+  });
+
+  it('invokes the backing Lambda and serves its response (viewer-response applied)', async () => {
+    const res = await fetch(`${lambdaServer.url}/api/items?q=1`, {
+      method: 'POST',
+      body: 'payload',
+    });
+    expect(res.status).toBe(201);
+    expect(await res.text()).toBe('method=POST');
+    // The viewer-response header function still runs over the Lambda response.
+    expect(res.headers.get('x-cdkl')).toBe('1');
+    // The v2 cookies array is emitted as a Set-Cookie header.
+    expect(res.headers.get('set-cookie')).toContain('sid=xyz');
+    // The Lambda received the request body + path.
+    const last = invoked.at(-1)!;
+    expect(last['body']).toBe('payload');
+    expect(last['rawPath']).toBe('/api/items');
+  });
+
+  it('returns 502 when no invoker is booted for the lambda-url origin (added post-startup)', async () => {
+    const next = lambdaDistribution();
+    next.origins = new Map([
+      [
+        'fn',
+        { kind: 'lambda-url', originId: 'fn', functionLogicalId: 'Unbooted', functionUrlLogicalId: 'U' },
+      ],
+    ]);
+    lambdaServer.update(next);
+    try {
+      const res = await fetch(`${lambdaServer.url}/`);
+      expect(res.status).toBe(502);
+      expect(await res.text()).toContain('was not booted');
+    } finally {
+      lambdaServer.update(lambdaDistribution());
+    }
+  });
+});
+
 describe('matchBehavior', () => {
   const def: ResolvedBehavior = { targetOriginId: 'o', hasLambdaEdge: false };
   const api: ResolvedBehavior = { pathPattern: '/api/*', targetOriginId: 'o', hasLambdaEdge: false };

@@ -20,8 +20,17 @@ import type {
   ResolvedDistribution,
   ResolvedOrigin,
 } from './cloudfront-resolver.js';
+import { serveLambdaUrlOrigin } from './cloudfront-lambda-origin.js';
 import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
+
+/**
+ * Invoke a warm Lambda RIE container with a Function URL event, keyed by the
+ * backing `AWS::Lambda::Function` logical id. The command boots one per unique
+ * Function URL origin at startup (issue #376); the server looks them up by the
+ * `lambda-url` origin's `functionLogicalId`.
+ */
+export type LambdaUrlInvokerMap = Map<string, (event: Record<string, unknown>) => Promise<unknown>>;
 
 /**
  * Local HTTP / HTTPS server that serves an `AWS::CloudFront::Distribution`'s
@@ -58,6 +67,13 @@ export interface StartCloudFrontServerOptions {
   port: number;
   /** TLS materials for an HTTPS listener; plain HTTP when absent. */
   tls?: FrontDoorTlsMaterials;
+  /**
+   * Invokers for `lambda-url` origins, keyed by backing-function logical id.
+   * Built once at boot (the warm RIE containers) and NOT recreated on a
+   * `--watch` reload — a `lambda-url` origin appearing only after a reload has
+   * no invoker and is served as 502 (restart to boot it).
+   */
+  lambdaInvokers?: LambdaUrlInvokerMap;
 }
 
 /** Start the local CloudFront server and resolve once it is listening. */
@@ -66,10 +82,13 @@ export async function startCloudFrontServer(
 ): Promise<StartedCloudFrontServer> {
   const logger = getLogger().child('cloudfront');
   // Mutable cell so `--watch` can swap the routing model under the live socket.
+  // The Lambda invokers are boot-time only (warm containers), so they live
+  // outside the swappable distribution cell.
+  const lambdaInvokers: LambdaUrlInvokerMap = options.lambdaInvokers ?? new Map();
   const state: { distribution: ResolvedDistribution } = { distribution: options.distribution };
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void handleRequest(req, res, state, logger).catch((err) => {
+    void handleRequest(req, res, state, lambdaInvokers, logger).catch((err) => {
       logger.warn(`Request handling failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -106,6 +125,7 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   state: { distribution: ResolvedDistribution },
+  lambdaInvokers: LambdaUrlInvokerMap,
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
   const distribution = state.distribution;
@@ -148,7 +168,19 @@ async function handleRequest(
 
   // Resolve + serve from the behavior's origin.
   const origin = distribution.origins.get(behavior.targetOriginId);
-  const originResult = serveFromOrigin(origin, behavior, effectiveUri, distribution, logger);
+  const originResult = await serveFromOrigin(origin, behavior, {
+    uri: effectiveUri,
+    querystring,
+    method: req.method ?? 'GET',
+    headers: req.headers,
+    // The body is buffered lazily — only a Lambda Function URL origin reads it;
+    // a static S3 origin never does, so an S3 GET pays no buffering cost.
+    readBody: () => readRequestBody(req),
+    sourceIp: req.socket.remoteAddress ?? '127.0.0.1',
+    distribution,
+    lambdaInvokers,
+    logger,
+  });
   if (!originResult) return writePlain(res, 502, originUnavailableMessage(origin, behavior));
 
   // Run the viewer-response function over the origin response.
@@ -164,9 +196,39 @@ async function handleRequest(
     finalHeaders = cfHeadersToPlain(mutated.headers, originResult.headers);
   }
 
+  // Collect Set-Cookie from BOTH the origin's v2 cookies[] and any set-cookie a
+  // viewer-response function added (the flat header map can't carry multiple),
+  // pulling the latter out of finalHeaders so it isn't dropped or double-set.
+  const setCookies = [...(originResult.setCookies ?? [])];
+  for (const name of Object.keys(finalHeaders)) {
+    if (name.toLowerCase() === 'set-cookie') {
+      setCookies.push(finalHeaders[name]!);
+      delete finalHeaders[name];
+    }
+  }
+
   res.statusCode = finalStatus;
   setHeadersSafely(res, finalHeaders, logger);
+  if (setCookies.length > 0) {
+    try {
+      res.setHeader('set-cookie', setCookies);
+    } catch (err) {
+      logger.warn(
+        `Skipping invalid Set-Cookie header(s): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
   res.end(originResult.body);
+}
+
+/** Read the full request body into a Buffer. */
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise<Buffer>((resolveBody, rejectBody) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolveBody(Buffer.concat(chunks)));
+    req.on('error', rejectBody);
+  });
 }
 
 /**
@@ -197,24 +259,64 @@ interface OriginResult {
   statusCode: number;
   headers: Record<string, string>;
   body: Buffer;
+  /** Set-Cookie values emitted alongside the flat header map (Lambda origins). */
+  setCookies?: string[];
 }
 
-function serveFromOrigin(
+interface ServeFromOriginArgs {
+  uri: string;
+  querystring: string;
+  method: string;
+  headers: IncomingMessage['headers'];
+  /** Lazily buffer the request body — called only by a Lambda Function URL origin. */
+  readBody: () => Promise<Buffer>;
+  sourceIp: string;
+  distribution: ResolvedDistribution;
+  lambdaInvokers: LambdaUrlInvokerMap;
+  logger: ReturnType<typeof getLogger>;
+}
+
+async function serveFromOrigin(
   origin: ResolvedOrigin | undefined,
   behavior: ResolvedBehavior,
-  uri: string,
-  distribution: ResolvedDistribution,
-  logger: ReturnType<typeof getLogger>
-): OriginResult | undefined {
+  args: ServeFromOriginArgs
+): Promise<OriginResult | undefined> {
+  const { distribution, logger } = args;
   if (behavior.hasLambdaEdge) {
     logger.warn(
-      `Behavior ${behavior.pathPattern ?? '(default)'} carries a Lambda@Edge association; cdk-local does not run Lambda@Edge — serving the S3 origin only.`
+      `Behavior ${behavior.pathPattern ?? '(default)'} carries a Lambda@Edge association; cdk-local does not run Lambda@Edge — serving the origin only.`
     );
   }
-  if (!origin || origin.kind !== 's3') return undefined;
+  if (!origin) return undefined;
+
+  if (origin.kind === 'lambda-url') {
+    const invoke = args.lambdaInvokers.get(origin.functionLogicalId);
+    if (!invoke) return undefined;
+    const result = await serveLambdaUrlOrigin({
+      invoke,
+      functionUrlLogicalId: origin.functionUrlLogicalId,
+      functionLogicalId: origin.functionLogicalId,
+      request: {
+        method: args.method,
+        uri: args.uri,
+        querystring: args.querystring,
+        headers: args.headers,
+        body: await args.readBody(),
+        sourceIp: args.sourceIp,
+      },
+    });
+    return {
+      statusCode: result.statusCode,
+      headers: result.headers,
+      body: result.body,
+      ...(result.cookies.length > 0 && { setCookies: result.cookies }),
+    };
+  }
+
+  if (origin.kind !== 's3') return undefined;
   const result = serveFromStaticOrigin({
     localDirs: origin.localDirs,
-    uri,
+    uri: args.uri,
     ...(distribution.defaultRootObject !== undefined && {
       defaultRootObject: distribution.defaultRootObject,
     }),
@@ -229,10 +331,16 @@ function originUnavailableMessage(
 ): string {
   if (!origin)
     return `Behavior ${behavior.pathPattern ?? '(default)'} targets unknown origin '${behavior.targetOriginId}'.\n`;
+  if (origin.kind === 'lambda-url') {
+    return (
+      `Origin '${origin.originId}' is a Lambda Function URL origin whose backing function ` +
+      `'${origin.functionLogicalId}' was not booted (it was added after start-up). Restart start-cloudfront.\n`
+    );
+  }
   if (origin.kind === 'custom') {
     return (
       `Origin '${origin.originId}' is a custom (non-S3) origin (${origin.domainName}). ` +
-      'cdkl start-cloudfront serves S3 origins only.\n'
+      'cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
     );
   }
   return (

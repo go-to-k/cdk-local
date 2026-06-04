@@ -201,13 +201,28 @@ AWS managed services.
   viewer-request function returning a `statusCode` short-circuits with a
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin, then the viewer-response function runs
-  over the origin response. `--watch` re-synths + atomically swaps the
-  in-memory routing model under the live socket (no Docker, so a reload
-  is just re-synth + re-resolve). `--tls` terminates real HTTPS (reusing
-  the ALB front-door's self-signed cert path); `--origin <id>=<dir>`
-  points an origin at a local directory when BucketDeployment resolution
-  cannot (content uploaded out of band, non-CDK bucket). S3 origins
-  ONLY: a custom (non-S3) origin, a `LambdaFunctionAssociations`
+  over the origin response. A **Lambda Function URL origin**
+  (`origins.FunctionUrlOrigin`) is also served (issue #376): the origin's
+  `DomainName` (`Fn::Select[2, Fn::Split['/', GetAtt[Url, 'FunctionUrl']]]`)
+  resolves to the `AWS::Lambda::Url` -> its `TargetFunctionArn` -> the
+  backing `AWS::Lambda::Function`, which is booted once in a warm RIE
+  container; a request routed there is invoked as a Function URL (payload
+  v2.0) event and its response (status / headers / body / `cookies`)
+  becomes the origin response (the viewer-response function still runs over
+  it). So start-cloudfront is pure-local (no Docker) for a pure-S3
+  distribution, and boots a Lambda container ONLY when the distribution has
+  a Function URL origin; the Lambda runs with the dev shell's forwarded AWS
+  creds (no `--from-cfn-stack` / `--assume-role`; AWS_IAM auth on the
+  Function URL is not enforced; response streaming is buffered). `--watch`
+  re-synths + atomically swaps the in-memory routing model under the live
+  socket (the viewer functions + S3 origins reload; a Function URL origin's
+  warm container is boot-time only, NOT rebuilt on reload — restart to pick
+  up a new one). `--tls` terminates real HTTPS (reusing the ALB front-door's
+  self-signed cert path); `--origin <id>=<dir>` points an origin at a local
+  directory when BucketDeployment resolution cannot (content uploaded out of
+  band, non-CDK bucket); `--no-pull` skips the docker pull for a Function
+  URL origin's base image. S3 + Lambda Function URL origins ONLY: a generic
+  custom (non-S3, non-Function-URL) origin, a `LambdaFunctionAssociations`
   Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
   origin API are WARN-and-skip (custom / unresolved origins return 502).
   Single distribution per invocation (interactive picker when the target
@@ -248,12 +263,17 @@ compute-locally category for Lambda + API Gateway).
   `createLocalStudioCommand`) + shared option
   helpers. `createLocalStartCloudFrontCommand` (`cdkl start-cloudfront`,
   issue #363) is a thin, lean command (NOT through the ECS/Docker
-  `runEcsServiceEmulator` — no containers / Cloud Map): it synths,
-  resolves one `AWS::CloudFront::Distribution` to an in-memory routing
-  model, and serves its viewer-request -> S3 origin -> viewer-response
-  pipeline in-process. `--watch` re-synths + swaps the routing model
-  under the live socket; `--tls` reuses `front-door-tls`; `--origin
-  <id>=<dir>` is the BucketDeployment-source escape hatch. `start-service` and `start-alb` share one neutral orchestration
+  `runEcsServiceEmulator` — no Cloud Map): it synths, resolves one
+  `AWS::CloudFront::Distribution` to an in-memory routing model, and
+  serves its viewer-request -> origin -> viewer-response pipeline
+  in-process. It is pure-local (no Docker) for an S3-origin
+  distribution; a Lambda Function URL origin (issue #376) boots one warm
+  RIE container per backing function via `createFrontDoorLambdaRunner`
+  (stopped on shutdown, boot-time only — not rebuilt on reload). `--watch`
+  re-synths + swaps the routing model under the live socket; `--tls`
+  reuses `front-door-tls`; `--origin <id>=<dir>` is the
+  BucketDeployment-source escape hatch; `--no-pull` skips the Lambda
+  origin image pull. `start-service` and `start-alb` share one neutral orchestration
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
@@ -372,17 +392,27 @@ compute-locally category for Lambda + API Gateway).
   `AWS::CloudFront::Distribution` to a `ResolvedDistribution`: behaviors
   (default + `CacheBehaviors[]`) -> path pattern + viewer-request /
   viewer-response CloudFront Functions, origins (S3 origin -> local
-  BucketDeployment source dir via the asset manifest, custom / unresolved
-  origins flagged), and custom error responses; the `start-cloudfront`
-  entry), cloudfront-function-runtime (compiles + runs an inline
+  BucketDeployment source dir via the asset manifest; a Lambda Function
+  URL origin -> backing `AWS::Lambda::Function` via the
+  `Fn::Select/Split/GetAtt` `DomainName` + `AWS::Lambda::Url`
+  `TargetFunctionArn`, issue #376; custom / unresolved origins flagged),
+  and custom error responses; the `start-cloudfront` entry),
+  cloudfront-function-runtime (compiles + runs an inline
   CloudFront Function in a `node:vm` sandbox, builds the
   viewer-request / viewer-response event from an HTTP request, and
   interprets the handler's return as continue-to-origin vs short-circuit
   response), cloudfront-static-origin (serves a URI from the resolved S3
   origin dir(s): default-root-object at `/`, path-traversal guard, MIME
-  by extension, `CustomErrorResponses` SPA fallback), cloudfront-server
+  by extension, `CustomErrorResponses` SPA fallback),
+  cloudfront-lambda-origin (issue #376 — serves a Lambda Function URL
+  origin: builds a Function URL payload-v2.0 event from the request
+  (reusing `buildHttpApiV2Event` with a synthetic `$default` route),
+  invokes the warm RIE container, and translates the v2 response
+  (`translateLambdaResponse`) into the origin status / headers / body /
+  cookies), cloudfront-server
   (the local HTTP/HTTPS server behind `start-cloudfront`: per-request
-  behavior match -> viewer-request fn -> S3 static origin ->
+  behavior match -> viewer-request fn -> origin (S3 static origin OR a
+  Lambda Function URL origin via the boot-time invoker map) ->
   viewer-response fn, with a mutable distribution cell so `--watch`
   swaps the routing model under the live socket),
   studio-custom-resource-filter (issue #323 —

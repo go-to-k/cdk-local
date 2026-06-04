@@ -288,6 +288,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
     const flags = longFlagsOf(addStartCloudFrontSpecificOptions(new Command()));
     expect(flags).toEqual([
       '--host',
+      // Issue #376 — skip the docker pull for a Lambda Function URL origin image.
+      '--no-pull',
       '--origin',
       '--port',
       '--tls',
