@@ -312,14 +312,26 @@ if ! grep -qF "url = '/api/reinvoke'" "${BODY_FILE}" \
   echo "FAIL: GET / did not include the re-invoke wiring (issue #284)"
   exit 1
 fi
-# Visual UX fixes: zebra shade (issue #333), wider session inputs (issue #339),
-# LOGS Clear button (issue #338).
-if ! grep -qF '.group-body .target:nth-child(2n) { background: #242424; }' "${BODY_FILE}" \
+# Visual UX fixes: zebra shade (issue #333 — now a JS-applied .alt class, not
+# :nth-child, since the per-stack sub-headers interleave among the rows), wider
+# session inputs (issue #339), LOGS Clear button (issue #338).
+if ! grep -qF '.group-body .target.alt { background: #242424; }' "${BODY_FILE}" \
   || ! grep -qF 'min-width: 240px;' "${BODY_FILE}" \
   || ! grep -qF "el('button', 'log-clear', 'Clear')" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the visual UX fixes (issues #333 / #338 / #339)"
   exit 1
 fi
+# Per-stack construct-path folding in the targets pane: each stack's '<stack>/'
+# prefix folds into a .stack-sub header and the row shows only the tail, with
+# the tail a horizontal-scroll container (overscroll-behavior-x stops the swipe
+# from triggering browser back-navigation) instead of a hard ellipsis.
+if ! grep -qF 'function stackSections' "${BODY_FILE}" \
+  || ! grep -qF '.stack-sub {' "${BODY_FILE}" \
+  || ! grep -qF 'overscroll-behavior-x: contain' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the per-stack construct-path folding"
+  exit 1
+fi
+echo "    OK: targets pane folds the per-stack construct-path prefix + scrollable path tail"
 # Composer send-flow (issues #334 / #335 / #336): surgical serve-log update,
 # timeline deselect, and the New request back affordance.
 if ! grep -qF 'serveLogPre.textContent = arr.join(' "${BODY_FILE}" \
