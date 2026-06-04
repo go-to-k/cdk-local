@@ -1,3 +1,10 @@
+# [0.110.0](https://github.com/go-to-k/cdk-local/compare/v0.109.0...v0.110.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** apply CloudFront ResponseHeadersPolicy CORS (preflight + response headers) ([#386](https://github.com/go-to-k/cdk-local/issues/386)) ([bb6411c](https://github.com/go-to-k/cdk-local/commit/bb6411c1ead7226d1984c67614d9b8e846df1fbe))
+
 # [0.109.0](https://github.com/go-to-k/cdk-local/compare/v0.108.0...v0.109.0) (2026-06-04)
 
 
