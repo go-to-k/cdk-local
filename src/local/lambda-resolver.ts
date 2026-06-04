@@ -1,4 +1,12 @@
-import { existsSync, statSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  statSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
@@ -811,6 +819,17 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
     const dest = resolveSafeZipEntryPath(dir, name);
     mkdirSync(dirname(dest), { recursive: true });
     writeFileSync(dest, content);
+    // Restore the executable bit. The deployed Lambda package preserves the
+    // zip's unix file modes, and a `provided.*` custom runtime's entrypoint
+    // (`bootstrap`) MUST be executable or RIE fails the invoke with
+    // `Runtime.InvalidEntrypoint` / `fork/exec ...: permission denied`. fflate's
+    // `unzipSync` returns only file CONTENTS (no per-entry unix mode), so we
+    // cannot recover the exact stored mode; granting `0o755` to every extracted
+    // file makes the bootstrap executable while keeping all files readable —
+    // safe for the user's own code in an ephemeral local container. (A
+    // directory asset bypasses this path entirely: CDK already staged it with
+    // correct modes and we bind-mount it directly.)
+    chmodSync(dest, 0o755);
   }
   return { dir, tmpDir: dir };
 }

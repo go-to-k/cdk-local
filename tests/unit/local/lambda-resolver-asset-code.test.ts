@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vite-plus/test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
@@ -72,6 +80,23 @@ describe('materializeAssetCodeDir', () => {
     expect(out.dir).not.toBe(zipPath);
     expect(readFileSync(join(out.dir, 'index.js'), 'utf-8')).toContain('ok: true');
     expect(readFileSync(join(out.dir, 'lib/util.js'), 'utf-8')).toBe('module.exports = 1;');
+  });
+
+  it('makes extracted files executable so a provided.* runtime bootstrap can be fork/exec-ed', () => {
+    // fflate's unzipSync drops unix modes, so without restoring the executable
+    // bit a `provided.*` custom runtime's `bootstrap` is written 0644 and RIE
+    // fails the invoke with `Runtime.InvalidEntrypoint` /
+    // `fork/exec /var/runtime/bootstrap: permission denied`.
+    const zipPath = join(root, 'asset.boot.zip');
+    writeFileSync(
+      zipPath,
+      zipSync({ bootstrap: strToU8('#!/bin/sh\nexec /usr/bin/true\n'), 'data.json': strToU8('{}') })
+    );
+    const out = materializeAssetCodeDir(zipPath);
+    made.push(out.dir);
+    // 0o111 = any execute bit set.
+    expect(statSync(join(out.dir, 'bootstrap')).mode & 0o111).not.toBe(0);
+    expect(statSync(join(out.dir, 'data.json')).mode & 0o111).not.toBe(0);
   });
 
   it('rejects a .zip entry that escapes the extraction root (zip-slip)', () => {
