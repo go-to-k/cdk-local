@@ -179,6 +179,38 @@ describe('createStudioServeManager', () => {
     expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/svc');
   });
 
+  it('threads one --image-override <service>=<dockerfile> per backing service for an alb serve (issue #382)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'S/Alb',
+      kind: 'alb',
+      imageOverrides: { 'S:SvcA': '/app/a/Dockerfile', 'S:SvcB': '/app/b/Dockerfile' },
+    });
+    child.stdout.emit('data', 'ALB front-door: http://127.0.0.1:51234\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    const pairs = argv.reduce<string[]>((acc, a, idx) => {
+      if (a === '--image-override') acc.push(argv[idx + 1]);
+      return acc;
+    }, []);
+    expect(pairs).toContain('S:SvcA=/app/a/Dockerfile');
+    expect(pairs).toContain('S:SvcB=/app/b/Dockerfile');
+    expect(pairs).toHaveLength(2);
+  });
+
   it('appends --watch to the serve child argv only when config.watch is set', async () => {
     const bus = new StudioEventBus();
     const fp = fakeProxies();

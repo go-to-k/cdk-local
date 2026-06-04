@@ -27,8 +27,11 @@ import {
   toStudioTargetGroups,
   filterStudioTargetGroups,
   annotatePinnedEcsTargets,
+  annotateAlbPinnedBackingServices,
   type RunningStudioServer,
 } from '../../local/studio-server.js';
+import { resolveAlbFrontDoor } from '../../local/elb-front-door-resolver.js';
+import { resolveAlbTarget } from './local-start-alb.js';
 import { filterStudioCustomResources } from '../../local/studio-custom-resource-filter.js';
 import {
   createStudioDispatcher,
@@ -83,7 +86,7 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
   if (typeof body !== 'object' || body === null) {
     throw new Error('Request body must be a JSON object.');
   }
-  const { targetId, kind, event, options, rawArgs, imageOverride } = body as Record<
+  const { targetId, kind, event, options, rawArgs, imageOverride, imageOverrides } = body as Record<
     string,
     unknown
   >;
@@ -122,6 +125,28 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     }
     if (imageOverride.trim() !== '') runImageOverride = imageOverride;
   }
+  // Per-backing-service image overrides for an `alb` serve (issue #382): a map
+  // of `Stack:LogicalId` -> Dockerfile path. Validate at the boundary so a
+  // malformed map fails as a clean 400; drop blank values (the "(keep pinned
+  // image)" picker choice).
+  let runImageOverrides: Record<string, string> | undefined;
+  if (imageOverrides !== undefined) {
+    if (
+      typeof imageOverrides !== 'object' ||
+      imageOverrides === null ||
+      Array.isArray(imageOverrides)
+    ) {
+      throw new Error('Request body "imageOverrides" must be a JSON object keyed by service id.');
+    }
+    const collected: Record<string, string> = {};
+    for (const [svc, df] of Object.entries(imageOverrides as Record<string, unknown>)) {
+      if (typeof df !== 'string') {
+        throw new Error(`Request body "imageOverrides.${svc}" must be a string.`);
+      }
+      if (df.trim() !== '') collected[svc] = df.trim();
+    }
+    if (Object.keys(collected).length > 0) runImageOverrides = collected;
+  }
   return {
     targetId,
     kind: kind as StudioTargetKind,
@@ -129,6 +154,7 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     ...(runOptions !== undefined ? { options: runOptions } : {}),
     ...(runRawArgs !== undefined ? { rawArgs: runRawArgs } : {}),
     ...(runImageOverride !== undefined ? { imageOverride: runImageOverride } : {}),
+    ...(runImageOverrides !== undefined ? { imageOverrides: runImageOverrides } : {}),
   };
 }
 
@@ -553,6 +579,66 @@ export function makePinClassifier(args: {
   };
 }
 
+/**
+ * Build the boot-time resolver `annotateAlbPinnedBackingServices` calls per
+ * `alb` entry (issue #382). It resolves the ALB to its backing ECS services
+ * (`resolveAlbFrontDoor`, template-only) and returns the subset that is in
+ * `pinnedEcsByQualifiedId` — the `ecs` services already classified as a
+ * deployed-registry pin by {@link makePinClassifier}. Each returned `id` is the
+ * service's `Stack:LogicalId` (the `--image-override` key `start-alb` matches
+ * against its own service-boot target); `label` is the pinned service's display
+ * id. An ALB that cannot be resolved is WARN-logged + contributes no pickers
+ * (the start-alb run still works; only the picker is absent). Exported for
+ * testing.
+ */
+export function makeAlbBackingPinnedResolver(args: {
+  stacks: StackInfo[];
+  pinnedEcsByQualifiedId: Map<string, string>;
+  logger: ReturnType<typeof getLogger>;
+}): (albEntry: { id: string; qualifiedId: string }) => { id: string; label: string }[] {
+  const { stacks, pinnedEcsByQualifiedId, logger } = args;
+  return (albEntry) => {
+    // No pinned ecs services => nothing an ALB picker could rebuild.
+    if (pinnedEcsByQualifiedId.size === 0) return [];
+    try {
+      const { stack, albLogicalId } = resolveAlbTarget(albEntry.id, stacks);
+      const resolution = resolveAlbFrontDoor(stack, albLogicalId);
+      // Collect the distinct ECS-service targets the ALB forwards to (default
+      // action + every rule action; redirect / fixed-response / lambda targets
+      // carry no backing ECS service).
+      const serviceQualifiedIds = new Set<string>();
+      for (const listener of resolution.listeners) {
+        const actions = [
+          ...(listener.defaultAction ? [listener.defaultAction] : []),
+          ...listener.rules.map((r) => r.action),
+        ];
+        for (const action of actions) {
+          if (action.kind !== 'forward') continue;
+          for (const t of action.targets) {
+            if (t.kind === 'ecs') {
+              serviceQualifiedIds.add(`${stack.stackName}:${t.serviceLogicalId}`);
+            }
+          }
+        }
+      }
+      const out: { id: string; label: string }[] = [];
+      for (const qid of serviceQualifiedIds) {
+        const label = pinnedEcsByQualifiedId.get(qid);
+        if (label !== undefined) out.push({ id: qid, label });
+      }
+      return out;
+    } catch (err) {
+      logger.warn(
+        `studio: could not resolve ALB '${albEntry.id}' backing services for the image-override ` +
+          `picker; the alb composer will not offer one. ${
+            err instanceof Error ? err.message : String(err)
+          }`
+      );
+      return [];
+    }
+  };
+}
+
 interface LocalStudioOptions {
   app?: string;
   output: string;
@@ -725,7 +811,31 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     targetGroups,
     makePinClassifier({ stacks, contextByStack, logger })
   );
-  const dockerfiles = anyPinned ? discoverDockerfiles(process.cwd()) : [];
+
+  // Issue #382 — offer the image-override Dockerfile picker on the ALB
+  // composer too, not only on a standalone `ecs` service. `start-alb` boots
+  // the ALB's backing ECS services, so a pinned (deployed-registry) backing
+  // service has the same "local source edits do not take effect" problem a
+  // standalone pinned service does. Resolve each ALB to its backing ECS
+  // services and intersect with the pinned `ecs` set classified above; a
+  // pinned backing service becomes a per-service picker on the alb composer
+  // that threads `--image-override <Stack:LogicalId>=<dockerfile>` to the
+  // spawned `start-alb` (the `Stack:LogicalId` key is start-alb's own
+  // service-boot target). ALB resolution is template-only, but the pinned set
+  // it intersects is empty without `--from-cfn-stack` for INTRINSIC-ECR
+  // services — same boot-time-only caveat as the ecs picker.
+  const pinnedEcsByQualifiedId = new Map<string, string>();
+  for (const g of targetGroups) {
+    if (g.kind !== 'ecs') continue;
+    for (const e of g.entries) {
+      if (e.pinned) pinnedEcsByQualifiedId.set(e.qualifiedId, e.id);
+    }
+  }
+  const anyAlbBackingPinned = annotateAlbPinnedBackingServices(
+    targetGroups,
+    makeAlbBackingPinnedResolver({ stacks, pinnedEcsByQualifiedId, logger })
+  );
+  const dockerfiles = anyPinned || anyAlbBackingPinned ? discoverDockerfiles(process.cwd()) : [];
 
   const bus = new StudioEventBus();
   // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`

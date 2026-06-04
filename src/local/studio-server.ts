@@ -34,6 +34,19 @@ export interface StudioTarget {
    * `--watch`) is not marked and gets no picker.
    */
   pinned?: boolean;
+  /**
+   * Set on an `alb` entry: the deployed-registry-pinned ECS services this ALB
+   * fronts (issue #382). `start-alb` boots the ALB's backing services, so a
+   * pinned backing service has the same "local edits do not take effect"
+   * problem a standalone pinned `ecs` service does — the alb composer offers a
+   * per-service Dockerfile picker that threads
+   * `--image-override <service-qualified-id>=<dockerfile>` to the spawned
+   * `start-alb` (the `<service-qualified-id>` is `start-alb`'s own
+   * `Stack:LogicalId` service-boot target). Each entry's `id` is that
+   * `--image-override` key; `label` is a human-readable service name. Absent /
+   * empty when the ALB fronts no pinned service.
+   */
+  backingPinnedServices?: { id: string; label: string }[];
 }
 
 /** A category of targets, grouped by the studio kind that runs them. */
@@ -116,6 +129,38 @@ export function annotatePinnedEcsTargets(
     }
   }
   return anyPinned;
+}
+
+/**
+ * Annotate each `alb` entry of `groups` with the deployed-registry-pinned ECS
+ * services that ALB fronts (issue #382), so the alb composer can offer a
+ * per-service image-override Dockerfile picker. `resolveBackingPinned` maps one
+ * ALB entry to its pinned backing services (`{ id, label }`, where `id` is the
+ * `--image-override` key — `start-alb`'s `Stack:LogicalId` service-boot
+ * target); the caller supplies it (studio's boot resolves the ALB via
+ * `resolveAlbFrontDoor` and intersects the backing services with the already-
+ * classified pinned `ecs` set). Mutates the entries in place and returns whether
+ * ANY ALB fronts a pinned service, so the caller can include the Dockerfile
+ * scan even when no standalone `ecs` service was pinned. Non-alb groups are
+ * left untouched. Exported so a host CLI can reuse it + so the boot logic is
+ * unit-testable without a real synth.
+ */
+export function annotateAlbPinnedBackingServices(
+  groups: StudioTargetGroup[],
+  resolveBackingPinned: (albEntry: StudioTarget) => { id: string; label: string }[]
+): boolean {
+  let any = false;
+  for (const group of groups) {
+    if (group.kind !== 'alb') continue;
+    for (const entry of group.entries) {
+      const pinned = resolveBackingPinned(entry);
+      if (pinned.length > 0) {
+        entry.backingPinnedServices = pinned;
+        any = true;
+      }
+    }
+  }
+  return any;
 }
 
 /** Compile a `*` / `?` glob to an anchored RegExp matched against a target id. */

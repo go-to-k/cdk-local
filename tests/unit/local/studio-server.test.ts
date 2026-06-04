@@ -6,6 +6,7 @@ import {
   toStudioTargetGroups,
   filterStudioTargetGroups,
   annotatePinnedEcsTargets,
+  annotateAlbPinnedBackingServices,
   type RunningStudioServer,
   type StudioTargetGroup,
 } from '../../../src/local/studio-server.js';
@@ -217,6 +218,46 @@ describe('annotatePinnedEcsTargets', () => {
     const g = groups();
     annotatePinnedEcsTargets(g, () => true);
     expect(g[1].entries[0].pinned).toBeUndefined();
+  });
+});
+
+describe('annotateAlbPinnedBackingServices', () => {
+  const groups = (): StudioTargetGroup[] => [
+    {
+      kind: 'ecs',
+      title: 'ECS Services',
+      entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true, pinned: true }],
+    },
+    {
+      kind: 'alb',
+      title: 'Load Balancers',
+      entries: [
+        { id: 'S/Alb1', qualifiedId: 'S:Alb1' },
+        { id: 'S/Alb2', qualifiedId: 'S:Alb2' },
+      ],
+    },
+  ];
+
+  it('sets backingPinnedServices on the alb entries the resolver returns pinned services for', () => {
+    const g = groups();
+    const any = annotateAlbPinnedBackingServices(g, (e) =>
+      e.id === 'S/Alb1' ? [{ id: 'S:Svc', label: 'S/Svc' }] : []
+    );
+    expect(any).toBe(true);
+    expect(g[1].entries[0].backingPinnedServices).toEqual([{ id: 'S:Svc', label: 'S/Svc' }]);
+    expect(g[1].entries[1].backingPinnedServices).toBeUndefined();
+  });
+
+  it('returns false + annotates nothing when no ALB fronts a pinned service', () => {
+    const g = groups();
+    expect(annotateAlbPinnedBackingServices(g, () => [])).toBe(false);
+    expect(g[1].entries[0].backingPinnedServices).toBeUndefined();
+  });
+
+  it('only touches alb groups (ecs entries are left alone)', () => {
+    const g = groups();
+    annotateAlbPinnedBackingServices(g, () => [{ id: 'X', label: 'X' }]);
+    expect(g[0].entries[0].backingPinnedServices).toBeUndefined();
   });
 });
 

@@ -484,11 +484,12 @@ const STUDIO_SCRIPT = `
   // --image-override flag to start-service so the deployed-registry-pinned
   // image is rebuilt from local source. Default "(keep pinned image)" => no
   // override.
-  function buildImageOverridePicker() {
-    const sec = el('div', 'section options');
-    sec.appendChild(el('h3', null, 'Image override'));
+  // One labeled Dockerfile <select> row (the discovered Dockerfiles + a
+  // "(keep pinned image)" default). Shared by the ecs single picker and the
+  // alb per-backing-service pickers.
+  function buildImageOverrideRow(labelText) {
     const row = el('div', 'opt-row');
-    row.appendChild(el('span', 'opt-label', 'Local Dockerfile'));
+    row.appendChild(el('span', 'opt-label', labelText));
     const sel = el('select', 'image-override-select');
     const none = el('option', null, '(keep pinned image)');
     none.value = '';
@@ -499,7 +500,19 @@ const STUDIO_SCRIPT = `
       sel.appendChild(o);
     });
     row.appendChild(sel);
-    sec.appendChild(row);
+    return {
+      row: row,
+      getValue: function () {
+        return sel.value.trim();
+      },
+    };
+  }
+
+  function buildImageOverridePicker() {
+    const sec = el('div', 'section options');
+    sec.appendChild(el('h3', null, 'Image override'));
+    const r = buildImageOverrideRow('Local Dockerfile');
+    sec.appendChild(r.row);
     const hint = studioDockerfiles.length
       ? 'This image is pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild it locally.'
       : 'This image is pinned to a deployed registry, but no Dockerfile was found under the app directory.';
@@ -507,8 +520,37 @@ const STUDIO_SCRIPT = `
     return {
       node: sec,
       collect: function () {
-        const v = sel.value.trim();
+        const v = r.getValue();
         return v === '' ? undefined : v;
+      },
+    };
+  }
+
+  // Per-backing-service image-override pickers for a pinned ALB (issue #382):
+  // one Dockerfile select per deployed-registry-pinned service the ALB fronts.
+  // collect() returns a { [serviceId]: dockerfile } map threaded as
+  // imageOverrides (one --image-override service=df per entry).
+  function buildAlbImageOverridePicker(services) {
+    const sec = el('div', 'section options');
+    sec.appendChild(el('h3', null, 'Image override (pinned backing services)'));
+    const rows = services.map(function (svc) {
+      const r = buildImageOverrideRow(svc.label);
+      sec.appendChild(r.row);
+      return { id: svc.id, getValue: r.getValue };
+    });
+    const hint = studioDockerfiles.length
+      ? 'These services behind the ALB are pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild one from local source.'
+      : 'These services behind the ALB are pinned to a deployed registry, but no Dockerfile was found under the app directory.';
+    sec.appendChild(el('div', 'opt-hint', hint));
+    return {
+      node: sec,
+      collect: function () {
+        const map = {};
+        rows.forEach(function (r) {
+          const v = r.getValue();
+          if (v !== '') map[r.id] = v;
+        });
+        return Object.keys(map).length ? map : undefined;
       },
     };
   }
@@ -598,7 +640,13 @@ const STUDIO_SCRIPT = `
             t.appendChild(btnSlot);
             t.onclick = () => selectTarget(entry.id, group.kind);
             targetEls.set(entry.id, t);
-            serveMeta.set(entry.id, { dot, btnSlot, kind: group.kind, pinned: entry.pinned === true });
+            serveMeta.set(entry.id, {
+              dot,
+              btnSlot,
+              kind: group.kind,
+              pinned: entry.pinned === true,
+              backingPinnedServices: entry.backingPinnedServices || [],
+            });
             updateServeRow(entry.id);
           }
           body.appendChild(t);
@@ -742,7 +790,7 @@ const STUDIO_SCRIPT = `
     return lines;
   }
 
-  async function startServe(id, options, rawArgs, imageOverride) {
+  async function startServe(id, options, rawArgs, imageOverride, imageOverrides) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
@@ -750,7 +798,12 @@ const STUDIO_SCRIPT = `
     // Remember what this serve was Started with so the running workspace can
     // show a read-only "Started with" summary (issue #356) — the per-run
     // option inputs are gone once the composer is replaced by the running view.
-    serveApplied.set(id, { options: options, rawArgs: rawArgs, imageOverride: imageOverride });
+    serveApplied.set(id, {
+      options: options,
+      rawArgs: rawArgs,
+      imageOverride: imageOverride,
+      imageOverrides: imageOverrides,
+    });
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
@@ -758,6 +811,7 @@ const STUDIO_SCRIPT = `
       if (options) body.options = options;
       if (rawArgs) body.rawArgs = rawArgs;
       if (imageOverride) body.imageOverride = imageOverride;
+      if (imageOverrides) body.imageOverrides = imageOverrides;
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -833,6 +887,7 @@ const STUDIO_SCRIPT = `
     let collectOpts = function () { return undefined; };
     let collectRaw = function () { return undefined; };
     let collectImageOverride = function () { return undefined; };
+    let collectImageOverrides = function () { return undefined; };
     btn.onclick = () => {
       if (running || starting) {
         stopServe(id);
@@ -843,7 +898,7 @@ const STUDIO_SCRIPT = `
         serveState.set(id, { status: 'stopped', endpoints: [] });
         renderServeWorkspace(id);
       } else {
-        startServe(id, collectOpts(), collectRaw(), collectImageOverride());
+        startServe(id, collectOpts(), collectRaw(), collectImageOverride(), collectImageOverrides());
       }
     };
     head.appendChild(btn);
@@ -862,6 +917,15 @@ const STUDIO_SCRIPT = `
         const io = buildImageOverridePicker();
         ws.appendChild(io.node);
         collectImageOverride = io.collect;
+      }
+      // An ALB boots its backing ECS services (issue #382); a pinned backing
+      // service has the same "local edits do not take effect" problem, so offer
+      // a per-service Dockerfile picker that threads
+      // --image-override service=dockerfile to start-alb.
+      if (meta && meta.kind === 'alb' && meta.backingPinnedServices && meta.backingPinnedServices.length) {
+        const io = buildAlbImageOverridePicker(meta.backingPinnedServices);
+        ws.appendChild(io.node);
+        collectImageOverrides = io.collect;
       }
       const opt = buildOptions(kind);
       if (opt.node) ws.appendChild(opt.node);

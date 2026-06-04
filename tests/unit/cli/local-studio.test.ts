@@ -132,6 +132,43 @@ describe('coerceRunRequest', () => {
     );
   });
 
+  it('accepts an alb imageOverrides map + drops blank values (issue #382)', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'S/Alb',
+        kind: 'alb',
+        imageOverrides: { 'S:SvcA': ' /app/a/Dockerfile ', 'S:SvcB': '' },
+      })
+    ).toEqual({
+      targetId: 'S/Alb',
+      kind: 'alb',
+      event: undefined,
+      // blank-valued service dropped; the kept value is trimmed.
+      imageOverrides: { 'S:SvcA': '/app/a/Dockerfile' },
+    });
+  });
+
+  it('omits imageOverrides entirely when every value is blank', () => {
+    const r = coerceRunRequest({
+      targetId: 'S/Alb',
+      kind: 'alb',
+      imageOverrides: { 'S:SvcA': '', 'S:SvcB': '   ' },
+    });
+    expect('imageOverrides' in r).toBe(false);
+  });
+
+  it.each([null, 42, 'str', [1, 2]])('rejects a non-object imageOverrides %p', (imageOverrides) => {
+    expect(() => coerceRunRequest({ targetId: 'S/Alb', kind: 'alb', imageOverrides })).toThrow(
+      /"imageOverrides" must be a JSON object/
+    );
+  });
+
+  it('rejects a non-string imageOverrides value', () => {
+    expect(() =>
+      coerceRunRequest({ targetId: 'S/Alb', kind: 'alb', imageOverrides: { 'S:Svc': 42 } })
+    ).toThrow(/"imageOverrides.S:Svc" must be a string/);
+  });
+
   it('rejects an unknown option flag for the kind (clean 400 at the boundary)', () => {
     expect(() =>
       coerceRunRequest({ targetId: 'T', kind: 'ecs', options: { '--tls': true } })

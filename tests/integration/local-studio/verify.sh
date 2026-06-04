@@ -1306,6 +1306,74 @@ sleep 3
 echo "    OK: image-override service stopped"
 
 # ---------------------------------------------------------------------------
+# 10d. ALB image-override picker (issue #382): MyAlb fronts the pinned
+#      MyService. Studio resolves the ALB's backing ECS services + offers a
+#      per-service Dockerfile picker on the ALB composer, threading
+#      `--image-override <Stack:LogicalId>=./Dockerfile.override` to start-alb.
+#      The override key is read back from /api/targets (the alb entry's
+#      backingPinnedServices[].id — start-alb's own service-boot target), which
+#      also proves the boot resolver populated it. Then the ALB is started with
+#      that imageOverrides map + the front-door is curled: the sentinel proves
+#      the backing pinned service was REBUILT from local source while running
+#      BEHIND the ALB (the picker -> /api/run -> imageOverrides ->
+#      --image-override -> start-alb rebuild path end-to-end).
+# ---------------------------------------------------------------------------
+echo "==> ALB image-override: /api/targets exposes the ALB's pinned backing services (issue #382)"
+curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
+ALB_SVC_KEY=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1])); tgt = sys.argv[2]
+for g in d["groups"]:
+    if g["kind"] != "alb":
+        continue
+    for e in g["entries"]:
+        if e["id"] == tgt:
+            bs = e.get("backingPinnedServices") or []
+            if bs:
+                print(bs[0]["id"])
+' "${BODY_FILE}" "${ALB_TARGET}")
+if [[ -z "${ALB_SVC_KEY}" ]]; then
+  echo "FAIL: /api/targets did not expose backingPinnedServices for ${ALB_TARGET}"
+  echo "----- targets -----"; cat "${BODY_FILE}"; echo "-------------------"
+  exit 1
+fi
+echo "    OK: ${ALB_TARGET} backing pinned service resolved = ${ALB_SVC_KEY}"
+
+echo "==> POST /api/run starts the ALB with imageOverrides; the backing service rebuilds from a local Dockerfile"
+AIO_FILE=$(mktemp)
+HTTP_AIO=$(curl -s -o "${AIO_FILE}" -w '%{http_code}' --max-time 300 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ALB_TARGET}\",\"kind\":\"alb\",\"imageOverrides\":{\"${ALB_SVC_KEY}\":\"./Dockerfile.override\"}}" || true)
+if [[ "${HTTP_AIO}" != "200" ]] || ! grep -qF '"status":"running"' "${AIO_FILE}"; then
+  echo "FAIL: POST /api/run (alb image-override) returned HTTP ${HTTP_AIO}"
+  echo "----- response -----"; cat "${AIO_FILE}"; echo "--------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  rm -f "${AIO_FILE}"; exit 1
+fi
+AIO_SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${AIO_FILE}" | head -1 || true)
+rm -f "${AIO_FILE}"
+# The override build + ALB boot + replica registration can take a while; retry.
+AIO_BODY=""
+for _ in $(seq 1 90); do
+  AIO_BODY=$(curl -fsS --max-time 3 "${AIO_SERVED}/" 2>/dev/null || true)
+  if echo "${AIO_BODY}" | grep -qF 'studio-image-override-301'; then break; fi
+  sleep 1
+done
+if ! echo "${AIO_BODY}" | grep -qF 'studio-image-override-301'; then
+  echo "FAIL: alb image-override did not apply (sentinel absent behind the ALB front-door)"
+  echo "----- served body -----"; echo "${AIO_BODY}" | head -c 1000; echo "-----------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: alb imageOverrides threaded; the backing pinned service rebuilt from the LOCAL Dockerfile + serves the sentinel behind the ALB"
+
+echo "==> POST /api/stop tears the ALB image-override serve down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ALB_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: ALB image-override serve stopped"
+
+# ---------------------------------------------------------------------------
 # 11. Clean shutdown on SIGTERM.
 # ---------------------------------------------------------------------------
 echo "==> Stopping studio (SIGTERM) and asserting clean exit"
@@ -1441,4 +1509,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + reinvoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + reinvoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + alb-image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
