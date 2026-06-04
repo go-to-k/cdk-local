@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
@@ -207,6 +208,208 @@ describe('startCloudFrontServer — Lambda Function URL origin', () => {
     } finally {
       lambdaServer.update(lambdaDistribution());
     }
+  });
+});
+
+describe('startCloudFrontServer — ResponseHeadersPolicy CORS', () => {
+  let corsServer: StartedCloudFrontServer;
+
+  function corsDistribution(): ResolvedDistribution {
+    const def: ResolvedBehavior = {
+      targetOriginId: 'o1',
+      hasLambdaEdge: false,
+      cors: {
+        AllowOrigins: ['http://127.0.0.1:5050'],
+        AllowMethods: ['POST'],
+        AllowHeaders: ['*', 'Authorization'],
+        ExposeHeaders: [],
+      },
+    };
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      defaultRootObject: 'index.html',
+      behaviors: [def],
+      origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [dir] }]]),
+      customErrorResponses: [],
+    };
+  }
+
+  // Drive requests with raw http.request — undici's fetch strips the
+  // forbidden `Origin` / `Access-Control-Request-*` headers a preflight needs.
+  function raw(
+    path: string,
+    method: string,
+    headers: Record<string, string>
+  ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const u = new URL(`${corsServer.url}${path}`);
+      const req = httpRequest(
+        // agent: false -> a one-off connection closed on response end, so no
+        // keep-alive socket lingers in the pool past server.close() (which
+        // would otherwise risk a vitest worker-teardown crash).
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, agent: false },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () =>
+            resolvePromise({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            })
+          );
+        }
+      );
+      req.on('error', rejectPromise);
+      req.end();
+    });
+  }
+
+  beforeAll(async () => {
+    corsServer = await startCloudFrontServer({
+      distribution: corsDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+    });
+  });
+
+  afterAll(async () => {
+    await corsServer.close();
+  });
+
+  it('answers a matching OPTIONS preflight with 204 + CORS headers (at the edge, no origin hit)', async () => {
+    const res = await raw('/', 'OPTIONS', {
+      origin: 'http://127.0.0.1:5050',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'authorization',
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-origin']).toBe('http://127.0.0.1:5050');
+    expect(res.headers['access-control-allow-methods']).toBe('POST');
+    expect(res.headers['access-control-allow-headers']).toBe('authorization');
+    expect(res.body).toBe('');
+  });
+
+  it('adds Access-Control-Allow-Origin to an actual (non-preflight) response', async () => {
+    const res = await raw('/', 'GET', { origin: 'http://127.0.0.1:5050' });
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://127.0.0.1:5050');
+    expect(res.headers['vary']).toContain('Origin');
+    expect(res.body).toBe('<h1>root</h1>');
+  });
+
+  it('omits CORS headers for a request without an Origin (non-CORS)', async () => {
+    const res = await raw('/', 'GET', {});
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('does not short-circuit a preflight from a disallowed origin (falls through, no ACAO)', async () => {
+    const res = await raw('/', 'OPTIONS', {
+      origin: 'https://evil.example.com',
+      'access-control-request-method': 'POST',
+    });
+    // matchPreflight returned null -> the request fell through to the static
+    // origin, which serves the URI regardless of method; the disallowed origin
+    // gets no Access-Control-Allow-Origin.
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('does not short-circuit a preflight requesting a disallowed method (falls through)', async () => {
+    const res = await raw('/', 'OPTIONS', {
+      origin: 'http://127.0.0.1:5050',
+      'access-control-request-method': 'DELETE', // policy allows GET only
+    });
+    // No canonical 204 preflight + no preflight-only Access-Control-Allow-Methods:
+    // matchPreflight returned null (DELETE not allowed), so it fell through to the
+    // static origin. The actual-response applier still echoes ACAO for the allowed
+    // origin, but without Allow-Methods the browser preflight still fails.
+    expect(res.status).not.toBe(204);
+    expect(res.headers['access-control-allow-methods']).toBeUndefined();
+  });
+});
+
+describe('startCloudFrontServer — ResponseHeadersPolicy CORS (credentials + expose + Vary append)', () => {
+  let credsServer: StartedCloudFrontServer;
+
+  // A viewer-response function that sets a Vary header, so the actual-response
+  // CORS apply must APPEND `, Origin` to it rather than overwrite.
+  const varyFn = compileCloudFrontFunction(
+    'VaryFn',
+    "function handler(event){var r=event.response; r.headers['vary']={value:'Accept-Encoding'}; return r;}",
+    'cloudfront-js-2.0'
+  );
+
+  function credsDistribution(): ResolvedDistribution {
+    const def: ResolvedBehavior = {
+      targetOriginId: 'o1',
+      hasLambdaEdge: false,
+      viewerResponse: varyFn,
+      cors: {
+        AllowOrigins: ['*'],
+        AllowMethods: ['GET'],
+        AllowHeaders: [],
+        ExposeHeaders: ['X-Trace-Id'],
+        AllowCredentials: true,
+      },
+    };
+    return {
+      logicalId: 'Dist',
+      stackName: 'Stack',
+      defaultRootObject: 'index.html',
+      behaviors: [def],
+      origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [dir] }]]),
+      customErrorResponses: [],
+    };
+  }
+
+  function raw(
+    headers: Record<string, string>
+  ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const u = new URL(`${credsServer.url}/`);
+      const req = httpRequest(
+        { hostname: u.hostname, port: u.port, path: '/', method: 'GET', headers, agent: false },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () =>
+            resolvePromise({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            })
+          );
+        }
+      );
+      req.on('error', rejectPromise);
+      req.end();
+    });
+  }
+
+  beforeAll(async () => {
+    credsServer = await startCloudFrontServer({
+      distribution: credsDistribution(),
+      host: '127.0.0.1',
+      port: 0,
+    });
+  });
+
+  afterAll(async () => {
+    await credsServer.close();
+  });
+
+  it('echoes Origin (not *) + Allow-Credentials + Expose-Headers, and appends Origin to an existing Vary', async () => {
+    const res = await raw({ origin: 'https://app.example.com' });
+    expect(res.status).toBe(200);
+    // AllowCredentials:true -> echo the literal Origin, never `*`.
+    expect(res.headers['access-control-allow-origin']).toBe('https://app.example.com');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
+    expect(res.headers['access-control-expose-headers']).toBe('X-Trace-Id');
+    // The viewer-response function set `Vary: Accept-Encoding`; CORS appends
+    // `, Origin` rather than overwriting it.
+    expect(res.headers['vary']).toBe('Accept-Encoding, Origin');
   });
 });
 

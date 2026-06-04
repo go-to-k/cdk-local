@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   applyCorsResponseHeaders,
+  applyCorsResponseHeadersFromConfig,
   buildCorsConfigByApiId,
   buildCorsConfigFromCloudFrontChain,
   isFunctionUrlOacFronted,
   matchPreflight,
+  resolveResponseHeadersPolicyCors,
   type CorsConfig,
 } from '../../../src/local/cors-handler.js';
 import type { CloudFormationTemplate, TemplateResource } from '../../../src/types/resource.js';
@@ -877,6 +879,80 @@ describe('applyCorsResponseHeaders (issue #652)', () => {
       'http://127.0.0.1:5050'
     );
     expect(res.headers.get('Vary')).toBe('Origin, Accept-Encoding');
+  });
+});
+
+describe('applyCorsResponseHeadersFromConfig (start-cloudfront per-behavior form)', () => {
+  const config: CorsConfig = {
+    AllowOrigins: ['http://127.0.0.1:5050'],
+    AllowMethods: ['POST'],
+    AllowHeaders: ['*', 'Authorization'],
+    ExposeHeaders: [],
+  };
+
+  it('sets Allow-Origin + Vary on a matched Origin (no map indirection)', () => {
+    const res = mockRes();
+    applyCorsResponseHeadersFromConfig(res as never, config, 'http://127.0.0.1:5050');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:5050');
+    expect(res.headers.get('Vary')).toBe('Origin');
+  });
+
+  it('no-op without an Origin and for a disallowed Origin', () => {
+    const noOrigin = mockRes();
+    applyCorsResponseHeadersFromConfig(noOrigin as never, config, undefined);
+    expect(noOrigin.headers.size).toBe(0);
+    const disallowed = mockRes();
+    applyCorsResponseHeadersFromConfig(disallowed as never, config, 'https://evil.example.com');
+    expect(disallowed.headers.size).toBe(0);
+  });
+
+  it('appends Origin to an existing Vary held as a string[] (not just a string)', () => {
+    const res = mockRes();
+    res.setHeader('Vary', ['Accept-Encoding', 'Accept']);
+    applyCorsResponseHeadersFromConfig(res as never, config, 'http://127.0.0.1:5050');
+    expect(res.headers.get('Vary')).toBe('Accept-Encoding, Accept, Origin');
+  });
+});
+
+describe('resolveResponseHeadersPolicyCors (start-cloudfront per-behavior resolve)', () => {
+  function rhp(cors: Record<string, unknown>): TemplateResource {
+    return {
+      Type: 'AWS::CloudFront::ResponseHeadersPolicy',
+      Properties: { ResponseHeadersPolicyConfig: { CorsConfig: cors } },
+    } as unknown as TemplateResource;
+  }
+  const corsBlock = {
+    AccessControlAllowCredentials: false,
+    AccessControlAllowHeaders: { Items: ['*', 'Authorization'] },
+    AccessControlAllowMethods: { Items: ['POST'] },
+    AccessControlAllowOrigins: { Items: ['http://127.0.0.1:5050'] },
+    OriginOverride: true,
+  };
+
+  it('resolves the CorsConfig behind a { Ref: <RhpLogicalId> }', () => {
+    const t = tpl({ Rhp: rhp(corsBlock) });
+    const cors = resolveResponseHeadersPolicyCors(t, { Ref: 'Rhp' });
+    expect(cors?.AllowOrigins).toEqual(['http://127.0.0.1:5050']);
+    expect(cors?.AllowMethods).toEqual(['POST']);
+    expect(cors?.AllowCredentials).toBe(false);
+  });
+
+  it('returns undefined for an AWS-managed policy id literal (not a Ref)', () => {
+    const t = tpl({ Rhp: rhp(corsBlock) });
+    expect(resolveResponseHeadersPolicyCors(t, '60669652-455b-4ae9-85a4-c4c02393f86c')).toBeUndefined();
+    expect(resolveResponseHeadersPolicyCors(t, undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when the Ref resolves to a non-RHP or a policy without a CorsConfig', () => {
+    const wrongType = tpl({ Rhp: { Type: 'AWS::S3::Bucket', Properties: {} } });
+    expect(resolveResponseHeadersPolicyCors(wrongType, { Ref: 'Rhp' })).toBeUndefined();
+    const noCors = tpl({
+      Rhp: {
+        Type: 'AWS::CloudFront::ResponseHeadersPolicy',
+        Properties: { ResponseHeadersPolicyConfig: { SecurityHeadersConfig: {} } },
+      } as unknown as TemplateResource,
+    });
+    expect(resolveResponseHeadersPolicyCors(noCors, { Ref: 'Rhp' })).toBeUndefined();
   });
 });
 

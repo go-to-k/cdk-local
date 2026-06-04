@@ -304,6 +304,76 @@ describe('resolveCloudFrontDistribution — Lambda Function URL origin', () => {
   });
 });
 
+describe('resolveCloudFrontDistribution — ResponseHeadersPolicy CORS', () => {
+  /** S3 template whose behavior(s) reference an RHP carrying a CORS block. */
+  function corsTemplate(opts?: {
+    perPathPolicy?: boolean;
+    managedPolicyLiteral?: boolean;
+  }): CloudFormationTemplate {
+    const template = s3DistributionTemplate();
+    const resources = template.Resources as Record<string, unknown>;
+    resources['Rhp'] = {
+      Type: 'AWS::CloudFront::ResponseHeadersPolicy',
+      Properties: {
+        ResponseHeadersPolicyConfig: {
+          CorsConfig: {
+            AccessControlAllowCredentials: false,
+            AccessControlAllowHeaders: { Items: ['*', 'Authorization'] },
+            AccessControlAllowMethods: { Items: ['POST'] },
+            AccessControlAllowOrigins: { Items: ['http://127.0.0.1:5050'] },
+            OriginOverride: true,
+          },
+        },
+      },
+    };
+    const dc = (resources['Dist'] as { Properties: { DistributionConfig: Record<string, unknown> } })
+      .Properties.DistributionConfig;
+    const policyValue = opts?.managedPolicyLiteral
+      ? '60669652-455b-4ae9-85a4-c4c02393f86c'
+      : { Ref: 'Rhp' };
+    if (opts?.perPathPolicy) {
+      dc['CacheBehaviors'] = [
+        { PathPattern: '/api/*', TargetOriginId: 'origin1', ResponseHeadersPolicyId: policyValue },
+      ];
+    } else {
+      (dc['DefaultCacheBehavior'] as Record<string, unknown>)['ResponseHeadersPolicyId'] =
+        policyValue;
+    }
+    return template;
+  }
+
+  it('resolves the default behavior CORS from its ResponseHeadersPolicy', () => {
+    const stack = buildStack(corsTemplate(), HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    const cors = resolved.behaviors[0]!.cors;
+    expect(cors).toBeDefined();
+    expect(cors!.AllowOrigins).toEqual(['http://127.0.0.1:5050']);
+    expect(cors!.AllowMethods).toEqual(['POST']);
+    expect(cors!.AllowHeaders).toEqual(['*', 'Authorization']);
+    expect(cors!.AllowCredentials).toBe(false);
+  });
+
+  it('resolves CORS per CacheBehaviors[] entry (path-specific policy)', () => {
+    const stack = buildStack(corsTemplate({ perPathPolicy: true }), HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.behaviors[0]!.cors).toBeUndefined(); // default behavior: no policy
+    const apiBehavior = resolved.behaviors.find((b) => b.pathPattern === '/api/*');
+    expect(apiBehavior?.cors?.AllowOrigins).toEqual(['http://127.0.0.1:5050']);
+  });
+
+  it('leaves cors undefined for an AWS-managed policy id literal (not fetchable)', () => {
+    const stack = buildStack(corsTemplate({ managedPolicyLiteral: true }), HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.behaviors[0]!.cors).toBeUndefined();
+  });
+
+  it('leaves cors undefined when the behavior has no ResponseHeadersPolicy', () => {
+    const stack = buildStack(s3DistributionTemplate(), HASH);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.behaviors[0]!.cors).toBeUndefined();
+  });
+});
+
 describe('intrinsic helpers', () => {
   it('pickFunctionLogicalIdFromArn unwraps Fn::GetAtt', () => {
     expect(pickFunctionLogicalIdFromArn({ 'Fn::GetAtt': ['Fn', 'FunctionARN'] })).toBe('Fn');

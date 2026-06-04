@@ -11,6 +11,10 @@
 #                     /foo/index.html and the S3 origin serves that key.
 #   - GET /missing -> the 403 -> /404.html (200) CustomErrorResponse fires
 #                     (the SPA fallback for a missing key).
+#   - OPTIONS /    -> the behavior's ResponseHeadersPolicy CORS answers the
+#                     preflight (204 + Access-Control-Allow-Origin) and an
+#                     actual GET with an allowed Origin carries it; a
+#                     disallowed origin gets none.
 #   - --watch      -> editing the site source re-synths + swaps the routing
 #                     model under the live socket; the new content is served.
 #   - SIGTERM frees the listening port.
@@ -105,7 +109,44 @@ grep -qi "spa fallback" /tmp/cdkl-cf-miss.$$ || fail "missing key did not serve 
 rm -f /tmp/cdkl-cf-miss.$$
 
 # ---------------------------------------------------------------------------
-# 4. --watch: edit the site source, expect the new content served after reload.
+# 4. ResponseHeadersPolicy CORS: an OPTIONS preflight is answered at the edge
+#    with the CORS headers, and an actual GET carries Access-Control-Allow-Origin.
+# ---------------------------------------------------------------------------
+echo "==> OPTIONS / preflight (ResponseHeadersPolicy CORS, allowed origin)"
+PREFLIGHT_STATUS=$(curl -s -o /dev/null -D /tmp/cdkl-cf-pre.$$ -w '%{http_code}' \
+  -X OPTIONS \
+  -H 'Origin: http://127.0.0.1:5050' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization' \
+  "${BASE}/") || true
+[[ "${PREFLIGHT_STATUS}" == "204" ]] \
+  || fail "CORS preflight did not return 204 (got ${PREFLIGHT_STATUS})"
+grep -qi "access-control-allow-origin: http://127.0.0.1:5050" /tmp/cdkl-cf-pre.$$ \
+  || fail "CORS preflight missing Access-Control-Allow-Origin for the allowed origin"
+grep -qi "access-control-allow-methods: GET" /tmp/cdkl-cf-pre.$$ \
+  || fail "CORS preflight missing Access-Control-Allow-Methods"
+rm -f /tmp/cdkl-cf-pre.$$
+
+echo "==> GET / with Origin (actual-response Access-Control-Allow-Origin)"
+CORS_HEADERS=$(curl -fsS -D - -o /dev/null -H 'Origin: http://127.0.0.1:5050' "${BASE}/") \
+  || fail "GET / with Origin failed"
+echo "${CORS_HEADERS}" | grep -qi "access-control-allow-origin: http://127.0.0.1:5050" \
+  || fail "actual GET response missing Access-Control-Allow-Origin"
+
+echo "==> OPTIONS / preflight from a disallowed origin (no ACAO smuggled through)"
+curl -s -o /dev/null -D /tmp/cdkl-cf-bad.$$ \
+  -X OPTIONS \
+  -H 'Origin: https://evil.example.com' \
+  -H 'Access-Control-Request-Method: GET' \
+  "${BASE}/" || true
+if grep -qi "access-control-allow-origin" /tmp/cdkl-cf-bad.$$; then
+  rm -f /tmp/cdkl-cf-bad.$$
+  fail "disallowed origin received an Access-Control-Allow-Origin header"
+fi
+rm -f /tmp/cdkl-cf-bad.$$
+
+# ---------------------------------------------------------------------------
+# 5. --watch: edit the site source, expect the new content served after reload.
 # ---------------------------------------------------------------------------
 echo "==> --watch: edit site/index.html and expect the reload to serve it"
 cp site/index.html site/index.html.bak
@@ -119,7 +160,7 @@ mv -f site/index.html.bak site/index.html
 [[ "${RELOADED}" -eq 1 ]] || fail "--watch did not serve the edited site content after a reload"
 
 # ---------------------------------------------------------------------------
-# 5. Teardown frees the port.
+# 6. Teardown frees the port.
 # ---------------------------------------------------------------------------
 echo "==> SIGTERM and verify the port is freed"
 kill -TERM "${CDKL_PID}" 2>/dev/null || true
@@ -132,4 +173,4 @@ CDKL_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, and a --watch reload."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."

@@ -201,7 +201,23 @@ AWS managed services.
   viewer-request function returning a `statusCode` short-circuits with a
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin, then the viewer-response function runs
-  over the origin response. A **Lambda Function URL origin**
+  over the origin response. A behavior's
+  **`AWS::CloudFront::ResponseHeadersPolicy` CORS** (`CorsConfig`, attached
+  via `ResponseHeadersPolicyId`) is reproduced at the edge per behavior: a
+  matching `OPTIONS` preflight is answered with the canonical `204` + CORS
+  headers before the origin is hit, and an actual response gets
+  `Access-Control-Allow-Origin` (+ `Vary: Origin` / `Allow-Credentials` /
+  `Expose-Headers`) added last (mirroring `CorsConfig.OriginOverride`).
+  Origin matching is literal-or-`*` (a wildcard-subdomain entry like
+  `https://*.example.com` is not matched; an AWS-managed policy id literal is
+  not fetchable so its CORS is skipped). The CORS headers are always applied
+  last (the policy wins), so `CorsConfig.OriginOverride: false` is not
+  distinguished from `true` — an origin that emits its own
+  `Access-Control-Allow-Origin` is still overridden locally. The non-CORS
+  parts of a response headers policy (`SecurityHeadersConfig` /
+  `CustomHeadersConfig` / `RemoveHeadersConfig` / `ServerTimingHeadersConfig`)
+  are not applied. A
+  **Lambda Function URL origin**
   (`origins.FunctionUrlOrigin`) is also served (issue #376): the origin's
   `DomainName` (`Fn::Select[2, Fn::Split['/', GetAtt[Url, 'FunctionUrl']]]`)
   resolves to the `AWS::Lambda::Url` -> its `TargetFunctionArn` -> the
@@ -415,6 +431,10 @@ compute-locally category for Lambda + API Gateway).
   URL origin -> backing `AWS::Lambda::Function` via the
   `Fn::Select/Split/GetAtt` `DomainName` + `AWS::Lambda::Url`
   `TargetFunctionArn`, issue #376; custom / unresolved origins flagged),
+  per-behavior CORS (each behavior's `ResponseHeadersPolicyId` ->
+  `AWS::CloudFront::ResponseHeadersPolicy` `CorsConfig`, via the cors-handler
+  `resolveResponseHeadersPolicyCors` helper shared with the `start-api`
+  CloudFront chain),
   and custom error responses; the `start-cloudfront` entry),
   cloudfront-function-runtime (compiles + runs an inline
   CloudFront Function in a `node:vm` sandbox, builds the
@@ -430,10 +450,13 @@ compute-locally category for Lambda + API Gateway).
   (`translateLambdaResponse`) into the origin status / headers / body /
   cookies), cloudfront-server
   (the local HTTP/HTTPS server behind `start-cloudfront`: per-request
-  behavior match -> viewer-request fn -> origin (S3 static origin OR a
+  behavior match -> (a matched behavior's ResponseHeadersPolicy CORS
+  preflight short-circuit via `matchPreflight`) -> viewer-request fn ->
+  origin (S3 static origin OR a
   Lambda Function URL origin via the boot-time invoker map) ->
-  viewer-response fn, with a mutable distribution cell so `--watch`
-  swaps the routing model under the live socket),
+  viewer-response fn -> the behavior's actual-response CORS headers
+  (`applyCorsResponseHeadersFromConfig`), with a mutable distribution cell so
+  `--watch` swaps the routing model under the live socket),
   studio-custom-resource-filter (issue #323 —
   `isCustomResourceLambdaTarget` / `filterStudioCustomResources`:
   recognizes CDK custom-resource / provider-framework Lambdas by their

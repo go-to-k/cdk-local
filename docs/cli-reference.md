@@ -1503,6 +1503,24 @@ its `DistributionConfig`:
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin. A viewer-response function then runs
   over the origin response.
+- **CORS (ResponseHeadersPolicy)** — a behavior's `ResponseHeadersPolicyId`
+  → the `AWS::CloudFront::ResponseHeadersPolicy`'s `CorsConfig` is
+  reproduced at the edge, per behavior. A matching `OPTIONS` preflight is
+  answered with the canonical `204` + `Access-Control-Allow-*` headers
+  before the origin is hit; an actual response gets
+  `Access-Control-Allow-Origin` (+ `Vary: Origin` / `Allow-Credentials` /
+  `Expose-Headers`) added last, mirroring `CorsConfig.OriginOverride`. This
+  is what makes a browser fetch from an allowed origin work locally when
+  CORS is owned by CloudFront (not by the origin Lambda / S3). Origin
+  matching is literal-or-`*` — a wildcard-subdomain entry
+  (`https://*.example.com`) is not matched, and an AWS-managed policy id
+  (a literal, not a `{Ref}` to a local policy) cannot be fetched so its
+  CORS is skipped. The CORS headers are always applied last, so
+  `CorsConfig.OriginOverride: false` is not distinguished from `true`
+  (an origin that emits its own `Access-Control-Allow-Origin` is still
+  overridden locally). The policy's non-CORS sections
+  (`SecurityHeadersConfig` / `CustomHeadersConfig` / `RemoveHeadersConfig` /
+  `ServerTimingHeadersConfig`) are not applied.
 - **S3 origin → local content** — the behavior's `TargetOriginId` → the
   origin's bucket (`{Fn::GetAtt: [<bucket>, RegionalDomainName]}`) → the
   `Custom::CDKBucketDeployment` custom resource whose
