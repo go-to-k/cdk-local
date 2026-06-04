@@ -1,3 +1,10 @@
+# [0.115.0](https://github.com/go-to-k/cdk-local/compare/v0.114.0...v0.115.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** surface an ecs serve's auto-published replica host port to the request composer ([#392](https://github.com/go-to-k/cdk-local/issues/392)) ([#393](https://github.com/go-to-k/cdk-local/issues/393)) ([c39d809](https://github.com/go-to-k/cdk-local/commit/c39d809ce97314a9bd0c9db90fbe4cc5fca3b929))
+
 # [0.114.0](https://github.com/go-to-k/cdk-local/compare/v0.113.0...v0.114.0) (2026-06-04)
 
 
