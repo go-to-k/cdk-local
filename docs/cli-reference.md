@@ -1453,21 +1453,34 @@ remote, or use a permissive loopback CIDR for local smoke tests.
 ## `cdkl start-cloudfront` (serve a CloudFront distribution locally)
 
 `cdkl start-cloudfront <target>` reproduces a CloudFront distribution's
-**viewer-request → S3 origin → viewer-response** pipeline on a local HTTP
+**viewer-request → origin → viewer-response** pipeline on a local HTTP
 (or HTTPS) server, so a URL-rewrite / routing / SPA-fallback change is
 verifiable in seconds instead of a deploy. A CloudFront Function is your
 own application compute — a few lines of rewrite JS — and this command
-runs it wired to the actual S3 origin content (default root object, the
+runs it wired to the actual origin content (default root object, the
 real keys, index / error-page fallback), which is exactly the end-to-end
-connection a unit test of the function alone cannot exercise. No Docker is
-needed: the functions run in-process and the origin is served from local
-files.
+connection a unit test of the function alone cannot exercise.
 
-This serves the static-site / SPA shape — an **S3 origin** plus
-CloudFront Functions. It does NOT emulate the managed CloudFront service:
-custom (non-S3) origins, Lambda@Edge (`LambdaFunctionAssociations`), the
+Two origin kinds are served:
+
+- an **S3 origin** — the static-site / SPA shape; the functions run
+  in-process and the origin content is served from local files (no
+  Docker);
+- a **Lambda Function URL origin** (`origins.FunctionUrlOrigin`) — the
+  backing Lambda is your own application compute, run locally in a real
+  RIE container (the same machinery `cdkl invoke` uses) and invoked with
+  the Function URL request/response shape, so a CDN-fronted Lambda (SSR /
+  API behind CloudFront) is testable end to end. A pure-S3 distribution
+  needs no Docker; a Function URL origin boots one Lambda container.
+
+It does NOT emulate the managed CloudFront service: other custom (non-S3,
+non-Function-URL) origins, Lambda@Edge (`LambdaFunctionAssociations`), the
 KeyValueStore, and the 2.0 `cf.fetch` origin API are out of scope
-(warn-and-skip).
+(warn-and-skip; a request routed to one returns 502). On a Function URL
+origin the Lambda runs with the dev shell's forwarded AWS credentials —
+`start-cloudfront` takes neither `--from-cfn-stack` nor `--assume-role`;
+`AWS_IAM` auth on the Function URL is not enforced locally and response
+streaming is invoked buffered.
 
 ### Resolution model
 
@@ -1495,6 +1508,18 @@ its `DistributionConfig`:
   does NOT auto-index sub-paths (that is what a rewrite function does).
   `CustomErrorResponses` (e.g. `403 → /index.html`) provide the SPA
   fallback for a missing key.
+- **Lambda Function URL origin → local invoke** — the origin's
+  `DomainName` (`{Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<url>,
+  FunctionUrl]}]}]}`) → the `AWS::Lambda::Url` → its `TargetFunctionArn`
+  (a `Ref` or `{Fn::GetAtt: [<fn>, Arn]}`) → the backing
+  `AWS::Lambda::Function`. One warm RIE container per backing function is
+  booted at start-up (only when such an origin exists) and stopped on
+  shutdown. A request routed there is translated into a Function URL
+  (payload v2.0) event, invoked, and the response (status / headers /
+  body / `cookies`) becomes the origin response — the viewer-response
+  function still runs over it. The container is boot-time only: a `--watch`
+  reload re-synths the viewer functions + S3 origins but does NOT rebuild
+  it (restart to pick up a new Function URL origin or a code change).
 
 ### Target resolution
 
@@ -1516,7 +1541,8 @@ On top of the [common flags](#common-flags):
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
-| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). |
+| `--no-pull` | off | Skip `docker pull` for a Lambda Function URL origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
+| `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container is NOT rebuilt on reload (boot-time only). |
 
 ```bash
 # Serve a static-site distribution; pick interactively in a TTY
@@ -1531,6 +1557,11 @@ cdkl start-cloudfront MyStack/SiteDist --port 8080 --watch
 
 # Point an origin at a local build dir when the source can't be resolved
 cdkl start-cloudfront MyStack/SiteDist --origin SiteOrigin=./dist
+
+# Serve a distribution fronting a Lambda Function URL (boots a Lambda
+# container); --no-pull reuses the cached base image
+cdkl start-cloudfront MyStack/ApiDist --port 8080 --no-pull
+# then: curl http://127.0.0.1:8080/        (CloudFront -> Function URL -> your Lambda)
 ```
 
 ### `cdkl start-cloudfront` exit codes
