@@ -1,3 +1,10 @@
+## [0.124.2](https://github.com/go-to-k/cdk-local/compare/v0.124.1...v0.124.2) (2026-06-04)
+
+
+### Bug Fixes
+
+* **studio:** keep the Stop "Stopping..." affordance visible for a minimum window ([#421](https://github.com/go-to-k/cdk-local/issues/421)) ([1eebf0b](https://github.com/go-to-k/cdk-local/commit/1eebf0b0adcaf12c414fb3b32afb5e651ceb2bb7))
+
 ## [0.124.1](https://github.com/go-to-k/cdk-local/compare/v0.124.0...v0.124.1) (2026-06-04)
 
 
