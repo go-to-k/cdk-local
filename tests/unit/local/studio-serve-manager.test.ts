@@ -467,7 +467,7 @@ describe('createStudioServeManager', () => {
     expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
   });
 
-  it('does NOT forward --from-cfn-stack / --assume-role to a cloudfront serve (issue #367)', async () => {
+  it('DOES forward --from-cfn-stack / --assume-role to a cloudfront serve (issue #380)', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
     const spawnFn = vi.fn(() => child as never);
@@ -478,8 +478,9 @@ describe('createStudioServeManager', () => {
       spawnFn: spawnFn as never,
       clock: fixedClock(),
       proxyFactory: fp.factory,
-      // Session bindings set — start-cloudfront declares neither flag, so they
-      // must NOT reach the child (it would reject with "unknown option").
+      // Session bindings set — start-cloudfront declares both flags as of #380
+      // (a Function URL origin Lambda gets `cdkl invoke`-parity env / state /
+      // role), so they MUST reach the child.
       fromCfnStack: 'MyStack',
       assumeRole: 'arn:aws:iam::123456789012:role/app',
     });
@@ -487,11 +488,15 @@ describe('createStudioServeManager', () => {
     child.stdout.emit('data', 'CloudFront distribution serving on http://127.0.0.1:51234  (SiteDist)\n');
     await p;
     const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
-    expect(argv).not.toContain('--from-cfn-stack');
-    expect(argv).not.toContain('--assume-role');
+    const fi = argv.indexOf('--from-cfn-stack');
+    expect(fi).toBeGreaterThan(-1);
+    expect(argv[fi + 1]).toBe('MyStack');
+    const ai = argv.indexOf('--assume-role');
+    expect(ai).toBeGreaterThan(-1);
+    expect(argv[ai + 1]).toBe('arn:aws:iam::123456789012:role/app');
   });
 
-  it('DOES forward --from-cfn-stack to an api serve (kind-specific omit only) (issue #367)', async () => {
+  it('DOES forward --from-cfn-stack to an api serve (issue #367)', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
     const spawnFn = vi.fn(() => child as never);

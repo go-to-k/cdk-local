@@ -12,6 +12,10 @@
 #     event (requestContext.elb present, httpMethod=GET, path=/, query a=1).
 #   - GET /api/ping?x=1&x=2 -> path-routed to ApiFn, which sees the multi-value
 #     query variant (multiValueQueryStringParameters present).
+#   - Each Lambda target receives its declared Environment.Variables (GREETING),
+#     proving issue #380's container-env wiring (resolveLambdaContainerEnv) for
+#     ALB Lambda targets — before it, the runner injected only AWS_LAMBDA_* +
+#     shell creds and GREETING echoed "unset".
 #   - SIGTERM tears every container + network + front-door socket down.
 #
 #     bash tests/integration/local-start-alb-lambda/verify.sh
@@ -149,7 +153,15 @@ if ! echo "${ROOT_RESP}" | grep -q '"a":"1"'; then
   echo "FAIL: the Lambda event did not carry queryStringParameters {a:1}"
   exit 1
 fi
-echo "    OK: echo Lambda saw the ALB Lambda-target event (elb context + method + path + query)"
+# Issue #380 — the ALB Lambda target's declared Environment.Variables now reach
+# the container (via the shared resolveLambdaContainerEnv). Before this wiring
+# the front-door runner injected only AWS_LAMBDA_* + shell creds, so GREETING
+# would echo "unset"; assert the declared value flows through.
+if ! echo "${ROOT_RESP}" | grep -q '"greeting":"hello"'; then
+  echo "FAIL: EchoFn did not receive its declared env var GREETING=hello (got: ${ROOT_RESP})"
+  exit 1
+fi
+echo "    OK: echo Lambda saw the ALB Lambda-target event (elb context + method + path + query + declared env)"
 
 echo "==> Asserting the response headers were translated back to HTTP"
 HEADERS=$(curl -fsS -D - -o /dev/null "http://127.0.0.1:${LB_HOST_PORT}/?a=1" 2>/dev/null || true)
@@ -177,7 +189,13 @@ if ! echo "${API_RESP}" | grep -q '"multiValueQueryStringParameters":{"x":\["1",
   echo "FAIL: ApiFn did not receive the multi-value query variant for the multi-value-headers TG"
   exit 1
 fi
-echo "    OK: /api/ping path-routed to ApiFn with the multi-value query event variant"
+# Issue #380 — ApiFn's distinct declared env var reaches its container too (a
+# per-target env, not a shared one), proving the resolve-per-Lambda wiring.
+if ! echo "${API_RESP}" | grep -q '"greeting":"api-hello"'; then
+  echo "FAIL: ApiFn did not receive its declared env var GREETING=api-hello (got: ${API_RESP})"
+  exit 1
+fi
+echo "    OK: /api/ping path-routed to ApiFn with the multi-value query event variant + declared env"
 
 echo "==> Sending SIGTERM to cdk-local (${CDKL_PID})"
 kill -TERM "${CDKL_PID}"
@@ -219,4 +237,4 @@ if curl -fsS --max-time 2 "http://127.0.0.1:${LB_HOST_PORT}/" >/dev/null 2>&1; t
 fi
 
 echo ""
-echo "==> local-start-alb-lambda test passed (default -> EchoFn, /api/* -> ApiFn multi-value, clean teardown)"
+echo "==> local-start-alb-lambda test passed (default -> EchoFn, /api/* -> ApiFn multi-value, declared env injected, clean teardown)"

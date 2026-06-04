@@ -100,6 +100,11 @@ import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
 } from '../../local/front-door-lambda-runner.js';
+import {
+  resolveLambdaContainerEnv,
+  type LambdaContainerEnvOptions,
+  type LambdaContainerEnvResult,
+} from './local-invoke.js';
 import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js';
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
@@ -695,7 +700,7 @@ export async function runEcsServiceEmulator(
     // bind failure should surface before any docker budget is spent. No-op when
     // the strategy returned no plan (start-service / pure compute).
     if (frontDoor && frontDoor.listeners.length > 0) {
-      const built = await buildFrontDoor(frontDoor, options, logger);
+      const built = await buildFrontDoor(frontDoor, options, logger, extraStateProviders);
       frontDoorServers = built.servers;
       frontDoorByService = built.frontDoorByService;
       frontDoorLambdaRunners = built.lambdaRunners;
@@ -1865,6 +1870,71 @@ async function resolveServiceAndRunnerOpts(
 }
 
 /**
+ * Collect the unique backing Lambdas across every forward action in the plan
+ * (default actions + listener rules), keyed by logical id. start-service plans
+ * have no Lambda targets so this is empty.
+ */
+function collectAlbLambdaTargets(plan: FrontDoorPlan): Map<string, ResolvedLambda> {
+  const out = new Map<string, ResolvedLambda>();
+  const fromAction = (action: PlannedAction | undefined): void => {
+    if (!action || action.kind !== 'forward') return;
+    for (const t of action.targets) {
+      if (t.kind === 'lambda' && !out.has(t.lambda.logicalId)) {
+        out.set(t.lambda.logicalId, t.lambda);
+      }
+    }
+  };
+  for (const listener of plan.listeners) {
+    fromAction(listener.defaultAction);
+    for (const rule of listener.rules) fromAction(rule.action);
+  }
+  return out;
+}
+
+/**
+ * Issue #380 — resolve the container env for every ALB `TargetType: lambda`
+ * target group's backing Lambda, the SAME way `cdkl invoke` /
+ * `cdkl start-cloudfront` do, via the shared {@link resolveLambdaContainerEnv}.
+ * Returns a `logicalId -> LambdaContainerEnvResult` map the front-door threads
+ * into each Lambda runner so the function's declared `Environment.Variables` +
+ * `--from-cfn-stack` intrinsic substitution + `--assume-role` / `--profile`
+ * creds all reach the locally-invoked Lambda. `--assume-role` collapses the
+ * legacy `--assume-task-role` alias via {@link resolveEcsAssumeRoleOption}, and
+ * `--env-vars` overlays the same SAM-shape `Parameters` it overlays onto the
+ * ECS task containers. Empty when the plan carries no Lambda targets.
+ */
+async function resolveAlbLambdaTargetEnv(
+  plan: FrontDoorPlan,
+  options: EcsServiceEmulatorOptions,
+  extraStateProviders: ExtraStateProviders | undefined
+): Promise<Map<string, LambdaContainerEnvResult>> {
+  const lambdas = collectAlbLambdaTargets(plan);
+  const out = new Map<string, LambdaContainerEnvResult>();
+  if (lambdas.size === 0) return out;
+
+  const effectiveAssumeRole = resolveEcsAssumeRoleOption(options);
+  const envOptions: LambdaContainerEnvOptions = {
+    ...(options.fromCfnStack !== undefined && { fromCfnStack: options.fromCfnStack }),
+    ...(effectiveAssumeRole !== undefined && { assumeRole: effectiveAssumeRole }),
+    ...(options.region !== undefined && { region: options.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+    ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+    ...(options.envVars !== undefined && { envVars: options.envVars }),
+  };
+  const profileCredentials = options.profile
+    ? await resolveProfileCredentials(options.profile)
+    : undefined;
+
+  for (const [logicalId, lambda] of lambdas) {
+    out.set(
+      logicalId,
+      await resolveLambdaContainerEnv(lambda, envOptions, profileCredentials, extraStateProviders)
+    );
+  }
+  return out;
+}
+
+/**
  * Stand up one host-side reverse-proxy server PER LISTENER PORT from the
  * resolved {@link FrontDoorPlan}, path-routing each request across the services
  * the listener fronts, and return the started servers (for teardown) plus a
@@ -1883,7 +1953,13 @@ async function resolveServiceAndRunnerOpts(
 export async function buildFrontDoor(
   plan: FrontDoorPlan,
   options: EcsServiceEmulatorOptions,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  // State providers for resolving ALB Lambda-target container env under
+  // `--from-cfn-stack` (issue #380). The production caller passes the
+  // emulator's providers; it defaults so ECS-routing unit tests (which carry
+  // no Lambda targets) can omit it — with no Lambda targets the resolution is
+  // never invoked, so the omission never masks a missing-state bug.
+  extraStateProviders?: ExtraStateProviders
 ): Promise<{
   servers: StartedFrontDoorServer[];
   frontDoorByService: Map<string, FrontDoorServicePools>;
@@ -1900,16 +1976,32 @@ export async function buildFrontDoor(
   // Lambda logicalId -> one warm runner, reused across listeners / rules.
   const lambdaRegistry = new Map<string, FrontDoorLambdaRunner>();
 
+  // Issue #380 — resolve each ALB Lambda target group's container env the
+  // SAME way `cdkl invoke` does, so a `TargetType: lambda` target reaches its
+  // deployed resources: declared `Environment.Variables` + `--from-cfn-stack`
+  // intrinsic substitution + `--assume-role` STS creds (else forwarded shell /
+  // `--profile` creds). Pre-resolved once per unique backing Lambda (boot-time
+  // only — the front-door is not rebuilt on `--watch` reload), then threaded
+  // into each runner below. start-service plans carry no Lambda targets, so
+  // this is a no-op there.
+  const lambdaEnvByLogicalId = await resolveAlbLambdaTargetEnv(plan, options, extraStateProviders);
+
   const dispatchFor = (t: PlannedForwardTarget): FrontDoorDispatchTarget => {
     if (t.kind === 'lambda') {
       let runner = lambdaRegistry.get(t.lambda.logicalId);
       if (!runner) {
+        const containerEnv = lambdaEnvByLogicalId.get(t.lambda.logicalId);
         runner = createFrontDoorLambdaRunner(t.lambda, {
           containerHost,
           skipPull: options.pull === false,
           ...(options.platform !== undefined && { platformOverride: options.platform }),
           ...(options.ecrRoleArn !== undefined && { ecrRoleArn: options.ecrRoleArn }),
           ...(options.region !== undefined && { region: options.region }),
+          ...(containerEnv !== undefined && { containerEnv: containerEnv.env }),
+          ...(containerEnv !== undefined &&
+            containerEnv.sensitiveEnvKeys.length > 0 && {
+              sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
+            }),
         });
         lambdaRegistry.set(t.lambda.logicalId, runner);
       }

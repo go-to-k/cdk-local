@@ -326,15 +326,17 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
     // `config.watch` per start (mutable — a Session-bar toggle applies to
     // the next serve), matching the `--watch` flag append below.
     const preferAssembly = config.watch !== true;
-    // `cloudfront` runs no container / makes no AWS call, so start-cloudfront
-    // declares neither `--from-cfn-stack` nor `--assume-role`; do not forward
-    // the session bindings to it (issue #367).
-    const omitStateBindings = req.kind === 'cloudfront';
+    // Every serve kind now declares `--from-cfn-stack` / `--assume-role`:
+    // start-cloudfront gained them in issue #380 (a Function URL origin Lambda
+    // gets the same env / deployed-state / execution-role injection as
+    // `cdkl invoke`), so the session bindings are forwarded to ALL kinds. The
+    // `omitStateBindings` guard in buildSharedChildArgs stays available for a
+    // future pure-local serve kind that declares neither flag.
     return [
       spec.command,
       req.targetId,
       ...spec.portArgs,
-      ...buildSharedChildArgs(config, { preferAssembly, omitStateBindings }),
+      ...buildSharedChildArgs(config, { preferAssembly }),
       ...buildPerRunArgs(req.kind, req.options),
       // The `--env-vars` per-run option takes a FILE (issue #355) — the env-kv
       // KV rows / JSON were materialized into a SAM-shape temp file by the

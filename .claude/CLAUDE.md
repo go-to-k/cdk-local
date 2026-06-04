@@ -142,7 +142,18 @@ AWS managed services.
   itself). A `TargetType: lambda` target group is served by invoking
   the backing Lambda locally (HTTP request -> `requestContext.elb`
   event -> RIE -> response), so a forward can mix ECS and Lambda
-  targets
+  targets. Each Lambda target's container gets the SAME env as a direct
+  `cdkl invoke` (issue #380): its declared `Environment.Variables`,
+  `--from-cfn-stack` intrinsic substitution, and `--assume-role` STS /
+  `--profile`-resolved creds are injected via the shared
+  `resolveLambdaContainerEnv` (resolved once per unique backing Lambda at boot
+  — boot-time only, like the rest of the front-door). As with
+  start-cloudfront's front-door Lambda path, the resolved creds ride the
+  container env overlay (so the standard SDK credential chain resolves them);
+  the named-profile credentials-FILE mount `cdkl invoke` adds is not
+  reproduced, so a handler reading creds via an explicit `fromIni({ profile })`
+  is the one `--profile` case not covered. `--env-vars` overlays the same
+  SAM-shape `Parameters` it overlays onto the ECS task containers
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
@@ -253,10 +264,9 @@ AWS managed services.
   is omitted in a TTY). Also runnable from `cdkl studio` as the
   `cloudfront` serve kind (issue #367) — a [Start]/[Stop] control with a
   capture proxy, like `api` / `alb`; the session-global
-  `--from-cfn-stack` / `--assume-role` bindings are NOT forwarded to the
-  studio cloudfront serve yet (studio still sets `omitStateBindings` for the
-  `cloudfront` kind — a #380 follow-up, since start-cloudfront now DOES
-  declare those flags for its Function URL origin Lambda)
+  `--from-cfn-stack` / `--assume-role` bindings ARE forwarded to the studio
+  cloudfront serve (issue #380, since start-cloudfront declares those flags
+  for its Function URL origin Lambda), same as every other serve kind
 
 ### Calls real AWS (managed services)
 
@@ -611,10 +621,11 @@ compute-locally category for Lambda + API Gateway).
   forward to their spawned child commands, so the two spawn sites cannot
   drift. The `omitStateBindings` option (issue #367) suppresses
   `--from-cfn-stack` / `--assume-role` for a child that does not declare
-  them — the serve-manager still sets it for the `cloudfront` kind. As of
-  issue #380 start-cloudfront DOES declare those flags (for a Function URL
-  origin Lambda), so forwarding the session bindings to the cloudfront serve
-  is a #380 follow-up; today they are still omitted),
+  them; as of issue #380 EVERY serve kind (incl. `cloudfront`, for its
+  Function URL origin Lambda) declares those flags, so the serve-manager no
+  longer sets `omitStateBindings` for any kind — the bindings are forwarded
+  to all serves. The guard stays available for a future pure-local serve
+  kind),
   studio-option-specs (issue #301 slice 2 — the per-target run-option
   descriptor table (`OPTION_SPECS`) that is the single source the UI
   renders controls from (serialized into the page) AND the server builds
