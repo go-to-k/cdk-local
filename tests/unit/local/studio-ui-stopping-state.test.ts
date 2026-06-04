@@ -7,6 +7,7 @@ const EXPOSE = `
 window.__t = {
   serveMeta: serveMeta,
   serveState: serveState,
+  stoppingSince: stoppingSince,
   renderServeWorkspace: renderServeWorkspace,
   updateServeRow: updateServeRow,
   onServeEvent: onServeEvent,
@@ -56,7 +57,7 @@ describe('Stop button "Stopping..." / "Starting..." transients (issue #394)', ()
     }
   });
 
-  it('a stopped serve event clears "Stopping..." and reverts the button to Start', () => {
+  it('a stopped serve event AFTER the min-visible window reverts the button to Start', () => {
     const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
     try {
       (h.window as any).fetch = () => new Promise(() => {});
@@ -64,9 +65,36 @@ describe('Stop button "Stopping..." / "Starting..." transients (issue #394)', ()
       headBtn(h).click();
       expect(headBtn(h).textContent).toBe('Stopping…');
 
+      // Pretend the Stop has been in flight longer than the min-visible window,
+      // so the terminal event settles immediately (no lingering "Stopping...").
+      t.stoppingSince.set('S/Svc', Date.now() - 100000);
       // The SSE 'stopped' event arrives (clean user stop — no message).
       t.onServeEvent({ target: 'S/Svc', status: 'stopped' });
 
+      expect(headBtn(h).textContent).toBe('Start');
+      expect(rowBtn(t).textContent).toBe('Start');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a near-instant stop keeps "Stopping..." up for the min-visible window, then reverts', async () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      (h.window as any).fetch = () => new Promise(() => {});
+      const t = setup(h, 'running');
+      headBtn(h).click();
+      expect(headBtn(h).textContent).toBe('Stopping…');
+
+      // A start-api / pure-S3 cloudfront serve tears down in tens of ms — the
+      // 'stopped' event arrives almost immediately. The button must NOT flip
+      // straight to Start (that is the bug: the Stop looked like it did nothing).
+      t.onServeEvent({ target: 'S/Svc', status: 'stopped' });
+      expect(headBtn(h).textContent).toBe('Stopping…');
+      expect(headBtn(h).disabled).toBe(true);
+
+      // After the min-visible window the pending timer clears it and reverts.
+      await new Promise((r) => setTimeout(r, 700));
       expect(headBtn(h).textContent).toBe('Start');
       expect(rowBtn(t).textContent).toBe('Start');
     } finally {
