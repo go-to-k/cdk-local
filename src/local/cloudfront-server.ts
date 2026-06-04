@@ -31,6 +31,7 @@ import type {
 } from './cloudfront-resolver.js';
 import { serveLambdaUrlOrigin } from './cloudfront-lambda-origin.js';
 import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
+import type { S3OriginReader } from './cloudfront-s3-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
 import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handler.js';
 
@@ -91,6 +92,15 @@ export interface StartCloudFrontServerOptions {
    * reload has no invoker and is skipped (restart to boot it).
    */
   edgeInvokers?: LambdaUrlInvokerMap;
+  /**
+   * Readers for `s3-deployed` origins, keyed by origin id (issue #405). Built
+   * once at boot (one S3 client per deployed-S3 origin) and NOT recreated on a
+   * `--watch` reload — like {@link lambdaInvokers}. The reloaded distribution's
+   * matching origin is re-annotated to `s3-deployed` so it dispatches to the
+   * same boot-time reader; an origin promoted to deployed-S3 only after a reload
+   * has no reader and is served as 502 (restart to bind it).
+   */
+  s3OriginReaders?: Map<string, S3OriginReader>;
 }
 
 /** Start the local CloudFront server and resolve once it is listening. */
@@ -103,10 +113,19 @@ export async function startCloudFrontServer(
   // outside the swappable distribution cell.
   const lambdaInvokers: LambdaUrlInvokerMap = options.lambdaInvokers ?? new Map();
   const edgeInvokers: LambdaUrlInvokerMap = options.edgeInvokers ?? new Map();
+  const s3OriginReaders: Map<string, S3OriginReader> = options.s3OriginReaders ?? new Map();
   const state: { distribution: ResolvedDistribution } = { distribution: options.distribution };
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void handleRequest(req, res, state, lambdaInvokers, edgeInvokers, logger).catch((err) => {
+    void handleRequest(
+      req,
+      res,
+      state,
+      lambdaInvokers,
+      edgeInvokers,
+      s3OriginReaders,
+      logger
+    ).catch((err) => {
       logger.warn(`Request handling failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -145,6 +164,7 @@ async function handleRequest(
   state: { distribution: ResolvedDistribution },
   lambdaInvokers: LambdaUrlInvokerMap,
   edgeInvokers: LambdaUrlInvokerMap,
+  s3OriginReaders: Map<string, S3OriginReader>,
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
   const distribution = state.distribution;
@@ -260,6 +280,7 @@ async function handleRequest(
     sourceIp: clientIp,
     distribution,
     lambdaInvokers,
+    s3OriginReaders,
     logger,
   });
   if (!originResult) return writePlain(res, 502, originUnavailableMessage(origin, behavior));
@@ -508,6 +529,7 @@ interface ServeFromOriginArgs {
   sourceIp: string;
   distribution: ResolvedDistribution;
   lambdaInvokers: LambdaUrlInvokerMap;
+  s3OriginReaders: Map<string, S3OriginReader>;
   logger: ReturnType<typeof getLogger>;
 }
 
@@ -542,6 +564,20 @@ async function serveFromOrigin(
     };
   }
 
+  // A deployed-S3 origin: read the bucket from real S3 on demand (issue #405).
+  if (origin.kind === 's3-deployed') {
+    const reader = args.s3OriginReaders.get(origin.originId);
+    if (!reader) return undefined;
+    const result = await reader({
+      uri: args.uri,
+      ...(distribution.defaultRootObject !== undefined && {
+        defaultRootObject: distribution.defaultRootObject,
+      }),
+      customErrorResponses: distribution.customErrorResponses,
+    });
+    return { statusCode: result.statusCode, headers: result.headers, body: result.body };
+  }
+
   if (origin.kind !== 's3') return undefined;
   const result = serveFromStaticOrigin({
     localDirs: origin.localDirs,
@@ -570,6 +606,12 @@ function originUnavailableMessage(
     return (
       `Origin '${origin.originId}' is a custom (non-S3) origin (${origin.domainName}). ` +
       'cdkl start-cloudfront serves S3 origins and Lambda Function URL origins only.\n'
+    );
+  }
+  if (origin.kind === 's3-deployed') {
+    return (
+      `Origin '${origin.originId}' is a deployed-S3 origin (bucket '${origin.bucketName}') whose ` +
+      'reader was not booted (it was promoted after start-up). Restart start-cloudfront.\n'
     );
   }
   return (

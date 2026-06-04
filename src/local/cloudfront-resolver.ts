@@ -90,6 +90,22 @@ export type ResolvedOrigin =
   | { kind: 's3-unresolved'; originId: string; bucketLogicalId?: string }
   | {
       /**
+       * An S3 origin with no local BucketDeployment source, served by reading
+       * the DEPLOYED bucket from real S3 on demand (issue #405). Produced by the
+       * command layer's deployed-state resolution (under `--from-cfn-stack`),
+       * NOT by {@link resolveCloudFrontDistribution} — the resolver stays pure
+       * and template-only; the command promotes an `s3-unresolved` origin to
+       * this once it resolves the bucket's physical name from state. The
+       * request-time read is done by an `S3OriginReader` keyed by `originId`,
+       * booted alongside the server (boot-time only, like a Function URL origin
+       * container — not rebuilt on a `--watch` reload).
+       */
+      kind: 's3-deployed';
+      originId: string;
+      bucketName: string;
+    }
+  | {
+      /**
        * A Lambda Function URL custom origin (`origins.FunctionUrlOrigin`):
        * served by invoking the backing Lambda locally (issue #376). The
        * `functionLogicalId` is the `AWS::Lambda::Function` the Function URL

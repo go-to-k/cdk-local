@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
 import {
   contentTypeForKey,
+  resolveErrorResponseCandidates,
   safeJoin,
   serveFromStaticOrigin,
   uriToKey,
@@ -109,5 +110,23 @@ describe('contentTypeForKey', () => {
   it('falls back to octet-stream', () => {
     expect(contentTypeForKey('x.unknownext')).toBe('application/octet-stream');
     expect(contentTypeForKey('noext')).toBe('application/octet-stream');
+  });
+});
+
+describe('resolveErrorResponseCandidates', () => {
+  it('tries 403 before 404 and strips the leading slash, defaulting the response code', () => {
+    const out = resolveErrorResponseCandidates([
+      { errorCode: 404, responsePagePath: '/nf.html' },
+      { errorCode: 403, responsePagePath: '/spa.html', responseCode: 200 },
+    ]);
+    expect(out).toEqual([
+      { errorKey: 'spa.html', responseCode: 200 },
+      { errorKey: 'nf.html', responseCode: 404 },
+    ]);
+  });
+
+  it('skips entries with no responsePagePath, and is empty when none given', () => {
+    expect(resolveErrorResponseCandidates([{ errorCode: 403 }])).toEqual([]);
+    expect(resolveErrorResponseCandidates()).toEqual([]);
   });
 });

@@ -774,9 +774,27 @@ export {
 } from './local/cloudfront-kvs-binding.js';
 export {
   serveFromStaticOrigin,
+  resolveErrorResponseCandidates,
   type StaticOriginResult,
   type ResolvedCustomErrorResponse,
+  type ErrorResponseCandidate,
 } from './local/cloudfront-static-origin.js';
+/**
+ * Deployed-S3 read-through origin for `start-cloudfront` (issue #405): serves an
+ * S3 origin that has no local BucketDeployment source by reading the deployed
+ * bucket from real S3 on demand (the front/back-split case). A host CLI wrapping
+ * `start-cloudfront` reuses `createS3OriginReader` to build the per-origin reader
+ * the server dispatches `s3-deployed` origins to.
+ */
+export {
+  createS3OriginReader,
+  classifyS3Error,
+  type S3OriginReader,
+  type S3OriginReaderOptions,
+  type S3OriginCredentials,
+  type S3ObjectFetcher,
+  type S3FetchResult,
+} from './local/cloudfront-s3-origin.js';
 export {
   serveLambdaUrlOrigin,
   type LambdaUrlOriginRequest,

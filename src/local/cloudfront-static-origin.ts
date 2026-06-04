@@ -59,16 +59,12 @@ export function serveFromStaticOrigin(input: {
   // missing key as 403 to match the OAC-fronted private-bucket default, which
   // is what static-site CDK apps overwhelmingly use; an app that mapped 404
   // instead is also honored because we try BOTH codes' error responses.
-  const errorResponses = input.customErrorResponses ?? [];
-  for (const code of [403, 404]) {
-    const match = errorResponses.find((e) => e.errorCode === code);
-    if (!match || !match.responsePagePath) continue;
-    const errorKey = stripLeadingSlash(match.responsePagePath);
-    const body = readKey(input.localDirs, errorKey);
+  for (const candidate of resolveErrorResponseCandidates(input.customErrorResponses)) {
+    const body = readKey(input.localDirs, candidate.errorKey);
     if (body) {
       return {
-        statusCode: match.responseCode ?? code,
-        headers: { 'content-type': contentTypeForKey(errorKey) },
+        statusCode: candidate.responseCode,
+        headers: { 'content-type': contentTypeForKey(candidate.errorKey) },
         body,
       };
     }
@@ -80,6 +76,38 @@ export function serveFromStaticOrigin(input: {
     headers: { 'content-type': 'text/plain; charset=utf-8' },
     body: Buffer.from(`Not found: ${input.uri}\n`),
   };
+}
+
+/** A `CustomErrorResponses` entry resolved to the object key to serve + the status to return. */
+export interface ErrorResponseCandidate {
+  /** The object key of the error page (leading slash stripped). */
+  errorKey: string;
+  /** The status code to return when this error page is served. */
+  responseCode: number;
+}
+
+/**
+ * Resolve the ordered list of custom-error-page candidates to try when an
+ * origin object is missing/forbidden, shared by the local-dir static origin and
+ * the deployed-S3 read-through origin so the 403-then-404 priority + the
+ * `ResponseCode` mapping live in ONE place. We try 403 first then 404 because a
+ * missing key on an OAC-fronted private bucket returns 403 AccessDenied (the
+ * common static-site setup), but an app that mapped 404 instead is also honored.
+ */
+export function resolveErrorResponseCandidates(
+  customErrorResponses?: readonly ResolvedCustomErrorResponse[]
+): ErrorResponseCandidate[] {
+  const errorResponses = customErrorResponses ?? [];
+  const out: ErrorResponseCandidate[] = [];
+  for (const code of [403, 404]) {
+    const match = errorResponses.find((e) => e.errorCode === code);
+    if (!match || !match.responsePagePath) continue;
+    out.push({
+      errorKey: stripLeadingSlash(match.responsePagePath),
+      responseCode: match.responseCode ?? code,
+    });
+  }
+  return out;
 }
 
 /**
