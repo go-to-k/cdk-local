@@ -1,3 +1,10 @@
+# [0.114.0](https://github.com/go-to-k/cdk-local/compare/v0.113.0...v0.114.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** image-override Dockerfile picker for ECS Task Definitions ([#388](https://github.com/go-to-k/cdk-local/issues/388)) ([#391](https://github.com/go-to-k/cdk-local/issues/391)) ([f73c0ff](https://github.com/go-to-k/cdk-local/commit/f73c0ff5fb1b74e72e62abd9f1889c74ae46e7a7))
+
 # [0.113.0](https://github.com/go-to-k/cdk-local/compare/v0.112.0...v0.113.0) (2026-06-04)
 
 
