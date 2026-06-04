@@ -363,6 +363,77 @@ export async function bootLambdaUrlOrigins(
   return { invokers, runners };
 }
 
+/**
+ * Boot one warm RIE container per unique Lambda@Edge function across the
+ * distribution's behaviors (issue #400), returning the runners + an invoker map
+ * keyed by backing-function logical id for {@link startCloudFrontServer}. Each
+ * function gets the SAME container env as a direct `cdkl invoke` (declared env
+ * vars + `--from-cfn-stack` substitution + `--assume-role` creds) via the shared
+ * {@link resolveLambdaContainerEnv}. A function that cannot be booted is
+ * warn-and-skipped (its edge stage will not run); booted once at start-up, NOT
+ * rebuilt on a `--watch` reload.
+ */
+export async function bootLambdaEdgeFunctions(
+  distribution: ResolvedDistribution,
+  stacks: StackInfo[],
+  opts: {
+    containerHost: string;
+    skipPull: boolean;
+    envOptions: LambdaContainerEnvOptions;
+    profileCredentials?: ResolvedProfileCredentials;
+  }
+): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
+  const logger = getLogger();
+  const invokers: LambdaUrlInvokerMap = new Map();
+  const runners: FrontDoorLambdaRunner[] = [];
+  const functionLogicalIds = new Set<string>();
+  for (const behavior of distribution.behaviors) {
+    const edge = behavior.lambdaEdge;
+    if (!edge) continue;
+    for (const assoc of [
+      edge.viewerRequest,
+      edge.originRequest,
+      edge.originResponse,
+      edge.viewerResponse,
+    ]) {
+      if (assoc) functionLogicalIds.add(assoc.functionLogicalId);
+    }
+  }
+  for (const functionLogicalId of functionLogicalIds) {
+    try {
+      const lambda = resolveLambdaTarget(functionLogicalId, stacks);
+      const containerEnv = await resolveLambdaContainerEnv(
+        lambda,
+        opts.envOptions,
+        opts.profileCredentials
+      );
+      const runner = createFrontDoorLambdaRunner(lambda, {
+        containerHost: opts.containerHost,
+        skipPull: opts.skipPull,
+        ...(opts.envOptions.region !== undefined && { region: opts.envOptions.region }),
+        containerEnv: containerEnv.env,
+        ...(containerEnv.sensitiveEnvKeys.length > 0 && {
+          sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
+        }),
+      });
+      logger.info(
+        `Booting Lambda@Edge container for ${functionLogicalId} (the function runs locally via RIE)...`
+      );
+      await runner.start();
+      runners.push(runner);
+      invokers.set(functionLogicalId, (event) => runner.invoke(event));
+    } catch (err) {
+      // Non-fatal: the distribution can still serve without this edge stage.
+      logger.warn(
+        `Could not boot Lambda@Edge function '${functionLogicalId}'; its stage will be skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+  return { invokers, runners };
+}
+
 /** Emit boot-time WARNs for parts of the distribution cdk-local does not serve. */
 function warnUnsupported(distribution: ResolvedDistribution): void {
   const logger = getLogger();
@@ -378,11 +449,6 @@ function warnUnsupported(distribution: ResolvedDistribution): void {
           `Point it at a directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
       );
     }
-  }
-  if (distribution.behaviors.some((b) => b.hasLambdaEdge)) {
-    logger.warn(
-      'One or more cache behaviors carry a Lambda@Edge association; cdk-local does not run Lambda@Edge functions — only CloudFront Functions + the S3 origin are served.'
-    );
   }
 }
 
@@ -481,33 +547,53 @@ async function localStartCloudFrontCommand(
 
   // Boot a warm RIE container per Lambda Function URL origin (issue #376).
   // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
+  const bootOpts = {
+    containerHost: options.host,
+    skipPull: options.pull === false,
+    envOptions,
+    ...(profileCredentials !== undefined && { profileCredentials }),
+  };
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
     initial.distribution,
     initial.stacks,
-    {
-      containerHost: options.host,
-      skipPull: options.pull === false,
-      envOptions,
-      ...(profileCredentials !== undefined && { profileCredentials }),
-    }
+    bootOpts
+  );
+  // Boot a warm RIE container per Lambda@Edge function (issue #400). No
+  // associations -> empty map -> no Docker for an all-S3 distribution.
+  const { invokers: edgeInvokers, runners: edgeRunners } = await bootLambdaEdgeFunctions(
+    initial.distribution,
+    initial.stacks,
+    bootOpts
   );
 
-  // TLS resolution (real termination opt-in). Resolved once at boot.
-  let tls: FrontDoorTlsMaterials | undefined;
-  if (tlsRequested) {
-    tls = await resolveFrontDoorTlsMaterials({
-      certPath: options.tlsCert,
-      keyPath: options.tlsKey,
-    });
-  }
+  // From here, the booted RIE containers are live but the shutdown handler is
+  // not yet wired — a TLS-material or port-bind failure would otherwise strand
+  // every booted Lambda container. Stop them all before rethrowing.
+  let server: StartedCloudFrontServer;
+  try {
+    // TLS resolution (real termination opt-in). Resolved once at boot.
+    let tls: FrontDoorTlsMaterials | undefined;
+    if (tlsRequested) {
+      tls = await resolveFrontDoorTlsMaterials({
+        certPath: options.tlsCert,
+        keyPath: options.tlsKey,
+      });
+    }
 
-  const server: StartedCloudFrontServer = await startCloudFrontServer({
-    distribution: initial.distribution,
-    host: options.host,
-    port: basePort,
-    ...(tls && { tls }),
-    ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
-  });
+    server = await startCloudFrontServer({
+      distribution: initial.distribution,
+      host: options.host,
+      port: basePort,
+      ...(tls && { tls }),
+      ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
+      ...(edgeInvokers.size > 0 && { edgeInvokers }),
+    });
+  } catch (err) {
+    await Promise.all(
+      [...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined))
+    );
+    throw err;
+  }
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(
@@ -581,12 +667,12 @@ async function localStartCloudFrontCommand(
     } catch {
       /* best-effort */
     }
-    // Tear down any Lambda Function URL origin containers.
+    // Tear down any Lambda Function URL origin + Lambda@Edge containers.
     await Promise.all(
-      lambdaRunners.map((r) =>
+      [...lambdaRunners, ...edgeRunners].map((r) =>
         r.stop().catch((err) => {
           logger.debug(
-            `Lambda origin runner stop failed: ${err instanceof Error ? err.message : String(err)}`
+            `Lambda runner stop failed: ${err instanceof Error ? err.message : String(err)}`
           );
         })
       )

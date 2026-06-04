@@ -12,9 +12,18 @@ import {
   buildViewerResponseEvent,
   runViewerRequest,
   runViewerResponse,
+  serializeCfQueryString,
   type CfResponse,
   type CfValue,
 } from './cloudfront-function-runtime.js';
+import {
+  applyEdgeRequestResult,
+  applyEdgeResponseResult,
+  buildEdgeRequestEvent,
+  buildEdgeResponseEvent,
+  type EdgeRequestInput,
+  type EdgeResponseResult,
+} from './cloudfront-edge-event.js';
 import type {
   ResolvedBehavior,
   ResolvedDistribution,
@@ -75,6 +84,13 @@ export interface StartCloudFrontServerOptions {
    * no invoker and is served as 502 (restart to boot it).
    */
   lambdaInvokers?: LambdaUrlInvokerMap;
+  /**
+   * Invokers for Lambda@Edge functions, keyed by backing-function logical id
+   * (issue #400). Built once at boot (warm RIE containers), like
+   * {@link lambdaInvokers} — an association appearing only after a `--watch`
+   * reload has no invoker and is skipped (restart to boot it).
+   */
+  edgeInvokers?: LambdaUrlInvokerMap;
 }
 
 /** Start the local CloudFront server and resolve once it is listening. */
@@ -86,10 +102,11 @@ export async function startCloudFrontServer(
   // The Lambda invokers are boot-time only (warm containers), so they live
   // outside the swappable distribution cell.
   const lambdaInvokers: LambdaUrlInvokerMap = options.lambdaInvokers ?? new Map();
+  const edgeInvokers: LambdaUrlInvokerMap = options.edgeInvokers ?? new Map();
   const state: { distribution: ResolvedDistribution } = { distribution: options.distribution };
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    void handleRequest(req, res, state, lambdaInvokers, logger).catch((err) => {
+    void handleRequest(req, res, state, lambdaInvokers, edgeInvokers, logger).catch((err) => {
       logger.warn(`Request handling failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -127,6 +144,7 @@ async function handleRequest(
   res: ServerResponse,
   state: { distribution: ResolvedDistribution },
   lambdaInvokers: LambdaUrlInvokerMap,
+  edgeInvokers: LambdaUrlInvokerMap,
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
   const distribution = state.distribution;
@@ -158,66 +176,157 @@ async function handleRequest(
     }
   }
 
-  // Build the viewer-request event and run the viewer-request function.
+  const config = {
+    distributionDomainName: req.headers.host ?? 'localhost',
+    distributionId: distribution.logicalId,
+    requestId: `cdkl-${Date.now().toString(36)}-${Math.floor(performance.now()).toString(36)}`,
+  };
+  const clientIp = req.socket.remoteAddress ?? '127.0.0.1';
+
+  // Build the viewer-request event and run the viewer-request CloudFront Function.
   let requestEvent = buildViewerRequestEvent({
     method: req.method ?? 'GET',
     uri,
     querystring,
     headers: req.headers,
-    ip: req.socket.remoteAddress ?? '127.0.0.1',
+    ip: clientIp,
     distributionId: distribution.logicalId,
     domainName: req.headers.host ?? 'localhost',
-    requestId: `cdkl-${Date.now().toString(36)}-${Math.floor(performance.now()).toString(36)}`,
+    requestId: config.requestId,
   });
-
-  let effectiveUri = uri;
   if (behavior.viewerRequest) {
     const outcome = await runViewerRequest(behavior.viewerRequest, requestEvent);
     if (outcome.kind === 'response') {
       writeCfResponse(res, outcome.response, logger);
       return;
     }
-    effectiveUri = outcome.request.uri;
-    requestEvent = {
-      ...requestEvent,
-      request: outcome.request,
-    };
+    requestEvent = { ...requestEvent, request: outcome.request };
   }
 
-  // Resolve + serve from the behavior's origin.
+  // The mutable Lambda@Edge request state, seeded from the CloudFront Function's
+  // (possibly rewritten) request so the edge stages see its changes.
+  let edgeInput: EdgeRequestInput = {
+    clientIp,
+    method: requestEvent.request.method,
+    uri: requestEvent.request.uri,
+    querystring: serializeCfQueryString(requestEvent.request.querystring),
+    headers: cfHeadersToRawMap(requestEvent.request.headers),
+  };
+
+  // Lambda@Edge viewer-request, then origin-request — either may short-circuit
+  // with a generated response or rewrite the request that reaches the origin.
+  for (const eventType of ['viewer-request', 'origin-request'] as const) {
+    const assoc =
+      eventType === 'viewer-request'
+        ? behavior.lambdaEdge?.viewerRequest
+        : behavior.lambdaEdge?.originRequest;
+    if (!assoc) continue;
+    const invoke = edgeInvokers.get(assoc.functionLogicalId);
+    if (!invoke) {
+      logger.warn(
+        `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (added after start-up); skipping. Restart start-cloudfront.`
+      );
+      continue;
+    }
+    if (assoc.includeBody && edgeInput.body === undefined) {
+      edgeInput = { ...edgeInput, body: await readRequestBody(req) };
+    }
+    const event = buildEdgeRequestEvent({
+      eventType,
+      config,
+      request: edgeInput,
+      includeBody: assoc.includeBody,
+    });
+    const result = await invoke(event as unknown as Record<string, unknown>);
+    const outcome = applyEdgeRequestResult(result, edgeInput);
+    if (outcome.kind === 'response') {
+      writeEdgeResponse(res, outcome.response, behavior, req, logger);
+      return;
+    }
+    edgeInput = outcome.request;
+  }
+
+  // Resolve + serve from the behavior's origin (using the edge-rewritten request).
   const origin = distribution.origins.get(behavior.targetOriginId);
-  const originResult = await serveFromOrigin(origin, behavior, {
-    uri: effectiveUri,
-    querystring,
-    method: req.method ?? 'GET',
-    headers: req.headers,
-    // The body is buffered lazily — only a Lambda Function URL origin reads it;
-    // a static S3 origin never does, so an S3 GET pays no buffering cost.
-    readBody: () => readRequestBody(req),
-    sourceIp: req.socket.remoteAddress ?? '127.0.0.1',
+  const originResult = await serveFromOrigin(origin, {
+    uri: edgeInput.uri,
+    querystring: edgeInput.querystring,
+    method: edgeInput.method,
+    headers: rawMapToIncomingHeaders(edgeInput.headers),
+    // Buffered lazily — only a Lambda Function URL origin reads it; an
+    // includeBody edge stage may have already cached it on edgeInput.body.
+    readBody: () =>
+      edgeInput.body !== undefined ? Promise.resolve(edgeInput.body) : readRequestBody(req),
+    sourceIp: clientIp,
     distribution,
     lambdaInvokers,
     logger,
   });
   if (!originResult) return writePlain(res, 502, originUnavailableMessage(origin, behavior));
 
-  // Run the viewer-response function over the origin response.
   let finalStatus = originResult.statusCode;
   let finalHeaders = originResult.headers;
+  let finalBody = originResult.body;
+  const setCookies = [...(originResult.setCookies ?? [])];
+
+  // Lambda@Edge origin-response runs over the origin response (before the
+  // viewer-response stage), then may modify status / headers / body.
+  if (behavior.lambdaEdge?.originResponse) {
+    const r = await runEdgeResponseStage(
+      behavior.lambdaEdge.originResponse,
+      'origin-response',
+      {
+        config,
+        request: edgeInput,
+        statusCode: finalStatus,
+        headers: finalHeaders,
+        body: finalBody,
+      },
+      edgeInvokers,
+      logger
+    );
+    if (r) {
+      finalStatus = r.statusCode;
+      finalHeaders = r.headers;
+      finalBody = r.body;
+      setCookies.push(...r.setCookies);
+    }
+  }
+
+  // viewer-response: a CloudFront Function then a Lambda@Edge function (both can
+  // run on the same event type — CloudFront runs the Function first).
   if (behavior.viewerResponse) {
     const responseEvent = buildViewerResponseEvent(requestEvent, {
-      statusCode: originResult.statusCode,
-      headers: originResult.headers,
+      statusCode: finalStatus,
+      headers: finalHeaders,
     });
     const mutated = await runViewerResponse(behavior.viewerResponse, responseEvent);
     finalStatus = mutated.statusCode;
-    finalHeaders = cfHeadersToPlain(mutated.headers, originResult.headers);
+    finalHeaders = cfHeadersToPlain(mutated.headers, finalHeaders);
+  }
+  if (behavior.lambdaEdge?.viewerResponse) {
+    const r = await runEdgeResponseStage(
+      behavior.lambdaEdge.viewerResponse,
+      'viewer-response',
+      {
+        config,
+        request: edgeInput,
+        statusCode: finalStatus,
+        headers: finalHeaders,
+        body: finalBody,
+      },
+      edgeInvokers,
+      logger
+    );
+    if (r) {
+      finalStatus = r.statusCode;
+      finalHeaders = r.headers;
+      finalBody = r.body;
+      setCookies.push(...r.setCookies);
+    }
   }
 
-  // Collect Set-Cookie from BOTH the origin's v2 cookies[] and any set-cookie a
-  // viewer-response function added (the flat header map can't carry multiple),
-  // pulling the latter out of finalHeaders so it isn't dropped or double-set.
-  const setCookies = [...(originResult.setCookies ?? [])];
+  // Collect Set-Cookie from the flat header map (it can't carry multiples).
   for (const name of Object.keys(finalHeaders)) {
     if (name.toLowerCase() === 'set-cookie') {
       setCookies.push(finalHeaders[name]!);
@@ -236,11 +345,8 @@ async function handleRequest(
       );
     }
   }
-  // Add the behavior's ResponseHeadersPolicy CORS headers to the actual
-  // response (Access-Control-Allow-Origin + Vary / credentials / expose),
-  // last so they win — CloudFront's CorsConfig.OriginOverride applies the
-  // policy over any header the origin set. No-op without a request Origin or
-  // an allowed one.
+  // The behavior's ResponseHeadersPolicy CORS headers, applied last (the policy
+  // wins, mirroring CorsConfig.OriginOverride). No-op without an allowed Origin.
   if (behavior.cors) {
     const origin = req.headers.origin;
     applyCorsResponseHeadersFromConfig(
@@ -249,7 +355,92 @@ async function handleRequest(
       typeof origin === 'string' ? origin : undefined
     );
   }
-  res.end(originResult.body);
+  res.end(finalBody);
+}
+
+/** Run a Lambda@Edge response-stage function, returning the modified response (or undefined when no invoker). */
+async function runEdgeResponseStage(
+  assoc: { functionLogicalId: string },
+  eventType: 'origin-response' | 'viewer-response',
+  ctx: {
+    config: { distributionDomainName: string; distributionId: string; requestId: string };
+    request: EdgeRequestInput;
+    statusCode: number;
+    headers: Record<string, string>;
+    body: Buffer;
+  },
+  edgeInvokers: LambdaUrlInvokerMap,
+  logger: ReturnType<typeof getLogger>
+): Promise<EdgeResponseResult | undefined> {
+  const invoke = edgeInvokers.get(assoc.functionLogicalId);
+  if (!invoke) {
+    logger.warn(
+      `Lambda@Edge ${eventType} function '${assoc.functionLogicalId}' was not booted (added after start-up); skipping. Restart start-cloudfront.`
+    );
+    return undefined;
+  }
+  const event = buildEdgeResponseEvent({
+    eventType,
+    config: ctx.config,
+    request: ctx.request,
+    response: { statusCode: ctx.statusCode, headers: ctx.headers },
+  });
+  const result = await invoke(event as unknown as Record<string, unknown>);
+  return applyEdgeResponseResult(
+    result,
+    { statusCode: ctx.statusCode, headers: ctx.headers },
+    ctx.body
+  );
+}
+
+/** Write a Lambda@Edge generated response (request-stage short-circuit), incl. CORS. */
+function writeEdgeResponse(
+  res: ServerResponse,
+  result: EdgeResponseResult,
+  behavior: ResolvedBehavior,
+  req: IncomingMessage,
+  logger: ReturnType<typeof getLogger>
+): void {
+  // Drain any unread request body so a short-circuit on a keep-alive
+  // connection does not stall the next request on the socket.
+  if (!req.readableEnded) req.resume();
+  res.statusCode = result.statusCode;
+  setHeadersSafely(res, result.headers, logger);
+  if (result.setCookies.length > 0) {
+    try {
+      res.setHeader('set-cookie', result.setCookies);
+    } catch {
+      /* best-effort */
+    }
+  }
+  if (behavior.cors) {
+    const origin = req.headers.origin;
+    applyCorsResponseHeadersFromConfig(
+      res,
+      behavior.cors,
+      typeof origin === 'string' ? origin : undefined
+    );
+  }
+  res.end(result.body);
+}
+
+/** Convert a CloudFront-Function header map (`{name: CfValue}`) into the raw `{name: string[]}` form. */
+function cfHeadersToRawMap(cf: Record<string, CfValue>): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [name, val] of Object.entries(cf)) {
+    if (val.multiValue && val.multiValue.length > 0) out[name] = val.multiValue.map((m) => m.value);
+    else out[name] = [val.value];
+  }
+  return out;
+}
+
+/** Convert a raw `{name: string[]}` header map into Node's `IncomingHttpHeaders` shape. */
+function rawMapToIncomingHeaders(headers: Record<string, string[]>): IncomingMessage['headers'] {
+  const out: Record<string, string | string[]> = {};
+  for (const [name, values] of Object.entries(headers)) {
+    out[name] = values.length === 1 ? values[0]! : values;
+  }
+  return out;
 }
 
 /**
@@ -322,15 +513,9 @@ interface ServeFromOriginArgs {
 
 async function serveFromOrigin(
   origin: ResolvedOrigin | undefined,
-  behavior: ResolvedBehavior,
   args: ServeFromOriginArgs
 ): Promise<OriginResult | undefined> {
-  const { distribution, logger } = args;
-  if (behavior.hasLambdaEdge) {
-    logger.warn(
-      `Behavior ${behavior.pathPattern ?? '(default)'} carries a Lambda@Edge association; cdk-local does not run Lambda@Edge — serving the origin only.`
-    );
-  }
+  const { distribution } = args;
   if (!origin) return undefined;
 
   if (origin.kind === 'lambda-url') {

@@ -31,7 +31,6 @@ const headerFn = compileCloudFrontFunction(
 function distribution(): ResolvedDistribution {
   const def: ResolvedBehavior = {
     targetOriginId: 'o1',
-    hasLambdaEdge: false,
     viewerRequest: rewriteFn,
     viewerResponse: headerFn,
   };
@@ -114,7 +113,7 @@ describe('startCloudFrontServer — pipeline', () => {
     );
     const withBad = distribution();
     withBad.behaviors = [
-      { targetOriginId: 'o1', hasLambdaEdge: false, viewerResponse: badHeaderFn },
+      { targetOriginId: 'o1', viewerResponse: badHeaderFn },
     ];
     server.update(withBad);
     try {
@@ -137,7 +136,7 @@ describe('startCloudFrontServer — Lambda Function URL origin', () => {
     return {
       logicalId: 'Dist',
       stackName: 'Stack',
-      behaviors: [{ targetOriginId: 'fn', hasLambdaEdge: false, viewerResponse: headerFn }],
+      behaviors: [{ targetOriginId: 'fn', viewerResponse: headerFn }],
       origins: new Map([
         [
           'fn',
@@ -217,7 +216,6 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS', () => {
   function corsDistribution(): ResolvedDistribution {
     const def: ResolvedBehavior = {
       targetOriginId: 'o1',
-      hasLambdaEdge: false,
       cors: {
         AllowOrigins: ['http://127.0.0.1:5050'],
         AllowMethods: ['POST'],
@@ -344,7 +342,6 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS (credentials + ex
   function credsDistribution(): ResolvedDistribution {
     const def: ResolvedBehavior = {
       targetOriginId: 'o1',
-      hasLambdaEdge: false,
       viewerResponse: varyFn,
       cors: {
         AllowOrigins: ['*'],
@@ -414,8 +411,8 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS (credentials + ex
 });
 
 describe('matchBehavior', () => {
-  const def: ResolvedBehavior = { targetOriginId: 'o', hasLambdaEdge: false };
-  const api: ResolvedBehavior = { pathPattern: '/api/*', targetOriginId: 'o', hasLambdaEdge: false };
+  const def: ResolvedBehavior = { targetOriginId: 'o' };
+  const api: ResolvedBehavior = { pathPattern: '/api/*', targetOriginId: 'o' };
 
   it('prefers a matching path pattern over the default', () => {
     expect(matchBehavior([def, api], '/api/x')).toBe(api);
@@ -425,5 +422,179 @@ describe('matchBehavior', () => {
   });
   it('returns undefined when there is no default and nothing matches', () => {
     expect(matchBehavior([api], '/other')).toBeUndefined();
+  });
+});
+
+describe('startCloudFrontServer — Lambda@Edge', () => {
+  let edgeDir: string;
+  let edgeServer: StartedCloudFrontServer;
+
+  beforeAll(async () => {
+    edgeDir = mkdtempSync(join(tmpdir(), 'cdkl-cf-edge-'));
+    writeFileSync(join(edgeDir, 'index.html'), '<h1>origin</h1>');
+
+    // viewer-request L@E: 401 unless the request carries x-auth; else continue.
+    const authInvoke = async (event: Record<string, unknown>): Promise<unknown> => {
+      const cf = (event as { Records: Array<{ cf: { request: { headers: Record<string, unknown> } } }> })
+        .Records[0]!.cf;
+      if (cf.request.headers['x-auth']) return cf.request;
+      return {
+        status: '401',
+        statusDescription: 'Unauthorized',
+        headers: { 'content-type': [{ key: 'Content-Type', value: 'text/plain' }] },
+        body: 'denied',
+      };
+    };
+    // origin-response L@E: stamp an x-edge header onto the response.
+    const stampInvoke = async (event: Record<string, unknown>): Promise<unknown> => {
+      const cf = (event as { Records: Array<{ cf: { response: { headers: Record<string, unknown> } } }> })
+        .Records[0]!.cf;
+      const headers = cf.response.headers;
+      headers['x-edge'] = [{ key: 'X-Edge', value: 'stamped' }];
+      return { ...cf.response, headers };
+    };
+
+    const behavior: ResolvedBehavior = {
+      targetOriginId: 'o1',
+      lambdaEdge: {
+        viewerRequest: { functionLogicalId: 'AuthFn', includeBody: false },
+        originResponse: { functionLogicalId: 'StampFn', includeBody: false },
+      },
+    };
+    const dist: ResolvedDistribution = {
+      logicalId: 'EdgeDist',
+      stackName: 'Stack',
+      defaultRootObject: 'index.html',
+      behaviors: [behavior],
+      origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [edgeDir] }]]),
+      customErrorResponses: [],
+    };
+    edgeServer = await startCloudFrontServer({
+      distribution: dist,
+      host: '127.0.0.1',
+      port: 0,
+      edgeInvokers: new Map([
+        ['AuthFn', authInvoke],
+        ['StampFn', stampInvoke],
+      ]),
+    });
+  });
+
+  afterAll(async () => {
+    await edgeServer.close();
+    rmSync(edgeDir, { recursive: true, force: true });
+  });
+
+  it('viewer-request Lambda@Edge short-circuits with a generated response', async () => {
+    const res = await fetch(`${edgeServer.url}/`);
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('denied');
+  });
+
+  it('continues to the origin when the request passes the edge auth, with origin-response stamp', async () => {
+    const res = await fetch(`${edgeServer.url}/`, { headers: { 'x-auth': 'yes' } });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('origin');
+    expect(res.headers.get('x-edge')).toBe('stamped');
+  });
+
+  // Start a one-off server for a specific behavior + invoker map, reusing edgeDir.
+  async function startEdge(
+    behavior: ResolvedBehavior,
+    invokers: Array<[string, (e: Record<string, unknown>) => Promise<unknown>]>
+  ): Promise<StartedCloudFrontServer> {
+    return startCloudFrontServer({
+      distribution: {
+        logicalId: 'D',
+        stackName: 'S',
+        defaultRootObject: 'index.html',
+        behaviors: [behavior],
+        origins: new Map([['o1', { kind: 's3', originId: 'o1', localDirs: [edgeDir] }]]),
+        customErrorResponses: [],
+      },
+      host: '127.0.0.1',
+      port: 0,
+      edgeInvokers: new Map(invokers),
+    });
+  }
+
+  it('origin-request Lambda@Edge rewrites the request URI before the origin fetch', async () => {
+    const rewrite = async (event: Record<string, unknown>): Promise<unknown> => {
+      const req = (event as { Records: Array<{ cf: { request: { uri: string } } }> }).Records[0]!.cf
+        .request;
+      return { ...req, uri: '/' };
+    };
+    const s = await startEdge(
+      {
+        targetOriginId: 'o1',
+        lambdaEdge: { originRequest: { functionLogicalId: 'R', includeBody: false } },
+      },
+      [['R', rewrite]]
+    );
+    const res = await fetch(`${s.url}/whatever`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('origin');
+    await s.close();
+  });
+
+  it('skips an edge stage (serving the origin) when its function was not booted', async () => {
+    const s = await startEdge(
+      {
+        targetOriginId: 'o1',
+        lambdaEdge: { viewerRequest: { functionLogicalId: 'Ghost', includeBody: false } },
+      },
+      []
+    );
+    const res = await fetch(`${s.url}/`);
+    expect(res.status).toBe(200); // skipped, NOT a 502
+    expect(await res.text()).toContain('origin');
+    await s.close();
+  });
+
+  it('surfaces the request body to an includeBody origin-request function', async () => {
+    const echoLen = async (event: Record<string, unknown>): Promise<unknown> => {
+      const req = (event as { Records: Array<{ cf: { request: { body?: { data: string } } } }> })
+        .Records[0]!.cf.request;
+      const decoded = Buffer.from(req.body?.data ?? '', 'base64').toString();
+      return {
+        status: '200',
+        statusDescription: 'OK',
+        headers: { 'content-type': [{ key: 'Content-Type', value: 'text/plain' }] },
+        body: `got:${decoded}`,
+      };
+    };
+    const s = await startEdge(
+      {
+        targetOriginId: 'o1',
+        lambdaEdge: { originRequest: { functionLogicalId: 'B', includeBody: true } },
+      },
+      [['B', echoLen]]
+    );
+    const res = await fetch(`${s.url}/api`, { method: 'POST', body: 'hello' });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('got:hello');
+    await s.close();
+  });
+
+  it('runs BOTH a CloudFront-Function and a Lambda@Edge viewer-response (not mutually exclusive)', async () => {
+    const stamp = async (event: Record<string, unknown>): Promise<unknown> => {
+      const cf = (event as { Records: Array<{ cf: { response: { headers: Record<string, unknown> } } }> })
+        .Records[0]!.cf;
+      cf.response.headers['x-edge-vr'] = [{ key: 'X-Edge-Vr', value: '1' }];
+      return cf.response;
+    };
+    const s = await startEdge(
+      {
+        targetOriginId: 'o1',
+        viewerResponse: headerFn,
+        lambdaEdge: { viewerResponse: { functionLogicalId: 'V', includeBody: false } },
+      },
+      [['V', stamp]]
+    );
+    const res = await fetch(`${s.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-cdkl')).toBe('1'); // CloudFront Function ran
+    expect(res.headers.get('x-edge-vr')).toBe('1'); // Lambda@Edge ran too
+    await s.close();
   });
 });

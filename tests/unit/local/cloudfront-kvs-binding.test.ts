@@ -29,7 +29,6 @@ function fn(
 function distWith(...functions: CompiledCloudFrontFunction[]): ResolvedDistribution {
   const behaviors: ResolvedBehavior[] = functions.map((f) => ({
     targetOriginId: 'O',
-    hasLambdaEdge: false,
     viewerRequest: f as never,
   }));
   return {
@@ -150,8 +149,8 @@ describe('resolveKvsModulesForDistribution', () => {
       logicalId: 'Dist',
       stackName: 'Stack',
       behaviors: [
-        { targetOriginId: 'O', hasLambdaEdge: false, viewerRequest: f as never },
-        { targetOriginId: 'O', hasLambdaEdge: false, viewerResponse: f as never },
+        { targetOriginId: 'O', viewerRequest: f as never },
+        { targetOriginId: 'O', viewerResponse: f as never },
       ],
       origins: new Map(),
       customErrorResponses: [],

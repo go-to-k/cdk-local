@@ -275,9 +275,19 @@ AWS managed services.
   API, SigV4A-signed) or a local JSON map (`--kvs-file <kvsLogicalId>=<file>`,
   the AWS-free escape hatch symmetric with `--origin`). A KVS read with no
   binding fails with an actionable error naming both flags; `cf.kvs().meta()` /
-  `count()` and KVS writes are not reproduced. S3 + Lambda Function URL
-  origins ONLY: a generic custom (non-S3, non-Function-URL) origin, a
-  `LambdaFunctionAssociations` Lambda@Edge association (issue #400), and the
+  `count()` and KVS writes are not reproduced. A behavior's
+  **Lambda@Edge** functions (`LambdaFunctionAssociations`) ARE run (issue
+  #400): each is real Lambda code, booted once in a warm RIE container (the
+  same machinery as a Function URL origin, with the same `cdkl invoke`
+  container env), and invoked at its event point with the Lambda@Edge event
+  shape (`{ Records: [{ cf: { config, request, response } }] }`). All four
+  event types are wired into the pipeline — `viewer-request` /
+  `origin-request` (before the origin fetch; either may short-circuit with a
+  generated response or rewrite the request) -> origin -> `origin-response` /
+  `viewer-response` (modify the response). `IncludeBody` surfaces the request
+  body (base64); the `request.origin` rewrite block + the edge size/timeout
+  tiers are out of scope. S3 + Lambda Function URL
+  origins ONLY: a generic custom (non-S3, non-Function-URL) origin and the
   2.0 `cf.fetch` origin API are WARN-and-skip (custom / unresolved origins
   return 502).
   Single distribution per invocation (interactive picker when the target
@@ -466,7 +476,11 @@ compute-locally category for Lambda + API Gateway).
   cloudfront-resolver (issue #363 — resolves an
   `AWS::CloudFront::Distribution` to a `ResolvedDistribution`: behaviors
   (default + `CacheBehaviors[]`) -> path pattern + viewer-request /
-  viewer-response CloudFront Functions, origins (S3 origin -> local
+  viewer-response CloudFront Functions + per-event-type Lambda@Edge
+  associations (issue #400 — each `LambdaFunctionAssociations[]` entry's
+  `LambdaFunctionARN` resolved through its `AWS::Lambda::Version` to the
+  backing `AWS::Lambda::Function` via `pickLambdaEdgeFunctionLogicalId`),
+  origins (S3 origin -> local
   BucketDeployment source dir via the asset manifest; a Lambda Function
   URL origin -> backing `AWS::Lambda::Function` via the
   `Fn::Select/Split/GetAtt` `DomainName` + `AWS::Lambda::Url`
@@ -503,13 +517,23 @@ compute-locally category for Lambda + API Gateway).
   (reusing `buildHttpApiV2Event` with a synthetic `$default` route),
   invokes the warm RIE container, and translates the v2 response
   (`translateLambdaResponse`) into the origin status / headers / body /
-  cookies), cloudfront-server
+  cookies), cloudfront-edge-event (issue #400 — the Lambda@Edge wire format:
+  builds the `{ Records: [{ cf: { config, request, response } }] }` event for
+  each of the four event types, translates HTTP headers to / from the
+  `{ name: [{ key, value }] }` multi-map, and interprets a handler's return as
+  a continue-with-rewritten-request, a generated-response short-circuit, or a
+  modified response — `applyEdgeRequestResult` / `applyEdgeResponseResult` are
+  the server-facing orchestration helpers), cloudfront-server
   (the local HTTP/HTTPS server behind `start-cloudfront`: per-request
   behavior match -> (a matched behavior's ResponseHeadersPolicy CORS
   preflight short-circuit via `matchPreflight`) -> viewer-request fn ->
+  Lambda@Edge viewer-request / origin-request (issue #400 — either may
+  short-circuit or rewrite the request via the boot-time edge invoker map) ->
   origin (S3 static origin OR a
   Lambda Function URL origin via the boot-time invoker map) ->
-  viewer-response fn -> the behavior's actual-response CORS headers
+  Lambda@Edge origin-response -> viewer-response fn THEN Lambda@Edge
+  viewer-response (both run, CloudFront Function first) -> the behavior's
+  actual-response CORS headers
   (`applyCorsResponseHeadersFromConfig`), with a mutable distribution cell so
   `--watch` swaps the routing model under the live socket),
   studio-custom-resource-filter (issue #323 —

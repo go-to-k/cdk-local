@@ -701,6 +701,7 @@ export {
   isCloudFrontDistribution,
   pickFunctionUrlLogicalIdFromOrigin,
   pickTargetFunctionLogicalId,
+  pickLambdaEdgeFunctionLogicalId,
   extractKvsAssociations,
   pickKvsLogicalIdFromArn,
   CLOUDFRONT_DISTRIBUTION_TYPE,
@@ -708,7 +709,30 @@ export {
   type ResolvedBehavior,
   type ResolvedOrigin,
   type ResolvedCloudFrontFunction,
+  type ResolvedLambdaEdge,
+  type ResolvedLambdaEdgeAssoc,
 } from './local/cloudfront-resolver.js';
+/**
+ * Lambda@Edge support for `start-cloudfront` (issue #400): the event/response
+ * wire format between the local HTTP pipeline and the Lambda@Edge contract
+ * (`{ Records: [{ cf }] }`, four event types). A host CLI driving the same
+ * local-CloudFront serving reuses these to translate requests to / from a
+ * Lambda@Edge function it boots itself.
+ */
+export {
+  buildEdgeRequestEvent,
+  buildEdgeResponseEvent,
+  applyEdgeRequestResult,
+  applyEdgeResponseResult,
+  httpHeadersToEdge,
+  edgeHeadersToHttp,
+  type EdgeEvent,
+  type EdgeRequest,
+  type EdgeResponse,
+  type EdgeRequestInput,
+  type EdgeResponseResult,
+  type EdgeEventType,
+} from './local/cloudfront-edge-event.js';
 export {
   compileCloudFrontFunction,
   runViewerRequest,
