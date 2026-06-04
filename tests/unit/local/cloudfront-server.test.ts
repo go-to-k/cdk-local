@@ -245,7 +245,10 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS', () => {
     return new Promise((resolvePromise, rejectPromise) => {
       const u = new URL(`${corsServer.url}${path}`);
       const req = httpRequest(
-        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers },
+        // agent: false -> a one-off connection closed on response end, so no
+        // keep-alive socket lingers in the pool past server.close() (which
+        // would otherwise risk a vitest worker-teardown crash).
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers, agent: false },
         (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => chunks.push(c));
@@ -367,7 +370,7 @@ describe('startCloudFrontServer — ResponseHeadersPolicy CORS (credentials + ex
     return new Promise((resolvePromise, rejectPromise) => {
       const u = new URL(`${credsServer.url}/`);
       const req = httpRequest(
-        { hostname: u.hostname, port: u.port, path: '/', method: 'GET', headers },
+        { hostname: u.hostname, port: u.port, path: '/', method: 'GET', headers, agent: false },
         (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => chunks.push(c));
