@@ -29,6 +29,7 @@ import {
   resolveEcsTaskTarget,
   TASK_ROLE_ACCOUNT_PLACEHOLDER,
   type EcsImageResolutionContext,
+  type ResolvedEcsTask,
 } from '../../local/ecs-task-resolver.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import {
@@ -42,9 +43,16 @@ import {
 import { matchStacks } from '../stack-matcher.js';
 import {
   addEcsAssumeRoleOptions,
+  addImageOverrideOptions,
   ecsClusterOption,
   resolveEcsAssumeRoleOption,
 } from './ecs-service-emulator.js';
+import {
+  parseImageOverrideFlags,
+  resolveImageOverrides,
+  enforceImageOverrideOrphans,
+  runImageOverrideBuilds,
+} from '../../local/image-override-engine.js';
 import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
@@ -119,6 +127,24 @@ interface LocalRunTaskOptions {
    * for `--from-cfn-stack`.
    */
   stackRegion?: string;
+  /**
+   * Issue #388 — the `--image-override` flag family (shared with
+   * `start-service` / `start-alb`). When the task definition's
+   * representative container image is a deployed-registry pin (ECR /
+   * public), rebuild it locally from a supplied Dockerfile and thread the
+   * resulting tag into the run. `imageOverride` is `<dockerfile>` (picker /
+   * boot-prompt form, single task) or `<target>=<dockerfile>` (explicit);
+   * `imageBuildArg` / `imageBuildSecret` / `imageTarget` are build-input
+   * pass-throughs; `interactiveOverrides` is `false` under
+   * `--no-interactive-overrides`; `strictOverrides` fails fast when the
+   * pinned image stays uncovered.
+   */
+  imageOverride?: string[];
+  imageBuildArg?: string[];
+  imageBuildSecret?: string[];
+  imageTarget?: string | string[];
+  interactiveOverrides?: boolean;
+  strictOverrides?: boolean;
   /** Host-injected extra state-source flag fields. */
   [key: string]: unknown;
 }
@@ -404,6 +430,25 @@ async function localRunTaskCommand(
         containerPath: profileCredsFile.containerPath,
         profileName: profileCredsFile.profileName,
       };
+    }
+
+    // Issue #388 — `--image-override`: rebuild a pinned (deployed-registry)
+    // task-def container image from a local Dockerfile and thread the built tag
+    // into the run. A pinned-but-uncovered image WARNs (local edits won't take
+    // effect); a local CDK asset already rebuilds locally, so this is a no-op.
+    const imageOverrideResult = await resolveRunTaskImageOverride({
+      task,
+      target: resolvedTarget,
+      options,
+      cwd: process.cwd(),
+    });
+    if (imageOverrideResult.imageOverrideByContainer) {
+      runOpts.imageOverrideByContainer = imageOverrideResult.imageOverrideByContainer;
+    } else if (imageOverrideResult.pinnedUncovered) {
+      logger.warn(
+        'Task definition image is pinned to a deployed registry; local source edits will not take ' +
+          'effect. Pass --image-override <dockerfile> to rebuild it from local source.'
+      );
     }
 
     // Issue #366 — a stable "running" banner after every container is up. The
@@ -757,6 +802,115 @@ export function createLocalRunTaskCommand(opts: CreateLocalRunTaskCommandOptions
  * and folding `run-task` into the service common block would mutate the
  * surface non-trivially. Each command keeps its own helper.
  */
+/** The outcome of {@link resolveRunTaskImageOverride}. */
+export interface RunTaskImageOverrideResult {
+  /**
+   * The per-container override map to thread into `runEcsTask` as
+   * `imageOverrideByContainer` — present only when an override image was
+   * built. Keyed by the representative (essential) container's name.
+   */
+  imageOverrideByContainer?: Map<string, string>;
+  /**
+   * True when the representative image is a deployed-registry pin that NO
+   * override covered, so the caller WARNs that local source edits will not
+   * take effect (the run pulls the pinned image as before).
+   */
+  pinnedUncovered?: boolean;
+}
+
+/**
+ * Resolve + build a `--image-override` for `cdkl run-task` (issue #388).
+ *
+ * A pinned (deployed-registry) task-def container image does not pick up local
+ * source edits; this rebuilds it from a supplied Dockerfile and returns the
+ * per-container override map threaded into `runEcsTask`. Mirrors the
+ * `start-service` / `start-alb` override path — the engine primitives
+ * (`parseImageOverrideFlags` / `resolveImageOverrides` /
+ * `enforceImageOverrideOrphans` / `runImageOverrideBuilds`) are shared — but
+ * resolves against the already-resolved task instead of a service: a task
+ * definition has exactly ONE override target (its representative container),
+ * so the picker / boot-prompt forms map to that single target.
+ *
+ * The representative container is the first essential one (or the first
+ * container when none is marked essential). It is pinned when its image kind is
+ * not `cdk-asset`. A short-circuit returns early when nothing is pinned AND no
+ * override flag was passed, so the common local-asset run pays nothing. Throws
+ * (clean user error) when `--strict-overrides` is set and the pinned image
+ * stays uncovered, or when a per-service build-input flag is orphaned
+ * (`enforceImageOverrideOrphans`). Exported for unit testing.
+ */
+export async function resolveRunTaskImageOverride(args: {
+  task: ResolvedEcsTask;
+  target: string;
+  options: Pick<
+    LocalRunTaskOptions,
+    | 'imageOverride'
+    | 'imageBuildArg'
+    | 'imageBuildSecret'
+    | 'imageTarget'
+    | 'interactiveOverrides'
+    | 'strictOverrides'
+  >;
+  cwd?: string;
+}): Promise<RunTaskImageOverrideResult> {
+  const { task, target, options, cwd } = args;
+  const essential = task.containers.find((c) => c.essential) ?? task.containers[0];
+  const pinned = essential !== undefined && essential.image.kind !== 'cdk-asset';
+  const pinnedTargets = pinned ? [target] : [];
+  const pinnedLabels = new Map<string, string>();
+  if (pinned) pinnedLabels.set(target, `${task.stack.stackName}/${task.taskDefinitionLogicalId}`);
+
+  const rawFlags = parseImageOverrideFlags({
+    ...(options.imageOverride && { imageOverride: options.imageOverride }),
+    ...(options.imageBuildArg && { imageBuildArg: options.imageBuildArg }),
+    ...(options.imageBuildSecret && { imageBuildSecret: options.imageBuildSecret }),
+    ...(options.imageTarget && { imageTarget: options.imageTarget }),
+  });
+
+  // Nothing pinned to prompt about AND no override flag => no-op. Per-service
+  // build-input flags are NOT eligible for short-circuit so the orphan
+  // validator still surfaces a typo'd / forgotten `--image-override`.
+  if (
+    pinnedTargets.length === 0 &&
+    rawFlags.explicit.size === 0 &&
+    rawFlags.pickerPaths.length === 0 &&
+    rawFlags.perService.size === 0
+  ) {
+    return {};
+  }
+
+  const overrides = await resolveImageOverrides({
+    rawFlags,
+    pinnedTargets,
+    pinnedLabels,
+    interactiveBootPrompt: true,
+    noInteractive: options.interactiveOverrides === false,
+    ...(cwd !== undefined ? { cwd } : {}),
+  });
+  enforceImageOverrideOrphans(rawFlags, overrides);
+
+  const uncovered = pinnedTargets.filter((t) => !overrides.has(t));
+  if (options.strictOverrides === true && uncovered.length > 0) {
+    throw new Error(
+      '--strict-overrides set, but the task definition image is pinned to a deployed registry and ' +
+        'no --image-override covered it. Pass --image-override <dockerfile> to rebuild it from local ' +
+        'source, or drop --strict-overrides / --from-cfn-stack to run the pinned image as-is.'
+    );
+  }
+
+  if (overrides.size === 0) return { pinnedUncovered: pinned };
+
+  const tags = await runImageOverrideBuilds(overrides);
+  const tag = tags.get(target);
+  if (tag !== undefined && essential !== undefined) {
+    return { imageOverrideByContainer: new Map([[essential.name, tag]]) };
+  }
+  // Defensive: overrides built but none covered THIS target — reachable only
+  // when every resolved override is for a different (mistyped) explicit key, so
+  // the actual target stays uncovered. Report it as such so the caller WARNs.
+  return { pinnedUncovered: pinned && uncovered.length > 0 };
+}
+
 export function addRunTaskSpecificOptions(cmd: Command): Command {
   cmd
     // Issue #249 / C12 — `--cluster` default sourced from the shared
@@ -847,5 +1001,10 @@ export function addRunTaskSpecificOptions(cmd: Command): Command {
         'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
       )
     );
+  // Issue #388 — the `--image-override` flag family (shared with
+  // `start-service` / `start-alb`). Lets a pinned (deployed-registry) task-def
+  // container image be rebuilt from a local Dockerfile while `--from-cfn-stack`
+  // still reaches real AWS state for env / secrets.
+  addImageOverrideOptions(cmd);
   return cmd;
 }

@@ -964,6 +964,12 @@ Path matching is prefix-based: an L2 path like
 | `--platform <platform>` | inferred from `RuntimePlatform.CpuArchitecture` | `linux/amd64` or `linux/arm64`. Threaded into every container's `docker run --platform`. |
 | `--keep-running` | off | Don't `docker rm -f` user containers on task exit (network + sidecar are still torn down). Use when you want to `docker exec` into a stopped container for post-mortems. |
 | `--detach` | off | Start the containers and return without streaming logs or auto-tearing them down. Useful in CI smoke tests; caller manages container lifecycle. |
+| `--image-override <target=dockerfile or dockerfile>` | — | Rebuild the task definition's pinned (deployed-registry) container image from a local `docker build` of the supplied Dockerfile, then run that locally-built image instead of pulling the pinned one. A task definition has ONE override target (its representative essential container), so an explicit `<target>=<dockerfile>` maps to it (a bare `<dockerfile>` works too — but the bare picker form needs a TTY and is skipped under `--no-interactive-overrides` / non-interactive runs, so prefer the explicit form when scripting). Lets `--from-cfn-stack` still reach real AWS state for env / secrets while you iterate on the application container locally. A pinned-but-uncovered image WARNs that local source edits will not take effect. Same engine as `start-service` / `start-alb`. |
+| `--image-build-arg <KEY=VAL>` | — | `docker build --build-arg KEY=VAL` applied to the `--image-override` build (repeatable). |
+| `--image-build-secret <id=src>` | — | `docker build --secret id=<id>,src=<src>` applied to the `--image-override` build (repeatable); enables `RUN --mount=type=secret,id=<id>` in the Dockerfile. |
+| `--image-target <stage>` | — | `docker build --target <stage>` for the `--image-override` build (stop at an intermediate multi-stage stage). |
+| `--no-interactive-overrides` | off | Suppress the interactive boot prompt that asks for a Dockerfile when the image is pinned (use in CI / scripted runs). |
+| `--strict-overrides` | off | Fail fast when the pinned image stays uncovered after `--image-override` resolves. |
 
 Plus the [common flags](#common-flags): `-a/--app`, `--output`,
 `-c/--context`, `--profile`, `--role-arn`, `--verbose`, `-y/--yes`.
