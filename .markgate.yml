@@ -1,6 +1,6 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Six gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
+# Seven gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
 # cdk-local does NOT deploy to AWS (no destroy path, no schema migration,
 # no broad real-AWS integ matrix), so the destroy / broad / schema-migration
 # gates from cdkd are not needed.
@@ -32,6 +32,10 @@
 #                    new public helper / behavior change). Set ONLY by
 #                    /check-cdkd-parity. Scope is the public library
 #                    surface; out-of-scope diffs don't invalidate it.
+#   create-integ   — A NEW `src/cli/commands/local-<verb>.ts` factory (a
+#                    brand-new subcommand) MUST ship its own integ fixture.
+#                    Set ONLY by /create-integ, which scaffolds + RUNS the
+#                    new fixture. Pre-create only, like cdkd-parity.
 
 gates:
   check:
@@ -87,3 +91,19 @@ gates:
       - "src/cli/commands/**"
       - "src/internal.ts"
       - "src/index.ts"
+
+  create-integ:
+    hash: files
+    # A NEW `src/cli/commands/local-<verb>.ts` factory (a file declaring
+    # `createLocal<Verb>Command`) is a brand-new subcommand with NO
+    # existing integ fixture, so it MUST ship its own.
+    # `create-integ-gate.sh` (pre-create only) fires when the PR adds such
+    # a factory file; `/create-integ` scaffolds + RUNS the new fixture and
+    # sets this marker. Scope is the whole command-factory surface, which
+    # is intentionally BROADER than the gate's trigger: any
+    # `src/cli/commands/**` edit stales the marker, but the gate only
+    # BLOCKS when a new factory file is also added, so staleness without a
+    # new-file add is a no-op. Pre-create-only, like cdkd-parity, so a
+    # later edit on the same PR doesn't re-block.
+    include:
+      - "src/cli/commands/**"

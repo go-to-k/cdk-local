@@ -141,8 +141,9 @@ The hooks split into three classes:
 
 ## 3. Markgate-backed gates
 
-The five markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
-`pr-review-gate.sh`, `integ-gate.sh`, and `cdkd-parity-gate.sh`) are
+The six markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
+`pr-review-gate.sh`, `integ-gate.sh`, `cdkd-parity-gate.sh`, and
+`create-integ-gate.sh`) are
 all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
 parses leading `cd <path>` and the last `git -C <path>` /
 `gh -C <path>` flag from the command, then `cd`s to that resolved
@@ -304,3 +305,38 @@ call `markgate set integ` directly from a shell.
 
   The skill is the ONLY legitimate setter of this marker — never
   call `markgate set cdkd-parity` directly from a shell.
+
+### create-integ-gate (pre-create)
+
+- **`create-integ-gate.sh`** blocks `gh pr create` (incl.
+  `gh -C <path> pr create` / `cd <path> && gh pr create`) on PRs whose
+  diff vs `origin/main` ADDS a new command factory — a NEW
+  `src/cli/commands/local-<verb>.ts` file (`--diff-filter=A`) that
+  declares an `export function createLocal<Verb>Command(...)` — when
+  the `create-integ` marker is stale. The content check matters:
+  `src/cli/commands/local-*.ts` also holds non-factory helper modules
+  (`local-state-source.ts`, `local-profile-credentials-file.ts`), which
+  must NOT fire the gate, so a filename match alone is not enough.
+
+  A new subcommand factory is brand-new top-level user-facing behavior
+  with NO existing integ fixture, so it MUST ship its own. This is the
+  one case where "needs a new fixture" is unambiguous (a new command
+  always does), so the gate is scoped to exactly that signal — EDITS to
+  existing command files (`M` / `D`, e.g. adding a flag) never fire it,
+  since they reuse that command's existing fixture (which `integ-gate`
+  already covers at pre-merge time).
+
+  The marker is set ONLY by `/create-integ`, which scaffolds a fixture
+  (`package.json` pinned with `packageManager` so `vp install` is a
+  no-op, `bin` / `lib` / `cdk.json` / `tsconfig` / a `verify.sh`
+  harness), has you fill in the stack + assertions, **RUNS it via
+  `/run-integ`**, and records the marker only on a clean green run.
+
+  Pre-create only — `gh pr merge` is intentionally NOT gated. "A fixture
+  was created for the new command" is a create-time judgment; the
+  `integ` gate still enforces marker freshness at pre-merge for any
+  `src/**` / `tests/integration/**` touch.
+
+  Fail-open: `gh` / `markgate` / `git` missing, or `origin/main`
+  unresolvable -> exit 0 silently. The skill is the ONLY legitimate
+  setter — never `markgate set create-integ` directly from a shell.

@@ -1021,6 +1021,21 @@ vp run runtime:smoke
   gate it so it cannot ship enabled — but still integ-test the real
   code path it adds, e.g. via the gated entrypoint.)
 
+- **Creating a NEW integ fixture**: use `/create-integ <name>`. It
+  scaffolds the fixture (`package.json` pinned with `packageManager` so
+  `vp install` is a no-op — never re-dirties on the first run, `bin` /
+  `lib` / `cdk.json` / `tsconfig` / a `verify.sh` harness), has you fill
+  in the stack + assertions, RUNS it via `/run-integ`, and sets the
+  `create-integ` marker on a clean green run. A NEW command factory
+  (a new `src/cli/commands/local-<verb>.ts` declaring a
+  `createLocal*Command`) is brand-new behavior with no existing fixture,
+  so `create-integ-gate.sh` blocks `gh pr create` until that marker is
+  fresh. It fires only on a new factory file — NOT on a new non-factory
+  helper module under `src/cli/commands/`, and NOT on a new flag on an
+  EXISTING command (extend that command's fixture instead). Details:
+  [.claude/skills/create-integ/SKILL.md](.claude/skills/create-integ/SKILL.md),
+  [.claude/rules/hooks.md](.claude/rules/hooks.md).
+
 - **When running integration tests**: use `/run-integ <test-name>`
   (e.g., `/run-integ local-invoke`). Never bypass by shelling into
   the fixture's `verify.sh` directly — the skill encodes Docker
