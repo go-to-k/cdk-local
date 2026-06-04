@@ -8,6 +8,7 @@ import {
   pickFunctionLogicalIdFromArn,
   pickFunctionUrlLogicalIdFromOrigin,
   pickKvsLogicalIdFromArn,
+  pickLambdaEdgeFunctionLogicalId,
   pickTargetFunctionLogicalId,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
@@ -109,7 +110,7 @@ describe('resolveCloudFrontDistribution — S3 origin happy path', () => {
     expect(def.viewerProtocolPolicy).toBe('redirect-to-https');
     expect(def.viewerRequest?.logicalId).toBe('RewriteFn');
     expect(def.viewerResponse).toBeUndefined();
-    expect(def.hasLambdaEdge).toBe(false);
+    expect(def.lambdaEdge).toBeUndefined();
 
     const origin = resolved.origins.get('origin1');
     expect(origin?.kind).toBe('s3');
@@ -178,17 +179,45 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
     if (origin?.kind === 'custom') expect(origin.domainName).toBe('api.example.com');
   });
 
-  it('records a Lambda@Edge association as hasLambdaEdge', () => {
+  it('pickLambdaEdgeFunctionLogicalId resolves a Version ref, a direct ref, and rejects the unresolvable', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Fn: { Type: 'AWS::Lambda::Function', Properties: {} },
+        Ver: { Type: 'AWS::Lambda::Version', Properties: { FunctionName: { Ref: 'Fn' } } },
+        Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+      },
+    };
+    // Ref to a Version -> its FunctionName -> the function.
+    expect(pickLambdaEdgeFunctionLogicalId({ Ref: 'Ver' }, template)).toBe('Fn');
+    // A direct (unqualified) function ref.
+    expect(pickLambdaEdgeFunctionLogicalId({ Ref: 'Fn' }, template)).toBe('Fn');
+    // GetAtt form on the Version.
+    expect(pickLambdaEdgeFunctionLogicalId({ 'Fn::GetAtt': ['Ver', 'FunctionArn'] }, template)).toBe('Fn');
+    // A literal ARN string (imported / cross-region EdgeFunction) is unresolvable.
+    expect(pickLambdaEdgeFunctionLogicalId('arn:aws:lambda:us-east-1:1:function:x:1', template)).toBeUndefined();
+    // A ref to a non-function / non-version resource.
+    expect(pickLambdaEdgeFunctionLogicalId({ Ref: 'Bucket' }, template)).toBeUndefined();
+  });
+
+  it('resolves a Lambda@Edge association through its Version to the backing function', () => {
     const template = s3DistributionTemplate();
+    template.Resources!['EdgeFn'] = { Type: 'AWS::Lambda::Function', Properties: {} };
+    template.Resources!['EdgeFnVersion'] = {
+      Type: 'AWS::Lambda::Version',
+      Properties: { FunctionName: { Ref: 'EdgeFn' } },
+    };
     const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
       'DistributionConfig'
     ]!;
     (dc['DefaultCacheBehavior'] as Record<string, unknown>)['LambdaFunctionAssociations'] = [
-      { EventType: 'origin-request', LambdaFunctionArn: 'arn:aws:lambda:...' },
+      { EventType: 'origin-request', LambdaFunctionARN: { Ref: 'EdgeFnVersion' }, IncludeBody: true },
     ];
     const stack = buildStack(template, HASH);
     const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
-    expect(resolved.behaviors[0]!.hasLambdaEdge).toBe(true);
+    expect(resolved.behaviors[0]!.lambdaEdge?.originRequest).toEqual({
+      functionLogicalId: 'EdgeFn',
+      includeBody: true,
+    });
   });
 
   it('resolves CacheBehaviors[] in declared order after the default', () => {

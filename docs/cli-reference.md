@@ -1480,11 +1480,13 @@ Two origin kinds are served:
   needs no Docker; a Function URL origin boots one Lambda container.
 
 It does NOT emulate the managed CloudFront service: other custom (non-S3,
-non-Function-URL) origins, Lambda@Edge (`LambdaFunctionAssociations`), and
-the 2.0 `cf.fetch` origin API are out of scope (warn-and-skip; a request
-routed to one returns 502). A CloudFront Function's **KeyValueStore** reads
-(`cf.kvs().get(key)`) ARE reproduced — backed by the deployed store
-(`--from-cfn-stack`) or a local JSON map (`--kvs-file`); see the
+non-Function-URL) origins and the 2.0 `cf.fetch` origin API are out of scope
+(warn-and-skip; a request routed to one returns 502). A behavior's
+**Lambda@Edge** functions (`LambdaFunctionAssociations`) ARE run — each is
+real Lambda code, booted in a real RIE container and invoked at its event
+point (see the Lambda@Edge resolution bullet below). A CloudFront Function's
+**KeyValueStore** reads (`cf.kvs().get(key)`) ARE reproduced — backed by the
+deployed store (`--from-cfn-stack`) or a local JSON map (`--kvs-file`); see the
 KeyValueStore resolution bullet below. A Function URL origin
 Lambda gets the **same container environment as a direct `cdkl invoke`**:
 its declared `Environment.Variables` are injected, `--from-cfn-stack [name]`
@@ -1512,6 +1514,22 @@ its `DistributionConfig`:
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin. A viewer-response function then runs
   over the origin response.
+- **Lambda@Edge** — each behavior's `LambdaFunctionAssociations[]`
+  (`{EventType, LambdaFunctionARN, IncludeBody}`) → the
+  `AWS::Lambda::Function` behind the association's `AWS::Lambda::Version`,
+  booted once in a warm RIE container (the same machinery a Lambda Function
+  URL origin uses — same `cdkl invoke` container env). The function is
+  invoked at its event point with the Lambda@Edge event
+  (`{ Records: [{ cf: { config, request, response } }] }`). All four event
+  types run in pipeline order: `viewer-request` / `origin-request` (before
+  the origin fetch — either may short-circuit with a generated `response` or
+  rewrite the `request` — `uri` / `method` / `headers` / `querystring` /
+  body) → origin → `origin-response` / `viewer-response` (modify the
+  response `status` / `headers` / body). `IncludeBody` surfaces the request
+  body (base64). Out of scope: the `request.origin` rewrite block (the local
+  origin is fixed by the resolved behavior) and the edge size / timeout
+  tiers. An imported / cross-region `EdgeFunction` ARN that does not resolve
+  to a local `AWS::Lambda::Function` is warn-and-skipped.
 - **KeyValueStore (`cf.kvs()`)** — a 2.0 function that opens with
   `import cf from 'cloudfront'` and reads `cf.kvs().get(key)` / `exists(key)`
   is run with that `import` stripped and a `cf` module injected into the

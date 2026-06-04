@@ -33,6 +33,22 @@ import { resolveResponseHeadersPolicyCors, type CorsConfig } from './cors-handle
 /** A CloudFront Function wired to a cache behavior, compiled and ready to run. */
 export interface ResolvedCloudFrontFunction extends CompiledCloudFrontFunction {}
 
+/** A resolved Lambda@Edge association: the backing function + whether it receives the body. */
+export interface ResolvedLambdaEdgeAssoc {
+  /** The backing `AWS::Lambda::Function` logical id (resolved via the Version). */
+  functionLogicalId: string;
+  /** `IncludeBody` — when true the function event carries the request body (base64). */
+  includeBody: boolean;
+}
+
+/** The four Lambda@Edge event-type slots a behavior can wire (each at most once). */
+export interface ResolvedLambdaEdge {
+  viewerRequest?: ResolvedLambdaEdgeAssoc;
+  originRequest?: ResolvedLambdaEdgeAssoc;
+  originResponse?: ResolvedLambdaEdgeAssoc;
+  viewerResponse?: ResolvedLambdaEdgeAssoc;
+}
+
 /** One resolved cache behavior (the default behavior, or a `CacheBehaviors[]` entry). */
 export interface ResolvedBehavior {
   /**
@@ -49,10 +65,14 @@ export interface ResolvedBehavior {
   /** Compiled `viewer-response` function, if associated. */
   viewerResponse?: ResolvedCloudFrontFunction;
   /**
-   * True when the behavior carries a `LambdaFunctionAssociations` (Lambda@Edge)
-   * — recorded so the boot path WARNs that it is not run locally.
+   * Resolved Lambda@Edge associations per event type (issue #400). Each entry
+   * names the backing `AWS::Lambda::Function` logical id (resolved through the
+   * association's `AWS::Lambda::Version`) + whether the function receives the
+   * request body (`IncludeBody`). The booted RIE container per function is
+   * looked up by this logical id at request time. Absent when the behavior has
+   * no `LambdaFunctionAssociations`.
    */
-  hasLambdaEdge: boolean;
+  lambdaEdge?: ResolvedLambdaEdge;
   /**
    * CORS config resolved from the behavior's `ResponseHeadersPolicyId` ->
    * `AWS::CloudFront::ResponseHeadersPolicy` `CorsConfig`. When set, the
@@ -103,6 +123,7 @@ const CLOUDFRONT_FUNCTION_TYPE = 'AWS::CloudFront::Function';
 const S3_BUCKET_TYPE = 'AWS::S3::Bucket';
 const LAMBDA_URL_TYPE = 'AWS::Lambda::Url';
 const LAMBDA_FUNCTION_TYPE = 'AWS::Lambda::Function';
+const LAMBDA_VERSION_TYPE = 'AWS::Lambda::Version';
 
 /**
  * Resolve a distribution logical id within a stack into its routing model.
@@ -268,10 +289,9 @@ function resolveBehavior(
   const resolved: ResolvedBehavior = {
     targetOriginId:
       typeof behavior['TargetOriginId'] === 'string' ? (behavior['TargetOriginId'] as string) : '',
-    hasLambdaEdge: Array.isArray(behavior['LambdaFunctionAssociations'])
-      ? (behavior['LambdaFunctionAssociations'] as unknown[]).length > 0
-      : false,
   };
+  const lambdaEdge = resolveLambdaEdgeAssociations(behavior, template, distLogicalId);
+  if (lambdaEdge) resolved.lambdaEdge = lambdaEdge;
   if (pathPattern !== undefined) resolved.pathPattern = pathPattern;
   // CloudFront CORS lives on the behavior's ResponseHeadersPolicy, not the
   // origin — resolve it so the server reproduces the edge CORS (preflight +
@@ -313,6 +333,70 @@ export function pickFunctionLogicalIdFromArn(value: unknown): string | undefined
   const getAtt = (value as Record<string, unknown>)['Fn::GetAtt'];
   if (Array.isArray(getAtt) && getAtt.length === 2 && typeof getAtt[0] === 'string') {
     return getAtt[0];
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a behavior's `LambdaFunctionAssociations[]` into the per-event-type
+ * backing-function map (issue #400). Each association names a
+ * `LambdaFunctionARN` (a versioned ARN) + an `EventType` + `IncludeBody`.
+ */
+function resolveLambdaEdgeAssociations(
+  behavior: Record<string, unknown>,
+  template: CloudFormationTemplate,
+  distLogicalId: string
+): ResolvedLambdaEdge | undefined {
+  const assocs = Array.isArray(behavior['LambdaFunctionAssociations'])
+    ? (behavior['LambdaFunctionAssociations'] as unknown[])
+    : [];
+  const out: ResolvedLambdaEdge = {};
+  for (const a of assocs) {
+    if (!a || typeof a !== 'object') continue;
+    const assoc = a as Record<string, unknown>;
+    const eventType = assoc['EventType'];
+    const functionLogicalId = pickLambdaEdgeFunctionLogicalId(assoc['LambdaFunctionARN'], template);
+    if (!functionLogicalId) {
+      getLogger().warn(
+        `Distribution '${distLogicalId}': a Lambda@Edge association references a LambdaFunctionARN ` +
+          'cdk-local could not resolve to a local AWS::Lambda::Function; it will not run.'
+      );
+      continue;
+    }
+    const entry: ResolvedLambdaEdgeAssoc = {
+      functionLogicalId,
+      includeBody: assoc['IncludeBody'] === true,
+    };
+    if (eventType === 'viewer-request') out.viewerRequest = entry;
+    else if (eventType === 'origin-request') out.originRequest = entry;
+    else if (eventType === 'origin-response') out.originResponse = entry;
+    else if (eventType === 'viewer-response') out.viewerResponse = entry;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Resolve a `LambdaFunctionARN` (a versioned function ARN) to the backing
+ * `AWS::Lambda::Function` logical id. CDK wires the association to a
+ * `lambda.Version` (`{Ref: <Version>}` returns the qualified ARN), whose
+ * `FunctionName` references the function. A direct (unqualified) function ref
+ * is also accepted. Returns `undefined` when it cannot reach an
+ * `AWS::Lambda::Function` (e.g. an imported cross-region EdgeFunction ARN).
+ */
+export function pickLambdaEdgeFunctionLogicalId(
+  value: unknown,
+  template: CloudFormationTemplate
+): string | undefined {
+  const candidate = refLogicalId(value) ?? getAttLogicalId(value);
+  if (!candidate) return undefined;
+  const resources = template.Resources ?? {};
+  const resource = resources[candidate];
+  if (!resource) return undefined;
+  if (resource.Type === LAMBDA_FUNCTION_TYPE) return candidate;
+  if (resource.Type === LAMBDA_VERSION_TYPE) {
+    const fnName = (resource.Properties ?? {})['FunctionName'];
+    const fnId = refLogicalId(fnName) ?? getAttLogicalId(fnName);
+    if (fnId && resources[fnId]?.Type === LAMBDA_FUNCTION_TYPE) return fnId;
   }
   return undefined;
 }
