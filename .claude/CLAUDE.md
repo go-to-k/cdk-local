@@ -229,12 +229,17 @@ AWS managed services.
   front/back-split case where the CDK repo defines the distribution +
   bucket but the static files are uploaded out of band by a separate
   frontend repo / pipeline — `--from-cfn-stack` resolves the deployed
-  bucket's physical name from state (`ListStackResources`) and serves it
-  by reading from **real S3 on demand** (issue #405): a request-time
-  `GetObject` per touched key (no pre-sync, so a CDN bucket with
-  100k objects is fine — a test touches a handful), reusing the same
-  URI->key / `DefaultRootObject` / `CustomErrorResponses` resolution
-  (`cloudfront-s3-origin`). The choice is automatic per origin (local
+  bucket NAME and serves it by reading from **real S3 on demand** (issue
+  #405): a request-time `GetObject` per touched key (no pre-sync, so a CDN
+  bucket with 100k objects is fine — a test touches a handful), reusing the
+  same URI->key / `DefaultRootObject` / `CustomErrorResponses` resolution
+  (`cloudfront-s3-origin`). The bucket name is resolved in priority order
+  (issue #405 + follow-up): a same-stack CDK bucket's physical id from
+  `ListStackResources`; else a literal bucket name parsed from the origin's
+  `DomainName` (an external / imported-by-name bucket); else — when the name
+  is a pure intrinsic (a `Ref` parameter / cross-stack import) — from the
+  deployed distribution via `cloudfront:GetDistributionConfig`
+  (`cloudfront-distribution-config`). The choice is automatic per origin (local
   BucketDeployment source -> real-S3 under `--from-cfn-stack` ->
   `--origin <id>=<dir>` override), logged per origin, gated only by the
   existing `--from-cfn-stack` flag; an `AccessDenied` (OAC-locked bucket
@@ -375,7 +380,8 @@ compute-locally category for Lambda + API Gateway).
   reuses `front-door-tls`; `--from-cfn-stack` additionally promotes an S3
   origin with no local BucketDeployment source to a deployed-S3
   read-through origin served from real S3 on demand (issue #405 —
-  `resolveDeployedS3Origins` reads the bucket's physical name from state +
+  `resolveDeployedS3Origins` resolves the bucket name (state physical id /
+  literal `DomainName` / `GetDistributionConfig`) +
   builds an `S3OriginReader` per origin, boot-time only, re-annotated on
   each `--watch` reload via `annotateDeployedS3Origins`; `--cache-origin`
   opts the reader into an in-memory read-through cache, cleared on reload);
@@ -520,7 +526,11 @@ compute-locally category for Lambda + API Gateway).
   origins (S3 origin -> local
   BucketDeployment source dir via the asset manifest, else an
   `s3-unresolved` origin the command promotes to `s3-deployed` real-S3
-  read-through under `--from-cfn-stack`, issue #405; a Lambda Function
+  read-through under `--from-cfn-stack`, issue #405 — `describeS3OriginDomain`
+  also detects an external/imported-bucket origin from its `DomainName`
+  (`<bucket>.s3[.-]...amazonaws.com`, literal / `Fn::Sub` / `Fn::Join`) and
+  parses the literal bucket name, marking a pure-intrinsic name
+  `deployedConfigOnly`; a Lambda Function
   URL origin -> backing `AWS::Lambda::Function` via the
   `Fn::Select/Split/GetAtt` `DomainName` + `AWS::Lambda::Url`
   `TargetFunctionArn`, issue #376; custom / unresolved origins flagged),
@@ -565,6 +575,13 @@ compute-locally category for Lambda + API Gateway).
   resolution; `classifyS3Error` maps a miss to the SPA fallback and an
   `AccessDenied` to an actionable `--origin` warning; the command promotes
   an `s3-unresolved` origin to `s3-deployed` under `--from-cfn-stack`),
+  cloudfront-distribution-config (issue #405 follow-up — the
+  `GetDistributionConfig` boundary: `resolveDeployedOriginBucket` reads the
+  DEPLOYED distribution's origin `DomainName` and parses the bucket name from
+  it, the fallback for a deployed-S3 origin whose bucket name is a pure
+  intrinsic (a `Ref` parameter / cross-stack import) not derivable from the
+  local template or stack state; never throws — a read failure resolves to
+  undefined so the command falls back to the `--origin` guidance),
   cloudfront-lambda-origin (issue #376 — serves a Lambda Function URL
   origin: builds a Function URL payload-v2.0 event from the request
   (reusing `buildHttpApiV2Event` with a synthetic `$default` route),

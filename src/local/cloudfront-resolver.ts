@@ -87,7 +87,24 @@ export interface ResolvedBehavior {
 /** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
 export type ResolvedOrigin =
   | { kind: 's3'; originId: string; localDirs: string[] }
-  | { kind: 's3-unresolved'; originId: string; bucketLogicalId?: string }
+  | {
+      /**
+       * An S3 origin with no local BucketDeployment source. The command
+       * promotes it to `s3-deployed` under `--from-cfn-stack` by resolving the
+       * bucket name from (in priority order): `bucketLogicalId` -> deployed
+       * state physical id (same-stack CDK bucket, issue #405); `bucketName` ->
+       * used directly (an external / imported-by-name bucket whose name is
+       * literal in the origin's `DomainName`, issue #405 follow-up); else
+       * `deployedConfigOnly` -> the bucket name is a pure intrinsic resolvable
+       * only in the deployed distribution, so the command reads the bucket
+       * name via `cloudfront:GetDistributionConfig`.
+       */
+      kind: 's3-unresolved';
+      originId: string;
+      bucketLogicalId?: string;
+      bucketName?: string;
+      deployedConfigOnly?: boolean;
+    }
   | {
       /**
        * An S3 origin with no local BucketDeployment source, served by reading
@@ -440,7 +457,13 @@ function resolveOrigins(
     }
 
     const bucketLogicalId = pickBucketLogicalIdFromOrigin(origin, template);
-    const isS3 = origin['S3OriginConfig'] !== undefined || bucketLogicalId !== undefined;
+    // An external / imported bucket origin carries its bucket name in the
+    // DomainName (`<bucket>.s3[.-]...amazonaws.com`), not via a same-stack
+    // Fn::GetAtt. Detect that shape so it is served as S3 (issue #405
+    // follow-up) instead of being mis-classified as a generic custom origin.
+    const s3Domain = describeS3OriginDomain(origin['DomainName']);
+    const isS3 =
+      origin['S3OriginConfig'] !== undefined || bucketLogicalId !== undefined || s3Domain.isS3;
     if (!isS3) {
       // A Lambda Function URL custom origin (origins.FunctionUrlOrigin) is the
       // one custom origin cdk-local serves: the backing Lambda is the user's
@@ -465,14 +488,76 @@ function resolveOrigins(
     if (localDirs.length > 0) {
       out.set(originId, { kind: 's3', originId, localDirs });
     } else {
+      // No local source -> command resolves the deployed bucket. Carry the
+      // best resolution hint: a same-stack logical id (physical id from state),
+      // a literal bucket name parsed from the DomainName, else the
+      // deployed-config-only signal (bucket name is a pure intrinsic).
+      const literalBucket = bucketLogicalId === undefined ? s3Domain.bucketName : undefined;
       out.set(originId, {
         kind: 's3-unresolved',
         originId,
         ...(bucketLogicalId !== undefined && { bucketLogicalId }),
+        ...(literalBucket !== undefined && { bucketName: literalBucket }),
+        ...(bucketLogicalId === undefined && literalBucket === undefined && s3Domain.isS3
+          ? { deployedConfigOnly: true }
+          : {}),
       });
     }
   }
   return out;
+}
+
+/**
+ * Describe an S3 origin's `DomainName`: whether it is an S3-bucket domain and,
+ * if so, the literal bucket name when it is statically derivable from the
+ * template (issue #405 follow-up). Handles a literal string, an `Fn::Sub`
+ * template, and an `Fn::Join('', [...])`. The bucket label is the part before
+ * `.s3` / `.s3-website`; when that label is a pure intrinsic (`${Ref}`), the
+ * name is left undefined (the command resolves it via GetDistributionConfig).
+ * The region segment (`${AWS::Region}` etc.) does NOT affect the bucket name,
+ * so it is normalized away just to validate the S3 shape.
+ */
+export function describeS3OriginDomain(value: unknown): {
+  isS3: boolean;
+  bucketName?: string;
+} {
+  const flat = flattenDomainTemplate(value);
+  if (flat === undefined) return { isS3: false };
+  // Normalize the pseudo-AWS vars (region / url-suffix / partition) so the S3
+  // shape validates; a remaining `${...}` marks a non-literal segment.
+  const normalized = flat
+    .replace(/\$\{AWS::Region\}/g, 'region')
+    .replace(/\$\{AWS::URLSuffix\}/g, 'amazonaws.com')
+    .replace(/\$\{AWS::Partition\}/g, 'aws');
+  // `<label>.s3` then any number of `.<seg>` / `-<seg>` then `.amazonaws.com`.
+  const match = /^(.+?)\.s3(?:[.-][A-Za-z0-9$.{}_-]+)*\.amazonaws\.com$/.exec(normalized);
+  if (!match) return { isS3: false };
+  const label = match[1]!;
+  // A literal bucket label has no unresolved intrinsic marker.
+  if (label.includes('${') || label.includes('{Fn')) return { isS3: true };
+  return { isS3: true, bucketName: label };
+}
+
+/**
+ * Flatten an origin `DomainName` to a single string for S3-shape matching:
+ * a literal string verbatim; an `Fn::Sub` template's string; an
+ * `Fn::Join('', parts)` with literal parts verbatim and intrinsic parts as a
+ * `${...}` marker. Returns `undefined` for any other shape.
+ */
+function flattenDomainTemplate(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const sub = obj['Fn::Sub'];
+  if (typeof sub === 'string') return sub;
+  if (Array.isArray(sub) && typeof sub[0] === 'string') return sub[0];
+  const join = obj['Fn::Join'];
+  if (Array.isArray(join) && join[0] === '' && Array.isArray(join[1])) {
+    return (join[1] as unknown[])
+      .map((part) => (typeof part === 'string' ? part : '${x}'))
+      .join('');
+  }
+  return undefined;
 }
 
 /**
