@@ -6,7 +6,10 @@ import {
   type StudioLogEvent,
   type StudioServeEvent,
 } from '../../../src/local/studio-events.js';
-import { createStudioServeManager } from '../../../src/local/studio-serve-manager.js';
+import {
+  createStudioServeManager,
+  parsePublishedHostEndpoint,
+} from '../../../src/local/studio-serve-manager.js';
 
 /** A minimal stand-in for a long-running spawned serve child. */
 function makeFakeChild(pid = 4242): EventEmitter & {
@@ -1156,5 +1159,101 @@ describe('createStudioServeManager', () => {
     expect(mgr.list()).toEqual([]);
     expect(children[0].kill).toHaveBeenCalledWith('SIGTERM');
     expect(children[1].kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  // Issue #392 — an ecs serve auto-publishes its replica host port; studio
+  // surfaces it as hostUrl so the request composer fires.
+  const ECS_READY = 'Service(s) running: 1 replica.\n';
+  const PUBLISH_LINE =
+    "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n";
+
+  it('sets hostUrl from an auto-published port that arrives before the ready line (#392)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'Stack/Svc', kind: 'ecs' });
+    child.stdout.emit('data', PUBLISH_LINE);
+    child.stdout.emit('data', ECS_READY);
+    const state = await p;
+    expect(state.hostUrl).toBe('http://127.0.0.1:54321');
+  });
+
+  it('sets hostUrl + re-emits when the published port arrives AFTER running (#392)', async () => {
+    const bus = new StudioEventBus();
+    const evs = collect(bus);
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'Stack/Svc', kind: 'ecs' });
+    child.stdout.emit('data', ECS_READY);
+    const state = await p;
+    expect(state.hostUrl).toBeUndefined(); // not known yet at ready time
+    // The publish line lands later -> hostUrl is set + a fresh serve event fires.
+    child.stdout.emit('data', PUBLISH_LINE);
+    const last = evs.serves.at(-1);
+    expect(last?.status).toBe('running');
+    expect(last?.hostUrl).toBe('http://127.0.0.1:54321');
+    expect(mgr.list()[0]?.hostUrl).toBe('http://127.0.0.1:54321');
+  });
+
+  it('does NOT override an explicit --host-port with the auto-published port (#392)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: 'cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'Stack/Svc',
+      kind: 'ecs',
+      options: { '--host-port': [{ left: '80', right: '9000' }] },
+    });
+    // Runner publishes on a DIFFERENT (auto-remapped) port — must NOT win over
+    // the explicit --host-port value.
+    child.stdout.emit('data', PUBLISH_LINE);
+    child.stdout.emit('data', ECS_READY);
+    const state = await p;
+    expect(state.hostUrl).toBe('http://127.0.0.1:9000');
+  });
+});
+
+describe('parsePublishedHostEndpoint (issue #392)', () => {
+  it('extracts http://<ip>:<port> from a publish line', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
+      )
+    ).toBe('http://127.0.0.1:54321');
+  });
+
+  it('handles a non-loopback container-host IP', () => {
+    expect(parsePublishedHostEndpoint('published on 192.168.0.5:8080')).toBe(
+      'http://192.168.0.5:8080'
+    );
+  });
+
+  it('returns undefined for a line with no published endpoint', () => {
+    expect(parsePublishedHostEndpoint('Service(s) running: 1 replica.')).toBeUndefined();
+    expect(parsePublishedHostEndpoint('Starting container web')).toBeUndefined();
   });
 });
