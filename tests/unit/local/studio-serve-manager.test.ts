@@ -153,6 +153,33 @@ describe('createStudioServeManager', () => {
     expect(serves[1].endpoints).toEqual([PROXIED]);
   });
 
+  it('spawns the serve child with CDKL_LOG_STREAM=stdout so its logs are single-stream (issue #403)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', LISTENING);
+    await p;
+
+    const opts = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2];
+    // The serve child's warn/error are unified onto stdout so the studio LOG
+    // panel does not race them across two OS pipes. The rest of the parent env
+    // is preserved (PATH etc.) so the child still resolves node / docker.
+    expect(opts.env['CDKL_LOG_STREAM']).toBe('stdout');
+    expect(opts.env['PATH']).toBe(process.env['PATH']);
+  });
+
   it('threads --from-cfn-stack <name> + --assume-role <arn> into the serve child argv', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

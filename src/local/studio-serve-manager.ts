@@ -418,7 +418,19 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
 
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec, envFile)], { cwd });
+      // `CDKL_LOG_STREAM=stdout` (issue #403): route the serve child's warn /
+      // error to stdout too, so its boot diagnostics do not race ahead of
+      // stdout lines across two OS pipes in the studio LOG panel (Node does not
+      // guarantee cross-pipe delivery order, so a stderr WARN could otherwise
+      // surface AFTER a later stdout banner like "Press ^C to shut down."). The
+      // serve path is safe: ready-line detection greps stdout for specific
+      // patterns and error detection is via the child `error` / `close` events,
+      // not stderr content. (NOT applied to single-shot invoke children, whose
+      // agentcore path treats whole stdout as the response.)
+      child = spawnFn(nodeBin, [config.cliEntry, ...buildArgs(req, spec, envFile)], {
+        cwd,
+        env: { ...process.env, CDKL_LOG_STREAM: 'stdout' },
+      });
     } catch (err) {
       // Spawn never happened — drop the env temp dir so it does not leak.
       if (envDir) {
