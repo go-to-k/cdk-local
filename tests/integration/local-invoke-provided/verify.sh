@@ -57,6 +57,14 @@ test -x lambda/build/bootstrap || {
   exit 1
 }
 
+# Build a ZIP-FILE asset from the same (executable) bootstrap for
+# BootstrapZipHandler. `zip` stores the unix exec mode; `Code.fromAsset` of a
+# `.zip` keeps it zipped (aws:asset:path -> asset.<hash>.zip), so cdkl must
+# extract it AND preserve the exec bit at invoke time. Built here (gitignored).
+echo "==> Building lambda/bootstrap.zip (ZIP-FILE asset for BootstrapZipHandler)"
+rm -f lambda/bootstrap.zip
+( cd lambda/build && zip -q -X ../bootstrap.zip bootstrap )
+
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
@@ -67,7 +75,7 @@ fi
 # On Apple Silicon hosts, `Architecture: x86_64` triggers Docker's
 # linux/amd64 emulation. The first invocation pays a one-time emulator
 # warm-up tax (~5s); the function's 30s timeout absorbs it comfortably.
-echo "==> [1/4] Invoking BootstrapHandler with default empty event"
+echo "==> [1/5] Invoking BootstrapHandler with default empty event"
 RESULT_1=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"Greeting": *"hello"|"greeting": *"hello"' || {
@@ -76,7 +84,7 @@ echo "${RESULT_1}" | grep -Eq '"Greeting": *"hello"|"greeting": *"hello"' || {
 }
 
 # Test 2 — asset-backed bootstrap with --event payload round-trip
-echo "==> [2/4] Invoking BootstrapHandler with --event payload"
+echo "==> [2/5] Invoking BootstrapHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -87,8 +95,26 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   exit 1
 }
 
-# Test 3 — inline Code.ZipFile rejection for provided.al2023.
-echo "==> [3/4] Invoking ProvidedAl2023InlineHandler — expecting inline Code.ZipFile rejection"
+# Test 3 — ZIP-FILE asset provided.al2023 bootstrap (regression: the extracted
+# bootstrap must keep its executable bit, else RIE -> Runtime.InvalidEntrypoint).
+echo "==> [3/5] Invoking BootstrapZipHandler (Code.fromAsset of a .zip with an executable bootstrap)"
+ZIP_EVENT=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ZIP_EVENT}"' EXIT
+echo '{"from":"zip"}' > "${ZIP_EVENT}"
+RESULT_ZIP=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapZipHandler --event "${ZIP_EVENT}" --no-pull 2>/dev/null | tail -1)
+echo "    response: ${RESULT_ZIP}"
+echo "${RESULT_ZIP}" | grep -Eq '"Greeting": *"hello-from-zip"|"greeting": *"hello-from-zip"' || {
+  echo "FAIL: expected greeting=hello-from-zip from the extracted zip bootstrap, got: ${RESULT_ZIP}"
+  exit 1
+}
+echo "${RESULT_ZIP}" | grep -Eq '"from": *"zip"' || {
+  echo "FAIL: expected echoed from=zip, got: ${RESULT_ZIP}"
+  exit 1
+}
+echo "    zip bootstrap executed ✓"
+
+# Test 4 — inline Code.ZipFile rejection for provided.al2023.
+echo "==> [4/5] Invoking ProvidedAl2023InlineHandler — expecting inline Code.ZipFile rejection"
 RESULT_3=""
 if RESULT_3=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/ProvidedAl2023InlineHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on inline provided.al2023, got success: ${RESULT_3}"
@@ -106,8 +132,8 @@ echo "${RESULT_3}" | grep -q "Code.fromAsset" || {
 }
 echo "    rejection ✓"
 
-# Test 4 — go1.x deprecation rejection.
-echo "==> [4/4] Invoking Go1xHandler — expecting go1.x deprecation message"
+# Test 5 — go1.x deprecation rejection.
+echo "==> [5/5] Invoking Go1xHandler — expecting go1.x deprecation message"
 RESULT_4=""
 if RESULT_4=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/Go1xHandler --no-pull 2>&1); then
   echo "FAIL: expected non-zero exit on go1.x, got success: ${RESULT_4}"
@@ -126,4 +152,4 @@ echo "${RESULT_4}" | grep -q "PROVIDED_AL2023" || {
 echo "    deprecation ✓"
 
 echo ""
-echo "==> All 4 local-invoke provided.* + go1.x tests passed"
+echo "==> All 5 local-invoke provided.* + go1.x tests passed"

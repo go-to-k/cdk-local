@@ -11,13 +11,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Fixture stack for `cdkl invoke` provided.* + go1.x integ test
  * (issue #248, final sub-PR).
  *
- * Four Lambdas:
+ * Five Lambdas:
  *   - `BootstrapHandler` — asset-backed `provided.al2023` function. The
  *     asset directory contains a statically-linked `bootstrap` binary
  *     compiled from `lambda/main.go` inside a Docker Go toolchain
  *     container; the OS-only Lambda runtime invokes it via the Lambda
  *     Runtime API. Architecture pinned to `x86_64` so the linux/amd64
  *     bootstrap built in CI matches the base image's default platform.
+ *   - `BootstrapZipHandler` — same compiled `bootstrap`, but `Code.fromAsset`
+ *     points at a `.zip` FILE (built by verify.sh) instead of the unzipped
+ *     directory. CDK keeps it zipped (`aws:asset:path` -> `asset.<hash>.zip`),
+ *     so cdkl must extract it AND preserve the bootstrap's executable bit —
+ *     otherwise RIE fails with `Runtime.InvalidEntrypoint` /
+ *     `fork/exec ...bootstrap: permission denied`.
  *   - `ProvidedAl2023InlineHandler` — `CfnFunction` with `Code: { ZipFile }`
  *     and `runtime: provided.al2023`. cdk-local's local invoke must reject
  *     with the "use Code.fromAsset" message — `provided.*` runtimes ship
@@ -48,6 +54,23 @@ export class LocalInvokeProvidedStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/build')),
       environment: {
         GREETING: 'hello',
+      },
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+    });
+
+    // Same `bootstrap` binary, but `Code.fromAsset` points at a `.zip` FILE
+    // (built by verify.sh) instead of the unzipped directory. CDK stages it as
+    // `asset.<hash>.zip` and `aws:asset:path` points at the zip; cdkl must
+    // extract it AND preserve the bootstrap's executable bit, or RIE fails with
+    // `Runtime.InvalidEntrypoint` / `fork/exec ...bootstrap: permission denied`.
+    new lambda.Function(this, 'BootstrapZipHandler', {
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      architecture: lambda.Architecture.X86_64,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(path.join(__dirname, '../lambda/bootstrap.zip')),
+      environment: {
+        GREETING: 'hello-from-zip',
       },
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
