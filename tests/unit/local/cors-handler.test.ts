@@ -905,6 +905,13 @@ describe('applyCorsResponseHeadersFromConfig (start-cloudfront per-behavior form
     applyCorsResponseHeadersFromConfig(disallowed as never, config, 'https://evil.example.com');
     expect(disallowed.headers.size).toBe(0);
   });
+
+  it('appends Origin to an existing Vary held as a string[] (not just a string)', () => {
+    const res = mockRes();
+    res.setHeader('Vary', ['Accept-Encoding', 'Accept']);
+    applyCorsResponseHeadersFromConfig(res as never, config, 'http://127.0.0.1:5050');
+    expect(res.headers.get('Vary')).toBe('Accept-Encoding, Accept, Origin');
+  });
 });
 
 describe('resolveResponseHeadersPolicyCors (start-cloudfront per-behavior resolve)', () => {

@@ -632,12 +632,19 @@ export function applyCorsResponseHeadersFromConfig(
   if (allowOrigin !== '*') {
     // The response varies by Origin; without `Vary: Origin` a shared
     // cache (browser / CDN) might serve the wrong-origin cached copy
-    // and break the security model. Append to existing Vary if any.
+    // and break the security model. Append to existing Vary if any —
+    // `getHeader` may return a string OR a string[] (a prior setHeader
+    // with an array), so normalize to a comma string before appending.
     const existing = res.getHeader('Vary');
-    if (typeof existing === 'string' && existing.length > 0) {
-      const tokens = existing.split(',').map((t) => t.trim());
+    const existingStr = Array.isArray(existing)
+      ? existing.join(', ')
+      : typeof existing === 'string'
+        ? existing
+        : '';
+    if (existingStr.length > 0) {
+      const tokens = existingStr.split(',').map((t) => t.trim());
       if (!tokens.some((t) => t.toLowerCase() === 'origin')) {
-        res.setHeader('Vary', `${existing}, Origin`);
+        res.setHeader('Vary', `${existingStr}, Origin`);
       }
     } else {
       res.setHeader('Vary', 'Origin');

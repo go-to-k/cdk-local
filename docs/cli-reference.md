@@ -1515,8 +1515,11 @@ its `DistributionConfig`:
   matching is literal-or-`*` — a wildcard-subdomain entry
   (`https://*.example.com`) is not matched, and an AWS-managed policy id
   (a literal, not a `{Ref}` to a local policy) cannot be fetched so its
-  CORS is skipped. The policy's non-CORS sections (`SecurityHeadersConfig`
-  / `CustomHeadersConfig` / `RemoveHeadersConfig` /
+  CORS is skipped. The CORS headers are always applied last, so
+  `CorsConfig.OriginOverride: false` is not distinguished from `true`
+  (an origin that emits its own `Access-Control-Allow-Origin` is still
+  overridden locally). The policy's non-CORS sections
+  (`SecurityHeadersConfig` / `CustomHeadersConfig` / `RemoveHeadersConfig` /
   `ServerTimingHeadersConfig`) are not applied.
 - **S3 origin → local content** — the behavior's `TargetOriginId` → the
   origin's bucket (`{Fn::GetAtt: [<bucket>, RegionalDomainName]}`) → the

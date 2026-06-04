@@ -210,9 +210,13 @@ AWS managed services.
   `Expose-Headers`) added last (mirroring `CorsConfig.OriginOverride`).
   Origin matching is literal-or-`*` (a wildcard-subdomain entry like
   `https://*.example.com` is not matched; an AWS-managed policy id literal is
-  not fetchable so its CORS is skipped). The non-CORS parts of a response
-  headers policy (`SecurityHeadersConfig` / `CustomHeadersConfig` /
-  `RemoveHeadersConfig` / `ServerTimingHeadersConfig`) are not applied. A
+  not fetchable so its CORS is skipped). The CORS headers are always applied
+  last (the policy wins), so `CorsConfig.OriginOverride: false` is not
+  distinguished from `true` — an origin that emits its own
+  `Access-Control-Allow-Origin` is still overridden locally. The non-CORS
+  parts of a response headers policy (`SecurityHeadersConfig` /
+  `CustomHeadersConfig` / `RemoveHeadersConfig` / `ServerTimingHeadersConfig`)
+  are not applied. A
   **Lambda Function URL origin**
   (`origins.FunctionUrlOrigin`) is also served (issue #376): the origin's
   `DomainName` (`Fn::Select[2, Fn::Split['/', GetAtt[Url, 'FunctionUrl']]]`)
