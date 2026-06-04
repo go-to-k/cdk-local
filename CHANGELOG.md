@@ -1,3 +1,10 @@
+# [0.112.0](https://github.com/go-to-k/cdk-local/compare/v0.111.0...v0.112.0) (2026-06-04)
+
+
+### Features
+
+* **start-alb,studio:** [#380](https://github.com/go-to-k/cdk-local/issues/380) env/state/role parity for ALB Lambda targets + studio cloudfront bindings ([#389](https://github.com/go-to-k/cdk-local/issues/389)) ([32cbb81](https://github.com/go-to-k/cdk-local/commit/32cbb817366064fe7fac99bb480edf66cd0aba7c))
+
 # [0.111.0](https://github.com/go-to-k/cdk-local/compare/v0.110.0...v0.111.0) (2026-06-04)
 
 
