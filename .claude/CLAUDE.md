@@ -209,8 +209,18 @@ AWS managed services.
   issue #363). The distribution's `AWS::CloudFront::Function`s (inline
   rewrite JS — URL rewrites, trailing-slash normalization, SPA fallback,
   header tweaks) are your own application compute and run in-process in a
-  `node:vm` sandbox (`cloudfront-js-1.0` / `2.0`, async handlers awaited);
-  the S3 origin content is the BucketDeployment source asset resolved out
+  `node:vm` sandbox (`cloudfront-js-1.0` / `2.0`, async handlers awaited).
+  The sandbox reproduces the CloudFront-Functions-2.0 runtime built-ins a
+  bare vm context lacks (issue #410): the `Buffer`, `atob` / `btoa`,
+  `TextEncoder` / `TextDecoder` globals + a `require` for the `crypto`
+  (`createHash` / `createHmac`) / `querystring` / `buffer` modules — backed
+  by the Node equivalents (a superset of the documented 2.0 subset), so a
+  function using `Buffer.from(...).toString('base64')` for a Basic-Auth check
+  runs locally instead of failing with `Buffer is not defined`. `fs` /
+  `process` / timers / network / `eval` are not provided as globals (a
+  `ReferenceError`, matching the restricted runtime); the vm is a fidelity
+  sandbox, not a security boundary (moot — the function code is the user's own).
+  The S3 origin content is the BucketDeployment source asset resolved out
   of the cloud assembly (walk the origin's bucket -> its
   `Custom::CDKBucketDeployment` -> `SourceObjectKeys` -> the staged asset
   dir), served with `DefaultRootObject` (root only — sub-paths are NOT
@@ -519,7 +529,11 @@ compute-locally category for Lambda + API Gateway).
   CloudFront Function in a `node:vm` sandbox, builds the
   viewer-request / viewer-response event from an HTTP request, and
   interprets the handler's return as continue-to-origin vs short-circuit
-  response; `stripCloudFrontImport` strips the 2.0
+  response; `cloudFrontRuntimeGlobals` merges the CloudFront-Functions-2.0
+  built-ins a bare vm context lacks — `Buffer` / `atob` / `btoa` /
+  `TextEncoder` / `TextDecoder` + a `require` for `crypto` / `querystring` /
+  `buffer`, issue #410 — into both the compile probe and the invoke sandbox;
+  `stripCloudFrontImport` strips the 2.0
   `import cf from 'cloudfront'` line at compile time so a KVS-reading
   function compiles as a plain `vm.Script`, and the resolved `cf` module is
   injected under the binding name at invoke time — issue #399),

@@ -1519,7 +1519,16 @@ its `DistributionConfig`:
   viewer-request function returning a `statusCode` short-circuits with a
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin. A viewer-response function then runs
-  over the origin response.
+  over the origin response. The sandbox reproduces the
+  CloudFront-Functions-2.0 runtime built-ins a bare `node:vm` lacks — the
+  `Buffer`, `atob` / `btoa`, `TextEncoder` / `TextDecoder` globals and a
+  `require` for the `crypto` / `querystring` / `buffer` modules (Node-backed)
+  — so a function that uses, e.g., `Buffer.from(...).toString('base64')` for a
+  Basic-Auth check runs locally instead of failing with `Buffer is not
+  defined`. `fs` / `process` / timers / network / `eval` are not provided as
+  globals (a `ReferenceError`, matching the restricted runtime); the vm is a
+  fidelity sandbox, not a security boundary (moot — the function is your own
+  code run locally).
 - **Lambda@Edge** — each behavior's `LambdaFunctionAssociations[]`
   (`{EventType, LambdaFunctionARN, IncludeBody}`) → the
   `AWS::Lambda::Function` behind the association's `AWS::Lambda::Version`,

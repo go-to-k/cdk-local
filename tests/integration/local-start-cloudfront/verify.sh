@@ -136,6 +136,27 @@ if grep -qi "no binding resolved it" "${OUT_FILE}"; then
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Buffer global in a cloudfront-js-2.0 function: the /secure/* behavior's
+#     Basic-Auth function builds the expected Authorization header with
+#     Buffer.from('user:pass').toString('base64'). Previously this failed with
+#     "Buffer is not defined" (issue #410).
+# ---------------------------------------------------------------------------
+echo "==> GET /secure/x without credentials (Basic-Auth function -> 401)"
+SEC_STATUS=$(curl -s -o /dev/null -D /tmp/cdkl-cf-sec.$$ -w '%{http_code}' "${BASE}/secure/x") || true
+[[ "${SEC_STATUS}" == "401" ]] \
+  || fail "Basic-Auth function did not return 401 without credentials (got ${SEC_STATUS}; a 5xx would mean Buffer is undefined)"
+grep -qi "www-authenticate: Basic" /tmp/cdkl-cf-sec.$$ || fail "401 missing the WWW-Authenticate header"
+rm -f /tmp/cdkl-cf-sec.$$
+echo "==> GET /secure/x with correct credentials (Buffer-built check passes -> root page)"
+SEC_BODY=$(curl -fsS -u user:pass "${BASE}/secure/x") \
+  || fail "GET /secure/x with credentials failed (a Buffer ReferenceError would 5xx)"
+echo "${SEC_BODY}" | grep -qi "root page" \
+  || fail "authorized /secure/x did not rewrite to the root page (Buffer-based auth check)"
+if grep -qi "Buffer is not defined" "${OUT_FILE}"; then
+  fail "the server logged 'Buffer is not defined' — the cloudfront-js-2.0 Buffer global is missing"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. CustomErrorResponses SPA fallback: missing key -> 403 -> /404.html (200).
 # ---------------------------------------------------------------------------
 echo "==> GET /does-not-exist (403 -> /404.html (200) SPA fallback)"
@@ -209,4 +230,4 @@ CDKL_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite (--kvs-file), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite (--kvs-file), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."
