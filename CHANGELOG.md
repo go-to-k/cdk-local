@@ -1,3 +1,10 @@
+# [0.113.0](https://github.com/go-to-k/cdk-local/compare/v0.112.0...v0.113.0) (2026-06-04)
+
+
+### Features
+
+* **run-task:** --image-override rebuilds a pinned task-def image from a local Dockerfile (slice A of [#388](https://github.com/go-to-k/cdk-local/issues/388)) ([#390](https://github.com/go-to-k/cdk-local/issues/390)) ([61ddd2e](https://github.com/go-to-k/cdk-local/commit/61ddd2ecdadc251eab1f708df9b6a95d50d50a57))
+
 # [0.112.0](https://github.com/go-to-k/cdk-local/compare/v0.111.0...v0.112.0) (2026-06-04)
 
 
