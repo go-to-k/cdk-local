@@ -771,21 +771,6 @@ export async function runEcsServiceEmulator(
         `Service(s) running: ${frontDoorLambdaRunners.length} Lambda target(s) behind the ALB front-door.`
       );
     }
-    // Surface the consolidated endpoint URLs at the END of the boot stream so
-    // the access URL doesn't get buried between streamed `docker pull` output
-    // and the per-replica boot logs. Two sources:
-    //   - per-service static host-port publishes recorded in
-    //     `state.publishedEndpoints` by the runner (single-replica start-service);
-    //   - per-listener ALB front-door servers (start-alb), echoed here so they
-    //     end up at the bottom too — the buildFrontDoor `ALB front-door: ...`
-    //     line is emitted earlier (and is the load-bearing marker integ tests
-    //     grep for), but it streams BEFORE the docker-pull noise and ends up
-    //     buried, exactly the same problem this banner solves for start-service.
-    // Empty when neither source has anything to show (e.g. multi-replica
-    // start-service with no front-door).
-    logEndpointsBanner(perTarget, frontDoorServers, logger);
-    logger.info('Press ^C to shut down.');
-
     // Issue #234 (broadened by #238) — warn per booted target whose
     // representative container image is NOT a local CDK docker-image
     // asset AND was NOT covered by `--image-override`. Such targets
@@ -839,6 +824,27 @@ export async function runEcsServiceEmulator(
     // Boot WARN already fired above for the same set; this throws on
     // top of it so the user sees both diagnostics before exiting.
     enforceStrictOverrides(options.strictOverrides === true, uncoveredPinnedTargets);
+
+    // Surface the consolidated endpoint URLs at the very END of the boot
+    // stream — AFTER the pinned-image WARN above — so two things hold at once:
+    // the access URL is the LAST thing printed (not buried between streamed
+    // `docker pull` output and the per-replica boot logs), AND the up-front
+    // pin WARN lands BEFORE the "Press ^C to shut down" banner rather than
+    // after it (where it read as an afterthought the user only sees once
+    // they've already spent time). Two sources:
+    //   - per-service static host-port publishes recorded in
+    //     `state.publishedEndpoints` by the runner (single-replica start-service);
+    //   - per-listener ALB front-door servers (start-alb), echoed here so they
+    //     end up at the bottom too — the buildFrontDoor `ALB front-door: ...`
+    //     line is emitted earlier (and is the load-bearing marker integ tests
+    //     grep for), but it streams BEFORE the docker-pull noise and ends up
+    //     buried, exactly the same problem this banner solves for start-service.
+    // Empty when neither source has anything to show (e.g. multi-replica
+    // start-service with no front-door). Placed after enforceStrictOverrides
+    // so a `--strict-overrides` failure throws BEFORE the misleading
+    // "Press ^C to shut down" is printed.
+    logEndpointsBanner(perTarget, frontDoorServers, logger);
+    logger.info('Press ^C to shut down.');
 
     // Phase 1 + Phase 2 + Phase 3 of issue #214 — `cdkl start-service --watch`
     // (Phases 1-2) and `cdkl start-alb --watch` (Phase 3) source-tree
