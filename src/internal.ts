@@ -688,14 +688,18 @@ export {
 /**
  * `start-cloudfront` runtime layer (issue #363): the distribution resolver
  * (synthesized `AWS::CloudFront::Distribution` -> behaviors / CloudFront
- * Functions / S3 origins / custom error responses), the in-process CloudFront
- * Function `node:vm` runtime, the S3 static-origin server, and the local
- * HTTP/HTTPS distribution server. Exposed for host CLIs that drive the same
- * local-CloudFront serving without re-importing the command factory.
+ * Functions / S3 origins / Lambda Function URL origins / custom error
+ * responses), the in-process CloudFront Function `node:vm` runtime, the S3
+ * static-origin server, the Lambda Function URL origin server (issue #376),
+ * and the local HTTP/HTTPS distribution server. Exposed for host CLIs that
+ * drive the same local-CloudFront serving without re-importing the command
+ * factory.
  */
 export {
   resolveCloudFrontDistribution,
   isCloudFrontDistribution,
+  pickFunctionUrlLogicalIdFromOrigin,
+  pickTargetFunctionLogicalId,
   CLOUDFRONT_DISTRIBUTION_TYPE,
   type ResolvedDistribution,
   type ResolvedBehavior,
@@ -716,9 +720,15 @@ export {
   type ResolvedCustomErrorResponse,
 } from './local/cloudfront-static-origin.js';
 export {
+  serveLambdaUrlOrigin,
+  type LambdaUrlOriginRequest,
+  type LambdaUrlOriginResult,
+} from './local/cloudfront-lambda-origin.js';
+export {
   startCloudFrontServer,
   matchBehavior,
   type StartedCloudFrontServer,
+  type LambdaUrlInvokerMap,
 } from './local/cloudfront-server.js';
 
 /**

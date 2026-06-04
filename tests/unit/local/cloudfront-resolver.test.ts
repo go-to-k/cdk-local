@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   pickBucketLogicalIdFromOrigin,
   pickFunctionLogicalIdFromArn,
+  pickFunctionUrlLogicalIdFromOrigin,
+  pickTargetFunctionLogicalId,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
@@ -222,10 +224,116 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
   });
 });
 
+/** A distribution whose default origin is a Lambda Function URL origin. */
+function functionUrlDistributionTemplate(
+  targetFunctionArn: unknown = { Ref: 'Handler' }
+): CloudFormationTemplate {
+  return {
+    Resources: {
+      Handler: {
+        Type: 'AWS::Lambda::Function',
+        Properties: { Runtime: 'nodejs20.x', Handler: 'index.handler', Code: { ZipFile: 'x' } },
+      },
+      HandlerUrl: {
+        Type: 'AWS::Lambda::Url',
+        Properties: { TargetFunctionArn: targetFunctionArn, AuthType: 'NONE' },
+      },
+      Dist: {
+        Type: 'AWS::CloudFront::Distribution',
+        Properties: {
+          DistributionConfig: {
+            Origins: [
+              {
+                Id: 'lambda',
+                // origins.FunctionUrlOrigin: strip scheme + trailing slash off
+                // {Fn::GetAtt: [HandlerUrl, 'FunctionUrl']}.
+                DomainName: {
+                  'Fn::Select': [
+                    2,
+                    { 'Fn::Split': ['/', { 'Fn::GetAtt': ['HandlerUrl', 'FunctionUrl'] }] },
+                  ],
+                },
+                CustomOriginConfig: { OriginProtocolPolicy: 'https-only' },
+              },
+            ],
+            DefaultCacheBehavior: { TargetOriginId: 'lambda' },
+          },
+        },
+      },
+    },
+  };
+}
+
+describe('resolveCloudFrontDistribution — Lambda Function URL origin', () => {
+  it('resolves a FunctionUrlOrigin to lambda-url (Ref TargetFunctionArn)', () => {
+    const stack = buildStack(functionUrlDistributionTemplate({ Ref: 'Handler' }));
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    const origin = resolved.origins.get('lambda');
+    expect(origin?.kind).toBe('lambda-url');
+    if (origin?.kind === 'lambda-url') {
+      expect(origin.functionLogicalId).toBe('Handler');
+      expect(origin.functionUrlLogicalId).toBe('HandlerUrl');
+    }
+  });
+
+  it('resolves a FunctionUrlOrigin to lambda-url (Fn::GetAtt Arn TargetFunctionArn)', () => {
+    const stack = buildStack(
+      functionUrlDistributionTemplate({ 'Fn::GetAtt': ['Handler', 'Arn'] })
+    );
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    const origin = resolved.origins.get('lambda');
+    expect(origin?.kind).toBe('lambda-url');
+    if (origin?.kind === 'lambda-url') expect(origin.functionLogicalId).toBe('Handler');
+  });
+
+  it('falls back to custom when the AWS::Lambda::Url resource is absent', () => {
+    const template = functionUrlDistributionTemplate();
+    delete (template.Resources as Record<string, unknown>)['HandlerUrl'];
+    const stack = buildStack(template);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.origins.get('lambda')?.kind).toBe('custom');
+  });
+
+  it('falls back to custom when TargetFunctionArn does not resolve to a Lambda function', () => {
+    const template = functionUrlDistributionTemplate({ Ref: 'Handler' });
+    // Make the referenced resource a non-Lambda.
+    (template.Resources as Record<string, { Type: string }>)['Handler']!.Type = 'AWS::SNS::Topic';
+    const stack = buildStack(template);
+    const resolved = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' });
+    expect(resolved.origins.get('lambda')?.kind).toBe('custom');
+  });
+});
+
 describe('intrinsic helpers', () => {
   it('pickFunctionLogicalIdFromArn unwraps Fn::GetAtt', () => {
     expect(pickFunctionLogicalIdFromArn({ 'Fn::GetAtt': ['Fn', 'FunctionARN'] })).toBe('Fn');
     expect(pickFunctionLogicalIdFromArn('literal')).toBeUndefined();
+  });
+
+  it('pickFunctionUrlLogicalIdFromOrigin unwraps the FunctionUrlOrigin domain shape', () => {
+    const domain = {
+      'Fn::Select': [2, { 'Fn::Split': ['/', { 'Fn::GetAtt': ['U', 'FunctionUrl'] }] }],
+    };
+    expect(pickFunctionUrlLogicalIdFromOrigin(domain)).toBe('U');
+    // Wrong select index (not 2).
+    expect(
+      pickFunctionUrlLogicalIdFromOrigin({
+        'Fn::Select': [1, { 'Fn::Split': ['/', { 'Fn::GetAtt': ['U', 'FunctionUrl'] }] }],
+      })
+    ).toBeUndefined();
+    // Wrong attribute (a RegionalDomainName S3 origin must not match).
+    expect(
+      pickFunctionUrlLogicalIdFromOrigin({
+        'Fn::Select': [2, { 'Fn::Split': ['/', { 'Fn::GetAtt': ['U', 'DomainName'] }] }],
+      })
+    ).toBeUndefined();
+    expect(pickFunctionUrlLogicalIdFromOrigin('literal.example.com')).toBeUndefined();
+  });
+
+  it('pickTargetFunctionLogicalId unwraps Ref and Fn::GetAtt Arn', () => {
+    expect(pickTargetFunctionLogicalId({ Ref: 'Handler' })).toBe('Handler');
+    expect(pickTargetFunctionLogicalId({ 'Fn::GetAtt': ['Handler', 'Arn'] })).toBe('Handler');
+    expect(pickTargetFunctionLogicalId('arn:literal')).toBeUndefined();
   });
 
   it('pickBucketLogicalIdFromOrigin only resolves to an S3 bucket', () => {

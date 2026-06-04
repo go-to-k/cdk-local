@@ -11,7 +11,13 @@ import {
 import {
   startCloudFrontServer,
   type StartedCloudFrontServer,
+  type LambdaUrlInvokerMap,
 } from '../../local/cloudfront-server.js';
+import {
+  createFrontDoorLambdaRunner,
+  type FrontDoorLambdaRunner,
+} from '../../local/front-door-lambda-runner.js';
+import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import {
   resolveFrontDoorTlsMaterials,
@@ -65,6 +71,11 @@ interface LocalStartCloudFrontOptions {
   tlsKey?: string;
   /** Hot-reload on CDK source changes. */
   watch: boolean;
+  /**
+   * Commander resolves `--no-pull` to `pull = false` (default `true`); when
+   * false, skip `docker pull` for a Lambda Function URL origin's base image.
+   */
+  pull?: boolean;
 }
 
 /** Factory options for {@link createLocalStartCloudFrontCommand}. */
@@ -170,13 +181,64 @@ function notFound(
   );
 }
 
+/**
+ * Boot one warm RIE container per unique Lambda Function URL origin in the
+ * distribution (issue #376), returning the runners + an invoker map keyed by
+ * backing-function logical id for {@link startCloudFrontServer}. Returns empty
+ * collections when the distribution has no Function URL origin — start-cloudfront
+ * then stays pure-local (no Docker). Booted once at start-up; NOT re-run on a
+ * `--watch` reload (the warm containers keep their boot-time image).
+ */
+export async function bootLambdaUrlOrigins(
+  distribution: ResolvedDistribution,
+  stacks: StackInfo[],
+  opts: { containerHost: string; skipPull: boolean; region?: string }
+): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
+  const logger = getLogger();
+  const invokers: LambdaUrlInvokerMap = new Map();
+  const runners: FrontDoorLambdaRunner[] = [];
+  // Unique backing functions across all lambda-url origins.
+  const functionLogicalIds = new Set<string>();
+  for (const origin of distribution.origins.values()) {
+    if (origin.kind === 'lambda-url') functionLogicalIds.add(origin.functionLogicalId);
+  }
+  for (const functionLogicalId of functionLogicalIds) {
+    let runner: FrontDoorLambdaRunner;
+    try {
+      const lambda = resolveLambdaTarget(functionLogicalId, stacks);
+      runner = createFrontDoorLambdaRunner(lambda, {
+        containerHost: opts.containerHost,
+        skipPull: opts.skipPull,
+        ...(opts.region !== undefined && { region: opts.region }),
+      });
+      logger.info(
+        `Booting Lambda Function URL origin container for ${functionLogicalId} (the backing Lambda runs locally via RIE)...`
+      );
+      await runner.start();
+    } catch (err) {
+      // A lambda-url origin is essential to the distribution; if its backing
+      // Lambda cannot be booted, stop the runners already started and fail.
+      await Promise.all(runners.map((r) => r.stop().catch(() => undefined)));
+      throw new LocalStartCloudFrontError(
+        `Failed to boot the Lambda Function URL origin's backing function '${functionLogicalId}': ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err : undefined
+      );
+    }
+    runners.push(runner);
+    invokers.set(functionLogicalId, (event) => runner.invoke(event));
+  }
+  return { invokers, runners };
+}
+
 /** Emit boot-time WARNs for parts of the distribution cdk-local does not serve. */
 function warnUnsupported(distribution: ResolvedDistribution): void {
   const logger = getLogger();
   for (const origin of distribution.origins.values()) {
     if (origin.kind === 'custom') {
       logger.warn(
-        `Origin '${origin.originId}' is a custom (non-S3) origin (${origin.domainName}); cdkl start-cloudfront serves S3 origins only. Requests routed to it return 502.`
+        `Origin '${origin.originId}' is a custom (non-S3, non-Lambda-Function-URL) origin (${origin.domainName}); ` +
+          `${getEmbedConfig().cliName} start-cloudfront serves S3 origins and Lambda Function URL origins only. Requests routed to it return 502.`
       );
     } else if (origin.kind === 's3-unresolved') {
       logger.warn(
@@ -221,8 +283,13 @@ async function localStartCloudFrontCommand(
     throw new LocalStartCloudFrontError(`--port must be 0..65535 (got ${options.port}).`);
   }
 
-  // One synth + resolve pass; reused on the initial boot and every reload.
-  const synthAndResolve = async (): Promise<ResolvedDistribution> => {
+  // One synth + resolve pass; reused on the initial boot and every reload. The
+  // backing stacks ride along so the boot path can resolve a Lambda Function
+  // URL origin's backing function.
+  const synthAndResolve = async (): Promise<{
+    distribution: ResolvedDistribution;
+    stacks: StackInfo[];
+  }> => {
     logger.info('Synthesizing CDK app...');
     const synthesizer = new Synthesizer();
     const context = parseContextOptions(options.context);
@@ -249,11 +316,26 @@ async function localStartCloudFrontCommand(
     target = chosen;
 
     const { stack, logicalId } = resolveCloudFrontTarget(chosen, stacks);
-    return resolveCloudFrontDistribution({ stack, logicalId, originOverrides });
+    return {
+      distribution: resolveCloudFrontDistribution({ stack, logicalId, originOverrides }),
+      stacks,
+    };
   };
 
   const initial = await synthAndResolve();
-  warnUnsupported(initial);
+  warnUnsupported(initial.distribution);
+
+  // Boot a warm RIE container per Lambda Function URL origin (issue #376).
+  // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
+  const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
+    initial.distribution,
+    initial.stacks,
+    {
+      containerHost: options.host,
+      skipPull: options.pull === false,
+      ...(options.region !== undefined && { region: options.region }),
+    }
+  );
 
   // TLS resolution (real termination opt-in). Resolved once at boot.
   let tls: FrontDoorTlsMaterials | undefined;
@@ -265,21 +347,25 @@ async function localStartCloudFrontCommand(
   }
 
   const server: StartedCloudFrontServer = await startCloudFrontServer({
-    distribution: initial,
+    distribution: initial.distribution,
     host: options.host,
     port: basePort,
     ...(tls && { tls }),
+    ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
   });
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(
-    `CloudFront distribution serving on ${server.url}  (${initial.logicalId})\n`
+    `CloudFront distribution serving on ${server.url}  (${initial.distribution.logicalId})\n`
   );
   process.stdout.write('^C to stop.\n');
 
   // `--watch`: re-synth + swap the in-memory routing model on source change.
-  // No Docker / containers here, so a reload is just re-synth + re-resolve +
-  // `server.update()` — the listening socket is never recreated.
+  // The viewer functions + S3 origins reload; a Lambda Function URL origin's
+  // warm container is boot-time only and is NOT rebuilt here (consistent with
+  // start-alb's Lambda targets), so a reload is just re-synth + re-resolve +
+  // `server.update()` — the listening socket and the RIE containers are never
+  // recreated.
   let watcher: FileWatcher | undefined;
   let reloadChain: Promise<unknown> = Promise.resolve();
   if (options.watch) {
@@ -298,8 +384,8 @@ async function localStartCloudFrontCommand(
         const next = reloadChain.then(async () => {
           try {
             const reloaded = await synthAndResolve();
-            warnUnsupported(reloaded);
-            server.update(reloaded);
+            warnUnsupported(reloaded.distribution);
+            server.update(reloaded.distribution);
             logger.info('Reload complete.');
           } catch (err) {
             logger.warn(
@@ -333,6 +419,16 @@ async function localStartCloudFrontCommand(
     } catch {
       /* best-effort */
     }
+    // Tear down any Lambda Function URL origin containers.
+    await Promise.all(
+      lambdaRunners.map((r) =>
+        r.stop().catch((err) => {
+          logger.debug(
+            `Lambda origin runner stop failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        })
+      )
+    );
     process.exit(exitCode);
   };
   process.on('SIGINT', () => void shutdown('SIGINT', 130));
@@ -349,9 +445,10 @@ export function createLocalStartCloudFrontCommand(
   const cmd = new Command('start-cloudfront')
     .description(
       'Run a long-running local server that serves a CloudFront distribution: its S3 origin content (resolved ' +
-        'from the BucketDeployment source in the cloud assembly) plus its viewer-request / viewer-response ' +
-        'CloudFront Functions, reproducing the distribution routing locally so a rewrite / routing change is ' +
-        'verifiable in seconds. Serves S3 origins only; custom origins and Lambda@Edge are not run (warn-and-skip). ' +
+        'from the BucketDeployment source in the cloud assembly) and its Lambda Function URL origins (the backing ' +
+        'Lambda is run locally via RIE), plus its viewer-request / viewer-response CloudFront Functions, ' +
+        'reproducing the distribution routing locally so a rewrite / routing change is verifiable in seconds. ' +
+        'Serves S3 and Lambda Function URL origins; other custom origins and Lambda@Edge are not run (warn-and-skip). ' +
         'Tip: omit the target in a terminal to pick interactively.'
     )
     .argument(
@@ -402,6 +499,12 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
     )
     .addOption(new Option('--tls-cert <path>', 'PEM server certificate for --tls (implies --tls).'))
     .addOption(new Option('--tls-key <path>', 'PEM server private key for --tls (implies --tls).'))
+    .addOption(
+      new Option(
+        '--no-pull',
+        "Skip 'docker pull' for a Lambda Function URL origin's base image (use the locally cached image)."
+      )
+    )
     .addOption(
       new Option(
         '--watch',
