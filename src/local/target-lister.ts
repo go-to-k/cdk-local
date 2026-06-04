@@ -1,7 +1,11 @@
 import { readCdkPathOrUndefined } from '../cli/cdk-path.js';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import { getLogger } from '../utils/logger.js';
-import { AGENTCORE_RUNTIME_TYPE } from './agentcore-resolver.js';
+import {
+  AGENTCORE_RUNTIME_TYPE,
+  AGENTCORE_MCP_PROTOCOL,
+  AGENTCORE_A2A_PROTOCOL,
+} from './agentcore-resolver.js';
 import { discoverRoutes } from './route-discovery.js';
 import { discoverWebSocketApis } from './websocket-route-discovery.js';
 
@@ -37,6 +41,14 @@ export interface TargetEntry {
    * targets apart. Omitted for Lambda / ECS targets.
    */
   kind?: string;
+  /**
+   * For `agentCoreRuntimes` entries only: whether the runtime exposes a
+   * bidirectional `/ws` WebSocket endpoint (HTTP / AGUI protocols do; MCP /
+   * A2A do not). Drives the studio `agentcore-ws` serve group, which only
+   * lists runtimes `cdkl start-agentcore` can serve. Omitted for non-agentcore
+   * targets.
+   */
+  agentCoreHasWs?: boolean;
 }
 
 /**
@@ -103,6 +115,32 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
     for (const [logicalId, resource] of Object.entries(resources)) {
       if (resource.Type !== type) continue;
       entries.push(makeEntry(stack.stackName, logicalId, readCdkPathOrUndefined(resource)));
+    }
+  }
+  return entries;
+}
+
+/**
+ * Enumerate `AWS::BedrockAgentCore::Runtime` targets, marking each with
+ * {@link TargetEntry.agentCoreHasWs} — true for HTTP / AGUI runtimes (which
+ * expose a `/ws` WebSocket endpoint), false for MCP / A2A (which do not). The
+ * marker lets the studio `agentcore-ws` serve group list only the runtimes
+ * `cdkl start-agentcore` can serve. The protocol is read the same way the
+ * resolver reads it (`Properties.ProtocolConfiguration`, default HTTP).
+ */
+function scanAgentCoreRuntimes(stacks: readonly StackInfo[]): TargetEntry[] {
+  const entries: TargetEntry[] = [];
+  for (const stack of stacks) {
+    const resources = stack.template.Resources ?? {};
+    for (const [logicalId, resource] of Object.entries(resources)) {
+      if (resource.Type !== AGENTCORE_RUNTIME_TYPE) continue;
+      const entry = makeEntry(stack.stackName, logicalId, readCdkPathOrUndefined(resource));
+      const protocol = (resource.Properties as Record<string, unknown> | undefined)?.[
+        'ProtocolConfiguration'
+      ];
+      entry.agentCoreHasWs =
+        protocol !== AGENTCORE_MCP_PROTOCOL && protocol !== AGENTCORE_A2A_PROTOCOL;
+      entries.push(entry);
     }
   }
   return entries;
@@ -197,7 +235,7 @@ export function listTargets(stacks: readonly StackInfo[]): TargetListing {
     apis: sortApiEntries(listApiSurfaces(stacks)),
     ecsServices: sortEntries(scanByType(stacks, 'AWS::ECS::Service')),
     ecsTaskDefinitions: sortEntries(scanByType(stacks, 'AWS::ECS::TaskDefinition')),
-    agentCoreRuntimes: sortEntries(scanByType(stacks, AGENTCORE_RUNTIME_TYPE)),
+    agentCoreRuntimes: sortEntries(scanAgentCoreRuntimes(stacks)),
     loadBalancers: sortEntries(scanApplicationLoadBalancers(stacks)),
     cloudFrontDistributions: sortEntries(scanByType(stacks, 'AWS::CloudFront::Distribution')),
   };

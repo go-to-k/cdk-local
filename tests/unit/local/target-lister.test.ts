@@ -154,8 +154,32 @@ describe('listTargets — AgentCore Runtimes', () => {
         stackName: 'App',
         qualifiedId: 'App:ChatAgent',
         displayPath: 'App/ChatAgent',
+        // No ProtocolConfiguration -> defaults to HTTP -> has a /ws endpoint.
+        agentCoreHasWs: true,
       },
     ]);
+  });
+
+  it('marks agentCoreHasWs per protocol (HTTP/AGUI true, MCP/A2A false)', () => {
+    const stack = buildStack('App', {
+      HttpAgent: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      AguiAgent: {
+        Type: 'AWS::BedrockAgentCore::Runtime',
+        Properties: { ProtocolConfiguration: 'AGUI' },
+      },
+      McpAgent: {
+        Type: 'AWS::BedrockAgentCore::Runtime',
+        Properties: { ProtocolConfiguration: 'MCP' },
+      },
+      A2aAgent: {
+        Type: 'AWS::BedrockAgentCore::Runtime',
+        Properties: { ProtocolConfiguration: 'A2A' },
+      },
+    });
+    const byId = Object.fromEntries(
+      listTargets([stack]).agentCoreRuntimes.map((e) => [e.logicalId, e.agentCoreHasWs])
+    );
+    expect(byId).toEqual({ HttpAgent: true, AguiAgent: true, McpAgent: false, A2aAgent: false });
   });
 });
 

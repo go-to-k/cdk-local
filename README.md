@@ -94,7 +94,7 @@ Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.m
 
 ### Web console — `cdkl studio`
 
-`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all.
+`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all. A served API Gateway WebSocket API — and an HTTP / AGUI AgentCore runtime's `/ws` endpoint (the `start-agentcore` serve, listed under "AgentCore WebSocket") — get an interactive in-browser WebSocket console (connect / send / receive frames).
 
 ```bash
 cdkl studio                                  # open the console (launches your browser)

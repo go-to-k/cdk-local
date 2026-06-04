@@ -11,7 +11,8 @@ export type StudioTargetKind =
   | 'ecs'
   | 'ecs-task'
   | 'cloudfront'
-  | 'agentcore';
+  | 'agentcore'
+  | 'agentcore-ws';
 
 /**
  * One request observed by `cdkl studio` — a single-shot invoke or one

@@ -80,6 +80,7 @@ const STUDIO_TARGET_KINDS: readonly StudioTargetKind[] = [
   'ecs-task',
   'cloudfront',
   'agentcore',
+  'agentcore-ws',
 ];
 
 /**

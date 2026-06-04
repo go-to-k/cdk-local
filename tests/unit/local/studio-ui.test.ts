@@ -29,6 +29,16 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
+  it('treats agentcore-ws as a serve kind with the AgentCore WS label', () => {
+    const html = renderStudioHtml('MyStack', 'cdkl');
+    // agentcore-ws is a serve kind (Start/Stop + WebSocket console), distinct
+    // from the single-shot agentcore invoke kind.
+    expect(html).toContain("'agentcore-ws'");
+    expect(html).toContain("'agentcore-ws': 'AgentCore WS'");
+    // Its per-run serve options are serialized too.
+    expect(html).toContain('"--no-verify-auth"');
+  });
+
   it('embeds the auto-derived full flag catalog for the "All options" section (issue #301)', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     // The full per-kind catalog is serialized for the UI.
@@ -36,6 +46,7 @@ describe('renderStudioHtml', () => {
     // It carries each runnable kind's headless command + real flags.
     expect(html).toContain('"command":"start-api"');
     expect(html).toContain('"command":"invoke-agentcore"');
+    expect(html).toContain('"command":"start-agentcore"');
     // Session-global flags are excluded from the per-target catalog.
     expect(html).not.toMatch(/__FLAG_CATALOG__ =[^;]*"--from-cfn-stack"/);
     // `<` is escaped so a flag description can never close the <script>.

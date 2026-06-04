@@ -67,7 +67,7 @@ cleanup() {
     wait "${STUDIO_PID}" 2>/dev/null || true
   fi
   rm -f "${LOG_FILE}" "${BODY_FILE}" "${RUN_FILE}" "${SSE_FILE}"
-  rm -f "$(pwd)/.studio-ws-client.mjs"
+  rm -f "$(pwd)/.studio-ws-client.mjs" "$(pwd)/.studio-agentcore-ws-client.mjs"
   # Drop the local-only image-override build(s) the ecs / alb / ecs-task picker
   # tests produced (tag prefix is the embed binary name: `cdkl-override-*:local`).
   docker images --filter 'reference=cdkl-override-*' -q | xargs -r docker rmi -f >/dev/null 2>&1 || true
@@ -1038,6 +1038,81 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 echo "    OK: WebSocket-API serve stopped"
+
+# ---------------------------------------------------------------------------
+# 7c. AgentCore WebSocket console (start-agentcore): studio serves an
+#     HTTP-protocol AgentCore runtime's /ws endpoint as the `agentcore-ws`
+#     serve kind (`start-agentcore LocalStudioFixture/MyAgent`), exposing the
+#     host bridge's ws:// endpoint un-proxied. A header-less client (the
+#     browser path — the global WebSocket cannot set the session-id header)
+#     connects through the bridge, and the bridge injects the session-id on the
+#     container /ws upgrade. Drive the agent's /ws REPL: send {"loop":true},
+#     assert the reply carries a bridge-injected sessionId, then a second frame
+#     round-trips as loop-echo:<text>. Proves studio -> start-agentcore ->
+#     bridge -> browser-reachable ws:// session end-to-end.
+# ---------------------------------------------------------------------------
+AC_WS_TARGET="LocalStudioFixture/MyAgent"
+echo "==> GET /api/targets lists ${AC_WS_TARGET} under the agentcore-ws serve group"
+curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
+if ! grep -qF '"kind":"agentcore-ws"' "${BODY_FILE}"; then
+  echo "FAIL: /api/targets has no agentcore-ws group"; head -c 2000 "${BODY_FILE}"; exit 1
+fi
+echo "    OK: agentcore-ws group present"
+
+echo "==> POST /api/run starts an agentcore-ws serve for ${AC_WS_TARGET}"
+ACWS_FILE=$(mktemp)
+ACWS_HTTP=$(curl -s -o "${ACWS_FILE}" -w '%{http_code}' --max-time 300 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${AC_WS_TARGET}\",\"kind\":\"agentcore-ws\"}" || true)
+if [[ "${ACWS_HTTP}" != "200" ]]; then
+  echo "FAIL: agentcore-ws serve start returned HTTP ${ACWS_HTTP}"; cat "${ACWS_FILE}"; rm -f "${ACWS_FILE}"; exit 1
+fi
+ACWS_URL=$(grep -oE 'ws://127\.0\.0\.1:[0-9]+/ws' "${ACWS_FILE}" | head -1 || true)
+rm -f "${ACWS_FILE}"
+if [[ -z "${ACWS_URL}" ]]; then
+  echo "FAIL: studio did not expose a ws:// endpoint for the agentcore-ws serve"; exit 1
+fi
+echo "    OK: agentcore-ws serve running at ${ACWS_URL}"
+curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
+if ! grep -qF "${ACWS_URL}" "${BODY_FILE}"; then
+  echo "FAIL: /api/running did not list the agentcore-ws ws:// endpoint"; cat "${BODY_FILE}"; exit 1
+fi
+# Header-less client (the browser path) drives the agent's /ws REPL through the
+# bridge; asserts the bridge-injected session-id + a frame round-trip.
+cat > "$(pwd)/.studio-agentcore-ws-client.mjs" <<'NODE'
+const url = process.argv[2];
+const ws = new WebSocket(url);
+let stage = 0;
+const done = (code, msg) => { if (msg) console.error(msg); process.exit(code); };
+ws.addEventListener('open', () => ws.send(JSON.stringify({ loop: true })));
+ws.addEventListener('message', async (e) => {
+  const text = typeof e.data === 'string' ? e.data : (e.data && typeof e.data.text === 'function' ? await e.data.text() : '');
+  if (stage === 0) {
+    let reply; try { reply = JSON.parse(text); } catch { return done(1, 'first frame not JSON: ' + text); }
+    if (reply.ws !== true) return done(1, 'first frame missing ws:true: ' + text);
+    if (!reply.sessionId) return done(1, 'bridge did not inject a session id: ' + text);
+    stage = 1; ws.send('studio-acws-415'); return;
+  }
+  if (text !== 'loop-echo:studio-acws-415') return done(1, 'expected loop-echo, got: ' + text);
+  console.log('PASS:', text); ws.close(); done(0);
+});
+ws.addEventListener('error', () => done(1, 'client socket error'));
+setTimeout(() => done(1, 'timeout waiting for agentcore /ws round-trip'), 30000);
+NODE
+if ! node "$(pwd)/.studio-agentcore-ws-client.mjs" "${ACWS_URL}"; then
+  echo "FAIL: AgentCore WebSocket console round-trip through the studio-served bridge"
+  curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${AC_WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
+  rm -f "$(pwd)/.studio-agentcore-ws-client.mjs"; exit 1
+fi
+rm -f "$(pwd)/.studio-agentcore-ws-client.mjs"
+echo "    OK: AgentCore WebSocket console round-trip (session-id injected + loop-echo) through ${ACWS_URL}"
+curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${AC_WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
+for _ in $(seq 1 40); do
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null || true
+  if ! grep -qF "${AC_WS_TARGET}" "${BODY_FILE}"; then break; fi
+  sleep 0.5
+done
+echo "    OK: agentcore-ws serve stopped"
 
 # ---------------------------------------------------------------------------
 # 8. The store (slice C3): history + full-text log search + per-invocation

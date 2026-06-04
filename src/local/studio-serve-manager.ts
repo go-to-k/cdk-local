@@ -213,6 +213,20 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     readyRe: /CloudFront distribution serving on (https?:\/\/\S+)/,
     capturesHttp: true,
   },
+  'agentcore-ws': {
+    // start-agentcore boots an AgentCore Runtime container and serves its
+    // bidirectional /ws endpoint behind a host bridge (issue start-agentcore).
+    // It binds an OS-assigned bridge port with --port 0 and logs `Server
+    // listening on ws://...`. The endpoint is ws:// so it is NOT proxied
+    // (the capture-proxy gate is /^https?:/); the browser connects directly
+    // to the bridge, which renders the same WebSocket console an API Gateway
+    // WebSocket API gets. readyRe anchors on the ws:// scheme so a stray boot
+    // log line cannot flip the serve to running.
+    command: 'start-agentcore',
+    portArgs: ['--port', '0', '--host', '127.0.0.1'],
+    readyRe: /Server listening on (ws:\/\/\S+)/,
+    capturesHttp: false,
+  },
 };
 
 /**
