@@ -1,3 +1,10 @@
+# [0.111.0](https://github.com/go-to-k/cdk-local/compare/v0.110.0...v0.111.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** re-classify targets when --from-cfn-stack changes in the Session bar ([#385](https://github.com/go-to-k/cdk-local/issues/385)) ([#387](https://github.com/go-to-k/cdk-local/issues/387)) ([230c143](https://github.com/go-to-k/cdk-local/commit/230c14306633e45d0fd5902d79c9175e4a7ad829))
+
 # [0.110.0](https://github.com/go-to-k/cdk-local/compare/v0.109.0...v0.110.0) (2026-06-04)
 
 
