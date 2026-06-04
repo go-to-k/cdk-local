@@ -109,6 +109,41 @@ describe('resolveKvsModulesForDistribution', () => {
     expect(f.cloudfrontModule).toBeUndefined();
   });
 
+  it('builds one source per association for a multi-KVS function (id-matched)', async () => {
+    writeFileSync(join(dir, 'a.json'), JSON.stringify({ k: 'from-a' }));
+    writeFileSync(join(dir, 'b.json'), JSON.stringify({ k: 'from-b' }));
+    const f = fn('MultiFn', [
+      { arnValue: { Ref: 'KvsA' }, kvsLogicalId: 'KvsA' },
+      { arnValue: { Ref: 'KvsB' }, kvsLogicalId: 'KvsB' },
+    ]);
+    const { warnings } = await resolveKvsModulesForDistribution(distWith(f), {
+      kvsFiles: new Map([
+        ['KvsA', join(dir, 'a.json')],
+        ['KvsB', join(dir, 'b.json')],
+      ]),
+    });
+    expect(warnings).toEqual([]);
+    // cf.kvs(<id>) selects the matching store (the file source's id is its key).
+    expect(await f.cloudfrontModule!.kvs('KvsA').get('k')).toBe('from-a');
+    expect(await f.cloudfrontModule!.kvs('KvsB').get('k')).toBe('from-b');
+  });
+
+  it('rebinds a function to a NEW source on a subsequent reload', async () => {
+    writeFileSync(join(dir, 'v1.json'), JSON.stringify({ k: 'v1' }));
+    writeFileSync(join(dir, 'v2.json'), JSON.stringify({ k: 'v2' }));
+    const f = fn('ReloadFn', [{ arnValue: { Ref: 'MyKvs' }, kvsLogicalId: 'MyKvs' }]);
+    const dist = distWith(f);
+    await resolveKvsModulesForDistribution(dist, {
+      kvsFiles: new Map([['MyKvs', join(dir, 'v1.json')]]),
+    });
+    expect(await f.cloudfrontModule!.kvs().get('k')).toBe('v1');
+    // Simulate a --watch reload that points the same store at a new file.
+    await resolveKvsModulesForDistribution(dist, {
+      kvsFiles: new Map([['MyKvs', join(dir, 'v2.json')]]),
+    });
+    expect(await f.cloudfrontModule!.kvs().get('k')).toBe('v2');
+  });
+
   it('resolves each unique function once even when shared across behaviors', async () => {
     const f = fn('Shared', [{ arnValue: { Ref: 'MyKvs' }, kvsLogicalId: 'MyKvs' }]);
     const dist: ResolvedDistribution = {
