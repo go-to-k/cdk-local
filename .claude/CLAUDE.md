@@ -682,7 +682,12 @@ compute-locally category for Lambda + API Gateway).
   `running` with no port). The control surfaces transient in-progress states
   (issue #394): a Stop in flight shows "Stopping..." (disabled) until the
   `stopped` / `error` serve event settles it (tracked in a client-side
-  `stoppingIds` set, cleared in `onServeEvent`), and a still-booting serve shows
+  `stoppingIds` set, settled in `onServeEvent` via `settleStoppingTransient`
+  with a `MIN_STOPPING_MS` floor so a near-instant teardown — a `start-api` /
+  pure-S3 `cloudfront` serve with no warmed containers tears down in tens of
+  ms — still shows the affordance instead of flipping straight back to Start;
+  the floor is a no-op for `alb` / `ecs`, whose real Docker teardown already
+  takes longer), and a still-booting serve shows
   "Starting..." (disabled) — both inert so a double-click cannot re-fire stop /
   cancel mid-boot. Issue #352 lists ECS Services (the `ecs`
   serve kind) and ECS Task Definitions as SEPARATE target groups,

@@ -301,6 +301,40 @@ const STUDIO_SCRIPT = `
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
   const stoppingIds = new Set();   // serve targetIds with a Stop in flight — button shows "Stopping..." until the stopped/error event (issue #394)
+  const stoppingSince = new Map(); // serve targetId -> Date.now() when Stop was clicked (drives the min-visible "Stopping..." window)
+  const stoppingTimers = new Map();// serve targetId -> pending setTimeout handle that clears the transient after the min-visible window
+  // Keep "Stopping..." visible for at least this long. A start-api / pure-S3
+  // cloudfront serve with no warmed containers tears down in tens of ms, so
+  // without a floor the button flips straight back to Start and the user never
+  // sees the Stop was registered. alb / ecs (real Docker teardown) already
+  // take longer than this, so the floor is a no-op for them.
+  const MIN_STOPPING_MS = 450;
+  // Fully clear a Stop transient (id + start time + any pending min-window timer).
+  function clearStoppingTransient(id) {
+    stoppingIds.delete(id);
+    stoppingSince.delete(id);
+    const t = stoppingTimers.get(id);
+    if (t) { clearTimeout(t); stoppingTimers.delete(id); }
+  }
+  // Settle a Stop transient when the serve reaches a terminal state: clear it
+  // immediately once the min-visible window has elapsed, else hold "Stopping..."
+  // for the remainder before reverting the button. Only holds when a user Stop
+  // is actually in flight (a self-crash that was never "stopping" clears at once).
+  function settleStoppingTransient(id) {
+    if (!stoppingIds.has(id)) return;
+    const elapsed = Date.now() - (stoppingSince.get(id) || 0);
+    const remaining = MIN_STOPPING_MS - elapsed;
+    if (remaining <= 0) { clearStoppingTransient(id); return; }
+    const existing = stoppingTimers.get(id);
+    if (existing) clearTimeout(existing);
+    const h = setTimeout(function () {
+      stoppingTimers.delete(id);
+      stoppingIds.delete(id);
+      stoppingSince.delete(id);
+      updateServeRow(id);
+    }, remaining);
+    stoppingTimers.set(id, h);
+  }
   // serve targetId -> the launch config it was last Started with (issue #356):
   // { options, rawArgs, imageOverride }. Kept separate from serveState so the
   // SSE-driven serveState rewrites (status / endpoints) never clobber it, and
@@ -969,8 +1003,9 @@ const STUDIO_SCRIPT = `
       imageOverrides: imageOverrides,
     });
     // Defensive: a restart clears any stale "Stopping..." transient (issue
-    // #394) so the new run shows "Starting...", not a lingering stop state.
-    stoppingIds.delete(id);
+    // #394) — including a pending min-visible timer — so the new run shows
+    // "Starting...", not a lingering stop state.
+    clearStoppingTransient(id);
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
@@ -1007,6 +1042,9 @@ const STUDIO_SCRIPT = `
     // stops (the SSE 'stopped' / 'error' event clears it via onServeEvent),
     // issue #394.
     stoppingIds.add(id);
+    stoppingSince.set(id, Date.now());
+    const staleTimer = stoppingTimers.get(id);
+    if (staleTimer) { clearTimeout(staleTimer); stoppingTimers.delete(id); }
     updateServeRow(id);
     try {
       await fetch('/api/stop', {
@@ -1014,12 +1052,13 @@ const STUDIO_SCRIPT = `
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ targetId: id }),
       });
-      // The serve SSE 'stopped' event clears the running state + the transient.
+      // The serve SSE 'stopped' event settles the transient (with a min-visible
+      // window) + clears the running state via onServeEvent.
     } catch (err) {
       // The stop request never reached the server — clear the transient so the
       // button reverts to Stop (the serve is still running). A later SSE event
       // or refresh otherwise reconciles state.
-      stoppingIds.delete(id);
+      clearStoppingTransient(id);
       updateServeRow(id);
     }
   }
@@ -2026,11 +2065,13 @@ const STUDIO_SCRIPT = `
     if (ev.status === 'stopped' || ev.status === 'error') {
       serveState.set(ev.target, { status: ev.status, endpoints: [], message: ev.message });
       // A terminal event settles any in-flight Stop transient (issue #394): the
-      // serve reached a final state, so clear "Stopping..." and let the button
-      // revert to Start (or Reconfigure on a failure). Cleared ONLY here — a
-      // late running re-emit (e.g. a hostUrl arriving after run, issue #392)
-      // must NOT cancel the in-progress stop indicator.
-      stoppingIds.delete(ev.target);
+      // serve reached a final state, so let the button revert to Start (or
+      // Reconfigure on a failure) — but keep "Stopping..." up for at least the
+      // min-visible window so a near-instant teardown (start-api / pure-S3
+      // cloudfront with no warmed containers) still shows the affordance.
+      // Settled ONLY here — a late running re-emit (e.g. a hostUrl arriving
+      // after run, issue #392) must NOT cancel the in-progress stop indicator.
+      settleStoppingTransient(ev.target);
     } else {
       serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [], hostUrl: ev.hostUrl });
     }
