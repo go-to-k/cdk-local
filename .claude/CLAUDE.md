@@ -144,11 +144,16 @@ AWS managed services.
   event -> RIE -> response), so a forward can mix ECS and Lambda
   targets. Each Lambda target's container gets the SAME env as a direct
   `cdkl invoke` (issue #380): its declared `Environment.Variables`,
-  `--from-cfn-stack` intrinsic substitution, and `--assume-role` /
-  `--profile` creds are injected via the shared `resolveLambdaContainerEnv`
-  (resolved once per unique backing Lambda at boot — boot-time only, like the
-  rest of the front-door). `--env-vars` overlays the same SAM-shape
-  `Parameters` it overlays onto the ECS task containers
+  `--from-cfn-stack` intrinsic substitution, and `--assume-role` STS /
+  `--profile`-resolved creds are injected via the shared
+  `resolveLambdaContainerEnv` (resolved once per unique backing Lambda at boot
+  — boot-time only, like the rest of the front-door). As with
+  start-cloudfront's front-door Lambda path, the resolved creds ride the
+  container env overlay (so the standard SDK credential chain resolves them);
+  the named-profile credentials-FILE mount `cdkl invoke` adds is not
+  reproduced, so a handler reading creds via an explicit `fromIni({ profile })`
+  is the one `--profile` case not covered. `--env-vars` overlays the same
+  SAM-shape `Parameters` it overlays onto the ECS task containers
 - Bedrock AgentCore Runtime agents — the agent served over its protocol
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
