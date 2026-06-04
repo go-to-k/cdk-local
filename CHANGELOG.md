@@ -1,3 +1,10 @@
+# [0.117.0](https://github.com/go-to-k/cdk-local/compare/v0.116.0...v0.117.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** make the image-override Dockerfile picker more legible ([#397](https://github.com/go-to-k/cdk-local/issues/397)) ([71231bf](https://github.com/go-to-k/cdk-local/commit/71231bf2ce00a73d1813b3b66468423b00575a03))
+
 # [0.116.0](https://github.com/go-to-k/cdk-local/compare/v0.115.0...v0.116.0) (2026-06-04)
 
 
