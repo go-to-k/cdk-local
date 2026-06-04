@@ -215,7 +215,23 @@ AWS managed services.
   `Custom::CDKBucketDeployment` -> `SourceObjectKeys` -> the staged asset
   dir), served with `DefaultRootObject` (root only — sub-paths are NOT
   auto-indexed, matching CloudFront) and `CustomErrorResponses` (the SPA
-  fallback). Path patterns route across `DefaultCacheBehavior` +
+  fallback). When an S3 origin has NO local BucketDeployment source — the
+  front/back-split case where the CDK repo defines the distribution +
+  bucket but the static files are uploaded out of band by a separate
+  frontend repo / pipeline — `--from-cfn-stack` resolves the deployed
+  bucket's physical name from state (`ListStackResources`) and serves it
+  by reading from **real S3 on demand** (issue #405): a request-time
+  `GetObject` per touched key (no pre-sync, so a CDN bucket with
+  100k objects is fine — a test touches a handful), reusing the same
+  URI->key / `DefaultRootObject` / `CustomErrorResponses` resolution
+  (`cloudfront-s3-origin`). The choice is automatic per origin (local
+  BucketDeployment source -> real-S3 under `--from-cfn-stack` ->
+  `--origin <id>=<dir>` override), logged per origin, gated only by the
+  existing `--from-cfn-stack` flag; an `AccessDenied` (OAC-locked bucket
+  the dev creds cannot read) warns with the `--origin` escape hatch. A
+  read-through cache of fetched objects is a possible follow-up; reads use
+  the `--profile` / default credential chain. Path patterns route across
+  `DefaultCacheBehavior` +
   `CacheBehaviors[]` (the existing ALB `*`/`?` glob matcher). A
   viewer-request function returning a `statusCode` short-circuits with a
   generated response (redirect / fixed body); otherwise the rewritten
@@ -262,8 +278,9 @@ AWS managed services.
   warm container is boot-time only, NOT rebuilt on reload — restart to pick
   up a new one). `--tls` terminates real HTTPS (reusing the ALB front-door's
   self-signed cert path); `--origin <id>=<dir>` points an origin at a local
-  directory when BucketDeployment resolution cannot (content uploaded out of
-  band, non-CDK bucket); `--no-pull` skips the docker pull for a Function
+  directory when BucketDeployment resolution cannot AND the deployed-S3
+  read-through is not wanted (content uploaded out of band, non-CDK bucket);
+  `--no-pull` skips the docker pull for a Function
   URL origin's base image. A CloudFront Function's **KeyValueStore**
   reads (`import cf from 'cloudfront'; cf.kvs().get(key)`) are reproduced
   (issue #399): the `import cf from 'cloudfront'` line is stripped and a `cf`
@@ -343,8 +360,14 @@ compute-locally category for Lambda + API Gateway).
   same env-var + deployed-state + execution-role injection as a direct
   `cdkl invoke`. `--watch`
   re-synths + swaps the routing model under the live socket; `--tls`
-  reuses `front-door-tls`; `--origin <id>=<dir>` is the
-  BucketDeployment-source escape hatch; `--no-pull` skips the Lambda
+  reuses `front-door-tls`; `--from-cfn-stack` additionally promotes an S3
+  origin with no local BucketDeployment source to a deployed-S3
+  read-through origin served from real S3 on demand (issue #405 —
+  `resolveDeployedS3Origins` reads the bucket's physical name from state +
+  builds an `S3OriginReader` per origin, boot-time only, re-annotated on
+  each `--watch` reload via `annotateDeployedS3Origins`); `--origin
+  <id>=<dir>` is the local-directory escape hatch when neither resolves;
+  `--no-pull` skips the Lambda
   origin image pull; `--kvs-file <kvsLogicalId>=<file>` backs a CloudFront
   Function's KeyValueStore reads with a local JSON map (issue #399; the
   deployed-store alternative is `--from-cfn-stack`).
@@ -481,7 +504,9 @@ compute-locally category for Lambda + API Gateway).
   `LambdaFunctionARN` resolved through its `AWS::Lambda::Version` to the
   backing `AWS::Lambda::Function` via `pickLambdaEdgeFunctionLogicalId`),
   origins (S3 origin -> local
-  BucketDeployment source dir via the asset manifest; a Lambda Function
+  BucketDeployment source dir via the asset manifest, else an
+  `s3-unresolved` origin the command promotes to `s3-deployed` real-S3
+  read-through under `--from-cfn-stack`, issue #405; a Lambda Function
   URL origin -> backing `AWS::Lambda::Function` via the
   `Fn::Select/Split/GetAtt` `DomainName` + `AWS::Lambda::Url`
   `TargetFunctionArn`, issue #376; custom / unresolved origins flagged),
@@ -511,7 +536,17 @@ compute-locally category for Lambda + API Gateway).
   attaches it to the compiled function; re-run on each `--watch` reload),
   cloudfront-static-origin (serves a URI from the resolved S3
   origin dir(s): default-root-object at `/`, path-traversal guard, MIME
-  by extension, `CustomErrorResponses` SPA fallback),
+  by extension, `CustomErrorResponses` SPA fallback; the
+  `resolveErrorResponseCandidates` 403-then-404 priority helper is shared
+  with the deployed-S3 reader),
+  cloudfront-s3-origin (issue #405 — the deployed-S3 read-through origin:
+  `createS3OriginReader(bucketName)` serves an S3 origin that has no local
+  BucketDeployment source by reading the DEPLOYED bucket from real S3 on
+  demand — a request-time `GetObject` per touched key, reusing the
+  static-origin URI->key / `DefaultRootObject` / `CustomErrorResponses`
+  resolution; `classifyS3Error` maps a miss to the SPA fallback and an
+  `AccessDenied` to an actionable `--origin` warning; the command promotes
+  an `s3-unresolved` origin to `s3-deployed` under `--from-cfn-stack`),
   cloudfront-lambda-origin (issue #376 — serves a Lambda Function URL
   origin: builds a Function URL payload-v2.0 event from the request
   (reusing `buildHttpApiV2Event` with a synthetic `$default` route),
@@ -529,7 +564,8 @@ compute-locally category for Lambda + API Gateway).
   preflight short-circuit via `matchPreflight`) -> viewer-request fn ->
   Lambda@Edge viewer-request / origin-request (issue #400 — either may
   short-circuit or rewrite the request via the boot-time edge invoker map) ->
-  origin (S3 static origin OR a
+  origin (S3 static origin OR a deployed-S3 read-through origin via the
+  boot-time `s3OriginReaders` map, issue #405, OR a
   Lambda Function URL origin via the boot-time invoker map) ->
   Lambda@Edge origin-response -> viewer-response fn THEN Lambda@Edge
   viewer-response (both run, CloudFront Function first) -> the behavior's

@@ -1,0 +1,19 @@
+{
+  "name": "cdkl-integ-local-start-cloudfront-s3-from-cfn-stack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkl start-cloudfront --from-cfn-stack (deployed-S3 read-through origin, #405)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

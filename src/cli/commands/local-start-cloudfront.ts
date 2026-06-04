@@ -13,6 +13,7 @@ import {
   type StartedCloudFrontServer,
   type LambdaUrlInvokerMap,
 } from '../../local/cloudfront-server.js';
+import { createS3OriginReader, type S3OriginReader } from '../../local/cloudfront-s3-origin.js';
 import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
@@ -446,8 +447,93 @@ function warnUnsupported(distribution: ResolvedDistribution): void {
     } else if (origin.kind === 's3-unresolved') {
       logger.warn(
         `Origin '${origin.originId}' is an S3 origin with no resolvable local source (no BucketDeployment found, or its source could not be located in the cloud assembly). ` +
-          `Point it at a directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
+          `Pass --from-cfn-stack to serve the deployed bucket from real S3 on demand, or point it at a local directory with --origin ${origin.originId}=<dir>. Requests routed to it return 502.`
       );
+    }
+  }
+}
+
+/**
+ * Promote each S3 origin with no local BucketDeployment source (`s3-unresolved`)
+ * to a deployed-S3 read-through origin (issue #405), building one
+ * {@link S3OriginReader} per origin. This is the front/back-split path: the CDK
+ * repo defines the distribution + bucket but the static files were uploaded out
+ * of band, so there is nothing in the cloud assembly to serve locally. Under
+ * `--from-cfn-stack`, the bucket's physical NAME is resolved from deployed state
+ * (`ListStackResources`) and the reader serves it from real S3 on demand.
+ *
+ * Returns the readers (keyed by origin id, handed to the server) + the
+ * origin-id -> bucket-name map (re-applied on each `--watch` reload via
+ * {@link annotateDeployedS3Origins}, since the pure resolver re-emits the origin
+ * as `s3-unresolved`). A no-op without `--from-cfn-stack` or when the bucket's
+ * physical id is not in state (the origin stays `s3-unresolved` -> the existing
+ * boot WARN + 502, with `--origin <id>=<dir>` as the escape hatch).
+ */
+export async function resolveDeployedS3Origins(
+  distribution: ResolvedDistribution,
+  stacks: StackInfo[],
+  options: LocalStartCloudFrontOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<{ readers: Map<string, S3OriginReader>; buckets: Map<string, string> }> {
+  const readers = new Map<string, S3OriginReader>();
+  const buckets = new Map<string, string>();
+  if (!isCfnFlagPresent(options)) return { readers, buckets };
+
+  const stack = stacks.find((s) => s.stackName === distribution.stackName);
+  const synthRegion = stack?.region;
+  // The bucket's region for the S3 client: explicit --stack-region / --region
+  // wins, else the synth region the distribution's stack was synthesized for.
+  const region = options.stackRegion ?? options.region ?? synthRegion;
+
+  const provider = createLocalStateProvider(
+    options as unknown as LocalStateSourceOptions,
+    distribution.stackName,
+    synthRegion
+  );
+  const record = provider ? await provider.load(distribution.stackName, synthRegion) : undefined;
+
+  for (const origin of [...distribution.origins.values()]) {
+    if (origin.kind !== 's3-unresolved' || origin.bucketLogicalId === undefined) continue;
+    // `ListStackResources` returns the bucket's NAME as its physical id.
+    const bucketName = record?.resources[origin.bucketLogicalId]?.physicalId;
+    if (!bucketName) continue; // not in state -> leave unresolved (warnUnsupported handles it)
+    readers.set(
+      origin.originId,
+      createS3OriginReader(bucketName, {
+        ...(region !== undefined && { region }),
+        ...(profileCredentials !== undefined && { credentials: profileCredentials }),
+      })
+    );
+    buckets.set(origin.originId, bucketName);
+    distribution.origins.set(origin.originId, {
+      kind: 's3-deployed',
+      originId: origin.originId,
+      bucketName,
+    });
+    logger.info(
+      `Origin '${origin.originId}': no local BucketDeployment source; serving from deployed S3 ` +
+        `(bucket=${bucketName}) on demand under --from-cfn-stack.`
+    );
+  }
+  return { readers, buckets };
+}
+
+/**
+ * Re-apply the boot-time deployed-S3 promotion to a freshly re-synthed
+ * distribution on a `--watch` reload: the pure resolver re-emits the origin as
+ * `s3-unresolved`, so rewrite it back to `s3-deployed` (same bucket name) so it
+ * dispatches to the boot-time reader. The S3 readers themselves are boot-time
+ * only (like the Function URL origin containers), so nothing is rebuilt here.
+ */
+export function annotateDeployedS3Origins(
+  distribution: ResolvedDistribution,
+  buckets: Map<string, string>
+): void {
+  for (const [originId, bucketName] of buckets) {
+    const origin = distribution.origins.get(originId);
+    if (origin && origin.kind === 's3-unresolved') {
+      distribution.origins.set(originId, { kind: 's3-deployed', originId, bucketName });
     }
   }
 }
@@ -521,14 +607,28 @@ async function localStartCloudFrontCommand(
   };
 
   const initial = await synthAndResolve();
-  warnUnsupported(initial.distribution);
 
   // `--profile`-resolved static credentials, forwarded into a Function URL
   // origin Lambda's container (the front-door Lambda path has no profile
-  // credentials-file bind-mount; the env overlay carries the creds).
+  // credentials-file bind-mount; the env overlay carries the creds) AND used by
+  // the deployed-S3 origin reader below. Resolved before the origin promotion.
   const profileCredentials = options.profile
     ? await resolveProfileCredentials(options.profile)
     : undefined;
+
+  // Promote any S3 origin with no local BucketDeployment source to a deployed-S3
+  // read-through origin (issue #405), building one S3 reader per origin. No-op
+  // without --from-cfn-stack. Run BEFORE warnUnsupported so a promoted origin
+  // does not also emit the unresolved-source WARN.
+  const deployedS3 = await resolveDeployedS3Origins(
+    initial.distribution,
+    initial.stacks,
+    options,
+    profileCredentials,
+    logger
+  );
+
+  warnUnsupported(initial.distribution);
   // State-source + assume-role options threaded into the shared container-env
   // resolver so a Function URL origin Lambda gets its env vars + deployed
   // values + execution role, exactly like `cdkl invoke` (issue #380).
@@ -587,6 +687,7 @@ async function localStartCloudFrontCommand(
       ...(tls && { tls }),
       ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
       ...(edgeInvokers.size > 0 && { edgeInvokers }),
+      ...(deployedS3.readers.size > 0 && { s3OriginReaders: deployedS3.readers }),
     });
   } catch (err) {
     await Promise.all(
@@ -625,6 +726,10 @@ async function localStartCloudFrontCommand(
         const next = reloadChain.then(async () => {
           try {
             const reloaded = await synthAndResolve();
+            // Re-apply the boot-time deployed-S3 promotion (the pure resolver
+            // re-emits the origin as s3-unresolved). Before warnUnsupported so a
+            // promoted origin does not re-emit the unresolved-source WARN.
+            annotateDeployedS3Origins(reloaded.distribution, deployedS3.buckets);
             warnUnsupported(reloaded.distribution);
             await attachKvsModules(
               reloaded.distribution,
@@ -765,10 +870,11 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--from-cfn-stack [cfn-stack-name]',
-        "Bind a Lambda Function URL origin's backing Lambda to a deployed CloudFormation stack so its " +
-          'env vars resolve to the deployed physical IDs / exports (ListStackResources). Use for CDK apps ' +
-          'deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass a value ' +
-          'when the CFn stack name differs. No effect on a pure-S3 distribution.'
+        'Bind to a deployed CloudFormation stack (ListStackResources). Resolves an S3 origin that has no local ' +
+          'BucketDeployment source to its deployed bucket and serves it from real S3 on demand (the ' +
+          'front/back-split case: files uploaded out of band), and resolves a Lambda Function URL / Lambda@Edge ' +
+          "function's env vars to the deployed physical IDs / exports. Use for CDK apps deployed via the upstream " +
+          'CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass a value when the CFn stack name differs.'
       )
     )
     .addOption(

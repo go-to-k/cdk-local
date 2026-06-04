@@ -1470,8 +1470,14 @@ connection a unit test of the function alone cannot exercise.
 Two origin kinds are served:
 
 - an **S3 origin** — the static-site / SPA shape; the functions run
-  in-process and the origin content is served from local files (no
-  Docker);
+  in-process and the origin content is served from local files (the
+  BucketDeployment source asset; no Docker). When there is no local
+  BucketDeployment source — the front/back-split case where the CDK repo
+  defines the distribution + bucket but the static files are uploaded out
+  of band by a separate frontend repo / pipeline — `--from-cfn-stack`
+  resolves the deployed bucket's name from state and serves it by reading
+  from **real S3 on demand** (a request-time `GetObject` per touched key,
+  no pre-sync, so a large CDN bucket is fine);
 - a **Lambda Function URL origin** (`origins.FunctionUrlOrigin`) — the
   backing Lambda is your own application compute, run locally in a real
   RIE container (the same machinery `cdkl invoke` uses) and invoked with
@@ -1576,6 +1582,22 @@ its `DistributionConfig`:
   does NOT auto-index sub-paths (that is what a rewrite function does).
   `CustomErrorResponses` (e.g. `403 → /index.html`) provide the SPA
   fallback for a missing key.
+- **S3 origin → deployed bucket (real S3)** — when the above finds NO
+  local BucketDeployment source (the front/back-split case: files uploaded
+  out of band), `--from-cfn-stack` resolves the origin's bucket physical
+  NAME from `ListStackResources` and the origin is served by reading the
+  **deployed bucket from real S3 on demand** (a request-time `GetObject`
+  per touched key — no pre-sync, so a CDN bucket with 100k objects is fine;
+  the fetched bytes live only in memory for that one request). The same
+  URI→key / `DefaultRootObject` / `CustomErrorResponses` resolution applies
+  — only the byte source changes from a local file to S3. Selection is
+  automatic per origin: a local BucketDeployment source wins (your latest
+  in-repo edits), else this deployed-S3 path under `--from-cfn-stack`, else
+  the `--origin <id>=<dir>` override. An `AccessDenied` (an OAC-locked
+  bucket the dev credentials cannot read) warns once with the `--origin`
+  escape hatch. Reads use the `--profile` / default credential chain; the
+  S3 readers are boot-time only (re-applied to a `--watch` reload, not
+  rebuilt). A read-through cache of fetched objects is a possible follow-up.
 - **Lambda Function URL origin → local invoke** — the origin's
   `DomainName` (`{Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<url>,
   FunctionUrl]}]}]}`) → the `AWS::Lambda::Url` → its `TargetFunctionArn`
@@ -1605,13 +1627,13 @@ On top of the [common flags](#common-flags):
 | --- | --- | --- |
 | `--port <port>` | `0` (auto-allocate) | Host port for the local server. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
-| `--origin <originId=dir>` | — | Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the origin's BucketDeployment source automatically (content uploaded out of band, or a non-CDK bucket). |
+| `--origin <originId=dir>` | — | Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the origin's BucketDeployment source automatically AND you do not want the deployed-S3 read-through (content uploaded out of band, or a non-CDK bucket). Wins over both the BucketDeployment source and the `--from-cfn-stack` deployed-S3 path. |
 | `--kvs-file <kvsLogicalId=file.json>` | — | Back a CloudFront Function's KeyValueStore reads (`cf.kvs().get()`) with a local JSON map (repeatable). The key is the `AWS::CloudFront::KeyValueStore` resource logical id; the file is a flat `{ "key": "value" }` object path. The AWS-free alternative to `--from-cfn-stack`, which instead reads the deployed store via `GetKey`. |
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda Function URL origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
-| `--from-cfn-stack [name]` | off | Bind a Function URL origin's backing Lambda to a deployed CloudFormation stack so its intrinsic env vars resolve to the deployed physical IDs / exports (`ListStackResources`). Bare form uses the resolved stack name; pass a value when the CFn stack name differs. No effect on a pure-S3 distribution. Same semantics as `cdkl invoke --from-cfn-stack`. |
+| `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
 | `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
 | `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container is NOT rebuilt on reload (boot-time only). |
@@ -1629,6 +1651,10 @@ cdkl start-cloudfront MyStack/SiteDist --port 8080 --watch
 
 # Point an origin at a local build dir when the source can't be resolved
 cdkl start-cloudfront MyStack/SiteDist --origin SiteOrigin=./dist
+
+# Front/back split: no local content in this repo — serve the deployed
+# bucket from real S3 on demand (resolves the bucket from the deployed stack)
+cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 
 # Serve a distribution fronting a Lambda Function URL (boots a Lambda
 # container); --no-pull reuses the cached base image

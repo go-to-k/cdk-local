@@ -13,6 +13,7 @@ import {
   startCloudFrontServer,
   type StartedCloudFrontServer,
 } from '../../../src/local/cloudfront-server.js';
+import { createS3OriginReader } from '../../../src/local/cloudfront-s3-origin.js';
 
 let dir: string;
 let server: StartedCloudFrontServer;
@@ -595,6 +596,55 @@ describe('startCloudFrontServer — Lambda@Edge', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('x-cdkl')).toBe('1'); // CloudFront Function ran
     expect(res.headers.get('x-edge-vr')).toBe('1'); // Lambda@Edge ran too
+    await s.close();
+  });
+});
+
+describe('startCloudFrontServer — deployed-S3 origin (issue #405)', () => {
+  it('dispatches an s3-deployed origin to its S3 reader and serves the fetched bytes', async () => {
+    const reader = createS3OriginReader('deployed-bucket', {
+      fetchObject: async (key) =>
+        key === 'index.html'
+          ? { kind: 'found', body: Buffer.from('<h1>from-s3</h1>') }
+          : { kind: 'not-found' },
+    });
+    const s = await startCloudFrontServer({
+      distribution: {
+        logicalId: 'Dist',
+        stackName: 'Stack',
+        defaultRootObject: 'index.html',
+        behaviors: [{ targetOriginId: 'o1' }],
+        origins: new Map([
+          ['o1', { kind: 's3-deployed', originId: 'o1', bucketName: 'deployed-bucket' }],
+        ]),
+        customErrorResponses: [],
+      },
+      host: '127.0.0.1',
+      port: 0,
+      s3OriginReaders: new Map([['o1', reader]]),
+    });
+    const res = await fetch(`${s.url}/`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('from-s3');
+    await s.close();
+  });
+
+  it('returns 502 when an s3-deployed origin has no booted reader', async () => {
+    const s = await startCloudFrontServer({
+      distribution: {
+        logicalId: 'Dist',
+        stackName: 'Stack',
+        behaviors: [{ targetOriginId: 'o1' }],
+        origins: new Map([
+          ['o1', { kind: 's3-deployed', originId: 'o1', bucketName: 'deployed-bucket' }],
+        ]),
+        customErrorResponses: [],
+      },
+      host: '127.0.0.1',
+      port: 0,
+    });
+    const res = await fetch(`${s.url}/`);
+    expect(res.status).toBe(502);
     await s.close();
   });
 });
