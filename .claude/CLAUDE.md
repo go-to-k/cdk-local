@@ -566,7 +566,12 @@ compute-locally category for Lambda + API Gateway).
   summary, surfaces the failure reason (`StudioServeEvent.message`,
   threaded through `onServeEvent` -> `serveState` -> the workspace error
   banner), and offers a `Reconfigure` button, instead of silently
-  reverting to a blank composer that reads as "my inputs vanished". A served
+  reverting to a blank composer that reads as "my inputs vanished". When a
+  stopped serve's composer is shown again (a Start -> Stop, or Reconfigure on
+  a failed serve), it is re-rendered PRE-FILLED from the same `serveApplied`
+  record (issue #398 — `buildOptions(kind, applied.options, applied.rawArgs)` +
+  the image-override pickers), so the bearer token / curated option inputs /
+  raw extra args / Dockerfile picks survive a restart instead of resetting. A served
   API Gateway WebSocket API additionally gets a WebSocket console
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module
