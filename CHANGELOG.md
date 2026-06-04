@@ -1,3 +1,10 @@
+# [0.123.0](https://github.com/go-to-k/cdk-local/compare/v0.122.0...v0.123.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** resolve an external / non-CDK S3 origin bucket (DomainName parse + GetDistributionConfig) ([#405](https://github.com/go-to-k/cdk-local/issues/405) follow-up) ([#413](https://github.com/go-to-k/cdk-local/issues/413)) ([426dc65](https://github.com/go-to-k/cdk-local/commit/426dc65dc65b6931d3ab9e939282f350b781a893))
+
 # [0.122.0](https://github.com/go-to-k/cdk-local/compare/v0.121.1...v0.122.0) (2026-06-04)
 
 
