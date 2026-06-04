@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
+  describeS3OriginDomain,
   extractKvsAssociations,
   pickBucketLogicalIdFromOrigin,
   pickFunctionLogicalIdFromArn,
@@ -548,5 +549,96 @@ describe('resolveCloudFrontDistribution KVS associations', () => {
     expect(vr?.kvsAssociations).toEqual([
       { arnValue: { 'Fn::GetAtt': ['Kvs', 'Arn'] }, kvsLogicalId: 'Kvs' },
     ]);
+  });
+});
+
+describe('describeS3OriginDomain (issue #405 follow-up — external bucket detection)', () => {
+  it('parses a literal regional S3 domain', () => {
+    expect(describeS3OriginDomain('my-bucket.s3.us-east-1.amazonaws.com')).toEqual({
+      isS3: true,
+      bucketName: 'my-bucket',
+    });
+  });
+
+  it('parses the legacy global S3 domain', () => {
+    expect(describeS3OriginDomain('my-bucket.s3.amazonaws.com')).toEqual({
+      isS3: true,
+      bucketName: 'my-bucket',
+    });
+  });
+
+  it('parses an S3 website endpoint', () => {
+    expect(describeS3OriginDomain('my-bucket.s3-website-us-east-1.amazonaws.com')).toEqual({
+      isS3: true,
+      bucketName: 'my-bucket',
+    });
+  });
+
+  it('keeps dots in the bucket name (label before .s3)', () => {
+    expect(describeS3OriginDomain('my.dotted.bucket.s3.eu-west-1.amazonaws.com')).toEqual({
+      isS3: true,
+      bucketName: 'my.dotted.bucket',
+    });
+  });
+
+  it('resolves an Fn::Sub with ${AWS::Region} (literal bucket label)', () => {
+    expect(
+      describeS3OriginDomain({ 'Fn::Sub': 'my-bucket.s3.${AWS::Region}.${AWS::URLSuffix}' })
+    ).toEqual({ isS3: true, bucketName: 'my-bucket' });
+  });
+
+  it('flags an Fn::Sub whose bucket label is a Ref as S3 but deployed-only (no literal name)', () => {
+    expect(
+      describeS3OriginDomain({ 'Fn::Sub': '${BucketNameParam}.s3.${AWS::Region}.amazonaws.com' })
+    ).toEqual({ isS3: true });
+  });
+
+  it('handles Fn::Join with a literal bucket and intrinsic region', () => {
+    const r = describeS3OriginDomain({
+      'Fn::Join': ['', ['my-bucket.s3.', { Ref: 'AWS::Region' }, '.amazonaws.com']],
+    });
+    expect(r.isS3).toBe(true);
+    expect(r.bucketName).toBe('my-bucket');
+  });
+
+  it('is not S3 for an API Gateway / non-S3 domain', () => {
+    expect(describeS3OriginDomain('abc.execute-api.us-east-1.amazonaws.com').isS3).toBe(false);
+    expect(describeS3OriginDomain('example.com').isS3).toBe(false);
+  });
+
+  it('is not S3 for an unrecognized intrinsic shape', () => {
+    expect(describeS3OriginDomain({ 'Fn::GetAtt': ['X', 'DomainName'] }).isS3).toBe(false);
+  });
+});
+
+describe('resolveCloudFrontDistribution — external/imported S3 origin (issue #405 follow-up)', () => {
+  function distWithOriginDomain(domainName: unknown): CloudFormationTemplate {
+    return {
+      Resources: {
+        Dist: {
+          Type: 'AWS::CloudFront::Distribution',
+          Properties: {
+            DistributionConfig: {
+              Origins: [{ Id: 'ext', DomainName: domainName, S3OriginConfig: { OriginAccessIdentity: '' } }],
+              DefaultCacheBehavior: { TargetOriginId: 'ext' },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  it('classifies a literal external-bucket domain as s3-unresolved with the parsed bucketName', () => {
+    const stack = buildStack(distWithOriginDomain('ext-bucket.s3.us-east-1.amazonaws.com'));
+    const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('ext');
+    expect(origin).toEqual({ kind: 's3-unresolved', originId: 'ext', bucketName: 'ext-bucket' });
+  });
+
+  it('marks a pure-intrinsic bucket name as deployedConfigOnly (GetDistributionConfig fallback)', () => {
+    const stack = buildStack(
+      distWithOriginDomain({ 'Fn::Sub': '${BucketParam}.s3.${AWS::Region}.amazonaws.com' })
+    );
+    const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('ext');
+    expect(origin).toEqual({ kind: 's3-unresolved', originId: 'ext', deployedConfigOnly: true });
   });
 });

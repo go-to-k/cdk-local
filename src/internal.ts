@@ -702,6 +702,7 @@ export {
   pickFunctionUrlLogicalIdFromOrigin,
   pickTargetFunctionLogicalId,
   pickLambdaEdgeFunctionLogicalId,
+  describeS3OriginDomain,
   extractKvsAssociations,
   pickKvsLogicalIdFromArn,
   CLOUDFRONT_DISTRIBUTION_TYPE,
@@ -795,6 +796,18 @@ export {
   type S3ObjectFetcher,
   type S3FetchResult,
 } from './local/cloudfront-s3-origin.js';
+/**
+ * Deployed-distribution bucket resolution for `start-cloudfront` (issue #405
+ * follow-up): `cloudfront:GetDistributionConfig` -> the origin's deployed
+ * `DomainName` -> bucket name, for a deployed-S3 origin whose bucket name is a
+ * pure intrinsic (not resolvable from the local template or stack state). A
+ * host CLI wrapping `start-cloudfront` reuses `resolveDeployedOriginBucket`.
+ */
+export {
+  resolveDeployedOriginBucket,
+  type ResolveDeployedOriginBucketOptions,
+  type CloudFrontClientCredentials,
+} from './local/cloudfront-distribution-config.js';
 export {
   serveLambdaUrlOrigin,
   type LambdaUrlOriginRequest,

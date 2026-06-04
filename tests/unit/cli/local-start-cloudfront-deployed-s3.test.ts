@@ -9,7 +9,7 @@ import type { ResolvedDistribution, ResolvedOrigin } from '../../../src/local/cl
 // reload (the pure resolver re-emits the origin as `s3-unresolved`). The state
 // provider is mocked so no real AWS is touched.
 
-const { createProviderMock, cfnPresentMock, readerMock } = vi.hoisted(() => ({
+const { createProviderMock, cfnPresentMock, readerMock, bucketResolverMock } = vi.hoisted(() => ({
   createProviderMock: vi.fn(),
   cfnPresentMock: vi.fn(() => true),
   // Stub the reader so the binding test can assert the options threaded into it
@@ -20,6 +20,8 @@ const { createProviderMock, cfnPresentMock, readerMock } = vi.hoisted(() => ({
     (fn as { clearCache: unknown }).clearCache = (): void => undefined;
     return fn;
   }),
+  // Stub the GetDistributionConfig fallback (no real CloudFront call).
+  bucketResolverMock: vi.fn(async () => undefined as string | undefined),
 }));
 
 vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
@@ -29,6 +31,10 @@ vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
 
 vi.mock('../../../src/local/cloudfront-s3-origin.js', () => ({
   createS3OriginReader: readerMock,
+}));
+
+vi.mock('../../../src/local/cloudfront-distribution-config.js', () => ({
+  resolveDeployedOriginBucket: bucketResolverMock,
 }));
 
 const { resolveDeployedS3Origins, annotateDeployedS3Origins } = await import(
@@ -115,6 +121,70 @@ describe('resolveDeployedS3Origins', () => {
     );
 
     expect(dist.origins.get('o1')?.kind).toBe('s3');
+    expect(readers.size).toBe(0);
+  });
+
+  it('uses a literal bucketName from the DomainName directly (external/imported bucket)', async () => {
+    createProviderMock.mockReturnValue({ load: vi.fn().mockResolvedValue({ resources: {} }) });
+    readerMock.mockClear();
+    const dist = distribution({ kind: 's3-unresolved', originId: 'o1', bucketName: 'ext-bucket' });
+
+    const { readers, buckets } = await resolveDeployedS3Origins(
+      dist,
+      stacks,
+      { fromCfnStack: 'Stack' } as never,
+      undefined,
+      logger
+    );
+
+    expect(buckets.get('o1')).toBe('ext-bucket');
+    expect(readers.has('o1')).toBe(true);
+    expect(readerMock).toHaveBeenCalledWith('ext-bucket', expect.anything());
+    expect(dist.origins.get('o1')).toMatchObject({ kind: 's3-deployed', bucketName: 'ext-bucket' });
+  });
+
+  it('falls back to GetDistributionConfig for a deployedConfigOnly origin (pure intrinsic)', async () => {
+    createProviderMock.mockReturnValue({
+      load: vi.fn().mockResolvedValue({ resources: { Dist: { physicalId: 'E123ABC' } } }),
+    });
+    bucketResolverMock.mockResolvedValueOnce('resolved-from-config');
+    readerMock.mockClear();
+    const dist = distribution({ kind: 's3-unresolved', originId: 'o1', deployedConfigOnly: true });
+
+    const { buckets } = await resolveDeployedS3Origins(
+      dist,
+      stacks,
+      { fromCfnStack: 'Stack' } as never,
+      undefined,
+      logger
+    );
+
+    expect(bucketResolverMock).toHaveBeenCalledWith(
+      expect.objectContaining({ distributionId: 'E123ABC', originId: 'o1' })
+    );
+    expect(buckets.get('o1')).toBe('resolved-from-config');
+    expect(dist.origins.get('o1')).toMatchObject({
+      kind: 's3-deployed',
+      bucketName: 'resolved-from-config',
+    });
+  });
+
+  it('leaves a deployedConfigOnly origin unresolved when GetDistributionConfig cannot resolve it', async () => {
+    createProviderMock.mockReturnValue({
+      load: vi.fn().mockResolvedValue({ resources: { Dist: { physicalId: 'E123ABC' } } }),
+    });
+    bucketResolverMock.mockResolvedValueOnce(undefined);
+    const dist = distribution({ kind: 's3-unresolved', originId: 'o1', deployedConfigOnly: true });
+
+    const { readers } = await resolveDeployedS3Origins(
+      dist,
+      stacks,
+      { fromCfnStack: 'Stack' } as never,
+      undefined,
+      logger
+    );
+
+    expect(dist.origins.get('o1')?.kind).toBe('s3-unresolved');
     expect(readers.size).toBe(0);
   });
 

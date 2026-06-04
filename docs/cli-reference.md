@@ -1593,9 +1593,15 @@ its `DistributionConfig`:
   fallback for a missing key.
 - **S3 origin → deployed bucket (real S3)** — when the above finds NO
   local BucketDeployment source (the front/back-split case: files uploaded
-  out of band), `--from-cfn-stack` resolves the origin's bucket physical
-  NAME from `ListStackResources` and the origin is served by reading the
-  **deployed bucket from real S3 on demand** (a request-time `GetObject`
+  out of band), `--from-cfn-stack` resolves the origin's bucket NAME and the
+  origin is served by reading the **deployed bucket from real S3 on demand**.
+  The bucket name is resolved in priority order: a same-stack CDK bucket's
+  physical id from `ListStackResources`; else a literal bucket name parsed
+  from the origin's `DomainName` (an external / imported-by-name bucket whose
+  domain is `<bucket>.s3...amazonaws.com`); else — when the name is a pure
+  intrinsic (a `Ref` parameter / cross-stack import) — from the deployed
+  distribution via `cloudfront:GetDistributionConfig`. The read itself is a
+  request-time `GetObject`
   per touched key — no pre-sync, so a CDN bucket with 100k objects is fine;
   the fetched bytes live only in memory for that one request). The same
   URI→key / `DefaultRootObject` / `CustomErrorResponses` resolution applies

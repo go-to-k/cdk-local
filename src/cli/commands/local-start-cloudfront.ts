@@ -14,6 +14,7 @@ import {
   type LambdaUrlInvokerMap,
 } from '../../local/cloudfront-server.js';
 import { createS3OriginReader, type S3OriginReader } from '../../local/cloudfront-s3-origin.js';
+import { resolveDeployedOriginBucket } from '../../local/cloudfront-distribution-config.js';
 import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
@@ -498,12 +499,38 @@ export async function resolveDeployedS3Origins(
     synthRegion
   );
   const record = provider ? await provider.load(distribution.stackName, synthRegion) : undefined;
+  // The deployed distribution's physical id (for the GetDistributionConfig
+  // fallback) — `ListStackResources` records it under the distribution's
+  // logical id.
+  const distributionId = record?.resources[distribution.logicalId]?.physicalId;
 
   for (const origin of [...distribution.origins.values()]) {
-    if (origin.kind !== 's3-unresolved' || origin.bucketLogicalId === undefined) continue;
-    // `ListStackResources` returns the bucket's NAME as its physical id.
-    const bucketName = record?.resources[origin.bucketLogicalId]?.physicalId;
-    if (!bucketName) continue; // not in state -> leave unresolved (warnUnsupported handles it)
+    if (origin.kind !== 's3-unresolved') continue;
+
+    // Resolve the bucket NAME in priority order (issue #405 + follow-up):
+    let bucketName: string | undefined;
+    let via: string;
+    if (origin.bucketLogicalId !== undefined) {
+      // Same-stack CDK bucket: ListStackResources records the NAME as its physical id.
+      bucketName = record?.resources[origin.bucketLogicalId]?.physicalId;
+      via = 'deployed state';
+    } else if (origin.bucketName !== undefined) {
+      // External / imported bucket whose name is literal in the DomainName.
+      bucketName = origin.bucketName;
+      via = "the origin's DomainName";
+    } else if (origin.deployedConfigOnly && distributionId) {
+      // Bucket name is a pure intrinsic -> read the deployed distribution config.
+      bucketName = await resolveDeployedOriginBucket({
+        distributionId,
+        originId: origin.originId,
+        ...(profileCredentials !== undefined && { credentials: profileCredentials }),
+      });
+      via = 'GetDistributionConfig';
+    } else {
+      continue; // nothing to resolve from
+    }
+    if (!bucketName) continue; // unresolved -> leave as-is (warnUnsupported handles it)
+
     readers.set(
       origin.originId,
       createS3OriginReader(bucketName, {
@@ -520,7 +547,7 @@ export async function resolveDeployedS3Origins(
     });
     logger.info(
       `Origin '${origin.originId}': no local BucketDeployment source; serving from deployed S3 ` +
-        `(bucket=${bucketName}) on demand under --from-cfn-stack.`
+        `(bucket=${bucketName}, resolved via ${via}) on demand under --from-cfn-stack.`
     );
   }
   return { readers, buckets };
