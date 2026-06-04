@@ -1,3 +1,10 @@
+# [0.116.0](https://github.com/go-to-k/cdk-local/compare/v0.115.0...v0.116.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** Stop button shows a transient "Stopping..." (+ "Starting..." symmetry) ([#394](https://github.com/go-to-k/cdk-local/issues/394)) ([#395](https://github.com/go-to-k/cdk-local/issues/395)) ([385dec3](https://github.com/go-to-k/cdk-local/commit/385dec38d2293093d6cf3f6dad07a2279b935e99))
+
 # [0.115.0](https://github.com/go-to-k/cdk-local/compare/v0.114.0...v0.115.0) (2026-06-04)
 
 
