@@ -1,3 +1,10 @@
+# [0.109.0](https://github.com/go-to-k/cdk-local/compare/v0.108.0...v0.109.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** image-override Dockerfile picker for an ALB's pinned backing services ([#383](https://github.com/go-to-k/cdk-local/issues/383)) ([c754a3b](https://github.com/go-to-k/cdk-local/commit/c754a3b79ac49a140309749eb0d2a9b82511a716))
+
 # [0.108.0](https://github.com/go-to-k/cdk-local/compare/v0.107.1...v0.108.0) (2026-06-04)
 
 
