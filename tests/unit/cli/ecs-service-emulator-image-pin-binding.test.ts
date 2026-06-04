@@ -171,4 +171,31 @@ describe('ecs-service-emulator image-pin detector binding (issue #234)', () => {
     expect(rollIdx).toBeGreaterThan(-1);
     expect(skipIdx).toBeLessThan(rollIdx);
   });
+
+  it('prints the pinned-image WARN BEFORE the endpoints banner + "Press ^C" (so the hint is not buried after the ready line)', () => {
+    const source = readFileSync(EMULATOR_SOURCE, 'utf-8');
+    // The pin WARN's whole purpose (issue #234) is to tell the user that
+    // local source edits will not take effect BEFORE they spend time saving
+    // files. Emitting it AFTER `logEndpointsBanner` + "Press ^C to shut down"
+    // buries it below the ready line, where the user only notices it once
+    // they've already started iterating. The boot-time WARN loop must come
+    // first; the endpoints banner + "Press ^C" land at the very bottom.
+    const warnUpFrontIdx = source.indexOf('Warn UP-FRONT');
+    const bannerIdx = source.indexOf('logEndpointsBanner(perTarget, frontDoorServers, logger);');
+    const pressCtrlCIdx = source.indexOf("logger.info('Press ^C to shut down.');");
+    expect(warnUpFrontIdx).toBeGreaterThan(-1);
+    expect(bannerIdx).toBeGreaterThan(-1);
+    expect(pressCtrlCIdx).toBeGreaterThan(-1);
+    // WARN region comes first; banner + "Press ^C" come after.
+    expect(warnUpFrontIdx).toBeLessThan(bannerIdx);
+    expect(warnUpFrontIdx).toBeLessThan(pressCtrlCIdx);
+    // The banner also lands AFTER the strict-overrides guard, so a
+    // `--strict-overrides` failure throws before the misleading "Press ^C".
+    const strictIdx = source.indexOf('enforceStrictOverrides(', warnUpFrontIdx);
+    expect(strictIdx).toBeGreaterThan(-1);
+    expect(strictIdx).toBeLessThan(bannerIdx);
+    // There is exactly one boot-stream banner call (it was MOVED, not copied).
+    const bannerCount = source.split('logEndpointsBanner(perTarget, frontDoorServers, logger);').length - 1;
+    expect(bannerCount).toBe(1);
+  });
 });
