@@ -1,3 +1,10 @@
+# [0.119.0](https://github.com/go-to-k/cdk-local/compare/v0.118.1...v0.119.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** KeyValueStore reads in CloudFront Functions (--from-cfn-stack + --kvs-file) ([#406](https://github.com/go-to-k/cdk-local/issues/406)) ([7dbf2c9](https://github.com/go-to-k/cdk-local/commit/7dbf2c981af5266595aa846ff62080a0c8b7fd86))
+
 ## [0.118.1](https://github.com/go-to-k/cdk-local/compare/v0.118.0...v0.118.1) (2026-06-04)
 
 
