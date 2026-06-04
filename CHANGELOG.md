@@ -1,3 +1,10 @@
+# [0.122.0](https://github.com/go-to-k/cdk-local/compare/v0.121.1...v0.122.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** --cache-origin read-through cache for the deployed-S3 origin ([#405](https://github.com/go-to-k/cdk-local/issues/405) follow-up) ([#412](https://github.com/go-to-k/cdk-local/issues/412)) ([cd7ad03](https://github.com/go-to-k/cdk-local/commit/cd7ad033eeb6f7cf0766c532ea07782b5e28fdd3))
+
 ## [0.121.1](https://github.com/go-to-k/cdk-local/compare/v0.121.0...v0.121.1) (2026-06-04)
 
 
