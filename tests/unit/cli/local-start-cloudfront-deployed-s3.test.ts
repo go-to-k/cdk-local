@@ -9,14 +9,26 @@ import type { ResolvedDistribution, ResolvedOrigin } from '../../../src/local/cl
 // reload (the pure resolver re-emits the origin as `s3-unresolved`). The state
 // provider is mocked so no real AWS is touched.
 
-const { createProviderMock, cfnPresentMock } = vi.hoisted(() => ({
+const { createProviderMock, cfnPresentMock, readerMock } = vi.hoisted(() => ({
   createProviderMock: vi.fn(),
   cfnPresentMock: vi.fn(() => true),
+  // Stub the reader so the binding test can assert the options threaded into it
+  // (cache flag, region, credentials) without building a real S3 client.
+  readerMock: vi.fn(() => {
+    const fn = (async () => ({ statusCode: 404, headers: {}, body: Buffer.alloc(0) })) as never;
+    (fn as { close: unknown }).close = async (): Promise<void> => undefined;
+    (fn as { clearCache: unknown }).clearCache = (): void => undefined;
+    return fn;
+  }),
 }));
 
 vi.mock('../../../src/cli/commands/local-state-source.js', () => ({
   createLocalStateProvider: createProviderMock,
   isCfnFlagPresent: cfnPresentMock,
+}));
+
+vi.mock('../../../src/local/cloudfront-s3-origin.js', () => ({
+  createS3OriginReader: readerMock,
 }));
 
 const { resolveDeployedS3Origins, annotateDeployedS3Origins } = await import(
@@ -104,6 +116,33 @@ describe('resolveDeployedS3Origins', () => {
 
     expect(dist.origins.get('o1')?.kind).toBe('s3');
     expect(readers.size).toBe(0);
+  });
+
+  it('threads cache: true into the reader only when --cache-origin is set', async () => {
+    createProviderMock.mockReturnValue({
+      load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'b' } } }),
+    });
+
+    readerMock.mockClear();
+    await resolveDeployedS3Origins(
+      distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' }),
+      stacks,
+      { fromCfnStack: 'Stack', cacheOrigin: true } as never,
+      undefined,
+      logger
+    );
+    expect(readerMock).toHaveBeenCalledWith('b', expect.objectContaining({ cache: true }));
+
+    readerMock.mockClear();
+    await resolveDeployedS3Origins(
+      distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' }),
+      stacks,
+      { fromCfnStack: 'Stack' } as never,
+      undefined,
+      logger
+    );
+    const opts = readerMock.mock.calls[0]?.[1] as { cache?: boolean } | undefined;
+    expect(opts?.cache).toBeUndefined();
   });
 });
 

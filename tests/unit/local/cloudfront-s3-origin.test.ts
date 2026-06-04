@@ -118,3 +118,91 @@ describe('classifyS3Error', () => {
     if (r.kind === 'error') expect(r.message).toContain('connection reset');
   });
 });
+
+describe('createS3OriginReader — read-through cache (--cache-origin)', () => {
+  it('with cache off (default), re-reads the same key on every request', async () => {
+    let calls = 0;
+    const reader = createS3OriginReader('b', {
+      fetchObject: async (key) => {
+        calls += 1;
+        return key === 'index.html'
+          ? { kind: 'found', body: Buffer.from('v') }
+          : { kind: 'not-found' };
+      },
+    });
+    await reader({ uri: '/index.html' });
+    await reader({ uri: '/index.html' });
+    expect(calls).toBe(2);
+  });
+
+  it('with cache on, serves a repeat read from memory (one fetch)', async () => {
+    let calls = 0;
+    const reader = createS3OriginReader('b', {
+      cache: true,
+      fetchObject: async (key) => {
+        calls += 1;
+        return key === 'index.html'
+          ? { kind: 'found', body: Buffer.from('v') }
+          : { kind: 'not-found' };
+      },
+    });
+    const a = await reader({ uri: '/index.html' });
+    const b = await reader({ uri: '/index.html' });
+    expect(calls).toBe(1);
+    expect(a.body.toString()).toBe('v');
+    expect(b.body.toString()).toBe('v');
+  });
+
+  it('clearCache() forces the next read to re-fetch', async () => {
+    let calls = 0;
+    const reader = createS3OriginReader('b', {
+      cache: true,
+      fetchObject: async () => {
+        calls += 1;
+        return { kind: 'found', body: Buffer.from('v') };
+      },
+    });
+    await reader({ uri: '/a.js' });
+    reader.clearCache();
+    await reader({ uri: '/a.js' });
+    expect(calls).toBe(2);
+  });
+
+  it('does not cache a miss (a later upload is picked up)', async () => {
+    const objects: Record<string, string> = {};
+    const reader = createS3OriginReader('b', {
+      cache: true,
+      fetchObject: async (key) =>
+        key in objects
+          ? { kind: 'found', body: Buffer.from(objects[key]!) }
+          : { kind: 'not-found' },
+    });
+    expect((await reader({ uri: '/late.js' })).statusCode).toBe(404);
+    objects['late.js'] = 'arrived';
+    expect((await reader({ uri: '/late.js' })).statusCode).toBe(200);
+  });
+
+  it('close() resolves and is a no-op for an injected fetcher', async () => {
+    const reader = createS3OriginReader('b', { fetchObject: mapFetcher({}) });
+    await expect(reader.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('createS3OriginReader — error-page read failures are logged', () => {
+  it('warns when the custom-error page itself is denied (not silently swallowed)', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      const reader = createS3OriginReader('b', {
+        fetchObject: async () => ({ kind: 'denied' }),
+      });
+      const r = await reader({
+        uri: '/route',
+        customErrorResponses: [{ errorCode: 403, responsePagePath: '/index.html' }],
+      });
+      expect(r.statusCode).toBe(404);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('custom-error page'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

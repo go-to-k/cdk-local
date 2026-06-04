@@ -1597,7 +1597,9 @@ its `DistributionConfig`:
   bucket the dev credentials cannot read) warns once with the `--origin`
   escape hatch. Reads use the `--profile` / default credential chain; the
   S3 readers are boot-time only (re-applied to a `--watch` reload, not
-  rebuilt). A read-through cache of fetched objects is a possible follow-up.
+  rebuilt). By default every request re-reads (always current); `--cache-origin`
+  opts into an in-memory read-through cache of fetched objects for the session,
+  cleared on each `--watch` reload.
 - **Lambda Function URL origin → local invoke** — the origin's
   `DomainName` (`{Fn::Select: [2, {Fn::Split: ['/', {Fn::GetAtt: [<url>,
   FunctionUrl]}]}]}`) → the `AWS::Lambda::Url` → its `TargetFunctionArn`
@@ -1634,6 +1636,7 @@ On top of the [common flags](#common-flags):
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda Function URL origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
 | `--from-cfn-stack [name]` | off | Bind to a deployed CloudFormation stack (`ListStackResources`). Serves an S3 origin that has NO local BucketDeployment source from its deployed bucket, read from real S3 on demand (the front/back-split case — see the S3 origin → deployed bucket bullet above), AND resolves a Function URL origin / Lambda@Edge function's intrinsic env vars to the deployed physical IDs / exports. Bare form uses the resolved stack name; pass a value when the CFn stack name differs. Same semantics as `cdkl invoke --from-cfn-stack`. |
+| `--cache-origin` | off | For a deployed-S3 origin (served from real S3 under `--from-cfn-stack`): keep fetched objects in memory for the session as a read-through cache instead of re-`GetObject`-ing on every request — faster repeat reads / fewer S3 GETs. An out-of-band S3 content change is NOT reflected until a `--watch` reload (which clears the cache) or a restart. Off by default (every request re-reads, always current). This is the local object cache, NOT CloudFront CDN / TTL caching. |
 | `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
 | `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
 | `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container is NOT rebuilt on reload (boot-time only). |
