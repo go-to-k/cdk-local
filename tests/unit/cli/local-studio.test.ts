@@ -132,7 +132,7 @@ describe('coerceRunRequest', () => {
     );
   });
 
-  it('accepts an alb imageOverrides map + drops blank values (issue #382)', () => {
+  it('accepts an alb imageOverrides map + drops blank values (issue #384)', () => {
     expect(
       coerceRunRequest({
         targetId: 'S/Alb',

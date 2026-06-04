@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { EcsImageResolutionContext } from '../../../src/local/ecs-task-resolver.js';
+import type { StudioTargetGroup } from '../../../src/local/studio-server.js';
 
 // Mock every external boundary the boot-time pin classifier touches so the
-// tests exercise the wiring (issue #354) without synth / Docker / AWS.
+// tests exercise the wiring (issue #354 / #385) without synth / Docker / AWS.
 const hoisted = vi.hoisted(() => ({
   resolveEcsServiceTarget: vi.fn(),
   isLocalCdkAssetImage: vi.fn(),
   buildEcsImageResolutionContext: vi.fn(),
   createLocalStateProvider: vi.fn(),
+  discoverDockerfiles: vi.fn(),
 }));
 
 vi.mock('../../../src/local/ecs-service-resolver.js', async (importOriginal) => {
@@ -36,11 +38,20 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
     await importOriginal<typeof import('../../../src/cli/commands/local-state-source.js')>();
   return { ...actual, createLocalStateProvider: hoisted.createLocalStateProvider };
 });
+// Stub the Dockerfile scan so `classifyStudioTargets` does not walk the real
+// cwd (which has fixture Dockerfiles); the tests assert it is called only when
+// a target is pinned, and returns a deterministic list.
+vi.mock('../../../src/local/image-override-engine.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/image-override-engine.js')>();
+  return { ...actual, discoverDockerfiles: hoisted.discoverDockerfiles };
+});
 
 const {
   resolveEcsServiceStack,
   prepareEcsImageContexts,
   makePinClassifier,
+  classifyStudioTargets,
+  reclassifyTargetsOnBindingChange,
 } = await import('../../../src/cli/commands/local-studio.js');
 
 function stack(name: string, region?: string): StackInfo {
@@ -71,6 +82,7 @@ beforeEach(() => {
   hoisted.isLocalCdkAssetImage.mockReset();
   hoisted.buildEcsImageResolutionContext.mockReset();
   hoisted.createLocalStateProvider.mockReset();
+  hoisted.discoverDockerfiles.mockReset();
 });
 
 describe('resolveEcsServiceStack', () => {
@@ -310,5 +322,203 @@ describe('makePinClassifier', () => {
     expect(classify('dev/Svc')).toBe(false);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve image'));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("'dev/Svc'"));
+  });
+});
+
+describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack toggle)', () => {
+  const baseGroups = (): StudioTargetGroup[] => [
+    {
+      kind: 'ecs',
+      title: 'ECS Services',
+      entries: [{ id: 'dev/Svc', qualifiedId: 'dev:Svc', servable: true }],
+    },
+  ];
+
+  it('pins an intrinsic-ECR service ONLY under --from-cfn-stack, re-classifying cleanly on toggle', async () => {
+    const logger = fakeLogger();
+    hoisted.discoverDockerfiles.mockReturnValue(['./Dockerfile']);
+    // An INTRINSIC-ECR image resolves ONLY with a deployed-state context; the
+    // resolver throws when no context is threaded (no --from-cfn-stack).
+    hoisted.resolveEcsServiceTarget.mockImplementation(
+      (_id: string, _stacks: unknown, ctx: unknown) => {
+        if (!ctx) throw new Error('intrinsic ECR URI needs --from-cfn-stack');
+        return { id: 'resolved' };
+      }
+    );
+    hoisted.isLocalCdkAssetImage.mockReturnValue(false); // registry pin
+    hoisted.createLocalStateProvider.mockReturnValue({ dispose: vi.fn() });
+    hoisted.buildEcsImageResolutionContext.mockResolvedValue({ stateResources: {} });
+
+    const base = baseGroups();
+    const stacks = [stack('dev', 'us-east-1')];
+    const servableEcs = new Set(['dev/Svc']);
+
+    // OFF: no context built -> resolve throws -> service stays unpinned, no scan.
+    const off = await classifyStudioTargets({
+      baseGroups: base,
+      stacks,
+      servableEcs,
+      options: {},
+      fromCfnStack: undefined,
+      logger,
+    });
+    expect(off.groups[0]?.entries[0]?.pinned).toBeUndefined();
+    expect(off.dockerfiles).toEqual([]);
+    expect(hoisted.discoverDockerfiles).not.toHaveBeenCalled();
+
+    // ON: context built -> resolve returns -> service is pinned + Dockerfiles scanned.
+    const on = await classifyStudioTargets({
+      baseGroups: base,
+      stacks,
+      servableEcs,
+      options: {},
+      fromCfnStack: true,
+      logger,
+    });
+    expect(on.groups[0]?.entries[0]?.pinned).toBe(true);
+    expect(on.dockerfiles).toEqual(['./Dockerfile']);
+    expect(hoisted.discoverDockerfiles).toHaveBeenCalledTimes(1);
+
+    // The base groups are never mutated — each classify clones, so a re-classify
+    // under a new binding never inherits stale pins.
+    expect(base[0]?.entries[0]?.pinned).toBeUndefined();
+  });
+
+  it('does not scan Dockerfiles for an all-local-asset app', async () => {
+    const logger = fakeLogger();
+    hoisted.discoverDockerfiles.mockReturnValue(['./Dockerfile']);
+    hoisted.resolveEcsServiceTarget.mockReturnValue({ id: 'resolved' });
+    hoisted.isLocalCdkAssetImage.mockReturnValue(true); // local asset => not pinned
+
+    const result = await classifyStudioTargets({
+      baseGroups: baseGroups(),
+      stacks: [stack('dev')],
+      servableEcs: new Set(['dev/Svc']),
+      options: {},
+      fromCfnStack: undefined,
+      logger,
+    });
+    expect(result.groups[0]?.entries[0]?.pinned).toBeUndefined();
+    expect(result.dockerfiles).toEqual([]);
+    expect(hoisted.discoverDockerfiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('reclassifyTargetsOnBindingChange (issue #385 — PATCH /api/config orchestration)', () => {
+  const result = (dockerfiles: string[] = []) => ({
+    groups: [{ kind: 'ecs' as const, title: 'ECS Services', entries: [] }],
+    dockerfiles,
+  });
+
+  it('skips re-classification when the binding is unchanged (a watch / role toggle)', async () => {
+    const logger = fakeLogger();
+    const classify = vi.fn();
+    const applyTargets = vi.fn();
+    await reclassifyTargetsOnBindingChange({
+      before: 'dev',
+      after: 'dev',
+      classify,
+      applyTargets,
+      tokenRef: { current: 0 },
+      logger,
+    });
+    expect(classify).not.toHaveBeenCalled();
+    expect(applyTargets).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('re-classifies + swaps the target list with the POST-PATCH binding', async () => {
+    const logger = fakeLogger();
+    const classify = vi.fn().mockResolvedValue(result(['./Dockerfile']));
+    const applyTargets = vi.fn();
+    await reclassifyTargetsOnBindingChange({
+      before: undefined,
+      after: 'NewStack',
+      classify,
+      applyTargets,
+      tokenRef: { current: 0 },
+      logger,
+    });
+    // The NEW binding (not the old one) is threaded into classify.
+    expect(classify).toHaveBeenCalledWith('NewStack');
+    expect(applyTargets).toHaveBeenCalledWith(
+      [{ kind: 'ecs', title: 'ECS Services', entries: [] }],
+      ['./Dockerfile']
+    );
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('re-classifying targets'));
+  });
+
+  it('treats clearing the binding (string -> undefined) as a change', async () => {
+    const logger = fakeLogger();
+    const classify = vi.fn().mockResolvedValue(result());
+    const applyTargets = vi.fn();
+    await reclassifyTargetsOnBindingChange({
+      before: 'dev',
+      after: undefined,
+      classify,
+      applyTargets,
+      tokenRef: { current: 0 },
+      logger,
+    });
+    expect(classify).toHaveBeenCalledWith(undefined);
+    expect(applyTargets).toHaveBeenCalledTimes(1);
+  });
+
+  it('latest-wins: a superseded earlier re-classify does NOT swap the list', async () => {
+    const logger = fakeLogger();
+    const tokenRef = { current: 0 };
+    const applyTargets = vi.fn();
+    // First classify is slow (resolves last); second is fast.
+    let releaseSlow!: () => void;
+    const slow = new Promise<{ groups: never[]; dockerfiles: string[] }>((res) => {
+      releaseSlow = () => res({ groups: [], dockerfiles: ['./slow'] });
+    });
+    const classify = vi
+      .fn()
+      .mockReturnValueOnce(slow)
+      .mockResolvedValueOnce({ groups: [], dockerfiles: ['./fast'] });
+
+    const p1 = reclassifyTargetsOnBindingChange({
+      before: undefined,
+      after: 'A',
+      classify,
+      applyTargets,
+      tokenRef,
+      logger,
+    });
+    const p2 = reclassifyTargetsOnBindingChange({
+      before: 'A',
+      after: 'B',
+      classify,
+      applyTargets,
+      tokenRef,
+      logger,
+    });
+    await p2; // the newer patch applies its result first
+    releaseSlow();
+    await p1; // the older patch resolves but is superseded
+
+    // Only the LATEST binding's result was applied.
+    expect(applyTargets).toHaveBeenCalledTimes(1);
+    expect(applyTargets).toHaveBeenCalledWith([], ['./fast']);
+  });
+
+  it('fails soft: a classify rejection WARNs and keeps the previous list (no throw)', async () => {
+    const logger = fakeLogger();
+    const classify = vi.fn().mockRejectedValue(new Error('state load failed'));
+    const applyTargets = vi.fn();
+    await expect(
+      reclassifyTargetsOnBindingChange({
+        before: undefined,
+        after: 'BadStack',
+        classify,
+        applyTargets,
+        tokenRef: { current: 0 },
+        logger,
+      })
+    ).resolves.toBeUndefined();
+    expect(applyTargets).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('state load failed'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not re-classify'));
   });
 });

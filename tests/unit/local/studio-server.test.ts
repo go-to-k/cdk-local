@@ -430,6 +430,55 @@ describe('startStudioServer', () => {
     expect(ecs?.entries[0].pinned).toBe(true);
   });
 
+  it('setTargets swaps the served target list under the live socket (issue #385)', async () => {
+    const server = await boot({
+      targetGroups: [
+        {
+          kind: 'ecs',
+          title: 'ECS Services',
+          entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true }],
+        },
+      ],
+      dockerfiles: [],
+    });
+    // Before: not pinned, no dockerfiles.
+    const before = (await (await http(`${server.url}/api/targets`)).json()) as {
+      groups: { kind: string; entries: { pinned?: boolean }[] }[];
+      dockerfiles: string[];
+    };
+    expect(before.groups.find((g) => g.kind === 'ecs')?.entries[0].pinned).toBeUndefined();
+    expect(before.dockerfiles).toEqual([]);
+
+    // Re-classification (e.g. after a Session-bar --from-cfn-stack change) marks
+    // the service pinned and surfaces a Dockerfile for the override picker.
+    server.setTargets(
+      [
+        {
+          kind: 'ecs',
+          title: 'ECS Services',
+          entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true, pinned: true }],
+        },
+      ],
+      ['./Dockerfile']
+    );
+
+    const after = (await (await http(`${server.url}/api/targets`)).json()) as {
+      groups: { kind: string; entries: { pinned?: boolean }[] }[];
+      dockerfiles: string[];
+    };
+    expect(after.groups.find((g) => g.kind === 'ecs')?.entries[0].pinned).toBe(true);
+    expect(after.dockerfiles).toEqual(['./Dockerfile']);
+  });
+
+  it('setTargets defaults dockerfiles to an empty array when omitted', async () => {
+    const server = await boot();
+    server.setTargets([{ kind: 'lambda', title: 'Lambda Functions', entries: [] }]);
+    const data = (await (await http(`${server.url}/api/targets`)).json()) as {
+      dockerfiles: string[];
+    };
+    expect(data.dockerfiles).toEqual([]);
+  });
+
   it('404s an unknown path', async () => {
     const server = await boot();
     const res = await http(`${server.url}/nope`);

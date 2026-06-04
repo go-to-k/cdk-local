@@ -280,6 +280,7 @@ const STUDIO_SCRIPT = `
   let shownDetailId = null;        // captured request whose read-only detail is shown
   let pendingReqPrefill = null;    // {method,path,headers,body} to seed the next serve request composer (re-invoke)
   let studioDockerfiles = [];      // Dockerfiles scanned at boot (pinned-ecs image-override picker)
+  let lastAppliedCfn = null;       // last-applied --from-cfn-stack (null | true | name) — a change re-loads targets (issue #385)
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -526,7 +527,7 @@ const STUDIO_SCRIPT = `
     };
   }
 
-  // Per-backing-service image-override pickers for a pinned ALB (issue #382):
+  // Per-backing-service image-override pickers for a pinned ALB (issue #384):
   // one Dockerfile select per deployed-registry-pinned service the ALB fronts.
   // collect() returns a { [serviceId]: dockerfile } map threaded as
   // imageOverrides (one --image-override service=df per entry).
@@ -784,7 +785,7 @@ const STUDIO_SCRIPT = `
       lines.push('--image-override ' + applied.imageOverride);
     }
     // An alb serve threads a per-backing-service imageOverrides map (issue
-    // #382); surface one --image-override line each so the picks do not
+    // #384); surface one --image-override line each so the picks do not
     // silently vanish from the running view (the issue #356 contract).
     if (applied && applied.imageOverrides) {
       Object.keys(applied.imageOverrides).forEach(function (svc) {
@@ -926,7 +927,7 @@ const STUDIO_SCRIPT = `
         ws.appendChild(io.node);
         collectImageOverride = io.collect;
       }
-      // An ALB boots its backing ECS services (issue #382); a pinned backing
+      // An ALB boots its backing ECS services (issue #384); a pinned backing
       // service has the same "local edits do not take effect" problem, so offer
       // a per-service Dockerfile picker that threads
       // --image-override service=dockerfile to start-alb.
@@ -1879,6 +1880,9 @@ const STUDIO_SCRIPT = `
       cfn.checked = on;
       cfnName.value = typeof c.fromCfnStack === 'string' ? c.fromCfnStack : '';
       cfnName.style.display = on ? '' : 'none';
+      // Seed the last-applied from-cfn-stack signature so the first Session-bar
+      // edit only re-loads targets if it actually changes the binding (#385).
+      lastAppliedCfn = on ? (typeof c.fromCfnStack === 'string' && c.fromCfnStack ? c.fromCfnStack : true) : null;
       // assume-role is now checkbox-gated, symmetric with from-cfn-stack
       // (issue #343): the ARN input appears only when the box is checked.
       const roleOn = document.getElementById('sess-role-on');
@@ -1907,8 +1911,9 @@ const STUDIO_SCRIPT = `
     const role = document.getElementById('sess-role');
     const roleOn = document.getElementById('sess-role-on');
     const msg = document.getElementById('sess-msg');
+    const nextCfn = cfn.checked ? cfnName.value.trim() || true : null;
     const body = {
-      fromCfnStack: cfn.checked ? cfnName.value.trim() || true : null,
+      fromCfnStack: nextCfn,
       // assume-role is explicit-ARN-only: checked + empty is simply not bound.
       assumeRole: roleOn.checked ? role.value.trim() || null : null,
       watch: document.getElementById('sess-watch').checked,
@@ -1926,16 +1931,31 @@ const STUDIO_SCRIPT = `
       }
       msg.textContent = '✓ applied';
       setTimeout(function () { msg.textContent = ''; }, 1200);
-      // Do NOT re-load from the server here (issue #349): the UI already shows
-      // exactly what was just PATCHed, and re-loading CLOBBERS the controls.
-      // assume-role has no bare server form, so a checked-but-empty assume-role
-      // PATCHes null; re-loading would read that back and immediately UN-check
-      // the box + hide the ARN input — so clicking the checkbox appeared to do
-      // nothing. loadConfig() runs once on init.
+      // Do NOT re-load the SESSION CONTROLS from the server here (issue #349):
+      // the UI already shows exactly what was just PATCHed, and re-loading
+      // CLOBBERS the controls. assume-role has no bare server form, so a
+      // checked-but-empty assume-role PATCHes null; re-loading would read that
+      // back and immediately UN-check the box. loadConfig() runs once on init.
+      //
+      // But a --from-cfn-stack change DID re-classify the targets server-side
+      // (issue #385) — the PATCH response already reflects the new binding, and
+      // the server swapped its target list. Re-fetch /api/targets so the
+      // image-override pickers appear / disappear without restarting studio.
+      // Only when the binding actually changed, so a watch / role toggle does
+      // not needlessly rebuild the target pane. Running-serve rows are
+      // preserved on re-render (serveState + updateServeRow drive them).
+      if (!sameCfn(nextCfn, lastAppliedCfn)) {
+        lastAppliedCfn = nextCfn;
+        await loadTargets();
+      }
     } catch (err) {
       msg.textContent = 'Failed: ' + err;
     }
   }
+
+  // Two --from-cfn-stack values are the same binding when both clear (null),
+  // both bare (true), or the same stack name.
+  function sameCfn(a, b) { return a === b; }
 
   function wireSession() {
     const cfn = document.getElementById('sess-cfn');

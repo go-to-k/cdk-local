@@ -46,7 +46,7 @@ export interface StudioRunRequest {
   imageOverride?: string;
   /**
    * Per-backing-service Dockerfile paths for an `alb` serve target's
-   * image-override pickers (issue #382), keyed by the service's
+   * image-override pickers (issue #384), keyed by the service's
    * `Stack:LogicalId` (the `--image-override` key `start-alb` matches). An ALB
    * boots multiple backing ECS services, so unlike the single `imageOverride`
    * this is a map — one `--image-override <service>=<dockerfile>` is threaded

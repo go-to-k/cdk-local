@@ -34,7 +34,7 @@ export interface StudioServeRequest {
    */
   imageOverride?: string;
   /**
-   * Per-backing-service Dockerfile paths for an `alb` serve (issue #382), keyed
+   * Per-backing-service Dockerfile paths for an `alb` serve (issue #384), keyed
    * by the backing service's `Stack:LogicalId` (the `--image-override` key
    * `start-alb` matches against its own service-boot target). One
    * `--image-override <service>=<dockerfile>` is appended per entry so the
@@ -350,7 +350,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...(req.imageOverride && req.imageOverride.trim() !== ''
         ? ['--image-override', req.targetId + '=' + req.imageOverride.trim()]
         : []),
-      // Per-backing-service image-override for an `alb` serve (issue #382): an
+      // Per-backing-service image-override for an `alb` serve (issue #384): an
       // ALB boots multiple backing ECS services, so the alb composer's per-
       // service pickers thread one explicit `--image-override <service>=<df>`
       // each. The service key is the backing service's `Stack:LogicalId` —

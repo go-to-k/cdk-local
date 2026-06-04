@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { createStudioHarness } from './studio-ui-harness.js';
 
-// Expose the serve-workspace internals + a Dockerfile-list setter (issue #382).
+// Expose the serve-workspace internals + a Dockerfile-list setter (issue #384).
 const EXPOSE = `
 window.__t = {
   serveMeta: serveMeta,
@@ -31,7 +31,7 @@ function albComposer(h: Harness, backingPinnedServices: { id: string; label: str
   return t;
 }
 
-describe('alb composer image-override picker (issue #382)', () => {
+describe('alb composer image-override picker (issue #384)', () => {
   it('renders one Dockerfile <select> per pinned backing service, labeled by service', () => {
     const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
     try {
