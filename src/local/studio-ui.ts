@@ -159,7 +159,9 @@ const STUDIO_CSS = `
   .req-composer select:focus, .req-composer input:focus, .req-composer textarea:focus {
     outline: none; border-color: #4ec97a; }
   .req-composer .req-send { display: flex; align-items: center; gap: 10px; }
-  .req-composer .req-send button { margin-top: 0; padding: 4px 16px; }
+  .req-composer .req-send button { margin-top: 0; padding: 4px 16px; background: #2a7d46; color: #fff; }
+  .req-composer .req-send button:hover { background: #339152; }
+  .req-composer .req-send button:disabled { background: #333; color: #888; }
   .req-composer .req-status { margin-top: 8px; font: 12px ui-monospace, Menlo, monospace; }
   .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
