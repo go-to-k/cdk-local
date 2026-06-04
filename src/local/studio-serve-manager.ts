@@ -215,6 +215,22 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
   },
 };
 
+/**
+ * Parse an auto-published replica host endpoint from an `ecs` serve child's
+ * stdout (issue #392). `start-service` publishes each replica's declared
+ * container port on the host — auto-remapping a privileged port (< 1024) to a
+ * free high port (issue #357) — and logs a line like
+ * `... container port 80 published on 127.0.0.1:54321. Reach it at ...`. studio
+ * surfaces the FIRST such endpoint as the serve's `hostUrl` so the in-workspace
+ * request composer can target it even when the user passed no explicit
+ * `--host-port`. Returns `http://<ip>:<port>` or `undefined` when the line does
+ * not carry a published endpoint. Exported for unit testing.
+ */
+export function parsePublishedHostEndpoint(line: string): string | undefined {
+  const m = /published on (\d{1,3}(?:\.\d{1,3}){3}:\d+)/.exec(line);
+  return m ? `http://${m[1]}` : undefined;
+}
+
 interface ServeEntry extends StudioServeState {
   child: ChildProcessWithoutNullStreams;
   /** Capture proxies fronting this serve's HTTP endpoints (slice C2). */
@@ -513,6 +529,17 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         // m[1] is the endpoint URL for api / alb; undefined for ecs (no
         // capture group) — a ready line with no host endpoint.
         if (m) void onReady(m[1]);
+        // An `ecs` serve auto-publishes its replica host port(s) (issue #392);
+        // surface the FIRST one as `hostUrl` so the request composer fires —
+        // unless an explicit `--host-port` already set it. The publish line can
+        // arrive after the ready line, so re-emit when the serve is running.
+        if (req.kind === 'ecs' && entry.hostUrl === undefined) {
+          const endpoint = parsePublishedHostEndpoint(line);
+          if (endpoint) {
+            entry.hostUrl = endpoint;
+            if (entry.status === 'running') emitServe(entry);
+          }
+        }
         emitLog(config.bus, clock, req.targetId, line, 'stdout');
       });
       streamLines(child.stderr, (line) => {

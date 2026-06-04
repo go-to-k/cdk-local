@@ -515,7 +515,8 @@ compute-locally category for Lambda + API Gateway).
   (issue #322 — relay a composed HTTP request to a running serve via
   `studio-request-relay` so the browser composer reaches the served port
   same-origin; api / alb go through the capture proxy and land on the
-  timeline, an ecs `--host-port` serve hits the replica host URL directly),
+  timeline, an ecs serve hits the replica host URL directly — from an explicit
+  `--host-port` or an auto-published replica port, issue #392),
   `POST /api/reinvoke` (issue #284 — re-run a past Lambda / AgentCore
   timeline row with an edited payload via `studio-reinvoke`, threading
   `reinvokeOf` so the new row links to its source; a served request is
@@ -680,8 +681,14 @@ compute-locally category for Lambda + API Gateway).
   `cloudfront` (`start-cloudfront`, issue #367) expose host
   HTTP endpoints each fronted by a studio-proxy so the `endpoints` handed
   to the UI are the proxy URLs (slice C2 capture), while `ecs`
-  (`start-service`) is pure compute — no host port, no capture, just the
-  running replicas + their streamed logs. Resolves running on the kind's
+  (`start-service`) is pure compute — no capture proxy, just the running
+  replicas + their streamed logs. The `ecs` serve's `hostUrl` is set from an
+  explicit `--host-port` OR (issue #392) parsed from the child's
+  `... published on <ip>:<port> ...` log line when start-service auto-publishes
+  / auto-remaps a replica port (`parsePublishedHostEndpoint`, first endpoint
+  wins, re-emitted if it arrives after the running event) — so the request
+  composer can target an auto-published replica without an explicit
+  `--host-port`. Resolves running on the kind's
   ready line (`Server listening on <url>` / `ALB front-door: <url>` /
   `CloudFront distribution serving on <url>` /
   `Service(s) running:`), tracks the running set for `/api/running`, and

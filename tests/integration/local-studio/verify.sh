@@ -1285,6 +1285,69 @@ sleep 3
 echo "    OK: ECS service stopped"
 
 # ---------------------------------------------------------------------------
+# 10a-autopub. ECS service serve WITHOUT --host-port (issue #392): start-service
+#   auto-publishes the privileged container port 80 to a free high host port
+#   (#357). studio now PARSES that published-port line from the child log to set
+#   the serve's hostUrl — so the request composer fires WITHOUT an explicit
+#   --host-port. Assert /api/running carries a hostUrl (which, since no
+#   --host-port was passed, can ONLY have come from the auto-publish parse), and
+#   POST /api/request relays to the auto-published replica.
+# ---------------------------------------------------------------------------
+echo "==> ecs serve WITHOUT --host-port surfaces an auto-published hostUrl (#392)"
+AP_FILE=$(mktemp)
+HTTP_AP=$(curl -s -o "${AP_FILE}" -w '%{http_code}' --max-time 180 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\"}}" || true)
+if [[ "${HTTP_AP}" != "200" ]] || ! grep -qF '"status":"running"' "${AP_FILE}"; then
+  echo "FAIL: POST /api/run (ecs auto-publish) returned HTTP ${HTTP_AP}"
+  cat "${AP_FILE}"; echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; rm -f "${AP_FILE}"; exit 1
+fi
+rm -f "${AP_FILE}"
+# The auto-published hostUrl lands on /api/running (parsed from the child log,
+# possibly slightly after the running event). Retry while the replica boots.
+AP_HOSTURL=""
+for _ in $(seq 1 40); do
+  curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null || true
+  AP_HOSTURL=$(python3 - "${BODY_FILE}" "${ECS_TARGET}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+e = next((x for x in d.get("running", []) if x.get("targetId") == sys.argv[2]), None)
+print((e or {}).get("hostUrl", "") or "")
+PY
+)
+  if [[ -n "${AP_HOSTURL}" ]]; then break; fi
+  sleep 1
+done
+if [[ -z "${AP_HOSTURL}" ]]; then
+  echo "FAIL: ecs serve without --host-port did not surface an auto-published hostUrl"
+  echo "----- /api/running -----"; cat "${BODY_FILE}"
+  echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; exit 1
+fi
+echo "    OK: auto-published hostUrl surfaced (${AP_HOSTURL}) with NO --host-port"
+# POST /api/request relays a composed GET / to the auto-published replica; the
+# fixture container's `python -m http.server 80` answers 200. Retry while it boots.
+AP_REQ=$(mktemp)
+AP_OK=""
+for _ in $(seq 1 30); do
+  AP_CODE=$(curl -s -o "${AP_REQ}" -w '%{http_code}' --max-time 10 \
+    -X POST "${URL}/api/request" -H 'content-type: application/json' \
+    -d "{\"targetId\":\"${ECS_TARGET}\",\"method\":\"GET\",\"path\":\"/\"}" || true)
+  if [[ "${AP_CODE}" == "200" ]] && grep -qF '"status":200' "${AP_REQ}"; then AP_OK="yes"; break; fi
+  sleep 1
+done
+if [[ -z "${AP_OK}" ]]; then
+  echo "FAIL: POST /api/request did not relay to the auto-published replica"
+  head -c 1000 "${AP_REQ}"; echo; rm -f "${AP_REQ}"; exit 1
+fi
+rm -f "${AP_REQ}"
+echo "    OK: request relayed through studio to the auto-published replica (upstream 200)"
+echo "==> POST /api/stop tears the auto-publish ecs serve down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: auto-publish ecs serve stopped"
+
+# ---------------------------------------------------------------------------
 # 10a2. ECS TASK DEFINITION run (issue #366): a task definition is the
 #       `ecs-task` kind — a [Run] control that runs `cdkl run-task` as a
 #       long-running run (server task defs stream logs until stopped). POST
