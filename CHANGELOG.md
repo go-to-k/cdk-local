@@ -1,3 +1,10 @@
+## [0.121.1](https://github.com/go-to-k/cdk-local/compare/v0.121.0...v0.121.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **start-cloudfront:** expose the CloudFront-Functions-2.0 runtime built-ins (Buffer, crypto, ...) in the vm sandbox ([#411](https://github.com/go-to-k/cdk-local/issues/411)) ([b77daa1](https://github.com/go-to-k/cdk-local/commit/b77daa173398b3b30c04fcb774f004e27ef27005))
+
 # [0.121.0](https://github.com/go-to-k/cdk-local/compare/v0.120.0...v0.121.0) (2026-06-04)
 
 
