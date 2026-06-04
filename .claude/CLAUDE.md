@@ -704,7 +704,15 @@ compute-locally category for Lambda + API Gateway).
   `Service(s) running:`), tracks the running set for `/api/running`, and
   SIGTERMs the child on `/api/stop` / studio shutdown with a generous
   grace so the serve command's OWN ECS-replica + docker-network teardown
-  completes before any SIGKILL. Under `cdkl studio --watch` it appends
+  completes before any SIGKILL. Each serve child is spawned with
+  `CDKL_LOG_STREAM=stdout` (issue #403) so the logger unifies warn / error
+  onto stdout: studio reads the child's stdout + stderr via two separate OS
+  pipes with no cross-pipe order guarantee, so without unification a stderr
+  WARN (e.g. the pinned-image boot warning) could surface in the studio LOG
+  panel AFTER a later stdout line like `Press ^C to shut down.`. The serve
+  path is safe to unify (ready-line detection greps stdout; error detection
+  is via the child `error` / `close` events, not stderr content). Under
+  `cdkl studio --watch` it appends
   `--watch` to each serve child — read off the mutable config per
   `start()`, so a Session-bar toggle applies to the next serve. Issue #355
   added env-vars to the `alb` / `ecs` serve composers: `start()`

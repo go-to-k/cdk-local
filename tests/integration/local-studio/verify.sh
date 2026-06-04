@@ -1158,6 +1158,33 @@ ALB_SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${ALB_FILE}" | head -1 || tr
 rm -f "${ALB_FILE}"
 echo "    OK: ALB serve started; front-door fronted by studio proxy at ${ALB_SERVED}"
 
+# Issue #403: the studio-spawned serve child runs with CDKL_LOG_STREAM=stdout
+# so its warn/error are unified onto stdout. studio reads stdout + stderr via
+# two separate OS pipes (no cross-pipe order guarantee), so without the fix the
+# pinned-image WARN (stderr) could surface in the studio LOG *after* the stdout
+# "Press ^C to shut down" banner. The fixture's backing MyService image is a
+# public-registry literal => the boot emits the pin WARN; assert it lands in the
+# captured studio LOG BEFORE the banner (single-stream => emission order kept).
+echo "==> The pinned-image WARN precedes 'Press ^C' in the studio LOG (issue #403)"
+ORDER_OK=0
+for _ in $(seq 1 30); do
+  if grep -qF 'running image is pinned' "${SSE_FILE}" && grep -qF 'Press ^C to shut down' "${SSE_FILE}"; then
+    WARN_LN=$(grep -nF 'running image is pinned' "${SSE_FILE}" | head -1 | cut -d: -f1)
+    BANNER_LN=$(grep -nF 'Press ^C to shut down' "${SSE_FILE}" | head -1 | cut -d: -f1)
+    if [[ -n "${WARN_LN}" && -n "${BANNER_LN}" && "${WARN_LN}" -lt "${BANNER_LN}" ]]; then
+      ORDER_OK=1
+      break
+    fi
+  fi
+  sleep 1
+done
+if [[ "${ORDER_OK}" != "1" ]]; then
+  echo "FAIL: pinned-image WARN did not precede 'Press ^C' in the studio LOG (issue #403)"
+  echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
+  exit 1
+fi
+echo "    OK: pinned-image WARN appears before 'Press ^C' in the studio LOG (single-stream order preserved)"
+
 echo "==> The ALB front-door answers through the studio proxy"
 # Retry: the front-door binds before the ECS replica registers in the target
 # group, so the first requests may be 503 until the replica is healthy.

@@ -102,6 +102,19 @@ export class ConsoleLogger implements Logger {
   }
 
   private emit(level: LogLevel, formatted: string): void {
+    // `cdkl studio` sets `CDKL_LOG_STREAM=stdout` on its spawned serve children
+    // (issue #403) so EVERY level routes to stdout instead of the default
+    // warn/error -> stderr split. studio captures a child's stdout and stderr
+    // via two separate OS pipes, and Node does NOT guarantee cross-pipe
+    // delivery order — a warn written just before a stdout banner can surface
+    // AFTER it in the studio LOG panel (e.g. the pinned-image WARN landing
+    // below "Press ^C to shut down."). Emitting one stream preserves emission
+    // order for that consumer. Direct CLI use never sets the var, so the
+    // warn/error -> stderr split is unchanged there.
+    if (process.env['CDKL_LOG_STREAM'] === 'stdout') {
+      console.log(formatted);
+      return;
+    }
     if (level === 'error') console.error(formatted);
     else if (level === 'warn') console.warn(formatted);
     else if (level === 'info') console.info(formatted);
