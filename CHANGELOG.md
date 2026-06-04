@@ -1,3 +1,10 @@
+## [0.123.1](https://github.com/go-to-k/cdk-local/compare/v0.123.0...v0.123.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **invoke:** extract a ZIP-FILE Lambda asset before bind-mounting ([#415](https://github.com/go-to-k/cdk-local/issues/415)) ([e9dd2a2](https://github.com/go-to-k/cdk-local/commit/e9dd2a244fad5c844551e996b2b05cfe00128d44))
+
 # [0.123.0](https://github.com/go-to-k/cdk-local/compare/v0.122.0...v0.123.0) (2026-06-04)
 
 
