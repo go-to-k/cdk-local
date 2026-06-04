@@ -220,6 +220,29 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
     });
   });
 
+  it('resolves multiple event-type slots and warn-skips an unresolvable association', () => {
+    const template = s3DistributionTemplate();
+    template.Resources!['EdgeFn'] = { Type: 'AWS::Lambda::Function', Properties: {} };
+    template.Resources!['EdgeFnVersion'] = {
+      Type: 'AWS::Lambda::Version',
+      Properties: { FunctionName: { Ref: 'EdgeFn' } },
+    };
+    const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[
+      'DistributionConfig'
+    ]!;
+    (dc['DefaultCacheBehavior'] as Record<string, unknown>)['LambdaFunctionAssociations'] = [
+      { EventType: 'viewer-request', LambdaFunctionARN: { Ref: 'EdgeFnVersion' } },
+      { EventType: 'viewer-response', LambdaFunctionARN: { Ref: 'EdgeFnVersion' } },
+      // Unresolvable (literal ARN) -> warn-skipped, siblings still resolve.
+      { EventType: 'origin-request', LambdaFunctionARN: 'arn:aws:lambda:us-east-1:1:function:x:1' },
+    ];
+    const stack = buildStack(template, HASH);
+    const edge = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).behaviors[0]!.lambdaEdge;
+    expect(edge?.viewerRequest?.functionLogicalId).toBe('EdgeFn');
+    expect(edge?.viewerResponse?.functionLogicalId).toBe('EdgeFn');
+    expect(edge?.originRequest).toBeUndefined();
+  });
+
   it('resolves CacheBehaviors[] in declared order after the default', () => {
     const template = s3DistributionTemplate();
     const dc = (template.Resources!['Dist']!.Properties as Record<string, Record<string, unknown>>)[

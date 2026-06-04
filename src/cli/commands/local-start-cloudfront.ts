@@ -566,23 +566,34 @@ async function localStartCloudFrontCommand(
     bootOpts
   );
 
-  // TLS resolution (real termination opt-in). Resolved once at boot.
-  let tls: FrontDoorTlsMaterials | undefined;
-  if (tlsRequested) {
-    tls = await resolveFrontDoorTlsMaterials({
-      certPath: options.tlsCert,
-      keyPath: options.tlsKey,
-    });
-  }
+  // From here, the booted RIE containers are live but the shutdown handler is
+  // not yet wired — a TLS-material or port-bind failure would otherwise strand
+  // every booted Lambda container. Stop them all before rethrowing.
+  let server: StartedCloudFrontServer;
+  try {
+    // TLS resolution (real termination opt-in). Resolved once at boot.
+    let tls: FrontDoorTlsMaterials | undefined;
+    if (tlsRequested) {
+      tls = await resolveFrontDoorTlsMaterials({
+        certPath: options.tlsCert,
+        keyPath: options.tlsKey,
+      });
+    }
 
-  const server: StartedCloudFrontServer = await startCloudFrontServer({
-    distribution: initial.distribution,
-    host: options.host,
-    port: basePort,
-    ...(tls && { tls }),
-    ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
-    ...(edgeInvokers.size > 0 && { edgeInvokers }),
-  });
+    server = await startCloudFrontServer({
+      distribution: initial.distribution,
+      host: options.host,
+      port: basePort,
+      ...(tls && { tls }),
+      ...(lambdaInvokers.size > 0 && { lambdaInvokers }),
+      ...(edgeInvokers.size > 0 && { edgeInvokers }),
+    });
+  } catch (err) {
+    await Promise.all(
+      [...lambdaRunners, ...edgeRunners].map((r) => r.stop().catch(() => undefined))
+    );
+    throw err;
+  }
 
   // D8.4-style load-bearing banner: verify.sh greps for this exact prefix.
   process.stdout.write(

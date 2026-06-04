@@ -531,8 +531,9 @@ compute-locally category for Lambda + API Gateway).
   short-circuit or rewrite the request via the boot-time edge invoker map) ->
   origin (S3 static origin OR a
   Lambda Function URL origin via the boot-time invoker map) ->
-  Lambda@Edge origin-response -> viewer-response fn OR Lambda@Edge
-  viewer-response -> the behavior's actual-response CORS headers
+  Lambda@Edge origin-response -> viewer-response fn THEN Lambda@Edge
+  viewer-response (both run, CloudFront Function first) -> the behavior's
+  actual-response CORS headers
   (`applyCorsResponseHeadersFromConfig`), with a mutable distribution cell so
   `--watch` swaps the routing model under the live socket),
   studio-custom-resource-filter (issue #323 —

@@ -293,7 +293,8 @@ async function handleRequest(
     }
   }
 
-  // viewer-response: a CloudFront Function OR a Lambda@Edge function.
+  // viewer-response: a CloudFront Function then a Lambda@Edge function (both can
+  // run on the same event type — CloudFront runs the Function first).
   if (behavior.viewerResponse) {
     const responseEvent = buildViewerResponseEvent(requestEvent, {
       statusCode: finalStatus,
@@ -302,7 +303,8 @@ async function handleRequest(
     const mutated = await runViewerResponse(behavior.viewerResponse, responseEvent);
     finalStatus = mutated.statusCode;
     finalHeaders = cfHeadersToPlain(mutated.headers, finalHeaders);
-  } else if (behavior.lambdaEdge?.viewerResponse) {
+  }
+  if (behavior.lambdaEdge?.viewerResponse) {
     const r = await runEdgeResponseStage(
       behavior.lambdaEdge.viewerResponse,
       'viewer-response',
@@ -399,6 +401,9 @@ function writeEdgeResponse(
   req: IncomingMessage,
   logger: ReturnType<typeof getLogger>
 ): void {
+  // Drain any unread request body so a short-circuit on a keep-alive
+  // connection does not stall the next request on the socket.
+  if (!req.readableEnded) req.resume();
   res.statusCode = result.statusCode;
   setHeadersSafely(res, result.headers, logger);
   if (result.setCookies.length > 0) {
