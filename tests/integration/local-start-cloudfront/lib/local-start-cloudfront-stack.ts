@@ -108,6 +108,32 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
       ),
     });
 
+    // A Basic-Auth viewer-request function on a /secure/* behavior, using the
+    // Buffer global to build the expected Authorization header. This is the
+    // common case from issue #410 — a cloudfront-js-2.0 function that uses
+    // Buffer, which previously failed locally with "Buffer is not defined".
+    const basicAuth = new cloudfront.Function(this, 'BasicAuthFn', {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(
+        [
+          'function handler(event) {',
+          '  var request = event.request;',
+          "  var expected = 'Basic ' + Buffer.from('user:pass').toString('base64');",
+          '  var auth = request.headers.authorization;',
+          '  if (!auth || auth.value !== expected) {',
+          '    return {',
+          "      statusCode: 401,",
+          "      statusDescription: 'Unauthorized',",
+          "      headers: { 'www-authenticate': { value: 'Basic realm=\"secure\"' } },",
+          '    };',
+          '  }',
+          "  request.uri = '/';",
+          '  return request;',
+          '}',
+        ].join('\n')
+      ),
+    });
+
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(bucket);
 
     new cloudfront.Distribution(this, 'SiteDist', {
@@ -125,6 +151,12 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
           origin: s3Origin,
           functionAssociations: [
             { function: kvsRewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+          ],
+        },
+        '/secure/*': {
+          origin: s3Origin,
+          functionAssociations: [
+            { function: basicAuth, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
           ],
         },
       },

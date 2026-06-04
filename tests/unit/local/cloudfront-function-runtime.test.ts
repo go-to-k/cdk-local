@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   buildViewerRequestEvent,
@@ -64,6 +65,43 @@ describe('runViewerRequest', () => {
     const out = await runViewerRequest(fn, reqEvent('/x'));
     expect(out.kind).toBe('continue');
     if (out.kind === 'continue') expect(out.request.uri).toBe('/x');
+  });
+
+  it('exposes the Buffer global to the function — Basic-Auth (issue #410)', async () => {
+    const fn = compile(
+      [
+        'function handler(event) {',
+        '  var request = event.request;',
+        "  var expected = 'Basic ' + Buffer.from('user:pass').toString('base64');",
+        '  var auth = request.headers.authorization;',
+        '  if (!auth || auth.value !== expected) {',
+        "    return { statusCode: 401, statusDescription: 'Unauthorized', headers: { 'www-authenticate': { value: 'Basic' } } };",
+        '  }',
+        '  return request;',
+        '}',
+      ].join('\n')
+    );
+    // No Authorization header -> the Buffer-built expected value mismatches -> 401.
+    const denied = await runViewerRequest(fn, reqEvent('/'));
+    expect(denied.kind).toBe('response');
+    if (denied.kind === 'response') expect(denied.response.statusCode).toBe(401);
+    // The correct Basic credentials pass.
+    const token = Buffer.from('user:pass').toString('base64');
+    const ok = await runViewerRequest(fn, reqEvent('/', { authorization: `Basic ${token}` }));
+    expect(ok.kind).toBe('continue');
+  });
+
+  it('exposes Buffer to TOP-LEVEL code (the compile-time handler probe) — issue #410', () => {
+    // A function that uses Buffer at module scope must still compile (the probe
+    // runs the top-level code to check for `handler`).
+    expect(() =>
+      compile(
+        [
+          "const SECRET = Buffer.from('user:pass').toString('base64');",
+          'function handler(event) { event.request.headers["x-secret"] = { value: SECRET }; return event.request; }',
+        ].join('\n')
+      )
+    ).not.toThrow();
   });
 
   it('awaits an async (cloudfront-js-2.0) handler', async () => {
@@ -210,5 +248,51 @@ describe('CloudFront Function KeyValueStore injection', () => {
     ].join('\n');
     // The probe must not throw on the top-level cf.kvs(id) call.
     expect(() => compile(code)).not.toThrow();
+  });
+});
+
+describe('CloudFront Functions 2.0 runtime built-ins (issue #410)', () => {
+  // Run a function whose body computes a value and returns it in a response
+  // header, so the test can read the result of the global / require under test.
+  async function evalToHeader(expr: string): Promise<string | undefined> {
+    const fn = compile(
+      `function handler(event){ var v = (${expr}); return { statusCode: 200, headers: { 'x-out': { value: String(v) } } }; }`
+    );
+    const out = await runViewerRequest(fn, reqEvent('/'));
+    return out.kind === 'response' ? out.response.headers['x-out']?.value : undefined;
+  }
+
+  it('Buffer.from(...).toString(base64)', async () => {
+    expect(await evalToHeader("Buffer.from('user:pass').toString('base64')")).toBe(
+      Buffer.from('user:pass').toString('base64')
+    );
+  });
+
+  it('atob / btoa', async () => {
+    expect(await evalToHeader("atob(btoa('hello'))")).toBe('hello');
+  });
+
+  it('TextEncoder / TextDecoder', async () => {
+    expect(await evalToHeader("new TextDecoder().decode(new TextEncoder().encode('hi'))")).toBe('hi');
+  });
+
+  it("require('crypto') HMAC sha256", async () => {
+    const expected = createHmac('sha256', 'key').update('msg').digest('hex');
+    expect(
+      await evalToHeader("require('crypto').createHmac('sha256','key').update('msg').digest('hex')")
+    ).toBe(expected);
+  });
+
+  it("require('querystring').parse", async () => {
+    expect(await evalToHeader("require('querystring').parse('a=1&b=2').b")).toBe('2');
+  });
+
+  it("require('buffer').Buffer", async () => {
+    expect(await evalToHeader("require('buffer').Buffer.from('x').toString('hex')")).toBe('78');
+  });
+
+  it('require of an unavailable module (fs) throws, matching the deployed runtime', async () => {
+    const fn = compile("function handler(event){ require('fs'); return event.request; }");
+    await expect(runViewerRequest(fn, reqEvent('/'))).rejects.toThrow(/Cannot find module 'fs'/);
   });
 });

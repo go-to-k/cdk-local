@@ -1,5 +1,51 @@
+import * as nodeBuffer from 'node:buffer';
+import * as nodeCrypto from 'node:crypto';
+import * as nodeQuerystring from 'node:querystring';
 import * as vm from 'node:vm';
 import { createUnboundCloudFrontModule, type CloudFrontModule } from './cloudfront-kvs.js';
+
+/**
+ * The CloudFront Functions JS 2.0 runtime exposes a set of globals + `require`
+ * modules that a bare `node:vm` context does NOT provide — code that uses any
+ * of them works in production but fails locally with a `ReferenceError`
+ * (issue #410). Reproduce them with their Node equivalents:
+ *
+ *   - globals: `Buffer`, `atob` / `btoa`, `TextEncoder` / `TextDecoder`
+ *     (the 2.0 runtime's documented globals / built-in objects);
+ *   - `require('crypto')` (`createHash` / `createHmac`, md5 / sha1 / sha256),
+ *     `require('querystring')`, and `require('buffer')` — backed by the Node
+ *     modules (a superset of the 2.0 runtime's documented subset, which is the
+ *     right trade-off for a dev tool: a function using only the documented API
+ *     behaves identically; an undocumented Node-only API would work locally but
+ *     not deployed).
+ *
+ * `console` is added by the caller. A `require` of anything other than the
+ * three modules above throws, and `fs` / `process` / timers / network / `eval`
+ * are not provided as globals — matching the deployed runtime's restricted
+ * features (a fidelity convenience, not a hard isolation guarantee; see the
+ * module docstring).
+ */
+function cloudFrontRuntimeRequire(name: string): unknown {
+  if (name === 'crypto') return nodeCrypto;
+  if (name === 'querystring') return nodeQuerystring;
+  if (name === 'buffer') return nodeBuffer;
+  throw new Error(
+    `Cannot find module '${name}'. CloudFront Functions only provides the 'crypto', ` +
+      "'querystring', and 'buffer' built-in modules."
+  );
+}
+
+/** The CloudFront-Functions-2.0 globals + `require` to merge into a sandbox. */
+function cloudFrontRuntimeGlobals(): Record<string, unknown> {
+  return {
+    Buffer,
+    atob,
+    btoa,
+    TextEncoder,
+    TextDecoder,
+    require: cloudFrontRuntimeRequire,
+  };
+}
 
 /**
  * Hard cap on a single CloudFront Function's synchronous run. The deployed
@@ -25,10 +71,17 @@ const FUNCTION_TIMEOUT_MS = 5000;
  * template (CDK always synthesizes it inline). It is compiled once and run in
  * a fresh `node:vm` context per request to obtain the `handler` function, then
  * `handler(event)` is invoked. `cloudfront-js-2.0` handlers may be `async`, so
- * a returned promise is awaited. The sandbox exposes only the standard
- * JavaScript built-ins a vm context already provides plus `console` (the 2.0
- * runtime has `console.log`); it does NOT expose `require`, `process`, timers,
- * or `fetch`.
+ * a returned promise is awaited. The sandbox exposes the standard JavaScript
+ * built-ins a vm context provides plus `console` and the CloudFront-Functions-2.0
+ * runtime built-ins a bare vm context lacks — `Buffer`, `atob` / `btoa`,
+ * `TextEncoder` / `TextDecoder`, and a `require` for the `crypto` /
+ * `querystring` / `buffer` modules (see {@link cloudFrontRuntimeGlobals}, issue
+ * #410). `process` / timers / `fetch` / `fs` are not provided as globals (a
+ * function referencing them gets a `ReferenceError`, matching CloudFront's
+ * restricted features). Note the vm is a FIDELITY sandbox, not a security
+ * boundary — injecting host objects (`console`, `Buffer`, the `cf` module)
+ * means hostile code could reach the host realm; that is moot here because the
+ * function code is the user's own CDK-app code run locally for dev.
  *
  * The 2.0 KeyValueStore API IS reproduced: a `import cf from 'cloudfront'`
  * statement is stripped from the code ({@link stripCloudFrontImport}) and the
@@ -202,7 +255,7 @@ export function compileCloudFrontFunction(
   // injected per request at invoke time).
   let hasHandler: unknown;
   try {
-    const probeGlobals: Record<string, unknown> = { console };
+    const probeGlobals: Record<string, unknown> = { console, ...cloudFrontRuntimeGlobals() };
     if (bindingName) probeGlobals[bindingName] = createUnboundCloudFrontModule(logicalId);
     const probeContext = vm.createContext(probeGlobals);
     hasHandler = new vm.Script(`${source}\n;typeof handler === 'function'`).runInContext(
@@ -239,7 +292,11 @@ export async function invokeCloudFrontFunction(
   fn: CompiledCloudFrontFunction,
   event: CfViewerRequestEvent | CfViewerResponseEvent
 ): Promise<unknown> {
-  const sandbox: Record<string, unknown> = { console, [EVENT_GLOBAL]: event };
+  const sandbox: Record<string, unknown> = {
+    console,
+    ...cloudFrontRuntimeGlobals(),
+    [EVENT_GLOBAL]: event,
+  };
   // Inject the `cloudfront` module under its import binding name. The command
   // layer sets `cloudfrontModule` once the KVS bindings resolve; when the
   // function imports `cloudfront` but no binding was resolved, an unbound module
