@@ -1,3 +1,10 @@
+## [0.124.1](https://github.com/go-to-k/cdk-local/compare/v0.124.0...v0.124.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **invoke:** preserve the executable bit when extracting a ZIP-FILE Lambda asset ([#419](https://github.com/go-to-k/cdk-local/issues/419)) ([aea41fc](https://github.com/go-to-k/cdk-local/commit/aea41fcfa6eeb1b6c9b8913001e03a98c095c704))
+
 # [0.124.0](https://github.com/go-to-k/cdk-local/compare/v0.123.3...v0.124.0) (2026-06-04)
 
 
