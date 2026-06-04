@@ -7,6 +7,7 @@ window.__t = {
   serveMeta: serveMeta,
   serveState: serveState,
   renderServeWorkspace: renderServeWorkspace,
+  formatAppliedOptions: formatAppliedOptions,
   setDockerfiles: function (d) { studioDockerfiles = d; },
 };
 window.__setShown = function (id) { shownServeId = id; };
@@ -85,6 +86,19 @@ describe('alb composer image-override picker (issue #382)', () => {
     try {
       albComposer(h, []);
       expect(h.document.querySelectorAll('.image-override-select').length).toBe(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('surfaces the imageOverrides picks in the "Started with" summary (issue #356 contract)', () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      const lines = h.window.__t.formatAppliedOptions({
+        imageOverrides: { 'S:SvcA': 'api/Dockerfile', 'S:SvcB': 'web/Dockerfile' },
+      });
+      expect(lines).toContain('--image-override S:SvcA=api/Dockerfile');
+      expect(lines).toContain('--image-override S:SvcB=web/Dockerfile');
     } finally {
       h.close();
     }

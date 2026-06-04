@@ -783,6 +783,14 @@ const STUDIO_SCRIPT = `
     if (applied && applied.imageOverride) {
       lines.push('--image-override ' + applied.imageOverride);
     }
+    // An alb serve threads a per-backing-service imageOverrides map (issue
+    // #382); surface one --image-override line each so the picks do not
+    // silently vanish from the running view (the issue #356 contract).
+    if (applied && applied.imageOverrides) {
+      Object.keys(applied.imageOverrides).forEach(function (svc) {
+        lines.push('--image-override ' + svc + '=' + applied.imageOverrides[svc]);
+      });
+    }
     if (applied && applied.rawArgs) {
       const raw = String(applied.rawArgs).trim();
       if (raw !== '') lines.push(raw);
