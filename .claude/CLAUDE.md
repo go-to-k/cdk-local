@@ -101,7 +101,15 @@ AWS managed services.
   named target, and an orphan validator
   (`enforceImageOverrideOrphans`) fails the boot when a per-service
   flag names a service the resolved override map does NOT cover
-  (typo / forgotten `--image-override` mapping).
+  (typo / forgotten `--image-override` mapping). Issue #388 extended
+  the SAME `--image-override` flag family to `cdkl run-task`: a pinned
+  (deployed-registry) task-definition container image is rebuilt from
+  the supplied Dockerfile and threaded into the run via
+  `imageOverrideByContainer` (a task def has ONE override target — its
+  representative essential container — so the picker / boot-prompt forms
+  map to that single target; `resolveRunTaskImageOverride` reuses the
+  shared engine primitives, and a pinned-but-uncovered image WARNs that
+  local source edits will not take effect).
   The host front-door (TLS materials, JWKS cache,
   Lambda-target RIE containers, listener sockets) is built once at
   boot and is NOT recreated on reload — only the per-service replica

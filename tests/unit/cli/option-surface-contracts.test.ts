@@ -106,6 +106,8 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
     // Issue #249 / C6 — `--assume-role` is the non-breaking alias of
     // `--assume-task-role` so both forms are present.
     // Issue #249 / C8 — `--no-build` parity with `cdkl invoke`.
+    // Issue #388 — the `--image-override` flag family (shared with
+    // start-service / start-alb via addImageOverrideOptions).
     expect(flags).toEqual([
       '--assume-role',
       '--assume-task-role',
@@ -116,11 +118,17 @@ describe('run-task option surface contract (addRunTaskSpecificOptions)', () => {
       '--env-vars',
       '--from-cfn-stack',
       '--host-port',
+      '--image-build-arg',
+      '--image-build-secret',
+      '--image-override',
+      '--image-target',
       '--keep-running',
       '--no-build',
+      '--no-interactive-overrides',
       '--no-pull',
       '--platform',
       '--stack-region',
+      '--strict-overrides',
     ]);
   });
 

@@ -1,0 +1,6 @@
+# Local image-override for the run-task integ (issue #388). The fixture's
+# NginxTask pins a public-registry image (public.ecr.aws/nginx/nginx:alpine);
+# `cdkl run-task --image-override` rebuilds it from this Dockerfile instead, so
+# the served page carries a sentinel the pinned image never would.
+FROM public.ecr.aws/nginx/nginx:alpine
+RUN echo 'run-task-image-override-sentinel-388' > /usr/share/nginx/html/index.html
