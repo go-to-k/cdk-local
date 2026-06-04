@@ -1,3 +1,10 @@
+## [0.107.1](https://github.com/go-to-k/cdk-local/compare/v0.107.0...v0.107.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **start-service:** print the pinned-image WARN before the endpoints banner + "Press ^C" ([#381](https://github.com/go-to-k/cdk-local/issues/381)) ([c2f9f91](https://github.com/go-to-k/cdk-local/commit/c2f9f910c4dd5305a94a2f3233b801b418beb1a4))
+
 # [0.107.0](https://github.com/go-to-k/cdk-local/compare/v0.106.1...v0.107.0) (2026-06-04)
 
 
