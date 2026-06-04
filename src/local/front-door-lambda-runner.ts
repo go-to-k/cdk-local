@@ -21,6 +21,7 @@ import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
 } from '../assets/asset-manifest-loader.js';
+import { materializeAssetCodeDir } from './lambda-resolver.js';
 import type { ResolvedImageLambda, ResolvedLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -92,6 +93,8 @@ interface ImagePlan {
   workingDir?: string;
   /** Temp dir to remove on stop (materialized inline ZIP code). */
   inlineTmpDir?: string;
+  /** Temp dir to remove on stop (extracted `.zip`-packaged asset). */
+  assetTmpDir?: string;
 }
 
 /** Forward the dev shell's AWS credential / region env into the Lambda container. */
@@ -136,6 +139,7 @@ async function resolveZipImagePlan(
   opts: FrontDoorLambdaRunnerOptions
 ): Promise<ImagePlan> {
   let inlineTmpDir: string | undefined;
+  let assetTmpDir: string | undefined;
   let codeDir = lambda.codePath;
   if (codeDir === null) {
     inlineTmpDir = materializeInlineCode(
@@ -144,6 +148,12 @@ async function resolveZipImagePlan(
       resolveRuntimeFileExtension(lambda.runtime)
     );
     codeDir = inlineTmpDir;
+  } else {
+    // A `.zip`-packaged asset is extracted to a temp dir for the bind-mount;
+    // an already-unzipped asset dir passes through (no tmpDir to clean up).
+    const materialized = materializeAssetCodeDir(codeDir);
+    codeDir = materialized.dir;
+    assetTmpDir = materialized.tmpDir;
   }
   const image = resolveRuntimeImage(lambda.runtime);
   await pullImage(image, opts.skipPull === true);
@@ -153,6 +163,7 @@ async function resolveZipImagePlan(
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
+    ...(assetTmpDir !== undefined && { assetTmpDir }),
   };
 }
 
@@ -352,6 +363,15 @@ export function createFrontDoorLambdaRunner(
         } catch (err) {
           logger.debug(
             `Failed to remove inline-code tmpdir ${plan.inlineTmpDir}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+      if (plan?.assetTmpDir) {
+        try {
+          rmSync(plan.assetTmpDir, { recursive: true, force: true });
+        } catch (err) {
+          logger.debug(
+            `Failed to remove zip-asset tmpdir ${plan.assetTmpDir}: ${err instanceof Error ? err.message : String(err)}`
           );
         }
       }

@@ -95,6 +95,7 @@ import {
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
   extractEphemeralStorageMb,
+  materializeAssetCodeDir,
   resolveLambdaLayers,
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
@@ -2159,14 +2160,22 @@ async function buildContainerSpec(args: {
     // Re-use `cdkl invoke`'s materialization rules for inline
     // (Code.ZipFile) Lambdas; asset-backed Lambdas already point at an
     // unzipped CDK directory.
-    codeDir =
-      lambda.codePath ??
-      materializeInlineCode(
+    if (lambda.codePath) {
+      // A `.zip`-packaged asset (`Code.fromAsset('bundle.zip')` / a bundling
+      // that emits a zip) is extracted to a temp dir for the bind-mount; an
+      // already-unzipped asset dir passes through. The temp dir is tracked in
+      // `inlineTmpDirs` so the same shutdown path removes it.
+      const materialized = materializeAssetCodeDir(lambda.codePath);
+      codeDir = materialized.dir;
+      if (materialized.tmpDir) inlineTmpDirs.add(materialized.tmpDir);
+    } else {
+      codeDir = materializeInlineCode(
         lambda.handler,
         lambda.inlineCode ?? '',
         resolveRuntimeFileExtension(lambda.runtime),
         inlineTmpDirs
       );
+    }
 
     // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
     // layer functions reuse the layer's asset dir directly; multi-

@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { zipSync, strToU8 } from 'fflate';
 import type { ResolvedZipLambda } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
@@ -44,6 +48,11 @@ const { createFrontDoorLambdaRunner } = await import(
   '../../../src/local/front-door-lambda-runner.js'
 );
 
+// A real on-disk asset directory: resolveZipImagePlan now stats codePath (to
+// distinguish an unzipped dir from a `.zip` file via materializeAssetCodeDir),
+// so the fixture must exist on disk like a real resolved CDK asset.
+let codeDir: string;
+
 function zipLambda(overrides: Partial<ResolvedZipLambda> = {}): ResolvedZipLambda {
   return {
     kind: 'zip',
@@ -55,18 +64,24 @@ function zipLambda(overrides: Partial<ResolvedZipLambda> = {}): ResolvedZipLambd
     layers: [],
     runtime: 'nodejs20.x',
     handler: 'index.handler',
-    codePath: '/tmp/code',
+    codePath: codeDir,
     ...overrides,
   } as ResolvedZipLambda;
 }
 
 beforeEach(() => {
+  codeDir = mkdtempSync(join(tmpdir(), 'cdkl-fd-code-'));
+  writeFileSync(join(codeDir, 'index.js'), 'exports.handler = () => {};');
   runDetachedMock.mockReset().mockResolvedValue('container-abc');
   pickFreePortMock.mockReset().mockResolvedValue(54321);
   removeContainerMock.mockReset().mockResolvedValue(undefined);
   pullImageMock.mockReset().mockResolvedValue(undefined);
   waitForRieReadyMock.mockReset().mockResolvedValue(undefined);
   invokeRieMock.mockReset().mockResolvedValue({ payload: { statusCode: 200 }, raw: '{}' });
+});
+
+afterEach(() => {
+  if (codeDir) rmSync(codeDir, { recursive: true, force: true });
 });
 
 describe('createFrontDoorLambdaRunner', () => {
@@ -80,11 +95,34 @@ describe('createFrontDoorLambdaRunner', () => {
     expect(runArgs.image).toBe('public.ecr.aws/lambda/nodejs:20');
     expect(runArgs.cmd).toEqual(['index.handler']);
     expect(runArgs.mounts).toEqual([
-      { hostPath: '/tmp/code', containerPath: '/var/task', readOnly: true },
+      { hostPath: codeDir, containerPath: '/var/task', readOnly: true },
     ]);
     expect(runArgs.hostPort).toBe(54321);
     expect(runArgs.env.AWS_LAMBDA_FUNCTION_NAME).toBe('EchoFn');
     expect(waitForRieReadyMock).toHaveBeenCalledWith('127.0.0.1', 54321, 30_000);
+  });
+
+  it('extracts a .zip-packaged asset and mounts the extracted dir, cleaning it up on stop()', async () => {
+    // A `Code.fromAsset('bundle.zip')` Lambda: codePath points at the zip FILE,
+    // which must be extracted before the bind-mount (a zip cannot be mounted as
+    // a dir). The extracted temp dir is removed on stop().
+    const zipPath = join(codeDir, 'asset.deadbeef.zip');
+    writeFileSync(zipPath, zipSync({ 'index.js': strToU8('exports.handler = () => {};') }));
+
+    const runner = createFrontDoorLambdaRunner(zipLambda({ codePath: zipPath }), {
+      containerHost: '127.0.0.1',
+    });
+    await runner.start();
+
+    const mount = runDetachedMock.mock.calls[0]![0].mounts[0];
+    expect(mount.containerPath).toBe('/var/task');
+    // The mount is a freshly-extracted dir, NOT the zip file itself.
+    expect(mount.hostPath).not.toBe(zipPath);
+    expect(existsSync(join(mount.hostPath, 'index.js'))).toBe(true);
+
+    const extracted = mount.hostPath;
+    await runner.stop();
+    expect(existsSync(extracted)).toBe(false);
   });
 
   it('uses a caller-provided containerEnv overlay + forwards sensitiveEnvKeys (issue #380)', async () => {

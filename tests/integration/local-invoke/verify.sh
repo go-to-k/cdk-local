@@ -31,9 +31,18 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
+# Build the ZIP-FILE asset for ZipAssetHandler from the same handler source.
+# `Code.fromAsset('zip-lambda.zip')` keeps it zipped, so synth emits
+# `asset.<hash>.zip` and `aws:asset:path` points at the zip FILE — the case
+# `cdkl invoke` must extract before bind-mounting. Built here (gitignored, not
+# committed) so it stays a generated artifact.
+echo "==> Building zip-lambda.zip (ZIP-FILE asset for ZipAssetHandler)"
+rm -f zip-lambda.zip
+( cd lambda && zip -q ../zip-lambda.zip index.js )
+
 
 # Test 1 — asset-backed Lambda echoes event + env var
-echo "==> [1/5] Invoking EchoHandler with default empty event"
+echo "==> [1/6] Invoking EchoHandler with default empty event"
 RESULT_1=$(${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -42,7 +51,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/5] Invoking EchoHandler with --event payload"
+echo "==> [2/6] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -54,7 +63,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override (Parameters)
-echo "==> [3/5] Invoking EchoHandler with --env-vars Parameters block"
+echo "==> [3/6] Invoking EchoHandler with --env-vars Parameters block"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
@@ -68,7 +77,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — --env-vars function-specific key by display path (issue #27)
-echo "==> [4/5] Invoking EchoHandler with --env-vars display-path key"
+echo "==> [4/6] Invoking EchoHandler with --env-vars display-path key"
 DP_ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
@@ -82,7 +91,7 @@ echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
 }
 
 # Test 5 — inline (Code.ZipFile) Lambda
-echo "==> [5/5] Invoking InlineHandler (Code.ZipFile)"
+echo "==> [5/6] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
@@ -93,5 +102,23 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
   exit 1
 }
 
+# Test 6 — ZIP-FILE asset Lambda (Code.fromAsset of a .zip). `aws:asset:path`
+# points at `asset.<hash>.zip`, so cdkl must extract it before bind-mounting.
+# A successful echo with the zip-only env var proves the extracted code ran.
+echo "==> [6/6] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
+ZIP_EVENT=$(mktemp)
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${ZIP_EVENT}"' EXIT
+echo '{"zip":"asset"}' > "${ZIP_EVENT}"
+RESULT_6=$(${CDKL} invoke CdkLocalInvokeFixture/ZipAssetHandler --event "${ZIP_EVENT}" --no-pull 2>/dev/null | tail -1)
+echo "    response: ${RESULT_6}"
+echo "${RESULT_6}" | grep -q '"echoed":{"zip":"asset"}' || {
+  echo "FAIL: expected echoed={zip:asset} from extracted zip asset, got: ${RESULT_6}"
+  exit 1
+}
+echo "${RESULT_6}" | grep -q '"greeting":"from-zip-asset"' || {
+  echo "FAIL: expected greeting=from-zip-asset from extracted zip asset, got: ${RESULT_6}"
+  exit 1
+}
+
 echo ""
-echo "==> All 5 local-invoke tests passed"
+echo "==> All 6 local-invoke tests passed"

@@ -1,5 +1,7 @@
-import { existsSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { existsSync, statSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { unzipSync } from 'fflate';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
@@ -438,7 +440,11 @@ function extractLambdaProperties(
 
   let codePath: string | null = null;
   if (!inlineCode) {
-    codePath = resolveAssetCodePath(stack, logicalId, resource);
+    // Function code may be a ZIP-packaged asset (`Code.fromAsset('bundle.zip')`
+    // or a bundling that emits a zip) — `allowZip` accepts the `.zip` file
+    // here; the consumer extracts it via `materializeAssetCodeDir` before the
+    // bind-mount. Layers still require an unzipped directory.
+    codePath = resolveAssetCodePath(stack, logicalId, resource, { allowZip: true });
   }
 
   // PR 6 (#232): resolve same-stack `Layers` references. Out-of-scope
@@ -695,7 +701,8 @@ function extractImageLambdaProperties(args: {
 function resolveAssetCodePath(
   stack: StackInfo,
   logicalId: string,
-  resource: TemplateResource
+  resource: TemplateResource,
+  options: { allowZip?: boolean } = {}
 ): string {
   const meta = resource.Metadata;
   const assetPath = meta?.['aws:asset:path'];
@@ -716,13 +723,104 @@ function resolveAssetCodePath(
   const cdkOutDir = stack.assetManifestPath ? dirname(stack.assetManifestPath) : process.cwd();
 
   const abs = isAbsolute(assetPath) ? assetPath : resolve(cdkOutDir, assetPath);
-  if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+  if (!existsSync(abs)) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' asset directory '${abs}' does not exist or is not a directory. ` +
+      `Lambda '${logicalId}' asset path '${abs}' does not exist. ` +
         'Re-synthesize the app and retry.'
     );
   }
-  return abs;
+  const stat = statSync(abs);
+  if (stat.isDirectory()) {
+    return abs;
+  }
+  // A ZIP-packaged asset (`Code.fromAsset('bundle.zip')` or a bundling step
+  // that emits a zip): CDK stages it as `asset.<hash>.zip` and points
+  // `aws:asset:path` at the zip FILE, not an unzipped directory. The function-
+  // code path opts in via `allowZip` and extracts it on demand
+  // (`materializeAssetCodeDir`). Layers still require an unzipped directory.
+  if (options.allowZip && stat.isFile() && abs.toLowerCase().endsWith('.zip')) {
+    return abs;
+  }
+  throw new LocalInvokeResolutionError(
+    `Lambda '${logicalId}' asset path '${abs}' is not a directory` +
+      (options.allowZip ? ' or a .zip archive' : '') +
+      '. Re-synthesize the app and retry.'
+  );
+}
+
+/**
+ * Result of {@link materializeAssetCodeDir}: a directory ready to bind-mount
+ * as the Lambda code root, plus an optional `tmpDir` the caller MUST clean up
+ * when the directory was freshly extracted from a `.zip` asset.
+ */
+export interface MaterializedAssetCode {
+  /** Directory to bind-mount as the Lambda code root. */
+  dir: string;
+  /**
+   * Set only when `dir` is a freshly-created temp directory holding the
+   * extracted contents of a `.zip` asset — the caller is responsible for
+   * removing it (via its existing tmpdir cleanup) once the container is gone.
+   * Undefined when `dir` is the original (already-unzipped) asset directory,
+   * which must NOT be removed.
+   */
+  tmpDir?: string;
+}
+
+/**
+ * Turn a resolved function-code asset path into a directory ready to
+ * bind-mount into the Lambda container.
+ *
+ * Most CDK Lambda assets are already-unzipped directories (`asset.<hash>/`)
+ * that bind-mount directly — those pass through untouched. But a
+ * ZIP-packaged asset (`Code.fromAsset('bundle.zip')`, or a bundling that
+ * emits a zip) is staged as `asset.<hash>.zip` and `aws:asset:path` points at
+ * the zip FILE. Docker cannot bind-mount a zip file as a directory, so we
+ * extract it to a fresh temp dir on demand and return that for the mount.
+ *
+ * Used by `cdkl invoke`, `cdkl start-api`, and the front-door Lambda runner —
+ * the three places that bind-mount a ZIP Lambda's code — so all agree on the
+ * zip handling. The returned `tmpDir` (when set) is threaded into the caller's
+ * existing tmpdir cleanup.
+ */
+export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode {
+  // `codePath` was produced by `resolveAssetCodePath(..., { allowZip: true })`,
+  // which already verified the path exists and is either a directory or a
+  // `.zip` file.
+  if (statSync(codePath).isDirectory()) {
+    return { dir: codePath };
+  }
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(readFileSync(codePath));
+  } catch (err) {
+    throw new LocalInvokeResolutionError(
+      `Lambda asset '${codePath}' is a file but could not be read as a ZIP archive: ` +
+        `${err instanceof Error ? err.message : String(err)}. Re-synthesize the app and retry.`
+    );
+  }
+  const dir = mkdtempSync(join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-lambda-zip-`));
+  for (const [name, content] of Object.entries(files)) {
+    if (name.endsWith('/')) continue; // directory entry — no file content
+    const dest = resolveSafeZipEntryPath(dir, name);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, content);
+  }
+  return { dir, tmpDir: dir };
+}
+
+/**
+ * Guard against zip-slip: reject an entry whose normalized path escapes the
+ * extraction root (e.g. `../../etc/passwd`).
+ */
+function resolveSafeZipEntryPath(root: string, entry: string): string {
+  const dest = normalize(join(root, entry));
+  const rootWithSep = root.endsWith(sep) ? root : root + sep;
+  if (dest !== root && !dest.startsWith(rootWithSep)) {
+    throw new LocalInvokeResolutionError(
+      `Refusing to extract a Lambda ZIP asset entry that escapes the target dir: '${entry}'.`
+    );
+  }
+  return dest;
 }
 
 /**

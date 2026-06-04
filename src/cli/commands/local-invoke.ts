@@ -34,6 +34,7 @@ import {
 } from '../../local/embed-config.js';
 import {
   resolveLambdaTarget,
+  materializeAssetCodeDir,
   type ResolvedImageLambda,
   type ResolvedLambda,
   type ResolvedLambdaLayer,
@@ -211,6 +212,17 @@ async function localInvokeCommand(
         } catch (err) {
           getLogger().debug(
             `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+      if (imagePlan?.assetTmpDir) {
+        try {
+          rmSync(imagePlan.assetTmpDir, { recursive: true, force: true });
+        } catch (err) {
+          getLogger().debug(
+            `Failed to remove zip-asset tmpdir ${imagePlan.assetTmpDir}: ${
               err instanceof Error ? err.message : String(err)
             }`
           );
@@ -447,6 +459,7 @@ interface ImagePlan {
   entryPoint?: string[];
   workingDir?: string;
   inlineTmpDir?: string;
+  assetTmpDir?: string;
   layersTmpDir?: string;
   layerArnTmpDirs?: string[];
   tmpfs?: { target: string; sizeMb: number };
@@ -467,6 +480,7 @@ async function resolveZipImagePlan(
   options: LocalInvokeOptions
 ): Promise<ImagePlan> {
   let inlineTmpDir: string | undefined;
+  let assetTmpDir: string | undefined;
   let codeDir = lambda.codePath;
   if (codeDir === null) {
     inlineTmpDir = materializeInlineCode(
@@ -475,6 +489,12 @@ async function resolveZipImagePlan(
       resolveRuntimeFileExtension(lambda.runtime)
     );
     codeDir = inlineTmpDir;
+  } else {
+    // A `.zip`-packaged asset is extracted to a temp dir for the bind-mount;
+    // an already-unzipped asset dir passes through (no tmpDir to clean up).
+    const materialized = materializeAssetCodeDir(codeDir);
+    codeDir = materialized.dir;
+    assetTmpDir = materialized.tmpDir;
   }
 
   const image = resolveRuntimeImage(lambda.runtime);
@@ -495,6 +515,7 @@ async function resolveZipImagePlan(
     extraMounts: layerPlan.mount ? [layerPlan.mount] : [],
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),
+    ...(assetTmpDir !== undefined && { assetTmpDir }),
     ...(layerPlan.tmpDir !== undefined && { layersTmpDir: layerPlan.tmpDir }),
     ...(layerPlan.extraTmpDirs.length > 0 && { layerArnTmpDirs: layerPlan.extraTmpDirs }),
     ...(tmpfs !== undefined && { tmpfs }),
