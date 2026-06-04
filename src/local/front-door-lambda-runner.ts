@@ -66,6 +66,21 @@ export interface FrontDoorLambdaRunnerOptions {
   region?: string;
   /** Whether to attach `docker logs -f`. Default true. */
   streamLogs?: boolean;
+  /**
+   * Pre-resolved container environment (issue #380). The caller resolves the
+   * function's declared env vars + `--from-cfn-stack` state substitution +
+   * `--assume-role` / shell creds via the shared `resolveLambdaContainerEnv`,
+   * so a CDN-/ALB-fronted Lambda reaches the same deployed resources as a
+   * direct `cdkl invoke`. When present, this REPLACES the runner's env base
+   * entirely — `resolveLambdaContainerEnv` already emits the six
+   * `AWS_LAMBDA_FUNCTION_*` identity vars (from the same `ResolvedLambda`), so
+   * the caller owns the full env. When absent, the runner builds the
+   * `AWS_LAMBDA_*` base itself and forwards only the dev shell's AWS env (the
+   * pre-#380 behavior).
+   */
+  containerEnv?: Record<string, string>;
+  /** Env keys carrying decrypted SecureStrings — kept off the `docker run` argv. */
+  sensitiveEnvKeys?: Set<string>;
 }
 
 interface ImagePlan {
@@ -238,15 +253,23 @@ export function createFrontDoorLambdaRunner(
     const name = `${getEmbedConfig().resourceNamePrefix}-alblambda-${lambda.logicalId}-${process.pid}-${Math.floor(
       Math.random() * 1_000_000
     )}`;
-    const env: Record<string, string> = {
-      AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
-      AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
-      AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
-      AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
-      AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
-      AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-      ...forwardAwsEnv(),
-    };
+    // When the caller pre-resolved the container env (issue #380 — declared
+    // env vars + `--from-cfn-stack` state substitution + `--assume-role` /
+    // shell creds, via `resolveLambdaContainerEnv`), it already carries the
+    // `AWS_LAMBDA_*` identity vars + resolved env + credentials, so use it
+    // directly. Otherwise fall back to the pre-#380 behavior: `AWS_LAMBDA_*`
+    // + only the dev shell's forwarded AWS env.
+    const env: Record<string, string> = opts.containerEnv
+      ? { ...opts.containerEnv }
+      : {
+          AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
+          AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
+          AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
+          AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
+          AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
+          AWS_LAMBDA_LOG_STREAM_NAME: 'local',
+          ...forwardAwsEnv(),
+        };
     logger.info(
       `Starting Lambda target container for ${lambda.logicalId} (image=${plan.image}, port=${port})...`
     );
@@ -254,6 +277,8 @@ export function createFrontDoorLambdaRunner(
       image: plan.image,
       mounts: plan.mounts,
       env,
+      ...(opts.sensitiveEnvKeys &&
+        opts.sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys: opts.sensitiveEnvKeys }),
       cmd: plan.cmd,
       hostPort: port,
       host: opts.containerHost,

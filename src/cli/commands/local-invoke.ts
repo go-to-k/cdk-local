@@ -24,6 +24,7 @@ import {
   createLocalStateProvider,
   resolveCfnFallbackRegion,
   type ExtraStateProviders,
+  type LocalStateSourceOptions,
 } from './local-state-source.js';
 import type { LocalStateProvider } from '../../local/local-state-provider.js';
 import {
@@ -322,210 +323,32 @@ async function localInvokeCommand(
 
     imagePlan = await resolveImagePlan(lambda, options);
 
-    let stateAudit: StateEnvSubstitutionAudit | undefined;
-    let templateEnv = getTemplateEnv(lambda.resource);
-    let stateForRoleHint: StackState | undefined;
-    // Pick the right LocalStateProvider for the supplied flags. Returns
-    // `undefined` when no state-source flag is set.
-    const stateProvider = createLocalStateProvider(
+    // Resolve the container env (declared env vars + `--from-cfn-stack` state
+    // substitution + `--assume-role` / shell creds + region) via the shared
+    // helper that `start-cloudfront` / `start-alb`'s Lambda paths also use
+    // (issue #380), so a direct invoke and a CDN-/ALB-fronted invoke agree.
+    const containerEnv = await resolveLambdaContainerEnv(
+      lambda,
       options,
-      lambda.stack.stackName,
-      await resolveCfnFallbackRegion(options, lambda.stack.region),
+      profileCredentials,
       extraStateProviders
     );
-    if (stateProvider) {
-      try {
-        const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
-        if (loaded) {
-          // Synthetic StackState shape consumed by the legacy
-          // `--assume-role` hint path. Sufficient for
-          // `resolveExecutionRoleArnFromState`, which only touches
-          // `state.resources[...].properties.Role` /
-          // `attributes.Arn`.
-          stateForRoleHint = {
-            version: 1,
-            stackName: lambda.stack.stackName,
-            resources: loaded.resources,
-            outputs: loaded.outputs,
-            lastModified: 0,
-          };
-          const subContext: SubstitutionContext = {
-            resources: loaded.resources,
-            consumerRegion: loaded.region,
-          };
-          if (envHasIntrinsicValue(templateEnv)) {
-            const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
-            if (pseudo) subContext.pseudoParameters = pseudo;
-          }
-          // Resolve SSM-backed template parameters
-          // (`AWS::SSM::Parameter::Value<String>`) so a `Ref` to such a
-          // parameter in an env var resolves to its SSM value instead of
-          // being warn-and-dropped (issue #94). Only the CFn provider
-          // implements this; the resolved map feeds the substitution
-          // context's `parameters` field consulted by `resolveRef`.
-          if (envHasIntrinsicValue(templateEnv) && stateProvider.resolveTemplateSsmParameters) {
-            const ssmParams = await stateProvider.resolveTemplateSsmParameters(
-              lambda.stack.template
-            );
-            if (Object.keys(ssmParams.values).length > 0) subContext.parameters = ssmParams.values;
-            // Flag decrypted SecureString parameters so the consuming env
-            // keys are kept off the `docker run` argv (issue #99).
-            if (ssmParams.secureStringLogicalIds.length > 0) {
-              subContext.sensitiveParameters = new Set(ssmParams.secureStringLogicalIds);
-            }
-          }
-          if (envHasCrossStackIntrinsic(templateEnv)) {
-            const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
-            if (resolver) {
-              subContext.crossStackResolver = resolver;
-            }
-          }
-          const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
-          templateEnv = env;
-          const label = stateProvider.label;
-          for (const key of audit.resolvedKeys) {
-            logger.debug(`${label}: substituted env var ${key}`);
-          }
-          // Deployed-env fallback: keys whose intrinsic value the static
-          // substituter could not resolve (e.g. `Fn::GetAtt <Sibling>.Arn`)
-          // are filled from the consumer function's deploy-time-resolved
-          // `Environment.Variables`. Only the CFn provider implements
-          // `resolveDeployedFunctionEnv`; the S3 provider's state already
-          // carries deploy-time attributes so its GetAtt resolves above.
-          let unresolved = audit.unresolved;
-          const resolvedKeys = [...audit.resolvedKeys];
-          if (unresolved.length > 0 && stateProvider.resolveDeployedFunctionEnv) {
-            const physicalId = loaded.resources[lambda.logicalId]?.physicalId;
-            if (physicalId) {
-              const deployedEnv = await stateProvider.resolveDeployedFunctionEnv(physicalId);
-              const fb = applyDeployedEnvFallback(templateEnv, unresolved, deployedEnv);
-              templateEnv = fb.env;
-              unresolved = fb.stillUnresolved;
-              for (const key of fb.filled) {
-                resolvedKeys.push(key);
-                logger.debug(`${label}: filled env var ${key} from deployed function config`);
-              }
-            }
-          }
-          stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
-          for (const { key, reason } of unresolved) {
-            logger.warn(
-              `${label}: could not substitute env var ${key} (${reason}). ` +
-                `Override it via --env-vars or it will be dropped.`
-            );
-          }
-        }
-      } catch (err) {
-        // Ensure the provider is released if the substitution pass threw.
-        // The success path defers dispose until after the assume-role
-        // resolution below so the issue-#181 fallback can still use it.
-        stateProvider.dispose();
-        throw err;
-      }
-    }
-
-    // Resolve env vars. Intrinsic-valued template entries are warned about
-    // and dropped; the user can override them via --env-vars (SAM-shape).
-    const overrides = readEnvOverridesFile(options.envVars);
-    const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
-    const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
-    for (const key of envResult.unresolved) {
-      if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
-      // Prefer the L2 form (`MyStack/MyFn`) in the suggestion since that
-      // matches the README guidance and `cdkl invoke` target shape; the
-      // resolver's prefix rule accepts either form.
-      const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
-      logger.warn(
-        `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
-          `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
-      );
-    }
-
-    // Resolve the role ARN to assume (if any). Three forms — explicit
-    // ARN, bare (auto-resolve from state, with a #181 fallback to
-    // GetFunctionConfiguration.Role when state misses), or absent.
-    // The state provider's dispose is deferred until after this call so
-    // the issue-#181 fallback can still use it.
-    let resolvedAssumeRoleArn: string | undefined;
-    try {
-      resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
-        options.assumeRole,
-        stateForRoleHint,
-        stateProvider,
-        lambda.logicalId
-      );
-    } finally {
-      stateProvider?.dispose();
-    }
-    if (options.assumeRole === undefined && stateForRoleHint) {
+    const dockerEnv = containerEnv.env;
+    if (options.assumeRole === undefined && containerEnv.stateForRoleHint) {
       // Legacy hint path: surface the deployed role ARN so they can re-run
       // with `--assume-role`.
-      suggestAssumeRoleFromState(stateForRoleHint, lambda.logicalId);
+      suggestAssumeRoleFromState(containerEnv.stateForRoleHint, lambda.logicalId);
+    }
+    // Point the container's SDK chain at the bind-mounted profile credentials
+    // file (invoke-specific) so `fromIni({ profile })` inside the handler
+    // resolves to the same creds. Only when no assume-role creds were applied.
+    if (!containerEnv.assumeRoleApplied && profileCredsFile) {
+      dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
+      dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
     }
 
     // Read the event payload. Default to {} (matches SAM).
     const event = await readEvent(options);
-
-    const dockerEnv: Record<string, string> = {
-      AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
-      AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
-      AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
-      AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
-      AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
-      AWS_LAMBDA_LOG_STREAM_NAME: 'local',
-      ...envResult.resolved,
-    };
-    let assumeSucceeded = false;
-    if (resolvedAssumeRoleArn) {
-      const stsRegion =
-        options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
-      try {
-        const creds = await assumeLambdaExecutionRole(
-          resolvedAssumeRoleArn,
-          stsRegion,
-          options.profile
-        );
-        dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
-        dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
-        dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
-        if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
-        assumeSucceeded = true;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        logger.warn(
-          `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
-            "Falling back to the developer's shell credentials."
-        );
-      }
-    }
-    if (!assumeSucceeded) {
-      forwardAwsEnv(dockerEnv);
-      applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
-      // Point the container's SDK chain at the bind-mounted credentials
-      // file so
-      // `fromIni({ profile })` calls inside the handler resolve to the
-      // same creds. `AWS_PROFILE` makes `fromIni()` (no explicit arg)
-      // ALSO use this profile.
-      if (profileCredsFile) {
-        dockerEnv['AWS_SHARED_CREDENTIALS_FILE'] = profileCredsFile.containerPath;
-        dockerEnv['AWS_PROFILE'] = profileCredsFile.profileName;
-      }
-    }
-    // Seed the container's `AWS_REGION` fallback so handler ambient-region
-    // SDK calls (`new XxxClient({})`) reach the same region the deployed
-    // function would. Precedence mirrors `start-api` via
-    // `resolveContainerFallbackRegion`:
-    //   1. `--region` / `AWS_REGION` / `AWS_DEFAULT_REGION` (forwarded above)
-    //   2. the synth-derived stack region (`env.region` on the CDK stack)
-    //   3. the `--profile`'s configured region (new in #245)
-    if (!dockerEnv['AWS_REGION'] && !dockerEnv['AWS_DEFAULT_REGION']) {
-      const fallbackRegion = resolveContainerFallbackRegion({
-        stackRegionOverride: options.region,
-        synthRegion: lambda.stack.region,
-        profileRegion: profileCredentials?.region,
-      });
-      if (fallbackRegion) dockerEnv['AWS_REGION'] = fallbackRegion;
-    }
 
     let debugPort: number | undefined;
     if (options.debugPort) {
@@ -572,10 +395,9 @@ async function localInvokeCommand(
       mounts: imagePlan.mounts,
       extraMounts: extraMountsWithProfile,
       env: dockerEnv,
-      ...(stateAudit &&
-        stateAudit.sensitiveKeys.length > 0 && {
-          sensitiveEnvKeys: new Set(stateAudit.sensitiveKeys),
-        }),
+      ...(containerEnv.sensitiveEnvKeys.length > 0 && {
+        sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
+      }),
       cmd: imagePlan.cmd,
       hostPort,
       host: containerHost,
@@ -838,7 +660,7 @@ export function envHasCrossStackIntrinsic(
 
 async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
-  options: LocalInvokeOptions
+  options: { region?: string; profile?: string }
 ): Promise<
   { accountId?: string; region?: string; partition?: string; urlSuffix?: string } | undefined
 > {
@@ -1020,6 +842,223 @@ export function applyProfileCredentialsOverlay(
   } else {
     delete env['AWS_SESSION_TOKEN'];
   }
+}
+
+/** The `--profile`-resolved static credentials, as {@link resolveProfileCredentials} returns. */
+export interface ResolvedProfileCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  region?: string;
+}
+
+/** Options for {@link resolveLambdaContainerEnv} — the state-source + assume-role + env-vars surface. */
+export interface LambdaContainerEnvOptions extends LocalStateSourceOptions {
+  /** `--assume-role` form (true=bare, string=ARN, undefined=off). */
+  assumeRole?: string | boolean;
+  /** `--env-vars` SAM-shape override file path. */
+  envVars?: string;
+}
+
+/** The fully resolved container environment for a Lambda. */
+export interface LambdaContainerEnvResult {
+  /**
+   * The container env map: `AWS_LAMBDA_*` runtime vars + the function's
+   * resolved declared env vars + AWS credentials + a fallback `AWS_REGION`.
+   * Does NOT include the `AWS_SHARED_CREDENTIALS_FILE` / `AWS_PROFILE` pointer
+   * to a bind-mounted profile credentials file — that mount is the caller's
+   * (only `cdkl invoke` materializes it today).
+   */
+  env: Record<string, string>;
+  /**
+   * Env keys whose values are decrypted SecureStrings — the caller passes
+   * these to `runDetached`'s `sensitiveEnvKeys` so they stay off the
+   * `docker run` argv.
+   */
+  sensitiveEnvKeys: string[];
+  /**
+   * The loaded deployed state (a synthetic {@link StackState}) when a
+   * state-source flag resolved one — so the caller can surface the
+   * assume-role suggestion hint. `undefined` when no state was loaded.
+   */
+  stateForRoleHint?: StackState;
+  /** Whether an `--assume-role` STS assume succeeded (creds are in `env`). */
+  assumeRoleApplied: boolean;
+}
+
+/**
+ * Resolve the full container environment for a Lambda: its declared env vars
+ * (literal + `--env-vars` overrides + intrinsic values substituted against a
+ * `--from-cfn-stack` deployed stack — SSM / cross-stack / deployed-env
+ * fallback included), the `AWS_LAMBDA_*` runtime vars, and AWS credentials
+ * (an `--assume-role` STS assume, else the dev shell's forwarded creds + a
+ * `--profile` overlay), plus a fallback `AWS_REGION`.
+ *
+ * This is the single source of truth shared by `cdkl invoke` AND the
+ * front-door Lambda boot path (`start-cloudfront`'s Function URL origin,
+ * `start-alb`'s Lambda targets — issue #380), so a CDN- / ALB-fronted Lambda
+ * reaches the same deployed resources as a direct `cdkl invoke`. The caller
+ * layers any command-specific concerns (a `--profile` credentials-file
+ * bind-mount, `--debug-port`) on top of `env`.
+ */
+export async function resolveLambdaContainerEnv(
+  lambda: ResolvedLambda,
+  options: LambdaContainerEnvOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  extraStateProviders?: ExtraStateProviders
+): Promise<LambdaContainerEnvResult> {
+  const logger = getLogger();
+  let stateAudit: StateEnvSubstitutionAudit | undefined;
+  let templateEnv = getTemplateEnv(lambda.resource);
+  let stateForRoleHint: StackState | undefined;
+  // Pick the right LocalStateProvider for the supplied flags. Returns
+  // `undefined` when no state-source flag is set.
+  const stateProvider = createLocalStateProvider(
+    options,
+    lambda.stack.stackName,
+    await resolveCfnFallbackRegion(options, lambda.stack.region),
+    extraStateProviders
+  );
+  if (stateProvider) {
+    try {
+      const loaded = await stateProvider.load(lambda.stack.stackName, lambda.stack.region);
+      if (loaded) {
+        stateForRoleHint = {
+          version: 1,
+          stackName: lambda.stack.stackName,
+          resources: loaded.resources,
+          outputs: loaded.outputs,
+          lastModified: 0,
+        };
+        const subContext: SubstitutionContext = {
+          resources: loaded.resources,
+          consumerRegion: loaded.region,
+        };
+        if (envHasIntrinsicValue(templateEnv)) {
+          const pseudo = await resolvePseudoParametersForInvoke(lambda.stack.region, options);
+          if (pseudo) subContext.pseudoParameters = pseudo;
+        }
+        if (envHasIntrinsicValue(templateEnv) && stateProvider.resolveTemplateSsmParameters) {
+          const ssmParams = await stateProvider.resolveTemplateSsmParameters(lambda.stack.template);
+          if (Object.keys(ssmParams.values).length > 0) subContext.parameters = ssmParams.values;
+          if (ssmParams.secureStringLogicalIds.length > 0) {
+            subContext.sensitiveParameters = new Set(ssmParams.secureStringLogicalIds);
+          }
+        }
+        if (envHasCrossStackIntrinsic(templateEnv)) {
+          const resolver = await stateProvider.buildCrossStackResolver(loaded.region);
+          if (resolver) subContext.crossStackResolver = resolver;
+        }
+        const { env, audit } = await substituteEnvVarsFromStateAsync(templateEnv, subContext);
+        templateEnv = env;
+        const label = stateProvider.label;
+        for (const key of audit.resolvedKeys) {
+          logger.debug(`${label}: substituted env var ${key}`);
+        }
+        let unresolved = audit.unresolved;
+        const resolvedKeys = [...audit.resolvedKeys];
+        if (unresolved.length > 0 && stateProvider.resolveDeployedFunctionEnv) {
+          const physicalId = loaded.resources[lambda.logicalId]?.physicalId;
+          if (physicalId) {
+            const deployedEnv = await stateProvider.resolveDeployedFunctionEnv(physicalId);
+            const fb = applyDeployedEnvFallback(templateEnv, unresolved, deployedEnv);
+            templateEnv = fb.env;
+            unresolved = fb.stillUnresolved;
+            for (const key of fb.filled) {
+              resolvedKeys.push(key);
+              logger.debug(`${label}: filled env var ${key} from deployed function config`);
+            }
+          }
+        }
+        stateAudit = { resolvedKeys, unresolved, sensitiveKeys: audit.sensitiveKeys };
+        for (const { key, reason } of unresolved) {
+          logger.warn(
+            `${label}: could not substitute env var ${key} (${reason}). ` +
+              `Override it via --env-vars or it will be dropped.`
+          );
+        }
+      }
+    } catch (err) {
+      stateProvider.dispose();
+      throw err;
+    }
+  }
+
+  const overrides = readEnvOverridesFile(options.envVars);
+  const lambdaCdkPath = readCdkPathOrUndefined(lambda.resource);
+  const envResult = resolveEnvVars(lambda.logicalId, lambdaCdkPath, templateEnv, overrides);
+  for (const key of envResult.unresolved) {
+    if (stateAudit && stateAudit.unresolved.some((u) => u.key === key)) continue;
+    const overrideKeyExample = lambdaCdkPath?.replace(/\/Resource$/, '') ?? lambda.logicalId;
+    logger.warn(
+      `Environment variable ${key} contains a CloudFormation intrinsic and was dropped. ` +
+        `Override it with --env-vars (e.g. {"${overrideKeyExample}":{"${key}":"<literal>"}}), or pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to recover deployed values.`
+    );
+  }
+
+  let resolvedAssumeRoleArn: string | undefined;
+  try {
+    resolvedAssumeRoleArn = await resolveAssumeRoleArnForLambda(
+      options.assumeRole,
+      stateForRoleHint,
+      stateProvider,
+      lambda.logicalId
+    );
+  } finally {
+    stateProvider?.dispose();
+  }
+
+  const dockerEnv: Record<string, string> = {
+    AWS_LAMBDA_FUNCTION_NAME: lambda.logicalId,
+    AWS_LAMBDA_FUNCTION_MEMORY_SIZE: String(lambda.memoryMb),
+    AWS_LAMBDA_FUNCTION_TIMEOUT: String(lambda.timeoutSec),
+    AWS_LAMBDA_FUNCTION_VERSION: '$LATEST',
+    AWS_LAMBDA_LOG_GROUP_NAME: `/aws/lambda/${lambda.logicalId}`,
+    AWS_LAMBDA_LOG_STREAM_NAME: 'local',
+    ...envResult.resolved,
+  };
+  let assumeSucceeded = false;
+  if (resolvedAssumeRoleArn) {
+    const stsRegion =
+      options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
+    try {
+      const creds = await assumeLambdaExecutionRole(
+        resolvedAssumeRoleArn,
+        stsRegion,
+        options.profile
+      );
+      dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
+      dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
+      dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;
+      if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
+      assumeSucceeded = true;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
+          "Falling back to the developer's shell credentials."
+      );
+    }
+  }
+  if (!assumeSucceeded) {
+    forwardAwsEnv(dockerEnv);
+    applyProfileCredentialsOverlay(dockerEnv, profileCredentials, false);
+  }
+  if (!dockerEnv['AWS_REGION'] && !dockerEnv['AWS_DEFAULT_REGION']) {
+    const fallbackRegion = resolveContainerFallbackRegion({
+      stackRegionOverride: options.region,
+      synthRegion: lambda.stack.region,
+      profileRegion: profileCredentials?.region,
+    });
+    if (fallbackRegion) dockerEnv['AWS_REGION'] = fallbackRegion;
+  }
+
+  return {
+    env: dockerEnv,
+    sensitiveEnvKeys: stateAudit?.sensitiveKeys ?? [],
+    ...(stateForRoleHint !== undefined && { stateForRoleHint }),
+    assumeRoleApplied: assumeSucceeded,
+  };
 }
 
 function materializeInlineCode(handler: string, source: string, fileExtension: string): string {

@@ -17,6 +17,12 @@ import {
   createFrontDoorLambdaRunner,
   type FrontDoorLambdaRunner,
 } from '../../local/front-door-lambda-runner.js';
+import {
+  resolveLambdaContainerEnv,
+  type LambdaContainerEnvOptions,
+  type ResolvedProfileCredentials,
+} from './local-invoke.js';
+import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import {
@@ -76,6 +82,20 @@ interface LocalStartCloudFrontOptions {
    * false, skip `docker pull` for a Lambda Function URL origin's base image.
    */
   pull?: boolean;
+  /**
+   * `--from-cfn-stack [name]` — bind a Lambda Function URL origin's backing
+   * Lambda to a deployed CloudFormation stack so its intrinsic env vars
+   * resolve to deployed physical IDs (issue #380). Off for a pure-S3
+   * distribution (no AWS call).
+   */
+  fromCfnStack?: string | boolean;
+  /** `--stack-region <region>` — CFn client region for `--from-cfn-stack`. */
+  stackRegion?: string;
+  /**
+   * `--assume-role [arn]` — assume the Function URL origin Lambda's deployed
+   * execution role and inject the STS creds into its container.
+   */
+  assumeRole?: string | boolean;
 }
 
 /** Factory options for {@link createLocalStartCloudFrontCommand}. */
@@ -192,7 +212,18 @@ function notFound(
 export async function bootLambdaUrlOrigins(
   distribution: ResolvedDistribution,
   stacks: StackInfo[],
-  opts: { containerHost: string; skipPull: boolean; region?: string }
+  opts: {
+    containerHost: string;
+    skipPull: boolean;
+    /**
+     * State-source + assume-role + profile options threaded into the shared
+     * {@link resolveLambdaContainerEnv} so a Function URL origin Lambda gets
+     * its declared env vars + `--from-cfn-stack` deployed values + an
+     * `--assume-role` execution role, exactly like `cdkl invoke` (issue #380).
+     */
+    envOptions: LambdaContainerEnvOptions;
+    profileCredentials?: ResolvedProfileCredentials;
+  }
 ): Promise<{ invokers: LambdaUrlInvokerMap; runners: FrontDoorLambdaRunner[] }> {
   const logger = getLogger();
   const invokers: LambdaUrlInvokerMap = new Map();
@@ -206,10 +237,22 @@ export async function bootLambdaUrlOrigins(
     let runner: FrontDoorLambdaRunner;
     try {
       const lambda = resolveLambdaTarget(functionLogicalId, stacks);
+      // Resolve the container env (declared env vars + --from-cfn-stack state
+      // substitution + --assume-role / shell creds) the same way `cdkl invoke`
+      // does, so the Function URL Lambda reaches its deployed resources.
+      const containerEnv = await resolveLambdaContainerEnv(
+        lambda,
+        opts.envOptions,
+        opts.profileCredentials
+      );
       runner = createFrontDoorLambdaRunner(lambda, {
         containerHost: opts.containerHost,
         skipPull: opts.skipPull,
-        ...(opts.region !== undefined && { region: opts.region }),
+        ...(opts.envOptions.region !== undefined && { region: opts.envOptions.region }),
+        containerEnv: containerEnv.env,
+        ...(containerEnv.sensitiveEnvKeys.length > 0 && {
+          sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
+        }),
       });
       logger.info(
         `Booting Lambda Function URL origin container for ${functionLogicalId} (the backing Lambda runs locally via RIE)...`
@@ -325,6 +368,23 @@ async function localStartCloudFrontCommand(
   const initial = await synthAndResolve();
   warnUnsupported(initial.distribution);
 
+  // `--profile`-resolved static credentials, forwarded into a Function URL
+  // origin Lambda's container (the front-door Lambda path has no profile
+  // credentials-file bind-mount; the env overlay carries the creds).
+  const profileCredentials = options.profile
+    ? await resolveProfileCredentials(options.profile)
+    : undefined;
+  // State-source + assume-role options threaded into the shared container-env
+  // resolver so a Function URL origin Lambda gets its env vars + deployed
+  // values + execution role, exactly like `cdkl invoke` (issue #380).
+  const envOptions: LambdaContainerEnvOptions = {
+    ...(options.fromCfnStack !== undefined && { fromCfnStack: options.fromCfnStack }),
+    ...(options.assumeRole !== undefined && { assumeRole: options.assumeRole }),
+    ...(options.region !== undefined && { region: options.region }),
+    ...(options.profile !== undefined && { profile: options.profile }),
+    ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
+  };
+
   // Boot a warm RIE container per Lambda Function URL origin (issue #376).
   // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
@@ -333,7 +393,8 @@ async function localStartCloudFrontCommand(
     {
       containerHost: options.host,
       skipPull: options.pull === false,
-      ...(options.region !== undefined && { region: options.region }),
+      envOptions,
+      ...(profileCredentials !== undefined && { profileCredentials }),
     }
   );
 
@@ -503,6 +564,30 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
       new Option(
         '--no-pull',
         "Skip 'docker pull' for a Lambda Function URL origin's base image (use the locally cached image)."
+      )
+    )
+    .addOption(
+      new Option(
+        '--from-cfn-stack [cfn-stack-name]',
+        "Bind a Lambda Function URL origin's backing Lambda to a deployed CloudFormation stack so its " +
+          'env vars resolve to the deployed physical IDs / exports (ListStackResources). Use for CDK apps ' +
+          'deployed via the upstream CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass a value ' +
+          'when the CFn stack name differs. No effect on a pure-S3 distribution.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--stack-region <region>',
+        'Region of the state record to read. Used with --from-cfn-stack as the CFn client region.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--assume-role [arn]',
+        "Assume a Lambda Function URL origin's deployed execution role and forward STS-issued temp " +
+          'credentials into its container so the handler runs with the deployed permissions. Three forms: ' +
+          '`--assume-role <arn>` (explicit ARN); `--assume-role` (bare, auto-resolves from state — requires ' +
+          '--from-cfn-stack); `--no-assume-role` (opt out). Off by default (the dev shell credentials are forwarded).'
       )
     )
     .addOption(

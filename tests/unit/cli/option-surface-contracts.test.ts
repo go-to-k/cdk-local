@@ -287,11 +287,15 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
   it('addStartCloudFrontSpecificOptions registers exactly the known start-cloudfront-only flags', () => {
     const flags = longFlagsOf(addStartCloudFrontSpecificOptions(new Command()));
     expect(flags).toEqual([
+      // Issue #380 — full env/state/role parity for a Function URL origin Lambda.
+      '--assume-role',
+      '--from-cfn-stack',
       '--host',
       // Issue #376 — skip the docker pull for a Lambda Function URL origin image.
       '--no-pull',
       '--origin',
       '--port',
+      '--stack-region',
       '--tls',
       '--tls-cert',
       '--tls-key',

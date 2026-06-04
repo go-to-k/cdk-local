@@ -211,9 +211,17 @@ AWS managed services.
   becomes the origin response (the viewer-response function still runs over
   it). So start-cloudfront is pure-local (no Docker) for a pure-S3
   distribution, and boots a Lambda container ONLY when the distribution has
-  a Function URL origin; the Lambda runs with the dev shell's forwarded AWS
-  creds (no `--from-cfn-stack` / `--assume-role`; AWS_IAM auth on the
-  Function URL is not enforced; response streaming is buffered). `--watch`
+  a Function URL origin. That Lambda gets the SAME container env as a direct
+  `cdkl invoke` (issue #380): its declared `Environment.Variables` are
+  injected, `--from-cfn-stack [name]` substitutes intrinsic env values
+  against a deployed stack (SSM / cross-stack / deployed-env fallback), and
+  `--assume-role [arn]` (bare auto-resolves the execution role from state)
+  injects STS creds into the container — via the shared
+  `resolveLambdaContainerEnv` the front-door Lambda boot path now calls.
+  `--profile` / `--region` shape the creds / region; without a state flag
+  the dev shell's creds are forwarded and intrinsic env values are dropped
+  (warn-per-key), matching `cdkl invoke`. AWS_IAM auth on the Function URL is
+  still not enforced; response streaming is buffered. `--watch`
   re-synths + atomically swaps the in-memory routing model under the live
   socket (the viewer functions + S3 origins reload; a Function URL origin's
   warm container is boot-time only, NOT rebuilt on reload — restart to pick
@@ -229,8 +237,10 @@ AWS managed services.
   is omitted in a TTY). Also runnable from `cdkl studio` as the
   `cloudfront` serve kind (issue #367) — a [Start]/[Stop] control with a
   capture proxy, like `api` / `alb`; the session-global
-  `--from-cfn-stack` / `--assume-role` bindings are NOT forwarded to it
-  (start-cloudfront declares neither — it makes no AWS call)
+  `--from-cfn-stack` / `--assume-role` bindings are NOT forwarded to the
+  studio cloudfront serve yet (studio still sets `omitStateBindings` for the
+  `cloudfront` kind — a #380 follow-up, since start-cloudfront now DOES
+  declare those flags for its Function URL origin Lambda)
 
 ### Calls real AWS (managed services)
 
@@ -269,7 +279,13 @@ compute-locally category for Lambda + API Gateway).
   in-process. It is pure-local (no Docker) for an S3-origin
   distribution; a Lambda Function URL origin (issue #376) boots one warm
   RIE container per backing function via `createFrontDoorLambdaRunner`
-  (stopped on shutdown, boot-time only — not rebuilt on reload). `--watch`
+  (stopped on shutdown, boot-time only — not rebuilt on reload), with the
+  container env resolved by the shared `resolveLambdaContainerEnv`
+  (extracted from `local-invoke.ts` so `cdkl invoke` and the front-door
+  Lambda path agree — issue #380): `--from-cfn-stack [name]` /
+  `--assume-role [arn]` / `--stack-region` give the Function URL Lambda the
+  same env-var + deployed-state + execution-role injection as a direct
+  `cdkl invoke`. `--watch`
   re-synths + swaps the routing model under the live socket; `--tls`
   reuses `front-door-tls`; `--origin <id>=<dir>` is the
   BucketDeployment-source escape hatch; `--no-pull` skips the Lambda
@@ -355,7 +371,10 @@ compute-locally category for Lambda + API Gateway).
   priority ordered), alb-lambda-event (HTTP <-> ALB
   `requestContext.elb` Lambda event/response translation), front-door-pool
   (round-robin pool of live replica endpoints), front-door-lambda-runner
-  (one warm RIE container per Lambda target), front-door-tls (resolves
+  (one warm RIE container per Lambda target; accepts an optional
+  pre-resolved `containerEnv` overlay + `sensitiveEnvKeys` so the caller can
+  inject a fully-resolved env via `resolveLambdaContainerEnv` — issue #380 —
+  instead of the default shell-creds-only forward), front-door-tls (resolves
   TLS materials for HTTPS listeners: `--tls-cert` / `--tls-key` pair or
   an auto-generated self-signed cert cached under XDG cache via openssl),
   front-door-auth (builds the per-action `AuthCheck` callback for
@@ -549,8 +568,10 @@ compute-locally category for Lambda + API Gateway).
   forward to their spawned child commands, so the two spawn sites cannot
   drift. The `omitStateBindings` option (issue #367) suppresses
   `--from-cfn-stack` / `--assume-role` for a child that does not declare
-  them — the serve-manager sets it for the `cloudfront` kind, since
-  `start-cloudfront` makes no AWS call and would reject the flags),
+  them — the serve-manager still sets it for the `cloudfront` kind. As of
+  issue #380 start-cloudfront DOES declare those flags (for a Function URL
+  origin Lambda), so forwarding the session bindings to the cloudfront serve
+  is a #380 follow-up; today they are still omitted),
   studio-option-specs (issue #301 slice 2 — the per-target run-option
   descriptor table (`OPTION_SPECS`) that is the single source the UI
   renders controls from (serialized into the page) AND the server builds
