@@ -33,6 +33,14 @@ export interface StudioServeRequest {
    * single booted service is the override target. Ignored when blank.
    */
   imageOverride?: string;
+  /**
+   * Per-backing-service Dockerfile paths for an `alb` serve (issue #382), keyed
+   * by the backing service's `Stack:LogicalId` (the `--image-override` key
+   * `start-alb` matches against its own service-boot target). One
+   * `--image-override <service>=<dockerfile>` is appended per entry so the
+   * ALB's pinned backing services rebuild from local source. Ignored when empty.
+   */
+  imageOverrides?: Record<string, string>;
 }
 
 /** A request to stop a running served target. */
@@ -342,6 +350,15 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...(req.imageOverride && req.imageOverride.trim() !== ''
         ? ['--image-override', req.targetId + '=' + req.imageOverride.trim()]
         : []),
+      // Per-backing-service image-override for an `alb` serve (issue #382): an
+      // ALB boots multiple backing ECS services, so the alb composer's per-
+      // service pickers thread one explicit `--image-override <service>=<df>`
+      // each. The service key is the backing service's `Stack:LogicalId` —
+      // exactly start-alb's own service-boot target — so the override engine
+      // matches it without an orphan-flag failure.
+      ...Object.entries(req.imageOverrides ?? {}).flatMap(([svc, df]) =>
+        df && df.trim() !== '' ? ['--image-override', svc + '=' + df.trim()] : []
+      ),
       // `cdkl studio --watch` (issue #301): every serve kind (start-api /
       // start-alb / start-service) implements `--watch` rolling reload, so
       // forwarding the bare flag makes a UI-started serve hot-reload on source

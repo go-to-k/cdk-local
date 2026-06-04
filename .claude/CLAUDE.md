@@ -452,6 +452,9 @@ compute-locally category for Lambda + API Gateway).
   UI at `/`, the synthesized target list (+ the boot-discovered
   Dockerfiles + a `pinned` flag per ecs service — set by
   `annotatePinnedEcsTargets` — for the image-override picker, issue #301;
+  plus `backingPinnedServices` per alb entry — set by
+  `annotateAlbPinnedBackingServices`, issue #382 — for the ALB's
+  per-backing-service image-override picker;
   CDK custom-resource / provider-framework Lambdas are excluded by
   default via `filterStudioCustomResources`, issue #323 — pass
   `cdkl studio --include-custom-resources` to surface them)
@@ -524,7 +527,17 @@ compute-locally category for Lambda + API Gateway).
   studio's child has no TTY, so the bare picker form would be skipped) onto
   the serve body so `start-service` rebuilds the pinned image from local
   source; a local-asset service (which already hot-reloads under `--watch`)
-  gets no picker (issue #301); the
+  gets no picker (issue #301). An `alb` serve gets the SAME picker for its
+  pinned BACKING services (issue #382): `start-alb` boots the ALB's backing
+  ECS services, so studio resolves each ALB (`resolveAlbFrontDoor`) to its
+  backing services at boot, intersects them with the pinned `ecs` set
+  (`annotateAlbPinnedBackingServices` + `makeAlbBackingPinnedResolver`), and
+  the alb composer offers ONE Dockerfile picker per pinned backing service
+  (`buildAlbImageOverridePicker`) — threading a per-service
+  `imageOverrides` map (`{ Stack:LogicalId -> dockerfile }`, one
+  `--image-override <service>=<dockerfile>` each, the service key being
+  start-alb's own service-boot target) so a pinned service rebuilds from
+  local source while running behind the ALB; the
   timeline carries both Lambda invocations and captured serve requests;
   clicking a past Lambda / AgentCore row reloads it into the composer
   pre-filled + wired to re-invoke (issue #284, the [Re-invoke] button ->
