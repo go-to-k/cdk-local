@@ -238,8 +238,10 @@ AWS managed services.
   BucketDeployment source -> real-S3 under `--from-cfn-stack` ->
   `--origin <id>=<dir>` override), logged per origin, gated only by the
   existing `--from-cfn-stack` flag; an `AccessDenied` (OAC-locked bucket
-  the dev creds cannot read) warns with the `--origin` escape hatch. A
-  read-through cache of fetched objects is a possible follow-up; reads use
+  the dev creds cannot read) warns with the `--origin` escape hatch.
+  `--cache-origin` opts into an in-memory read-through cache of fetched
+  objects for the session (cleared on each `--watch` reload; off by default
+  so every request re-reads / is always current). Reads use
   the `--profile` / default credential chain. Path patterns route across
   `DefaultCacheBehavior` +
   `CacheBehaviors[]` (the existing ALB `*`/`?` glob matcher). A
@@ -375,7 +377,9 @@ compute-locally category for Lambda + API Gateway).
   read-through origin served from real S3 on demand (issue #405 —
   `resolveDeployedS3Origins` reads the bucket's physical name from state +
   builds an `S3OriginReader` per origin, boot-time only, re-annotated on
-  each `--watch` reload via `annotateDeployedS3Origins`); `--origin
+  each `--watch` reload via `annotateDeployedS3Origins`; `--cache-origin`
+  opts the reader into an in-memory read-through cache, cleared on reload);
+  `--origin
   <id>=<dir>` is the local-directory escape hatch when neither resolves;
   `--no-pull` skips the Lambda
   origin image pull; `--kvs-file <kvsLogicalId>=<file>` backs a CloudFront

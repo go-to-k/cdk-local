@@ -19,7 +19,8 @@
 #      ALONE (the slow CloudFront distribution is local-synth-only)
 #   3. upload content OUT OF BAND (aws s3 cp), i.e. NO BucketDeployment
 #   4. --from-cfn-stack: GET / -> the deployed bucket's index.html (read from
-#      real S3); GET a nested asset; GET a missing route -> the SPA fallback
+#      real S3); GET a nested asset; GET a missing route -> the SPA fallback;
+#      --cache-origin -> a cached object survives an out-of-band S3 delete
 #   5. baseline (no --from-cfn-stack): the S3 origin is unresolved -> 502
 #   6. cdk destroy --force (autoDeleteObjects empties the bucket) + port sweep
 #
@@ -163,6 +164,36 @@ echo "[verify]   status=$(cat "${BODY_FILE}.code") body=$(cat "${BODY_FILE}")"
 grep -qi "deployed s3 root" "${BODY_FILE}" \
   || fail "missing route did not fall back to /index.html from real S3"
 
+echo "[verify] step 4d: --cache-origin — a cached object survives an out-of-band S3 delete"
+# Boot WITH --cache-origin and keep the server up across two requests + an S3
+# delete in between. A read caches index.html; deleting it from S3 then GETting
+# again must STILL serve it (proving the read-through cache, not a re-read).
+: > "${OUT_FILE}"
+if lsof -ti "tcp:${PORT_CFN}" >/dev/null 2>&1; then lsof -ti "tcp:${PORT_CFN}" | xargs -r kill -9 || true; fi
+${CLI} start-cloudfront "${TARGET}" --port "${PORT_CFN}" --region "${REGION}" \
+  -c withDistribution=true --from-cfn-stack --cache-origin > "${OUT_FILE}" 2>&1 &
+CDKL_PID=$!
+cache_booted=0
+for _ in $(seq 1 240); do
+  if grep -q "CloudFront distribution serving on" "${OUT_FILE}"; then cache_booted=1; break; fi
+  kill -0 "${CDKL_PID}" 2>/dev/null || fail "cache server exited before it was ready"
+  sleep 0.5
+done
+[ "${cache_booted}" -eq 1 ] || fail "cache server did not print its ready banner in time"
+warm="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT_CFN}/")"
+[ "${warm}" = "200" ] || fail "--cache-origin: warming GET / did not return 200"
+echo "[verify]   warmed cache (GET / = 200); deleting index.html from S3 out of band"
+aws s3 rm "s3://${BUCKET}/index.html" --region "${REGION}" >/dev/null
+cached="$(curl -s -o "${BODY_FILE}" -w '%{http_code}' "http://127.0.0.1:${PORT_CFN}/")"
+stop_server
+echo "[verify]   after-delete status=${cached} body=$(cat "${BODY_FILE}")"
+[ "${cached}" = "200" ] || fail "--cache-origin did not serve the deleted object from cache (got ${cached})"
+grep -qi "deployed s3 root" "${BODY_FILE}" \
+  || fail "--cache-origin did not serve the original cached index.html after the S3 delete"
+# Re-upload so step 5 (and any rerun) starts clean.
+echo '<h1>deployed s3 root</h1>' > "${BODY_FILE}"
+aws s3 cp "${BODY_FILE}" "s3://${BUCKET}/index.html" --content-type text/html --region "${REGION}" >/dev/null
+
 echo "[verify] step 5: baseline (no --from-cfn-stack) — the S3 origin is unresolved -> 502"
 boot_and_get "${PORT_BASE}" "/" "${BODY_FILE}"
 echo "[verify]   status=$(cat "${BODY_FILE}.code")"
@@ -171,4 +202,4 @@ echo "[verify]   status=$(cat "${BODY_FILE}.code")"
 grep -qi "no resolvable local source" "${OUT_FILE}" \
   || fail "baseline did not warn that the S3 origin had no resolvable local source"
 
-echo "[verify] PASS: start-cloudfront --from-cfn-stack resolved the deployed bucket and served its out-of-band content from real S3 on demand (root, nested asset, SPA fallback); baseline left the origin unresolved (502)."
+echo "[verify] PASS: start-cloudfront --from-cfn-stack resolved the deployed bucket and served its out-of-band content from real S3 on demand (root, nested asset, SPA fallback); --cache-origin served a deleted object from the read-through cache; baseline left the origin unresolved (502)."

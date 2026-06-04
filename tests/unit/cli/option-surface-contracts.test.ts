@@ -297,6 +297,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
     expect(flags).toEqual([
       // Issue #380 — full env/state/role parity for a Function URL origin Lambda.
       '--assume-role',
+      // Issue #405 follow-up — in-memory read-through cache for a deployed-S3 origin.
+      '--cache-origin',
       '--from-cfn-stack',
       '--host',
       // Issue #399 — back a CloudFront Function's KeyValueStore reads with a local JSON map.

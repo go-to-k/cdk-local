@@ -86,6 +86,12 @@ interface LocalStartCloudFrontOptions {
   origin?: string[];
   /** Repeatable `--kvs-file <kvsLogicalId>=<file.json>` local KeyValueStore map. */
   kvsFile?: string[];
+  /**
+   * `--cache-origin` — keep a deployed-S3 origin's fetched objects in memory
+   * for the session (a read-through cache) instead of re-`GetObject`-ing on
+   * every request (issue #405 follow-up). Cleared on each `--watch` reload.
+   */
+  cacheOrigin?: boolean;
   /** Opt-in to real TLS termination. */
   tls?: boolean;
   tlsCert?: string;
@@ -503,6 +509,7 @@ export async function resolveDeployedS3Origins(
       createS3OriginReader(bucketName, {
         ...(region !== undefined && { region }),
         ...(profileCredentials !== undefined && { credentials: profileCredentials }),
+        ...(options.cacheOrigin === true && { cache: true }),
       })
     );
     buckets.set(origin.originId, bucketName);
@@ -730,6 +737,8 @@ async function localStartCloudFrontCommand(
             // re-emits the origin as s3-unresolved). Before warnUnsupported so a
             // promoted origin does not re-emit the unresolved-source WARN.
             annotateDeployedS3Origins(reloaded.distribution, deployedS3.buckets);
+            // Drop any read-through cache so the reload reflects fresh S3 content.
+            for (const reader of deployedS3.readers.values()) reader.clearCache();
             warnUnsupported(reloaded.distribution);
             await attachKvsModules(
               reloaded.distribution,
@@ -782,6 +791,8 @@ async function localStartCloudFrontCommand(
         })
       )
     );
+    // Release any deployed-S3 origin reader's S3 client socket pool.
+    await Promise.all([...deployedS3.readers.values()].map((reader) => reader.close()));
     process.exit(exitCode);
   };
   process.on('SIGINT', () => void shutdown('SIGINT', 130));
@@ -876,6 +887,15 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
           "function's env vars to the deployed physical IDs / exports. Use for CDK apps deployed via the upstream " +
           'CDK CLI (`cdk deploy`). Bare form uses the resolved stack name; pass a value when the CFn stack name differs.'
       )
+    )
+    .addOption(
+      new Option(
+        '--cache-origin',
+        'For a deployed-S3 origin (served from real S3 under --from-cfn-stack): keep fetched objects in memory ' +
+          'for the session instead of re-reading on every request. Faster repeat reads / fewer S3 GETs, but an ' +
+          'out-of-band S3 content change is not reflected until a --watch reload (which clears the cache) or a ' +
+          'restart. Off by default (every request re-reads, always current). Not CloudFront CDN caching.'
+      ).default(false)
     )
     .addOption(
       new Option(
