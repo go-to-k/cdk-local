@@ -5,17 +5,30 @@ import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 // Mock the two external boundaries `bootLambdaUrlOrigins` drives: the Lambda
 // resolver and the RIE runner factory. We assert the orchestration (dedup,
 // pure-S3 short-circuit, partial-boot rollback) without any Docker.
-const { resolveLambdaTargetMock, createRunnerMock, runners } = vi.hoisted(() => ({
-  resolveLambdaTargetMock: vi.fn(),
-  createRunnerMock: vi.fn(),
-  runners: [] as Array<{ logicalId: string; start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; invoke: ReturnType<typeof vi.fn> }>,
-}));
+const { resolveLambdaTargetMock, createRunnerMock, resolveContainerEnvMock, runners } = vi.hoisted(
+  () => ({
+    resolveLambdaTargetMock: vi.fn(),
+    createRunnerMock: vi.fn(),
+    resolveContainerEnvMock: vi.fn(),
+    runners: [] as Array<{
+      logicalId: string;
+      start: ReturnType<typeof vi.fn>;
+      stop: ReturnType<typeof vi.fn>;
+      invoke: ReturnType<typeof vi.fn>;
+    }>,
+  })
+);
 
 vi.mock('../../../src/local/lambda-resolver.js', () => ({
   resolveLambdaTarget: resolveLambdaTargetMock,
 }));
 vi.mock('../../../src/local/front-door-lambda-runner.js', () => ({
   createFrontDoorLambdaRunner: createRunnerMock,
+}));
+// bootLambdaUrlOrigins imports ONLY `resolveLambdaContainerEnv` (a value) from
+// local-invoke.js — the rest are erased types — so a minimal module mock is safe.
+vi.mock('../../../src/cli/commands/local-invoke.js', () => ({
+  resolveLambdaContainerEnv: resolveContainerEnvMock,
 }));
 
 const { bootLambdaUrlOrigins } = await import(
@@ -35,13 +48,21 @@ function distributionWith(origins: ResolvedOrigin[]): ResolvedDistribution {
 const stacks: StackInfo[] = [
   { stackName: 'Stack', displayName: 'Stack', artifactId: 'Stack', template: {}, dependencyNames: [] },
 ];
-const bootOpts = { containerHost: '127.0.0.1', skipPull: false };
+const bootOpts = { containerHost: '127.0.0.1', skipPull: false, envOptions: {} };
 
 beforeEach(() => {
   resolveLambdaTargetMock.mockReset();
   createRunnerMock.mockReset();
+  resolveContainerEnvMock.mockReset();
   runners.length = 0;
   resolveLambdaTargetMock.mockImplementation((id: string) => ({ logicalId: id }));
+  // The shared env resolver is exercised in its own tests; here it is a stub so
+  // the orchestration (dedup / rollback) is isolated from state/STS resolution.
+  resolveContainerEnvMock.mockResolvedValue({
+    env: {},
+    sensitiveEnvKeys: [],
+    assumeRoleApplied: false,
+  });
   createRunnerMock.mockImplementation((lambda: { logicalId: string }) => {
     const runner = {
       logicalId: lambda.logicalId,
@@ -62,6 +83,39 @@ describe('bootLambdaUrlOrigins', () => {
     expect(r).toHaveLength(0);
     expect(createRunnerMock).not.toHaveBeenCalled();
     expect(resolveLambdaTargetMock).not.toHaveBeenCalled();
+  });
+
+  it('resolves the container env per backing Lambda and threads it into the runner (issue #380)', async () => {
+    resolveContainerEnvMock.mockResolvedValue({
+      env: { TABLE_NAME: 'deployed-table', AWS_ACCESS_KEY_ID: 'AKIA' },
+      sensitiveEnvKeys: ['SECRET_VALUE'],
+      assumeRoleApplied: true,
+    });
+    const dist = distributionWith([
+      { kind: 'lambda-url', originId: 'a', functionLogicalId: 'Fn', functionUrlLogicalId: 'FnUrl' },
+    ]);
+    const envOptions = { fromCfnStack: 'MyStack', assumeRole: true as const, region: 'us-east-1' };
+    const profileCredentials = { accessKeyId: 'AK', secretAccessKey: 'SK' };
+    await bootLambdaUrlOrigins(dist, stacks, {
+      containerHost: '127.0.0.1',
+      skipPull: false,
+      envOptions,
+      profileCredentials,
+    });
+    // The shared resolver is called with the resolved Lambda + the threaded
+    // state/assume-role options + the profile credentials.
+    expect(resolveContainerEnvMock).toHaveBeenCalledWith(
+      { logicalId: 'Fn' },
+      envOptions,
+      profileCredentials
+    );
+    // The resolver's env + sensitive keys reach the runner factory.
+    const runnerOpts = createRunnerMock.mock.calls[0]![1];
+    expect(runnerOpts.containerEnv).toEqual({
+      TABLE_NAME: 'deployed-table',
+      AWS_ACCESS_KEY_ID: 'AKIA',
+    });
+    expect(runnerOpts.sensitiveEnvKeys).toEqual(new Set(['SECRET_VALUE']));
   });
 
   it('boots one runner per UNIQUE backing function (dedups shared functions)', async () => {

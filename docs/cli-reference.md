@@ -1476,11 +1476,15 @@ Two origin kinds are served:
 It does NOT emulate the managed CloudFront service: other custom (non-S3,
 non-Function-URL) origins, Lambda@Edge (`LambdaFunctionAssociations`), the
 KeyValueStore, and the 2.0 `cf.fetch` origin API are out of scope
-(warn-and-skip; a request routed to one returns 502). On a Function URL
-origin the Lambda runs with the dev shell's forwarded AWS credentials —
-`start-cloudfront` takes neither `--from-cfn-stack` nor `--assume-role`;
-`AWS_IAM` auth on the Function URL is not enforced locally and response
-streaming is invoked buffered.
+(warn-and-skip; a request routed to one returns 502). A Function URL origin
+Lambda gets the **same container environment as a direct `cdkl invoke`**:
+its declared `Environment.Variables` are injected, `--from-cfn-stack [name]`
+substitutes intrinsic env values against a deployed stack, and
+`--assume-role [arn]` injects the deployed execution role's STS credentials
+(see the options table). Without a state-source flag the dev shell's
+credentials are forwarded and intrinsic env values are dropped (warn-per-key),
+matching `cdkl invoke`. `AWS_IAM` auth on the Function URL is not enforced
+locally and response streaming is invoked buffered.
 
 ### Resolution model
 
@@ -1542,6 +1546,9 @@ On top of the [common flags](#common-flags):
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda Function URL origin's base image (use the locally cached image). No effect on a pure-S3 distribution. |
+| `--from-cfn-stack [name]` | off | Bind a Function URL origin's backing Lambda to a deployed CloudFormation stack so its intrinsic env vars resolve to the deployed physical IDs / exports (`ListStackResources`). Bare form uses the resolved stack name; pass a value when the CFn stack name differs. No effect on a pure-S3 distribution. Same semantics as `cdkl invoke --from-cfn-stack`. |
+| `--stack-region <region>` | unset | Region of the state record to read; used with `--from-cfn-stack` as the CFn client region. |
+| `--assume-role [arn]` | off | Assume a Function URL origin Lambda's deployed execution role and forward STS temp credentials into its container. `--assume-role <arn>` (explicit); `--assume-role` (bare, auto-resolves from state — requires `--from-cfn-stack`); `--no-assume-role` (opt out). Same semantics as `cdkl invoke --assume-role`. |
 | `--watch` | off | Hot reload: re-synth + re-resolve the distribution and atomically swap the in-memory routing model when the CDK app's source changes (honors `cdk.json` `watch.include` / `watch.exclude`; `cdk.out`, `node_modules`, `.git` always excluded). The listening socket is never recreated; a synth failure keeps the previous version serving (warn-and-continue). A Function URL origin's RIE container is NOT rebuilt on reload (boot-time only). |
 
 ```bash
