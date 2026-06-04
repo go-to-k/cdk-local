@@ -239,6 +239,12 @@ const STUDIO_CSS = `
   }
   .all-options input.raw-args:focus { outline: none; border-color: #4ec97a; }
   .opt-hint { color: #777; font-size: 11px; }
+  /* Image-override picker legibility (issue #396): the construct-path label is
+     a readable light color (long paths wrap cleanly), and the caveat hint is an
+     attention amber so the "local edits do not take effect" note is actually
+     read — kept small as it is secondary. */
+  .io-label { color: #d7dde5; font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+  .io-hint { color: #e3b34a; font-size: 11px; }
   .flag-catalog { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
   .flag-row { display: flex; gap: 8px; align-items: baseline; font-size: 11px; }
   .flag-name { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
@@ -490,8 +496,12 @@ const STUDIO_SCRIPT = `
   // "(keep pinned image)" default). Shared by the ecs single picker and the
   // alb per-backing-service pickers.
   function buildImageOverrideRow(labelText) {
-    const row = el('div', 'opt-row');
-    row.appendChild(el('span', 'opt-label', labelText));
+    // Vertical layout (issue #396): the construct-path label on its own line,
+    // the Dockerfile select directly below it (left-aligned) — a long service
+    // path no longer pushes the select to the far right. The label uses the
+    // readable io-label color (light) instead of the faint grey opt-label.
+    const row = el('div', 'opt-row opt-col');
+    row.appendChild(el('span', 'opt-label io-label', labelText));
     const sel = el('select', 'image-override-select');
     const none = el('option', null, '(keep pinned image)');
     none.value = '';
@@ -518,7 +528,7 @@ const STUDIO_SCRIPT = `
     const hint = studioDockerfiles.length
       ? 'This image is pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild it locally.'
       : 'This image is pinned to a deployed registry, but no Dockerfile was found under the app directory.';
-    sec.appendChild(el('div', 'opt-hint', hint));
+    sec.appendChild(el('div', 'opt-hint io-hint', hint));
     return {
       node: sec,
       collect: function () {
@@ -543,7 +553,7 @@ const STUDIO_SCRIPT = `
     const hint = studioDockerfiles.length
       ? 'These services behind the ALB are pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild one from local source.'
       : 'These services behind the ALB are pinned to a deployed registry, but no Dockerfile was found under the app directory.';
-    sec.appendChild(el('div', 'opt-hint', hint));
+    sec.appendChild(el('div', 'opt-hint io-hint', hint));
     return {
       node: sec,
       collect: function () {

@@ -54,6 +54,29 @@ describe('alb composer image-override picker (issue #384)', () => {
     }
   });
 
+  it('lays each picker row out vertically with a legible label + amber hint (issue #396)', () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      albComposer(h, [{ id: 'S:SvcA', label: 'My-App/Backend/Api/Fargate/Service/Resource/Service' }]);
+      // The select sits BELOW its label (vertical opt-col row), not pushed to
+      // the far right of a long construct path.
+      const sel = h.document.querySelector('.image-override-select');
+      const row = sel.closest('.opt-row');
+      expect(row.classList.contains('opt-col')).toBe(true);
+      // The construct-path label uses the readable io-label class (not the faint
+      // grey opt-label alone).
+      const label = row.querySelector('.io-label');
+      expect(label).toBeTruthy();
+      expect(label.textContent).toBe('My-App/Backend/Api/Fargate/Service/Resource/Service');
+      // The caveat hint uses the attention io-hint class.
+      const hint = h.document.querySelector('.io-hint');
+      expect(hint).toBeTruthy();
+      expect(hint.textContent).toContain('local edits do not take effect');
+    } finally {
+      h.close();
+    }
+  });
+
   it('threads only the chosen services into the POST body imageOverrides map', () => {
     const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
     try {
