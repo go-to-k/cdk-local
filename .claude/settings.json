@@ -108,6 +108,13 @@
             "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
             "timeout": 15,
             "statusMessage": "Verifying cdkd-parity markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/create-integ-gate.sh",
+            "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
+            "timeout": 15,
+            "statusMessage": "Verifying create-integ markgate marker..."
           }
         ]
       }

@@ -17,5 +17,6 @@
     "aws-cdk-lib": "^2.169.0",
     "constructs": "^10.0.0"
   },
-  "type": "module"
+  "type": "module",
+  "packageManager": "pnpm@11.5.1"
 }
