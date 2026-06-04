@@ -269,6 +269,7 @@ const STUDIO_SCRIPT = `
   const targetEls = new Map();     // targetId -> left-pane element
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
+  const stoppingIds = new Set();   // serve targetIds with a Stop in flight — button shows "Stopping..." until the stopped/error event (issue #394)
   // serve targetId -> the launch config it was last Started with (issue #356):
   // { options, rawArgs, imageOverride }. Kept separate from serveState so the
   // SSE-driven serveState rewrites (status / endpoints) never clobber it, and
@@ -701,18 +702,30 @@ const STUDIO_SCRIPT = `
     // A task-def run (ecs-task) is labeled Run (it runs the task once), vs a
     // service/api/alb which is Started (issue #366).
     const startLabel = meta.kind === 'ecs-task' ? 'Run' : 'Start';
-    const btn = running || starting
-      ? el('button', 'stop-btn', 'Stop')
-      : el('button', 'invoke-btn', startLabel);
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      if (running || starting) stopServe(id); else startServe(id);
-    };
+    // Transient in-progress states (issue #394): a Stop in flight shows
+    // "Stopping..." (disabled) until the stopped/error event clears it; a
+    // serve still booting shows "Starting..." (disabled). Both are inert so a
+    // double-click cannot re-fire stop / cancel mid-boot.
+    const stopping = stoppingIds.has(id);
+    let btn;
+    if (stopping) {
+      btn = el('button', 'stop-btn', 'Stopping…');
+      btn.disabled = true;
+    } else if (starting) {
+      btn = el('button', 'stop-btn', 'Starting…');
+      btn.disabled = true;
+    } else if (running) {
+      btn = el('button', 'stop-btn', 'Stop');
+      btn.onclick = (e) => { e.stopPropagation(); stopServe(id); };
+    } else {
+      btn = el('button', 'invoke-btn', startLabel);
+      btn.onclick = (e) => { e.stopPropagation(); startServe(id); };
+    }
     meta.btnSlot.appendChild(btn);
-    // Keep a running / starting serve's row VISIBLE even though groups are
-    // collapsed by default — otherwise its dot + curl-able studio-proxy port
-    // would be hidden inside a collapsed group.
-    if (running || starting) {
+    // Keep a running / starting / stopping serve's row VISIBLE even though
+    // groups are collapsed by default — otherwise its dot + curl-able
+    // studio-proxy port would be hidden inside a collapsed group.
+    if (running || starting || stopping) {
       const body = meta.dot.closest('.group-body');
       const grp = meta.dot.closest('.target-group');
       if (body) body.classList.remove('collapsed');
@@ -813,6 +826,9 @@ const STUDIO_SCRIPT = `
       imageOverride: imageOverride,
       imageOverrides: imageOverrides,
     });
+    // Defensive: a restart clears any stale "Stopping..." transient (issue
+    // #394) so the new run shows "Starting...", not a lingering stop state.
+    stoppingIds.delete(id);
     serveState.set(id, { status: 'starting', endpoints: [] });
     updateServeRow(id);
     try {
@@ -842,15 +858,27 @@ const STUDIO_SCRIPT = `
   }
 
   async function stopServe(id) {
+    // Already stopping — ignore a double-click (the button is disabled, but a
+    // programmatic call could still arrive).
+    if (stoppingIds.has(id)) return;
+    // Show the transient "Stopping..." affordance until the serve actually
+    // stops (the SSE 'stopped' / 'error' event clears it via onServeEvent),
+    // issue #394.
+    stoppingIds.add(id);
+    updateServeRow(id);
     try {
       await fetch('/api/stop', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ targetId: id }),
       });
-      // The serve SSE 'stopped' event clears the running state.
+      // The serve SSE 'stopped' event clears the running state + the transient.
     } catch (err) {
-      /* the stop SSE event (or a later refresh) reconciles state */
+      // The stop request never reached the server — clear the transient so the
+      // button reverts to Stop (the serve is still running). A later SSE event
+      // or refresh otherwise reconciles state.
+      stoppingIds.delete(id);
+      updateServeRow(id);
     }
   }
 
@@ -889,9 +917,23 @@ const STUDIO_SCRIPT = `
     const startLabel = isTaskRun ? 'Run' : 'Start';
     const head = el('div', 'composer');
     head.appendChild(el('div', 'target-name', (isTaskRun ? 'Run ' : 'Serve ') + id));
-    const btn = running || starting
-      ? el('button', null, 'Stop')
-      : el('button', null, failed ? 'Reconfigure' : startLabel);
+    // Transient in-progress button states (issue #394): a Stop in flight shows
+    // "Stopping..." (disabled) until the stopped/error event; a still-booting
+    // serve shows "Starting..." (disabled). Both inert so a double-click cannot
+    // re-fire. Otherwise: running -> Stop, failed -> Reconfigure, else Start/Run.
+    const stopping = stoppingIds.has(id);
+    let btn;
+    if (stopping) {
+      btn = el('button', null, 'Stopping…');
+      btn.disabled = true;
+    } else if (starting) {
+      btn = el('button', null, 'Starting…');
+      btn.disabled = true;
+    } else if (running) {
+      btn = el('button', null, 'Stop');
+    } else {
+      btn = el('button', null, failed ? 'Reconfigure' : startLabel);
+    }
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
     let collectRaw = function () { return undefined; };
@@ -1832,6 +1874,12 @@ const STUDIO_SCRIPT = `
     // message (renderServeWorkspace uses message presence to tell them apart).
     if (ev.status === 'stopped' || ev.status === 'error') {
       serveState.set(ev.target, { status: ev.status, endpoints: [], message: ev.message });
+      // A terminal event settles any in-flight Stop transient (issue #394): the
+      // serve reached a final state, so clear "Stopping..." and let the button
+      // revert to Start (or Reconfigure on a failure). Cleared ONLY here — a
+      // late running re-emit (e.g. a hostUrl arriving after run, issue #392)
+      // must NOT cancel the in-progress stop indicator.
+      stoppingIds.delete(ev.target);
     } else {
       serveState.set(ev.target, { status: ev.status, endpoints: ev.endpoints || [], hostUrl: ev.hostUrl });
     }

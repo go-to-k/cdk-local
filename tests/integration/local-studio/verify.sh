@@ -335,7 +335,16 @@ if ! grep -qF 'let lastHeaderMode' "${BODY_FILE}" \
   echo "FAIL: GET / did not include the remembered Headers editor mode (issue #345)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry + remembered-header-mode"
+# Stop/Start transient button states (issue #394): a Stop in flight shows
+# "Stopping..." (disabled) until the stopped/error event; a booting serve shows
+# "Starting..." — both backed by the stoppingIds transient set.
+if ! grep -qF 'stoppingIds' "${BODY_FILE}" \
+  || ! grep -qF 'Stopping…' "${BODY_FILE}" \
+  || ! grep -qF 'Starting…' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the Stop/Start transient button states (issue #394)"
+  exit 1
+fi
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry + remembered-header-mode + stop/start transients"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.

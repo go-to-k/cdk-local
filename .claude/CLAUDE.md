@@ -541,7 +541,12 @@ compute-locally category for Lambda + API Gateway).
   targets (api / alb / ecs / ecs-task / cloudfront) a [Start]/[Stop] control
   with a
   `running ● :port` indicator (ecs services + ecs-task runs show
-  `running` with no port). Issue #352 lists ECS Services (the `ecs`
+  `running` with no port). The control surfaces transient in-progress states
+  (issue #394): a Stop in flight shows "Stopping..." (disabled) until the
+  `stopped` / `error` serve event settles it (tracked in a client-side
+  `stoppingIds` set, cleared in `onServeEvent`), and a still-booting serve shows
+  "Starting..." (disabled) — both inert so a double-click cannot re-fire stop /
+  cancel mid-boot. Issue #352 lists ECS Services (the `ecs`
   serve kind) and ECS Task Definitions as SEPARATE target groups,
   matching `cdkl list`; issue #366 makes the task-definitions group the
   `ecs-task` kind — a [Run] control (labeled Run, not Start) that runs
