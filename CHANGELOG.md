@@ -1,3 +1,10 @@
+# [0.118.0](https://github.com/go-to-k/cdk-local/compare/v0.117.0...v0.118.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** preserve serve composer inputs across Start -> Stop ([#401](https://github.com/go-to-k/cdk-local/issues/401)) ([f26a56a](https://github.com/go-to-k/cdk-local/commit/f26a56ad5eeb6cd4e6c9f61190ddb103a844f345))
+
 # [0.117.0](https://github.com/go-to-k/cdk-local/compare/v0.116.0...v0.117.0) (2026-06-04)
 
 
