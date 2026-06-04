@@ -1,3 +1,10 @@
+# [0.124.0](https://github.com/go-to-k/cdk-local/compare/v0.123.3...v0.124.0) (2026-06-04)
+
+
+### Features
+
+* **studio:** fold per-stack construct-path prefix in the targets pane ([#418](https://github.com/go-to-k/cdk-local/issues/418)) ([b7eea9d](https://github.com/go-to-k/cdk-local/commit/b7eea9da214066411b9810e62d4aaa79fd7005dc))
+
 ## [0.123.3](https://github.com/go-to-k/cdk-local/compare/v0.123.2...v0.123.3) (2026-06-04)
 
 
