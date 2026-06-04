@@ -1,3 +1,10 @@
+# [0.107.0](https://github.com/go-to-k/cdk-local/compare/v0.106.1...v0.107.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** serve a Lambda Function URL custom origin ([#376](https://github.com/go-to-k/cdk-local/issues/376)) ([#378](https://github.com/go-to-k/cdk-local/issues/378)) ([eacfcf9](https://github.com/go-to-k/cdk-local/commit/eacfcf91247e21d7f468f6ae161de360cf4115e5))
+
 ## [0.106.1](https://github.com/go-to-k/cdk-local/compare/v0.106.0...v0.106.1) (2026-06-03)
 
 
