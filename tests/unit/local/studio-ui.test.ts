@@ -140,10 +140,11 @@ describe('renderStudioHtml', () => {
     // Collapsible groups (collapsed by default) + the toggle.
     expect(html).toContain('function toggleGroup');
     expect(html).toContain("el('div', 'group-body collapsed')");
-    // Zebra striping via the group-body nth-child rule, with a clearly
-    // distinct shade (issue #333 — the previous #1b1b1b was 1 step off the
-    // #1a1a1a base and imperceptible).
-    expect(html).toContain('.group-body .target:nth-child(2n) { background: #242424; }');
+    // Zebra striping via the JS-applied .alt class (no longer :nth-child, since
+    // the interleaved stack sub-headers would offset a positional count), with
+    // a clearly distinct shade (issue #333 — the previous #1b1b1b was 1 step off
+    // the #1a1a1a base and imperceptible).
+    expect(html).toContain('.group-body .target.alt { background: #242424; }');
   });
 
   it('widens the Session-bar inputs so the placeholder is not truncated (issue #339)', () => {

@@ -102,11 +102,34 @@ const STUDIO_CSS = `
   /* Zebra: alternate rows get a clearly lighter background than the base
      (#1a1a1a) so adjacent target boxes read as distinct — a 1-step shade was
      imperceptible. The kind label (#8f8f8f) still reads on both shades. */
-  .group-body .target:nth-child(2n) { background: #242424; }
+  /* Zebra is driven by a JS-applied .alt class (not :nth-child) because the
+     stack sub-headers interleaved among the rows would otherwise throw the
+     positional count off. */
+  .group-body .target.alt { background: #242424; }
   .target.runnable { cursor: pointer; }
   .target.runnable:hover { background: #292929; }
-  .target.sel, .group-body .target.sel:nth-child(2n) { background: #2a3550; }
-  .target .name { color: #ddd; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .target.sel, .group-body .target.sel.alt { background: #2a3550; }
+  /* The construct path. The common stack prefix is folded into the .stack-sub
+     header above, so the row shows only the distinguishing tail. The tail can
+     still overflow a narrow pane, so it is a horizontal-scroll container (a
+     two-finger trackpad swipe reveals the rest and scrolls back to the head)
+     rather than a hard ellipsis: overscroll-behavior-x stops the swipe from
+     triggering the browser's back-navigation, and the right-edge mask is the
+     "there is more ->" cue that replaces the hidden scrollbar. */
+  .target .name {
+    color: #ddd; flex: 1; min-width: 0;
+    white-space: nowrap; overflow-x: auto; overflow-y: hidden;
+    overscroll-behavior-x: contain; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
+  }
+  .target .name::-webkit-scrollbar { display: none; }
+  /* The folded common stack prefix shared by the rows beneath it. */
+  .stack-sub {
+    padding: 4px 12px 2px; color: #6f6f6f; font-size: 10px;
+    font-family: ui-monospace, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .target .kind { color: #8f8f8f; font-size: 11px; }
   .target .invoke-btn {
     padding: 2px 10px; font: 11px ui-monospace, Menlo, monospace; font-weight: 700;
@@ -624,10 +647,17 @@ const STUDIO_SCRIPT = `
       const title = grp.querySelector('.group-title');
       const body = grp.querySelector('.group-body');
       let matches = 0;
-      body.querySelectorAll('.target').forEach(function (row) {
-        const hit = q === '' || (row.getAttribute('data-tid') || '').includes(q);
-        row.style.display = hit ? '' : 'none';
-        if (hit) matches += 1;
+      // Walk per-stack sections so a section whose rows all filter out (and its
+      // sub-header) is hidden too, not left as an orphan header.
+      body.querySelectorAll('.stack-section').forEach(function (sec) {
+        let secMatches = 0;
+        sec.querySelectorAll('.target').forEach(function (row) {
+          const hit = q === '' || (row.getAttribute('data-tid') || '').includes(q);
+          row.style.display = hit ? '' : 'none';
+          if (hit) secMatches += 1;
+        });
+        sec.style.display = q === '' || secMatches ? '' : 'none';
+        matches += secMatches;
       });
       if (q === '') {
         grp.style.display = '';
@@ -639,6 +669,45 @@ const STUDIO_SCRIPT = `
         title.classList.toggle('open', matches > 0);
       }
     });
+  }
+
+  // The stack a target id belongs to: the first '/'-delimited segment (the
+  // synthesized construct path is '<stack>/<construct>/...'). An id with no
+  // '/' (the '<stack>:<logicalId>' fallback for a resource with no cdk path)
+  // has no foldable construct path, so its stack key is the part before ':'.
+  function targetStackKey(id) {
+    const s = String(id);
+    const slash = s.indexOf('/');
+    if (slash !== -1) return s.slice(0, slash);
+    const colon = s.indexOf(':');
+    return colon !== -1 ? s.slice(0, colon) : s;
+  }
+
+  // The prefix folded into a stack sub-header: the leading '<stack>/' segment
+  // when the id carries a construct path, else '' (the colon-fallback form has
+  // nothing to fold). Folding is PER STACK only, so rows from different stacks
+  // never share a fold.
+  function stackFoldPrefix(id) {
+    const s = String(id);
+    const slash = s.indexOf('/');
+    return slash === -1 ? '' : s.slice(0, slash + 1);
+  }
+
+  // Partition a group's entries into contiguous per-stack sections. The
+  // entries arrive already sorted by stack then logical id (the target lister),
+  // so a section break is just a change of stack key.
+  function stackSections(entries) {
+    const sections = [];
+    let cur = null;
+    for (const entry of entries) {
+      const key = targetStackKey(entry.id);
+      if (!cur || cur.key !== key) {
+        cur = { key: key, prefix: stackFoldPrefix(entry.id), entries: [] };
+        sections.push(cur);
+      }
+      cur.entries.push(entry);
+    }
+    return sections;
   }
 
   async function loadTargets() {
@@ -662,45 +731,67 @@ const STUDIO_SCRIPT = `
         title.onclick = () => toggleGroup(title, body);
         grp.appendChild(title);
         grp.appendChild(body);
-        for (const entry of group.entries) {
-          total += 1;
-          // Lambda + AgentCore targets are single-shot invokes; api / alb / ecs
-          // are long-running serves. Other kinds list but are not yet runnable.
-          // Within ecs, only services are servable (task defs are run-task).
-          const isServe = SERVE_KINDS.includes(group.kind) && (group.kind !== 'ecs' || entry.servable === true);
-          const isInvoke = INVOKE_KINDS.includes(group.kind);
-          const runnable = isInvoke || isServe;
-          const t = el('div', runnable ? 'target runnable' : 'target');
-          t.setAttribute('data-tid', String(entry.id).toLowerCase()); // for the filter
-          const name = el('span', 'name', entry.id);
-          name.title = entry.id; // full path on hover even when truncated
-          t.appendChild(name);
-          t.appendChild(el('span', 'kind', '(' + (KIND_LABEL[group.kind] || group.kind) + ')'));
-          if (isInvoke) {
-            const btn = el('button', 'invoke-btn', 'Invoke');
-            btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };
-            t.appendChild(btn);
-            t.onclick = () => selectTarget(entry.id, group.kind);
-            targetEls.set(entry.id, t);
-          } else if (isServe) {
-            // A serve target: a running-state dot + a Start/Stop button
-            // slot, both refreshed by updateServeRow on serve events.
-            const dot = el('span', 'run-dot');
-            const btnSlot = el('span', 'btn-slot');
-            t.appendChild(dot);
-            t.appendChild(btnSlot);
-            t.onclick = () => selectTarget(entry.id, group.kind);
-            targetEls.set(entry.id, t);
-            serveMeta.set(entry.id, {
-              dot,
-              btnSlot,
-              kind: group.kind,
-              pinned: entry.pinned === true,
-              backingPinnedServices: entry.backingPinnedServices || [],
-            });
-            updateServeRow(entry.id);
+        // Within a kind group, fold each stack's shared '<stack>/' prefix into
+        // a sub-header and show only the distinguishing tail per row. Zebra is
+        // a running .alt class (continuous across sections) since the sub-header
+        // rows would throw a positional :nth-child count off.
+        let rowIdx = 0;
+        for (const section of stackSections(group.entries)) {
+          const sec = el('div', 'stack-section');
+          if (section.prefix) {
+            const sub = el('div', 'stack-sub', section.prefix);
+            sub.title = section.prefix;
+            sec.appendChild(sub);
           }
-          body.appendChild(t);
+          for (const entry of section.entries) {
+            total += 1;
+            // Lambda + AgentCore targets are single-shot invokes; api / alb / ecs
+            // are long-running serves. Other kinds list but are not yet runnable.
+            // Within ecs, only services are servable (task defs are run-task).
+            const isServe = SERVE_KINDS.includes(group.kind) && (group.kind !== 'ecs' || entry.servable === true);
+            const isInvoke = INVOKE_KINDS.includes(group.kind);
+            const runnable = isInvoke || isServe;
+            const t = el('div', runnable ? 'target runnable' : 'target');
+            if (rowIdx % 2 === 1) t.classList.add('alt');
+            rowIdx += 1;
+            t.setAttribute('data-tid', String(entry.id).toLowerCase()); // for the filter (full id)
+            // The folded tail; fall back to the full id if the prefix somehow
+            // does not match (defensive — sorting guarantees it does).
+            const full = String(entry.id);
+            const tail = (section.prefix && full.indexOf(section.prefix) === 0)
+              ? full.slice(section.prefix.length) || full
+              : full;
+            const name = el('span', 'name', tail);
+            name.title = entry.id; // full path on hover
+            t.appendChild(name);
+            t.appendChild(el('span', 'kind', '(' + (KIND_LABEL[group.kind] || group.kind) + ')'));
+            if (isInvoke) {
+              const btn = el('button', 'invoke-btn', 'Invoke');
+              btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };
+              t.appendChild(btn);
+              t.onclick = () => selectTarget(entry.id, group.kind);
+              targetEls.set(entry.id, t);
+            } else if (isServe) {
+              // A serve target: a running-state dot + a Start/Stop button
+              // slot, both refreshed by updateServeRow on serve events.
+              const dot = el('span', 'run-dot');
+              const btnSlot = el('span', 'btn-slot');
+              t.appendChild(dot);
+              t.appendChild(btnSlot);
+              t.onclick = () => selectTarget(entry.id, group.kind);
+              targetEls.set(entry.id, t);
+              serveMeta.set(entry.id, {
+                dot,
+                btnSlot,
+                kind: group.kind,
+                pinned: entry.pinned === true,
+                backingPinnedServices: entry.backingPinnedServices || [],
+              });
+              updateServeRow(entry.id);
+            }
+            sec.appendChild(t);
+          }
+          body.appendChild(sec);
         }
         pane.appendChild(grp);
       }

@@ -659,6 +659,19 @@ compute-locally category for Lambda + API Gateway).
   list does not push the APIs below the fold; a running serve auto-expands
   its group so its `:port` stays visible), zebra-stripes the rows, and has
   a full-text filter box (`applyTargetFilter`) beside the TARGETS heading.
+  Within a kind group, each stack's shared `<stack>/` construct-path prefix
+  is folded into a `.stack-sub` header (PER STACK — `stackSections` splits a
+  group's already-stack-sorted entries on a stack-key change, so rows from
+  different stacks never share a fold) and the row shows only the
+  distinguishing tail; this keeps a deep construct path legible in a narrow
+  pane where the shared prefix used to eat the width. The tail is a
+  horizontal-scroll container (a two-finger trackpad swipe reveals the rest
+  and scrolls back; `overscroll-behavior-x: contain` stops the swipe from
+  triggering browser back-navigation, a right-edge mask is the "more ->"
+  cue) instead of a hard ellipsis. The full id stays on the row `title`
+  (hover tooltip) + `data-tid` (the filter key). Zebra is a JS-applied
+  `.alt` class (continuous across sections) rather than `:nth-child`, which
+  the interleaved sub-headers would offset.
   The Session bar applies on change (no Save button — `applyConfig` PATCHes
   `/api/config` immediately on a checkbox toggle / input change, issue
   #301); Lambdas + AgentCore runtimes get an
