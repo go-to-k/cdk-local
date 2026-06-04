@@ -1,3 +1,10 @@
+## [0.123.2](https://github.com/go-to-k/cdk-local/compare/v0.123.1...v0.123.2) (2026-06-04)
+
+
+### Bug Fixes
+
+* **logger:** only emit ANSI color when output is a TTY (NO_COLOR / FORCE_COLOR aware) ([#416](https://github.com/go-to-k/cdk-local/issues/416)) ([eedecce](https://github.com/go-to-k/cdk-local/commit/eedecce48ea540b9f3b9a6acbeb7f1669cb5974b))
+
 ## [0.123.1](https://github.com/go-to-k/cdk-local/compare/v0.123.0...v0.123.1) (2026-06-04)
 
 
