@@ -783,9 +783,16 @@ export interface MaterializedAssetCode {
  * existing tmpdir cleanup.
  */
 export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode {
-  // `codePath` was produced by `resolveAssetCodePath(..., { allowZip: true })`,
+  // `codePath` usually comes from `resolveAssetCodePath(..., { allowZip: true })`,
   // which already verified the path exists and is either a directory or a
-  // `.zip` file.
+  // `.zip` file. Re-check existence here so callers whose own asset-path
+  // resolver does NOT validate (e.g. start-api's local `resolveAssetCodePath`)
+  // still get an actionable error instead of a raw `ENOENT` from `statSync`.
+  if (!existsSync(codePath)) {
+    throw new LocalInvokeResolutionError(
+      `Lambda asset path '${codePath}' does not exist. Re-synthesize the app and retry.`
+    );
+  }
   if (statSync(codePath).isDirectory()) {
     return { dir: codePath };
   }

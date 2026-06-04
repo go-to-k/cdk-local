@@ -85,6 +85,12 @@ describe('materializeAssetCodeDir', () => {
     writeFileSync(notZip, 'this is not a zip archive');
     expect(() => materializeAssetCodeDir(notZip)).toThrow(/could not be read as a ZIP archive/);
   });
+
+  it('throws an actionable error (not a raw ENOENT) when the asset path is missing', () => {
+    // Callers whose own resolver does not validate existence (e.g. start-api's
+    // local resolveAssetCodePath) rely on this guard for a friendly message.
+    expect(() => materializeAssetCodeDir(join(root, 'nope.zip'))).toThrow(/does not exist/);
+  });
 });
 
 describe('resolveLambdaTarget asset code path (zip vs directory)', () => {

@@ -2157,9 +2157,9 @@ async function buildContainerSpec(args: {
   let imageRef: string | undefined;
   let platform: string | undefined;
   if (lambda.kind === 'zip') {
-    // Re-use `cdkl invoke`'s materialization rules for inline
-    // (Code.ZipFile) Lambdas; asset-backed Lambdas already point at an
-    // unzipped CDK directory.
+    // Re-use `cdkl invoke`'s materialization rules: inline (Code.ZipFile)
+    // Lambdas are written to a temp dir, and an asset-backed codePath is a
+    // directory OR a `.zip` file (the latter extracted by materializeAssetCodeDir).
     if (lambda.codePath) {
       // A `.zip`-packaged asset (`Code.fromAsset('bundle.zip')` / a bundling
       // that emits a zip) is extracted to a temp dir for the bind-mount; an
