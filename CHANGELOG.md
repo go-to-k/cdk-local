@@ -1,3 +1,10 @@
+# [0.108.0](https://github.com/go-to-k/cdk-local/compare/v0.107.1...v0.108.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** full env-var + --from-cfn-stack + --assume-role parity for a Function URL origin Lambda ([#380](https://github.com/go-to-k/cdk-local/issues/380) slice A) ([#382](https://github.com/go-to-k/cdk-local/issues/382)) ([e1527a3](https://github.com/go-to-k/cdk-local/commit/e1527a37a6b50b8e15139a0bf8e4c914983581fb))
+
 ## [0.107.1](https://github.com/go-to-k/cdk-local/compare/v0.107.0...v0.107.1) (2026-06-04)
 
 
