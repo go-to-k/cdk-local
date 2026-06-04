@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { invokeAgentCoreWs } from '../../../src/local/agentcore-ws-client.js';
+import { invokeAgentCoreWs, bridgeAgentCoreWs } from '../../../src/local/agentcore-ws-client.js';
 import { AGENTCORE_SESSION_ID_HEADER } from '../../../src/local/agentcore-client.js';
 
 /**
@@ -272,5 +272,187 @@ describe('invokeAgentCoreWs', () => {
         })
       ).rejects.toThrow(/boom from frame source/);
     });
+  });
+});
+
+/**
+ * `bridgeAgentCoreWs` is the caller-driven relay primitive behind
+ * `cdkl start-agentcore`. Unlike {@link invokeAgentCoreWs} it sends NO initial
+ * frame — every frame is driven by the caller via the handle. Tested against a
+ * real in-process `ws` server (the container stand-in) so the upgrade headers +
+ * framing are exercised end to end.
+ */
+describe('bridgeAgentCoreWs', () => {
+  let liveHandles: Array<{ close: () => void }> = [];
+  afterEach(() => {
+    for (const h of liveHandles) {
+      try {
+        h.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    liveHandles = [];
+  });
+  const track = <T extends { close: () => void }>(h: T): T => {
+    liveHandles.push(h);
+    return h;
+  };
+
+  /** Start a server that records every frame it receives + the upgrade headers. */
+  async function startRecordingServer(
+    onConn?: (ws: WebSocket) => void
+  ): Promise<{
+    port: number;
+    received: string[];
+    lastHeaders: () => Record<string, string | string[] | undefined>;
+    sendToClient: (text: string) => void;
+    closeClient: () => void;
+  }> {
+    const wss = new WebSocketServer({ port: 0, path: '/ws' });
+    servers.push(wss);
+    const received: string[] = [];
+    let headers: Record<string, string | string[] | undefined> = {};
+    let live: WebSocket | undefined;
+    wss.on('connection', (ws, req) => {
+      headers = req.headers;
+      live = ws;
+      ws.on('message', (data) => received.push(data.toString()));
+      onConn?.(ws);
+    });
+    await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
+    const port = (wss.address() as AddressInfo).port;
+    return {
+      port,
+      received,
+      lastHeaders: () => headers,
+      sendToClient: (text) => live?.send(text),
+      closeClient: () => live?.close(),
+    };
+  }
+
+  const tick = (ms = 60): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('does NOT auto-send any initial frame on open', async () => {
+    const server = await startRecordingServer();
+    const opened = new Promise<void>((resolve) => {
+      track(
+        bridgeAgentCoreWs('127.0.0.1', server.port, {
+          sessionId: 's1',
+          onMessage: () => {},
+          onOpen: () => resolve(),
+        })
+      );
+    });
+    await opened;
+    await tick();
+    expect(server.received).toEqual([]);
+  });
+
+  it('sets the session-id (+ Authorization) on the upgrade and forwards a frame to the container', async () => {
+    const server = await startRecordingServer();
+    const handle = track(
+      bridgeAgentCoreWs('127.0.0.1', server.port, {
+        sessionId: 'sess-42',
+        authorization: 'Bearer tok',
+        onMessage: () => {},
+      })
+    );
+    // Sent before open — must be buffered and flushed in order on open.
+    handle.send('first');
+    handle.send('second');
+    await tick(120);
+    // Node lowercases incoming header names.
+    expect(server.lastHeaders()[AGENTCORE_SESSION_ID_HEADER.toLowerCase()]).toBe('sess-42');
+    expect(server.lastHeaders()['authorization']).toBe('Bearer tok');
+    expect(server.received).toEqual(['first', 'second']);
+    handle.close();
+  });
+
+  it('forwards each container frame to onMessage', async () => {
+    const frames: string[] = [];
+    const server = await startRecordingServer((ws) => {
+      ws.send('from-container-1');
+      ws.send('from-container-2');
+    });
+    await new Promise<void>((resolve) => {
+      let n = 0;
+      track(
+        bridgeAgentCoreWs('127.0.0.1', server.port, {
+          sessionId: 's',
+          onMessage: (t) => {
+            frames.push(t);
+            if (++n === 2) resolve();
+          },
+        })
+      );
+    });
+    expect(frames).toEqual(['from-container-1', 'from-container-2']);
+  });
+
+  it('fires onClose when the container closes the socket', async () => {
+    const server = await startRecordingServer((ws) => ws.close());
+    const closed = await new Promise<boolean>((resolve) => {
+      track(
+        bridgeAgentCoreWs('127.0.0.1', server.port, {
+          sessionId: 's',
+          onMessage: () => {},
+          onClose: () => resolve(true),
+        })
+      );
+    });
+    expect(closed).toBe(true);
+  });
+
+  it('close() tears the container socket down (onClose fires, later sends are dropped)', async () => {
+    const server = await startRecordingServer();
+    const events: string[] = [];
+    const handle = track(
+      bridgeAgentCoreWs('127.0.0.1', server.port, {
+        sessionId: 's',
+        onMessage: () => {},
+        onOpen: () => events.push('open'),
+        onClose: () => events.push('close'),
+      })
+    );
+    await tick(80);
+    handle.close();
+    await tick(80);
+    handle.send('after-close'); // dropped — must not reach the server
+    await tick(60);
+    expect(events).toEqual(['open', 'close']);
+    expect(server.received).toEqual([]);
+  });
+
+  it('fires onError when the container connection cannot be established', async () => {
+    // Point at a port with no listener — the `ws` connect fails, surfacing
+    // onError (the failure path the bridge server turns into a browser notice).
+    const err = await new Promise<Error>((resolve) => {
+      track(
+        bridgeAgentCoreWs('127.0.0.1', 1, {
+          sessionId: 's',
+          onMessage: () => {},
+          onError: (e) => resolve(e),
+        })
+      );
+    });
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('closes cleanly when a pre-fired abort signal is supplied', async () => {
+    const server = await startRecordingServer();
+    const controller = new AbortController();
+    controller.abort();
+    const handle = track(
+      bridgeAgentCoreWs('127.0.0.1', server.port, {
+        sessionId: 's',
+        onMessage: () => {},
+        abortSignal: controller.signal,
+      })
+    );
+    await tick(80);
+    handle.send('never'); // closed already → dropped
+    await tick(60);
+    expect(server.received).toEqual([]);
   });
 });

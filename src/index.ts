@@ -35,6 +35,10 @@ export {
   type CreateLocalStartCloudFrontCommandOptions,
 } from './cli/commands/local-start-cloudfront.js';
 export {
+  createLocalStartAgentCoreCommand,
+  type CreateLocalStartAgentCoreCommandOptions,
+} from './cli/commands/local-start-agentcore.js';
+export {
   createLocalListCommand,
   formatTargetListing,
   type CreateLocalListCommandOptions,

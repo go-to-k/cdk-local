@@ -345,9 +345,17 @@ export {
 } from './local/agentcore-mcp-client.js';
 export {
   invokeAgentCoreWs,
+  bridgeAgentCoreWs,
   type InvokeAgentCoreWsOptions,
   type AgentCoreWsResult,
+  type BridgeAgentCoreWsOptions,
+  type AgentCoreWsBridgeHandle,
 } from './local/agentcore-ws-client.js';
+export {
+  startAgentCoreWsBridge,
+  type AgentCoreWsBridgeServerConfig,
+  type RunningAgentCoreWsBridge,
+} from './local/agentcore-ws-bridge.js';
 export {
   a2aInvokeOnce,
   A2A_CONTAINER_PORT,
@@ -663,6 +671,7 @@ export { addListSpecificOptions } from './cli/commands/local-list.js';
 export { addRunTaskSpecificOptions } from './cli/commands/local-run-task.js';
 export { addInvokeSpecificOptions } from './cli/commands/local-invoke.js';
 export { addInvokeAgentCoreSpecificOptions } from './cli/commands/local-invoke-agentcore.js';
+export { addStartAgentCoreSpecificOptions } from './cli/commands/local-start-agentcore.js';
 export { addStartApiSpecificOptions } from './cli/commands/local-start-api.js';
 export {
   addStartServiceSpecificOptions,
