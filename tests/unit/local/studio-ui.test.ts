@@ -64,8 +64,9 @@ describe('renderStudioHtml', () => {
     // The picker builder + its select are present.
     expect(html).toContain('function buildImageOverridePicker');
     expect(html).toContain("el('select', 'image-override-select')");
-    // Gated on the serve target being a pinned ecs service.
-    expect(html).toContain("meta.kind === 'ecs' && meta.pinned");
+    // Gated on the serve target being a pinned ecs service OR ecs-task task
+    // definition (issue #388 extended the picker to the ecs-task composer).
+    expect(html).toContain("(meta.kind === 'ecs' || meta.kind === 'ecs-task') && meta.pinned");
     // The picked Dockerfile is threaded onto the serve body.
     expect(html).toContain('body.imageOverride = imageOverride');
     // The picker is populated from the boot-scanned dockerfiles carried on the

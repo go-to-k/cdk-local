@@ -918,11 +918,13 @@ const STUDIO_SCRIPT = `
     ws.appendChild(head);
 
     if (!running && !starting && !failed) {
-      // A pinned ECS service (deployed-registry image) does not pick up local
-      // source edits — offer an image-override Dockerfile picker so it can be
-      // rebuilt locally (issue #301). Local-asset services hot-reload under
-      // --watch and get no picker.
-      if (meta && meta.kind === 'ecs' && meta.pinned) {
+      // A pinned ECS service / task definition (deployed-registry image) does
+      // not pick up local source edits — offer an image-override Dockerfile
+      // picker so it can be rebuilt locally (issue #301 for ecs, #388 for
+      // ecs-task). The ecs composer threads --image-override to start-service;
+      // the ecs-task composer threads it to run-task. Local-asset targets
+      // rebuild locally already and get no picker.
+      if (meta && (meta.kind === 'ecs' || meta.kind === 'ecs-task') && meta.pinned) {
         const io = buildImageOverridePicker();
         ws.appendChild(io.node);
         collectImageOverride = io.collect;

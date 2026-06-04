@@ -68,6 +68,9 @@ cleanup() {
   fi
   rm -f "${LOG_FILE}" "${BODY_FILE}" "${RUN_FILE}" "${SSE_FILE}"
   rm -f "$(pwd)/.studio-ws-client.mjs"
+  # Drop the local-only image-override build(s) the ecs / alb / ecs-task picker
+  # tests produced (tag prefix is the embed binary name: `cdkl-override-*:local`).
+  docker images --filter 'reference=cdkl-override-*' -q | xargs -r docker rmi -f >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -1092,6 +1095,24 @@ if ! grep -qF 'Dockerfile.override' "${BODY_FILE}"; then
 fi
 echo "    OK: pinned ecs service flagged + Dockerfile.override discovered"
 
+# Issue #388 — the ECS Task Definition (kind `ecs-task`) MyTask shares the same
+# public-registry-pinned image, so studio marks ITS entry `pinned` too (the
+# ecs-task pin classifier), which is what gates the run-task image-override
+# picker. Assert specifically the ecs-task group's MyTask entry is pinned.
+echo "==> /api/targets marks the pinned ecs-task task definition (issue #388)"
+if ! python3 - "${BODY_FILE}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+g = next((x for x in d["groups"] if x["kind"] == "ecs-task"), None)
+e = next((x for x in (g or {}).get("entries", []) if x["id"].endswith("/MyTask")), None)
+sys.exit(0 if e and e.get("pinned") is True else 1)
+PY
+then
+  echo "FAIL: /api/targets did not mark the ecs-task MyTask as pinned"
+  cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: ecs-task MyTask flagged pinned (the run-task image-override picker will offer)"
+
 ALB_TARGET="LocalStudioFixture/MyAlb"
 echo "==> POST /api/run starts an ALB serve (boots the ECS service + front-door)"
 # Re-arm the SSE listener to capture the ALB request invocation.
@@ -1297,6 +1318,50 @@ curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/js
   -d "{\"targetId\":\"${ECS_TASK_TARGET}\"}" -o /dev/null || true
 sleep 3
 echo "    OK: task run stopped"
+
+# ---------------------------------------------------------------------------
+# 10a2. ecs-task image-override picker (issue #388): MyTask's image is the same
+#       public-registry pin, so the run-task composer offers the Dockerfile
+#       picker. Studio threads the picked Dockerfile as the EXPLICIT
+#       `--image-override LocalStudioFixture/MyTask=./Dockerfile.override` (no
+#       TTY in the studio child) to the spawned `cdkl run-task`, plus
+#       `--host-port 80=<port>` (via rawArgs) so the published container is
+#       reachable. The override build serves the same WORKDIR sentinel, so
+#       curling it proves the picker -> /api/run -> run-task --image-override
+#       rebuild path end-to-end (the pinned image would serve a directory
+#       listing, never the sentinel).
+# ---------------------------------------------------------------------------
+TIO_HOST_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+echo "==> POST /api/run with imageOverride rebuilds the pinned task definition from a local Dockerfile"
+TIO_FILE=$(mktemp)
+HTTP_TIO=$(curl -s -o "${TIO_FILE}" -w '%{http_code}' --max-time 300 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TASK_TARGET}\",\"kind\":\"ecs-task\",\"imageOverride\":\"./Dockerfile.override\",\"rawArgs\":\"--host-port 80=${TIO_HOST_PORT}\"}" || true)
+if [[ "${HTTP_TIO}" != "200" ]] || ! grep -qF '"status":"running"' "${TIO_FILE}"; then
+  echo "FAIL: POST /api/run (ecs-task image-override) returned HTTP ${HTTP_TIO}"
+  echo "----- response -----"; cat "${TIO_FILE}"; echo "--------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  rm -f "${TIO_FILE}"; exit 1
+fi
+rm -f "${TIO_FILE}"
+TIO_BODY=""
+for _ in $(seq 1 60); do
+  TIO_BODY=$(curl -fsS --max-time 3 "http://127.0.0.1:${TIO_HOST_PORT}/" 2>/dev/null || true)
+  if echo "${TIO_BODY}" | grep -qF 'studio-image-override-301'; then break; fi
+  sleep 1
+done
+if ! echo "${TIO_BODY}" | grep -qF 'studio-image-override-301'; then
+  echo "FAIL: ecs-task image-override did not apply (sentinel absent from the published container)"
+  echo "----- served body -----"; echo "${TIO_BODY}" | head -c 1000; echo "-----------------------"
+  echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
+  exit 1
+fi
+echo "    OK: ecs-task image-override threaded; run-task ran the LOCAL Dockerfile build (sentinel served)"
+echo "==> POST /api/stop tears the image-override task run down"
+curl -s --max-time 60 -X POST "${URL}/api/stop" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TASK_TARGET}\"}" -o /dev/null || true
+sleep 3
+echo "    OK: ecs-task image-override run stopped"
 
 # ---------------------------------------------------------------------------
 # 10b. Image-override picker (issue #301): MyService's deployed image is a

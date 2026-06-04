@@ -500,7 +500,9 @@ compute-locally category for Lambda + API Gateway).
   UI at `/`, the synthesized target list (+ the boot-discovered
   Dockerfiles + a `pinned` flag per ecs service — set by
   `annotatePinnedEcsTargets` — for the image-override picker, issue #301;
-  plus `backingPinnedServices` per alb entry — set by
+  plus a `pinned` flag per `ecs-task` task definition — set by
+  `annotateEcsTaskPinnedTargets`, issue #388 — for the run-task image-override
+  picker; plus `backingPinnedServices` per alb entry — set by
   `annotateAlbPinnedBackingServices`, issue #384 — for the ALB's
   per-backing-service image-override picker;
   CDK custom-resource / provider-framework Lambdas are excluded by
@@ -575,7 +577,12 @@ compute-locally category for Lambda + API Gateway).
   studio's child has no TTY, so the bare picker form would be skipped) onto
   the serve body so `start-service` rebuilds the pinned image from local
   source; a local-asset service (which already hot-reloads under `--watch`)
-  gets no picker (issue #301). An `alb` serve gets the SAME picker for its
+  gets no picker (issue #301). A PINNED `ecs-task` task definition gets the
+  SAME single picker (issue #388): the `ecs-task` composer threads
+  `--image-override <target>=<dockerfile>` onto the run body so the spawned
+  `cdkl run-task` rebuilds the pinned task-def image from local source
+  (`makeTaskPinClassifier` + `annotateEcsTaskPinnedTargets` mark a pinned task
+  def at boot). An `alb` serve gets the SAME picker for its
   pinned BACKING services (issue #384): `start-alb` boots the ALB's backing
   ECS services, so studio resolves each ALB (`resolveAlbFrontDoor`) to its
   backing services at boot, intersects them with the pinned `ecs` set

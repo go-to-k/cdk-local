@@ -26,12 +26,13 @@ export interface StudioTarget {
    */
   servable?: boolean;
   /**
-   * Set on a servable `ecs` service whose image is a deployed-registry pin
-   * (ECR / public) rather than a local CDK asset (issue #301). Local source
-   * edits do NOT take effect for a pinned image, so the serve composer offers
-   * a Dockerfile picker that threads `--image-override` to the spawned
-   * `start-service`. A local-asset service (which already hot-reloads under
-   * `--watch`) is not marked and gets no picker.
+   * Set on a servable `ecs` service OR an `ecs-task` task definition whose
+   * image is a deployed-registry pin (ECR / public) rather than a local CDK
+   * asset (issue #301 / #388). Local source edits do NOT take effect for a
+   * pinned image, so the composer offers a Dockerfile picker that threads
+   * `--image-override` to the spawned `start-service` (ecs) / `run-task`
+   * (ecs-task). A local-asset target (which already rebuilds locally) is not
+   * marked and gets no picker.
    */
   pinned?: boolean;
   /**
@@ -122,6 +123,39 @@ export function annotatePinnedEcsTargets(
     if (group.kind !== 'ecs') continue;
     for (const entry of group.entries) {
       if (!entry.servable) continue;
+      if (classify(entry.id)) {
+        entry.pinned = true;
+        anyPinned = true;
+      }
+    }
+  }
+  return anyPinned;
+}
+
+/**
+ * Annotate the `ecs-task` task-definition entries of `groups` with
+ * `pinned: true` when `classify(targetId)` returns true (issue #388). The
+ * counterpart of {@link annotatePinnedEcsTargets} for the `ecs-task` kind: a
+ * task definition whose representative container image is a deployed-registry
+ * pin gets the same image-override Dockerfile picker (the `ecs-task` composer
+ * spawns `cdkl run-task`, which now accepts `--image-override`). `classify`
+ * decides pinned vs local CDK asset for one task-def id (studio's boot resolves
+ * the task via `resolveEcsTaskTarget` and checks the representative container's
+ * image kind). Unlike the `ecs` group there is no `servable` gate — every
+ * task-def entry is run via run-task. Mutates the entries in place and returns
+ * whether ANY task definition was pinned, so the caller can include the
+ * Dockerfile scan even when no standalone `ecs` service was pinned. Non-ecs-task
+ * groups are left untouched. Exported so a host CLI can reuse it + so the boot
+ * logic is unit-testable without a real synth.
+ */
+export function annotateEcsTaskPinnedTargets(
+  groups: StudioTargetGroup[],
+  classify: (targetId: string) => boolean
+): boolean {
+  let anyPinned = false;
+  for (const group of groups) {
+    if (group.kind !== 'ecs-task') continue;
+    for (const entry of group.entries) {
       if (classify(entry.id)) {
         entry.pinned = true;
         anyPinned = true;

@@ -11,12 +11,19 @@ const hoisted = vi.hoisted(() => ({
   buildEcsImageResolutionContext: vi.fn(),
   createLocalStateProvider: vi.fn(),
   discoverDockerfiles: vi.fn(),
+  resolveEcsTaskTarget: vi.fn(),
 }));
 
 vi.mock('../../../src/local/ecs-service-resolver.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../../src/local/ecs-service-resolver.js')>();
   return { ...actual, resolveEcsServiceTarget: hoisted.resolveEcsServiceTarget };
+});
+// Partial mock: local-studio.ts calls resolveEcsTaskTarget for the ecs-task pin
+// classifier (issue #388); preserve every other export (parseEcsTarget, etc.).
+vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/ecs-task-resolver.js')>();
+  return { ...actual, resolveEcsTaskTarget: hoisted.resolveEcsTaskTarget };
 });
 vi.mock('../../../src/local/image-pin-detector.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/local/image-pin-detector.js')>();
@@ -50,6 +57,7 @@ const {
   resolveEcsServiceStack,
   prepareEcsImageContexts,
   makePinClassifier,
+  makeTaskPinClassifier,
   classifyStudioTargets,
   reclassifyTargetsOnBindingChange,
 } = await import('../../../src/cli/commands/local-studio.js');
@@ -83,6 +91,7 @@ beforeEach(() => {
   hoisted.buildEcsImageResolutionContext.mockReset();
   hoisted.createLocalStateProvider.mockReset();
   hoisted.discoverDockerfiles.mockReset();
+  hoisted.resolveEcsTaskTarget.mockReset();
 });
 
 describe('resolveEcsServiceStack', () => {
@@ -325,6 +334,63 @@ describe('makePinClassifier', () => {
   });
 });
 
+describe('makeTaskPinClassifier (issue #388)', () => {
+  const taskWith = (kind: string, essential = true) => ({
+    containers: [{ name: 'web', essential, image: { kind } }],
+  });
+
+  it('marks a registry-pinned task definition as pinned (public / ecr)', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockReturnValue(taskWith('public'));
+    const classify = makeTaskPinClassifier({ stacks: [stack('dev')], contextByStack: new Map(), logger });
+    expect(classify('dev/Task')).toBe(true);
+  });
+
+  it('does NOT mark a local-asset task definition', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockReturnValue(taskWith('cdk-asset'));
+    const classify = makeTaskPinClassifier({ stacks: [stack('dev')], contextByStack: new Map(), logger });
+    expect(classify('dev/Task')).toBe(false);
+  });
+
+  it('classifies the representative (first essential) container', () => {
+    const logger = fakeLogger();
+    // First container non-essential (cdk-asset), second essential (ecr pin).
+    hoisted.resolveEcsTaskTarget.mockReturnValue({
+      containers: [
+        { name: 'sidecar', essential: false, image: { kind: 'cdk-asset' } },
+        { name: 'app', essential: true, image: { kind: 'ecr' } },
+      ],
+    });
+    const classify = makeTaskPinClassifier({ stacks: [stack('dev')], contextByStack: new Map(), logger });
+    expect(classify('dev/Task')).toBe(true);
+  });
+
+  it('threads the owning-stack image context into resolveEcsTaskTarget', () => {
+    const logger = fakeLogger();
+    const ctx: EcsImageResolutionContext = { stateResources: { Repo: { id: 'r' } } };
+    hoisted.resolveEcsTaskTarget.mockReturnValue(taskWith('ecr'));
+    const classify = makeTaskPinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map([['dev', ctx]]),
+      logger,
+    });
+    classify('dev/Task');
+    expect(hoisted.resolveEcsTaskTarget).toHaveBeenCalledWith('dev/Task', expect.any(Array), ctx);
+  });
+
+  it('WARNs (not silent) and returns false when task resolution throws', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockImplementation(() => {
+      throw new Error('cannot resolve task image');
+    });
+    const classify = makeTaskPinClassifier({ stacks: [stack('dev')], contextByStack: new Map(), logger });
+    expect(classify('dev/Task')).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve task image'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('task definition'));
+  });
+});
+
 describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack toggle)', () => {
   const baseGroups = (): StudioTargetGroup[] => [
     {
@@ -382,6 +448,90 @@ describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack 
     // The base groups are never mutated — each classify clones, so a re-classify
     // under a new binding never inherits stale pins.
     expect(base[0]?.entries[0]?.pinned).toBeUndefined();
+  });
+
+  it('pins a deployed-registry ECS task definition + scans Dockerfiles (issue #388)', async () => {
+    const logger = fakeLogger();
+    hoisted.discoverDockerfiles.mockReturnValue(['./Dockerfile']);
+    hoisted.resolveEcsTaskTarget.mockReturnValue({
+      containers: [{ name: 'web', essential: true, image: { kind: 'public' } }],
+    });
+    const base: StudioTargetGroup[] = [
+      { kind: 'ecs', title: 'ECS Services', entries: [] },
+      {
+        kind: 'ecs-task',
+        title: 'ECS Task Definitions',
+        entries: [{ id: 'dev/Task', qualifiedId: 'dev:Task' }],
+      },
+    ];
+    const result = await classifyStudioTargets({
+      baseGroups: base,
+      stacks: [stack('dev')],
+      servableEcs: new Set(),
+      options: {},
+      fromCfnStack: undefined,
+      logger,
+    });
+    const taskGroup = result.groups.find((g) => g.kind === 'ecs-task');
+    expect(taskGroup?.entries[0]?.pinned).toBe(true);
+    expect(result.dockerfiles).toEqual(['./Dockerfile']);
+    // The task-def id was resolved (it was collected into prepareEcsImageContexts
+    // + classified), and the base groups stay un-annotated (fresh clone).
+    expect(hoisted.resolveEcsTaskTarget).toHaveBeenCalledWith('dev/Task', expect.any(Array), undefined);
+    expect((base[1]?.entries[0] as { pinned?: boolean }).pinned).toBeUndefined();
+  });
+
+  it('builds the deployed-state context for a task-def-only stack under --from-cfn-stack (issue #388)', async () => {
+    const logger = fakeLogger();
+    hoisted.discoverDockerfiles.mockReturnValue(['./Dockerfile']);
+    // An INTRINSIC-ECR task-def image resolves ONLY with a deployed-state
+    // context; the resolver throws when no context is threaded.
+    hoisted.resolveEcsTaskTarget.mockImplementation((_id: string, _stacks: unknown, ctx: unknown) => {
+      if (!ctx) throw new Error('intrinsic ECR URI needs --from-cfn-stack');
+      return { containers: [{ name: 'web', essential: true, image: { kind: 'ecr' } }] };
+    });
+    hoisted.createLocalStateProvider.mockReturnValue({ dispose: vi.fn() });
+    hoisted.buildEcsImageResolutionContext.mockResolvedValue({ stateResources: {} });
+
+    // NO servable services — the task-def id is the ONLY reason its stack
+    // enters the per-stack context build.
+    const base: StudioTargetGroup[] = [
+      { kind: 'ecs', title: 'ECS Services', entries: [] },
+      {
+        kind: 'ecs-task',
+        title: 'ECS Task Definitions',
+        entries: [{ id: 'dev/Task', qualifiedId: 'dev:Task' }],
+      },
+    ];
+    const stacks = [stack('dev', 'us-east-1')];
+
+    // OFF: no context built -> resolve throws -> task def stays unpinned.
+    const off = await classifyStudioTargets({
+      baseGroups: base,
+      stacks,
+      servableEcs: new Set(),
+      options: {},
+      fromCfnStack: undefined,
+      logger,
+    });
+    expect(off.groups.find((g) => g.kind === 'ecs-task')?.entries[0]?.pinned).toBeUndefined();
+
+    // ON: the TASK-DEF id alone drives the per-stack context build, so the
+    // intrinsic-ECR image resolves and the task def is pinned.
+    const on = await classifyStudioTargets({
+      baseGroups: base,
+      stacks,
+      servableEcs: new Set(),
+      options: {},
+      fromCfnStack: true,
+      logger,
+    });
+    expect(on.groups.find((g) => g.kind === 'ecs-task')?.entries[0]?.pinned).toBe(true);
+    expect(hoisted.buildEcsImageResolutionContext).toHaveBeenCalledWith(
+      expect.objectContaining({ stackName: 'dev' }),
+      expect.anything(),
+      expect.objectContaining({ fromCfnStack: true })
+    );
   });
 
   it('does not scan Dockerfiles for an all-local-asset app', async () => {
