@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { vi } from 'vite-plus/test';
+import { afterAll, vi } from 'vite-plus/test';
 
 /**
  * Global vitest setup — defenses against Node 24 + vitest 1.6.1 surfacing
@@ -104,3 +104,58 @@ const originalExit = process.exit;
 
 // Keep a reference to the real exit in case anything downstream wants it.
 (globalThis as Record<string, unknown>).__cdk_local_test_original_exit__ = originalExit;
+
+/**
+ * Per-file teardown: destroy the undici (Node global `fetch`) keep-alive pool
+ * so no pooled socket survives into the forked worker's teardown.
+ *
+ * Background (issue #402):
+ *
+ *   A forked vitest worker is reused across several test files. Tests that
+ *   drive a real HTTP server with the global `fetch` leave an idle keep-alive
+ *   socket pooled in undici's global dispatcher after the request finishes.
+ *   When the worker process is later told to exit, that pooled socket's
+ *   native handle can crash the worker ("Worker exited unexpectedly") AFTER
+ *   every assertion has already passed — vitest then propagates the crash as
+ *   a non-zero exit even though the suite is green. The crash is intermittent
+ *   (timing-dependent)
+ *   and not locally reproducible, so the only robust defense is to guarantee
+ *   the pool is empty at every file boundary.
+ *
+ *   Node stores the global dispatcher on a well-known global symbol
+ *   (`Symbol.for('undici.globalDispatcher.1')`) — the same slot the public
+ *   `undici` package reads/writes — so we can clear it WITHOUT adding undici
+ *   as a dependency. We `destroy()` the current dispatcher (forcibly aborting
+ *   any leftover/idle socket) and install a fresh `Agent` of the same
+ *   constructor so subsequent files in the same worker get a clean pool. The
+ *   symbol slot is non-configurable but writable, so reassignment is allowed;
+ *   reusing the existing dispatcher's constructor avoids importing `Agent`.
+ *
+ *   This is a per-FILE hook (`afterAll`), not per-test, so within-file
+ *   connection reuse is unchanged — only the file boundary resets the pool.
+ *   Tests that drive raw `node:http` sockets (their own `agent: false` /
+ *   `req.destroy()` teardown) are unaffected: they do not use the undici
+ *   global dispatcher.
+ */
+const UNDICI_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1');
+
+interface UndiciDispatcher {
+  destroy(): Promise<void>;
+  constructor: new () => UndiciDispatcher;
+}
+
+afterAll(async () => {
+  const slot = globalThis as Record<symbol, unknown>;
+  const dispatcher = slot[UNDICI_GLOBAL_DISPATCHER] as UndiciDispatcher | undefined;
+  // Undefined until the worker issues its first `fetch`; nothing to clear.
+  if (!dispatcher || typeof dispatcher.destroy !== 'function') {
+    return;
+  }
+
+  try {
+    await dispatcher.destroy();
+    slot[UNDICI_GLOBAL_DISPATCHER] = new dispatcher.constructor();
+  } catch {
+    // Best-effort teardown — never fail a green suite over pool cleanup.
+  }
+});
