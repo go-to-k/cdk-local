@@ -1,3 +1,10 @@
+# [0.121.0](https://github.com/go-to-k/cdk-local/compare/v0.120.0...v0.121.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** serve an S3 origin from real S3 on demand under --from-cfn-stack ([#405](https://github.com/go-to-k/cdk-local/issues/405)) ([#409](https://github.com/go-to-k/cdk-local/issues/409)) ([7c98f05](https://github.com/go-to-k/cdk-local/commit/7c98f057eedd60b484e7c7eefdf13d8e176b3ee1))
+
 # [0.120.0](https://github.com/go-to-k/cdk-local/compare/v0.119.0...v0.120.0) (2026-06-04)
 
 
