@@ -6,6 +6,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { getLogger } from '../utils/logger.js';
 import {
   compileCloudFrontFunction,
+  type CloudFrontKvsAssociation,
   type CompiledCloudFrontFunction,
 } from './cloudfront-function-runtime.js';
 import type { ResolvedCustomErrorResponse } from './cloudfront-static-origin.js';
@@ -162,15 +163,65 @@ function compileDistributionFunctions(
       continue;
     }
     const config = props['FunctionConfig'];
+    const configObj =
+      config && typeof config === 'object' ? (config as Record<string, unknown>) : {};
     const runtime =
-      config &&
-      typeof config === 'object' &&
-      typeof (config as Record<string, unknown>)['Runtime'] === 'string'
-        ? ((config as Record<string, unknown>)['Runtime'] as string)
+      typeof configObj['Runtime'] === 'string'
+        ? (configObj['Runtime'] as string)
         : 'cloudfront-js-1.0';
-    out.set(logicalId, compileCloudFrontFunction(logicalId, code, runtime));
+    const compiled = compileCloudFrontFunction(logicalId, code, runtime);
+    const kvsAssociations = extractKvsAssociations(configObj);
+    if (kvsAssociations.length > 0) compiled.kvsAssociations = kvsAssociations;
+    out.set(logicalId, compiled);
   }
   return out;
+}
+
+/**
+ * Extract a function's `FunctionConfig.KeyValueStoreAssociations[]` into the
+ * compiled-function carrier, pre-resolving each association's KVS resource
+ * logical id from the `KeyValueStoreARN` intrinsic so the command layer can
+ * bind it (deployed store under `--from-cfn-stack`, or a `--kvs-file` map).
+ */
+export function extractKvsAssociations(
+  functionConfig: Record<string, unknown>
+): CloudFrontKvsAssociation[] {
+  const raw = Array.isArray(functionConfig['KeyValueStoreAssociations'])
+    ? (functionConfig['KeyValueStoreAssociations'] as unknown[])
+    : [];
+  const out: CloudFrontKvsAssociation[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const arnValue = (entry as Record<string, unknown>)['KeyValueStoreARN'];
+    if (arnValue === undefined) continue;
+    const kvsLogicalId = pickKvsLogicalIdFromArn(arnValue);
+    out.push({ arnValue, ...(kvsLogicalId !== undefined && { kvsLogicalId }) });
+  }
+  return out;
+}
+
+/**
+ * Unwrap a `KeyValueStoreARN` value to the `AWS::CloudFront::KeyValueStore`
+ * logical id when it is an intrinsic reference to a same-template store. CDK /
+ * CloudFormation synthesize it as `Fn::GetAtt[<Kvs>, 'Arn']`, a `Ref`, or
+ * `Fn::Sub: '${<Kvs>.Arn}'`. Returns `undefined` for a literal ARN string (an
+ * imported / out-of-stack store).
+ */
+export function pickKvsLogicalIdFromArn(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const getAtt = obj['Fn::GetAtt'];
+  if (Array.isArray(getAtt) && getAtt.length === 2 && typeof getAtt[0] === 'string') {
+    return getAtt[0];
+  }
+  if (typeof obj['Ref'] === 'string') return obj['Ref'];
+  const sub = obj['Fn::Sub'];
+  const subTemplate = typeof sub === 'string' ? sub : Array.isArray(sub) ? sub[0] : undefined;
+  if (typeof subTemplate === 'string') {
+    const match = /^\$\{([A-Za-z0-9]+)(?:\.[A-Za-z0-9]+)?\}$/.exec(subTemplate.trim());
+    if (match) return match[1]!;
+  }
+  return undefined;
 }
 
 function resolveBehaviors(

@@ -299,6 +299,8 @@ describe('start-cloudfront option surface contract (addStartCloudFrontSpecificOp
       '--assume-role',
       '--from-cfn-stack',
       '--host',
+      // Issue #399 — back a CloudFront Function's KeyValueStore reads with a local JSON map.
+      '--kvs-file',
       // Issue #376 — skip the docker pull for a Lambda Function URL origin image.
       '--no-pull',
       '--origin',

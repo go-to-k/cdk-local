@@ -68,8 +68,29 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
-echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --watch"
-${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --watch > "${OUT_FILE}" 2>&1 &
+# Synth once so we can read the AWS::CloudFront::KeyValueStore logical id (the
+# --kvs-file key is the resource logical id) out of the template, rather than
+# hardcoding its hash-suffixed value (which a CDK version bump could change).
+echo "==> Synth + extract the KeyValueStore logical id"
+# CDK App auto-synths only under the CDK CLI (i.e. when CDK_OUTDIR is set);
+# set it so a standalone `node bin/app.ts` writes the assembly to cdk.out.
+CDK_OUTDIR=cdk.out node bin/app.ts >/dev/null 2>&1 || fail "standalone synth (node bin/app.ts) failed"
+KVS_ID=$(node -e '
+const fs = require("fs");
+for (const f of fs.readdirSync("cdk.out").filter((x) => x.endsWith(".template.json"))) {
+  const t = JSON.parse(fs.readFileSync("cdk.out/" + f, "utf-8"));
+  for (const [id, r] of Object.entries(t.Resources || {})) {
+    if (r.Type === "AWS::CloudFront::KeyValueStore") { console.log(id); process.exit(0); }
+  }
+}
+process.exit(1);
+') || fail "could not find an AWS::CloudFront::KeyValueStore in the synthesized template"
+echo "    KeyValueStore logical id: ${KVS_ID}"
+KVS_FILE="$(pwd)/kvs.json"
+
+echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --watch --kvs-file ${KVS_ID}=${KVS_FILE}"
+${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --watch \
+  --kvs-file "${KVS_ID}=${KVS_FILE}" > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
 
 echo "==> Waiting for the server banner"
@@ -98,6 +119,21 @@ echo "==> GET /foo (viewer-request rewrite -> /foo/index.html)"
 FOO_BODY=$(curl -fsS "${BASE}/foo") || fail "GET /foo failed"
 echo "${FOO_BODY}" | grep -qi "foo page" \
   || fail "viewer-request rewrite did not resolve /foo to /foo/index.html"
+
+# ---------------------------------------------------------------------------
+# 2b. KeyValueStore-backed viewer-request rewrite (--kvs-file): the /kv/*
+#     behavior's function reads cf.kvs().get('/kv/go') -> '/foo/index.html'
+#     from the local JSON map, exercising the import-cf-from-cloudfront
+#     transform + cf.kvs() runtime path with no AWS. (issue #399)
+# ---------------------------------------------------------------------------
+echo "==> GET /kv/go (KeyValueStore rewrite -> /foo/index.html via --kvs-file)"
+KV_BODY=$(curl -fsS "${BASE}/kv/go") || fail "GET /kv/go failed"
+echo "${KV_BODY}" | grep -qi "foo page" \
+  || fail "KeyValueStore-backed rewrite did not resolve /kv/go to /foo/index.html"
+# The binding resolved, so the unbound-KVS warning must NOT have fired.
+if grep -qi "no binding resolved it" "${OUT_FILE}"; then
+  fail "the KeyValueStore association was reported unbound despite --kvs-file"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. CustomErrorResponses SPA fallback: missing key -> 403 -> /404.html (200).
@@ -173,4 +209,4 @@ CDKL_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite (--kvs-file), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."

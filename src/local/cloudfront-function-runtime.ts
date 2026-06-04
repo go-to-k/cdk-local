@@ -1,4 +1,5 @@
 import * as vm from 'node:vm';
+import { createUnboundCloudFrontModule, type CloudFrontModule } from './cloudfront-kvs.js';
 
 /**
  * Hard cap on a single CloudFront Function's synchronous run. The deployed
@@ -27,13 +28,18 @@ const FUNCTION_TIMEOUT_MS = 5000;
  * a returned promise is awaited. The sandbox exposes only the standard
  * JavaScript built-ins a vm context already provides plus `console` (the 2.0
  * runtime has `console.log`); it does NOT expose `require`, `process`, timers,
- * or `fetch`, so a function reaching for the real CloudFront KeyValueStore /
- * `cf.fetch` runtime APIs fails locally with a clear error rather than
- * silently diverging.
+ * or `fetch`.
  *
- * Out of scope: the CloudFront KeyValueStore (`cloudfront.kvs()`), the 2.0
- * `cf.fetch` origin-request API, and crypto helpers — these have no local
- * analogue and are documented as unsupported.
+ * The 2.0 KeyValueStore API IS reproduced: a `import cf from 'cloudfront'`
+ * statement is stripped from the code ({@link stripCloudFrontImport}) and the
+ * binding (`cf`) is injected as a {@link CloudFrontModule} whose `cf.kvs()`
+ * reads are backed by the deployed store (`--from-cfn-stack`) or a local JSON
+ * map (`--kvs-file`) — see `cloudfront-kvs.ts`. A function reaching for KVS
+ * with no binding resolved gets a clear actionable error at read time
+ * ({@link createUnboundCloudFrontModule}).
+ *
+ * Out of scope: the 2.0 `cf.fetch` origin-request API and crypto helpers —
+ * these have no local analogue and are documented as unsupported.
  */
 
 /** The CloudFront-Functions header / cookie / query-value object shape. */
@@ -79,6 +85,26 @@ export interface CfViewerResponseEvent extends CfViewerRequestEvent {
   response: CfResponse;
 }
 
+/**
+ * A KeyValueStore association declared on a function's
+ * `FunctionConfig.KeyValueStoreAssociations[]`, carried on the compiled
+ * function so the command layer can resolve its ARN (under `--from-cfn-stack`)
+ * or back it with a `--kvs-file` and build the `cf` module.
+ */
+export interface CloudFrontKvsAssociation {
+  /**
+   * The raw `KeyValueStoreARN` value from the template — a literal ARN string,
+   * or an intrinsic (`Fn::GetAtt[<Kvs>, 'Arn']` / `Ref` / `Fn::Sub`).
+   */
+  arnValue: unknown;
+  /**
+   * The `AWS::CloudFront::KeyValueStore` resource logical id, pre-extracted when
+   * the ARN is an intrinsic reference to a same-template store. Absent for a
+   * literal-ARN association (e.g. an imported store).
+   */
+  kvsLogicalId?: string;
+}
+
 /** A compiled CloudFront Function — reused across requests. */
 export interface CompiledCloudFrontFunction {
   /** The `AWS::CloudFront::Function` logical id (for diagnostics). */
@@ -92,9 +118,54 @@ export interface CompiledCloudFrontFunction {
    * {@link FUNCTION_TIMEOUT_MS} bound a runaway synchronous handler.
    */
   script: vm.Script;
+  /**
+   * The local name the `cloudfront` module is imported under (`cf` in
+   * `import cf from 'cloudfront'`), when the function imports it. Set by
+   * {@link stripCloudFrontImport} at compile time; the binding is injected into
+   * the sandbox at invoke time.
+   */
+  cloudfrontBindingName?: string;
+  /**
+   * KeyValueStore associations declared on the function (from
+   * `FunctionConfig.KeyValueStoreAssociations`). Populated by the resolver;
+   * consumed by the command layer to build {@link cloudfrontModule}.
+   */
+  kvsAssociations?: CloudFrontKvsAssociation[];
+  /**
+   * The resolved `cf` module injected at invoke time. Set by the command layer
+   * after it resolves the KVS bindings (deployed store / local file). When a
+   * function imports `cloudfront` but this is unset, an
+   * {@link createUnboundCloudFrontModule} is injected so a `cf.kvs()` read
+   * surfaces a clear actionable error. Mutable so a `--watch` reload can rebind.
+   */
+  cloudfrontModule?: CloudFrontModule;
 }
 
 const EVENT_GLOBAL = '__cfEvent';
+
+/**
+ * Regex matching the canonical CloudFront-Functions 2.0 KeyValueStore import
+ * line (`import cf from 'cloudfront';`). The module is default-imported under a
+ * single binding name; this is the only `cloudfront` import form the runtime
+ * supports. Anchored per-line (`m` flag) so only the import statement is
+ * matched, not a substring elsewhere.
+ */
+const CLOUDFRONT_IMPORT_RE = /^[ \t]*import\s+(\w+)\s+from\s+['"]cloudfront['"]\s*;?[ \t]*$/m;
+
+/**
+ * Strip the `import cf from 'cloudfront'` statement from a 2.0 function's code
+ * and return the binding name, so the code compiles as a plain `vm.Script`
+ * (an `import` statement is invalid outside an ES module) and the `cloudfront`
+ * module can be injected as the binding-named sandbox global instead. Returns
+ * the code unchanged with no binding name when the function does not import
+ * `cloudfront`. The matched line is blanked (not deleted) so error line numbers
+ * still line up with the source.
+ */
+export function stripCloudFrontImport(code: string): { code: string; bindingName?: string } {
+  const match = CLOUDFRONT_IMPORT_RE.exec(code);
+  if (!match) return { code };
+  return { code: code.replace(CLOUDFRONT_IMPORT_RE, ''), bindingName: match[1]! };
+}
 
 /**
  * Compile a CloudFront Function's inline code once. Throws a clear error when
@@ -106,13 +177,17 @@ export function compileCloudFrontFunction(
   code: string,
   runtime: string
 ): CompiledCloudFrontFunction {
+  // A 2.0 function backed by a KeyValueStore opens with `import cf from
+  // 'cloudfront'`; strip it so the body compiles as a plain Script and inject
+  // the `cloudfront` module under the captured binding name at invoke time.
+  const { code: source, bindingName } = stripCloudFrontImport(code);
   let script: vm.Script;
   try {
     // The user code defines `handler`; the trailing call invokes it with the
     // per-request event injected as a context global. Compiling the call into
     // the same script means `runInContext`'s `timeout` covers the handler's
     // synchronous execution, not just its definition.
-    script = new vm.Script(`${code}\n;handler(${EVENT_GLOBAL})`, {
+    script = new vm.Script(`${source}\n;handler(${EVENT_GLOBAL})`, {
       filename: `cloudfront-function-${logicalId}.js`,
     });
   } catch (err) {
@@ -121,11 +196,16 @@ export function compileCloudFrontFunction(
     );
   }
   // Probe once that a `handler` is actually defined, surfacing a
-  // missing-handler error at boot rather than a silent no-op per request.
+  // missing-handler error at boot rather than a silent no-op per request. When
+  // the function imports `cloudfront`, top-level code may call `cf.kvs(...)`, so
+  // bind a benign placeholder module in the probe context (the real module is
+  // injected per request at invoke time).
   let hasHandler: unknown;
   try {
-    const probeContext = vm.createContext({ console });
-    hasHandler = new vm.Script(`${code}\n;typeof handler === 'function'`).runInContext(
+    const probeGlobals: Record<string, unknown> = { console };
+    if (bindingName) probeGlobals[bindingName] = createUnboundCloudFrontModule(logicalId);
+    const probeContext = vm.createContext(probeGlobals);
+    hasHandler = new vm.Script(`${source}\n;typeof handler === 'function'`).runInContext(
       probeContext,
       { timeout: FUNCTION_TIMEOUT_MS }
     );
@@ -140,7 +220,12 @@ export function compileCloudFrontFunction(
         'A CloudFront Function must export `function handler(event) { ... }`.'
     );
   }
-  return { logicalId, runtime, script };
+  return {
+    logicalId,
+    runtime,
+    script,
+    ...(bindingName !== undefined && { cloudfrontBindingName: bindingName }),
+  };
 }
 
 /**
@@ -154,7 +239,16 @@ export async function invokeCloudFrontFunction(
   fn: CompiledCloudFrontFunction,
   event: CfViewerRequestEvent | CfViewerResponseEvent
 ): Promise<unknown> {
-  const context = vm.createContext({ console, [EVENT_GLOBAL]: event });
+  const sandbox: Record<string, unknown> = { console, [EVENT_GLOBAL]: event };
+  // Inject the `cloudfront` module under its import binding name. The command
+  // layer sets `cloudfrontModule` once the KVS bindings resolve; when the
+  // function imports `cloudfront` but no binding was resolved, an unbound module
+  // is injected so a `cf.kvs()` read fails with a clear actionable error.
+  if (fn.cloudfrontBindingName) {
+    sandbox[fn.cloudfrontBindingName] =
+      fn.cloudfrontModule ?? createUnboundCloudFrontModule(fn.logicalId);
+  }
+  const context = vm.createContext(sandbox);
   let result: unknown;
   try {
     result = fn.script.runInContext(context, { timeout: FUNCTION_TIMEOUT_MS });

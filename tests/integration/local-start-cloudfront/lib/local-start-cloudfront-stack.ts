@@ -84,15 +84,49 @@ export class LocalStartCloudFrontStack extends cdk.Stack {
       },
     });
 
+    // A KeyValueStore-backed viewer-request function on a /kv/* behavior: it
+    // looks the request URI up in the store and rewrites to the mapped path.
+    // The integ backs it with --kvs-file (local JSON), exercising the
+    // import-cf-from-cloudfront transform + cf.kvs().get() runtime path with no
+    // AWS. (issue #399)
+    const routesKvs = new cloudfront.KeyValueStore(this, 'RoutesKvs');
+    const kvsRewrite = new cloudfront.Function(this, 'KvsRewriteFn', {
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      keyValueStore: routesKvs,
+      code: cloudfront.FunctionCode.fromInline(
+        [
+          "import cf from 'cloudfront';",
+          'const store = cf.kvs();',
+          'async function handler(event) {',
+          '  var request = event.request;',
+          '  try {',
+          '    request.uri = await store.get(request.uri);',
+          '  } catch (e) {}',
+          '  return request;',
+          '}',
+        ].join('\n')
+      ),
+    });
+
+    const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(bucket);
+
     new cloudfront.Distribution(this, 'SiteDist', {
       defaultRootObject: 'index.html',
       defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(bucket),
+        origin: s3Origin,
         responseHeadersPolicy: corsPolicy,
         functionAssociations: [
           { function: rewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
           { function: stampHeader, eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE },
         ],
+      },
+      additionalBehaviors: {
+        '/kv/*': {
+          origin: s3Origin,
+          functionAssociations: [
+            { function: kvsRewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+          ],
+        },
       },
       errorResponses: [
         { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/404.html' },

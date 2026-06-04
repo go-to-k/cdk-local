@@ -22,6 +22,18 @@ import {
   type LambdaContainerEnvOptions,
   type ResolvedProfileCredentials,
 } from './local-invoke.js';
+import {
+  createLocalStateProvider,
+  isCfnFlagPresent,
+  type LocalStateSourceOptions,
+} from './local-state-source.js';
+import {
+  resolveKvsModulesForDistribution,
+  idFromArn,
+  type DeployedKvsRef,
+  type ResolveKvsModulesOptions,
+} from '../../local/cloudfront-kvs-binding.js';
+import { resolveDeployedKvsArnByName } from '../../local/cloudfront-kvs-client.js';
 import { resolveProfileCredentials } from '../../utils/profile-resolver.js';
 import { resolveLambdaTarget } from '../../local/lambda-resolver.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
@@ -71,6 +83,8 @@ interface LocalStartCloudFrontOptions {
   host: string;
   /** Repeatable `--origin <id>=<dir>` override. */
   origin?: string[];
+  /** Repeatable `--kvs-file <kvsLogicalId>=<file.json>` local KeyValueStore map. */
+  kvsFile?: string[];
   /** Opt-in to real TLS termination. */
   tls?: boolean;
   tlsCert?: string;
@@ -122,6 +136,81 @@ export function parseOriginOverrides(values: string[] | undefined): Map<string, 
     out.set(raw.slice(0, eq).trim(), raw.slice(eq + 1).trim());
   }
   return out;
+}
+
+/**
+ * Parse the repeatable `--kvs-file <kvsLogicalId>=<file.json>` overrides into a
+ * map. Each entry backs a CloudFront Function's `cf.kvs()` reads with a local
+ * JSON map instead of the deployed store — the AWS-free escape hatch for KVS,
+ * symmetric with `--origin <id>=<dir>`. The key is the
+ * `AWS::CloudFront::KeyValueStore` resource logical id (surfaced in the
+ * unbound-KVS boot warning when missing).
+ */
+export function parseKvsFileOverrides(values: string[] | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const raw of values ?? []) {
+    const eq = raw.indexOf('=');
+    if (eq <= 0 || eq === raw.length - 1) {
+      throw new LocalStartCloudFrontError(
+        `Invalid --kvs-file '${raw}'. Expected <kvsLogicalId>=<file.json> (e.g. MyKvsStore=./kvs.json).`
+      );
+    }
+    out.set(raw.slice(0, eq).trim(), raw.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+/**
+ * Resolve + attach the `cf` KeyValueStore module to every KVS-reading
+ * CloudFront Function in the distribution (run after each synth, initial +
+ * `--watch` reload). A `--kvs-file` map wins; otherwise `--from-cfn-stack`
+ * resolves the deployed store's ARN from state and `cf.kvs().get()` reads it
+ * via the `GetKey` API. Unresolved associations log an actionable WARN (the
+ * runtime then fails the read with the same guidance).
+ */
+async function attachKvsModules(
+  distribution: ResolvedDistribution,
+  stacks: StackInfo[],
+  options: LocalStartCloudFrontOptions,
+  profileCredentials: ResolvedProfileCredentials | undefined,
+  logger: ReturnType<typeof getLogger>
+): Promise<void> {
+  const kvsFiles = parseKvsFileOverrides(options.kvsFile);
+  const stack = stacks.find((s) => s.stackName === distribution.stackName);
+  const synthRegion = stack?.region;
+
+  const resolveDeployedKvs = isCfnFlagPresent(options)
+    ? async (kvsLogicalId: string): Promise<DeployedKvsRef | undefined> => {
+        const provider = createLocalStateProvider(
+          options as unknown as LocalStateSourceOptions,
+          distribution.stackName,
+          synthRegion
+        );
+        if (!provider) return undefined;
+        const record = await provider.load(distribution.stackName, synthRegion);
+        const physicalId = record?.resources[kvsLogicalId]?.physicalId;
+        if (!physicalId) return undefined;
+        // `ListStackResources` returns the store's NAME (the `Ref` value) as its
+        // physical id, NOT the ARN. The data-plane `GetKey` needs the ARN (which
+        // embeds the store's UUID), so look the name up via the CloudFront
+        // control plane. A literal-ARN physical id (defensive) is used directly.
+        if (physicalId.startsWith('arn:')) {
+          const id = idFromArn(physicalId);
+          return { arn: physicalId, ...(id !== undefined && { id }) };
+        }
+        return resolveDeployedKvsArnByName(physicalId, {
+          ...(profileCredentials !== undefined && { credentials: profileCredentials }),
+        });
+      }
+    : undefined;
+
+  const resolution: ResolveKvsModulesOptions = {
+    ...(kvsFiles.size > 0 && { kvsFiles }),
+    ...(resolveDeployedKvs !== undefined && { resolveDeployedKvs }),
+    ...(profileCredentials !== undefined && { credentials: profileCredentials }),
+  };
+  const { warnings } = await resolveKvsModulesForDistribution(distribution, resolution);
+  for (const warning of warnings) logger.warn(warning);
 }
 
 /**
@@ -385,6 +474,11 @@ async function localStartCloudFrontCommand(
     ...(options.stackRegion !== undefined && { stackRegion: options.stackRegion }),
   };
 
+  // Resolve + attach the cf KeyValueStore module to every KVS-reading function
+  // (--kvs-file local map / --from-cfn-stack deployed GetKey). Independent of
+  // the Lambda-origin boot; re-run on every --watch reload below.
+  await attachKvsModules(initial.distribution, initial.stacks, options, profileCredentials, logger);
+
   // Boot a warm RIE container per Lambda Function URL origin (issue #376).
   // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
   const { invokers: lambdaInvokers, runners: lambdaRunners } = await bootLambdaUrlOrigins(
@@ -446,6 +540,13 @@ async function localStartCloudFrontCommand(
           try {
             const reloaded = await synthAndResolve();
             warnUnsupported(reloaded.distribution);
+            await attachKvsModules(
+              reloaded.distribution,
+              reloaded.stacks,
+              options,
+              profileCredentials,
+              logger
+            );
             server.update(reloaded.distribution);
             logger.info('Reload complete.');
           } catch (err) {
@@ -550,6 +651,15 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
         '--origin <originId=dir>',
         'Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the ' +
           "origin's BucketDeployment source automatically (content uploaded out of band, or a non-CDK bucket)."
+      ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
+    )
+    .addOption(
+      new Option(
+        '--kvs-file <kvsLogicalId=file.json>',
+        "Back a CloudFront Function's KeyValueStore reads (cf.kvs().get()) with a local JSON map " +
+          '(repeatable). The key is the AWS::CloudFront::KeyValueStore resource logical id; the file is a flat ' +
+          '{ "key": "value" } object. The AWS-free alternative to --from-cfn-stack, which instead reads the ' +
+          'deployed store via the GetKey API.'
       ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])
     )
     .addOption(
