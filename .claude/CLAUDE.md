@@ -264,10 +264,22 @@ AWS managed services.
   self-signed cert path); `--origin <id>=<dir>` points an origin at a local
   directory when BucketDeployment resolution cannot (content uploaded out of
   band, non-CDK bucket); `--no-pull` skips the docker pull for a Function
-  URL origin's base image. S3 + Lambda Function URL origins ONLY: a generic
-  custom (non-S3, non-Function-URL) origin, a `LambdaFunctionAssociations`
-  Lambda@Edge association, the KeyValueStore, and the 2.0 `cf.fetch`
-  origin API are WARN-and-skip (custom / unresolved origins return 502).
+  URL origin's base image. A CloudFront Function's **KeyValueStore**
+  reads (`import cf from 'cloudfront'; cf.kvs().get(key)`) are reproduced
+  (issue #399): the `import cf from 'cloudfront'` line is stripped and a `cf`
+  module is injected into the `node:vm` sandbox whose `cf.kvs().get` /
+  `exists` are backed by either the deployed store (`--from-cfn-stack` resolves
+  the `AWS::CloudFront::KeyValueStore` ARN from state — the physical id is the
+  store NAME, looked up to its ARN via the control-plane `ListKeyValueStores` —
+  and reads it through the real `cloudfront-keyvaluestore` `GetKey` data-plane
+  API, SigV4A-signed) or a local JSON map (`--kvs-file <kvsLogicalId>=<file>`,
+  the AWS-free escape hatch symmetric with `--origin`). A KVS read with no
+  binding fails with an actionable error naming both flags; `cf.kvs().meta()` /
+  `count()` and KVS writes are not reproduced. S3 + Lambda Function URL
+  origins ONLY: a generic custom (non-S3, non-Function-URL) origin, a
+  `LambdaFunctionAssociations` Lambda@Edge association (issue #400), and the
+  2.0 `cf.fetch` origin API are WARN-and-skip (custom / unresolved origins
+  return 502).
   Single distribution per invocation (interactive picker when the target
   is omitted in a TTY). Also runnable from `cdkl studio` as the
   `cloudfront` serve kind (issue #367) — a [Start]/[Stop] control with a
@@ -323,7 +335,10 @@ compute-locally category for Lambda + API Gateway).
   re-synths + swaps the routing model under the live socket; `--tls`
   reuses `front-door-tls`; `--origin <id>=<dir>` is the
   BucketDeployment-source escape hatch; `--no-pull` skips the Lambda
-  origin image pull. `start-service` and `start-alb` share one neutral orchestration
+  origin image pull; `--kvs-file <kvsLogicalId>=<file>` backs a CloudFront
+  Function's KeyValueStore reads with a local JSON map (issue #399; the
+  deployed-store alternative is `--from-cfn-stack`).
+  `start-service` and `start-alb` share one neutral orchestration
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
@@ -465,7 +480,22 @@ compute-locally category for Lambda + API Gateway).
   CloudFront Function in a `node:vm` sandbox, builds the
   viewer-request / viewer-response event from an HTTP request, and
   interprets the handler's return as continue-to-origin vs short-circuit
-  response), cloudfront-static-origin (serves a URI from the resolved S3
+  response; `stripCloudFrontImport` strips the 2.0
+  `import cf from 'cloudfront'` line at compile time so a KVS-reading
+  function compiles as a plain `vm.Script`, and the resolved `cf` module is
+  injected under the binding name at invoke time — issue #399),
+  cloudfront-kvs (issue #399 — the binding-agnostic `cf` KeyValueStore shim:
+  `cf.kvs(id?)` -> a handle with `get` / `exists` over a `KvsDataSource`, the
+  local-file data source, and the unbound module that fails a read with an
+  actionable error), cloudfront-kvs-client (issue #399 — the AWS boundary:
+  the deployed `GetKey` data source + `resolveDeployedKvsArnByName` which maps
+  a store NAME to its ARN via the control-plane `ListKeyValueStores`; a
+  side-effect `import '@aws-sdk/signature-v4a'` registers the SigV4A signer the
+  `cloudfront-keyvaluestore` API requires), cloudfront-kvs-binding (issue #399
+  — `resolveKvsModulesForDistribution`: walks each KVS-reading function, builds
+  its `cf` module from a `--kvs-file` map or the deployed-ARN callback, and
+  attaches it to the compiled function; re-run on each `--watch` reload),
+  cloudfront-static-origin (serves a URI from the resolved S3
   origin dir(s): default-root-object at `/`, path-traversal guard, MIME
   by extension, `CustomErrorResponses` SPA fallback),
   cloudfront-lambda-origin (issue #376 — serves a Lambda Function URL

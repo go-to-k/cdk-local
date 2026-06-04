@@ -6,7 +6,9 @@ import {
   runViewerRequest,
   runViewerResponse,
   serializeCfQueryString,
+  stripCloudFrontImport,
 } from '../../../src/local/cloudfront-function-runtime.js';
+import { createCloudFrontModule, type KvsDataSource } from '../../../src/local/cloudfront-kvs.js';
 
 function compile(code: string, runtime = 'cloudfront-js-2.0') {
   return compileCloudFrontFunction('Fn', code, runtime);
@@ -143,5 +145,70 @@ describe('serializeCfQueryString', () => {
     expect(serializeCfQueryString({ a: { value: '1' }, b: { value: 'x', multiValue: [{ value: 'x' }, { value: 'y' }] } })).toBe(
       'a=1&b=x&b=y'
     );
+  });
+});
+
+describe('stripCloudFrontImport', () => {
+  it('strips the import and returns the binding name', () => {
+    const out = stripCloudFrontImport("import cf from 'cloudfront';\nfunction handler(e){return e}");
+    expect(out.bindingName).toBe('cf');
+    expect(out.code).not.toMatch(/import/);
+    // The handler body survives.
+    expect(out.code).toMatch(/function handler/);
+  });
+
+  it('captures a non-default binding name + double quotes', () => {
+    expect(stripCloudFrontImport('import store from "cloudfront"').bindingName).toBe('store');
+  });
+
+  it('returns the code unchanged with no binding when cloudfront is not imported', () => {
+    const code = 'function handler(event) { return event.request; }';
+    expect(stripCloudFrontImport(code)).toEqual({ code });
+  });
+
+  it('preserves line numbering (blanks the import line)', () => {
+    const out = stripCloudFrontImport("import cf from 'cloudfront';\nlet x = 1;");
+    expect(out.code.split('\n')).toHaveLength(2);
+  });
+});
+
+function kvsSource(map: Record<string, string>): KvsDataSource {
+  return { label: 'fake', getValue: (k) => Promise.resolve(map[k]) };
+}
+
+describe('CloudFront Function KeyValueStore injection', () => {
+  const KVS_FN = [
+    "import cf from 'cloudfront';",
+    'async function handler(event) {',
+    "  event.request.uri = await cf.kvs().get(event.request.uri);",
+    '  return event.request;',
+    '}',
+  ].join('\n');
+
+  it('records the cloudfront binding name at compile time', () => {
+    expect(compile(KVS_FN).cloudfrontBindingName).toBe('cf');
+  });
+
+  it('injects the resolved cf module so cf.kvs().get() resolves', async () => {
+    const fn = compile(KVS_FN);
+    fn.cloudfrontModule = createCloudFrontModule([kvsSource({ '/old': '/new' })]);
+    const outcome = await runViewerRequest(fn, reqEvent('/old'));
+    expect(outcome.kind).toBe('continue');
+    if (outcome.kind === 'continue') expect(outcome.request.uri).toBe('/new');
+  });
+
+  it('injects an unbound module that fails the read with actionable guidance', async () => {
+    const fn = compile(KVS_FN); // no cloudfrontModule set
+    await expect(runViewerRequest(fn, reqEvent('/old'))).rejects.toThrow(/--from-cfn-stack/);
+  });
+
+  it('compiles a function whose top-level code calls cf.kvs(id)', () => {
+    const code = [
+      "import cf from 'cloudfront';",
+      "const kvs = cf.kvs('some-id');",
+      'function handler(event) { return event.request; }',
+    ].join('\n');
+    // The probe must not throw on the top-level cf.kvs(id) call.
+    expect(() => compile(code)).not.toThrow();
   });
 });

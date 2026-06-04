@@ -1480,9 +1480,12 @@ Two origin kinds are served:
   needs no Docker; a Function URL origin boots one Lambda container.
 
 It does NOT emulate the managed CloudFront service: other custom (non-S3,
-non-Function-URL) origins, Lambda@Edge (`LambdaFunctionAssociations`), the
-KeyValueStore, and the 2.0 `cf.fetch` origin API are out of scope
-(warn-and-skip; a request routed to one returns 502). A Function URL origin
+non-Function-URL) origins, Lambda@Edge (`LambdaFunctionAssociations`), and
+the 2.0 `cf.fetch` origin API are out of scope (warn-and-skip; a request
+routed to one returns 502). A CloudFront Function's **KeyValueStore** reads
+(`cf.kvs().get(key)`) ARE reproduced — backed by the deployed store
+(`--from-cfn-stack`) or a local JSON map (`--kvs-file`); see the
+KeyValueStore resolution bullet below. A Function URL origin
 Lambda gets the **same container environment as a direct `cdkl invoke`**:
 its declared `Environment.Variables` are injected, `--from-cfn-stack [name]`
 substitutes intrinsic env values against a deployed stack, and
@@ -1509,6 +1512,25 @@ its `DistributionConfig`:
   generated response (redirect / fixed body); otherwise the rewritten
   request continues to the origin. A viewer-response function then runs
   over the origin response.
+- **KeyValueStore (`cf.kvs()`)** — a 2.0 function that opens with
+  `import cf from 'cloudfront'` and reads `cf.kvs().get(key)` / `exists(key)`
+  is run with that `import` stripped and a `cf` module injected into the
+  sandbox. Each read is served by one of two bindings:
+  - **`--from-cfn-stack`** — the function's
+    `FunctionConfig.KeyValueStoreAssociations[].KeyValueStoreARN` resolves to
+    the deployed `AWS::CloudFront::KeyValueStore` (its physical id from
+    `ListStackResources` is the store NAME, looked up to its ARN via the
+    control-plane `ListKeyValueStores`), and the read hits the real
+    `cloudfront-keyvaluestore` `GetKey` data-plane API. The deployed store's
+    data is read live — exactly like a Lambda reaching a real managed service.
+  - **`--kvs-file <kvsLogicalId>=<file.json>`** — a local
+    `{ "key": "value" }` map backs the reads with no AWS (the AWS-free escape
+    hatch, symmetric with `--origin`). The key is the
+    `AWS::CloudFront::KeyValueStore` resource logical id (named in the boot
+    warning when a read is unbound).
+
+  A read with neither binding fails with an actionable error naming both
+  flags. `cf.kvs().meta()` / `count()` and KVS writes are not reproduced.
 - **CORS (ResponseHeadersPolicy)** — a behavior's `ResponseHeadersPolicyId`
   → the `AWS::CloudFront::ResponseHeadersPolicy`'s `CorsConfig` is
   reproduced at the edge, per behavior. A matching `OPTIONS` preflight is
@@ -1566,6 +1588,7 @@ On top of the [common flags](#common-flags):
 | `--port <port>` | `0` (auto-allocate) | Host port for the local server. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
 | `--origin <originId=dir>` | — | Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the origin's BucketDeployment source automatically (content uploaded out of band, or a non-CDK bucket). |
+| `--kvs-file <kvsLogicalId=file.json>` | — | Back a CloudFront Function's KeyValueStore reads (`cf.kvs().get()`) with a local JSON map (repeatable). The key is the `AWS::CloudFront::KeyValueStore` resource logical id; the file is a flat `{ "key": "value" }` object path. The AWS-free alternative to `--from-cfn-stack`, which instead reads the deployed store via `GetKey`. |
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |
@@ -1593,6 +1616,13 @@ cdkl start-cloudfront MyStack/SiteDist --origin SiteOrigin=./dist
 # container); --no-pull reuses the cached base image
 cdkl start-cloudfront MyStack/ApiDist --port 8080 --no-pull
 # then: curl http://127.0.0.1:8080/        (CloudFront -> Function URL -> your Lambda)
+
+# Back a CloudFront Function's cf.kvs().get() reads with a local JSON map
+# (./routes.json is a flat { "key": "value" } file)
+cdkl start-cloudfront MyStack/SiteDist --kvs-file RoutesKvs=./routes.json
+
+# Or read the DEPLOYED KeyValueStore via the GetKey API
+cdkl start-cloudfront MyStack/SiteDist --from-cfn-stack
 ```
 
 ### `cdkl start-cloudfront` exit codes

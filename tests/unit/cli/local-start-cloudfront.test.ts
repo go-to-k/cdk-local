@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   createLocalStartCloudFrontCommand,
+  parseKvsFileOverrides,
   parseOriginOverrides,
   resolveCloudFrontTarget,
 } from '../../../src/cli/commands/local-start-cloudfront.js';
@@ -72,6 +73,23 @@ describe('parseOriginOverrides', () => {
   });
 });
 
+describe('parseKvsFileOverrides', () => {
+  it('parses <kvsLogicalId>=<file> pairs', () => {
+    const map = parseKvsFileOverrides(['MyKvs=./kvs.json', 'Other=/abs/x.json']);
+    expect(map.get('MyKvs')).toBe('./kvs.json');
+    expect(map.get('Other')).toBe('/abs/x.json');
+  });
+
+  it('returns an empty map for undefined', () => {
+    expect(parseKvsFileOverrides(undefined).size).toBe(0);
+  });
+
+  it('rejects a malformed value', () => {
+    expect(() => parseKvsFileOverrides(['nope'])).toThrow(/Expected <kvsLogicalId>=<file.json>/);
+    expect(() => parseKvsFileOverrides(['=x.json'])).toThrow(/Expected <kvsLogicalId>=<file.json>/);
+  });
+});
+
 describe('createLocalStartCloudFrontCommand — option surface', () => {
   const cmd = createLocalStartCloudFrontCommand();
   const longs = cmd.options.map((o) => o.long);
@@ -83,6 +101,8 @@ describe('createLocalStartCloudFrontCommand — option surface', () => {
     expect(longs).toContain('--watch');
     // --no-pull skips the docker pull for a Lambda Function URL origin's image.
     expect(longs).toContain('--no-pull');
+    // --kvs-file backs a CloudFront Function's KeyValueStore reads locally (#399).
+    expect(longs).toContain('--kvs-file');
   });
 
   it('resolves --no-pull to pull=false (Commander negation)', () => {

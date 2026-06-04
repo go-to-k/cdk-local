@@ -682,6 +682,7 @@ export {
   addStartCloudFrontSpecificOptions,
   resolveCloudFrontTarget,
   parseOriginOverrides,
+  parseKvsFileOverrides,
   LocalStartCloudFrontError,
 } from './cli/commands/local-start-cloudfront.js';
 
@@ -700,6 +701,8 @@ export {
   isCloudFrontDistribution,
   pickFunctionUrlLogicalIdFromOrigin,
   pickTargetFunctionLogicalId,
+  extractKvsAssociations,
+  pickKvsLogicalIdFromArn,
   CLOUDFRONT_DISTRIBUTION_TYPE,
   type ResolvedDistribution,
   type ResolvedBehavior,
@@ -710,10 +713,41 @@ export {
   compileCloudFrontFunction,
   runViewerRequest,
   runViewerResponse,
+  stripCloudFrontImport,
   type CompiledCloudFrontFunction,
+  type CloudFrontKvsAssociation,
   type CfRequest,
   type CfResponse,
 } from './local/cloudfront-function-runtime.js';
+/**
+ * CloudFront KeyValueStore support for `start-cloudfront`'s CloudFront
+ * Functions (issue #399): the binding-agnostic `cf` module shim + local-file
+ * data source, the deployed-store (`GetKey`) data source, and the command-layer
+ * orchestration that resolves a function's KVS bindings (deployed via
+ * `--from-cfn-stack`, or a local JSON map via `--kvs-file`) and attaches the
+ * `cf` module to each compiled function. A host CLI wiring KVS-backed
+ * CloudFront Functions reuses `resolveKvsModulesForDistribution` with its own
+ * deployed-ARN resolver.
+ */
+export {
+  createCloudFrontModule,
+  createUnboundCloudFrontModule,
+  createLocalFileKvsDataSource,
+  type CloudFrontModule,
+  type CloudFrontKvsHandle,
+  type KvsDataSource,
+} from './local/cloudfront-kvs.js';
+export {
+  createDeployedKvsDataSource,
+  resolveDeployedKvsArnByName,
+  type CreateDeployedKvsDataSourceOptions,
+} from './local/cloudfront-kvs-client.js';
+export {
+  resolveKvsModulesForDistribution,
+  idFromArn,
+  type DeployedKvsRef,
+  type ResolveKvsModulesOptions,
+} from './local/cloudfront-kvs-binding.js';
 export {
   serveFromStaticOrigin,
   type StaticOriginResult,

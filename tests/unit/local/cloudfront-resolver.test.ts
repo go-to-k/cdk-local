@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
+  extractKvsAssociations,
   pickBucketLogicalIdFromOrigin,
   pickFunctionLogicalIdFromArn,
   pickFunctionUrlLogicalIdFromOrigin,
+  pickKvsLogicalIdFromArn,
   pickTargetFunctionLogicalId,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
@@ -416,5 +418,83 @@ describe('intrinsic helpers', () => {
     expect(
       pickBucketLogicalIdFromOrigin({ DomainName: { 'Fn::GetAtt': ['X', 'RegionalDomainName'] } }, template)
     ).toBeUndefined();
+  });
+});
+
+describe('pickKvsLogicalIdFromArn', () => {
+  it('unwraps Fn::GetAtt[<Kvs>, Arn]', () => {
+    expect(pickKvsLogicalIdFromArn({ 'Fn::GetAtt': ['MyKvs', 'Arn'] })).toBe('MyKvs');
+  });
+  it('unwraps Ref', () => {
+    expect(pickKvsLogicalIdFromArn({ Ref: 'MyKvs' })).toBe('MyKvs');
+  });
+  it('unwraps Fn::Sub "${MyKvs.Arn}" and "${MyKvs}"', () => {
+    expect(pickKvsLogicalIdFromArn({ 'Fn::Sub': '${MyKvs.Arn}' })).toBe('MyKvs');
+    expect(pickKvsLogicalIdFromArn({ 'Fn::Sub': '${MyKvs}' })).toBe('MyKvs');
+    expect(pickKvsLogicalIdFromArn({ 'Fn::Sub': ['${MyKvs.Arn}', {}] })).toBe('MyKvs');
+  });
+  it('returns undefined for a literal ARN string', () => {
+    expect(pickKvsLogicalIdFromArn('arn:aws:cloudfront::1:key-value-store/x')).toBeUndefined();
+  });
+});
+
+describe('extractKvsAssociations', () => {
+  it('extracts associations with pre-resolved logical ids', () => {
+    const out = extractKvsAssociations({
+      KeyValueStoreAssociations: [
+        { KeyValueStoreARN: { 'Fn::GetAtt': ['MyKvs', 'Arn'] } },
+        { KeyValueStoreARN: 'arn:aws:cloudfront::1:key-value-store/lit' },
+      ],
+    });
+    expect(out).toHaveLength(2);
+    expect(out[0]).toEqual({ arnValue: { 'Fn::GetAtt': ['MyKvs', 'Arn'] }, kvsLogicalId: 'MyKvs' });
+    expect(out[1]!.kvsLogicalId).toBeUndefined();
+  });
+  it('returns empty when there are no associations', () => {
+    expect(extractKvsAssociations({})).toEqual([]);
+    expect(extractKvsAssociations({ KeyValueStoreAssociations: [] })).toEqual([]);
+  });
+});
+
+describe('resolveCloudFrontDistribution KVS associations', () => {
+  it('attaches kvsAssociations to a function that declares one', () => {
+    const template: CloudFormationTemplate = {
+      Resources: {
+        Kvs: { Type: 'AWS::CloudFront::KeyValueStore', Properties: { Name: 'demo' } },
+        Fn: {
+          Type: 'AWS::CloudFront::Function',
+          Properties: {
+            FunctionCode: "import cf from 'cloudfront';\nfunction handler(e){return e.request}",
+            FunctionConfig: {
+              Runtime: 'cloudfront-js-2.0',
+              KeyValueStoreAssociations: [{ KeyValueStoreARN: { 'Fn::GetAtt': ['Kvs', 'Arn'] } }],
+            },
+          },
+        },
+        Dist: {
+          Type: 'AWS::CloudFront::Distribution',
+          Properties: {
+            DistributionConfig: {
+              DefaultCacheBehavior: {
+                TargetOriginId: 'O',
+                FunctionAssociations: [
+                  { EventType: 'viewer-request', FunctionARN: { 'Fn::GetAtt': ['Fn', 'FunctionARN'] } },
+                ],
+              },
+              Origins: [{ Id: 'O' }],
+            },
+          },
+        },
+      },
+    };
+    const dist = resolveCloudFrontDistribution({
+      stack: { stackName: 'S', displayName: 'S', artifactId: 'S', template, dependencyNames: [] },
+      logicalId: 'Dist',
+    });
+    const vr = dist.behaviors[0]?.viewerRequest;
+    expect(vr?.cloudfrontBindingName).toBe('cf');
+    expect(vr?.kvsAssociations).toEqual([
+      { arnValue: { 'Fn::GetAtt': ['Kvs', 'Arn'] }, kvsLogicalId: 'Kvs' },
+    ]);
   });
 });
