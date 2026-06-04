@@ -302,7 +302,10 @@ const STUDIO_SCRIPT = `
   // the values when the user clicks Invoke / Start.
   const OPTION_SPECS = window.__OPTION_SPECS__ || {};
 
-  function buildOptions(kind) {
+  // prefill (issue #398): the option map a stopped serve was last Started with
+  // (serveApplied.options), so the re-rendered composer comes back filled.
+  // rawPrefill is the raw-extra-args string (serveApplied.rawArgs).
+  function buildOptions(kind, prefill, rawPrefill) {
     const specs = OPTION_SPECS[kind] || [];
     // The composer always shows an "All options" section (raw extra args + the
     // auto-derived flag reference), even for kinds with no curated controls.
@@ -316,10 +319,12 @@ const STUDIO_SCRIPT = `
     const bools = {};
 
     // Shared add-row pair list (used by repeat-pair AND the env-kv KV pane).
-    function pairList(spec) {
+    // initialRows (issue #398) pre-populates one row per { left, right } so a
+    // stopped serve's composer comes back filled with what it was Started with.
+    function pairList(spec, initialRows) {
       const list = el('div', 'pair-rows');
       const pairs = [];
-      const addRow = function () {
+      const addRow = function (initial) {
         const r = el('div', 'pair-row');
         const lv = el('input');
         lv.placeholder = spec.leftPlaceholder;
@@ -327,6 +332,10 @@ const STUDIO_SCRIPT = `
         const rv = el('input');
         rv.placeholder = spec.rightPlaceholder;
         rv.className = 'pair-in';
+        if (initial) {
+          if (initial.left != null) lv.value = String(initial.left);
+          if (initial.right != null) rv.value = String(initial.right);
+        }
         const pair = { l: lv, r: rv };
         const x = el('button', 'pair-x', 'x');
         x.type = 'button';
@@ -344,7 +353,12 @@ const STUDIO_SCRIPT = `
       };
       const add = el('button', 'pair-add', '+ add');
       add.type = 'button';
-      add.onclick = addRow;
+      // Wrap so the click event is not passed as the initial-row arg to addRow.
+      add.onclick = function () { addRow(); };
+      // Pre-populate from initialRows (issue #398) — one filled row each.
+      if (Array.isArray(initialRows)) {
+        initialRows.forEach(function (ir) { addRow(ir); });
+      }
       const wrap = el('div', 'pair-wrap');
       wrap.appendChild(list);
       wrap.appendChild(add);
@@ -356,11 +370,15 @@ const STUDIO_SCRIPT = `
       };
     }
 
+    // The recorded value for a flag (issue #398) — undefined when no prefill.
+    const pre = function (flag) { return prefill ? prefill[flag] : undefined; };
+
     specs.forEach(function (spec) {
       const row = el('div', 'opt-row');
       if (spec.kind === 'boolean') {
         const cb = el('input');
         cb.type = 'checkbox';
+        if (pre(spec.flag) === true) cb.checked = true;
         const lab = el('label', 'opt-bool');
         lab.appendChild(cb);
         lab.appendChild(document.createTextNode(' ' + spec.label));
@@ -372,6 +390,8 @@ const STUDIO_SCRIPT = `
         const inp = el('input');
         inp.type = spec.inputType === 'number' ? 'number' : 'text';
         if (spec.placeholder) inp.placeholder = spec.placeholder;
+        const pv = pre(spec.flag);
+        if (pv != null && pv !== '') inp.value = String(pv);
         row.appendChild(inp);
         if (spec.showWhen) {
           const gate = bools[spec.showWhen];
@@ -393,7 +413,11 @@ const STUDIO_SCRIPT = `
         modes.appendChild(kvBtn);
         modes.appendChild(jsonBtn);
         row.appendChild(modes);
-        const pl = pairList(spec);
+        // Prefill (issue #398): collect() returns an array in KV mode and a
+        // string in JSON mode, so an array prefill restores KV rows and a
+        // string prefill restores the JSON textarea + that mode.
+        const pv = pre(spec.flag);
+        const pl = pairList(spec, Array.isArray(pv) ? pv : undefined);
         row.appendChild(pl.node);
         const ta = el('textarea', 'envkv-ta');
         ta.placeholder = '{ "KEY": "value" }';
@@ -415,19 +439,24 @@ const STUDIO_SCRIPT = `
           ta.style.display = '';
           pl.node.style.display = 'none';
         };
+        if (typeof pv === 'string') {
+          ta.value = pv;
+          jsonBtn.onclick();
+        }
         getters.push(function () {
           return mode === 'json' ? [spec.flag, ta.value] : [spec.flag, pl.rows()];
         });
       } else {
         // repeat-pair: an add-row list of left<sep>right inputs.
         row.appendChild(el('span', 'opt-label', spec.label));
-        const pl = pairList(spec);
+        const pvp = pre(spec.flag);
+        const pl = pairList(spec, Array.isArray(pvp) ? pvp : undefined);
         row.appendChild(pl.node);
         getters.push(function () { return [spec.flag, pl.rows()]; });
       }
       sec.appendChild(row);
     });
-    const allOpts = buildAllOptions(kind);
+    const allOpts = buildAllOptions(kind, rawPrefill);
     wrap.appendChild(allOpts.node);
     return {
       node: wrap,
@@ -450,7 +479,7 @@ const STUDIO_SCRIPT = `
   // UI is never strictly less capable than the headless CLI (issue #301).
   const FLAG_CATALOG = window.__FLAG_CATALOG__ || {};
 
-  function buildAllOptions(kind) {
+  function buildAllOptions(kind, rawPrefill) {
     const cat = FLAG_CATALOG[kind] || { command: '', flags: [] };
     const det = el('details', 'all-options');
     det.appendChild(el('summary', null, 'All options'));
@@ -459,6 +488,11 @@ const STUDIO_SCRIPT = `
     rawRow.appendChild(el('span', 'opt-label', 'Raw extra args'));
     const rawIn = el('input', 'raw-args');
     rawIn.placeholder = '--flag value --other "with spaces"';
+    // Prefill the raw extra args a stopped serve was Started with (issue #398).
+    if (rawPrefill != null && rawPrefill !== '') {
+      rawIn.value = String(rawPrefill);
+      det.open = true;
+    }
     rawRow.appendChild(rawIn);
     const hint = cat.command
       ? 'Appended verbatim to the spawned ' + cat.command + ' command. Quote values with spaces.'
@@ -495,7 +529,7 @@ const STUDIO_SCRIPT = `
   // One labeled Dockerfile <select> row (the discovered Dockerfiles + a
   // "(keep pinned image)" default). Shared by the ecs single picker and the
   // alb per-backing-service pickers.
-  function buildImageOverrideRow(labelText) {
+  function buildImageOverrideRow(labelText, initialValue) {
     // Vertical layout (issue #396): the construct-path label on its own line,
     // the Dockerfile select directly below it (left-aligned) — a long service
     // path no longer pushes the select to the far right. The label uses the
@@ -511,6 +545,11 @@ const STUDIO_SCRIPT = `
       o.value = df;
       sel.appendChild(o);
     });
+    // Restore the Dockerfile picked before a stop (issue #398) — only when it
+    // is still one of the discovered options, else keep the default.
+    if (initialValue && studioDockerfiles.indexOf(initialValue) >= 0) {
+      sel.value = initialValue;
+    }
     row.appendChild(sel);
     return {
       row: row,
@@ -520,10 +559,10 @@ const STUDIO_SCRIPT = `
     };
   }
 
-  function buildImageOverridePicker() {
+  function buildImageOverridePicker(prefillValue) {
     const sec = el('div', 'section options');
     sec.appendChild(el('h3', null, 'Image override'));
-    const r = buildImageOverrideRow('Local Dockerfile');
+    const r = buildImageOverrideRow('Local Dockerfile', prefillValue);
     sec.appendChild(r.row);
     const hint = studioDockerfiles.length
       ? 'This image is pinned to a deployed registry — local edits do not take effect. Pick a Dockerfile to rebuild it locally.'
@@ -542,11 +581,11 @@ const STUDIO_SCRIPT = `
   // one Dockerfile select per deployed-registry-pinned service the ALB fronts.
   // collect() returns a { [serviceId]: dockerfile } map threaded as
   // imageOverrides (one --image-override service=df per entry).
-  function buildAlbImageOverridePicker(services) {
+  function buildAlbImageOverridePicker(services, prefillMap) {
     const sec = el('div', 'section options');
     sec.appendChild(el('h3', null, 'Image override (pinned backing services)'));
     const rows = services.map(function (svc) {
-      const r = buildImageOverrideRow(svc.label);
+      const r = buildImageOverrideRow(svc.label, prefillMap ? prefillMap[svc.id] : undefined);
       sec.appendChild(r.row);
       return { id: svc.id, getValue: r.getValue };
     });
@@ -970,6 +1009,12 @@ const STUDIO_SCRIPT = `
     ws.appendChild(head);
 
     if (!running && !starting && !failed) {
+      // Prefill the composer with what this serve was last Started with (issue
+      // #398): a Start -> Stop (or Reconfigure on a failed serve) re-renders
+      // here, so thread the recorded serveApplied values back into the inputs
+      // instead of dropping them to a blank composer. Undefined on the first
+      // render (no prior start) => blank, as before.
+      const applied = serveApplied.get(id);
       // A pinned ECS service / task definition (deployed-registry image) does
       // not pick up local source edits — offer an image-override Dockerfile
       // picker so it can be rebuilt locally (issue #301 for ecs, #388 for
@@ -977,7 +1022,7 @@ const STUDIO_SCRIPT = `
       // the ecs-task composer threads it to run-task. Local-asset targets
       // rebuild locally already and get no picker.
       if (meta && (meta.kind === 'ecs' || meta.kind === 'ecs-task') && meta.pinned) {
-        const io = buildImageOverridePicker();
+        const io = buildImageOverridePicker(applied && applied.imageOverride);
         ws.appendChild(io.node);
         collectImageOverride = io.collect;
       }
@@ -986,11 +1031,14 @@ const STUDIO_SCRIPT = `
       // a per-service Dockerfile picker that threads
       // --image-override service=dockerfile to start-alb.
       if (meta && meta.kind === 'alb' && meta.backingPinnedServices && meta.backingPinnedServices.length) {
-        const io = buildAlbImageOverridePicker(meta.backingPinnedServices);
+        const io = buildAlbImageOverridePicker(
+          meta.backingPinnedServices,
+          applied && applied.imageOverrides
+        );
         ws.appendChild(io.node);
         collectImageOverrides = io.collect;
       }
-      const opt = buildOptions(kind);
+      const opt = buildOptions(kind, applied && applied.options, applied && applied.rawArgs);
       if (opt.node) ws.appendChild(opt.node);
       collectOpts = opt.collect;
       collectRaw = opt.collectRaw;

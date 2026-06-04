@@ -276,6 +276,13 @@ if ! grep -qF 'io-label' "${BODY_FILE}" || ! grep -qF 'io-hint' "${BODY_FILE}"; 
   echo "FAIL: GET / did not include the legible image-override picker classes (issue #396)"
   exit 1
 fi
+# Serve composer input preservation (issue #398): a stopped serve re-renders
+# its composer pre-filled from the recorded serveApplied values, so the
+# render path threads the applied options + rawArgs into buildOptions.
+if ! grep -qF 'buildOptions(kind, applied' "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the serve-composer input-preservation wiring (issue #398)"
+  exit 1
+fi
 # Target-pane UX (issue #301): collapsible/filterable groups + apply-on-change
 # Session bar (no Save button).
 if ! grep -qF 'id="target-search"' "${BODY_FILE}" || ! grep -qF "function applyTargetFilter" "${BODY_FILE}"; then
@@ -351,7 +358,7 @@ if ! grep -qF 'stoppingIds' "${BODY_FILE}" \
   echo "FAIL: GET / did not include the Stop/Start transient button states (issue #394)"
   exit 1
 fi
-echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry + remembered-header-mode + stop/start transients"
+echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry + remembered-header-mode + stop/start transients + serve-input preservation"
 
 # ---------------------------------------------------------------------------
 # 4. GET /api/targets lists the fixture's targets.
