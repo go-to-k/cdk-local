@@ -1,3 +1,10 @@
+# [0.120.0](https://github.com/go-to-k/cdk-local/compare/v0.119.0...v0.120.0) (2026-06-04)
+
+
+### Features
+
+* **start-cloudfront:** run Lambda@Edge functions locally (LambdaFunctionAssociations) ([#408](https://github.com/go-to-k/cdk-local/issues/408)) ([6946c68](https://github.com/go-to-k/cdk-local/commit/6946c689ecf18dae0337254d1bdd4654b25a7b17))
+
 # [0.119.0](https://github.com/go-to-k/cdk-local/compare/v0.118.1...v0.119.0) (2026-06-04)
 
 
