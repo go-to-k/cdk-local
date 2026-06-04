@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Mock the two resolver functions makeAlbBackingPinnedResolver calls so we can
-// drive its branch logic (issue #382) without a real synth. local-studio.ts
+// drive its branch logic (issue #384) without a real synth. local-studio.ts
 // imports ONLY `resolveAlbTarget` from local-start-alb and `resolveAlbFrontDoor`
 // from elb-front-door-resolver, so the partial mocks cover its imports.
 const h = vi.hoisted(() => ({ resolveAlbTarget: vi.fn(), resolveAlbFrontDoor: vi.fn() }));
@@ -34,7 +34,7 @@ const ecsFwd = (...ids: string[]) => ({
 });
 const albEntry = { id: 'S/Alb', qualifiedId: 'S:Alb' };
 
-describe('makeAlbBackingPinnedResolver (issue #382)', () => {
+describe('makeAlbBackingPinnedResolver (issue #384)', () => {
   beforeEach(() => {
     h.resolveAlbTarget.mockClear();
     h.resolveAlbFrontDoor.mockClear();

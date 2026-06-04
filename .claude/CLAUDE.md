@@ -356,8 +356,15 @@ compute-locally category for Lambda + API Gateway).
   `--from-cfn-stack`, e.g. `ContainerImage.fromEcrRepository(repo)`) is
   detected as pinned — matching `cdkl start-service --from-cfn-stack`; a
   service that cannot be classified now WARNs instead of silently going
-  unmarked. Boot-time only: a runtime Session-bar `--from-cfn-stack` change
-  does NOT re-classify (restart studio to re-detect).
+  unmarked. Issue #385 made this re-runnable: a Session-bar
+  `--from-cfn-stack` change (`PATCH /api/config`) re-runs the classification
+  (`classifyStudioTargets` against a fresh clone of the un-annotated base) and
+  swaps the served target list under the live socket (`RunningStudioServer.
+  setTargets`), so the image-override pickers appear / disappear under the new
+  binding WITHOUT restarting studio (latest-wins on rapid patches; the UI
+  re-fetches `/api/targets` after the binding change). The pin classification
+  re-runs ONLY when `--from-cfn-stack` actually changes (a watch / assume-role
+  toggle does not).
 - `src/synthesis/` — thin wrapper over `@aws-cdk/toolkit-lib`
   (`Toolkit.fromCdkApp()` + context store threading) that returns
   `StackInfo[]` for downstream consumers.
@@ -476,7 +483,7 @@ compute-locally category for Lambda + API Gateway).
   Dockerfiles + a `pinned` flag per ecs service — set by
   `annotatePinnedEcsTargets` — for the image-override picker, issue #301;
   plus `backingPinnedServices` per alb entry — set by
-  `annotateAlbPinnedBackingServices`, issue #382 — for the ALB's
+  `annotateAlbPinnedBackingServices`, issue #384 — for the ALB's
   per-backing-service image-override picker;
   CDK custom-resource / provider-framework Lambdas are excluded by
   default via `filterStudioCustomResources`, issue #323 — pass
@@ -551,7 +558,7 @@ compute-locally category for Lambda + API Gateway).
   the serve body so `start-service` rebuilds the pinned image from local
   source; a local-asset service (which already hot-reloads under `--watch`)
   gets no picker (issue #301). An `alb` serve gets the SAME picker for its
-  pinned BACKING services (issue #382): `start-alb` boots the ALB's backing
+  pinned BACKING services (issue #384): `start-alb` boots the ALB's backing
   ECS services, so studio resolves each ALB (`resolveAlbFrontDoor`) to its
   backing services at boot, intersects them with the pinned `ecs` set
   (`annotateAlbPinnedBackingServices` + `makeAlbBackingPinnedResolver`), and

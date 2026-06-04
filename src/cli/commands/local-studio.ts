@@ -29,6 +29,7 @@ import {
   annotatePinnedEcsTargets,
   annotateAlbPinnedBackingServices,
   type RunningStudioServer,
+  type StudioTargetGroup,
 } from '../../local/studio-server.js';
 import { resolveAlbFrontDoor } from '../../local/elb-front-door-resolver.js';
 import { resolveAlbTarget } from './local-start-alb.js';
@@ -125,7 +126,7 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     }
     if (imageOverride.trim() !== '') runImageOverride = imageOverride;
   }
-  // Per-backing-service image overrides for an `alb` serve (issue #382): a map
+  // Per-backing-service image overrides for an `alb` serve (issue #384): a map
   // of `Stack:LogicalId` -> Dockerfile path. Validate at the boundary so a
   // malformed map fails as a clean 400; drop blank values (the "(keep pinned
   // image)" picker choice).
@@ -547,9 +548,10 @@ export async function prepareEcsImageContexts(args: {
  * the pin resolves, and surfaces a WARN (not a silent DEBUG swallow) when a
  * service still cannot be classified.
  *
- * NOTE: the target list + these pinned flags are computed ONCE at boot. A
- * run-time Session-bar `--from-cfn-stack` change (`PATCH /api/config`) does
- * NOT re-classify — restart studio to re-detect pins under a new binding.
+ * The classifier is re-run whenever the Session-bar `--from-cfn-stack` binding
+ * changes (`PATCH /api/config`), so the pickers appear / disappear under the
+ * new binding without restarting studio (issue #385) — `classifyTargets`
+ * re-invokes this against a fresh clone of the un-annotated target groups.
  *
  * Returns a `(id) => boolean` callback (true = pinned). Exported for testing.
  */
@@ -581,7 +583,7 @@ export function makePinClassifier(args: {
 
 /**
  * Build the boot-time resolver `annotateAlbPinnedBackingServices` calls per
- * `alb` entry (issue #382). It resolves the ALB to its backing ECS services
+ * `alb` entry (issue #384). It resolves the ALB to its backing ECS services
  * (`resolveAlbFrontDoor`, template-only) and returns the subset that is in
  * `pinnedEcsByQualifiedId` — the `ecs` services already classified as a
  * deployed-registry pin by {@link makePinClassifier}. Each returned `id` is the
@@ -637,6 +639,112 @@ export function makeAlbBackingPinnedResolver(args: {
       return [];
     }
   };
+}
+
+/**
+ * Classify the studio target list for a given `--from-cfn-stack` binding
+ * (issue #385): annotate a FRESH clone of the un-annotated base groups with the
+ * `pinned` (ecs services) + `backingPinnedServices` (alb entries) image-override
+ * hints, and scan the app dir for Dockerfiles when at least one target is
+ * pinned. Returns the annotated groups + dockerfiles; the un-annotated
+ * `baseGroups` argument is left untouched so it can be re-classified under a
+ * different binding (the Session-bar `--from-cfn-stack` change path —
+ * `PATCH /api/config` — re-runs this and swaps the served target list, so the
+ * pickers appear without restarting studio). Runs once at boot and again per
+ * binding change.
+ *
+ * The clone means a re-classify never inherits stale pins; the `fromCfnStack`
+ * override is threaded into the state-source options so the pin classifier
+ * resolves INTRINSIC-ECR images against the right (or no) deployed stack
+ * (issue #354). Exported for unit testing.
+ */
+export async function classifyStudioTargets(args: {
+  baseGroups: StudioTargetGroup[];
+  stacks: StackInfo[];
+  servableEcs: ReadonlySet<string>;
+  options: LocalStateSourceLikeOptions;
+  fromCfnStack: string | boolean | undefined;
+  logger: ReturnType<typeof getLogger>;
+}): Promise<{ groups: StudioTargetGroup[]; dockerfiles: string[] }> {
+  const { baseGroups, stacks, servableEcs, options, fromCfnStack, logger } = args;
+  const groups = structuredClone(baseGroups) as StudioTargetGroup[];
+  // Re-bind the state-source options to the CURRENT `--from-cfn-stack` so the
+  // pin classifier resolves intrinsic-ECR images against the right (or no)
+  // deployed stack. `createLocalStateProvider` reads `fromCfnStack` / `profile`
+  // / region off this bag. `as` (not an annotation): with
+  // exactOptionalPropertyTypes a literal whose `fromCfnStack` may be `undefined`
+  // cannot be assigned to the optional-but-non-undefined field; an undefined /
+  // false value reads as "no --from-cfn-stack" via `isCfnFlagPresent`.
+  const classifyOptions = { ...options, fromCfnStack } as LocalStateSourceLikeOptions;
+  const contextByStack = await prepareEcsImageContexts({
+    serviceIds: [...servableEcs],
+    stacks,
+    options: classifyOptions,
+    logger,
+  });
+  const anyPinned = annotatePinnedEcsTargets(
+    groups,
+    makePinClassifier({ stacks, contextByStack, logger })
+  );
+  const pinnedEcsByQualifiedId = new Map<string, string>();
+  for (const g of groups) {
+    if (g.kind !== 'ecs') continue;
+    for (const e of g.entries) {
+      if (e.pinned) pinnedEcsByQualifiedId.set(e.qualifiedId, e.id);
+    }
+  }
+  const anyAlbBackingPinned = annotateAlbPinnedBackingServices(
+    groups,
+    makeAlbBackingPinnedResolver({ stacks, pinnedEcsByQualifiedId, logger })
+  );
+  const dockerfiles = anyPinned || anyAlbBackingPinned ? discoverDockerfiles(process.cwd()) : [];
+  return { groups, dockerfiles };
+}
+
+/**
+ * Re-classify the studio target list when the Session-bar `--from-cfn-stack`
+ * binding changes (issue #385), and swap the served list via `applyTargets`.
+ * The orchestration the `PATCH /api/config` handler runs, extracted so its
+ * branches are unit-testable without booting the studio server:
+ *
+ *  - **change gate**: returns immediately when `after === before` (a watch /
+ *    assume-role toggle does not change the pin classification);
+ *  - **latest-wins**: bumps `tokenRef.current` before the async `classify` and
+ *    applies the result ONLY if its token is still current — so a slow earlier
+ *    re-classify cannot clobber a newer binding's result when patches arrive in
+ *    quick succession;
+ *  - **fail-soft**: a `classify` rejection is WARN-logged and the previous
+ *    target list is kept (never throws — the PATCH still returns the config).
+ *
+ * `after` (the post-patch binding) is threaded into `classify`, never the boot
+ * value, so the pin classifier resolves against the new stack. Exported for
+ * unit testing.
+ */
+export async function reclassifyTargetsOnBindingChange(args: {
+  before: string | boolean | undefined;
+  after: string | boolean | undefined;
+  classify: (
+    fromCfnStack: string | boolean | undefined
+  ) => Promise<{ groups: StudioTargetGroup[]; dockerfiles: string[] }>;
+  applyTargets: (groups: StudioTargetGroup[], dockerfiles: string[]) => void;
+  tokenRef: { current: number };
+  logger: ReturnType<typeof getLogger>;
+}): Promise<void> {
+  const { before, after, classify, applyTargets, tokenRef, logger } = args;
+  if (after === before) return;
+  logger.info('--from-cfn-stack binding changed; re-classifying targets...');
+  const myToken = ++tokenRef.current;
+  try {
+    const { groups, dockerfiles } = await classify(after);
+    if (myToken === tokenRef.current) applyTargets(groups, dockerfiles);
+  } catch (err) {
+    logger.warn(
+      'studio: could not re-classify targets after a --from-cfn-stack change; the target ' +
+        `list keeps its previous pins (restart studio to retry). ${
+          err instanceof Error ? err.message : String(err)
+        }`
+    );
+  }
 }
 
 interface LocalStudioOptions {
@@ -774,68 +882,51 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
       .flatMap((g) => g.entries.filter((e) => e.servable).map((e) => e.id))
   );
 
-  // Mark servable ECS services whose image is a deployed-registry pin (ECR /
-  // public) rather than a local CDK asset (issue #301). A pinned image does
-  // NOT pick up local source edits, so the UI offers an image-override
-  // Dockerfile picker for those services; a local-asset service already
-  // hot-reloads under `--watch` and gets no picker.
+  // Mark servable ECS services / ALB-backing services whose image is a
+  // deployed-registry pin (ECR / public) rather than a local CDK asset
+  // (issue #301 / #384). A pinned image does NOT pick up local source edits,
+  // so the UI offers an image-override Dockerfile picker for those targets; a
+  // local-asset service already hot-reloads under `--watch` and gets no picker.
   //
   // Classification reads the synthed template by default. Under
-  // `--from-cfn-stack` (set at boot via the CLI flag), an ECR image expressed
-  // as an INTRINSIC URI (e.g. `ContainerImage.fromEcrRepository(repo)`) is
-  // ONLY resolvable with the deployed-state image-resolution context — the
-  // same context `cdkl run-task` / `start-service --from-cfn-stack` build. So
-  // we build a `LocalStateProvider` once at boot and thread each service's
-  // owning-stack `EcsImageResolutionContext` into the resolver; without it the
-  // service would silently stay unmarked even though start-service detects the
-  // pin (issue #354). The hint only governs whether the UI surfaces the
-  // picker; a mis-hinted service can still be overridden via the "All options"
-  // raw-args `--image-override`. A service that still cannot be classified is
-  // WARN-logged (not silently swallowed). Dockerfiles are scanned once, only
-  // when at least one service is pinned, so an all-local app pays nothing.
+  // `--from-cfn-stack`, an ECR image expressed as an INTRINSIC URI (e.g.
+  // `ContainerImage.fromEcrRepository(repo)`) is ONLY resolvable with the
+  // deployed-state image-resolution context — the same context `cdkl run-task`
+  // / `start-service --from-cfn-stack` build. So we build a `LocalStateProvider`
+  // and thread each service's owning-stack `EcsImageResolutionContext` into the
+  // resolver; without it the service would silently stay unmarked even though
+  // start-service detects the pin (issue #354). The hint only governs whether
+  // the UI surfaces the picker; a mis-hinted service can still be overridden via
+  // the "All options" raw-args `--image-override`. A service that still cannot
+  // be classified is WARN-logged (not silently swallowed). Dockerfiles are
+  // scanned once per classify, only when at least one target is pinned, so an
+  // all-local app pays nothing.
   //
-  // NOTE: the target list + pinned flags are boot-time only. A run-time
-  // Session-bar `--from-cfn-stack` change (`PATCH /api/config`) does NOT
-  // re-classify — restart studio to re-detect pins under a new binding.
-  // Pre-build each owning stack's deployed-state image-resolution context
-  // (only under `--from-cfn-stack`; each per-stack state provider is created
-  // + disposed inside the helper), then classify every servable service with
-  // its stack's context threaded into the resolver.
-  const contextByStack = await prepareEcsImageContexts({
-    serviceIds: [...servableEcs],
-    stacks,
-    options,
-    logger,
-  });
-  const anyPinned = annotatePinnedEcsTargets(
-    targetGroups,
-    makePinClassifier({ stacks, contextByStack, logger })
-  );
+  // Factored into `classifyTargets(fromCfnStack)` so the SAME path runs at boot
+  // AND on a Session-bar `--from-cfn-stack` change (`PATCH /api/config`, issue
+  // #385): the classify annotations (`pinned` / `backingPinnedServices`) are
+  // added to a FRESH clone of the un-annotated base each call, so a re-classify
+  // under a new binding never inherits stale pins from the prior one. The ALB
+  // picker (issue #384) intersects each ALB's backing ECS services with the
+  // pinned `ecs` set classified above; its key is `start-alb`'s own
+  // `Stack:LogicalId` service-boot target.
+  const baseTargetGroups = targetGroups;
+  const classifyTargets = (
+    fromCfnStack: string | boolean | undefined
+  ): Promise<{ groups: StudioTargetGroup[]; dockerfiles: string[] }> =>
+    classifyStudioTargets({
+      baseGroups: baseTargetGroups,
+      stacks,
+      servableEcs,
+      options,
+      fromCfnStack,
+      logger,
+    });
 
-  // Issue #382 — offer the image-override Dockerfile picker on the ALB
-  // composer too, not only on a standalone `ecs` service. `start-alb` boots
-  // the ALB's backing ECS services, so a pinned (deployed-registry) backing
-  // service has the same "local source edits do not take effect" problem a
-  // standalone pinned service does. Resolve each ALB to its backing ECS
-  // services and intersect with the pinned `ecs` set classified above; a
-  // pinned backing service becomes a per-service picker on the alb composer
-  // that threads `--image-override <Stack:LogicalId>=<dockerfile>` to the
-  // spawned `start-alb` (the `Stack:LogicalId` key is start-alb's own
-  // service-boot target). ALB resolution is template-only, but the pinned set
-  // it intersects is empty without `--from-cfn-stack` for INTRINSIC-ECR
-  // services — same boot-time-only caveat as the ecs picker.
-  const pinnedEcsByQualifiedId = new Map<string, string>();
-  for (const g of targetGroups) {
-    if (g.kind !== 'ecs') continue;
-    for (const e of g.entries) {
-      if (e.pinned) pinnedEcsByQualifiedId.set(e.qualifiedId, e.id);
-    }
-  }
-  const anyAlbBackingPinned = annotateAlbPinnedBackingServices(
-    targetGroups,
-    makeAlbBackingPinnedResolver({ stacks, pinnedEcsByQualifiedId, logger })
+  // Boot-time classification under the CLI `--from-cfn-stack` value.
+  const { groups: initialGroups, dockerfiles: initialDockerfiles } = await classifyTargets(
+    options.fromCfnStack
   );
-  const dockerfiles = anyPinned || anyAlbBackingPinned ? discoverDockerfiles(process.cwd()) : [];
 
   const bus = new StudioEventBus();
   // `process.argv[1]` is the running CLI entry (`dist/cli.js` / the `cdkl`
@@ -888,11 +979,23 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
   // logs at CloudWatch granularity (slice C3).
   const store = createStudioStore(bus);
 
+  // The running server, captured AFTER `startStudioServer` resolves so the
+  // `patchConfig` handler (defined inline below) can call `setTargets` on it
+  // to swap the target list under the live socket when `--from-cfn-stack`
+  // changes (issue #385). The handler only fires at run-time, by which point
+  // this is assigned. A monotonic token makes re-classification latest-wins so
+  // a slow earlier classify cannot clobber a newer binding's result.
+  let serverRef: RunningStudioServer | undefined;
+  // Monotonic re-classification token (latest-wins). Held in a ref object so
+  // {@link reclassifyTargetsOnBindingChange} can bump + compare it across
+  // overlapping PATCHes without recreating the closure.
+  const reclassifyToken = { current: 0 };
+
   const server = await startStudioServer({
     port,
     bus,
-    targetGroups,
-    dockerfiles,
+    targetGroups: initialGroups,
+    dockerfiles: initialDockerfiles,
     appLabel,
     cliName: getEmbedConfig().cliName,
     store,
@@ -942,13 +1045,27 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
     },
     getRunning: () => ({ running: serveManager.list() }),
     getConfig: () => sessionConfigSnapshot(),
-    patchConfig: (body) => {
+    patchConfig: async (body) => {
       // Mutates the shared childConfig the dispatcher + serve-manager read
       // per-run, so the new binding applies to subsequent invokes / serves.
+      const beforeFromCfn = childConfig.fromCfnStack;
       applyConfigPatch(body, childConfig);
-      return Promise.resolve(sessionConfigSnapshot());
+      // A `--from-cfn-stack` change re-runs the ECS image-pin classification +
+      // swaps the served target list under the live socket (issue #385); other
+      // edits (assume-role / watch) skip it. The post-patch `childConfig.
+      // fromCfnStack` is the new binding to classify against.
+      await reclassifyTargetsOnBindingChange({
+        before: beforeFromCfn,
+        after: childConfig.fromCfnStack,
+        classify: classifyTargets,
+        applyTargets: (groups, dockerfiles) => serverRef?.setTargets(groups, dockerfiles),
+        tokenRef: reclassifyToken,
+        logger,
+      });
+      return sessionConfigSnapshot();
     },
   });
+  serverRef = server;
 
   const cliName = getEmbedConfig().cliName;
   logger.info(`${cliName} studio is running at ${server.url}`);

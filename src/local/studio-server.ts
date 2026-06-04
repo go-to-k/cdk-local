@@ -36,7 +36,7 @@ export interface StudioTarget {
   pinned?: boolean;
   /**
    * Set on an `alb` entry: the deployed-registry-pinned ECS services this ALB
-   * fronts (issue #382). `start-alb` boots the ALB's backing services, so a
+   * fronts (issue #384). `start-alb` boots the ALB's backing services, so a
    * pinned backing service has the same "local edits do not take effect"
    * problem a standalone pinned `ecs` service does — the alb composer offers a
    * per-service Dockerfile picker that threads
@@ -133,7 +133,7 @@ export function annotatePinnedEcsTargets(
 
 /**
  * Annotate each `alb` entry of `groups` with the deployed-registry-pinned ECS
- * services that ALB fronts (issue #382), so the alb composer can offer a
+ * services that ALB fronts (issue #384), so the alb composer can offer a
  * per-service image-override Dockerfile picker. `resolveBackingPinned` maps one
  * ALB entry to its pinned backing services (`{ id, label }`, where `id` is the
  * `--image-override` key — `start-alb`'s `Stack:LogicalId` service-boot
@@ -285,6 +285,14 @@ export interface RunningStudioServer {
   port: number;
   /** Stop the server and release the port. */
   close: () => Promise<void>;
+  /**
+   * Replace the target list served at `GET /api/targets` under the live socket
+   * (issue #385). studio calls this when the Session-bar `--from-cfn-stack`
+   * binding changes and the ECS image-pin classification is re-run, so the
+   * image-override pickers appear without restarting studio. The next
+   * `GET /api/targets` returns the new groups + dockerfiles.
+   */
+  setTargets: (groups: StudioTargetGroup[], dockerfiles?: string[]) => void;
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
@@ -301,13 +309,18 @@ export async function startStudioServer(
   const host = options.host ?? '127.0.0.1';
   const maxBump = options.maxPortBump ?? 20;
   const html = renderStudioHtml(options.appLabel, options.cliName);
-  const targetsJson = JSON.stringify({
+  // The served target list is mutable (issue #385): a Session-bar
+  // `--from-cfn-stack` change re-runs the ECS pin classification and pushes a
+  // fresh groups + dockerfiles set in via `setTargets`. Held as a
+  // pre-stringified cell read per `GET /api/targets`, so the swap is atomic
+  // (one assignment) and a request reads either the old or the new JSON whole.
+  let targetsJson = JSON.stringify({
     groups: options.targetGroups,
     dockerfiles: options.dockerfiles ?? [],
   });
 
   const server = createServer((req, res) =>
-    handleRequest(req, res, options.bus, html, targetsJson, options)
+    handleRequest(req, res, options.bus, html, () => targetsJson, options)
   );
 
   const boundPort = await listenWithBump(server, host, options.port, maxBump);
@@ -322,6 +335,9 @@ export async function startStudioServer(
         // so without this `close()` would hang on live EventSource clients.
         server.closeAllConnections?.();
       }),
+    setTargets: (groups, dockerfiles) => {
+      targetsJson = JSON.stringify({ groups, dockerfiles: dockerfiles ?? [] });
+    },
   };
 }
 
@@ -330,7 +346,7 @@ function handleRequest(
   res: ServerResponse,
   bus: StudioEventBus,
   html: string,
-  targetsJson: string,
+  getTargetsJson: () => string,
   options: StudioServerOptions
 ): void {
   const url = req.url ?? '/';
@@ -343,7 +359,7 @@ function handleRequest(
   }
   if (req.method === 'GET' && path === '/api/targets') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(targetsJson);
+    res.end(getTargetsJson());
     return;
   }
   if (req.method === 'GET' && path === '/api/running') {

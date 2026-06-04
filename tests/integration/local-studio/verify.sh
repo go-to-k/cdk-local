@@ -591,6 +591,47 @@ curl -s -X PATCH "${URL}/api/config" -H 'content-type: application/json' \
   -d '{"fromCfnStack":null}' -o /dev/null || true
 
 # ---------------------------------------------------------------------------
+# 6c2. Re-classify on --from-cfn-stack change (issue #385): a PATCH that CHANGES
+#      the binding re-runs the ECS image-pin classification + swaps the served
+#      target list under the live socket, so the image-override pickers refresh
+#      WITHOUT restarting studio. The PATCH handler AWAITS the re-classification
+#      before responding. Two end-to-end signals:
+#       (a) the studio log emits the re-classify banner (info-level, fired ONLY
+#           on a from-cfn-stack change — absent at boot), and
+#       (b) GET /api/targets still re-serves the full target list (the swap path
+#           did not break serving).
+#      The fixture's ECS service image is a public-registry literal (pinned
+#      regardless of --from-cfn-stack), so the VISIBLE pin does not flip here;
+#      the unit suite covers the pinned-flip + swap-re-serve cases.
+echo "==> PATCH /api/config --from-cfn-stack re-classifies the target list (issue #385)"
+# Snapshot the studio log line count so we inspect only lines THIS patch emits.
+LOG_OFFSET=$(wc -l < "${LOG_FILE}")
+RECLASS_PATCH=$(mktemp)
+HTTP_RC=$(curl -s -o "${RECLASS_PATCH}" -w '%{http_code}' -X PATCH "${URL}/api/config" \
+  -H 'content-type: application/json' -d '{"fromCfnStack":"BOGUSRECLASS385"}' || true)
+if [[ "${HTTP_RC}" != "200" ]]; then
+  echo "FAIL: re-classify PATCH returned HTTP ${HTTP_RC}"; cat "${RECLASS_PATCH}"; rm -f "${RECLASS_PATCH}"; exit 1
+fi
+rm -f "${RECLASS_PATCH}"
+tail -n +"$((LOG_OFFSET + 1))" "${LOG_FILE}" > "${BODY_FILE}" || true
+if ! grep -qF 're-classifying targets' "${BODY_FILE}"; then
+  echo "FAIL: a --from-cfn-stack change did not re-run the target classification"
+  echo "----- studio log tail -----"; cat "${BODY_FILE}"; echo "---------------------------"
+  exit 1
+fi
+echo "    OK: the --from-cfn-stack change re-ran classification (banner observed)"
+# The swapped target list still serves the full set under the live socket.
+curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
+if ! grep -qF '"kind":"ecs"' "${BODY_FILE}" || ! grep -qF 'LocalStudioFixture/MyHandler' "${BODY_FILE}"; then
+  echo "FAIL: GET /api/targets did not re-serve the target list after the re-classify swap"
+  cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: GET /api/targets re-served the swapped target list"
+# Reset the binding so later sections are unaffected.
+curl -s -X PATCH "${URL}/api/config" -H 'content-type: application/json' \
+  -d '{"fromCfnStack":null}' -o /dev/null || true
+
+# ---------------------------------------------------------------------------
 # 6d. POST /api/run invokes an AgentCore runtime (issue #303): the studio
 #     dispatch spawns `cdkl invoke-agentcore LocalStudioFixture/MyAgent`, which
 #     `docker build`s the `agent/` container (linux/arm64) and runs the HTTP
@@ -1306,7 +1347,7 @@ sleep 3
 echo "    OK: image-override service stopped"
 
 # ---------------------------------------------------------------------------
-# 10d. ALB image-override picker (issue #382): MyAlb fronts the pinned
+# 10d. ALB image-override picker (issue #384): MyAlb fronts the pinned
 #      MyService. Studio resolves the ALB's backing ECS services + offers a
 #      per-service Dockerfile picker on the ALB composer, threading
 #      `--image-override <Stack:LogicalId>=./Dockerfile.override` to start-alb.
@@ -1318,7 +1359,7 @@ echo "    OK: image-override service stopped"
 #      BEHIND the ALB (the picker -> /api/run -> imageOverrides ->
 #      --image-override -> start-alb rebuild path end-to-end).
 # ---------------------------------------------------------------------------
-echo "==> ALB image-override: /api/targets exposes the ALB's pinned backing services (issue #382)"
+echo "==> ALB image-override: /api/targets exposes the ALB's pinned backing services (issue #384)"
 curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
 ALB_SVC_KEY=$(python3 -c '
 import json, sys

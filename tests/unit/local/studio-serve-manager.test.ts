@@ -179,7 +179,7 @@ describe('createStudioServeManager', () => {
     expect(argv[j + 1]).toBe('arn:aws:iam::123456789012:role/svc');
   });
 
-  it('threads one --image-override <service>=<dockerfile> per backing service for an alb serve (issue #382)', async () => {
+  it('threads one --image-override <service>=<dockerfile> per backing service for an alb serve (issue #384)', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();
     const spawnFn = vi.fn(() => child as never);
