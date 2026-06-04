@@ -44,6 +44,44 @@ function formatTimestamp(): string {
 }
 
 /**
+ * Resolve whether ANSI color should be emitted by default.
+ *
+ * Color is appropriate for an interactive terminal but is noise (literal
+ * `\x1b[31m...` escapes) when the output is a pipe — e.g. when `cdkl studio`
+ * spawns `cdkl invoke` / a serve command as a child and captures its output to
+ * render in the browser, where the raw escapes leak as visible text. So the
+ * default tracks the stdout TTY-ness, with the two standard env overrides:
+ *
+ * - `NO_COLOR` (any non-empty value) forces colors OFF (https://no-color.org).
+ * - `FORCE_COLOR` (non-empty, not `'0'` / `'false'`) forces colors ON, even
+ *   when not a TTY (the convention many CLIs honor for CI / log capture).
+ * - otherwise: on when `process.stdout.isTTY`.
+ *
+ * We gate on `process.stdout.isTTY` even though warn / error go to stderr via
+ * `console.error` / `console.warn`. In the case this fix targets — a piped
+ * child (e.g. studio) — NEITHER stdout nor stderr is a TTY, so gating on stdout
+ * still yields colorless output. Tracking stdout matches common CLI tooling and
+ * keeps a single, predictable signal; an explicit `useColors` argument (passed
+ * by child loggers) always overrides this default.
+ */
+export function resolveDefaultUseColors(): boolean {
+  const noColor = process.env['NO_COLOR'];
+  if (noColor !== undefined && noColor !== '') {
+    return false;
+  }
+  const forceColor = process.env['FORCE_COLOR'];
+  if (
+    forceColor !== undefined &&
+    forceColor !== '' &&
+    forceColor !== '0' &&
+    forceColor !== 'false'
+  ) {
+    return true;
+  }
+  return !!process.stdout.isTTY;
+}
+
+/**
  * Console logger implementation
  *
  * Supports two output modes:
@@ -54,7 +92,7 @@ export class ConsoleLogger implements Logger {
   private level: LogLevel;
   private useColors: boolean;
 
-  constructor(level: LogLevel = 'info', useColors: boolean = true) {
+  constructor(level: LogLevel = 'info', useColors: boolean = resolveDefaultUseColors()) {
     this.level = level;
     this.useColors = useColors;
   }
