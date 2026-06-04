@@ -546,6 +546,36 @@ describe('createStudioServeManager', () => {
     expect(argv[i + 1]).toBe('Stack/MyService=./Dockerfile.local');
   });
 
+  it('threads imageOverride for an ecs-task run-task too (issue #388)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({
+      targetId: 'Stack/MyTask',
+      kind: 'ecs-task',
+      imageOverride: './Dockerfile.local',
+    });
+    child.stdout.emit('data', 'Task running (family=fam)\n');
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    // The ecs-task kind spawns run-task, and the override threads kind-agnostically.
+    expect(argv).toContain('run-task');
+    const i = argv.indexOf('--image-override');
+    expect(i).toBeGreaterThan(-1);
+    expect(argv[i + 1]).toBe('Stack/MyTask=./Dockerfile.local');
+  });
+
   it('materializes --env-vars into a SAM-shape temp file and removes it on stop (issue #355)', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

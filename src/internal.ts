@@ -768,6 +768,7 @@ export {
   toStudioTargetGroups,
   filterStudioTargetGroups,
   annotatePinnedEcsTargets,
+  annotateEcsTaskPinnedTargets,
   annotateAlbPinnedBackingServices,
   type StudioServerOptions,
   type RunningStudioServer,

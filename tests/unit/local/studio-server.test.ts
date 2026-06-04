@@ -6,6 +6,7 @@ import {
   toStudioTargetGroups,
   filterStudioTargetGroups,
   annotatePinnedEcsTargets,
+  annotateEcsTaskPinnedTargets,
   annotateAlbPinnedBackingServices,
   type RunningStudioServer,
   type StudioTargetGroup,
@@ -218,6 +219,43 @@ describe('annotatePinnedEcsTargets', () => {
     const g = groups();
     annotatePinnedEcsTargets(g, () => true);
     expect(g[1].entries[0].pinned).toBeUndefined();
+  });
+});
+
+describe('annotateEcsTaskPinnedTargets (issue #388)', () => {
+  const groups = (): StudioTargetGroup[] => [
+    {
+      kind: 'ecs',
+      title: 'ECS Services',
+      entries: [{ id: 'S/Svc', qualifiedId: 'S:Svc', servable: true }],
+    },
+    {
+      kind: 'ecs-task',
+      title: 'ECS Task Definitions',
+      entries: [
+        { id: 'S/PinnedTask', qualifiedId: 'S:PinnedTask' },
+        { id: 'S/AssetTask', qualifiedId: 'S:AssetTask' },
+      ],
+    },
+  ];
+
+  it('marks the ecs-task entries the classifier returns true for (no servable gate)', () => {
+    const g = groups();
+    const any = annotateEcsTaskPinnedTargets(g, (id) => id === 'S/PinnedTask');
+    expect(any).toBe(true);
+    const tasks = g[1].entries;
+    expect(tasks[0].pinned).toBe(true); // S/PinnedTask
+    expect(tasks[1].pinned).toBeUndefined(); // S/AssetTask
+  });
+
+  it('leaves the ecs (service) group untouched — that is annotatePinnedEcsTargets job', () => {
+    const g = groups();
+    annotateEcsTaskPinnedTargets(g, () => true);
+    expect(g[0].entries[0].pinned).toBeUndefined();
+  });
+
+  it('returns false when no task definition is pinned', () => {
+    expect(annotateEcsTaskPinnedTargets(groups(), () => false)).toBe(false);
   });
 });
 

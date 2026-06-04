@@ -27,6 +27,7 @@ import {
   toStudioTargetGroups,
   filterStudioTargetGroups,
   annotatePinnedEcsTargets,
+  annotateEcsTaskPinnedTargets,
   annotateAlbPinnedBackingServices,
   type RunningStudioServer,
   type StudioTargetGroup,
@@ -50,7 +51,11 @@ import { relayServeRequest } from '../../local/studio-request-relay.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
 import { discoverDockerfiles } from '../../local/image-override-engine.js';
-import { parseEcsTarget, type EcsImageResolutionContext } from '../../local/ecs-task-resolver.js';
+import {
+  parseEcsTarget,
+  resolveEcsTaskTarget,
+  type EcsImageResolutionContext,
+} from '../../local/ecs-task-resolver.js';
 import { matchStacks } from '../stack-matcher.js';
 import {
   createLocalStateProvider,
@@ -582,6 +587,44 @@ export function makePinClassifier(args: {
 }
 
 /**
+ * Build the boot-time pin classifier {@link annotateEcsTaskPinnedTargets} calls
+ * per `ecs-task` task definition (issue #388) — the counterpart of
+ * {@link makePinClassifier} for task defs. Resolves the task via
+ * {@link resolveEcsTaskTarget} (threading the owning stack's
+ * {@link EcsImageResolutionContext} so an INTRINSIC-ECR image resolves under
+ * `--from-cfn-stack`, same as the service path) and classifies its
+ * representative container (first essential, else first) as a deployed-registry
+ * pin when the image kind is not `cdk-asset`. A task def that cannot be
+ * classified is WARN-logged (not silently swallowed) and left unmarked.
+ *
+ * Returns a `(id) => boolean` callback (true = pinned). Exported for testing.
+ */
+export function makeTaskPinClassifier(args: {
+  stacks: StackInfo[];
+  contextByStack: Map<string, EcsImageResolutionContext | undefined>;
+  logger: ReturnType<typeof getLogger>;
+}): (id: string) => boolean {
+  const { stacks, contextByStack, logger } = args;
+  return (id: string): boolean => {
+    try {
+      const stack = resolveEcsServiceStack(id, stacks);
+      const context = stack ? contextByStack.get(stack.stackName) : undefined;
+      const task = resolveEcsTaskTarget(id, stacks, context);
+      const representative = task.containers.find((c) => c.essential) ?? task.containers[0];
+      return representative !== undefined && representative.image.kind !== 'cdk-asset';
+    } catch (err) {
+      logger.warn(
+        `studio: could not classify image-pin status for ECS task definition '${id}'; leaving it ` +
+          `unmarked (the image-override picker will not be offered). ${
+            err instanceof Error ? err.message : String(err)
+          }`
+      );
+      return false;
+    }
+  };
+}
+
+/**
  * Build the boot-time resolver `annotateAlbPinnedBackingServices` calls per
  * `alb` entry (issue #384). It resolves the ALB to its backing ECS services
  * (`resolveAlbFrontDoor`, template-only) and returns the subset that is in
@@ -676,8 +719,16 @@ export async function classifyStudioTargets(args: {
   // cannot be assigned to the optional-but-non-undefined field; an undefined /
   // false value reads as "no --from-cfn-stack" via `isCfnFlagPresent`.
   const classifyOptions = { ...options, fromCfnStack } as LocalStateSourceLikeOptions;
+  // Build the deployed-state image-resolution context per owning stack for the
+  // servable ECS services AND the ECS task definitions (issue #388), so an
+  // INTRINSIC-ECR image on EITHER resolves under `--from-cfn-stack`. The
+  // contexts are keyed by stack name, so a task def sharing a stack with a
+  // service reuses the same context.
+  const taskDefIds = (baseGroups.find((g) => g.kind === 'ecs-task')?.entries ?? []).map(
+    (e) => e.id
+  );
   const contextByStack = await prepareEcsImageContexts({
-    serviceIds: [...servableEcs],
+    serviceIds: [...servableEcs, ...taskDefIds],
     stacks,
     options: classifyOptions,
     logger,
@@ -685,6 +736,13 @@ export async function classifyStudioTargets(args: {
   const anyPinned = annotatePinnedEcsTargets(
     groups,
     makePinClassifier({ stacks, contextByStack, logger })
+  );
+  // Issue #388 — classify ECS task definitions (the `ecs-task` kind) too, so a
+  // pinned task-def image gets the same image-override picker. The `ecs-task`
+  // composer spawns `cdkl run-task`, which accepts `--image-override`.
+  const anyTaskPinned = annotateEcsTaskPinnedTargets(
+    groups,
+    makeTaskPinClassifier({ stacks, contextByStack, logger })
   );
   const pinnedEcsByQualifiedId = new Map<string, string>();
   for (const g of groups) {
@@ -697,7 +755,8 @@ export async function classifyStudioTargets(args: {
     groups,
     makeAlbBackingPinnedResolver({ stacks, pinnedEcsByQualifiedId, logger })
   );
-  const dockerfiles = anyPinned || anyAlbBackingPinned ? discoverDockerfiles(process.cwd()) : [];
+  const dockerfiles =
+    anyPinned || anyTaskPinned || anyAlbBackingPinned ? discoverDockerfiles(process.cwd()) : [];
   return { groups, dockerfiles };
 }
 
