@@ -15,11 +15,17 @@ CDKL="node ../../../dist/cli.js"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
 
+# Set below; init empty so the EXIT trap's `rm -f` is set-u-safe if the
+# script dies before the temp file is created.
+OUT_FILE=""
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers"
   docker ps --filter "name=cdkl-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  rm -f "${OUT_FILE}"
 }
+# A single EXIT trap: a second `trap ... EXIT` would REPLACE this one (bash
+# keeps only the last), silently dropping the docker sweep above.
 trap cleanup EXIT
 
 echo "==> Verifying Docker is available"
@@ -37,7 +43,6 @@ fi
 
 # Capture the run output so we can assert on the `[app]`-prefixed line.
 OUT_FILE=$(mktemp)
-trap 'rm -f "${OUT_FILE}"' EXIT
 
 echo "==> Running multi-container task"
 # Run synchronously so `cdkl run-task` waits for the essential
