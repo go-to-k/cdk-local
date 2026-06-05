@@ -1,3 +1,10 @@
+## [0.127.3](https://github.com/go-to-k/cdk-local/compare/v0.127.2...v0.127.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** give the kind-group headers a uniform light-grey bar background ([#435](https://github.com/go-to-k/cdk-local/issues/435)) ([7693c85](https://github.com/go-to-k/cdk-local/commit/7693c85d2191f2d6c2a6ca7bb5ade78010a9f45b))
+
 ## [0.127.2](https://github.com/go-to-k/cdk-local/compare/v0.127.1...v0.127.2) (2026-06-05)
 
 
