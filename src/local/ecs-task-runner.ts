@@ -15,6 +15,7 @@ import {
   SENSITIVE_ENV_KEYS,
 } from './docker-runner.js';
 import { attachContainerLogStreamer } from './container-log-streamer.js';
+import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { buildDockerImage } from '../assets/docker-build.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
@@ -1211,13 +1212,20 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     for (const f of opts.addHostFlags) args.push(f);
   }
 
+  let resolvedPlatform: string | undefined;
   if (opts.platformOverride) {
-    args.push('--platform', opts.platformOverride);
+    resolvedPlatform = opts.platformOverride;
   } else if (task.runtimePlatform) {
-    args.push(
-      '--platform',
-      task.runtimePlatform.cpuArchitecture === 'ARM64' ? 'linux/arm64' : 'linux/amd64'
-    );
+    resolvedPlatform =
+      task.runtimePlatform.cpuArchitecture === 'ARM64' ? 'linux/arm64' : 'linux/amd64';
+  }
+  if (resolvedPlatform) {
+    args.push('--platform', resolvedPlatform);
+    // An ECS task container threads `--platform` too (RuntimePlatform /
+    // override), but runs via execFileAsync rather than runDetached — so
+    // surface CPU emulation here as well: a Swift/Rust ECS task can die
+    // under emulation with the same opaque `exec format error`.
+    warnIfEmulatedPlatform(resolvedPlatform, { label: `${task.family}/${container.name}` });
   }
 
   // Issue #585 — multi-replica services skip the host-port publish.

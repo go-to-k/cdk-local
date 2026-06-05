@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vite-plus/test';
 import {
   buildDockerRunArgs,
   resolvePrivilegedHostPortRemaps,
 } from '../../../src/local/ecs-task-runner.js';
+import { resetEmulationWarningsForTesting } from '../../../src/local/docker-image-builder.js';
+import { getLogger } from '../../../src/utils/logger.js';
 import type { ResolvedEcsContainer, ResolvedEcsTask } from '../../../src/local/ecs-task-resolver.js';
 
 // buildDockerRunArgs / resolvePrivilegedHostPortRemaps read only a bounded
@@ -129,5 +131,59 @@ describe('buildDockerRunArgs privileged-port auto-remap publish (issue #357)', (
     const ep = publishedEndpoints.find((e) => e.containerPort === 80);
     expect(ep?.hostPort).toBe(50000);
     expect(ep?.overridden).toBe(true);
+  });
+});
+
+describe('buildDockerRunArgs emulation warning', () => {
+  const realArch = process.arch;
+  const baseOpts = () => ({
+    task: taskWith([]),
+    container: container('web', [{ containerPort: 80, protocol: 'tcp' }]),
+    image: 'public.ecr.aws/docker/library/busybox:latest',
+    network: 'net',
+    volumeByName: new Map(),
+    secrets: [],
+    envOverrides: undefined,
+    containerHost: '127.0.0.1',
+    roleArn: undefined,
+    region: undefined,
+    hostPortOverrides: {},
+    autoRemappedContainerPorts: new Set<number>(),
+  });
+
+  beforeEach(() => {
+    Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
+    resetEmulationWarningsForTesting();
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'arch', { value: realArch, configurable: true });
+    vi.restoreAllMocks();
+  });
+
+  it('warns when a platformOverride emulates the host arch', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const { args } = buildDockerRunArgs({ ...baseOpts(), platformOverride: 'linux/amd64' });
+    expect(args).toContain('--platform');
+    expect(args).toContain('linux/amd64');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('emulation');
+  });
+
+  it('warns when a RuntimePlatform-derived arch emulates the host', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    const task = {
+      family: 'fam',
+      containers: [],
+      runtimePlatform: { cpuArchitecture: 'X86_64' },
+    } as unknown as ResolvedEcsTask;
+    const { args } = buildDockerRunArgs({ ...baseOpts(), task, platformOverride: undefined });
+    expect(args).toContain('linux/amd64');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn when the platform matches the host arch', () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    buildDockerRunArgs({ ...baseOpts(), platformOverride: 'linux/arm64' });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
