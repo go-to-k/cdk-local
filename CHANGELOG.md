@@ -1,3 +1,10 @@
+# [0.130.0](https://github.com/go-to-k/cdk-local/compare/v0.129.1...v0.130.0) (2026-06-05)
+
+
+### Features
+
+* **invoke/run-task:** warn when a Lambda/ECS container runs under CPU emulation ([#440](https://github.com/go-to-k/cdk-local/issues/440)) ([08d9feb](https://github.com/go-to-k/cdk-local/commit/08d9febc7f4f4b530e29b9bbb5ad91c45937d358))
+
 ## [0.129.1](https://github.com/go-to-k/cdk-local/compare/v0.129.0...v0.129.1) (2026-06-05)
 
 
