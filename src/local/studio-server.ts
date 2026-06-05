@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import {
   StudioEventBus,
   type StudioInvocationEvent,
@@ -354,6 +355,14 @@ export async function startStudioServer(
   const host = options.host ?? '127.0.0.1';
   const maxBump = options.maxPortBump ?? 20;
   const html = renderStudioHtml(options.appLabel, options.cliName);
+  // A per-boot identity so the browser can tell THIS server instance apart
+  // from any other studio process. The SSE stream announces it in a `hello`
+  // event on connect; the UI flips to "disconnected" if a reconnect ever
+  // lands on a DIFFERENT instance (e.g. a second `cdkl studio` that reused
+  // this port after the originating process exited). Without it, liveness
+  // tracked only the TCP socket + port, so the UI could read as "live"
+  // against the wrong server.
+  const instanceId = randomUUID();
   // The served target list is mutable (issue #385): a Session-bar
   // `--from-cfn-stack` change re-runs the ECS pin classification and pushes a
   // fresh groups + dockerfiles set in via `setTargets`. Held as a
@@ -365,7 +374,7 @@ export async function startStudioServer(
   });
 
   const server = createServer((req, res) =>
-    handleRequest(req, res, options.bus, html, () => targetsJson, options)
+    handleRequest(req, res, options.bus, html, () => targetsJson, options, instanceId)
   );
 
   const boundPort = await listenWithBump(server, host, options.port, maxBump);
@@ -392,7 +401,8 @@ function handleRequest(
   bus: StudioEventBus,
   html: string,
   getTargetsJson: () => string,
-  options: StudioServerOptions
+  options: StudioServerOptions,
+  instanceId: string
 ): void {
   const url = req.url ?? '/';
   const path = url.split('?')[0];
@@ -453,7 +463,7 @@ function handleRequest(
     return;
   }
   if (req.method === 'GET' && path === '/api/events') {
-    serveSse(req, res, bus);
+    serveSse(req, res, bus, instanceId);
     return;
   }
   if (req.method === 'POST' && path === '/api/run') {
@@ -558,7 +568,12 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus): void {
+function serveSse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  bus: StudioEventBus,
+  instanceId: string
+): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
@@ -566,7 +581,12 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
   });
 
   let closed = false;
-  const heartbeat = setInterval(() => safeWrite(':hb\n\n'), SSE_HEARTBEAT_MS);
+  // A JS-VISIBLE heartbeat (a named `ping` event, not an SSE `:comment`):
+  // the browser EventSource layer cannot observe comments, so the UI runs a
+  // client-side watchdog that flips to "disconnected" when these stop
+  // arriving — catching a dead server even when the TCP close is never
+  // surfaced as an `error` event (a backgrounded tab / a missed FIN).
+  const heartbeat = setInterval(() => safeWrite(`event: ping\ndata: {}\n\n`), SSE_HEARTBEAT_MS);
   heartbeat.unref?.();
 
   const onInvocation = (ev: StudioInvocationEvent): void => {
@@ -616,8 +636,12 @@ function serveSse(req: IncomingMessage, res: ServerResponse, bus: StudioEventBus
   res.on('close', cleanup);
   res.on('error', cleanup);
 
-  // Open the stream so EventSource fires `open` immediately.
-  safeWrite(':ok\n\n');
+  // Open the stream so EventSource fires `open` immediately, and announce
+  // this server's per-boot instance id as the first event. The UI records
+  // the first `hello` it sees and treats a later, DIFFERENT id (a reconnect
+  // that landed on another studio process reusing this port) as a
+  // disconnect from the originating server.
+  safeWrite(`event: hello\ndata: ${JSON.stringify({ instanceId })}\n\n`);
 }
 
 /**
