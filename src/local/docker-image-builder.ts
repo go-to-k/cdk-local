@@ -3,7 +3,7 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
-import { getLogger } from '../utils/logger.js';
+import { getLogger, type Logger } from '../utils/logger.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -109,6 +109,67 @@ export async function buildContainerImage(
  */
 export function architectureToPlatform(architecture: 'x86_64' | 'arm64'): string {
   return architecture === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+}
+
+/**
+ * The Docker `--platform` value matching the host CPU arch.
+ *
+ * `process.arch` is `arm64` on Apple Silicon and `x64` on Intel/amd64
+ * hosts; everything else is treated as amd64 for the purpose of the
+ * emulation comparison (the only two `--platform` values cdk-local emits
+ * are `linux/arm64` / `linux/amd64`).
+ */
+function hostPlatform(): string {
+  return process.arch === 'arm64' ? 'linux/arm64' : 'linux/amd64';
+}
+
+/** Process-global dedupe so a warm pool / per-request boot warns once per arch. */
+const warnedEmulatedPlatforms = new Set<string>();
+
+/**
+ * Warn once per process when a container is about to run at a `--platform`
+ * whose CPU arch differs from the host's — i.e. it will run under CPU
+ * emulation.
+ *
+ * The arch is chosen automatically from the function's declared
+ * `Architectures`, so the user gets no signal that emulation is in play
+ * until a container dies. Emulated containers usually run fine, but some
+ * compiled custom-runtime binaries (notably a Swift `provided.*`
+ * bootstrap) crash under emulation with `exec format error` or
+ * `illegal instruction`, which is opaque without this hint. Surface the
+ * two real fixes: enable Rosetta for x86/amd64 emulation in the Docker
+ * engine settings, or build the function for the host arch.
+ *
+ * Deduped by target platform so a warm pool / per-request boot doesn't
+ * spam. `platform` is the resolved `--platform` value (`undefined` =>
+ * docker picks the host arch, so there is nothing to warn about).
+ */
+export function warnIfEmulatedPlatform(
+  platform: string | undefined,
+  opts: { label?: string; logger?: Logger } = {}
+): void {
+  if (!platform) return;
+  const host = hostPlatform();
+  if (platform === host) return;
+  if (warnedEmulatedPlatforms.has(platform)) return;
+  warnedEmulatedPlatforms.add(platform);
+  const logger = opts.logger ?? getLogger();
+  const what = opts.label ? `'${opts.label}' ` : '';
+  logger.warn(
+    `Running ${what}under ${platform} emulation on a ${host} host. ` +
+      'Emulated containers can crash some compiled custom-runtime binaries ' +
+      "(e.g. a Swift 'provided.*' bootstrap) with 'exec format error' or " +
+      "'illegal instruction'. If you hit that, enable Rosetta for x86/amd64 " +
+      `emulation in your Docker engine settings, or build the function for ${host}.`
+  );
+}
+
+/**
+ * Test-only: reset the process-global emulation-warning dedupe set so a
+ * unit test can re-assert the once-per-arch behavior across cases.
+ */
+export function resetEmulationWarningsForTesting(): void {
+  warnedEmulatedPlatforms.clear();
 }
 
 /**

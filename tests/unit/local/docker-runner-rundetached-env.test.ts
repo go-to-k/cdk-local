@@ -20,6 +20,10 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { runDetached } = await import('../../../src/local/docker-runner.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
+const { resetEmulationWarningsForTesting } = await import(
+  '../../../src/local/docker-image-builder.js'
+);
 
 describe('runDetached sensitive-env wiring', () => {
   beforeEach(() => execFileMock.mockReset());
@@ -87,6 +91,56 @@ describe('runDetached sensitive-env wiring', () => {
     // Non-sensitive config still inline; value carried via process env.
     expect(args).toContain('TABLE_NAME=my-table');
     expect(options.env!['API_KEY']).toBe('s3cr3t-ssm-value');
+  });
+
+  it('threads --platform and warns once when the declared arch is emulated', async () => {
+    const realArch = process.arch;
+    Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
+    resetEmulationWarningsForTesting();
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      await runDetached({
+        image: 'public.ecr.aws/lambda/provided:al2023',
+        mounts: [],
+        env: {},
+        cmd: ['bootstrap'],
+        hostPort: 9101,
+        platform: 'linux/amd64',
+        name: 'cdkl-MyFn-abc',
+      });
+      const [, args] = execFileMock.mock.calls[0] as [string, string[]];
+      // The platform is threaded to docker run.
+      expect(args).toContain('--platform');
+      expect(args).toContain('linux/amd64');
+      // And the emulation mismatch (amd64 target on arm64 host) is surfaced.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('emulation');
+    } finally {
+      warnSpy.mockRestore();
+      Object.defineProperty(process, 'arch', { value: realArch, configurable: true });
+    }
+  });
+
+  it('does not warn when the declared arch matches the host', async () => {
+    const realArch = process.arch;
+    Object.defineProperty(process, 'arch', { value: 'arm64', configurable: true });
+    resetEmulationWarningsForTesting();
+    const warnSpy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+    try {
+      await runDetached({
+        image: 'public.ecr.aws/lambda/provided:al2023',
+        mounts: [],
+        env: {},
+        cmd: ['bootstrap'],
+        hostPort: 9102,
+        platform: 'linux/arm64',
+        name: 'cdkl-MyFn-arm',
+      });
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      Object.defineProperty(process, 'arch', { value: realArch, configurable: true });
+    }
   });
 
   it('uses no env option when the container has no sensitive env', async () => {

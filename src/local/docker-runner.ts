@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { getDockerCmd, runDockerForeground, runDockerStreaming } from '../utils/docker-cmd.js';
 import { getLogger } from '../utils/logger.js';
+import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { getEmbedConfig } from './embed-config.js';
 
 const execFileAsync = promisify(execFile);
@@ -241,6 +242,10 @@ export async function runDetached(opts: DockerRunOptions): Promise<string> {
   }
   if (opts.platform) {
     args.push('--platform', opts.platform);
+    // Surface CPU emulation (declared arch != host arch) before the
+    // container boots — an emulated compiled custom runtime can die with
+    // an opaque `exec format error` / `illegal instruction` otherwise.
+    warnIfEmulatedPlatform(opts.platform, opts.name ? { label: opts.name } : {});
   }
   if (opts.extraHosts) {
     for (const entry of opts.extraHosts) {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 
 // Mock the docker-cmd helpers used by buildDockerImage / isImageInLocalCache.
 // `vi.mock` is hoisted ABOVE top-level `const`s, so the stub functions must
@@ -40,7 +40,10 @@ vi.mock('../../../src/utils/docker-cmd.js', async () => {
 import {
   architectureToPlatform,
   buildContainerImage,
+  resetEmulationWarningsForTesting,
+  warnIfEmulatedPlatform,
 } from '../../../src/local/docker-image-builder.js';
+import type { Logger } from '../../../src/utils/logger.js';
 import { LocalInvokeBuildError } from '../../../src/utils/error-handler.js';
 
 beforeEach(() => {
@@ -61,6 +64,73 @@ describe('architectureToPlatform', () => {
   });
   it('maps arm64 to linux/arm64', () => {
     expect(architectureToPlatform('arm64')).toBe('linux/arm64');
+  });
+});
+
+describe('warnIfEmulatedPlatform', () => {
+  const realArch = process.arch;
+  const setArch = (arch: string) => {
+    Object.defineProperty(process, 'arch', { value: arch, configurable: true });
+  };
+  const fakeLogger = () => {
+    const warn = vi.fn();
+    return { logger: { warn } as unknown as Logger, warn };
+  };
+
+  beforeEach(() => {
+    resetEmulationWarningsForTesting();
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'arch', { value: realArch, configurable: true });
+  });
+
+  it('warns when the target platform arch differs from the host (amd64 on arm64 host)', () => {
+    setArch('arm64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform('linux/amd64', { logger });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0][0] as string;
+    expect(msg).toContain('linux/amd64');
+    expect(msg).toContain('linux/arm64');
+    expect(msg).toContain('emulation');
+    expect(msg).toContain('Rosetta');
+  });
+
+  it('warns the other direction too (arm64 target on an amd64 host)', () => {
+    setArch('x64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform('linux/arm64', { logger });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('linux/arm64');
+  });
+
+  it('does not warn when the target platform matches the host arch', () => {
+    setArch('arm64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform('linux/arm64', { logger });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when no platform is resolved (docker picks the host arch)', () => {
+    setArch('arm64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform(undefined, { logger });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('dedupes by platform so a warm pool / per-request boot warns once', () => {
+    setArch('arm64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform('linux/amd64', { logger });
+    warnIfEmulatedPlatform('linux/amd64', { logger, label: 'cdkl-fn-2' });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes the label in the message when provided', () => {
+    setArch('arm64');
+    const { logger, warn } = fakeLogger();
+    warnIfEmulatedPlatform('linux/amd64', { logger, label: 'cdkl-MyFn-abc' });
+    expect(warn.mock.calls[0][0]).toContain('cdkl-MyFn-abc');
   });
 });
 
