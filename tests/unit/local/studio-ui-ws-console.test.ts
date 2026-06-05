@@ -106,17 +106,24 @@ describe('studio WebSocket console (renderWsConsole)', () => {
     expect(pre.textContent).toBe('');
   });
 
-  it('the Clear button sits BELOW the frame log (in a .clear-row), not in the header', () => {
+  it('the Clear button sits below Send and ABOVE the frame log (in a .clear-row), not in the header', () => {
     const { node } = mountConsole();
     // Not in the section header anymore.
     expect(node.querySelector('h3 .ws-clear')).toBeNull();
-    // Inside a .clear-row, and that row comes AFTER the frame log in the DOM.
     const clearBtn = node.querySelector('.clear-row .ws-clear');
+    const sendBtn = node.querySelector('.ws-send');
     const frames = node.querySelector('.ws-frames');
     expect(clearBtn).not.toBeNull();
+    expect(sendBtn).not.toBeNull();
     expect(frames).not.toBeNull();
-    const FOLLOWING = (harness.window as unknown as { Node: { DOCUMENT_POSITION_FOLLOWING: number } })
-      .Node.DOCUMENT_POSITION_FOLLOWING;
-    expect(frames!.compareDocumentPosition(clearBtn!) & FOLLOWING).toBeTruthy();
+    const NODE = (
+      harness.window as unknown as {
+        Node: { DOCUMENT_POSITION_FOLLOWING: number; DOCUMENT_POSITION_PRECEDING: number };
+      }
+    ).Node;
+    // Clear comes AFTER Send...
+    expect(sendBtn!.compareDocumentPosition(clearBtn!) & NODE.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // ...and BEFORE the frame log.
+    expect(frames!.compareDocumentPosition(clearBtn!) & NODE.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 });
