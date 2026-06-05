@@ -1,3 +1,10 @@
+## [0.132.2](https://github.com/go-to-k/cdk-local/compare/v0.132.1...v0.132.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **integ:** restore the docker sweep in local-run-task-multi-container cleanup ([#451](https://github.com/go-to-k/cdk-local/issues/451)) ([def2279](https://github.com/go-to-k/cdk-local/commit/def22795198eef812d62950af41a88574a73cc9c))
+
 ## [0.132.1](https://github.com/go-to-k/cdk-local/compare/v0.132.0...v0.132.1) (2026-06-05)
 
 
