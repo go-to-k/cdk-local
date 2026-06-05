@@ -1,3 +1,10 @@
+# [0.128.0](https://github.com/go-to-k/cdk-local/compare/v0.127.3...v0.128.0) (2026-06-05)
+
+
+### Features
+
+* **start-cloudfront:** accept extraStateProviders on the command factory (host --from-state parity) ([#436](https://github.com/go-to-k/cdk-local/issues/436)) ([fb0fefc](https://github.com/go-to-k/cdk-local/commit/fb0fefcdf8317569fd0e9d4e5efdb5e8479af6da))
+
 ## [0.127.3](https://github.com/go-to-k/cdk-local/compare/v0.127.2...v0.127.3) (2026-06-05)
 
 
