@@ -156,10 +156,11 @@ describe('renderStudioHtml', () => {
     // a clearly distinct shade (issue #333 — the previous #1b1b1b was 1 step off
     // the #1a1a1a base and imperceptible).
     expect(html).toContain('.group-body .target.alt { background: #242424; }');
-    // Kind-group header: a uniform light-grey bar (lighter than the row shades)
-    // with a bottom border — neutral hue so it never clashes with the blue-navy
-    // stack sub-header below it.
-    expect(html).toContain('background: #2e2e2e;');
+    // Kind-group header: a uniform dark-amber bar with a warm-gold label —
+    // a warm hue that stands apart from both the neutral-grey rows and the
+    // blue-navy stack sub-header below it.
+    expect(html).toContain('background: #302b18;');
+    expect(html).toContain('color: #e3c272;');
     expect(html).toContain('.group-title .count { color: #8a8a8a; }');
   });
 
