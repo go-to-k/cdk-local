@@ -1,3 +1,10 @@
+## [0.130.2](https://github.com/go-to-k/cdk-local/compare/v0.130.1...v0.130.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **invoke:** correct the emulation warn message (drop the misattributed Swift/illegal-instruction example) ([#442](https://github.com/go-to-k/cdk-local/issues/442)) ([92c51ff](https://github.com/go-to-k/cdk-local/commit/92c51ff87203bc6e64d6a9b3c530b61b97d13b58))
+
 ## [0.130.1](https://github.com/go-to-k/cdk-local/compare/v0.130.0...v0.130.1) (2026-06-05)
 
 
