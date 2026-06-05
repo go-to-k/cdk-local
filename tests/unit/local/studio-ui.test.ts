@@ -213,6 +213,13 @@ describe('renderStudioHtml', () => {
     // The ecs host URL is shown in Endpoints with a note that composer requests
     // ARE captured on the timeline (the direct relay self-emits — issue #432).
     expect(html).toContain('composer requests are captured on the timeline');
+    // The inline result's Request / Response headings are emphasised (pale
+    // yellow + bold) vs the muted .section h3, so the pair stands out; the
+    // Headers / Body sub-labels are blue, distinct from the grey content.
+    expect(html).toContain('.req-composer .req-result .req-req h3,');
+    expect(html).toContain('.req-composer .req-result .req-resp h3 { color: #e3d18a; }');
+    expect(html).toContain('.req-composer .req-result .opt-label {');
+    expect(html).toContain('letter-spacing: 0.7px; color: #6cb6ff;');
   });
 
   it('clarifies the curl-able proxy port vs the child internal port (issue #325)', () => {
