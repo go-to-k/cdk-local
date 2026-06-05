@@ -1,3 +1,10 @@
+## [0.126.6](https://github.com/go-to-k/cdk-local/compare/v0.126.5...v0.126.6) (2026-06-05)
+
+
+### Bug Fixes
+
+* **deps:** bump @aws-cdk/toolkit-lib to ^1.28.0 for aws-cdk-lib 2.258.0 (schema v54) ([#431](https://github.com/go-to-k/cdk-local/issues/431)) ([4226591](https://github.com/go-to-k/cdk-local/commit/4226591902e3657d0a16aafcd7294d13f875096c))
+
 ## [0.126.5](https://github.com/go-to-k/cdk-local/compare/v0.126.4...v0.126.5) (2026-06-05)
 
 
