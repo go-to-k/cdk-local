@@ -140,4 +140,12 @@ describe('targets pane construct-path CSS', () => {
     expect(html).toContain('.target .name::-webkit-scrollbar { display: none; }');
     expect(html).toContain('.stack-sub {');
   });
+
+  it('renders the stack sub-header as a legible divider bar (brighter label + faint bar)', () => {
+    const html = renderStudioHtml('TestStack', 'cdkl');
+    // A brighter label on a faint background bar, so the folded prefix reads on
+    // the dark pane instead of disappearing as dim grey-on-black.
+    expect(html).toContain('color: #b5b5b5');
+    expect(html).toContain('background: #202020; border-bottom: 1px solid #2c2c2c;');
+  });
 });
