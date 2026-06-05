@@ -298,13 +298,40 @@ call `markgate set integ` directly from a shell.
   not touching the gate's paths, docs, tests, infra) pass through
   silently.
 
+  **Tracking-issue enforcement (cat 1 / cat 2).** The marker proves the
+  skill *walked* the categories — not that a cdkd tracking issue was
+  actually filed. So for the two mechanically-unambiguous host-MUST-act
+  categories the gate ALSO requires a cdkd issue reference, on top of the
+  marker:
+
+  - **cat 1** — a NEW `src/cli/commands/local-*.ts` file (`--diff-filter=A`)
+    whose added content declares `export function createLocal<Verb>Command`
+    (the same factory-content check as `create-integ-gate.sh`, so a new
+    non-factory helper module does NOT fire it), OR
+  - **cat 2** — a `+...addOption(new Option(...)` line added to any
+    `src/cli/commands/*.ts`.
+
+  When either fires, the gate requires the per-worktree sentinel
+  `.cdkd-parity-issue` to exist AND contain a
+  `github.com/go-to-k/cdkd/issues/` reference (written by
+  `/check-cdkd-parity` when it auto-files the issue), blocking
+  `gh pr create` until it does. cat 3 (new `src/local/**` export — noisy)
+  and cat 4 (behavior change — a judgment call) are NOT hard-blocked; they
+  rely on the marker (the skill walked + auto-filed for them too). This
+  puts the hard floor on the cases where cdkd unambiguously must
+  wrap / inherit, without over-firing on internal refactors.
+
   Fail-open behavior: when `gh` / `markgate` are missing, or
   `origin/main` is not resolvable, the hook exits 0 silently. The
   gate is a safety net for the four categories above, not a hard
   dependency.
 
   The skill is the ONLY legitimate setter of this marker — never
-  call `markgate set cdkd-parity` directly from a shell.
+  call `markgate set cdkd-parity` directly from a shell. Likewise, do
+  NOT hand-write `.cdkd-parity-issue` to satisfy the cat-1/2 check — run
+  `/check-cdkd-parity` so the issue is actually created on go-to-k/cdkd
+  (the skill auto-creates it; `.claude/settings.json` `permissions.allow`
+  pre-authorizes the scoped `gh issue create`).
 
 ### create-integ-gate (pre-create)
 

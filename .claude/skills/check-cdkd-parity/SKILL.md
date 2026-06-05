@@ -80,11 +80,12 @@ For each new factory file:
       The new factory name must appear in the export list. If it
       doesn't, add the export before setting the marker.
 
-- [ ] **cdkd notified?** — this is a manual step. Either file an issue
-      on the cdkd repo describing the new subcommand and the wrap point
-      (`createLocal<Verb>Command` factory + suggested host-side options
-      block), OR cross-link this PR in an existing tracking issue. Note
-      which path you took in the PR body.
+- [ ] **cdkd tracking issue filed?** — REQUIRED for a new subcommand. File
+      (or reuse) the cdkd issue per "File the cdkd tracking issue" below,
+      labeling this as cat 1 "wrap the new subcommand
+      (`createLocal<Verb>Command`) — REQUIRED". The `cdkd-parity-gate.sh`
+      hook hard-blocks `gh pr create` until `.cdkd-parity-issue` carries the
+      issue URL.
 
 ## Category 2: New CLI option on an existing command?
 
@@ -157,6 +158,14 @@ For each new export in `src/local/**`:
       by cdkd's `<command>` provider to ..."). Pure-implementation
       docstrings ("returns a Foo") are not sufficient.
 
+- [ ] **cdkd tracking issue filed?** — file (or reuse) the cdkd issue per
+      "File the cdkd tracking issue" below, labeling this as cat 3 "new
+      internal primitive available — OPTIONAL: adopt if useful, cdkd
+      decides". Additive, so cdkd's build won't break by not adopting —
+      but filing surfaces it so cdkd makes the adoption call, instead of
+      cdk-local silently deciding for it. (The hook does NOT hard-block
+      cat 3; the marker covers it.)
+
 ## Category 4: Behavior change in an existing command?
 
 Behavior changes — changed defaults, new validation, changed output
@@ -171,25 +180,79 @@ change for an existing input?".
 
 For each behavior change:
 
-- [ ] **cdkd informed?** — file an issue on the cdkd repo OR cross-link
-      this PR in an existing tracking issue. The issue must name the
-      old behavior, the new behavior, and the migration cdkd needs to
-      apply (if any). Without this, cdkd's next release silently ships
-      the changed behavior with no host-side adjustment.
+- [ ] **cdkd tracking issue filed?** — REQUIRED for a behavior change. File
+      (or reuse) the cdkd issue per "File the cdkd tracking issue" below,
+      labeling this as cat 4 "behavior change — adapt — REQUIRED" and naming
+      the old behavior, the new behavior, and the migration cdkd needs to
+      apply. (The hook does NOT mechanically detect cat 4; the marker covers
+      it — so filing here is on your honor, but it is REQUIRED.)
 
-- [ ] **Migration note in PR body?** — the PR body must call out the
+- [ ] **Migration note in PR body?** — the PR body must ALSO call out the
       behavior change in a section labeled `Behavior change` (or
       `Breaking change` when appropriate), so anyone bumping the
       `cdk-local` version in cdkd reads it without digging through the
       diff.
 
+## File the cdkd tracking issue (REQUIRED when any category applies)
+
+When ANY of categories 1-4 above applies, you MUST file a tracking issue on
+the `go-to-k/cdkd` repo so the cdkd agent can inherit the change by working
+its own issue queue — without having to actively watch cdk-local. cdk-local's
+job is to SURFACE the change; cdkd decides whether/how to follow.
+
+This is no longer optional or a PR-body note. The `cdkd-parity-gate.sh` hook
+hard-blocks `gh pr create` for category 1 (new subcommand) and category 2 (new
+option) until the per-worktree sentinel `.cdkd-parity-issue` carries a
+`github.com/go-to-k/cdkd/issues/` reference. Categories 3 and 4 are filed too
+(the gate relies on the marker for those, but you still file).
+
+**Idempotent — reuse the sentinel; never open a duplicate on a re-run:**
+
+```bash
+SENTINEL=".cdkd-parity-issue"   # per-worktree, gitignored (like .markgate-pr-review-sha)
+if [ -f "$SENTINEL" ] && grep -q 'github.com/go-to-k/cdkd/issues/' "$SENTINEL"; then
+  echo "Reusing existing cdkd issue: $(cat "$SENTINEL")"
+  # If the applicable categories changed since it was filed, append an update
+  # with: gh issue comment "$(cat "$SENTINEL")" --repo go-to-k/cdkd --body-file <file>
+else
+  # Build the body in a file (NEVER inline bare #N — the cross-repo auto-link
+  # trap; reference the cdk-local PR/branch as a FULL GitHub URL). Label EACH
+  # applicable category with its host action:
+  #   cat 1 -> "wrap the new subcommand (createLocal<Verb>Command) — REQUIRED"
+  #   cat 2 -> "inherit the new option (add<Cmd>SpecificOptions) — REQUIRED"
+  #   cat 3 -> "new internal primitive available — OPTIONAL: adopt if useful, cdkd decides"
+  #   cat 4 -> "behavior change — adapt — REQUIRED" (name old vs new + migration)
+  cat > /tmp/cdkd-parity-body.md <<'BODY'
+## Follow cdk-local: <one-line summary>
+
+cdk-local changed its host-facing surface. All changes are additive unless a
+category-4 item below says otherwise. cdk-local PR:
+https://github.com/go-to-k/cdk-local/pull/<N>  (or the branch URL pre-merge)
+
+<one bullet per applicable category, each with the host-action label above>
+BODY
+  url=$(gh issue create --repo go-to-k/cdkd \
+    --title "Follow cdk-local: <one-line summary>" \
+    --body-file /tmp/cdkd-parity-body.md)
+  printf '%s\n' "$url" > "$SENTINEL"
+  echo "Filed cdkd tracking issue: $url"
+fi
+```
+
+If `gh issue create` is denied (permission / offline), say so explicitly and
+STOP — do NOT hand-write the sentinel to satisfy the gate. The whole point is
+that the issue actually exists. (The committed `permissions.allow` in
+`.claude/settings.json` pre-authorizes `gh issue create --repo go-to-k/cdkd`,
+so this should not normally prompt.)
+
 ## Final step: set the marker
 
 Only call `mise exec -- markgate set cdkd-parity` when EVERY check
-above passed or was explicitly marked N/A. If any item is unresolved,
-skip the marker, list the unresolved items, and stop — the
-`cdkd-parity-gate.sh` hook will then correctly block `gh pr create`
-until the walk-through is repeated.
+above passed or was explicitly marked N/A, AND — when any category applied —
+the cdkd tracking issue has been filed and `.cdkd-parity-issue` carries its
+URL. If any item is unresolved, skip the marker, list the unresolved items,
+and stop — the `cdkd-parity-gate.sh` hook will then correctly block
+`gh pr create` until the walk-through is repeated.
 
 ```bash
 mise exec -- markgate set cdkd-parity
@@ -207,6 +270,11 @@ the per-worktree marker convention.
   — the dependency direction is `cdkd -> cdk-local`. The skill talks
   about "notify cdkd" / "host CLI", not about cdkd's deploy or
   provider system.
-- The "notify cdkd" steps are manual — this skill does NOT file the
-  issue / send the message itself; it prompts the user to do so and
-  records the decision in the PR body.
+- Filing the cdkd tracking issue is done BY this skill (auto `gh issue
+  create --repo go-to-k/cdkd`, idempotent via the `.cdkd-parity-issue`
+  sentinel), not left as a manual prompt — that is the change that makes
+  cdkd follow-up actually happen (it never did under the old manual /
+  PR-body-note path). cat 1 / cat 2 are hard-blocked by the gate until the
+  sentinel carries the issue URL; cat 3 / cat 4 are filed on the marker's
+  honor. The committed `permissions.allow` in `.claude/settings.json`
+  pre-authorizes the scoped `gh issue create` / `gh issue comment`.

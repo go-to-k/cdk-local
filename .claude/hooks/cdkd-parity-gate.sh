@@ -127,6 +127,71 @@ if [ -z "$scope_touched" ] && [ -z "$new_local_file" ]; then
   exit 0
 fi
 
+# --- cdkd tracking-issue enforcement (cat 1 / cat 2) ------------------------
+# The marker proves the skill WALKED the categories; it does not prove a cdkd
+# tracking issue was actually filed. For the two mechanically-unambiguous
+# host-MUST-act categories we additionally require a cdkd issue reference in
+# the per-worktree sentinel `.cdkd-parity-issue` (written by
+# `/check-cdkd-parity` when it auto-files the issue):
+#   cat 1 — a NEW command factory: a `src/cli/commands/local-*.ts` file added
+#           (`--diff-filter=A`) whose added content declares
+#           `export function createLocal<Verb>Command`. Mirrors
+#           create-integ-gate.sh's factory-content check so a new non-factory
+#           helper module does NOT fire it.
+#   cat 2 — a NEW CLI option: a `+...addOption(new Option(...)` line added to
+#           any `src/cli/commands/*.ts`.
+# cat 3 (new src/local export) and cat 4 (behavior change) are NOT hard-blocked
+# here — cat 3 is noisy and cat 4 is a judgment call; both rely on the marker
+# (the skill walked + auto-filed). This keeps the hard block on the cases where
+# cdkd unambiguously must wrap/inherit, without over-firing on internal
+# refactors.
+cat1_new_factory=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if git diff origin/main...HEAD --diff-filter=A -- "$f" 2>/dev/null \
+    | grep -qE '^\+[[:space:]]*export[[:space:]]+function[[:space:]]+createLocal[A-Z][A-Za-z]*Command'; then
+    cat1_new_factory="$f"
+    break
+  fi
+done < <(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+  | grep -E '^src/cli/commands/local-[^/]+\.ts$')
+
+cat2_new_option=""
+# Same permissive pattern the skill's own detection uses (an added line that
+# carries `addOption(...new Option`), so chained `.addOption(new Option(` /
+# `cmd.addOption(new Option(` forms all match regardless of leading context.
+if git diff origin/main...HEAD -- 'src/cli/commands/*.ts' 2>/dev/null \
+  | grep -qE '^\+.*addOption.*new Option'; then
+  cat2_new_option="yes"
+fi
+
+if [ -n "$cat1_new_factory" ] || [ -n "$cat2_new_option" ]; then
+  sentinel="$target_dir/.cdkd-parity-issue"
+  if [ ! -f "$sentinel" ] || ! grep -q 'github\.com/go-to-k/cdkd/issues/' "$sentinel" 2>/dev/null; then
+    if [ -n "$cat1_new_factory" ]; then
+      cat_desc="a NEW subcommand factory ($cat1_new_factory)"
+    else
+      cat_desc="a NEW CLI option (addOption in src/cli/commands/**)"
+    fi
+    printf "Blocked by cdkd-parity-gate: this PR adds %s, which cdkd must inherit, but no cdkd tracking issue was filed.\n\n" "$cat_desc" >&2
+    cat >&2 <<'EOF'
+Required action — no exceptions:
+  /check-cdkd-parity
+
+For a new subcommand / new CLI option the skill files a tracking issue on
+go-to-k/cdkd (so the cdkd agent inherits it by working its issue queue) and
+records the issue URL in the per-worktree sentinel `.cdkd-parity-issue`. This
+gate requires that sentinel to carry a `github.com/go-to-k/cdkd/issues/`
+reference before `gh pr create` can proceed.
+
+Do NOT hand-write the sentinel to bypass this — run the skill so the issue is
+actually created.
+EOF
+    exit 2
+  fi
+fi
+# ---------------------------------------------------------------------------
+
 # Prefer the `mise`-managed markgate via `mise exec --` so the repo's
 # canonical version wins; fall back to PATH; fail open if neither.
 if command -v mise >/dev/null 2>&1; then

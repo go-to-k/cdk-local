@@ -1136,13 +1136,27 @@ vp run runtime:smoke
   internal refactors don't trigger noise). The marker is set ONLY by `/check-cdkd-parity`, which walks
   the four host-impacting categories:
   - **New subcommand factory** — exported from `src/index.ts`? cdkd
-    notified (issue / cross-link)?
+    tracking issue filed (cat 1, REQUIRED)?
   - **New CLI option** — added inside the relevant
     `add<Cmd>SpecificOptions` helper (not inline in
-    `create<Cmd>Command`)? contract test still green?
+    `create<Cmd>Command`)? contract test still green? cdkd tracking
+    issue filed (cat 2, REQUIRED)?
   - **New public helper / type in `src/local/**`** — exported from
-    `src/internal.ts`? JSDoc names the host-side use case?
-  - **Behavior change** — cdkd informed? migration note in PR body?
+    `src/internal.ts`? JSDoc names the host-side use case? cdkd
+    tracking issue filed (cat 3, "optional — cdkd decides")?
+  - **Behavior change** — cdkd tracking issue filed (cat 4, REQUIRED)?
+    migration note in PR body?
+
+  The skill AUTO-FILES the cdkd tracking issue (`gh issue create --repo
+  go-to-k/cdkd`, idempotent via the per-worktree `.cdkd-parity-issue`
+  sentinel) for every applicable category, labeling each with its host
+  action (wrap / inherit / optional-adopt / adapt) so the cdkd agent can
+  follow by working its issue queue — it no longer relies on a manual
+  "notify cdkd" step that never happened. The gate HARD-BLOCKS
+  `gh pr create` for cat 1 / cat 2 until the sentinel carries a
+  `github.com/go-to-k/cdkd/issues/` reference; cat 3 / cat 4 rely on the
+  marker. `.claude/settings.json` `permissions.allow` pre-authorizes the
+  scoped `gh issue create`.
 
   Out-of-scope diffs (internal refactors, docs, tests) pass through
   silently. `gh pr merge` is intentionally NOT gated — the parity

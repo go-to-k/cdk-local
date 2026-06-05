@@ -45,6 +45,9 @@ cdk.context.json
 # markgate pr-review sentinel
 .markgate-pr-review-sha
 
+# cdkd-parity tracking-issue sentinel (per-worktree; written by /check-cdkd-parity)
+.cdkd-parity-issue
+
 # Worktree-local scratch files for git commit -F / gh --body-file payloads
 .commit-msg*.txt
 .commit-msg*.md
