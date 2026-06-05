@@ -1,3 +1,10 @@
+# [0.133.0](https://github.com/go-to-k/cdk-local/compare/v0.132.2...v0.133.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** surface the watch + assume-role session toggles ([#452](https://github.com/go-to-k/cdk-local/issues/452)) ([373984f](https://github.com/go-to-k/cdk-local/commit/373984f883d7daca28a58c052f270ae2edaa3850))
+
 ## [0.132.2](https://github.com/go-to-k/cdk-local/compare/v0.132.1...v0.132.2) (2026-06-05)
 
 
