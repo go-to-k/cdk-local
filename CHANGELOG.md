@@ -1,3 +1,10 @@
+# [0.129.0](https://github.com/go-to-k/cdk-local/compare/v0.128.1...v0.129.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** show the composer result as a Request/Response pair with split headers/body + JSON pretty-print ([#438](https://github.com/go-to-k/cdk-local/issues/438)) ([06e9cae](https://github.com/go-to-k/cdk-local/commit/06e9cae53d1e5b7203bdd63e5ec1fa19bfcf32fd))
+
 ## [0.128.1](https://github.com/go-to-k/cdk-local/compare/v0.128.0...v0.128.1) (2026-06-05)
 
 
