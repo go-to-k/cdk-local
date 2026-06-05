@@ -212,10 +212,10 @@ const STUDIO_CSS = `
     padding: 5px 16px; font-size: 12px; cursor: pointer; margin: 0;
   }
   .log-clear:hover { background: #2a2a2a; color: #fff; border-color: #4a4a4a; }
-  /* A Clear action sits BELOW the log it clears, right-aligned within the
-     same capped content column so it lands near the log, not at the far
-     right edge of a wide pane. */
-  .clear-row { display: flex; justify-content: flex-end; max-width: 760px; margin-top: 6px; }
+  /* A Clear action sits on its own row, right-aligned, ABOVE the log it
+     clears (the log streams downward) and below the action controls (the
+     WS console's Send row). */
+  .clear-row { display: flex; justify-content: flex-end; margin: 4px 0; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
   .section h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
@@ -226,12 +226,7 @@ const STUDIO_CSS = `
   .endpoint:hover { text-decoration: underline; }
   .ws-console .ws-status { font-size: 12px; color: #888; margin-left: 8px; font-weight: 400; }
   .ws-console .ws-status.on { color: #4ec97a; }
-  /* Cap the interactive content to a readable column so on a wide center
-     pane the input does not stretch edge-to-edge and fling Send far to the
-     right. Send then sits right after the input; the log + Clear share the
-     same column. The cap is a no-op on a narrow pane (content uses what is
-     available). */
-  .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; max-width: 760px; }
+  .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
   .ws-row .ws-input { flex: 1; min-width: 0; background: #1a1a1a; border: 1px solid #333;
     color: #ddd; border-radius: 4px; padding: 5px 7px; font: inherit; }
   .ws-row .ws-input:focus { outline: none; border-color: #4ec97a; }
@@ -239,10 +234,7 @@ const STUDIO_CSS = `
     padding: 5px 12px; cursor: pointer; }
   .ws-row button:disabled { background: #2a2a2a; color: #666; cursor: default; }
   .ws-frames { max-height: 180px; overflow: auto; background: #141414; border: 1px solid #262626;
-    border-radius: 4px; padding: 6px 8px; margin-top: 4px; min-height: 22px; max-width: 760px; }
-  /* The serve LOGS <pre> shares the capped column so its Clear (below it,
-     right-aligned via .clear-row) lands at the column edge, near the log. */
-  .serve-log { max-width: 760px; }
+    border-radius: 4px; padding: 6px 8px; margin-top: 4px; min-height: 22px; }
   .searchbar { padding: 6px 10px; border-bottom: 1px solid #2a2a2a; background: #151515;
     position: sticky; top: 28px; z-index: 1; }
   .searchbar input {
@@ -1299,12 +1291,9 @@ const STUDIO_SCRIPT = `
         )
       );
     }
-    const logPre = el('pre', 'serve-log', logs.length ? logs.join('\\n') : '(none)');
-    logSec.appendChild(logPre);
-    // Clear sits below the log (issue #338): hammering a serve piles up log
-    // lines, so let the user empty the panel (display-only — the server-side
-    // store / history is untouched). Below the log + right-aligned so it lands
-    // near the content it clears, not in the section header above.
+    // Clear sits ABOVE the log, right-aligned (issue #338): hammering a serve
+    // piles up log lines, so let the user empty the panel (display-only — the
+    // server-side store / history is untouched).
     const logClearRow = el('div', 'clear-row');
     const logClear = el('button', 'log-clear', 'Clear');
     logClear.onclick = function () {
@@ -1315,6 +1304,8 @@ const STUDIO_SCRIPT = `
     };
     logClearRow.appendChild(logClear);
     logSec.appendChild(logClearRow);
+    const logPre = el('pre', null, logs.length ? logs.join('\\n') : '(none)');
+    logSec.appendChild(logPre);
     ws.appendChild(logSec);
     // Register the live LOGS <pre> so streamed log events update it surgically
     // (issue #334) instead of re-rendering the whole serve workspace.
@@ -1764,22 +1755,28 @@ const STUDIO_SCRIPT = `
     sendBtn.disabled = !on;
     sendBtn.onclick = wsSend;
 
+    // Input fills the row width; Send is wrapped onto its OWN row below so on
+    // a wide pane it sits at the left (near the input) instead of being flung
+    // to the far right edge.
     const row = el('div', 'ws-row');
     row.appendChild(connectBtn);
     row.appendChild(input);
-    row.appendChild(sendBtn);
     sec.appendChild(row);
 
-    const frames = el('pre', 'ws-frames', wsFrames.join('\\n'));
-    sec.appendChild(frames);
+    const sendRow = el('div', 'ws-row');
+    sendRow.appendChild(sendBtn);
+    sec.appendChild(sendRow);
 
-    // Clear sits BELOW the log it clears (the log streams downward), right-
-    // aligned within the capped column so it stays near the content.
+    // Clear sits directly below the Send button (and above the log it clears),
+    // right-aligned.
     const clearRow = el('div', 'clear-row');
     const clearBtn = el('button', 'log-clear ws-clear', 'Clear');
     clearBtn.onclick = wsClear;
     clearRow.appendChild(clearBtn);
     sec.appendChild(clearRow);
+
+    const frames = el('pre', 'ws-frames', wsFrames.join('\\n'));
+    sec.appendChild(frames);
     return sec;
   }
 
