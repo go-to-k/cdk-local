@@ -28,6 +28,7 @@ import {
   createLocalStateProvider,
   isCfnFlagPresent,
   type LocalStateSourceOptions,
+  type ExtraStateProviders,
 } from './local-state-source.js';
 import {
   resolveKvsModulesForDistribution,
@@ -124,6 +125,13 @@ interface LocalStartCloudFrontOptions {
 export interface CreateLocalStartCloudFrontCommandOptions {
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
+  /**
+   * Additional state-source factories a host CLI can inject so its own
+   * `--from-state`-style source is picked up by the deployed-state resolution
+   * paths (the KVS resolver + the deployed-S3 origin resolver). Absent =>
+   * cdk-local's built-in `--from-cfn-stack` only.
+   */
+  extraStateProviders?: ExtraStateProviders;
 }
 
 /**
@@ -181,7 +189,8 @@ async function attachKvsModules(
   stacks: StackInfo[],
   options: LocalStartCloudFrontOptions,
   profileCredentials: ResolvedProfileCredentials | undefined,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
   const kvsFiles = parseKvsFileOverrides(options.kvsFile);
   const stack = stacks.find((s) => s.stackName === distribution.stackName);
@@ -192,7 +201,8 @@ async function attachKvsModules(
         const provider = createLocalStateProvider(
           options as unknown as LocalStateSourceOptions,
           distribution.stackName,
-          synthRegion
+          synthRegion,
+          extraStateProviders
         );
         if (!provider) return undefined;
         const record = await provider.load(distribution.stackName, synthRegion);
@@ -481,7 +491,8 @@ export async function resolveDeployedS3Origins(
   stacks: StackInfo[],
   options: LocalStartCloudFrontOptions,
   profileCredentials: ResolvedProfileCredentials | undefined,
-  logger: ReturnType<typeof getLogger>
+  logger: ReturnType<typeof getLogger>,
+  extraStateProviders?: ExtraStateProviders
 ): Promise<{ readers: Map<string, S3OriginReader>; buckets: Map<string, string> }> {
   const readers = new Map<string, S3OriginReader>();
   const buckets = new Map<string, string>();
@@ -496,7 +507,8 @@ export async function resolveDeployedS3Origins(
   const provider = createLocalStateProvider(
     options as unknown as LocalStateSourceOptions,
     distribution.stackName,
-    synthRegion
+    synthRegion,
+    extraStateProviders
   );
   const record = provider ? await provider.load(distribution.stackName, synthRegion) : undefined;
   // The deployed distribution's physical id (for the GetDistributionConfig
@@ -574,7 +586,8 @@ export function annotateDeployedS3Origins(
 
 async function localStartCloudFrontCommand(
   target: string | undefined,
-  options: LocalStartCloudFrontOptions
+  options: LocalStartCloudFrontOptions,
+  extraStateProviders?: ExtraStateProviders
 ): Promise<void> {
   const logger = getLogger();
   if (options.verbose) logger.setLevel('debug');
@@ -659,7 +672,8 @@ async function localStartCloudFrontCommand(
     initial.stacks,
     options,
     profileCredentials,
-    logger
+    logger,
+    extraStateProviders
   );
 
   warnUnsupported(initial.distribution);
@@ -677,7 +691,14 @@ async function localStartCloudFrontCommand(
   // Resolve + attach the cf KeyValueStore module to every KVS-reading function
   // (--kvs-file local map / --from-cfn-stack deployed GetKey). Independent of
   // the Lambda-origin boot; re-run on every --watch reload below.
-  await attachKvsModules(initial.distribution, initial.stacks, options, profileCredentials, logger);
+  await attachKvsModules(
+    initial.distribution,
+    initial.stacks,
+    options,
+    profileCredentials,
+    logger,
+    extraStateProviders
+  );
 
   // Boot a warm RIE container per Lambda Function URL origin (issue #376).
   // No Function URL origin -> empty map -> start-cloudfront stays pure-local.
@@ -772,7 +793,8 @@ async function localStartCloudFrontCommand(
               reloaded.stacks,
               options,
               profileCredentials,
-              logger
+              logger,
+              extraStateProviders
             );
             server.update(reloaded.distribution);
             logger.info('Reload complete.');
@@ -850,7 +872,7 @@ export function createLocalStartCloudFrontCommand(
     .action(
       withErrorHandling(
         async (target: string | undefined, options: LocalStartCloudFrontOptions) => {
-          await localStartCloudFrontCommand(target, options);
+          await localStartCloudFrontCommand(target, options, opts.extraStateProviders);
         }
       )
     );

@@ -188,6 +188,30 @@ describe('resolveDeployedS3Origins', () => {
     expect(readers.size).toBe(0);
   });
 
+  it('threads extraStateProviders into createLocalStateProvider (host --from-state parity, issue #426)', async () => {
+    createProviderMock.mockReturnValue({
+      load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'b' } } }),
+    });
+    createProviderMock.mockClear();
+    const extraStateProviders = { marker: 'providers' } as never;
+
+    await resolveDeployedS3Origins(
+      distribution({ kind: 's3-unresolved', originId: 'o1', bucketLogicalId: 'Bucket123' }),
+      stacks,
+      { fromCfnStack: 'Stack' } as never,
+      undefined,
+      logger,
+      extraStateProviders
+    );
+
+    expect(createProviderMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'Stack',
+      'us-west-2',
+      extraStateProviders
+    );
+  });
+
   it('threads cache: true into the reader only when --cache-origin is set', async () => {
     createProviderMock.mockReturnValue({
       load: vi.fn().mockResolvedValue({ resources: { Bucket123: { physicalId: 'b' } } }),
