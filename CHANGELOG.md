@@ -1,3 +1,10 @@
+## [0.131.1](https://github.com/go-to-k/cdk-local/compare/v0.131.0...v0.131.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** drop bold on the kind-group header label ([#446](https://github.com/go-to-k/cdk-local/issues/446)) ([7a07a2a](https://github.com/go-to-k/cdk-local/commit/7a07a2af16d8496d663ae501fa3042034f2f8add))
+
 # [0.131.0](https://github.com/go-to-k/cdk-local/compare/v0.130.3...v0.131.0) (2026-06-05)
 
 
