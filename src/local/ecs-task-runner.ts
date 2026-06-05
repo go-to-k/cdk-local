@@ -35,6 +35,7 @@ import {
   type ResolvedEcsVolume,
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { applyEnvOverrideMap } from './env-resolver.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1354,8 +1355,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
 
   const overrides = opts.envOverrides;
   if (overrides) {
-    applyOverrideMap(finalEnv, overrides['Parameters']);
-    applyOverrideMap(finalEnv, overrides[container.name]);
+    applyEnvOverrideMap(finalEnv, overrides['Parameters']);
+    applyEnvOverrideMap(finalEnv, overrides[container.name]);
   }
 
   // Resolved secret values (and any AWS credentials that landed in the
@@ -1404,19 +1405,6 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
 
   args.push(image, ...entryPointTail, ...(container.command ?? []));
   return { args, sensitiveEnv, publishedEndpoints };
-}
-
-function applyOverrideMap(
-  acc: Record<string, string>,
-  map: Record<string, string | null> | undefined
-): void {
-  if (!map) return;
-  for (const [k, v] of Object.entries(map)) {
-    if (v === null) delete acc[k];
-    else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      acc[k] = String(v);
-    }
-  }
 }
 
 /**

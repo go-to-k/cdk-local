@@ -1,0 +1,20 @@
+{
+  "name": "cdkl-integ-local-run-task-env-vars",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Integration test fixture for cdkl run-task --env-vars overlay (set / add / null-clear)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.169.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.5.1"
+}

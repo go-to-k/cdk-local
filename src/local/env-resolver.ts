@@ -91,7 +91,7 @@ export function resolveEnvVars(
   }
 
   if (overrides) {
-    applyOverrideMap(resolved, overrides.Parameters);
+    applyEnvOverrideMap(resolved, overrides.Parameters);
     // Iterate non-Parameters keys in JSON insertion order so a
     // logical-ID + display-path collision applies later-wins (SAM-compat).
     //
@@ -107,11 +107,11 @@ export function resolveEnvVars(
       if (key === 'Parameters') continue;
       if (!val || typeof val !== 'object') continue;
       if (key === logicalId) {
-        applyOverrideMap(resolved, val);
+        applyEnvOverrideMap(resolved, val);
         continue;
       }
       if (displayPath && (displayPath === key || displayPath.startsWith(`${key}/`))) {
-        applyOverrideMap(resolved, val);
+        applyEnvOverrideMap(resolved, val);
       }
     }
   }
@@ -120,12 +120,19 @@ export function resolveEnvVars(
 }
 
 /**
- * Apply one override map to the accumulator. `null` clears a key (SAM
- * compatibility); any other value is coerced to string. Unknown shapes are
- * silently skipped — the file format is loose and we don't want to fail a
- * whole run on one bad entry.
+ * Apply one `--env-vars` override map to an env accumulator. `null` CLEARS a
+ * key (SAM compatibility) by deleting it from `acc` — the key is then absent
+ * from the resolved env entirely, never set to the string `"null"`. Any other
+ * primitive value is coerced to string. Unknown shapes are silently skipped —
+ * the file format is loose and we don't want to fail a whole run on one bad
+ * entry.
+ *
+ * Shared by `cdkl invoke`'s Lambda env resolution ({@link resolveEnvVars}) and
+ * the ECS task-container env overlay in `ecs-task-runner.ts`
+ * (`start-service` / `start-alb` / `run-task`), so the two `--env-vars`
+ * code paths apply identical SAM-shape semantics and cannot drift.
  */
-function applyOverrideMap(
+export function applyEnvOverrideMap(
   acc: Record<string, string>,
   map: Record<string, string | null> | undefined
 ): void {
