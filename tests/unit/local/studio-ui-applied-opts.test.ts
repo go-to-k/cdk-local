@@ -67,6 +67,23 @@ describe('studio serve "Started with" summary (issue #356)', () => {
     }
   });
 
+  it('surfaces the session-global --watch first when the serve was Started with watch ON', () => {
+    const h = createStudioHarness({ epilogue: EXPOSE });
+    try {
+      const t = exposed(h);
+      // watch ON -> --watch line, listed first (it is not a per-run option).
+      expect(t.formatAppliedOptions({ watch: true, options: { '--max-tasks': '2' } })).toEqual([
+        '--watch',
+        '--max-tasks 2',
+      ]);
+      // watch absent / false -> no --watch line (a serve started before the toggle).
+      expect(t.formatAppliedOptions({ options: { '--max-tasks': '2' } })).toEqual(['--max-tasks 2']);
+      expect(t.formatAppliedOptions({ watch: false, options: {} })).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+
   it('renders the chosen options in the running serve workspace', () => {
     const h = createStudioHarness({ epilogue: EXPOSE });
     try {

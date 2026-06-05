@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   applyConfigPatch,
+  describeWatchToggle,
+  describeAssumeRoleToggle,
   coerceRunRequest,
   coerceStopRequest,
   coerceServeRequest,
@@ -315,6 +317,55 @@ describe('applyConfigPatch', () => {
     const cfg: EditableSessionBindings = { watch: true };
     applyConfigPatch({ assumeRole: 'arn:x' }, cfg);
     expect(cfg.watch).toBe(true);
+  });
+});
+
+describe('describeWatchToggle', () => {
+  it('returns undefined when the value did not change (no spurious log)', () => {
+    expect(describeWatchToggle(false, false)).toBeUndefined();
+    expect(describeWatchToggle(true, true)).toBeUndefined();
+  });
+
+  it('logs an ON line on a false -> true flip, noting it binds the next serve', () => {
+    const line = describeWatchToggle(false, true);
+    expect(line).toMatch(/Watch mode: ON/);
+    expect(line).toMatch(/already-running serves/);
+  });
+
+  it('logs an OFF line on a true -> false flip', () => {
+    const line = describeWatchToggle(true, false);
+    expect(line).toMatch(/Watch mode: OFF/);
+  });
+});
+
+describe('describeAssumeRoleToggle', () => {
+  it('returns undefined when the value did not change (undefined / same string)', () => {
+    expect(describeAssumeRoleToggle(undefined, undefined)).toBeUndefined();
+    expect(describeAssumeRoleToggle('arn:aws:iam::1:role/r', 'arn:aws:iam::1:role/r')).toBeUndefined();
+  });
+
+  it('treats undefined and empty-string as equivalent (no spurious log)', () => {
+    expect(describeAssumeRoleToggle(undefined, '')).toBeUndefined();
+    expect(describeAssumeRoleToggle('', undefined)).toBeUndefined();
+  });
+
+  it('logs a set line naming the ARN on an unset -> set flip', () => {
+    const line = describeAssumeRoleToggle(undefined, 'arn:aws:iam::1:role/r');
+    expect(line).toMatch(/Assume-role binding set to arn:aws:iam::1:role\/r/);
+    expect(line).toMatch(/already-running serves/);
+  });
+
+  it('logs a cleared line on a set -> unset flip', () => {
+    expect(describeAssumeRoleToggle('arn:aws:iam::1:role/r', undefined)).toMatch(
+      /Assume-role binding cleared/
+    );
+    expect(describeAssumeRoleToggle('arn:aws:iam::1:role/r', '')).toMatch(
+      /Assume-role binding cleared/
+    );
+  });
+
+  it('logs a set line on a role -> different role change', () => {
+    expect(describeAssumeRoleToggle('arn:old', 'arn:new')).toMatch(/set to arn:new/);
   });
 });
 

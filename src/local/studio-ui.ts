@@ -1014,6 +1014,14 @@ const STUDIO_SCRIPT = `
   // (repeat-pair / env-kv). Unset / false / blank entries are omitted.
   function formatAppliedOptions(applied) {
     const lines = [];
+    // The session-global --watch is not a per-run option (the serve-manager
+    // appends it from the mutable session config), so it would otherwise never
+    // appear in this summary. Surface it first so a serve started with watch ON
+    // shows it, and one started before the toggle visibly does NOT (the
+    // confusion that a missing --watch line here used to cause).
+    if (applied && applied.watch) {
+      lines.push('--watch');
+    }
     const options = applied && applied.options;
     if (options) {
       Object.keys(options).forEach(function (flag) {
@@ -1061,11 +1069,18 @@ const STUDIO_SCRIPT = `
     // Remember what this serve was Started with so the running workspace can
     // show a read-only "Started with" summary (issue #356) — the per-run
     // option inputs are gone once the composer is replaced by the running view.
+    // Record the session-global watch state at Start time (the serve-manager
+    // reads the SAME mutable config to decide --watch), so the "Started with"
+    // summary reflects whether THIS serve actually got --watch, regardless of
+    // any later toggle. The checkbox mirrors the server binding (applyConfig
+    // PATCHes on change), and only serve kinds reach startServe.
+    const watchEl = document.getElementById('sess-watch');
     serveApplied.set(id, {
       options: options,
       rawArgs: rawArgs,
       imageOverride: imageOverride,
       imageOverrides: imageOverrides,
+      watch: !!(watchEl && watchEl.checked),
     });
     // Defensive: a restart clears any stale "Stopping..." transient (issue
     // #394) — including a pending min-visible timer — so the new run shows

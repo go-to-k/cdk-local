@@ -445,6 +445,51 @@ export function applyConfigPatch(body: unknown, target: EditableSessionBindings)
   }
 }
 
+/**
+ * One-line log surfaced when a `PATCH /api/config` flips the session `watch`
+ * binding. studio otherwise logs NOTHING for a watch toggle — unlike a
+ * `--from-cfn-stack` change, which re-classifies + logs a line — so the user
+ * pressing the Session-bar `watch` checkbox has no confirmation it took (the
+ * confusion that motivated this helper). Returns `undefined` when the value did
+ * not change (the Session bar PATCHes every binding on any field edit, so a
+ * from-cfn-stack-only / assume-role-only toggle re-sends `watch` unchanged), so
+ * the caller logs only on a real flip. The "already-running serves" note
+ * mirrors the serve-manager reading `config.watch` per `start()`: the toggle
+ * binds the NEXT serve started, never a live one.
+ */
+export function describeWatchToggle(before: boolean, after: boolean): string | undefined {
+  if (before === after) return undefined;
+  return after
+    ? 'Watch mode: ON — serves started from now on hot-reload on CDK source changes ' +
+        '(already-running serves keep their launch setting; restart them to pick it up).'
+    : 'Watch mode: OFF — serves started from now on do not hot-reload ' +
+        '(already-running serves keep their launch setting; restart them to apply).';
+}
+
+/**
+ * One-line log surfaced when a `PATCH /api/config` flips the session
+ * `assume-role` binding. Like {@link describeWatchToggle}, the toggle is
+ * otherwise silent (only a from-cfn-stack change logs, via re-classification),
+ * so the user editing the Session-bar role gets no confirmation. Returns
+ * `undefined` when the value did not change (the Session bar re-sends every
+ * binding on any field edit). The binding is forwarded to every child studio
+ * spawns, so it takes effect on the NEXT invoke / serve started — already-
+ * running serves keep the role they launched with.
+ */
+export function describeAssumeRoleToggle(
+  before: string | undefined,
+  after: string | undefined
+): string | undefined {
+  const b = before ?? '';
+  const a = after ?? '';
+  if (b === a) return undefined;
+  return a === ''
+    ? 'Assume-role binding cleared — invokes / serves started from now on use the default ' +
+        'credential chain (already-running serves keep their launch setting).'
+    : `Assume-role binding set to ${a} — applied to invokes / serves started from now on ` +
+        '(already-running serves keep their launch setting).';
+}
+
 const DEFAULT_STUDIO_PORT = 9999;
 
 /**
@@ -1195,7 +1240,18 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
       // Mutates the shared childConfig the dispatcher + serve-manager read
       // per-run, so the new binding applies to subsequent invokes / serves.
       const beforeFromCfn = childConfig.fromCfnStack;
+      const beforeWatch = childConfig.watch === true;
+      const beforeAssumeRole = childConfig.assumeRole;
       applyConfigPatch(body, childConfig);
+      // A watch / assume-role toggle is otherwise silent (no re-classification,
+      // unlike a from-cfn-stack change which logs via the reclassify pass), so
+      // log a one-line confirmation on a real flip so the user knows the
+      // Session-bar edit took + that it binds the NEXT run, not already-running
+      // serves.
+      const watchLog = describeWatchToggle(beforeWatch, childConfig.watch === true);
+      if (watchLog) logger.info(watchLog);
+      const assumeRoleLog = describeAssumeRoleToggle(beforeAssumeRole, childConfig.assumeRole);
+      if (assumeRoleLog) logger.info(assumeRoleLog);
       // A `--from-cfn-stack` change re-runs the ECS image-pin classification +
       // swaps the served target list under the live socket (issue #385); other
       // edits (assume-role / watch) skip it. The post-patch `childConfig.
