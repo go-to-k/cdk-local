@@ -157,7 +157,9 @@ async function main() {
 
   // Send — the response renders inline AND lands on the timeline.
   await click(page.locator('.req-send button', { hasText: 'Send' }));
-  await page.locator('.req-result .req-status').first().waitFor({ timeout: 30000 });
+  // The result renders as a Request -> Response PAIR (#438 / #444); wait for the
+  // Response section to appear (the old single .req-status span was retired).
+  await page.locator('.req-result .req-resp').first().waitFor({ timeout: 30000 });
   // Hold on the inline response (status + reflected body) so it reads clearly.
   await wait(2600);
 
