@@ -190,7 +190,7 @@ const STUDIO_CSS = `
   .req-composer .req-send button { margin-top: 0; padding: 4px 16px; background: #2a7d46; color: #fff; }
   .req-composer .req-send button:hover { background: #339152; }
   .req-composer .req-send button:disabled { background: #333; color: #888; }
-  .req-composer .req-status { margin-top: 8px; font: 12px ui-monospace, Menlo, monospace; }
+  .req-composer .req-result .req-resp { margin-top: 8px; padding: 0; border-bottom: none; }
   .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
@@ -1224,10 +1224,13 @@ const STUDIO_SCRIPT = `
       );
     } else if (running && isEcs && st.hostUrl) {
       // An ecs service published via --host-port IS reachable on the host
-      // (issue #322); show its host URL. No proxy fronts it, so requests are
-      // not captured on the timeline.
+      // (issue #322); show its host URL. No proxy fronts it, so an EXTERNAL
+      // curl to the host port is not captured — but a request sent through the
+      // composer below IS recorded on the timeline (studio emits it itself).
       epSec.appendChild(href(st.hostUrl));
-      epSec.appendChild(el('div', 'opt-hint', '(direct host port — not captured on the timeline)'));
+      epSec.appendChild(
+        el('div', 'opt-hint', '(direct host port — composer requests are captured on the timeline)')
+      );
     } else if (running && isEcs) {
       // A pure-compute ECS service has no host endpoint — it just runs the
       // replicas (reach them container-to-container via Cloud Map).
@@ -1239,8 +1242,9 @@ const STUDIO_SCRIPT = `
 
     // In-workspace HTTP request composer for a running api / alb (or ecs with
     // --host-port) serve (issue #322): compose a request and Send it; studio
-    // relays it server-side (same-origin) so it works cross-port and, for
-    // api / alb, lands on the timeline via the capture proxy.
+    // relays it server-side (same-origin) so it works cross-port and lands on
+    // the timeline — api / alb via the capture proxy, ecs via studio emitting
+    // the invocation pair itself (the direct host-port relay has no proxy).
     const httpBase = running
       ? (st.endpoints || []).find((u) => /^https?:/.test(u)) || (isEcs ? st.hostUrl : null)
       : null;
@@ -1526,17 +1530,25 @@ const STUDIO_SCRIPT = `
           msg.textContent = 'Request failed: ' + (data.error || ('HTTP ' + res.status));
           return;
         }
-        const statusLine = el('div', 'req-status');
+        // Frame the result as a "Response" section (status badge in the
+        // heading) so a sent request reads as Request (the compose form above)
+        // -> Response, matching the timeline's read-only detail. Without the
+        // heading the status + headers + body dumped raw under Send read as an
+        // unlabeled blob — most visible for an ecs --host-port serve, which is
+        // not captured on the timeline and so has only this inline result.
+        const respSec = el('div', 'section req-resp');
+        const respHead = el('h3', null, 'Response');
         const cls = data.status >= 200 && data.status < 300 ? 'ok' : 'bad';
-        statusLine.appendChild(
-          el('span', cls, data.status + (data.durationMs != null ? ' · ' + data.durationMs + 'ms' : ''))
+        respHead.appendChild(
+          el('span', cls, '  ' + data.status + (data.durationMs != null ? ' · ' + data.durationMs + 'ms' : ''))
         );
-        result.appendChild(statusLine);
+        respSec.appendChild(respHead);
         const hdrs = Object.keys(data.headers || {})
           .map(function (k) { return k + ': ' + data.headers[k]; })
           .join('\\n');
-        if (hdrs) result.appendChild(el('pre', 'req-resp-headers', hdrs));
-        result.appendChild(el('pre', null, data.body != null ? data.body : ''));
+        if (hdrs) respSec.appendChild(el('pre', 'req-resp-headers', hdrs));
+        respSec.appendChild(el('pre', null, data.body != null ? data.body : ''));
+        result.appendChild(respSec);
       } catch (err) {
         msg.textContent = 'Request failed: ' + err;
       } finally {

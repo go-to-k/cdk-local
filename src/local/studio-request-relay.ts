@@ -12,7 +12,9 @@
  * For an `api` / `alb` serve the endpoint is the studio capture-proxy URL, so a
  * relayed request lands on the timeline exactly like an external curl. For an
  * `ecs` serve published via `--host-port` the endpoint is the replica's host
- * URL (no proxy in front, so it is NOT captured).
+ * URL (no proxy in front); the relay is still recorded on the timeline because
+ * the caller emits the invocation events itself (see
+ * `relayAndCaptureServeRequest` in `local-studio.ts`).
  *
  * The relay is host-agnostic — it just performs one bounded HTTP request — so
  * it is exported from `cdk-local/internal` for a host CLI embedding studio.

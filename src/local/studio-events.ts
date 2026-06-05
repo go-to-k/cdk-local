@@ -94,8 +94,10 @@ export interface StudioServeEvent {
   endpoints?: string[];
   /**
    * Direct host URL for an `ecs` serve published via `--host-port` (issue
-   * #322) — no proxy in front (so a request to it is not captured). Absent for
-   * api / alb (use `endpoints`) and for an ecs serve without `--host-port`.
+   * #322) — no proxy in front. A request relayed through the studio composer
+   * still lands on the timeline (studio emits the invocation events itself); an
+   * external curl straight to the host port is not captured. Absent for api /
+   * alb (use `endpoints`) and for an ecs serve without `--host-port`.
    */
   hostUrl?: string;
   /** Child process id, present from `starting` onward. */

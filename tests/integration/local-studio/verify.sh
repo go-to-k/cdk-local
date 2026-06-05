@@ -1408,6 +1408,45 @@ if [[ -z "${ECS_ENV_HIT}" ]]; then
 fi
 echo "    OK: --env-vars threaded; task container '${ECS_ENV_HIT}' carries STUDIO_ECS_PROBE=${ECS_ENV_VALUE}"
 
+# In-workspace HTTP request composer against an ecs --host-port serve: unlike
+# api / alb (which relay through the capture proxy), the ecs relay goes DIRECT
+# to the replica host port (no proxy). studio emits the invocation start/end
+# pair itself (relayAndCaptureServeRequest) so the request STILL lands on the
+# timeline. Start an SSE listener, relay a composed GET /, then assert (a) the
+# relay returns the fixture's directory-listing 200 and (b) an invocation row
+# with kind=ecs + the GET / label appears on the timeline.
+echo "==> POST /api/request relays to the ecs --host-port serve AND lands on the timeline"
+ECS_SSE_FILE=$(mktemp)
+curl -sN --max-time 30 "${URL}/api/events" >"${ECS_SSE_FILE}" 2>/dev/null &
+ECS_SSE_PID=$!
+sleep 1
+ECS_REQ_FILE=$(mktemp)
+HTTP_EREQ=$(curl -s -o "${ECS_REQ_FILE}" -w '%{http_code}' --max-time 30 \
+  -X POST "${URL}/api/request" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${ECS_TARGET}\",\"method\":\"GET\",\"path\":\"/\"}" || true)
+if [[ "${HTTP_EREQ}" != "200" ]] || ! grep -qF '"status":200' "${ECS_REQ_FILE}"; then
+  echo "FAIL: POST /api/request (ecs direct) did not report the upstream 200"
+  echo "----- relay result -----"; head -c 1000 "${ECS_REQ_FILE}"; echo; echo "------------------------"
+  kill "${ECS_SSE_PID}" 2>/dev/null || true
+  rm -f "${ECS_REQ_FILE}" "${ECS_SSE_FILE}"; exit 1
+fi
+rm -f "${ECS_REQ_FILE}"
+# The emitted invocation row carries kind=ecs + the GET / label — proof the
+# direct (un-proxied) ecs relay was captured onto the timeline.
+for _ in $(seq 1 20); do
+  if grep -qF 'event: invocation' "${ECS_SSE_FILE}" && grep -qF '"label":"GET /"' "${ECS_SSE_FILE}"; then break; fi
+  sleep 0.5
+done
+if ! grep -qF '"label":"GET /"' "${ECS_SSE_FILE}" || ! grep -qF '"kind":"ecs"' "${ECS_SSE_FILE}"; then
+  echo "FAIL: the ecs --host-port request was NOT captured on the timeline (invocation row)"
+  echo "----- sse capture -----"; tail -c 2000 "${ECS_SSE_FILE}"; echo "-----------------------"
+  kill "${ECS_SSE_PID}" 2>/dev/null || true
+  rm -f "${ECS_SSE_FILE}"; exit 1
+fi
+kill "${ECS_SSE_PID}" 2>/dev/null || true
+rm -f "${ECS_SSE_FILE}"
+echo "    OK: ecs direct relay captured on the timeline (GET / invocation, kind=ecs)"
+
 echo "==> GET /api/running reflects the ECS service (no endpoint)"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${ECS_TARGET}" "${BODY_FILE}"; then

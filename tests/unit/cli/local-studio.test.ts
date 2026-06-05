@@ -9,6 +9,8 @@ import {
   coerceServeRequest,
   coerceReinvokeRequest,
   resolveServeBaseUrl,
+  serveRelayIsCaptured,
+  relayAndCaptureServeRequest,
   createLocalStudioCommand,
   installStudioResilienceGuard,
   parseStudioPort,
@@ -18,6 +20,7 @@ import {
 } from '../../../src/cli/commands/local-studio.js';
 import type { StudioRunRequest } from '../../../src/local/studio-dispatch.js';
 import type { StudioServeState } from '../../../src/local/studio-serve-manager.js';
+import { StudioEventBus } from '../../../src/local/studio-events.js';
 
 describe('createLocalStudioCommand', () => {
   it('is named "studio"', () => {
@@ -512,6 +515,114 @@ describe('resolveServeBaseUrl (issue #322)', () => {
   it('returns undefined when there is no reachable http endpoint', () => {
     expect(resolveServeBaseUrl(state({ endpoints: ['ws://x'] }))).toBeUndefined();
     expect(resolveServeBaseUrl(state({}))).toBeUndefined();
+  });
+});
+
+describe('serveRelayIsCaptured', () => {
+  const state = (over: Partial<StudioServeState>): StudioServeState => ({
+    targetId: 'T',
+    kind: 'api',
+    status: 'running',
+    endpoints: [],
+    startedAt: 0,
+    ...over,
+  });
+
+  it('is true for an api / alb serve (http capture-proxy endpoint)', () => {
+    expect(serveRelayIsCaptured(state({ endpoints: ['http://127.0.0.1:51234'] }))).toBe(true);
+  });
+
+  it('is false for an ecs --host-port serve (direct host URL, no proxy)', () => {
+    expect(
+      serveRelayIsCaptured(state({ kind: 'ecs', hostUrl: 'http://127.0.0.1:8080' }))
+    ).toBe(false);
+  });
+
+  it('is false for a ws-only endpoint (not a captured http relay)', () => {
+    expect(serveRelayIsCaptured(state({ endpoints: ['ws://127.0.0.1:51234'] }))).toBe(false);
+  });
+});
+
+describe('relayAndCaptureServeRequest', () => {
+  const ecsState: StudioServeState = {
+    targetId: 'Stack/Svc',
+    kind: 'ecs',
+    status: 'running',
+    endpoints: [],
+    hostUrl: 'http://127.0.0.1:8080',
+    startedAt: 0,
+  };
+
+  it('emits the invocation start/end pair so the ecs request lands on the timeline', async () => {
+    const bus = new StudioEventBus();
+    const events: unknown[] = [];
+    bus.on('invocation', (ev) => events.push(ev));
+
+    const relay = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      body: '<html/>',
+      truncated: false,
+      durationMs: 9,
+    });
+    const result = await relayAndCaptureServeRequest(
+      {
+        bus,
+        state: ecsState,
+        req: { targetId: 'Stack/Svc', method: 'GET', path: '/orders?x=1' },
+        baseUrl: 'http://127.0.0.1:8080',
+      },
+      relay,
+      () => 1000,
+      () => 'req-fixed'
+    );
+
+    // The relay was called against the ecs host URL with the composed request.
+    expect(relay).toHaveBeenCalledWith({
+      baseUrl: 'http://127.0.0.1:8080',
+      method: 'GET',
+      path: '/orders?x=1',
+    });
+    expect(result.status).toBe(200);
+
+    // Two events, both keyed by the same id, with the label stripped of query.
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      id: 'req-fixed',
+      ts: 1000,
+      target: 'Stack/Svc',
+      kind: 'ecs',
+      label: 'GET /orders',
+      request: { method: 'GET', path: '/orders?x=1', headers: {} },
+    });
+    expect(events[0]).not.toHaveProperty('response');
+    expect(events[1]).toMatchObject({
+      id: 'req-fixed',
+      target: 'Stack/Svc',
+      status: 200,
+      durationMs: 9,
+      response: { status: 200, headers: { 'content-type': 'text/html' }, body: '<html/>' },
+    });
+  });
+
+  it('closes the timeline row with a 502 and rethrows on a relay failure', async () => {
+    const bus = new StudioEventBus();
+    const events: any[] = [];
+    bus.on('invocation', (ev) => events.push(ev));
+
+    const relay = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(
+      relayAndCaptureServeRequest(
+        { bus, state: ecsState, req: { targetId: 'Stack/Svc', method: 'POST' }, baseUrl: 'http://127.0.0.1:8080' },
+        relay,
+        () => 2000,
+        () => 'req-err'
+      )
+    ).rejects.toThrow('ECONNREFUSED');
+
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ id: 'req-err', status: 502 });
+    expect(events[1].response).toContain('ECONNREFUSED');
   });
 });
 
