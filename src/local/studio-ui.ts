@@ -195,12 +195,15 @@ const STUDIO_CSS = `
   .req-composer .req-result pre { background: #0e0e0e; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
-  .log-head { display: flex; align-items: center; justify-content: space-between; }
   .log-clear {
-    background: #1d1d1d; color: #bbb; border: 1px solid #333; border-radius: 3px;
-    padding: 2px 10px; font-size: 11px; cursor: pointer; margin: 0;
+    background: #1d1d1d; color: #ccc; border: 1px solid #3a3a3a; border-radius: 4px;
+    padding: 5px 16px; font-size: 12px; cursor: pointer; margin: 0;
   }
-  .log-clear:hover { background: #262626; color: #ddd; }
+  .log-clear:hover { background: #2a2a2a; color: #fff; border-color: #4a4a4a; }
+  /* A Clear action sits BELOW the log it clears, right-aligned within the
+     same capped content column so it lands near the log, not at the far
+     right edge of a wide pane. */
+  .clear-row { display: flex; justify-content: flex-end; max-width: 760px; margin-top: 6px; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
   .section h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
@@ -211,8 +214,12 @@ const STUDIO_CSS = `
   .endpoint:hover { text-decoration: underline; }
   .ws-console .ws-status { font-size: 12px; color: #888; margin-left: 8px; font-weight: 400; }
   .ws-console .ws-status.on { color: #4ec97a; }
-  .ws-console h3 .ws-clear { float: right; font-weight: 400; }
-  .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  /* Cap the interactive content to a readable column so on a wide center
+     pane the input does not stretch edge-to-edge and fling Send far to the
+     right. Send then sits right after the input; the log + Clear share the
+     same column. The cap is a no-op on a narrow pane (content uses what is
+     available). */
+  .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; max-width: 760px; }
   .ws-row .ws-input { flex: 1; min-width: 0; background: #1a1a1a; border: 1px solid #333;
     color: #ddd; border-radius: 4px; padding: 5px 7px; font: inherit; }
   .ws-row .ws-input:focus { outline: none; border-color: #4ec97a; }
@@ -220,7 +227,10 @@ const STUDIO_CSS = `
     padding: 5px 12px; cursor: pointer; }
   .ws-row button:disabled { background: #2a2a2a; color: #666; cursor: default; }
   .ws-frames { max-height: 180px; overflow: auto; background: #141414; border: 1px solid #262626;
-    border-radius: 4px; padding: 6px 8px; margin-top: 4px; min-height: 22px; }
+    border-radius: 4px; padding: 6px 8px; margin-top: 4px; min-height: 22px; max-width: 760px; }
+  /* The serve LOGS <pre> shares the capped column so its Clear (below it,
+     right-aligned via .clear-row) lands at the column edge, near the log. */
+  .serve-log { max-width: 760px; }
   .searchbar { padding: 6px 10px; border-bottom: 1px solid #2a2a2a; background: #151515;
     position: sticky; top: 28px; z-index: 1; }
   .searchbar input {
@@ -1263,20 +1273,7 @@ const STUDIO_SCRIPT = `
 
     const logs = logsById.get(id) || [];
     const logSec = el('div', 'section');
-    // Logs header carries a Clear button (issue #338): hammering a serve piles
-    // up log lines, so let the user empty the panel (display-only — the
-    // server-side store / history is untouched).
-    const logHead = el('div', 'log-head');
-    logHead.appendChild(el('h3', null, 'Logs'));
-    const logClear = el('button', 'log-clear', 'Clear');
-    logClear.onclick = function () {
-      // Surgical clear (issue #334): empty the buffer + the live <pre> without
-      // a full re-render that would wipe the request composer's fields.
-      logsById.set(id, []);
-      if (serveLogPre) serveLogPre.textContent = '(none)';
-    };
-    logHead.appendChild(logClear);
-    logSec.appendChild(logHead);
+    logSec.appendChild(el('h3', null, 'Logs'));
     // A proxy-fronted serve (api / alb) streams its child start-* logs here,
     // which advertise the child internal 127.0.0.1 port — a DIFFERENT port
     // than the capture-proxy URL in Endpoints above. Flag it so the child
@@ -1290,8 +1287,22 @@ const STUDIO_SCRIPT = `
         )
       );
     }
-    const logPre = el('pre', null, logs.length ? logs.join('\\n') : '(none)');
+    const logPre = el('pre', 'serve-log', logs.length ? logs.join('\\n') : '(none)');
     logSec.appendChild(logPre);
+    // Clear sits below the log (issue #338): hammering a serve piles up log
+    // lines, so let the user empty the panel (display-only — the server-side
+    // store / history is untouched). Below the log + right-aligned so it lands
+    // near the content it clears, not in the section header above.
+    const logClearRow = el('div', 'clear-row');
+    const logClear = el('button', 'log-clear', 'Clear');
+    logClear.onclick = function () {
+      // Surgical clear (issue #334): empty the buffer + the live <pre> without
+      // a full re-render that would wipe the request composer's fields.
+      logsById.set(id, []);
+      if (serveLogPre) serveLogPre.textContent = '(none)';
+    };
+    logClearRow.appendChild(logClear);
+    logSec.appendChild(logClearRow);
     ws.appendChild(logSec);
     // Register the live LOGS <pre> so streamed log events update it surgically
     // (issue #334) instead of re-rendering the whole serve workspace.
@@ -1709,12 +1720,16 @@ const STUDIO_SCRIPT = `
     row.appendChild(sendBtn);
     sec.appendChild(row);
 
-    const clearBtn = el('button', 'log-clear ws-clear', 'Clear');
-    clearBtn.onclick = wsClear;
-    h.appendChild(clearBtn);
-
     const frames = el('pre', 'ws-frames', wsFrames.join('\\n'));
     sec.appendChild(frames);
+
+    // Clear sits BELOW the log it clears (the log streams downward), right-
+    // aligned within the capped column so it stays near the content.
+    const clearRow = el('div', 'clear-row');
+    const clearBtn = el('button', 'log-clear ws-clear', 'Clear');
+    clearBtn.onclick = wsClear;
+    clearRow.appendChild(clearBtn);
+    sec.appendChild(clearRow);
     return sec;
   }
 

@@ -105,4 +105,18 @@ describe('studio WebSocket console (renderWsConsole)', () => {
     (node.querySelector('.ws-clear') as HTMLElement & { onclick: () => void }).onclick();
     expect(pre.textContent).toBe('');
   });
+
+  it('the Clear button sits BELOW the frame log (in a .clear-row), not in the header', () => {
+    const { node } = mountConsole();
+    // Not in the section header anymore.
+    expect(node.querySelector('h3 .ws-clear')).toBeNull();
+    // Inside a .clear-row, and that row comes AFTER the frame log in the DOM.
+    const clearBtn = node.querySelector('.clear-row .ws-clear');
+    const frames = node.querySelector('.ws-frames');
+    expect(clearBtn).not.toBeNull();
+    expect(frames).not.toBeNull();
+    const FOLLOWING = (harness.window as unknown as { Node: { DOCUMENT_POSITION_FOLLOWING: number } })
+      .Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(frames!.compareDocumentPosition(clearBtn!) & FOLLOWING).toBeTruthy();
+  });
 });
