@@ -1,3 +1,10 @@
+## [0.128.1](https://github.com/go-to-k/cdk-local/compare/v0.128.0...v0.128.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** switch the kind-group header bar to a warm amber tint ([#437](https://github.com/go-to-k/cdk-local/issues/437)) ([2a53f41](https://github.com/go-to-k/cdk-local/commit/2a53f413c76a8745f4ec414a168cb8b8c7107c94))
+
 # [0.128.0](https://github.com/go-to-k/cdk-local/compare/v0.127.3...v0.128.0) (2026-06-05)
 
 
