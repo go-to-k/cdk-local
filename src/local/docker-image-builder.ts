@@ -132,13 +132,18 @@ const warnedEmulatedPlatforms = new Set<string>();
  * emulation.
  *
  * The arch is chosen automatically from the function's declared
- * `Architectures`, so the user gets no signal that emulation is in play
- * until a container dies. Emulated containers usually run fine, but some
- * compiled custom-runtime binaries (notably a Swift `provided.*`
- * bootstrap) crash under emulation with `exec format error` or
- * `illegal instruction`, which is opaque without this hint. Surface the
- * two real fixes: enable Rosetta for x86/amd64 emulation in the Docker
- * engine settings, or build the function for the host arch.
+ * `Architectures`, so the user gets no signal that emulation is in play.
+ * Emulated containers are slower and some compiled binaries can fail
+ * under emulation (an unsupported CPU instruction surfaces as a crash),
+ * which is opaque without this hint. Surface the two real fixes: enable
+ * Rosetta for x86/amd64 emulation in the Docker engine settings, or build
+ * the function for the host arch.
+ *
+ * The message stays generic about failure symptoms on purpose: an
+ * emulated container that crashes may be a genuine emulation limit, but
+ * the same symptom (e.g. `illegal instruction`) can also come from the
+ * program's own trap on an unrelated runtime error — so the warning flags
+ * that emulation is in play without claiming it is the cause.
  *
  * Deduped by target platform so a warm pool / per-request boot doesn't
  * spam. `platform` is the resolved `--platform` value (`undefined` =>
@@ -156,11 +161,11 @@ export function warnIfEmulatedPlatform(
   const logger = opts.logger ?? getLogger();
   const what = opts.label ? `'${opts.label}' ` : '';
   logger.warn(
-    `Running ${what}under ${platform} emulation on a ${host} host. ` +
-      'Emulated containers can crash some compiled custom-runtime binaries ' +
-      "(e.g. a Swift 'provided.*' bootstrap) with 'exec format error' or " +
-      "'illegal instruction'. If you hit that, enable Rosetta for x86/amd64 " +
-      `emulation in your Docker engine settings, or build the function for ${host}.`
+    `Running ${what}under ${platform} emulation on a ${host} host ` +
+      '(the declared architecture differs from the host). Emulation is slower ' +
+      'and some compiled binaries can fail under it. If the container does not ' +
+      'run correctly, enable Rosetta for x86/amd64 emulation in your Docker ' +
+      `engine settings, or build the function for ${host}.`
   );
 }
 
