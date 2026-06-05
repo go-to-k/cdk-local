@@ -206,8 +206,9 @@ describe('renderStudioHtml', () => {
     // ecs --host-port host URL).
     expect(html).toContain('renderRequestComposer(id, httpBase, captured)');
     expect(html).toContain('isEcs ? st.hostUrl');
-    // The ecs host URL is shown in Endpoints with an "not captured" note.
-    expect(html).toContain('not captured on the timeline');
+    // The ecs host URL is shown in Endpoints with a note that composer requests
+    // ARE captured on the timeline (the direct relay self-emits — issue #432).
+    expect(html).toContain('composer requests are captured on the timeline');
   });
 
   it('clarifies the curl-able proxy port vs the child internal port (issue #325)', () => {

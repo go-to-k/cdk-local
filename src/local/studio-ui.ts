@@ -198,8 +198,13 @@ const STUDIO_CSS = `
   .req-composer .req-send button { margin-top: 0; padding: 4px 16px; background: #2a7d46; color: #fff; }
   .req-composer .req-send button:hover { background: #339152; }
   .req-composer .req-send button:disabled { background: #333; color: #888; }
-  .req-composer .req-result .req-resp { margin-top: 8px; padding: 0; border-bottom: none; }
+  .req-composer .req-result .req-req,
+  .req-composer .req-result .req-resp { margin-top: 10px; padding: 0; border-bottom: none; }
   .req-composer .req-result pre { background: #0e0e0e; }
+  .req-composer .req-result .opt-label { margin-top: 6px; margin-bottom: 3px; }
+  .req-composer .req-result .req-line { color: #cdd6e0; font-weight: 600; }
+  .req-composer .req-result .req-resp-headers { color: #8b8b8b; }
+  .req-composer .req-result .req-resp-body { color: #d6d6d6; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
   .log-clear {
@@ -1446,6 +1451,50 @@ const STUDIO_SCRIPT = `
     };
   }
 
+  // Pretty-print a body when it parses as JSON (object / array); otherwise
+  // return it untouched (HTML / plain text / XML stay verbatim — e.g. a
+  // python http.server directory listing is text/html, not JSON). Guarded on a
+  // leading { or [ so a bare number / quoted-string body is not reformatted.
+  function prettyBody(s) {
+    if (typeof s !== 'string') return s == null ? '' : String(s);
+    const t = s.trim();
+    if (t === '' || (t.charAt(0) !== '{' && t.charAt(0) !== '[')) return s;
+    try {
+      return JSON.stringify(JSON.parse(t), null, 2);
+    } catch (e) {
+      return s;
+    }
+  }
+
+  // Render one side of an HTTP exchange (Request or Response) as a section
+  // with a heading (a status badge for the response), the request-line (for
+  // the request), and Headers / Body split into a dimmed header block + a
+  // (JSON-pretty-printed) body block. Shared by the composer's inline result
+  // so the sent request and the response read as a labeled pair.
+  function renderHttpExchangeSection(title, status, headers, body, requestLine, durationMs) {
+    const sec = el('div', 'section ' + (title === 'Request' ? 'req-req' : 'req-resp'));
+    const head = el('h3', null, title);
+    if (status != null) {
+      const cls = status >= 200 && status < 300 ? 'ok' : 'bad';
+      head.appendChild(
+        el('span', cls, '  ' + status + (durationMs != null ? ' · ' + durationMs + 'ms' : ''))
+      );
+    }
+    sec.appendChild(head);
+    if (requestLine) sec.appendChild(el('pre', 'req-line', requestLine));
+    const hdrKeys = Object.keys(headers || {});
+    if (hdrKeys.length) {
+      sec.appendChild(el('div', 'opt-label', 'Headers'));
+      const hdrText = hdrKeys.map(function (k) { return k + ': ' + headers[k]; }).join('\\n');
+      sec.appendChild(el('pre', 'req-resp-headers', hdrText));
+    }
+    if (body != null && body !== '') {
+      sec.appendChild(el('div', 'opt-label', 'Body'));
+      sec.appendChild(el('pre', 'req-resp-body', prettyBody(body)));
+    }
+    return sec;
+  }
+
   function renderRequestComposer(id, baseUrl, captured) {
     const sec = el('div', 'section req-composer');
     sec.appendChild(el('h3', null, 'Request'));
@@ -1549,25 +1598,19 @@ const STUDIO_SCRIPT = `
           msg.textContent = 'Request failed: ' + (data.error || ('HTTP ' + res.status));
           return;
         }
-        // Frame the result as a "Response" section (status badge in the
-        // heading) so a sent request reads as Request (the compose form above)
-        // -> Response, matching the timeline's read-only detail. Without the
-        // heading the status + headers + body dumped raw under Send read as an
-        // unlabeled blob — most visible for an ecs --host-port serve, which is
-        // not captured on the timeline and so has only this inline result.
-        const respSec = el('div', 'section req-resp');
-        const respHead = el('h3', null, 'Response');
-        const cls = data.status >= 200 && data.status < 300 ? 'ok' : 'bad';
-        respHead.appendChild(
-          el('span', cls, '  ' + data.status + (data.durationMs != null ? ' · ' + data.durationMs + 'ms' : ''))
+        // Render the result as a Request -> Response PAIR (matching the
+        // timeline's read-only detail): the sent request echoed above the
+        // response, each with its status / request-line heading and Headers /
+        // Body split into separate dimmed-header + body blocks. Without this the
+        // status + headers + body dump raw under Send as one unlabeled blob —
+        // most visible for an ecs --host-port serve, whose only result surface
+        // is this inline pane.
+        result.appendChild(
+          renderHttpExchangeSection('Request', null, payload.headers, payload.body, method.value + ' ' + payload.path)
         );
-        respSec.appendChild(respHead);
-        const hdrs = Object.keys(data.headers || {})
-          .map(function (k) { return k + ': ' + data.headers[k]; })
-          .join('\\n');
-        if (hdrs) respSec.appendChild(el('pre', 'req-resp-headers', hdrs));
-        respSec.appendChild(el('pre', null, data.body != null ? data.body : ''));
-        result.appendChild(respSec);
+        result.appendChild(
+          renderHttpExchangeSection('Response', data.status, data.headers, data.body, null, data.durationMs)
+        );
       } catch (err) {
         msg.textContent = 'Request failed: ' + err;
       } finally {

@@ -293,9 +293,16 @@ if ! grep -qF "function applyConfig" "${BODY_FILE}" || grep -qF 'id="sess-save"'
   echo "FAIL: GET / Session bar is not apply-on-change (Save button still present?)"
   exit 1
 fi
-# In-workspace HTTP request composer (issue #322).
+# In-workspace HTTP request composer (issue #322). The composer's inline result
+# renders the sent request + response as a labeled Request/Response pair with a
+# JSON-pretty-printed body (renderHttpExchangeSection + prettyBody must ship in
+# the embedded script).
 if ! grep -qF "function renderRequestComposer" "${BODY_FILE}" || ! grep -qF "fetch('/api/request'" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the in-workspace HTTP request composer"
+  exit 1
+fi
+if ! grep -qF "function renderHttpExchangeSection" "${BODY_FILE}" || ! grep -qF "function prettyBody" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the Request/Response exchange renderer + JSON body pretty-printer"
   exit 1
 fi
 # Proxy-vs-child port clarity (issue #325): the Endpoints hint names the proxy
