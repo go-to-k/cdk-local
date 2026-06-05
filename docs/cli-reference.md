@@ -18,6 +18,7 @@ cdk-local has eight subcommands, all under the `cdkl` binary:
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
 | `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
+| `cdkl start-agentcore <target>` | Long-running serve of an HTTP / AGUI AgentCore Runtime's `/ws` WebSocket endpoint | Agent container + a host WebSocket bridge (`node:http` + `ws`) that injects the session-id / `Authorization` upgrade headers a browser can't set |
 | `cdkl studio` | Interactive web console over every runnable target — invoke / serve from the browser, watch a live activity timeline | `node:http` server hosting the embedded UI; spawns the same `invoke` / `start-api` / `start-alb` / `start-service` runners as child processes |
 
 The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
@@ -779,6 +780,67 @@ and non-integer values pre-container.
   `error` (MCP), OR a cdk-local-side error: Docker not installed, image
   build / pull failed, target not found, the agent never became ready within
   the readiness window, or the container exited before responding.
+
+## `cdkl start-agentcore` (serve an AgentCore `/ws` endpoint locally)
+
+`cdkl start-agentcore <target>` is the long-running serve counterpart of the
+single-shot `cdkl invoke-agentcore`. It boots an `AWS::BedrockAgentCore::Runtime`
+agent container once — using the **same** image / env-var / `--from-cfn-stack`
+/ `--assume-role` / `--bearer-token` resolution as `invoke-agentcore` — and
+then serves the agent's bidirectional `/ws` WebSocket endpoint behind a host
+**bridge** so a client can hold an interactive multi-frame session. It prints a
+`Server listening on ws://127.0.0.1:<port>/ws` ready line and runs until `^C`.
+
+**Why a bridge.** The AgentCore `/ws` upgrade requires the
+`X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` header (and `Authorization:
+Bearer <jwt>` when the runtime declares a `customJwtAuthorizer`). A browser
+`WebSocket` cannot set custom request headers, so it can't connect to the
+container directly. The bridge accepts a header-less client on its own
+`--port` and opens a connection to the container `/ws` with those headers
+injected — a fresh session-id UUID per inbound connection (so each client /
+browser tab is its own AgentCore session), unless `--session-id` pins one.
+
+**Protocols.** HTTP and AGUI runtimes only — they expose `/ws` on 8080. MCP
+(`POST /mcp`) and A2A (`POST /`) are single-shot request/response contracts
+with no `/ws`, and are rejected up front with an actionable error (use
+`cdkl invoke-agentcore` for those).
+
+```bash
+# Pick an AgentCore Runtime interactively (TTY), serve its /ws on a free port
+cdkl start-agentcore
+
+# Serve a named runtime's /ws on a fixed bridge port
+cdkl start-agentcore MyStack/Agent --port 8080
+
+# Forward a bearer token (verified against the runtime's OIDC discovery URL)
+# on every bridged container upgrade
+cdkl start-agentcore MyStack/Agent --bearer-token "$JWT"
+
+# Bind to a deployed stack so intrinsic env values / ECR image URIs resolve
+cdkl start-agentcore MyStack/Agent --from-cfn-stack
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--port <n>` | `0` | Bridge-server bind port the client connects to (0 = OS-assigned). |
+| `--host <ip>` | `127.0.0.1` | Bridge-server bind host. |
+| `--session-id <id>` | random UUID per connection | Pin one AgentCore session-id header value for every connection. |
+| `--bearer-token <jwt>` | — | Bearer JWT for a `customJwtAuthorizer`; verified against the runtime's OIDC discovery URL, then injected as `Authorization: Bearer <jwt>` on every container `/ws` upgrade. |
+| `--no-verify-auth` | (verify on) | Skip inbound JWT verification (local-dev escape hatch); a `--bearer-token`, if given, is still forwarded. |
+| `--env-vars <file>` | — | SAM-shape JSON env-var overrides for the agent container. |
+| `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container. |
+| `--no-pull` / `--no-build` | (on) | Skip the image pull / local build. |
+| `--container-host <ip>` | `127.0.0.1` | Host IP used to bind the agent container port. |
+| `--timeout <ms>` | `120000` | `GET /ping` container-ready probe timeout. |
+| `--assume-role [arn]` | — | Assume the runtime's execution role and forward STS credentials to the container. |
+| `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR. |
+| `--from-cfn-stack [name]` | — | Resolve intrinsic env values / ECR image URIs against a deployed stack. |
+| `--stack-region <region>` | — | Region of the state record (with `--from-cfn-stack`). |
+
+`--watch` (reload on CDK source changes) is a planned follow-up; for now,
+restart the command to pick up local edits. `start-agentcore` is also runnable
+from `cdkl studio` (the `agentcore-ws` serve kind) with an in-browser WebSocket
+console.
 
 ## `cdkl start-api` (long-running local API server)
 

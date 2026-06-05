@@ -55,7 +55,7 @@ The locally executable resources are listed under [Supported resources](#support
 
 Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
 
-Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
+Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ```bash
 cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
@@ -65,6 +65,7 @@ cdkl start-alb MyStack/WebAlb                  # ECS behind an ALB (front-door p
 cdkl start-api MyStack/Api                     # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
 cdkl start-cloudfront MyStack/SiteDist         # CloudFront: S3 / Lambda Function URL origins + Functions (static site / SPA / SSR)
 cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
+cdkl start-agentcore MyStack/Agent             # serve an AgentCore /ws endpoint for an interactive WebSocket session
 cdkl list                                      # every runnable target, grouped by command (alias: ls)
 cdkl studio                                    # interactive web console over every target
 ```
@@ -85,6 +86,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its depl
 - **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
 - **`start-cloudfront`** serves a CloudFront distribution's `viewer-request` -> origin -> `viewer-response` pipeline locally — CloudFront Functions in-process (incl. **KeyValueStore** reads via the deployed store with `--from-cfn-stack` or a local map with `--kvs-file`) and **Lambda@Edge** functions in a real RIE container (all four event types — viewer / origin request / response) over an **S3 origin** (BucketDeployment source, or — when there's no local source, e.g. files uploaded out of band by a separate frontend repo — the deployed bucket read from **real S3 on demand** with `--from-cfn-stack`) or a **Lambda Function URL origin** (the backing Lambda run locally), with the behavior's **`ResponseHeadersPolicy` CORS** (preflight + response headers) reproduced at the edge, so a routing / rewrite / auth / SPA-fallback / CDN-fronted-Lambda / CORS change is verifiable in seconds. `--origin`, `--tls`, `--watch` ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
 - **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
+- **`start-agentcore`** serves an HTTP / AGUI AgentCore Runtime's bidirectional `/ws` endpoint as a long-running local session — it boots the agent container (same env / credential / `--bearer-token` resolution as `invoke-agentcore`) behind a host WebSocket bridge that injects the AgentCore session-id (and `Authorization` under a `customJwtAuthorizer`) on the container upgrade, so a header-less client — a browser `WebSocket`, which can't set those headers — can hold an interactive multi-frame session ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-ws-endpoint-locally)).
 - **`studio`** opens a local web console over the same synthesized targets — a point-and-click front over the same CLI runners. Takes no target (it lists them all). Flags + in-UI controls: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
@@ -217,7 +219,7 @@ Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each l
 | Cloud Map / Service Connect registry | service discovery between local replicas |
 | ALB-fronted ECS / Lambda services | `start-alb` — HTTP / HTTPS listeners, all six listener-rule conditions, weighted forwards, redirect / fixed-response, mixed ECS + Lambda targets, authenticate-cognito / authenticate-oidc (local Bearer-JWT enforcement), WebSocket Upgrade |
 | CloudFront distributions (S3 + Lambda Function URL origins + CloudFront Functions + Lambda@Edge) | `start-cloudfront` — viewer-request / viewer-response Functions over S3 origin routing (default root object, custom error responses / SPA fallback; the deployed bucket read from real S3 on demand via `--from-cfn-stack` when there's no local BucketDeployment source) and Lambda Function URL origins (backing Lambda run locally), **Lambda@Edge** functions in a real RIE container (all four event types), CloudFront Function **KeyValueStore** reads (deployed store via `--from-cfn-stack` or a local map via `--kvs-file`), `ResponseHeadersPolicy` CORS (preflight + response headers), `--tls`, `--watch` |
-| Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP / MCP / A2A / AGUI |
+| Bedrock AgentCore Runtime agents | `invoke-agentcore` — container + `fromCodeAsset` / `fromS3` artifacts, HTTP / MCP / A2A / AGUI; `start-agentcore` — long-running serve of an HTTP / AGUI `/ws` endpoint behind a header-injecting WebSocket bridge (browser-client sessions) |
 
 Lambda runs on every current AWS Lambda runtime — Node.js (18/20/22/24), Python (3.11–3.14), Ruby (3.2/3.3), Java (8.al2/11/17/21), .NET (6/8), and the OS-only `provided.al2` / `provided.al2023`. The retired `go1.x` runtime is rejected with a pointer to migrate to `provided.al2023`.
 

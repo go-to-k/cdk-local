@@ -65,6 +65,155 @@ export interface AgentCoreWsResult {
 }
 
 /**
+ * Decode a `ws` {@link RawData} frame to UTF-8 text. `ws` delivers a Buffer by
+ * default (binaryType 'nodebuffer'); handle the fragments / ArrayBuffer shapes
+ * too so a frame is always decoded the same way regardless of source.
+ */
+function decodeWsFrame(data: RawData): string {
+  const buf = Buffer.isBuffer(data)
+    ? data
+    : Array.isArray(data)
+      ? Buffer.concat(data)
+      : Buffer.from(data);
+  return buf.toString('utf-8');
+}
+
+export interface BridgeAgentCoreWsOptions {
+  /** Value for the {@link AGENTCORE_SESSION_ID_HEADER} upgrade header. */
+  sessionId: string;
+  /**
+   * `Authorization: Bearer <jwt>` to send on the upgrade when the runtime
+   * declares a `customJwtAuthorizer`, forwarded the way the HTTP path forwards
+   * it to `/invocations`.
+   */
+  authorization?: string;
+  /** Sink for each received text frame, in arrival order (container -> caller). */
+  onMessage: (text: string) => void;
+  /** Fired once the upgrade completes and buffered frames have been flushed. */
+  onOpen?: () => void;
+  /** Fired when the container `/ws` socket closes (carries the close code). */
+  onClose?: (code?: number) => void;
+  /** Fired on a connection / send error. */
+  onError?: (err: Error) => void;
+  /** Optional `AbortSignal`; firing it closes the WS cleanly. */
+  abortSignal?: AbortSignal;
+  /** Injected WebSocket implementation for tests. Defaults to `ws`. */
+  webSocketImpl?: typeof WebSocket;
+}
+
+/**
+ * A live, caller-driven bridge to the container `/ws` endpoint. Unlike {@link
+ * invokeAgentCoreWs} (a fire-and-await-close promise that sends the `--event`
+ * as the first frame), this opens the socket and sends NOTHING on its own — the
+ * caller drives every frame via {@link AgentCoreWsBridgeHandle.send}. It is the
+ * relay primitive behind `cdkl start-agentcore`: a browser (which cannot set
+ * the session-id / Authorization upgrade headers) connects to a host bridge
+ * server, and the bridge forwards its frames here with the headers injected.
+ */
+export interface AgentCoreWsBridgeHandle {
+  /**
+   * Forward a text frame to the container. Frames sent before the upgrade
+   * completes are buffered and flushed in order on `open`.
+   */
+  send: (text: string) => void;
+  /** Close the container `/ws` socket. Idempotent. */
+  close: () => void;
+}
+
+/**
+ * Open `ws://host:port/ws` with the AgentCore session-id (+ optional
+ * `Authorization`) upgrade header and return a handle for bidirectional
+ * frame relay. Sends NO initial frame — the caller drives every frame. Each
+ * received frame is decoded to UTF-8 and passed to {@link
+ * BridgeAgentCoreWsOptions.onMessage}.
+ */
+export function bridgeAgentCoreWs(
+  host: string,
+  port: number,
+  options: BridgeAgentCoreWsOptions
+): AgentCoreWsBridgeHandle {
+  const Impl = options.webSocketImpl ?? WebSocket;
+  const url = `ws://${host}:${port}${WS_PATH}`;
+  const ws = new Impl(url, {
+    headers: {
+      [AGENTCORE_SESSION_ID_HEADER]: options.sessionId,
+      ...(options.authorization && { Authorization: options.authorization }),
+    },
+  });
+
+  let open = false;
+  let closed = false;
+  const pending: string[] = [];
+
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    options.abortSignal?.removeEventListener('abort', close);
+    try {
+      ws.close();
+    } catch {
+      /* already closing */
+    }
+  };
+
+  if (options.abortSignal) {
+    if (options.abortSignal.aborted) {
+      close();
+    } else {
+      options.abortSignal.addEventListener('abort', close, { once: true });
+    }
+  }
+
+  const sendFrame = (text: string): void => {
+    try {
+      ws.send(text);
+    } catch (err) {
+      options.onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  ws.on('open', () => {
+    open = true;
+    // A close() that raced the upgrade: honor it now that the socket is open.
+    if (closed) {
+      try {
+        ws.close();
+      } catch {
+        /* already closing */
+      }
+      return;
+    }
+    options.onOpen?.();
+    for (const frame of pending.splice(0)) sendFrame(frame);
+  });
+  ws.on('message', (data: RawData) => options.onMessage(decodeWsFrame(data)));
+  ws.on('close', (code?: number) => {
+    closed = true;
+    // The container closing first (the common case — the agent ends the
+    // stream) must also detach the abort listener so a long-lived signal
+    // (e.g. a future --watch reload controller) does not retain this handle.
+    options.abortSignal?.removeEventListener('abort', close);
+    options.onClose?.(code);
+  });
+  ws.on('error', (err: Error) => options.onError?.(err));
+
+  return {
+    send: (text: string): void => {
+      // Post-close sends are intentionally dropped silently: the bridge
+      // server's browser `message` can fire between the container `close` and
+      // the browser-close propagation, and those frames have nowhere to go.
+      if (closed) return;
+      if (!open) {
+        pending.push(text);
+        return;
+      }
+      sendFrame(text);
+    },
+    close,
+  };
+}
+
+/**
  * Open `/ws`, send the event as the first frame, stream received frames to
  * `onMessage`, and resolve when the server closes. Rejects on a connection
  * error or when `timeoutMs` elapses before the server closes.

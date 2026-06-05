@@ -201,7 +201,24 @@ AWS managed services.
   container handoff) so the next session connects to the rebuilt
   container — the honest local-dev semantic. `--watch` on the
   single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A
-  `POST /` paths logs a one-line WARN and proceeds single-shot
+  `POST /` paths logs a one-line WARN and proceeds single-shot.
+  `cdkl start-agentcore` is the long-running serve counterpart of the
+  single-shot `invoke-agentcore --ws`: it boots the agent
+  container once (same image / env / `--from-cfn-stack` / `--assume-role`
+  / `--bearer-token` resolution as `invoke-agentcore`) and serves the
+  bidirectional `/ws` endpoint behind a host WebSocket BRIDGE so a
+  header-less client — a browser `WebSocket`, which cannot set the
+  `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` (or `Authorization`)
+  upgrade header — can hold an interactive multi-frame session. The
+  bridge accepts the header-less client on its own `--port` (default 0)
+  and opens a `ws` connection to the container `/ws` with those headers
+  injected (a fresh session-id UUID per inbound connection, unless
+  `--session-id` pins one), piping frames both ways. HTTP / AGUI
+  protocols only — MCP / A2A runtimes have no `/ws` (hard-rejected at
+  resolution). It prints a `Server listening on ws://...` ready line and
+  runs until `^C` (`--watch` is a follow-up). The `cdkl invoke-agentcore`
+  terminal path (interactive over stdin in a TTY) is unchanged; the
+  bridge exists for clients that cannot drive a terminal
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 - CloudFront distributions — the `viewer-request` -> S3 origin ->
@@ -359,6 +376,7 @@ compute-locally category for Lambda + API Gateway).
   `createLocalInvokeAgentCoreCommand`, `createLocalStartApiCommand`,
   `createLocalRunTaskCommand`, `createLocalStartServiceCommand`,
   `createLocalStartAlbCommand`, `createLocalStartCloudFrontCommand`,
+  `createLocalStartAgentCoreCommand`,
   `createLocalListCommand`,
   `createLocalStudioCommand`) + shared option
   helpers. `createLocalStartCloudFrontCommand` (`cdkl start-cloudfront`,
@@ -395,6 +413,18 @@ compute-locally category for Lambda + API Gateway).
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
   thin strategy over it (service targets vs ALB targets).
+  `createLocalStartAgentCoreCommand` (`cdkl start-agentcore`)
+  is the long-running serve counterpart of the single-shot
+  `createLocalInvokeAgentCoreCommand`: it reuses that command's exported
+  boot helpers (`resolveAgentCoreImage` / `buildContainerEnv` /
+  `resolveInboundAuthorization` / `buildAgentCoreImageContext`) to boot the
+  agent container once, then runs `startAgentCoreWsBridge` (a host
+  WebSocket server) in front of the container `/ws` so a header-less
+  browser client can hold an interactive session. HTTP / AGUI only
+  (`assertAgentCoreWsServable` hard-rejects MCP / A2A). New CLI options
+  live in `addStartAgentCoreSpecificOptions` (`--port` / `--host` /
+  `--session-id` / `--bearer-token` / `--no-verify-auth` / `--env-vars` /
+  `--platform` / `--from-cfn-stack` / `--assume-role` / ...).
   `createLocalStudioCommand` (`cdkl studio`, issue #282) is the
   interactive web console over the same target enumeration — a control
   plane that spawns the SAME `invoke` / `start-api` / `start-alb` /
@@ -464,7 +494,15 @@ compute-locally category for Lambda + API Gateway).
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +
   container-URI extraction) + agentcore-client (the `/ping` + `/invocations`
   HTTP-contract client for `cdkl invoke-agentcore`) + agentcore-ws-client (the
-  bidirectional `/ws` WebSocket client for `--ws`) + agentcore-s3-bundle
+  bidirectional `/ws` WebSocket client for `--ws` (`invokeAgentCoreWs`), plus
+  the caller-driven relay primitive `bridgeAgentCoreWs` — which
+  opens the container `/ws` with the session-id / Authorization headers
+  injected and sends NO initial frame, so a caller drives every frame) +
+  agentcore-ws-bridge (`startAgentCoreWsBridge`: the host
+  WebSocket server behind `cdkl start-agentcore`; accepts a header-less client
+  (a browser, which cannot set the upgrade headers) and bridges each
+  connection to the container `/ws` via `bridgeAgentCoreWs`, injecting a
+  per-connection session-id UUID + optional Authorization) + agentcore-s3-bundle
   (downloads + extracts a fromS3 CodeConfiguration bundle for the from-source
   build), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver

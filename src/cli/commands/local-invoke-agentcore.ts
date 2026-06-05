@@ -112,7 +112,7 @@ import {
   type ProfileCredentialsFile,
 } from './local-profile-credentials-file.js';
 
-interface LocalInvokeAgentCoreOptions {
+export interface LocalInvokeAgentCoreOptions {
   app?: string;
   output: string;
   verbose: boolean;
