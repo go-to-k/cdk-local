@@ -1,3 +1,10 @@
+## [0.130.1](https://github.com/go-to-k/cdk-local/compare/v0.130.0...v0.130.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** put the WS console Connect button on its own row above the input ([#441](https://github.com/go-to-k/cdk-local/issues/441)) ([4502ea4](https://github.com/go-to-k/cdk-local/commit/4502ea4c5b28cb08bdb36b7f788d737b425d1e4d))
+
 # [0.130.0](https://github.com/go-to-k/cdk-local/compare/v0.129.1...v0.130.0) (2026-06-05)
 
 
