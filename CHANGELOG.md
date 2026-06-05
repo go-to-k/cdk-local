@@ -1,3 +1,10 @@
+# [0.132.0](https://github.com/go-to-k/cdk-local/compare/v0.131.1...v0.132.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** colour-code the serve workspace headings (yellow output sections, blue structural labels) ([#447](https://github.com/go-to-k/cdk-local/issues/447)) ([5516cd0](https://github.com/go-to-k/cdk-local/commit/5516cd0ea1995033ddbb53cc6fa8394bbbb49b1c))
+
 ## [0.131.1](https://github.com/go-to-k/cdk-local/compare/v0.131.0...v0.131.1) (2026-06-05)
 
 
