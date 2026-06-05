@@ -124,10 +124,15 @@ const STUDIO_CSS = `
             mask-image: linear-gradient(to right, #000 calc(100% - 14px), transparent);
   }
   .target .name::-webkit-scrollbar { display: none; }
-  /* The folded common stack prefix shared by the rows beneath it. */
+  /* The folded common stack prefix shared by the rows beneath it — a quiet
+     section-divider bar: a brighter label on a faint background bar (distinct
+     from both the #1a1a1a / #242424 row shades) with a hairline bottom border,
+     so the prefix reads clearly on the dark pane instead of disappearing as
+     dim grey-on-black. */
   .stack-sub {
-    padding: 4px 12px 2px; color: #6f6f6f; font-size: 10px;
+    padding: 4px 12px 3px; color: #b5b5b5; font-size: 10px;
     font-family: ui-monospace, Menlo, monospace;
+    background: #202020; border-bottom: 1px solid #2c2c2c;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .target .kind { color: #8f8f8f; font-size: 11px; }
