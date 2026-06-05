@@ -96,4 +96,73 @@ describe('request-composer Send result framing', () => {
       h.close();
     }
   });
+
+  it('echoes the sent Request (method/path + headers + body) above the Response', async () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      (h.window as any).fetch = () =>
+        Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () => Promise.resolve({ status: 201, headers: {}, body: 'ok', durationMs: 2 }),
+        });
+
+      const sec = h.window.__t.renderRequestComposer('S/Svc', 'http://127.0.0.1:8080', false);
+      h.document.body.appendChild(sec);
+      // Compose a POST /orders with a body so the echo has all three parts.
+      sec.querySelector('.req-method').value = 'POST';
+      sec.querySelector('.req-path').value = '/orders';
+      sec.querySelector('.req-body').value = '{"item":"x"}';
+      sec.querySelector('.req-send button').click();
+      await flush();
+
+      // A "Request" section echoes the sent request as a counterpart to Response.
+      const reqSec = sec.querySelector('.req-result .req-req');
+      expect(reqSec).not.toBeNull();
+      expect(reqSec.querySelector('h3').textContent).toContain('Request');
+      // The request-line carries method + path.
+      const reqLine = reqSec.querySelector('pre.req-line');
+      expect(reqLine).not.toBeNull();
+      expect(reqLine.textContent).toBe('POST /orders');
+      // The request body is echoed (and pretty-printed, being JSON).
+      const reqBodyPre = reqSec.querySelector('pre.req-resp-body');
+      expect(reqBodyPre).not.toBeNull();
+      expect(reqBodyPre.textContent).toContain('"item": "x"');
+      // The Response section is still present below it.
+      expect(sec.querySelector('.req-result .req-resp h3').textContent).toContain('Response');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('pretty-prints a JSON response body but leaves HTML/text verbatim', async () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      (h.window as any).fetch = () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+              body: '{"a":1,"b":[2,3]}',
+              durationMs: 5,
+            }),
+        });
+
+      const sec = h.window.__t.renderRequestComposer('S/Api', 'http://127.0.0.1:8080', true);
+      h.document.body.appendChild(sec);
+      sec.querySelector('.req-send button').click();
+      await flush();
+
+      const bodyPre = sec.querySelector('.req-result .req-resp pre.req-resp-body');
+      expect(bodyPre).not.toBeNull();
+      // JSON.stringify(parsed, null, 2): newlines + 2-space indentation.
+      expect(bodyPre.textContent).toContain('\n  "a": 1');
+      expect(bodyPre.textContent).toContain('\n  "b": [');
+    } finally {
+      h.close();
+    }
+  });
 });
