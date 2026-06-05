@@ -1,3 +1,10 @@
+# [0.126.0](https://github.com/go-to-k/cdk-local/compare/v0.125.0...v0.126.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** interactive WebSocket console for AgentCore /ws (agentcore-ws serve kind) ([#422](https://github.com/go-to-k/cdk-local/issues/422)) ([d8befa0](https://github.com/go-to-k/cdk-local/commit/d8befa05bbab61d0645198da5af380c356934ced))
+
 # [0.125.0](https://github.com/go-to-k/cdk-local/compare/v0.124.2...v0.125.0) (2026-06-05)
 
 
