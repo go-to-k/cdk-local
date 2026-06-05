@@ -162,9 +162,9 @@ describe('renderStudioHtml', () => {
     expect(html).toContain('background: rgba(227, 194, 114, 0.12);');
     expect(html).toContain('color: #e7cd86;');
     expect(html).toContain('.group-title .count { color: #8a8a8a; }');
-    // Size hierarchy: the section header is the largest + bold (14px) so it
+    // Size hierarchy: the section header is the largest (14px, not bold) so it
     // outranks the target rows (13px); the stack-sub fold divider sits at 12px.
-    expect(html).toContain('font-size: 14px; font-weight: 700;');
+    expect(html).toContain('color: #e7cd86; font-size: 14px;');
     expect(html).toContain('color: #9fb2d4; font-size: 12px;');
   });
 
