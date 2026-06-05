@@ -1,3 +1,10 @@
+## [0.130.3](https://github.com/go-to-k/cdk-local/compare/v0.130.2...v0.130.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** translucent amber kind-group header + size hierarchy ([#443](https://github.com/go-to-k/cdk-local/issues/443)) ([139ed7a](https://github.com/go-to-k/cdk-local/commit/139ed7ab68972edb9a7df58831ae27f7ac2389aa))
+
 ## [0.130.2](https://github.com/go-to-k/cdk-local/compare/v0.130.1...v0.130.2) (2026-06-05)
 
 
