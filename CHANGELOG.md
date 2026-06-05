@@ -1,3 +1,10 @@
+## [0.132.1](https://github.com/go-to-k/cdk-local/compare/v0.132.0...v0.132.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** rename the targets-pane ALB group to "Application Load Balancers" ([#449](https://github.com/go-to-k/cdk-local/issues/449)) ([07d482c](https://github.com/go-to-k/cdk-local/commit/07d482cb0d0bb06083521705565aaf4599b2c9fc))
+
 # [0.132.0](https://github.com/go-to-k/cdk-local/compare/v0.131.1...v0.132.0) (2026-06-05)
 
 
