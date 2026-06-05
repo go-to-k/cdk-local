@@ -440,7 +440,13 @@ compute-locally category for Lambda + API Gateway).
   per-run is mutable, `GET /api/config` exposes it (with the read-only
   synth-time `profile` / `region` / `app`), and `PATCH /api/config`
   (`applyConfigPatch`) edits the bindings so the change applies to
-  subsequent runs without a restart. Issue #301 slice 4 added
+  subsequent runs without a restart. A watch / assume-role toggle is
+  otherwise silent (only a from-cfn-stack change logs, via its
+  re-classification pass), so the patch handler logs a one-line
+  confirmation on a real flip — `describeWatchToggle` /
+  `describeAssumeRoleToggle` (both change-gated: a no-op re-send logs
+  nothing) note the new binding + that it binds the NEXT run, not
+  already-running serves. Issue #301 slice 4 added
   `--stack <glob...>` (`filterStudioTargetGroups` in studio-server):
   a DISPLAY-only glob filter over the listed targets (a target id is
   `Stack/Construct`, so `dev/*` scopes to stack `dev`) — it does NOT
@@ -750,7 +756,13 @@ compute-locally category for Lambda + API Gateway).
   read-only "Started with" summary (issue #356 — `formatAppliedOptions`
   over the `serveApplied` map recorded at Start) surfaces the launch
   config the serve is running with (e.g. a chosen `--max-tasks` stays
-  visible instead of silently vanishing). A serve that FAILS — a boot
+  visible instead of silently vanishing). The session-global `--watch`
+  is appended by the serve-manager from the mutable session config (not
+  a per-run option), so `startServe` records the watch checkbox state at
+  Start into `serveApplied.watch` and `formatAppliedOptions` surfaces a
+  `--watch` line FIRST — so a serve started with watch ON shows it and
+  one started before the toggle visibly does NOT (the visibility gap that
+  made a watch-on serve look watch-off). A serve that FAILS — a boot
   failure (serve-manager emits status `error` with a message) or a crash
   AFTER it was running (status `stopped` WITH a message, vs a clean user
   stop which is `stopped` with NO message) — keeps that "Started with"
