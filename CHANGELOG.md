@@ -1,3 +1,10 @@
+## [0.126.3](https://github.com/go-to-k/cdk-local/compare/v0.126.2...v0.126.3) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** tie the UI live/disconnected indicator to its originating server ([#427](https://github.com/go-to-k/cdk-local/issues/427)) ([ac35726](https://github.com/go-to-k/cdk-local/commit/ac35726f60b36a659e11936110dd8b0c82a8cad7))
+
 ## [0.126.2](https://github.com/go-to-k/cdk-local/compare/v0.126.1...v0.126.2) (2026-06-05)
 
 
