@@ -1,3 +1,10 @@
+## [0.126.5](https://github.com/go-to-k/cdk-local/compare/v0.126.4...v0.126.5) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** tint the folded stack sub-header blue so it never reads as a row ([#429](https://github.com/go-to-k/cdk-local/issues/429)) ([24494eb](https://github.com/go-to-k/cdk-local/commit/24494eb6b4b0b617cca73eb4c0e53bbedcf1ef21))
+
 ## [0.126.4](https://github.com/go-to-k/cdk-local/compare/v0.126.3...v0.126.4) (2026-06-05)
 
 
