@@ -714,7 +714,8 @@ compute-locally category for Lambda + API Gateway).
   `/api/config` immediately on a checkbox toggle / input change, issue
   #301); Lambdas + AgentCore runtimes get an
   [Invoke] composer (`INVOKE_KINDS`), serve
-  targets (api / alb / ecs / ecs-task / cloudfront) a [Start]/[Stop] control
+  targets (api / alb / ecs / ecs-task / cloudfront / agentcore-ws) a
+  [Start]/[Stop] control
   with a
   `running ● :port` indicator (ecs services + ecs-task runs show
   `running` with no port). The control surfaces transient in-progress states
@@ -757,7 +758,13 @@ compute-locally category for Lambda + API Gateway).
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module
   state so a log-driven serve re-render never drops the connection (issue
-  #303); every composer (invoke + serve) carries a collapsed "All options"
+  #303); the SAME console renders for an `agentcore-ws` serve (an HTTP / AGUI
+  AgentCore runtime's `/ws` endpoint served by `cdkl start-agentcore` behind a
+  host bridge — the runtime is listed in a second "AgentCore WebSocket" group
+  alongside its single-shot invoke entry, the same dual listing as the
+  ecs / ecs-task split; only HTTP / AGUI runtimes appear there since MCP / A2A
+  have no `/ws`), because the bridge's `ws://` endpoint flows through the same
+  un-proxied `endpoints` path; every composer (invoke + serve) carries a collapsed "All options"
   `<details>` (`buildAllOptions`) with a raw extra-args input + the
   read-only auto-derived flag catalog from studio-option-catalog, so the
   curated controls handle common flags richly while every other flag the
@@ -846,7 +853,10 @@ compute-locally category for Lambda + API Gateway).
   `--bearer-token` / `--session-id` (scalar), and `--env-vars` (env-kv);
   the `alb` / `ecs` serve kinds also declare `--env-vars` (env-kv, issue
   #355) so a UI-started serve can overlay the backing ECS task container
-  env)),
+  env; the `agentcore-ws` serve kind declares `--bearer-token` (scalar) /
+  `--no-verify-auth` (boolean) / `--session-id` (scalar) / `--env-vars`
+  (env-kv) — the serve-relevant subset of start-agentcore's flags, no
+  `--ws` / `--sigv4`)),
   studio-option-catalog (issue #301 — the AUTO-DERIVED full flag catalog
   that backs the composer's collapsed "All options" section.
   `buildFlagCatalog` introspects each runnable kind's Commander command
@@ -873,14 +883,18 @@ compute-locally category for Lambda + API Gateway).
   HTTP endpoints each fronted by a studio-proxy so the `endpoints` handed
   to the UI are the proxy URLs (slice C2 capture), while `ecs`
   (`start-service`) is pure compute — no capture proxy, just the running
-  replicas + their streamed logs. The `ecs` serve's `hostUrl` is set from an
+  replicas + their streamed logs. `agentcore-ws` (`start-agentcore`) resolves
+  running on `Server listening on (ws://...)`; its `ws://` endpoint is NOT
+  proxied (the capture-proxy gate is `/^https?:/`), so the browser connects
+  straight to the bridge and the UI renders the WebSocket console. The `ecs` serve's `hostUrl` is set from an
   explicit `--host-port` OR (issue #392) parsed from the child's
   `... published on <ip>:<port> ...` log line when start-service auto-publishes
   / auto-remaps a replica port (`parsePublishedHostEndpoint`, first endpoint
   wins, re-emitted if it arrives after the running event) — so the request
   composer can target an auto-published replica without an explicit
   `--host-port`. Resolves running on the kind's
-  ready line (`Server listening on <url>` / `ALB front-door: <url>` /
+  ready line (`Server listening on <url>` (shared by start-api and
+  start-agentcore — the latter's is a `ws://` URL) / `ALB front-door: <url>` /
   `CloudFront distribution serving on <url>` /
   `Service(s) running:`), tracks the running set for `/api/running`, and
   SIGTERMs the child on `/api/stop` / studio shutdown with a generous

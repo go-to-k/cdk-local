@@ -321,6 +321,7 @@ describe('toStudioTargetGroups', () => {
       'ecs',
       'ecs-task',
       'agentcore',
+      'agentcore-ws',
       'alb',
       'cloudfront',
     ]);
@@ -330,6 +331,7 @@ describe('toStudioTargetGroups', () => {
       'ECS Services',
       'ECS Task Definitions',
       'AgentCore Runtimes',
+      'AgentCore WebSocket',
       'Load Balancers',
       'CloudFront Distributions',
     ]);
@@ -346,7 +348,24 @@ describe('toStudioTargetGroups', () => {
     expect(groups[2].entries.map((e) => e.servable)).toEqual([true]);
     expect(groups[3].entries).toEqual([{ id: 'S:Task', qualifiedId: 'S:Task' }]);
     // CloudFront distributions are a plain serve entry (no servable flag).
-    expect(groups[6].entries).toEqual([{ id: 'S/Dist', qualifiedId: 'S:Dist' }]);
+    expect(groups[7].entries).toEqual([{ id: 'S/Dist', qualifiedId: 'S:Dist' }]);
+  });
+
+  it('lists only WS-capable runtimes in the agentcore-ws serve group', () => {
+    const listing: TargetListing = {
+      ...emptyListing(),
+      agentCoreRuntimes: [
+        { qualifiedId: 'S:Http', displayPath: 'S/Http', agentCoreHasWs: true },
+        { qualifiedId: 'S:Mcp', displayPath: 'S/Mcp', agentCoreHasWs: false },
+      ],
+    };
+    const groups = toStudioTargetGroups(listing);
+    const invoke = groups.find((g) => g.kind === 'agentcore');
+    const wsServe = groups.find((g) => g.kind === 'agentcore-ws');
+    // Both runtimes are invoke-able...
+    expect(invoke?.entries.map((e) => e.id)).toEqual(['S/Http', 'S/Mcp']);
+    // ...but only the HTTP runtime (agentCoreHasWs) is WS-servable.
+    expect(wsServe?.entries.map((e) => e.id)).toEqual(['S/Http']);
   });
 
   it('falls back to the qualified id when no display path exists', () => {

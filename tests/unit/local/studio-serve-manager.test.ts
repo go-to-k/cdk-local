@@ -153,6 +153,40 @@ describe('createStudioServeManager', () => {
     expect(serves[1].endpoints).toEqual([PROXIED]);
   });
 
+  it('spawns `cdkl start-agentcore <target> --port 0` and surfaces the ws:// endpoint un-proxied', async () => {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'MyAgent', kind: 'agentcore-ws' });
+    child.stdout.emit(
+      'data',
+      'Server listening on ws://127.0.0.1:49160/ws  (MyAgent (AgentCore WebSocket))\n'
+    );
+    const state = await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv.slice(1, 6)).toEqual(['start-agentcore', 'MyAgent', '--port', '0', '--host']);
+
+    expect(state.status).toBe('running');
+    // ws:// endpoints are NOT proxied (the capture-proxy gate is /^https?:/),
+    // so the browser connects straight to the bridge.
+    expect(state.endpoints).toEqual(['ws://127.0.0.1:49160/ws']);
+    expect(fp.upstreams).toEqual([]);
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
+  });
+
   it('spawns the serve child with CDKL_LOG_STREAM=stdout so its logs are single-stream (issue #403)', async () => {
     const bus = new StudioEventBus();
     const child = makeFakeChild();

@@ -26,6 +26,7 @@ import { createLocalStartApiCommand } from '../cli/commands/local-start-api.js';
 import { createLocalStartAlbCommand } from '../cli/commands/local-start-alb.js';
 import { createLocalStartServiceCommand } from '../cli/commands/local-start-service.js';
 import { createLocalStartCloudFrontCommand } from '../cli/commands/local-start-cloudfront.js';
+import { createLocalStartAgentCoreCommand } from '../cli/commands/local-start-agentcore.js';
 import { createLocalRunTaskCommand } from '../cli/commands/local-run-task.js';
 import { getEmbedConfig, setEmbedConfig, type CdkLocalEmbedConfig } from './embed-config.js';
 import type { StudioTargetKind } from './studio-events.js';
@@ -80,6 +81,7 @@ const KIND_FACTORIES: Record<StudioTargetKind, { command: string; factory: FlagC
   ecs: { command: 'start-service', factory: createLocalStartServiceCommand },
   'ecs-task': { command: 'run-task', factory: createLocalRunTaskCommand },
   cloudfront: { command: 'start-cloudfront', factory: createLocalStartCloudFrontCommand },
+  'agentcore-ws': { command: 'start-agentcore', factory: createLocalStartAgentCoreCommand },
 };
 
 let cached: Partial<Record<StudioTargetKind, KindFlagCatalog>> | undefined;

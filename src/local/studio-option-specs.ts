@@ -189,6 +189,37 @@ export const OPTION_SPECS: Partial<Record<StudioTargetKind, OptionSpec[]>> = {
       help: 'Overlay container env vars — add KEY=VALUE rows or paste a JSON object.',
     },
   ],
+  'agentcore-ws': [
+    {
+      flag: '--bearer-token',
+      kind: 'scalar',
+      label: 'Bearer token',
+      placeholder: 'eyJ...',
+      help: "Bearer JWT to present when the runtime declares a customJwtAuthorizer (verified against the runtime's OIDC discovery URL, then injected on every container /ws upgrade).",
+    },
+    {
+      flag: '--no-verify-auth',
+      kind: 'boolean',
+      label: 'Skip JWT verification',
+      help: 'Skip inbound JWT verification even when the runtime declares a customJwtAuthorizer (local-dev escape hatch). A bearer token, if given, is still forwarded.',
+    },
+    {
+      flag: '--session-id',
+      kind: 'scalar',
+      label: 'Session id',
+      placeholder: 'auto (random UUID per connection)',
+      help: 'Pin one AgentCore session id for every connection. Defaults to a fresh random UUID per connection when blank.',
+    },
+    {
+      flag: '--env-vars',
+      kind: 'env-kv',
+      label: 'Env vars',
+      sep: '=',
+      leftPlaceholder: 'KEY',
+      rightPlaceholder: 'value',
+      help: 'Overlay container env vars — add KEY=VALUE rows or paste a JSON object.',
+    },
+  ],
   ecs: [
     {
       flag: '--max-tasks',

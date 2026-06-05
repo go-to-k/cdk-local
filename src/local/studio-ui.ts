@@ -288,8 +288,8 @@ const STUDIO_CSS = `
 `;
 
 const STUDIO_SCRIPT = `
-  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore' };
-  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront']; // long-running serve targets (ecs-task = run-task)
+  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore', 'agentcore-ws': 'AgentCore WS' };
+  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront', 'agentcore-ws']; // long-running serve targets (ecs-task = run-task; agentcore-ws = start-agentcore /ws bridge)
   const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event

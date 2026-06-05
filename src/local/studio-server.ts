@@ -53,7 +53,7 @@ export interface StudioTarget {
 /** A category of targets, grouped by the studio kind that runs them. */
 export interface StudioTargetGroup {
   /** Studio kind discriminator shared with {@link StudioInvocationEvent}. */
-  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'cloudfront' | 'agentcore';
+  kind: 'lambda' | 'api' | 'alb' | 'ecs' | 'ecs-task' | 'cloudfront' | 'agentcore' | 'agentcore-ws';
   /** Human-readable group heading. */
   title: string;
   entries: StudioTarget[];
@@ -90,6 +90,17 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     { kind: 'ecs', title: 'ECS Services', entries: map(listing.ecsServices, { servable: true }) },
     { kind: 'ecs-task', title: 'ECS Task Definitions', entries: map(listing.ecsTaskDefinitions) },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
+    // The same runtimes that have a /ws endpoint (HTTP / AGUI — MCP / A2A
+    // don't) ALSO appear as an `agentcore-ws` serve group: a [Start]/[Stop]
+    // control that runs `cdkl start-agentcore` and renders an interactive
+    // WebSocket console (like the API Gateway WebSocket console). The dual
+    // listing mirrors the ecs / ecs-task split — invoke once vs hold a live
+    // session are genuinely different operations.
+    {
+      kind: 'agentcore-ws',
+      title: 'AgentCore WebSocket',
+      entries: map(listing.agentCoreRuntimes.filter((e) => e.agentCoreHasWs)),
+    },
     { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
     // CloudFront distributions are a serve target (start-cloudfront -> Start),
     // like api / alb — they expose a host HTTP endpoint (issue #367 / #363).

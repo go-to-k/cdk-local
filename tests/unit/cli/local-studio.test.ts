@@ -239,6 +239,20 @@ describe('coerceRunRequest', () => {
       options: { '--ws': true, '--bearer-token': 'eyJ' },
     });
   });
+
+  it('accepts the agentcore-ws serve kind with its per-run options', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'Stack/Agent',
+        kind: 'agentcore-ws',
+        options: { '--bearer-token': 'eyJ', '--no-verify-auth': true },
+      })
+    ).toEqual({
+      targetId: 'Stack/Agent',
+      kind: 'agentcore-ws',
+      options: { '--bearer-token': 'eyJ', '--no-verify-auth': true },
+    });
+  });
 });
 
 describe('applyConfigPatch', () => {
@@ -528,8 +542,8 @@ describe('routeStudioRun (issue #372 — POST /api/run kind -> runner)', () => {
     }
   });
 
-  it('routes the serve kinds (incl. cloudfront) to the serve manager', async () => {
-    for (const kind of ['api', 'alb', 'ecs-task', 'cloudfront'] as const) {
+  it('routes the serve kinds (incl. cloudfront + agentcore-ws) to the serve manager', async () => {
+    for (const kind of ['api', 'alb', 'ecs-task', 'cloudfront', 'agentcore-ws'] as const) {
       const d = deps();
       await routeStudioRun(req(kind), d.build());
       expect(d.start).toHaveBeenCalledOnce();

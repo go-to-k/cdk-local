@@ -1789,7 +1789,14 @@ The console is a three-pane layout:
   serve targets get a `[Start]` / `[Stop]` control with a `running ● :port`
   indicator (an ECS service shows `running` with no port — it is pure
   compute with no host endpoint; only servable ECS *services* are runnable,
-  not task definitions).
+  not task definitions). An HTTP / AGUI AgentCore runtime additionally
+  appears in an **AgentCore WebSocket** group (the `agentcore-ws` serve kind):
+  a `[Start]` / `[Stop]` control that runs `cdkl start-agentcore` and, once
+  running, renders an interactive WebSocket console wired to the served `/ws`
+  bridge — the same console a served API Gateway WebSocket API gets. The dual
+  listing (invoke once vs hold a live session) mirrors the ECS service /
+  task-definition split; MCP / A2A runtimes have no `/ws` and are not listed
+  there.
 - **Workspace** — the composer for the selected target (event JSON for a
   Lambda or AgentCore invoke; start / stop for a serve). An **Options**
   section exposes the per-target run options as controls — a checkbox per
