@@ -7,6 +7,8 @@ import {
   readFileSync,
   existsSync,
   statSync,
+  lstatSync,
+  readlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -121,6 +123,47 @@ describe('materializeAssetCodeDir', () => {
     // Callers whose own resolver does not validate existence (e.g. start-api's
     // local resolveAssetCodePath) rely on this guard for a friendly message.
     expect(() => materializeAssetCodeDir(join(root, 'nope.zip'))).toThrow(/does not exist/);
+  });
+
+  it('recreates a symlink entry as a symlink (not the link-target as a text file)', () => {
+    // A provided.* runtime commonly ships `bootstrap` as a symlink to the real
+    // binary (Swift: `bootstrap -> MyHandler`). fflate returns the symlink's
+    // content = the target path, so writing it as a regular file yields a tiny
+    // text file that RIE fork/exec's -> exec format error. The zip's central-dir
+    // unix mode (S_IFLNK = 0o120000) lets us recreate it as a real symlink.
+    const S_IFLNK = 0o120000;
+    const zipPath = join(root, 'asset.symlink.zip');
+    writeFileSync(
+      zipPath,
+      zipSync({
+        bootstrap: [strToU8('SwiftHandler'), { attrs: ((S_IFLNK | 0o755) << 16) >>> 0, os: 3 }],
+        SwiftHandler: [strToU8('#!/bin/sh\necho hi\n'), { attrs: (0o100755 << 16) >>> 0, os: 3 }],
+      })
+    );
+
+    const out = materializeAssetCodeDir(zipPath);
+    made.push(out.dir);
+    const bs = lstatSync(join(out.dir, 'bootstrap'));
+    expect(bs.isSymbolicLink()).toBe(true);
+    expect(readlinkSync(join(out.dir, 'bootstrap'))).toBe('SwiftHandler');
+    // The real binary keeps its stored executable mode; the symlink resolves to it.
+    expect(statSync(join(out.dir, 'bootstrap')).mode & 0o111).not.toBe(0);
+    expect(readFileSync(join(out.dir, 'bootstrap'), 'utf-8')).toContain('echo hi');
+  });
+
+  it('preserves the stored unix permission bits for a regular file', () => {
+    const zipPath = join(root, 'asset.perm.zip');
+    writeFileSync(
+      zipPath,
+      zipSync({
+        run: [strToU8('x'), { attrs: (0o100755 << 16) >>> 0, os: 3 }],
+        'data.txt': [strToU8('y'), { attrs: (0o100644 << 16) >>> 0, os: 3 }],
+      })
+    );
+    const out = materializeAssetCodeDir(zipPath);
+    made.push(out.dir);
+    expect(statSync(join(out.dir, 'run')).mode & 0o777).toBe(0o755);
+    expect(statSync(join(out.dir, 'data.txt')).mode & 0o777).toBe(0o644);
   });
 });
 

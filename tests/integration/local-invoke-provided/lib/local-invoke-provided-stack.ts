@@ -18,12 +18,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     container; the OS-only Lambda runtime invokes it via the Lambda
  *     Runtime API. Architecture pinned to `x86_64` so the linux/amd64
  *     bootstrap built in CI matches the base image's default platform.
- *   - `BootstrapZipHandler` — same compiled `bootstrap`, but `Code.fromAsset`
- *     points at a `.zip` FILE (built by verify.sh) instead of the unzipped
- *     directory. CDK keeps it zipped (`aws:asset:path` -> `asset.<hash>.zip`),
- *     so cdkl must extract it AND preserve the bootstrap's executable bit —
- *     otherwise RIE fails with `Runtime.InvalidEntrypoint` /
- *     `fork/exec ...bootstrap: permission denied`.
+ *   - `BootstrapZipHandler` — same compiled handler, but `Code.fromAsset`
+ *     points at a `.zip` FILE (built by verify.sh) whose `bootstrap` is a
+ *     SYMLINK to the real binary (`bootstrap -> SwiftMathAlgorithm`), exactly
+ *     how Swift / many `provided.*` runtimes ship it. CDK keeps it zipped
+ *     (`aws:asset:path` -> `asset.<hash>.zip`), so cdkl must (a) recreate the
+ *     symlink (not write the link-target path as a text file) and (b) preserve
+ *     the real binary's executable bit — otherwise RIE fork/exec's a
+ *     non-executable and fails with `Runtime.InvalidEntrypoint` /
+ *     `exec format error` (or `permission denied`).
  *   - `ProvidedAl2023InlineHandler` — `CfnFunction` with `Code: { ZipFile }`
  *     and `runtime: provided.al2023`. cdk-local's local invoke must reject
  *     with the "use Code.fromAsset" message — `provided.*` runtimes ship
@@ -59,11 +62,11 @@ export class LocalInvokeProvidedStack extends cdk.Stack {
       memorySize: 256,
     });
 
-    // Same `bootstrap` binary, but `Code.fromAsset` points at a `.zip` FILE
-    // (built by verify.sh) instead of the unzipped directory. CDK stages it as
-    // `asset.<hash>.zip` and `aws:asset:path` points at the zip; cdkl must
-    // extract it AND preserve the bootstrap's executable bit, or RIE fails with
-    // `Runtime.InvalidEntrypoint` / `fork/exec ...bootstrap: permission denied`.
+    // Same handler, but `Code.fromAsset` points at a `.zip` FILE (built by
+    // verify.sh) whose `bootstrap` is a SYMLINK to the real binary — how Swift
+    // / many `provided.*` runtimes ship it. CDK stages it as `asset.<hash>.zip`;
+    // cdkl must recreate the symlink + preserve the binary's exec bit, or RIE
+    // fork/exec's a non-executable and fails with `exec format error`.
     new lambda.Function(this, 'BootstrapZipHandler', {
       runtime: lambda.Runtime.PROVIDED_AL2023,
       architecture: lambda.Architecture.X86_64,
