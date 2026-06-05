@@ -1,3 +1,10 @@
+## [0.127.2](https://github.com/go-to-k/cdk-local/compare/v0.127.1...v0.127.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **invoke:** recreate symlink entries when extracting a ZIP-FILE Lambda asset ([#434](https://github.com/go-to-k/cdk-local/issues/434)) ([a4bd34f](https://github.com/go-to-k/cdk-local/commit/a4bd34fabc5355367143e94f31e3f98e0f4e9ced))
+
 ## [0.127.1](https://github.com/go-to-k/cdk-local/compare/v0.127.0...v0.127.1) (2026-06-05)
 
 
