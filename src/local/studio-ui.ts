@@ -92,10 +92,10 @@ const STUDIO_CSS = `
      below it; the translucency keeps it a light wash rather than a heavy block.
      The label is a warm gold (a blue label would clash on the amber); caret +
      count stay neutral grey, which still reads over the tint. The header is the
-     LARGEST + bold (14px) so the section header outranks the target rows (13px)
-     below it; the stack-sub fold divider sits between at 12px. */
+     LARGEST (14px, not bold) so the section header outranks the target rows
+     (13px) below it; the stack-sub fold divider sits between at 12px. */
   .group-title {
-    padding: 7px 12px; color: #e7cd86; font-size: 14px; font-weight: 700;
+    padding: 7px 12px; color: #e7cd86; font-size: 14px;
     cursor: pointer; user-select: none;
     display: flex; align-items: center; gap: 6px; background: rgba(227, 194, 114, 0.12);
     border-bottom: 1px solid rgba(227, 194, 114, 0.3);
