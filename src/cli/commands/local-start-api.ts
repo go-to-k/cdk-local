@@ -96,6 +96,7 @@ import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.j
 import {
   extractEphemeralStorageMb,
   materializeAssetCodeDir,
+  resolveLambdaArchitecture,
   resolveLambdaLayers,
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
@@ -2176,12 +2177,12 @@ async function buildContainerSpec(args: {
         inlineTmpDirs
       );
     }
-
-    // Run the warm container at the Lambda's declared architecture (emulated
-    // when the host arch differs) — a `provided.*` `bootstrap` compiled for one
-    // arch fails to exec on the other ("exec format error"). The IMAGE branch
-    // below already pins the platform; the ZIP branch must too.
-    platform = architectureToPlatform(lambda.architecture);
+    // NOTE: the ZIP warm container's `--platform` is derived from
+    // `lambda.architecture` inside the container pool's run path
+    // (`container-pool.ts` `startOne`), so it is NOT set on `platform` here —
+    // unlike the IMAGE branch below, the ZIP `ContainerSpec` carries the
+    // resolved `lambda` (with `architecture`) rather than a pre-computed
+    // platform string.
 
     // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
     // layer functions reuse the layer's asset dir directly; multi-
@@ -2749,9 +2750,9 @@ export function resolveLambdaByLogicalId(
     const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
     // Pin the warm container's platform to the declared architecture (default
     // x86_64) so a `provided.*` `bootstrap` does not hit an "exec format error".
-    const zipArches = props['Architectures'];
-    const architecture: 'x86_64' | 'arm64' =
-      Array.isArray(zipArches) && zipArches[0] === 'arm64' ? 'arm64' : 'x86_64';
+    // Shared with `cdkl invoke`'s resolver so an unsupported value errors
+    // consistently rather than being silently coerced to x86_64.
+    const architecture = resolveLambdaArchitecture(props, logicalId);
     return {
       kind: 'zip',
       stack,

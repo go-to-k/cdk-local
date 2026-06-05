@@ -226,7 +226,7 @@ export interface ResolvedImageLambda extends ResolvedLambdaBase {
  * without it a `provided.*` `bootstrap` compiled for one arch fails with
  * `exec format error` when run at the host's native arch.
  */
-function resolveLambdaArchitecture(
+export function resolveLambdaArchitecture(
   props: Record<string, unknown>,
   logicalId: string
 ): 'x86_64' | 'arm64' {
