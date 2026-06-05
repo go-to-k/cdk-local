@@ -1,3 +1,10 @@
+## [0.126.2](https://github.com/go-to-k/cdk-local/compare/v0.126.1...v0.126.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** make the folded stack sub-header legible on the dark pane ([#425](https://github.com/go-to-k/cdk-local/issues/425)) ([b7ec899](https://github.com/go-to-k/cdk-local/commit/b7ec899c076e9ea7e97a4589f98dca560c6b2d98))
+
 ## [0.126.1](https://github.com/go-to-k/cdk-local/compare/v0.126.0...v0.126.1) (2026-06-05)
 
 
