@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(gh issue create --repo go-to-k/cdkd*)",
+      "Bash(gh -C * issue create --repo go-to-k/cdkd*)",
+      "Bash(cd * && gh issue create --repo go-to-k/cdkd*)",
+      "Bash(gh issue comment * --repo go-to-k/cdkd*)",
+      "Bash(gh -C * issue comment * --repo go-to-k/cdkd*)",
+      "Bash(cd * && gh issue comment * --repo go-to-k/cdkd*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
