@@ -47,7 +47,7 @@ import {
   type OptionValues,
 } from '../../local/studio-option-specs.js';
 import { tokenizeRawArgs } from '../../local/studio-option-catalog.js';
-import { relayServeRequest } from '../../local/studio-request-relay.js';
+import { relayServeRequest, type ServeRequestResult } from '../../local/studio-request-relay.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
 import { discoverDockerfiles } from '../../local/image-override-engine.js';
@@ -234,6 +234,85 @@ const SERVE_REQUEST_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 
 export function resolveServeBaseUrl(state: StudioServeState): string | undefined {
   const http = (state.endpoints || []).find((u) => /^https?:/.test(u));
   return http ?? state.hostUrl;
+}
+
+/**
+ * Whether a relayed request to this serve is already captured on the timeline.
+ * An `api` / `alb` / `cloudfront` serve's `endpoints` are the studio
+ * capture-proxy URLs, so relaying to one emits `invocation` events from the
+ * proxy. An `ecs` serve published via `--host-port` has only a `hostUrl` (no
+ * proxy in front), so a relay to it is NOT captured — the caller emits the
+ * timeline events itself (see {@link relayAndCaptureServeRequest}).
+ */
+export function serveRelayIsCaptured(state: StudioServeState): boolean {
+  return (state.endpoints || []).some((u) => /^https?:/.test(u));
+}
+
+let serveRelayIdCounter = 0;
+
+/**
+ * Relay a composed request to an UNCAPTURED serve (an `ecs` `--host-port`
+ * replica, reached direct with no capture proxy in front) while emitting the
+ * `invocation` start/end pair onto the bus, so the request lands on the studio
+ * timeline exactly like an api / alb request the capture proxy records. The
+ * event shape mirrors {@link startStudioProxy}'s so the UI's read-only
+ * Request/Response detail + the store's history/log binding treat it
+ * identically. Exported for unit testing. `clock` / `idFactory` are injectable.
+ */
+export async function relayAndCaptureServeRequest(
+  deps: {
+    bus: StudioEventBus;
+    state: StudioServeState;
+    req: StudioServeRequestPayload;
+    baseUrl: string;
+  },
+  relay: typeof relayServeRequest = relayServeRequest,
+  clock: () => number = Date.now,
+  idFactory: () => string = () => {
+    serveRelayIdCounter += 1;
+    return `req-${Date.now()}-${serveRelayIdCounter}`;
+  }
+): Promise<ServeRequestResult> {
+  const { bus, state, req, baseUrl } = deps;
+  const id = idFactory();
+  const startedAt = clock();
+  const pathStr = req.path ?? '/';
+  const label = `${req.method} ${pathStr.split('?')[0]}`;
+  const headers = req.headers ?? {};
+  const base = { id, ts: startedAt, target: state.targetId, kind: state.kind, label };
+
+  bus.emit('invocation', { ...base, request: { method: req.method, path: pathStr, headers } });
+
+  const reqShape = { method: req.method, path: pathStr, headers, body: req.body };
+  try {
+    const result = await relay({
+      baseUrl,
+      method: req.method,
+      ...(req.path !== undefined ? { path: req.path } : {}),
+      ...(req.headers !== undefined ? { headers: req.headers } : {}),
+      ...(req.body !== undefined ? { body: req.body } : {}),
+    });
+    bus.emit('invocation', {
+      ...base,
+      request: reqShape,
+      response: { status: result.status, headers: result.headers, body: result.body },
+      status: result.status,
+      durationMs: result.durationMs,
+    });
+    return result;
+  } catch (err) {
+    // A network / timeout failure still closes the timeline row (502, the same
+    // convention startStudioProxy uses for an upstream error) rather than
+    // leaving it pending forever, then rethrows so /api/request reports the 500.
+    bus.emit('invocation', {
+      ...base,
+      request: reqShape,
+      response: `relay error: ${err instanceof Error ? err.message : String(err)}`,
+      status: 502,
+      durationMs: clock() - startedAt,
+    });
+    throw err;
+  }
 }
 
 /**
@@ -1085,14 +1164,21 @@ async function localStudioCommand(options: LocalStudioOptions): Promise<void> {
           `'${req.targetId}' has no reachable HTTP endpoint (an ecs service needs --host-port).`
         );
       }
-      const result = await relayServeRequest({
-        baseUrl,
-        method: req.method,
-        ...(req.path !== undefined ? { path: req.path } : {}),
-        ...(req.headers !== undefined ? { headers: req.headers } : {}),
-        ...(req.body !== undefined ? { body: req.body } : {}),
-      });
-      return result;
+      // An api / alb / cloudfront relay goes through the capture proxy, which
+      // already emits the timeline events. An ecs --host-port relay is direct
+      // (no proxy), so emit the invocation pair here so it lands on the
+      // timeline too — otherwise the only record of an ecs request is the
+      // composer's inline result.
+      if (serveRelayIsCaptured(state)) {
+        return relayServeRequest({
+          baseUrl,
+          method: req.method,
+          ...(req.path !== undefined ? { path: req.path } : {}),
+          ...(req.headers !== undefined ? { headers: req.headers } : {}),
+          ...(req.body !== undefined ? { body: req.body } : {}),
+        });
+      }
+      return relayAndCaptureServeRequest({ bus, state, req, baseUrl });
     },
     // `/api/reinvoke`: re-run a past Lambda / AgentCore row with an edited
     // payload (issue #284). Resolves the source target from the store and

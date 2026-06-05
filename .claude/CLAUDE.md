@@ -682,7 +682,13 @@ compute-locally category for Lambda + API Gateway).
   `studio-request-relay` so the browser composer reaches the served port
   same-origin; api / alb go through the capture proxy and land on the
   timeline, an ecs serve hits the replica host URL directly — from an explicit
-  `--host-port` or an auto-published replica port, issue #392),
+  `--host-port` or an auto-published replica port, issue #392 — and that
+  direct (un-proxied) ecs relay STILL lands on the timeline because the
+  command emits the `invocation` start/end pair itself
+  (`relayAndCaptureServeRequest`), so a Service request gets the same
+  Request/Response timeline row + read-only detail an api / alb request does;
+  an external curl straight to the host port is the one case not captured, no
+  proxy intercepting it),
   `POST /api/reinvoke` (issue #284 — re-run a past Lambda / AgentCore
   timeline row with an edited payload via `studio-reinvoke`, threading
   `reinvokeOf` so the new row links to its source; a served request is

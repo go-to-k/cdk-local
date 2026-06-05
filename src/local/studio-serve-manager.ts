@@ -63,8 +63,10 @@ export interface StudioServeState {
    * Direct host URL for an `ecs` serve published via `--host-port` (issue
    * #322). Unlike `endpoints` (api / alb capture-proxy URLs), this is the
    * replica's own host port with NO proxy in front — so the in-workspace
-   * request composer can target it, but a request to it is NOT captured on
-   * the timeline. Absent for api / alb (use `endpoints`) and for an ecs
+   * request composer can target it. A request relayed through the composer
+   * still lands on the timeline (studio emits the invocation events itself),
+   * but an EXTERNAL curl straight to the host port is not captured (no proxy
+   * intercepts it). Absent for api / alb (use `endpoints`) and for an ecs
    * serve started without `--host-port`.
    */
   hostUrl?: string;
