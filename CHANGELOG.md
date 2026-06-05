@@ -1,3 +1,10 @@
+# [0.131.0](https://github.com/go-to-k/cdk-local/compare/v0.130.3...v0.131.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** emphasise the composer result's Request/Response headings + distinct Headers/Body sub-labels ([#444](https://github.com/go-to-k/cdk-local/issues/444)) ([c5cf834](https://github.com/go-to-k/cdk-local/commit/c5cf834f208e09d278238f6fb69ad46a3e59e30a))
+
 ## [0.130.3](https://github.com/go-to-k/cdk-local/compare/v0.130.2...v0.130.3) (2026-06-05)
 
 
