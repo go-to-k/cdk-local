@@ -85,18 +85,22 @@ const STUDIO_CSS = `
     font: 11px ui-monospace, Menlo, monospace;
   }
   .pane-head #target-search:focus { outline: none; border-color: #4ec97a; }
-  /* Kind-group header (Lambda Functions etc.): a single uniform dark-amber
-     bar with a hairline bottom border. Warm yellow by hue, so it stands apart
-     from both the neutral-grey rows (#1a1a1a / #242424) and the blue-navy
-     stack-sub divider below it. The label is a warm gold (a blue label would
-     clash on the amber bar); the caret + count stay neutral grey, which still
-     reads on the dark warm bar. */
+  /* Kind-group header (Lambda Functions etc.): a single uniform TRANSLUCENT
+     amber bar (a warm tint the dark pane shows through) with a hairline
+     translucent bottom border. The warm hue stands apart from both the
+     neutral-grey rows (#1a1a1a / #242424) and the blue-navy stack-sub divider
+     below it; the translucency keeps it a light wash rather than a heavy block.
+     The label is a warm gold (a blue label would clash on the amber); caret +
+     count stay neutral grey, which still reads over the tint. The header is the
+     LARGEST + bold (14px) so the section header outranks the target rows (13px)
+     below it; the stack-sub fold divider sits between at 12px. */
   .group-title {
-    padding: 7px 12px; color: #e3c272; font-size: 11px; cursor: pointer; user-select: none;
-    display: flex; align-items: center; gap: 6px; background: #302b18;
-    border-bottom: 1px solid #46411f;
+    padding: 7px 12px; color: #e7cd86; font-size: 14px; font-weight: 700;
+    cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px; background: rgba(227, 194, 114, 0.12);
+    border-bottom: 1px solid rgba(227, 194, 114, 0.3);
   }
-  .group-title:hover { background: #3a341d; }
+  .group-title:hover { background: rgba(227, 194, 114, 0.18); }
   .group-title .caret { color: #9a9a9a; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
   .group-title.open .caret { transform: rotate(90deg); }
   .group-title .count { color: #8a8a8a; }
@@ -138,7 +142,7 @@ const STUDIO_CSS = `
      for a target row. A blue-grey label on a dark-navy bar with a faint blue
      bottom border. */
   .stack-sub {
-    padding: 4px 12px 3px; color: #9fb2d4; font-size: 10px;
+    padding: 4px 12px 3px; color: #9fb2d4; font-size: 12px;
     font-family: ui-monospace, Menlo, monospace; letter-spacing: 0.02em;
     background: #18223a; border-bottom: 1px solid #2b3c5e;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

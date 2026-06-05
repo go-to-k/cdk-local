@@ -156,12 +156,16 @@ describe('renderStudioHtml', () => {
     // a clearly distinct shade (issue #333 — the previous #1b1b1b was 1 step off
     // the #1a1a1a base and imperceptible).
     expect(html).toContain('.group-body .target.alt { background: #242424; }');
-    // Kind-group header: a uniform dark-amber bar with a warm-gold label —
-    // a warm hue that stands apart from both the neutral-grey rows and the
-    // blue-navy stack sub-header below it.
-    expect(html).toContain('background: #302b18;');
-    expect(html).toContain('color: #e3c272;');
+    // Kind-group header: a uniform TRANSLUCENT amber bar (warm tint the dark
+    // pane shows through) with a warm-gold label — a warm hue that stands apart
+    // from both the neutral-grey rows and the blue-navy stack sub-header below.
+    expect(html).toContain('background: rgba(227, 194, 114, 0.12);');
+    expect(html).toContain('color: #e7cd86;');
     expect(html).toContain('.group-title .count { color: #8a8a8a; }');
+    // Size hierarchy: the section header is the largest + bold (14px) so it
+    // outranks the target rows (13px); the stack-sub fold divider sits at 12px.
+    expect(html).toContain('font-size: 14px; font-weight: 700;');
+    expect(html).toContain('color: #9fb2d4; font-size: 12px;');
   });
 
   it('widens the Session-bar inputs so the placeholder is not truncated (issue #339)', () => {
