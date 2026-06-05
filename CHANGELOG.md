@@ -1,3 +1,10 @@
+## [0.126.4](https://github.com/go-to-k/cdk-local/compare/v0.126.3...v0.126.4) (2026-06-05)
+
+
+### Bug Fixes
+
+* **invoke:** pin --platform to the Lambda architecture for ZIP functions (exec format error) ([#428](https://github.com/go-to-k/cdk-local/issues/428)) ([f3f9ddf](https://github.com/go-to-k/cdk-local/commit/f3f9ddfa411f077baf0859b7240acfe23c56d645))
+
 ## [0.126.3](https://github.com/go-to-k/cdk-local/compare/v0.126.2...v0.126.3) (2026-06-05)
 
 
