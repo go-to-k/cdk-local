@@ -103,7 +103,15 @@ const STUDIO_CSS = `
   .group-title:hover { background: rgba(227, 194, 114, 0.18); }
   .group-title .caret { color: #9a9a9a; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
   .group-title.open .caret { transform: rotate(90deg); }
-  .group-title .count { color: #8a8a8a; }
+  /* A long group label (e.g. "Application Load Balancers") would wrap onto a
+     second line in the 280px pane and shove the count off to the right; keep
+     the label on one line and ellipsis the overflow (full text on hover via
+     the title attr) so the row height + count placement stay uniform. */
+  .group-title .group-name {
+    flex: 0 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .group-title .count { color: #8a8a8a; flex: none; }
   .group-body.collapsed { display: none; }
   .target {
     padding: 6px 12px; display: flex; align-items: center; gap: 8px;
@@ -816,6 +824,7 @@ const STUDIO_SCRIPT = `
         if (!group.entries.length) continue;
         const grp = el('div', 'target-group');
         const title = el('div', 'group-title');
+        title.title = group.title; // full label on hover (the name ellipsises when long)
         title.appendChild(el('span', 'caret', '▶'));
         title.appendChild(el('span', 'group-name', group.title));
         title.appendChild(el('span', 'count', '(' + group.entries.length + ')'));

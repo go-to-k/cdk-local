@@ -268,7 +268,7 @@ describe('annotateAlbPinnedBackingServices', () => {
     },
     {
       kind: 'alb',
-      title: 'Load Balancers',
+      title: 'Application Load Balancers',
       entries: [
         { id: 'S/Alb1', qualifiedId: 'S:Alb1' },
         { id: 'S/Alb2', qualifiedId: 'S:Alb2' },
@@ -332,7 +332,7 @@ describe('toStudioTargetGroups', () => {
       'ECS Task Definitions',
       'AgentCore Runtimes',
       'AgentCore WebSocket',
-      'Load Balancers',
+      'Application Load Balancers',
       'CloudFront Distributions',
     ]);
     expect(groups[0].entries).toEqual([{ id: 'S/Fn', qualifiedId: 'S:Fn' }]);
