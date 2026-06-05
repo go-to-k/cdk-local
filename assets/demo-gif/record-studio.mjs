@@ -160,18 +160,26 @@ async function main() {
   // The result renders as a Request -> Response PAIR (#438 / #444); wait for the
   // Response section to appear (the old single .req-status span was retired).
   await page.locator('.req-result .req-resp').first().waitFor({ timeout: 30000 });
-  // Hold on the inline response (status + reflected body) so it reads clearly.
-  await wait(2600);
+  // Brief hold on the inline response before scrolling.
+  await wait(1300);
 
-  // VISIBLY scroll the workspace down to reveal the streamed container logs.
-  // A stepped wheel scroll (not an instant scrollIntoView) so the GIF actually
-  // captures the scroll motion. Park the cursor over the workspace first so the
-  // wheel targets that pane.
+  // VISIBLY scroll the workspace down in TWO phases: first bring the
+  // Request -> Response pair fully into view and dwell ~1s, then continue down
+  // to the streamed container logs. A stepped wheel scroll (not an instant
+  // scrollIntoView) so the GIF actually captures the scroll motion. Park the
+  // cursor over the workspace first so the wheel targets that pane.
   const wsBox = await page.locator('#workspace').boundingBox();
   if (wsBox) {
     await page.mouse.move(wsBox.x + wsBox.width / 2, wsBox.y + wsBox.height / 2, { steps: 8 });
     await wait(300);
-    for (let i = 0; i < 10; i += 1) {
+    // Phase 1: scroll to frame the Request -> Response pair.
+    for (let i = 0; i < 5; i += 1) {
+      await page.mouse.wheel(0, 150);
+      await wait(150);
+    }
+    await wait(1000); // dwell on the Request -> Response pair
+    // Phase 2: continue scrolling down to the logs.
+    for (let i = 0; i < 5; i += 1) {
       await page.mouse.wheel(0, 150);
       await wait(150);
     }
