@@ -1,5 +1,6 @@
 import { getLogger } from '../utils/logger.js';
 import { pickFreePort, removeContainer, runDetached, streamLogs } from './docker-runner.js';
+import { architectureToPlatform } from './docker-image-builder.js';
 import type { ResolvedImageLambda, ResolvedZipLambda } from './lambda-resolver.js';
 import { waitForRieReady } from './rie-client.js';
 import { resolveRuntimeCodeMountPath, resolveRuntimeImage } from './runtime-image.js';
@@ -373,6 +374,10 @@ export function createContainerPool(
       const image = resolveRuntimeImage(spec.lambda.runtime);
       containerId = await runDetached({
         image,
+        // Run the base image at the Lambda's declared architecture (emulated
+        // when the host arch differs) so a `provided.*` `bootstrap` does not
+        // hit an "exec format error". Mirrors the IMAGE branch's `spec.platform`.
+        platform: architectureToPlatform(spec.lambda.architecture),
         mounts: [{ hostPath: spec.codeDir, containerPath: containerCodePath, readOnly: true }],
         extraMounts,
         env: spec.env,

@@ -156,10 +156,15 @@ async function resolveZipImagePlan(
     assetTmpDir = materialized.tmpDir;
   }
   const image = resolveRuntimeImage(lambda.runtime);
-  await pullImage(image, opts.skipPull === true);
+  // Run the base image at the Lambda's declared architecture (emulated when the
+  // host arch differs) so a `provided.*` `bootstrap` does not hit an "exec
+  // format error". Mirrors the IMAGE path's `platformOverride ?? <arch>`.
+  const platform = opts.platformOverride ?? architectureToPlatform(lambda.architecture);
+  await pullImage(image, opts.skipPull === true, platform);
   const containerCodePath = resolveRuntimeCodeMountPath(lambda.runtime);
   return {
     image,
+    platform,
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
     cmd: [lambda.handler],
     ...(inlineTmpDir !== undefined && { inlineTmpDir }),

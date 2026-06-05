@@ -35,10 +35,13 @@ vi.mock('../../../src/local/runtime-image.js', () => ({
 
 const { createContainerPool } = await import('../../../src/local/container-pool.js');
 
-function zipSpec(sensitiveEnvKeys?: ReadonlySet<string>): ContainerSpec {
+function zipSpec(
+  sensitiveEnvKeys?: ReadonlySet<string>,
+  architecture: 'x86_64' | 'arm64' = 'x86_64'
+): ContainerSpec {
   return {
     kind: 'zip',
-    lambda: { logicalId: 'Fn', runtime: 'nodejs20.x', handler: 'index.handler' },
+    lambda: { logicalId: 'Fn', runtime: 'nodejs20.x', handler: 'index.handler', architecture },
     codeDir: '/tmp/code',
     env: { API_KEY: 's3cr3t', TABLE: 't' },
     ...(sensitiveEnvKeys && { sensitiveEnvKeys }),
@@ -109,6 +112,32 @@ describe('container pool forwards spec.sensitiveEnvKeys to runDetached (issue #9
 
     expect(runDetachedMock).toHaveBeenCalledTimes(1);
     expect(runDetachedMock.mock.calls[0]![0].sensitiveEnvKeys).toBeUndefined();
+    pool.release(handle);
+    await pool.dispose();
+  });
+});
+
+describe('container pool pins --platform to the ZIP Lambda architecture', () => {
+  beforeEach(() => {
+    runDetachedMock.mockReset().mockResolvedValue('container-id');
+    pickFreePortMock.mockReset().mockResolvedValue(9001);
+    removeContainerMock.mockReset().mockResolvedValue(undefined);
+    waitForRieReadyMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  // The ZIP run path (startOne) derives --platform from spec.lambda.architecture;
+  // without it a provided.* bootstrap fails with "exec format error" on a host
+  // whose native arch differs. This is the sole link carrying it to docker run.
+  it.each([
+    ['x86_64', 'linux/amd64'],
+    ['arm64', 'linux/arm64'],
+  ] as const)('runs a %s ZIP Lambda with --platform %s', async (arch, platform) => {
+    const pool = createContainerPool(new Map([['Fn', zipSpec(undefined, arch)]]), {
+      perLambdaConcurrency: 1,
+      streamLogs: false,
+    });
+    const handle = await pool.acquire('Fn');
+    expect(runDetachedMock.mock.calls[0]![0].platform).toBe(platform);
     pool.release(handle);
     await pool.dispose();
   });

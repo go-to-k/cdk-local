@@ -65,6 +65,7 @@ function zipLambda(overrides: Partial<ResolvedZipLambda> = {}): ResolvedZipLambd
     runtime: 'nodejs20.x',
     handler: 'index.handler',
     codePath: codeDir,
+    architecture: 'x86_64',
     ...overrides,
   } as ResolvedZipLambda;
 }
@@ -89,10 +90,18 @@ describe('createFrontDoorLambdaRunner', () => {
     const runner = createFrontDoorLambdaRunner(zipLambda(), { containerHost: '127.0.0.1' });
     await runner.start();
 
-    expect(pullImageMock).toHaveBeenCalledWith('public.ecr.aws/lambda/nodejs:20', false);
+    // Pull + run pin the platform to the Lambda's declared architecture so a
+    // provided.* bootstrap does not hit an "exec format error" on a host whose
+    // native arch differs.
+    expect(pullImageMock).toHaveBeenCalledWith(
+      'public.ecr.aws/lambda/nodejs:20',
+      false,
+      'linux/amd64'
+    );
     expect(runDetachedMock).toHaveBeenCalledTimes(1);
     const runArgs = runDetachedMock.mock.calls[0]![0];
     expect(runArgs.image).toBe('public.ecr.aws/lambda/nodejs:20');
+    expect(runArgs.platform).toBe('linux/amd64');
     expect(runArgs.cmd).toEqual(['index.handler']);
     expect(runArgs.mounts).toEqual([
       { hostPath: codeDir, containerPath: '/var/task', readOnly: true },
@@ -100,6 +109,19 @@ describe('createFrontDoorLambdaRunner', () => {
     expect(runArgs.hostPort).toBe(54321);
     expect(runArgs.env.AWS_LAMBDA_FUNCTION_NAME).toBe('EchoFn');
     expect(waitForRieReadyMock).toHaveBeenCalledWith('127.0.0.1', 54321, 30_000);
+  });
+
+  it('pins --platform to the declared arm64 architecture for a ZIP Lambda', async () => {
+    const runner = createFrontDoorLambdaRunner(zipLambda({ architecture: 'arm64' }), {
+      containerHost: '127.0.0.1',
+    });
+    await runner.start();
+    expect(pullImageMock).toHaveBeenCalledWith(
+      'public.ecr.aws/lambda/nodejs:20',
+      false,
+      'linux/arm64'
+    );
+    expect(runDetachedMock.mock.calls[0]![0].platform).toBe('linux/arm64');
   });
 
   it('extracts a .zip-packaged asset and mounts the extracted dir, cleaning it up on stop()', async () => {
@@ -161,7 +183,7 @@ describe('createFrontDoorLambdaRunner', () => {
       skipPull: true,
     });
     await runner.start();
-    expect(pullImageMock).toHaveBeenCalledWith('public.ecr.aws/lambda/nodejs:20', true);
+    expect(pullImageMock).toHaveBeenCalledWith('public.ecr.aws/lambda/nodejs:20', true, 'linux/amd64');
   });
 
   it('invoke() POSTs the event to RIE and returns the parsed payload', async () => {

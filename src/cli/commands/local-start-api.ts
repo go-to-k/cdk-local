@@ -96,6 +96,7 @@ import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.j
 import {
   extractEphemeralStorageMb,
   materializeAssetCodeDir,
+  resolveLambdaArchitecture,
   resolveLambdaLayers,
   type ResolvedLambdaLayer,
 } from '../../local/lambda-resolver.js';
@@ -2176,6 +2177,12 @@ async function buildContainerSpec(args: {
         inlineTmpDirs
       );
     }
+    // NOTE: the ZIP warm container's `--platform` is derived from
+    // `lambda.architecture` inside the container pool's run path
+    // (`container-pool.ts` `startOne`), so it is NOT set on `platform` here —
+    // unlike the IMAGE branch below, the ZIP `ContainerSpec` carries the
+    // resolved `lambda` (with `architecture`) rather than a pre-computed
+    // platform string.
 
     // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
     // layer functions reuse the layer's asset dir directly; multi-
@@ -2647,6 +2654,12 @@ interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
   handler: string;
   codePath: string | null;
   inlineCode?: string;
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]` — pins the warm
+   * container's `--platform` so a `provided.*` `bootstrap` compiled for the
+   * other arch does not fail with `exec format error`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
@@ -2735,6 +2748,11 @@ export function resolveLambdaByLogicalId(
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
     const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
+    // Pin the warm container's platform to the declared architecture (default
+    // x86_64) so a `provided.*` `bootstrap` does not hit an "exec format error".
+    // Shared with `cdkl invoke`'s resolver so an unsupported value errors
+    // consistently rather than being silently coerced to x86_64.
+    const architecture = resolveLambdaArchitecture(props, logicalId);
     return {
       kind: 'zip',
       stack,
@@ -2746,6 +2764,7 @@ export function resolveLambdaByLogicalId(
       timeoutSec,
       codePath,
       layers,
+      architecture,
       ...(inlineCode !== undefined && { inlineCode }),
       ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     };
