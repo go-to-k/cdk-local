@@ -1,3 +1,10 @@
+## [0.127.1](https://github.com/go-to-k/cdk-local/compare/v0.127.0...v0.127.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** cap WS console width + move Clear below the log, enlarge it ([#433](https://github.com/go-to-k/cdk-local/issues/433)) ([3e00a14](https://github.com/go-to-k/cdk-local/commit/3e00a14cd5b7a36cc576d02f8b124ea56f80e8d2))
+
 # [0.127.0](https://github.com/go-to-k/cdk-local/compare/v0.126.6...v0.127.0) (2026-06-05)
 
 
