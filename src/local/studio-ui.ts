@@ -205,6 +205,7 @@ const STUDIO_CSS = `
   .endpoint:hover { text-decoration: underline; }
   .ws-console .ws-status { font-size: 12px; color: #888; margin-left: 8px; font-weight: 400; }
   .ws-console .ws-status.on { color: #4ec97a; }
+  .ws-console h3 .ws-clear { float: right; font-weight: 400; }
   .ws-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
   .ws-row .ws-input { flex: 1; min-width: 0; background: #1a1a1a; border: 1px solid #333;
     color: #ddd; border-radius: 4px; padding: 5px 7px; font: inherit; }
@@ -1650,6 +1651,12 @@ const STUDIO_SCRIPT = `
       inp.value = '';
     }
   }
+  function wsClear() {
+    // Clear only the displayed frame log; the live socket stays connected.
+    wsFrames = [];
+    const pre = wsEl('.ws-frames');
+    if (pre) pre.textContent = '';
+  }
 
   function renderWsConsole(wsUrl) {
     // A fresh target's console starts with a clean frame log; same-url
@@ -1667,7 +1674,13 @@ const STUDIO_SCRIPT = `
     const input = el('input', 'ws-input');
     input.placeholder = '{ "action": "sendMessage", "text": "hi" }';
     input.disabled = !on;
-    input.onkeydown = function (e) { if (e.key === 'Enter') wsSend(); };
+    // Guard against an IME composition Enter: while composing (e.g. confirming
+    // a Japanese / CJK conversion candidate), the Enter that COMMITS the
+    // conversion must NOT send the frame. e.isComposing is true mid-composition;
+    // keyCode 229 is the legacy signal some IMEs fire instead.
+    input.onkeydown = function (e) {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) wsSend();
+    };
     const sendBtn = el('button', 'ws-send', 'Send');
     sendBtn.disabled = !on;
     sendBtn.onclick = wsSend;
@@ -1677,6 +1690,10 @@ const STUDIO_SCRIPT = `
     row.appendChild(input);
     row.appendChild(sendBtn);
     sec.appendChild(row);
+
+    const clearBtn = el('button', 'log-clear ws-clear', 'Clear');
+    clearBtn.onclick = wsClear;
+    h.appendChild(clearBtn);
 
     const frames = el('pre', 'ws-frames', wsFrames.join('\\n'));
     sec.appendChild(frames);
