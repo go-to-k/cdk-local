@@ -1,3 +1,10 @@
+# [0.127.0](https://github.com/go-to-k/cdk-local/compare/v0.126.6...v0.127.0) (2026-06-05)
+
+
+### Features
+
+* **studio:** frame the composer result as Response + capture ecs --host-port requests on the timeline ([#432](https://github.com/go-to-k/cdk-local/issues/432)) ([f5b6827](https://github.com/go-to-k/cdk-local/commit/f5b6827b93dacf08a8bb4a0520e3bd8445e09a92))
+
 ## [0.126.6](https://github.com/go-to-k/cdk-local/compare/v0.126.5...v0.126.6) (2026-06-05)
 
 
