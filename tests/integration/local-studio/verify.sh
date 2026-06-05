@@ -305,11 +305,12 @@ if ! grep -qF "function renderHttpExchangeSection" "${BODY_FILE}" || ! grep -qF 
   echo "FAIL: GET / did not include the Request/Response exchange renderer + JSON body pretty-printer"
   exit 1
 fi
-# The inline Request / Response headings are emphasised (pale-yellow accent) and
-# the Headers / Body sub-labels are a distinct blue small-caps style vs the
-# grey content.
-if ! grep -qF ".req-composer .req-result .req-resp h3 { color: #e3d18a; }" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the emphasised Request/Response heading styles"
+# The major output-section headings (Request / Response / serve LOGS) are
+# emphasised pale-yellow, and the serve workspace's structural labels (Started
+# with / Endpoints / form Request / Headers / Body) are blue.
+if ! grep -qF ".section.serve-logs h3 { color: #e3d18a; }" "${BODY_FILE}" \
+  || ! grep -qF ".req-composer > .opt-label { color: #6cb6ff; }" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the emphasised heading + blue structural-label styles"
   exit 1
 fi
 # Proxy-vs-child port clarity (issue #325): the Endpoints hint names the proxy

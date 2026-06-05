@@ -216,16 +216,30 @@ const STUDIO_CSS = `
   .req-composer .req-result .req-line { color: #cdd6e0; font-weight: 600; }
   .req-composer .req-result .req-resp-headers { color: #8b8b8b; }
   .req-composer .req-result .req-resp-body { color: #d6d6d6; }
-  /* Make the Request / Response headings prominent (vs the muted 11px grey
-     .section h3): larger, bold, pale-yellow accent, with an underline rule. The
-     status badge keeps its own ok/bad colour. */
+  /* Make the major output-section headings (the result REQUEST / RESPONSE pair
+     + the serve LOGS) prominent (vs the muted 11px grey .section h3): larger,
+     bold, pale-yellow accent, with an underline rule. The status badge keeps
+     its own ok/bad colour. The .section.NAME form lifts specificity to
+     (0,2,1) so these win over a plain .section h3 (0,1,1) regardless of source
+     order (.section h3 is declared later in this stylesheet). */
   .req-composer .req-result .req-req h3,
-  .req-composer .req-result .req-resp h3 {
+  .req-composer .req-result .req-resp h3,
+  .section.serve-logs h3 {
     font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
     padding-bottom: 4px; margin-bottom: 8px; border-bottom: 1px solid #2c2c2c;
   }
   .req-composer .req-result .req-req h3,
-  .req-composer .req-result .req-resp h3 { color: #e3d18a; }
+  .req-composer .req-result .req-resp h3,
+  .section.serve-logs h3 { color: #e3d18a; }
+  /* The serve workspace's structural labels (Started with / Endpoints, and the
+     request-composer form's Request / Headers / Body) are blue — matching the
+     result's blue Headers / Body sub-labels, distinct from the yellow output
+     headings. Shared by every serve kind (renderServeWorkspace). Same (0,2,1)
+     specificity lift so they beat a plain .section h3 / global .opt-label. */
+  .section.started-with h3,
+  .section.endpoints h3,
+  .section.req-composer > h3,
+  .req-composer > .opt-label { color: #6cb6ff; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
   .log-clear {
@@ -1240,7 +1254,7 @@ const STUDIO_SCRIPT = `
     // Both an ecs service and an ecs-task run are pure compute: no host
     // endpoint unless a --host-port was published (issue #366).
     const isEcs = meta && (meta.kind === 'ecs' || meta.kind === 'ecs-task');
-    const epSec = el('div', 'section');
+    const epSec = el('div', 'section endpoints');
     epSec.appendChild(el('h3', null, 'Endpoints'));
     if (running && st.endpoints.length) {
       for (const url of st.endpoints) {
@@ -1297,7 +1311,7 @@ const STUDIO_SCRIPT = `
     }
 
     const logs = logsById.get(id) || [];
-    const logSec = el('div', 'section');
+    const logSec = el('div', 'section serve-logs');
     logSec.appendChild(el('h3', null, 'Logs'));
     // A proxy-fronted serve (api / alb) streams its child start-* logs here,
     // which advertise the child internal 127.0.0.1 port — a DIFFERENT port

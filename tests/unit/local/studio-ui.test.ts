@@ -213,11 +213,18 @@ describe('renderStudioHtml', () => {
     // The ecs host URL is shown in Endpoints with a note that composer requests
     // ARE captured on the timeline (the direct relay self-emits — issue #432).
     expect(html).toContain('composer requests are captured on the timeline');
-    // The inline result's Request / Response headings are emphasised (pale
-    // yellow + bold) vs the muted .section h3, so the pair stands out; the
-    // Headers / Body sub-labels are blue, distinct from the grey content.
+    // The major output-section headings — the result Request / Response pair
+    // AND the serve LOGS — are emphasised pale-yellow (grouped selector),
+    // distinct from the blue structural labels.
     expect(html).toContain('.req-composer .req-result .req-req h3,');
-    expect(html).toContain('.req-composer .req-result .req-resp h3 { color: #e3d18a; }');
+    expect(html).toContain('.section.serve-logs h3 { color: #e3d18a; }');
+    // The serve workspace's structural labels (Started with / Endpoints + the
+    // request-composer form's Request / Headers / Body) are blue — the
+    // .section.NAME form lifts specificity over the later `.section h3`.
+    expect(html).toContain('.section.started-with h3,');
+    expect(html).toContain('.section.endpoints h3,');
+    expect(html).toContain('.req-composer > .opt-label { color: #6cb6ff; }');
+    // The result's Headers / Body sub-labels are blue too.
     expect(html).toContain('.req-composer .req-result .opt-label {');
     expect(html).toContain('letter-spacing: 0.7px; color: #6cb6ff;');
   });
