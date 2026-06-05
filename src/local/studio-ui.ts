@@ -202,25 +202,26 @@ const STUDIO_CSS = `
   .req-composer .req-result .req-resp { margin-top: 10px; padding: 0; border-bottom: none; }
   .req-composer .req-result pre { background: #0e0e0e; }
   /* The "Headers" / "Body" sub-labels read as labels, not content: small
-     uppercase bold in a muted slate, distinct from the monospace header lines
-     below them (which share a similar grey + size otherwise). */
+     uppercase bold in blue — a distinct hue from the grey monospace header
+     lines below them (which otherwise share a similar grey + size) and from
+     the pale-yellow section headings. */
   .req-composer .req-result .opt-label {
     margin-top: 8px; margin-bottom: 3px; font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.7px; color: #707a89;
+    text-transform: uppercase; letter-spacing: 0.7px; color: #6cb6ff;
   }
   .req-composer .req-result .req-line { color: #cdd6e0; font-weight: 600; }
   .req-composer .req-result .req-resp-headers { color: #8b8b8b; }
   .req-composer .req-result .req-resp-body { color: #d6d6d6; }
   /* Make the Request / Response headings prominent (vs the muted 11px grey
-     .section h3): larger, bold, accent-coloured, with an underline rule. The
+     .section h3): larger, bold, pale-yellow accent, with an underline rule. The
      status badge keeps its own ok/bad colour. */
   .req-composer .req-result .req-req h3,
   .req-composer .req-result .req-resp h3 {
     font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
     padding-bottom: 4px; margin-bottom: 8px; border-bottom: 1px solid #2c2c2c;
   }
-  .req-composer .req-result .req-req h3 { color: #6cb6ff; }
-  .req-composer .req-result .req-resp h3 { color: #c8a2ff; }
+  .req-composer .req-result .req-req h3,
+  .req-composer .req-result .req-resp h3 { color: #e3d18a; }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
   .log-clear {
