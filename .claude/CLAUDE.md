@@ -672,7 +672,10 @@ compute-locally category for Lambda + API Gateway).
   default via `filterStudioCustomResources`, issue #323 — pass
   `cdkl studio --include-custom-resources` to surface them)
   at `/api/targets`, an SSE
-  stream of the event bus at `/api/events`, `POST /api/run` (single-shot
+  stream of the event bus at `/api/events` (which opens with a `hello`
+  event carrying a per-boot `instanceId` and beats a JS-visible `ping`
+  event every `SSE_HEARTBEAT_MS` so the UI can detect a dead / swapped
+  server — see studio-ui's liveness watchdog), `POST /api/run` (single-shot
   invoke / serve start), `POST /api/stop` (serve stop),
   `GET /api/running` (running serve snapshot), `POST /api/request`
   (issue #322 — relay a composed HTTP request to a running serve via
@@ -799,7 +802,14 @@ compute-locally category for Lambda + API Gateway).
   Request/Response detail whose [Re-invoke] reuses that serve's request
   composer (pre-filled), and a re-invoked row is visually linked to its
   source; a log search box queries the store and a captured request's
-  detail shows its bound logs),
+  detail shows its bound logs. The header `● live` / `● disconnected`
+  indicator is driven by `connect()`'s liveness logic: it binds to the
+  FIRST `/api/events` `hello` instanceId, flips to disconnected (latched,
+  socket closed) when a reconnect lands on a DIFFERENT instanceId (a second
+  `cdkl studio` that reused this port after the originating process exited),
+  and a heartbeat watchdog flips to disconnected when no `ping` / event
+  arrives within the liveness window — so a dead server is detected even
+  when the dropped socket never surfaces an EventSource `error`),
   studio-reinvoke (issue #284 — `reinvoke({invocationId, payload}, {store,
   dispatcher})`: resolves the source target from the recorded invocation
   and re-fires the edited payload through the SAME single-shot dispatcher

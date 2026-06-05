@@ -2048,14 +2048,47 @@ const STUDIO_SCRIPT = `
     }
   }
 
-  function connect() {
+  function setConn(live) {
     const conn = document.getElementById('conn');
+    if (!conn) return;
+    conn.textContent = live ? '● live' : '● disconnected';
+    conn.className = live ? 'up' : 'down';
+  }
+  // Liveness watchdog window: the SSE stream emits a ping event every ~15s
+  // (plus real events). If nothing arrives for longer than this, the
+  // originating server is gone even when the dropped socket never surfaced an
+  // error event. Kept a generous multiple of the server heartbeat so a slow
+  // tick can never false-trip.
+  const LIVENESS_TIMEOUT_MS = 45000;
+  function connect() {
     const es = new EventSource('/api/events');
-    es.addEventListener('open', () => { conn.textContent = '● live'; conn.className = 'up'; });
-    es.addEventListener('error', () => { conn.textContent = '● disconnected'; conn.className = 'down'; });
-    es.addEventListener('invocation', (e) => addInvocation(JSON.parse(e.data)));
-    es.addEventListener('serve', (e) => onServeEvent(JSON.parse(e.data)));
+    let seenInstance = null;     // instanceId of the server we first connected to
+    let lastBeat = 0;            // ms timestamp of the last received message
+    let dead = false;            // latched once this server is judged gone
+    const beat = () => { lastBeat = Date.now(); if (!dead) setConn(true); };
+    es.addEventListener('open', () => beat());
+    es.addEventListener('error', () => { if (!dead) setConn(false); });
+    es.addEventListener('ping', () => beat());
+    es.addEventListener('hello', (e) => {
+      let id = null;
+      try { id = JSON.parse(e.data).instanceId; } catch (_) { id = null; }
+      if (seenInstance === null) { seenInstance = id; beat(); return; }
+      if (id && id !== seenInstance) {
+        // The reconnect landed on a DIFFERENT studio process that reused this
+        // port after the originating server exited. It is not our server, so
+        // stay disconnected and stop listening (a page reload re-binds to the
+        // new server cleanly).
+        dead = true;
+        setConn(false);
+        es.close();
+        return;
+      }
+      beat();
+    });
+    es.addEventListener('invocation', (e) => { beat(); addInvocation(JSON.parse(e.data)); });
+    es.addEventListener('serve', (e) => { beat(); onServeEvent(JSON.parse(e.data)); });
     es.addEventListener('log', (e) => {
+      beat();
       const ev = JSON.parse(e.data);
       const arr = logsById.get(ev.containerId) || [];
       arr.push(ev.line);
@@ -2069,6 +2102,10 @@ const STUDIO_SCRIPT = `
         serveLogPre.textContent = arr.join('\\n');
       }
     });
+    setInterval(() => {
+      if (dead) return;
+      if (lastBeat && Date.now() - lastBeat > LIVENESS_TIMEOUT_MS) setConn(false);
+    }, 5000);
   }
 
   function onServeEvent(ev) {

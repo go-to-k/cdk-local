@@ -577,6 +577,49 @@ describe('startStudioServer', () => {
     expect(buf).toContain('"id":"sse1"');
   });
 
+  it('opens the SSE stream with a hello event carrying a per-boot instanceId', async () => {
+    const server = await boot();
+    const { res: resP, abort } = openSse(`${server.url}/api/events`);
+    const res = await resP;
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    let buf = '';
+    while (!buf.includes('event: hello')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+    }
+    abort();
+
+    expect(buf).toContain('event: hello');
+    const m = /event: hello\ndata: (\{.*\})/.exec(buf);
+    expect(m).not.toBeNull();
+    const payload = JSON.parse(m![1]);
+    expect(typeof payload.instanceId).toBe('string');
+    expect(payload.instanceId.length).toBeGreaterThan(0);
+  });
+
+  it('gives a distinct instanceId to each studio server boot', async () => {
+    async function helloId(server: RunningStudioServer): Promise<string> {
+      const { res: resP, abort } = openSse(`${server.url}/api/events`);
+      const res = await resP;
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (!buf.includes('event: hello')) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+      }
+      abort();
+      return JSON.parse(/data: (\{.*\})/.exec(buf)![1]).instanceId;
+    }
+    const a = await boot();
+    const b = await boot();
+    expect(await helloId(a)).not.toBe(await helloId(b));
+  });
+
   it('bumps to the next free port when the preferred port is taken', async () => {
     const first = await boot({ port: 0 });
     // Re-request the SAME concrete port the first server bound; the bump
