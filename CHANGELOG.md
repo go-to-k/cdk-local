@@ -1,3 +1,10 @@
+# [0.125.0](https://github.com/go-to-k/cdk-local/compare/v0.124.2...v0.125.0) (2026-06-05)
+
+
+### Features
+
+* **start-agentcore:** serve an AgentCore /ws endpoint via a host WebSocket bridge ([#420](https://github.com/go-to-k/cdk-local/issues/420)) ([33ed11e](https://github.com/go-to-k/cdk-local/commit/33ed11e883b81d9f027d3e6f5eebbbeba98cf57f))
+
 ## [0.124.2](https://github.com/go-to-k/cdk-local/compare/v0.124.1...v0.124.2) (2026-06-04)
 
 
