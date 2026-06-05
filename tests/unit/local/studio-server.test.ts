@@ -553,7 +553,7 @@ describe('startStudioServer', () => {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
 
-    // The server writes an opening `:ok` comment; read it so we know the
+    // The server writes an opening `hello` event; read it so we know the
     // subscription is live before emitting.
     await reader.read();
     bus.emit('invocation', {
@@ -875,7 +875,7 @@ describe('startStudioServer', () => {
     const res = await resP;
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
-    await reader.read(); // opening `:ok`
+    await reader.read(); // opening `hello`
 
     bus.emit('serve', {
       ts: 1,
