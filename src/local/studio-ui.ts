@@ -125,14 +125,15 @@ const STUDIO_CSS = `
   }
   .target .name::-webkit-scrollbar { display: none; }
   /* The folded common stack prefix shared by the rows beneath it — a quiet
-     section-divider bar: a brighter label on a faint background bar (distinct
-     from both the #1a1a1a / #242424 row shades) with a hairline bottom border,
-     so the prefix reads clearly on the dark pane instead of disappearing as
-     dim grey-on-black. */
+     section-divider bar tinted in the BLUE family of the group-title accent
+     (#6aa9ff), so its hue (not just its lightness) sets it apart from the
+     neutral-grey zebra rows (#1a1a1a / #242424) and it can never be mistaken
+     for a target row. A blue-grey label on a dark-navy bar with a faint blue
+     bottom border. */
   .stack-sub {
-    padding: 4px 12px 3px; color: #b5b5b5; font-size: 10px;
-    font-family: ui-monospace, Menlo, monospace;
-    background: #202020; border-bottom: 1px solid #2c2c2c;
+    padding: 4px 12px 3px; color: #9fb2d4; font-size: 10px;
+    font-family: ui-monospace, Menlo, monospace; letter-spacing: 0.02em;
+    background: #18223a; border-bottom: 1px solid #2b3c5e;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .target .kind { color: #8f8f8f; font-size: 11px; }

@@ -141,11 +141,11 @@ describe('targets pane construct-path CSS', () => {
     expect(html).toContain('.stack-sub {');
   });
 
-  it('renders the stack sub-header as a legible divider bar (brighter label + faint bar)', () => {
+  it('renders the stack sub-header as a blue-tinted divider bar (distinct hue from the grey rows)', () => {
     const html = renderStudioHtml('TestStack', 'cdkl');
-    // A brighter label on a faint background bar, so the folded prefix reads on
-    // the dark pane instead of disappearing as dim grey-on-black.
-    expect(html).toContain('color: #b5b5b5');
-    expect(html).toContain('background: #202020; border-bottom: 1px solid #2c2c2c;');
+    // A blue-tinted bar (group-title accent family) so its HUE sets it apart
+    // from the neutral-grey zebra rows — it can never read as a target row.
+    expect(html).toContain('color: #9fb2d4');
+    expect(html).toContain('background: #18223a; border-bottom: 1px solid #2b3c5e;');
   });
 });
