@@ -85,18 +85,18 @@ const STUDIO_CSS = `
     font: 11px ui-monospace, Menlo, monospace;
   }
   .pane-head #target-search:focus { outline: none; border-color: #4ec97a; }
-  /* Kind-group header (Lambda Functions etc.): a single uniform light-grey
-     bar (lighter than the row shades #1a1a1a / #242424, so the section header
-     reads as the most prominent band) with a hairline bottom border. Neutral
-     grey by hue, so it never clashes with the blue-navy stack-sub divider
-     below it. The blue label (#6aa9ff) still reads on the lighter bar; the
-     caret + count are lifted to suit the brighter background. */
+  /* Kind-group header (Lambda Functions etc.): a single uniform dark-amber
+     bar with a hairline bottom border. Warm yellow by hue, so it stands apart
+     from both the neutral-grey rows (#1a1a1a / #242424) and the blue-navy
+     stack-sub divider below it. The label is a warm gold (a blue label would
+     clash on the amber bar); the caret + count stay neutral grey, which still
+     reads on the dark warm bar. */
   .group-title {
-    padding: 7px 12px; color: #6aa9ff; font-size: 11px; cursor: pointer; user-select: none;
-    display: flex; align-items: center; gap: 6px; background: #2e2e2e;
-    border-bottom: 1px solid #3a3a3a;
+    padding: 7px 12px; color: #e3c272; font-size: 11px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 6px; background: #302b18;
+    border-bottom: 1px solid #46411f;
   }
-  .group-title:hover { background: #363636; }
+  .group-title:hover { background: #3a341d; }
   .group-title .caret { color: #9a9a9a; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
   .group-title.open .caret { transform: rotate(90deg); }
   .group-title .count { color: #8a8a8a; }
