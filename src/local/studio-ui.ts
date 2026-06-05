@@ -1755,11 +1755,14 @@ const STUDIO_SCRIPT = `
     sendBtn.disabled = !on;
     sendBtn.onclick = wsSend;
 
-    // Input fills the row width; Send is wrapped onto its OWN row below so on
-    // a wide pane it sits at the left (near the input) instead of being flung
-    // to the far right edge.
+    // Each control on its OWN row, stacked: Connect, then the (full-width)
+    // input, then Send. Keeps Connect / Send at the left (near the input)
+    // instead of being flung to the far right edge on a wide pane.
+    const connectRow = el('div', 'ws-row');
+    connectRow.appendChild(connectBtn);
+    sec.appendChild(connectRow);
+
     const row = el('div', 'ws-row');
-    row.appendChild(connectBtn);
     row.appendChild(input);
     sec.appendChild(row);
 
