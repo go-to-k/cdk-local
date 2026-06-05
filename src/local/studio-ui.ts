@@ -85,14 +85,21 @@ const STUDIO_CSS = `
     font: 11px ui-monospace, Menlo, monospace;
   }
   .pane-head #target-search:focus { outline: none; border-color: #4ec97a; }
+  /* Kind-group header (Lambda Functions etc.): a single uniform light-grey
+     bar (lighter than the row shades #1a1a1a / #242424, so the section header
+     reads as the most prominent band) with a hairline bottom border. Neutral
+     grey by hue, so it never clashes with the blue-navy stack-sub divider
+     below it. The blue label (#6aa9ff) still reads on the lighter bar; the
+     caret + count are lifted to suit the brighter background. */
   .group-title {
     padding: 7px 12px; color: #6aa9ff; font-size: 11px; cursor: pointer; user-select: none;
-    display: flex; align-items: center; gap: 6px; background: #131313;
+    display: flex; align-items: center; gap: 6px; background: #2e2e2e;
+    border-bottom: 1px solid #3a3a3a;
   }
-  .group-title:hover { background: #1a1a1a; }
-  .group-title .caret { color: #777; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
+  .group-title:hover { background: #363636; }
+  .group-title .caret { color: #9a9a9a; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
   .group-title.open .caret { transform: rotate(90deg); }
-  .group-title .count { color: #666; }
+  .group-title .count { color: #8a8a8a; }
   .group-body.collapsed { display: none; }
   .target {
     padding: 6px 12px; display: flex; align-items: center; gap: 8px;
