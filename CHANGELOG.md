@@ -1,3 +1,10 @@
+## [0.129.1](https://github.com/go-to-k/cdk-local/compare/v0.129.0...v0.129.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** full-width WS input, wrap Send below, right-aligned Clear above the log ([#439](https://github.com/go-to-k/cdk-local/issues/439)) ([cd37a02](https://github.com/go-to-k/cdk-local/commit/cd37a021fec5edcdaa0e930e2ca044d7d2496339))
+
 # [0.129.0](https://github.com/go-to-k/cdk-local/compare/v0.128.1...v0.129.0) (2026-06-05)
 
 
