@@ -1,3 +1,10 @@
+## [0.126.1](https://github.com/go-to-k/cdk-local/compare/v0.126.0...v0.126.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **studio:** guard IME Enter + add Clear button in the WebSocket console ([#424](https://github.com/go-to-k/cdk-local/issues/424)) ([15fe362](https://github.com/go-to-k/cdk-local/commit/15fe362845e1fa1b941d0a0495052b983cc85c47))
+
 # [0.126.0](https://github.com/go-to-k/cdk-local/compare/v0.125.0...v0.126.0) (2026-06-05)
 
 
