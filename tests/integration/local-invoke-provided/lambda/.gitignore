@@ -2,6 +2,7 @@
 # verify.sh's `go build` inside Docker — not checked in.
 build/
 go.sum
-# ZIP-FILE asset for BootstrapZipHandler, built from build/bootstrap by
-# verify.sh — a generated artifact, not checked in.
+# ZIP-FILE asset for BootstrapZipHandler (+ its staging dir), built from
+# build/bootstrap by verify.sh — generated artifacts, not checked in.
 bootstrap.zip
+.ziptmp/

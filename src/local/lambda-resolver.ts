@@ -6,6 +6,7 @@ import {
   readFileSync,
   writeFileSync,
   chmodSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
@@ -824,34 +825,101 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
   if (statSync(codePath).isDirectory()) {
     return { dir: codePath };
   }
+  const zipBytes = readFileSync(codePath);
   let files: Record<string, Uint8Array>;
   try {
-    files = unzipSync(readFileSync(codePath));
+    files = unzipSync(zipBytes);
   } catch (err) {
     throw new LocalInvokeResolutionError(
       `Lambda asset '${codePath}' is a file but could not be read as a ZIP archive: ` +
         `${err instanceof Error ? err.message : String(err)}. Re-synthesize the app and retry.`
     );
   }
+  // fflate's `unzipSync` returns only file CONTENTS — no per-entry unix mode,
+  // and a SYMLINK entry comes back as a regular entry whose content is the link
+  // TARGET path. A `provided.*` runtime commonly ships `bootstrap` as a symlink
+  // to the real binary (e.g. Swift's `bootstrap -> MyHandler`), so writing that
+  // content as a regular file yields an 18-byte text file that RIE fork/exec's
+  // -> `exec format error` / `Runtime.InvalidEntrypoint`. So we parse the zip's
+  // central directory ourselves for each entry's stored unix mode and recreate
+  // symlinks as symlinks + restore the executable bit. (A directory asset
+  // bypasses this path entirely — CDK staged it with correct modes and we
+  // bind-mount it directly.)
+  const modes = parseZipUnixModes(zipBytes);
+  const S_IFMT = 0o170000;
+  const S_IFLNK = 0o120000;
   const dir = mkdtempSync(join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-lambda-zip-`));
+  // Two passes: write every REGULAR file first, then create symlinks. Creating
+  // symlinks last means no regular-file `writeFileSync` can follow an
+  // already-created symlink out of the extraction dir (a symlink-then-write
+  // escape), on top of the lexical zip-slip guard on every `dest`.
+  const symlinks: Array<{ dest: string; target: string }> = [];
   for (const [name, content] of Object.entries(files)) {
     if (name.endsWith('/')) continue; // directory entry — no file content
     const dest = resolveSafeZipEntryPath(dir, name);
     mkdirSync(dirname(dest), { recursive: true });
+    const mode = modes.get(name) ?? 0;
+    if ((mode & S_IFMT) === S_IFLNK) {
+      // Symlink entry: the content IS the link target path. Defer creation to
+      // the second pass.
+      symlinks.push({ dest, target: new TextDecoder().decode(content) });
+      continue;
+    }
     writeFileSync(dest, content);
-    // Restore the executable bit. The deployed Lambda package preserves the
-    // zip's unix file modes, and a `provided.*` custom runtime's entrypoint
-    // (`bootstrap`) MUST be executable or RIE fails the invoke with
-    // `Runtime.InvalidEntrypoint` / `fork/exec ...: permission denied`. fflate's
-    // `unzipSync` returns only file CONTENTS (no per-entry unix mode), so we
-    // cannot recover the exact stored mode; granting `0o755` to every extracted
-    // file makes the bootstrap executable while keeping all files readable —
-    // safe for the user's own code in an ephemeral local container. (A
-    // directory asset bypasses this path entirely: CDK already staged it with
-    // correct modes and we bind-mount it directly.)
-    chmodSync(dest, 0o755);
+    // Preserve the stored unix permission bits when present; otherwise grant
+    // 0o755 so a `provided.*` `bootstrap` stays executable (some zips store a
+    // bare 0 mode). Keeping files readable is safe: the user's own code in an
+    // ephemeral local container.
+    const perm = mode & 0o777;
+    chmodSync(dest, perm || 0o755);
+  }
+  // A `provided.*` runtime commonly ships `bootstrap` as a symlink to the real
+  // binary (Swift: `bootstrap -> MyHandler`); recreate it as a real symlink so
+  // the bind-mounted asset resolves the same as the deployed package — the
+  // target is the user's own (relative) path, resolved inside the container.
+  for (const { dest, target } of symlinks) {
+    symlinkSync(target, dest);
   }
   return { dir, tmpDir: dir };
+}
+
+/**
+ * Parse a ZIP archive's central directory into a map of entry name -> stored
+ * unix mode (the high 16 bits of the central-directory external file
+ * attributes). fflate's `unzipSync` discards this, but we need it to tell a
+ * symlink entry from a regular file and to restore the executable bit. Returns
+ * an empty map (callers fall back to a default mode) for a non-standard /
+ * unparseable archive — best-effort, never throws.
+ */
+function parseZipUnixModes(bytes: Uint8Array): Map<string, number> {
+  const modes = new Map<string, number>();
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const EOCD_SIG = 0x06054b50; // End Of Central Directory record
+  const CDH_SIG = 0x02014b50; // Central Directory file Header
+  // The EOCD is at the end, after an optional <=65535-byte comment; scan back.
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) {
+    if (dv.getUint32(i, true) === EOCD_SIG) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return modes;
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true); // offset of central directory start
+  const decoder = new TextDecoder();
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > bytes.length || dv.getUint32(p, true) !== CDH_SIG) break;
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const externalAttrs = dv.getUint32(p + 38, true);
+    const unixMode = externalAttrs >>> 16; // high 16 bits = unix st_mode
+    const name = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    if (unixMode !== 0) modes.set(name, unixMode);
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return modes;
 }
 
 /**

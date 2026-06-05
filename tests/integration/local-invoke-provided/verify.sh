@@ -57,13 +57,22 @@ test -x lambda/build/bootstrap || {
   exit 1
 }
 
-# Build a ZIP-FILE asset from the same (executable) bootstrap for
-# BootstrapZipHandler. `zip` stores the unix exec mode; `Code.fromAsset` of a
-# `.zip` keeps it zipped (aws:asset:path -> asset.<hash>.zip), so cdkl must
-# extract it AND preserve the exec bit at invoke time. Built here (gitignored).
-echo "==> Building lambda/bootstrap.zip (ZIP-FILE asset for BootstrapZipHandler)"
+# Build a ZIP-FILE asset for BootstrapZipHandler with `bootstrap` as a SYMLINK
+# to the real binary — exactly how Swift and many other `provided.*` runtimes
+# ship it (`bootstrap -> MyHandler`). `zip -y` stores the symlink AS a symlink
+# (unix mode S_IFLNK). cdkl must (a) recreate the symlink instead of writing the
+# link-target path as a text file, and (b) preserve the real binary's exec bit,
+# or RIE fork/exec's a non-executable and fails with `exec format error`. Built
+# here (gitignored). The staging dir keeps the directory-asset BootstrapHandler
+# (Test 1/2) using a plain `bootstrap`.
+echo "==> Building lambda/bootstrap.zip (symlinked bootstrap ZIP-FILE asset)"
 rm -f lambda/bootstrap.zip
-( cd lambda/build && zip -q -X ../bootstrap.zip bootstrap )
+ZIPSTAGE="lambda/.ziptmp"
+rm -rf "${ZIPSTAGE}"
+mkdir -p "${ZIPSTAGE}"
+cp lambda/build/bootstrap "${ZIPSTAGE}/SwiftMathAlgorithm"
+( cd "${ZIPSTAGE}" && ln -sf SwiftMathAlgorithm bootstrap && zip -q -y -X ../bootstrap.zip bootstrap SwiftMathAlgorithm )
+rm -rf "${ZIPSTAGE}"
 
 echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
