@@ -2177,6 +2177,12 @@ async function buildContainerSpec(args: {
       );
     }
 
+    // Run the warm container at the Lambda's declared architecture (emulated
+    // when the host arch differs) — a `provided.*` `bootstrap` compiled for one
+    // arch fails to exec on the other ("exec format error"). The IMAGE branch
+    // below already pins the platform; the ZIP branch must too.
+    platform = architectureToPlatform(lambda.architecture);
+
     // PR 6 (#232): pre-resolve the `/opt` bind-mount source. Single-
     // layer functions reuse the layer's asset dir directly; multi-
     // layer functions get a freshly-merged tmpdir (later layers
@@ -2647,6 +2653,12 @@ interface ResolvedStartApiZipLambda extends ResolvedStartApiLambdaBase {
   handler: string;
   codePath: string | null;
   inlineCode?: string;
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]` — pins the warm
+   * container's `--platform` so a `provided.*` `bootstrap` compiled for the
+   * other arch does not fail with `exec format error`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export interface ResolvedStartApiImageLambda extends ResolvedStartApiLambdaBase {
@@ -2735,6 +2747,11 @@ export function resolveLambdaByLogicalId(
     // the box.
     const layers = resolveLambdaLayers(stack, logicalId, props);
     const ephemeralStorageMb = extractEphemeralStorageMb(props, logicalId);
+    // Pin the warm container's platform to the declared architecture (default
+    // x86_64) so a `provided.*` `bootstrap` does not hit an "exec format error".
+    const zipArches = props['Architectures'];
+    const architecture: 'x86_64' | 'arm64' =
+      Array.isArray(zipArches) && zipArches[0] === 'arm64' ? 'arm64' : 'x86_64';
     return {
       kind: 'zip',
       stack,
@@ -2746,6 +2763,7 @@ export function resolveLambdaByLogicalId(
       timeoutSec,
       codePath,
       layers,
+      architecture,
       ...(inlineCode !== undefined && { inlineCode }),
       ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     };

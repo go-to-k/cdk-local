@@ -499,7 +499,14 @@ async function resolveZipImagePlan(
 
   const image = resolveRuntimeImage(lambda.runtime);
 
-  await pullImage(image, options.pull === false);
+  // Run the base image at the Lambda's declared architecture (emulated when the
+  // host arch differs). A `provided.*` `bootstrap` compiled for one arch fails
+  // to exec on the other ("exec format error"); even managed runtimes can carry
+  // arch-specific native deps. The IMAGE path already pins the platform — the
+  // ZIP path must too.
+  const platform = architectureToPlatform(lambda.architecture);
+
+  await pullImage(image, options.pull === false, platform);
 
   const layerPlan = await materializeLambdaLayersIncludingArns(lambda.layers, options);
 
@@ -511,6 +518,7 @@ async function resolveZipImagePlan(
 
   return {
     image,
+    platform,
     mounts: [{ hostPath: codeDir, containerPath: containerCodePath, readOnly: true }],
     extraMounts: layerPlan.mount ? [layerPlan.mount] : [],
     cmd: [lambda.handler],

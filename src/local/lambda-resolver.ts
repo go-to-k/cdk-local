@@ -177,6 +177,14 @@ export interface ResolvedZipLambda extends ResolvedLambdaBase {
    * writes this into a temp dir at the path implied by `handler`.
    */
   inlineCode?: string;
+  /**
+   * `Architectures: [x86_64]` (default) or `[arm64]`. Threaded through to
+   * `--platform linux/amd64` / `linux/arm64` on the warm container's
+   * `docker run` (and base-image pull). Without it the base image runs at the
+   * host's native arch, so a `provided.*` `bootstrap` compiled for the other
+   * arch fails with `exec format error`.
+   */
+  architecture: 'x86_64' | 'arm64';
 }
 
 export interface ResolvedImageLambda extends ResolvedLambdaBase {
@@ -209,6 +217,30 @@ export interface ResolvedImageLambda extends ResolvedLambdaBase {
    * `exec format error`.
    */
   architecture: 'x86_64' | 'arm64';
+}
+
+/**
+ * Resolve a Lambda's `Architectures` array to a single architecture, defaulting
+ * to `x86_64` (AWS's default when the property is omitted). Shared by the ZIP
+ * and IMAGE resolution paths so both pin `--platform` to the declared arch —
+ * without it a `provided.*` `bootstrap` compiled for one arch fails with
+ * `exec format error` when run at the host's native arch.
+ */
+function resolveLambdaArchitecture(
+  props: Record<string, unknown>,
+  logicalId: string
+): 'x86_64' | 'arm64' {
+  const arches = props['Architectures'];
+  if (Array.isArray(arches) && arches.length > 0) {
+    const first: unknown = arches[0];
+    if (first === 'arm64') return 'arm64';
+    if (first === 'x86_64') return 'x86_64';
+    throw new LocalInvokeResolutionError(
+      `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
+        `${getEmbedConfig().cliName} supports x86_64 and arm64.`
+    );
+  }
+  return 'x86_64';
 }
 
 export class LocalInvokeResolutionError extends Error {
@@ -461,6 +493,7 @@ function extractLambdaProperties(
   // offending entry instead of a silently-missing `/opt/<lib>` at
   // invoke time.
   const layers = resolveLambdaLayers(stack, logicalId, props);
+  const architecture = resolveLambdaArchitecture(props, logicalId);
 
   return {
     kind: 'zip',
@@ -473,6 +506,7 @@ function extractLambdaProperties(
     timeoutSec,
     codePath,
     layers,
+    architecture,
     ...(ephemeralStorageMb !== undefined && { ephemeralStorageMb }),
     ...(inlineCode !== undefined && { inlineCode }),
   };
@@ -659,21 +693,7 @@ function extractImageLambdaProperties(args: {
     imageConfig.workingDirectory = rawImageConfig['WorkingDirectory'];
   }
 
-  // Architectures is an array (CFn). CDK never sets more than one entry.
-  // Default x86_64 matches AWS.
-  const arches = props['Architectures'];
-  let architecture: 'x86_64' | 'arm64' = 'x86_64';
-  if (Array.isArray(arches) && arches.length > 0) {
-    const first: unknown = arches[0];
-    if (first === 'arm64') architecture = 'arm64';
-    else if (first === 'x86_64') architecture = 'x86_64';
-    else {
-      throw new LocalInvokeResolutionError(
-        `Lambda '${logicalId}' has unsupported Architectures value '${String(first)}'. ` +
-          `${getEmbedConfig().cliName} supports x86_64 and arm64.`
-      );
-    }
-  }
+  const architecture = resolveLambdaArchitecture(props, logicalId);
 
   // PR 6 (#232): container Lambdas reject `Layers` at deploy time on
   // the AWS side — layers are baked into the image at build time, not

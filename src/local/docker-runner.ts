@@ -163,16 +163,25 @@ export interface DockerRunOptions {
  * via `--verbose`). Errors are always surfaced: the captured stderr is
  * folded into the thrown `DockerRunnerError` message.
  */
-export async function pullImage(image: string, skipPull: boolean): Promise<void> {
+export async function pullImage(
+  image: string,
+  skipPull: boolean,
+  platform?: string
+): Promise<void> {
   const logger = getLogger().child('docker');
   if (skipPull) {
     logger.debug(`Skipping docker pull for ${image} (--no-pull)`);
     return;
   }
+  // Pull the variant matching the Lambda's declared `Architectures`. Without
+  // `--platform` docker picks the host's native arch, so on an arm64 host a
+  // function declared `x86_64` (or vice versa) gets a mismatched base image and
+  // a compiled `provided.*` `bootstrap` fails to exec ("exec format error").
+  const platformArgs = platform ? ['--platform', platform] : [];
   if (getLogger().getLevel() === 'debug') {
-    logger.info(`Pulling ${image}...`);
+    logger.info(`Pulling ${image}${platform ? ` (${platform})` : ''}...`);
     try {
-      await runDockerForeground(['pull', image]);
+      await runDockerForeground(['pull', ...platformArgs, image]);
     } catch (err) {
       const e = err as Error;
       throw new DockerRunnerError(`docker pull ${image} failed: ${e.message}`);
@@ -187,7 +196,7 @@ export async function pullImage(image: string, skipPull: boolean): Promise<void>
   // motion during what is otherwise a multi-minute silent pull
   // against a real-world image.
   try {
-    await runDockerStreaming(['pull', image], {
+    await runDockerStreaming(['pull', ...platformArgs, image], {
       streamLive: false,
       progressLabel: `Pulling ${image}`,
     });

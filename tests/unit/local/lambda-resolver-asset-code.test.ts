@@ -20,12 +20,18 @@ import type { CloudFormationTemplate, TemplateResource } from '../../../src/type
 
 // Build a minimal StackInfo whose single Lambda points `aws:asset:path` at
 // `assetPath` (relative to the cdk.out dir that `assetManifestPath` lives in).
-function makeStack(cdkOutDir: string, assetPath: string, extraResources = {}): StackInfo {
+function makeStack(
+  cdkOutDir: string,
+  assetPath: string,
+  extraResources = {},
+  extraProps: Record<string, unknown> = {}
+): StackInfo {
   const lambda: TemplateResource = {
     Type: 'AWS::Lambda::Function',
     Properties: {
       Runtime: 'nodejs20.x',
       Handler: 'index.handler',
+      ...extraProps,
     },
     Metadata: { 'aws:asset:path': assetPath },
   };
@@ -156,5 +162,19 @@ describe('resolveLambdaTarget asset code path (zip vs directory)', () => {
   it('errors clearly when the asset path does not exist', () => {
     const stack = makeStack(cdkOut, 'asset.missing.zip');
     expect(() => resolveLambdaTarget('Fn', [stack])).toThrow(/does not exist/);
+  });
+
+  it('carries the declared architecture (so the container runs at the right --platform)', () => {
+    const dirName = 'asset.arch';
+    mkdirSync(join(cdkOut, dirName), { recursive: true });
+    writeFileSync(join(cdkOut, dirName, 'index.js'), 'x');
+
+    const arm = resolveLambdaTarget('Fn', [makeStack(cdkOut, dirName, {}, { Architectures: ['arm64'] })]);
+    expect(arm.kind).toBe('zip');
+    if (arm.kind === 'zip') expect(arm.architecture).toBe('arm64');
+
+    // Default (no Architectures) is x86_64, matching AWS.
+    const def = resolveLambdaTarget('Fn', [makeStack(cdkOut, dirName)]);
+    if (def.kind === 'zip') expect(def.architecture).toBe('x86_64');
   });
 });
