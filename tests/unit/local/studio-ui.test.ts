@@ -161,7 +161,11 @@ describe('renderStudioHtml', () => {
     // from both the neutral-grey rows and the blue-navy stack sub-header below.
     expect(html).toContain('background: rgba(227, 194, 114, 0.12);');
     expect(html).toContain('color: #e7cd86;');
-    expect(html).toContain('.group-title .count { color: #8a8a8a; }');
+    expect(html).toContain('.group-title .count { color: #8a8a8a; flex: none; }');
+    // A long group label (e.g. "Application Load Balancers") ellipsises on one
+    // line instead of wrapping + shoving the count off (issue: ALB label fit).
+    expect(html).toContain('.group-title .group-name {');
+    expect(html).toContain('white-space: nowrap; overflow: hidden; text-overflow: ellipsis;');
     // Size hierarchy: the section header is the largest (14px, not bold) so it
     // outranks the target rows (13px); the stack-sub fold divider sits at 12px.
     expect(html).toContain('color: #e7cd86; font-size: 14px;');

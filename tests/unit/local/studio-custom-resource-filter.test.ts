@@ -89,7 +89,7 @@ const groups = (): StudioTargetGroup[] => [
   },
   {
     kind: 'alb',
-    title: 'Load Balancers',
+    title: 'Application Load Balancers',
     entries: [lambda('MyStack/Alb')],
   },
   {

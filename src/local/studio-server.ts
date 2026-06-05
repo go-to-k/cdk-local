@@ -102,7 +102,7 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
       title: 'AgentCore WebSocket',
       entries: map(listing.agentCoreRuntimes.filter((e) => e.agentCoreHasWs)),
     },
-    { kind: 'alb', title: 'Load Balancers', entries: map(listing.loadBalancers) },
+    { kind: 'alb', title: 'Application Load Balancers', entries: map(listing.loadBalancers) },
     // CloudFront distributions are a serve target (start-cloudfront -> Start),
     // like api / alb — they expose a host HTTP endpoint (issue #367 / #363).
     {
