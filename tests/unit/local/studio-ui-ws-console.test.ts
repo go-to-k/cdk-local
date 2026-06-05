@@ -126,4 +126,17 @@ describe('studio WebSocket console (renderWsConsole)', () => {
     // ...and BEFORE the frame log.
     expect(frames!.compareDocumentPosition(clearBtn!) & NODE.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
+
+  it('the Connect button sits on its own row ABOVE the text input', () => {
+    const { node, input } = mountConsole();
+    const connectBtn = node.querySelector('.ws-connect');
+    expect(connectBtn).not.toBeNull();
+    const FOLLOWING = (
+      harness.window as unknown as { Node: { DOCUMENT_POSITION_FOLLOWING: number } }
+    ).Node.DOCUMENT_POSITION_FOLLOWING;
+    // The input comes AFTER the Connect button in the DOM.
+    expect(connectBtn!.compareDocumentPosition(input) & FOLLOWING).toBeTruthy();
+    // Connect is not a sibling of the input inside the same row.
+    expect(connectBtn!.parentElement).not.toBe(input.parentElement);
+  });
 });
