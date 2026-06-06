@@ -1,3 +1,10 @@
+# [0.135.0](https://github.com/go-to-k/cdk-local/compare/v0.134.1...v0.135.0) (2026-06-06)
+
+
+### Features
+
+* **start-agentcore:** warm HTTP serve — POST /invocations + GET /ping on the live container ([#454](https://github.com/go-to-k/cdk-local/issues/454) slice 1) ([#458](https://github.com/go-to-k/cdk-local/issues/458)) ([c30e74a](https://github.com/go-to-k/cdk-local/commit/c30e74af6baecff5e2070d8d74bd46f6a62a4e5a))
+
 ## [0.134.1](https://github.com/go-to-k/cdk-local/compare/v0.134.0...v0.134.1) (2026-06-06)
 
 
