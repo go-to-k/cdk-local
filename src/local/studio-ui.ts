@@ -352,7 +352,7 @@ const STUDIO_CSS = `
 `;
 
 const STUDIO_SCRIPT = `
-  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore', 'agentcore-ws': 'AgentCore WS' };
+  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS Service', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore', 'agentcore-ws': 'AgentCore WS' };
   const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront', 'agentcore-ws']; // long-running serve targets (ecs-task = run-task; agentcore-ws = start-agentcore /ws bridge)
   const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
@@ -865,7 +865,14 @@ const STUDIO_SCRIPT = `
             const name = el('span', 'name', tail);
             name.title = entry.id; // full path on hover
             t.appendChild(name);
-            t.appendChild(el('span', 'kind', '(' + (KIND_LABEL[group.kind] || group.kind) + ')'));
+            // An API surface carries its own kind ('HTTP API v2' / 'REST API
+            // v1' / 'Function URL' / 'WebSocket') in entry.surface; show it so
+            // the APIs group disambiguates per row (a Function URL reads as
+            // such, not a uniform '(API)' that collides with the same backing
+            // Lambda's '(Lambda)' row). Other kinds have no surface and fall
+            // back to the group-kind label.
+            const kindLabel = entry.surface || KIND_LABEL[group.kind] || group.kind;
+            t.appendChild(el('span', 'kind', '(' + kindLabel + ')'));
             if (isInvoke) {
               const btn = el('button', 'invoke-btn', 'Invoke');
               btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };

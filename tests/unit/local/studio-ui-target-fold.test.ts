@@ -133,6 +133,74 @@ describe('targets pane per-stack path folding', () => {
   });
 });
 
+describe('targets pane per-row kind label', () => {
+  it('shows each API surface kind per row (not a uniform group label)', async () => {
+    const h = createStudioHarness({ epilogue: EPILOGUE });
+    try {
+      const apiGroup = {
+        kind: 'api',
+        title: 'APIs',
+        entries: [
+          { id: 'dev/OrdersApi', qualifiedId: 'dev:OrdersApi', surface: 'HTTP API v2' },
+          { id: 'dev/LegacyApi', qualifiedId: 'dev:LegacyApi', surface: 'REST API v1' },
+          { id: 'dev/ImageResizer', qualifiedId: 'dev:ImageResizer', surface: 'Function URL' },
+          { id: 'dev/ChatApi', qualifiedId: 'dev:ChatApi', surface: 'WebSocket' },
+        ],
+      };
+      (h.window as unknown as { fetch: unknown }).fetch = targetsFetch([apiGroup]);
+      await (h.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+
+      const kinds = Array.from(h.document.querySelectorAll('.target .kind')).map((n) => n.textContent);
+      expect(kinds).toEqual(['(HTTP API v2)', '(REST API v1)', '(Function URL)', '(WebSocket)']);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('falls back to the group-kind label for a surface-less API entry', async () => {
+    const h = createStudioHarness({ epilogue: EPILOGUE });
+    try {
+      const apiGroup = {
+        kind: 'api',
+        title: 'APIs',
+        entries: [{ id: 'dev/Bare', qualifiedId: 'dev:Bare' }],
+      };
+      (h.window as unknown as { fetch: unknown }).fetch = targetsFetch([apiGroup]);
+      await (h.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+
+      const kind = h.document.querySelector('.target .kind') as HTMLElement;
+      expect(kind.textContent).toBe('(API)');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('labels an ECS service row "ECS Service" (paired with the "ECS Task" group)', async () => {
+    const h = createStudioHarness({ epilogue: EPILOGUE });
+    try {
+      const groups = [
+        {
+          kind: 'ecs',
+          title: 'ECS Services',
+          entries: [{ id: 'dev/WebSvc', qualifiedId: 'dev:WebSvc', servable: true }],
+        },
+        {
+          kind: 'ecs-task',
+          title: 'ECS Task Definitions',
+          entries: [{ id: 'dev/BatchTask', qualifiedId: 'dev:BatchTask' }],
+        },
+      ];
+      (h.window as unknown as { fetch: unknown }).fetch = targetsFetch(groups);
+      await (h.window as unknown as { __loadTargets: () => Promise<void> }).__loadTargets();
+
+      const kinds = Array.from(h.document.querySelectorAll('.target .kind')).map((n) => n.textContent);
+      expect(kinds).toEqual(['(ECS Service)', '(ECS Task)']);
+    } finally {
+      h.close();
+    }
+  });
+});
+
 describe('targets pane construct-path CSS', () => {
   it('makes the path a horizontal-scroll container with overscroll containment', () => {
     const html = renderStudioHtml('TestStack', 'cdkl');
