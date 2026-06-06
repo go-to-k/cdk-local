@@ -218,5 +218,11 @@ describe('studio agentcore-ws serve workspace (issue #454)', () => {
     expect(invokeRow.querySelector('button')).toBeNull();
     // Serve row: keeps an acting Start button.
     expect(serveRow.querySelector('button')?.textContent).toBe('Start');
+    // Both groups' row kind labels read the same resource type "(AgentCore)" —
+    // the action (invoke vs serve) is conveyed by the group title, so the
+    // per-row parenthetical stays symmetric (not "(AgentCore)" vs
+    // "(AgentCore serve)").
+    expect(invokeRow.querySelector('.kind')?.textContent).toBe('(AgentCore)');
+    expect(serveRow.querySelector('.kind')?.textContent).toBe('(AgentCore)');
   });
 });
