@@ -107,6 +107,21 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
       environmentVariables: { GREETING: 'hello-from-code' },
     });
 
+    // A CodeConfiguration bundle that DECLARES a third-party dependency
+    // (requirements.txt: requests) but does NOT vendor it. The AgentCore
+    // managed runtime does not install deps at runtime, so cdkl builds + runs
+    // it AS-IS: the top-level import fails (ModuleNotFoundError) exactly as it
+    // would on deploy, and cdkl warns up-front with the vendoring recipe.
+    // Regression guard for the false-green where the from-source build used to
+    // pip-install requirements.txt locally (issue #455).
+    new Runtime(this, 'UnvendoredCodeAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromCodeAsset({
+        path: path.join(__dirname, '../code-agent-unvendored'),
+        runtime: AgentCoreRuntime.PYTHON_3_12,
+        entrypoint: ['app.py'],
+      }),
+    });
+
     // An A2A-protocol runtime (ProtocolConfiguration = A2A). The container
     // serves the Agent2Agent JSON-RPC 2.0 contract on 9000 at POST / (no
     // /ping). `cdkl invoke-agentcore` POSTs one JSON-RPC request — defaults
