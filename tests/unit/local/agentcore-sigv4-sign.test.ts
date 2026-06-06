@@ -87,6 +87,25 @@ describe('signAgentCoreInvocation', () => {
     expect(a.amzContentSha256).not.toBe(b.amzContentSha256);
   });
 
+  it('signs a Buffer body byte-exactly (the start-agentcore --sigv4 serve path, #454)', async () => {
+    // The warm serve forwards the raw request Buffer; signing the Buffer must
+    // produce the SAME signature as signing its UTF-8 string form, so the
+    // signed payload is byte-exact with what the proxy sends.
+    const common = {
+      credentials: STATIC_CREDS,
+      region: 'us-east-1',
+      host: '127.0.0.1',
+      port: 9000,
+      path: '/invocations',
+      sessionId: 's',
+      now: FIXED_NOW,
+    };
+    const asString = await signAgentCoreInvocation({ ...common, body: '{"q":"hi"}' });
+    const asBuffer = await signAgentCoreInvocation({ ...common, body: Buffer.from('{"q":"hi"}', 'utf-8') });
+    expect(asBuffer.amzContentSha256).toBe(asString.amzContentSha256);
+    expect(asBuffer.authorization).toBe(asString.authorization);
+  });
+
   it('binds the signature to the session id (different session -> different signature)', async () => {
     const a = await signAgentCoreInvocation({
       credentials: STATIC_CREDS,

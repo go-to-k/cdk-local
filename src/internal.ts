@@ -371,9 +371,11 @@ export {
 // the caller's token against the runtime's customJwtAuthorizer per request.
 export {
   buildAgentCoreServeAuthCheck,
+  selectServeInboundAuth,
   type AgentCoreServeAuthCheck,
   type AgentCoreServeAuthResult,
   type BuildAgentCoreServeAuthCheckOptions,
+  type ServeInboundAuthPlan,
 } from './local/agentcore-serve-auth.js';
 export {
   a2aInvokeOnce,

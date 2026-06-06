@@ -34,8 +34,14 @@ export interface SignAgentCoreInvocationOptions {
   port: number;
   /** Path of the request being signed (e.g. `/invocations`). */
   path: string;
-  /** Stringified request body the signature commits to. */
-  body: string;
+  /**
+   * Request body the signature commits to. A string (the single-shot
+   * `invoke-agentcore` path, which signs `JSON.stringify(event)`) or the raw
+   * `Buffer` (the warm `start-agentcore --sigv4` serve, which forwards the same
+   * bytes — passing the Buffer keeps the signed payload byte-exact for a
+   * non-UTF-8 body instead of a lossy re-encode).
+   */
+  body: string | Buffer;
   /** AgentCore session id (sent as the session-id header AND part of the signed canonical request). */
   sessionId: string;
   /** HTTP method (default `POST`). */

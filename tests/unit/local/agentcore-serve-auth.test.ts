@@ -8,8 +8,14 @@ vi.mock('../../../src/local/cognito-jwt.js', () => ({
   verifyJwtViaDiscovery: (...args: unknown[]) => verifyJwtViaDiscovery(...args),
 }));
 
-import { buildAgentCoreServeAuthCheck } from '../../../src/local/agentcore-serve-auth.js';
-import type { AgentCoreJwtAuthorizer } from '../../../src/local/agentcore-resolver.js';
+import {
+  buildAgentCoreServeAuthCheck,
+  selectServeInboundAuth,
+} from '../../../src/local/agentcore-serve-auth.js';
+import type {
+  AgentCoreJwtAuthorizer,
+  ResolvedAgentCoreRuntime,
+} from '../../../src/local/agentcore-resolver.js';
 
 const AUTHORIZER: AgentCoreJwtAuthorizer = {
   discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration',
@@ -96,5 +102,49 @@ describe('buildAgentCoreServeAuthCheck (issue #454)', () => {
     const check = buildAgentCoreServeAuthCheck(AUTHORIZER, {});
     const result = await check({ authorization: ['Bearer first', 'Bearer second'] });
     expect(result.authorization).toBe('Bearer first');
+  });
+});
+
+describe('selectServeInboundAuth — boot wiring selector (issue #454)', () => {
+  const runtime = (jwtAuthorizer?: AgentCoreJwtAuthorizer): Pick<ResolvedAgentCoreRuntime, 'jwtAuthorizer'> =>
+    jwtAuthorizer ? { jwtAuthorizer } : {};
+
+  it('customJwtAuthorizer => per-request authCheck + the --bearer-token as the bridge default, no signing', () => {
+    const sentinel = (() => Promise.resolve({ allow: true })) as never;
+    const buildAuthCheck = vi.fn(() => sentinel);
+    const plan = selectServeInboundAuth(
+      runtime(AUTHORIZER),
+      { bearerToken: 'tok', verifyAuth: false },
+      // sigv4Active is true here but the authorizer arm must still win.
+      true,
+      buildAuthCheck
+    );
+    expect(plan.authCheck).toBe(sentinel);
+    expect(plan.sign).toBe(false);
+    expect(plan.bridgeAuthorization).toBe('Bearer tok');
+    // The authorizer + threaded options are passed to the builder.
+    expect(buildAuthCheck).toHaveBeenCalledWith(AUTHORIZER, {
+      noVerifyAuth: true,
+      bearerToken: 'tok',
+    });
+  });
+
+  it('no authorizer + --sigv4 active => sign, no authCheck, no static bridge auth', () => {
+    const plan = selectServeInboundAuth(runtime(), { bearerToken: undefined }, true);
+    expect(plan.sign).toBe(true);
+    expect(plan.authCheck).toBeUndefined();
+    expect(plan.bridgeAuthorization).toBeUndefined();
+  });
+
+  it('no authorizer + no --sigv4 => forward the --bearer-token as a static pass-through', () => {
+    const plan = selectServeInboundAuth(runtime(), { bearerToken: 'tok' }, false);
+    expect(plan.sign).toBe(false);
+    expect(plan.authCheck).toBeUndefined();
+    expect(plan.bridgeAuthorization).toBe('Bearer tok');
+  });
+
+  it('no authorizer + no --sigv4 + no --bearer-token => no auth wiring at all', () => {
+    const plan = selectServeInboundAuth(runtime(), {}, false);
+    expect(plan).toEqual({ sign: false });
   });
 });

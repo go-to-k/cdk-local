@@ -281,10 +281,21 @@ export function startAgentCoreHttpServer(
     // cloud (the customJwtAuthorizer guards InvokeAgentRuntime, not the health
     // probe). On allow, forward the verified / injected Authorization.
     if (config.authCheck && req.method === 'POST') {
+      // The gate is async (a JWKS / discovery round-trip), so the request may
+      // be in flight while we await. A client that aborts mid-upload errors
+      // `req`; with no listener that is an unhandled `error` that crashes the
+      // long-running serve (the streaming path guards the same way). On the
+      // allow path proxyToContainer re-attaches its own listener.
+      req.on('error', (err) =>
+        getLogger().debug(`agentcore http serve client error (auth gate): ${err.message}`)
+      );
       void config
         .authCheck(req.headers)
         .then((result) => {
           if (!result.allow) {
+            // Drain the unconsumed request body so the socket can close cleanly
+            // instead of half-open until the client gives up.
+            req.resume();
             res.writeHead(result.status ?? 403, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: result.message ?? 'forbidden' }));
             return;
@@ -296,6 +307,7 @@ export function startAgentCoreHttpServer(
         .catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
           getLogger().debug(`agentcore http serve auth-check error: ${msg}`);
+          req.resume();
           if (!res.headersSent) {
             res.writeHead(500, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ error: `auth check failed: ${msg}` }));

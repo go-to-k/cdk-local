@@ -39,10 +39,7 @@ import {
   type AgentCoreServeSignRequest,
   type RunningAgentCoreHttpServer,
 } from '../../local/agentcore-http-server.js';
-import {
-  buildAgentCoreServeAuthCheck,
-  type AgentCoreServeAuthCheck,
-} from '../../local/agentcore-serve-auth.js';
+import { selectServeInboundAuth } from '../../local/agentcore-serve-auth.js';
 import { signAgentCoreInvocation } from '../../local/agentcore-sigv4-sign.js';
 import {
   ensureDockerAvailable,
@@ -320,22 +317,12 @@ async function localStartAgentCoreCommand(
     loadedState,
     stateProvider
   );
-  let authCheck: AgentCoreServeAuthCheck | undefined;
-  // The static Authorization injected on the /ws bridge leg (and as the HTTP
-  // fallback when there is no authCheck): the --bearer-token, if given.
-  let bridgeAuthorization = options.bearerToken ? `Bearer ${options.bearerToken}` : undefined;
-  if (resolved.jwtAuthorizer) {
-    authCheck = buildAgentCoreServeAuthCheck(resolved.jwtAuthorizer, {
-      ...(options.verifyAuth === false && { noVerifyAuth: true }),
-      ...(options.bearerToken && { bearerToken: options.bearerToken }),
-    });
+  const authPlan = selectServeInboundAuth(resolved, options, sigv4Context !== undefined);
+  if (authPlan.authCheck && resolved.jwtAuthorizer) {
     logger.info(
       `Inbound JWT: each request verified per-request against ${resolved.jwtAuthorizer.discoveryUrl}` +
         `${options.verifyAuth === false ? ' (verification DISABLED via --no-verify-auth)' : ''}.`
     );
-  } else if (sigv4Context) {
-    // --sigv4 replaces the bearer; nothing static to inject.
-    bridgeAuthorization = undefined;
   }
 
   // Resolve a fromS3 bundle's intrinsic bucket before the image step.
@@ -410,27 +397,30 @@ async function localStartAgentCoreCommand(
     // --sigv4: sign each forwarded POST against the warm container's host:port
     // (built here, now that the port is known). Reuses the boot-resolved
     // credentials + region from resolveAgentCoreSigV4Context.
-    const signRequest: AgentCoreServeSignRequest | undefined = sigv4Context
-      ? async ({ method, path, body, sessionId }) => {
-          const signed = await signAgentCoreInvocation({
-            credentials: sigv4Context.credentials,
-            region: sigv4Context.region,
-            host: containerHost,
-            port: containerHostPort,
-            path,
-            body: body.toString('utf-8'),
-            sessionId,
-            method,
-          });
-          const h: Record<string, string> = {
-            Authorization: signed.authorization,
-            'X-Amz-Date': signed.amzDate,
-            'X-Amz-Content-Sha256': signed.amzContentSha256,
-          };
-          if (signed.amzSecurityToken) h['X-Amz-Security-Token'] = signed.amzSecurityToken;
-          return h;
-        }
-      : undefined;
+    const signRequest: AgentCoreServeSignRequest | undefined =
+      authPlan.sign && sigv4Context
+        ? async ({ method, path, body, sessionId }) => {
+            const signed = await signAgentCoreInvocation({
+              credentials: sigv4Context.credentials,
+              region: sigv4Context.region,
+              host: containerHost,
+              port: containerHostPort,
+              path,
+              // Pass the raw Buffer (not a re-encoded string) so the signature
+              // commits to the exact bytes the proxy forwards.
+              body,
+              sessionId,
+              method,
+            });
+            const h: Record<string, string> = {
+              Authorization: signed.authorization,
+              'X-Amz-Date': signed.amzDate,
+              'X-Amz-Content-Sha256': signed.amzContentSha256,
+            };
+            if (signed.amzSecurityToken) h['X-Amz-Security-Token'] = signed.amzSecurityToken;
+            return h;
+          }
+        : undefined;
 
     server = await startAgentCoreHttpServer({
       containerHost,
@@ -439,8 +429,8 @@ async function localStartAgentCoreCommand(
       port: options.port,
       routes: plan.routes,
       attachWs: plan.attachWs,
-      ...(bridgeAuthorization && { authorization: bridgeAuthorization }),
-      ...(authCheck && { authCheck }),
+      ...(authPlan.bridgeAuthorization && { authorization: authPlan.bridgeAuthorization }),
+      ...(authPlan.authCheck && { authCheck: authPlan.authCheck }),
       ...(signRequest && { signRequest }),
       ...(options.sessionId && { sessionId: options.sessionId }),
     });

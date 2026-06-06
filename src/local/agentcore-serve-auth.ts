@@ -5,7 +5,7 @@ import {
   type JwksCache,
   type WarnedAt,
 } from './cognito-jwt.js';
-import type { AgentCoreJwtAuthorizer } from './agentcore-resolver.js';
+import type { AgentCoreJwtAuthorizer, ResolvedAgentCoreRuntime } from './agentcore-resolver.js';
 
 /**
  * Per-request inbound-auth verdict for the `cdkl start-agentcore` warm HTTP
@@ -125,9 +125,61 @@ export function buildAgentCoreServeAuthCheck(
   };
 }
 
+/**
+ * The inbound-auth wiring `cdkl start-agentcore` applies to the warm serve, by
+ * runtime shape (issue #454). Exactly one of the three mutually-exclusive arms:
+ *  - `customJwtAuthorizer` => per-request `authCheck`; `bridgeAuthorization` is
+ *    the `--bearer-token` default (injected on the `/ws` leg + when an inbound
+ *    HTTP request carries none).
+ *  - else `--sigv4` => `sign: true` (the boot builds the per-request signer once
+ *    the container port is known); no static bridge auth.
+ *  - else => forward the `--bearer-token` verbatim as `bridgeAuthorization`.
+ */
+export interface ServeInboundAuthPlan {
+  /** Per-request inbound-JWT gate (customJwtAuthorizer runtimes only). */
+  authCheck?: AgentCoreServeAuthCheck;
+  /** Authorization injected on the `/ws` bridge leg + as the HTTP static fallback. */
+  bridgeAuthorization?: string;
+  /** Whether the boot should build + wire the `--sigv4` per-request signer. */
+  sign: boolean;
+}
+
+/**
+ * Pick the warm serve's inbound-auth wiring for a runtime shape (issue #454).
+ * Pure (no Docker / network) so the boot's mutually-exclusive selection —
+ * per-request JWT gate vs `--sigv4` signing vs static `--bearer-token`
+ * pass-through — is unit-testable. `sigv4Active` is whether
+ * `resolveAgentCoreSigV4Context` resolved a signing context (it returns
+ * undefined when `--sigv4` is off OR a customJwtAuthorizer is declared, so the
+ * authorizer arm always wins). `buildAuthCheck` is injectable for tests.
+ */
+export function selectServeInboundAuth(
+  resolved: Pick<ResolvedAgentCoreRuntime, 'jwtAuthorizer'>,
+  options: { bearerToken?: string; verifyAuth?: boolean },
+  sigv4Active: boolean,
+  buildAuthCheck: typeof buildAgentCoreServeAuthCheck = buildAgentCoreServeAuthCheck
+): ServeInboundAuthPlan {
+  const bearerHeader = options.bearerToken ? `Bearer ${options.bearerToken}` : undefined;
+  if (resolved.jwtAuthorizer) {
+    return {
+      authCheck: buildAuthCheck(resolved.jwtAuthorizer, {
+        ...(options.verifyAuth === false && { noVerifyAuth: true }),
+        ...(options.bearerToken && { bearerToken: options.bearerToken }),
+      }),
+      ...(bearerHeader && { bridgeAuthorization: bearerHeader }),
+      sign: false,
+    };
+  }
+  if (sigv4Active) {
+    // --sigv4 replaces the bearer; nothing static to inject.
+    return { sign: true };
+  }
+  return { ...(bearerHeader && { bridgeAuthorization: bearerHeader }), sign: false };
+}
+
 /** Read a single `Authorization` header value (first when duplicated, undefined when empty). */
 function readAuthorizationHeader(headers: IncomingHttpHeaders): string | undefined {
-  const v = headers['authorization'];
-  if (Array.isArray(v)) return v[0];
+  const raw = headers['authorization'];
+  const v = Array.isArray(raw) ? raw[0] : raw;
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
