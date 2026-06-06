@@ -1,3 +1,10 @@
+# [0.137.0](https://github.com/go-to-k/cdk-local/compare/v0.136.0...v0.137.0) (2026-06-06)
+
+
+### Features
+
+* **studio:** warm-serve AgentCore HTTP composer + list all protocols ([#454](https://github.com/go-to-k/cdk-local/issues/454) slice 3) ([#460](https://github.com/go-to-k/cdk-local/issues/460)) ([4d97315](https://github.com/go-to-k/cdk-local/commit/4d973150f6b058243f38d0315f8f1f715d805696))
+
 # [0.136.0](https://github.com/go-to-k/cdk-local/compare/v0.135.0...v0.136.0) (2026-06-06)
 
 
