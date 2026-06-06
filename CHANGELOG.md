@@ -1,3 +1,10 @@
+# [0.136.0](https://github.com/go-to-k/cdk-local/compare/v0.135.0...v0.136.0) (2026-06-06)
+
+
+### Features
+
+* **start-agentcore:** serve MCP + A2A warm, alongside HTTP/AGUI ([#454](https://github.com/go-to-k/cdk-local/issues/454) slice 2) ([#459](https://github.com/go-to-k/cdk-local/issues/459)) ([d4d93bd](https://github.com/go-to-k/cdk-local/commit/d4d93bd1dcf80338f31ebe9b3948af644115d1c0))
+
 # [0.135.0](https://github.com/go-to-k/cdk-local/compare/v0.134.1...v0.135.0) (2026-06-06)
 
 
