@@ -252,8 +252,17 @@ AWS managed services.
   (kept verbatim for studio's agentcore-ws serve) plus an `HTTP contract
   served on http://...` line; MCP / A2A print a `Server listening on
   http://...` line plus a `<PROTOCOL> contract served on http://...<path>`
-  line. Runs until `^C` (`--watch` is a follow-up). The `cdkl
-  invoke-agentcore` terminal path (interactive over stdin in a TTY) is
+  line. Runs until `^C`. `--watch` (issue #454, slice 4b) re-synths + reloads
+  the warm container IN PLACE on a CDK source change, keeping the HOST serve
+  UP — only the container rotates (like start-service: the front-door stays,
+  the replicas roll). A per-firing classifier (shared with
+  invoke-agentcore `--ws --watch` + the ECS serves) picks rebuild (SIGTERM the
+  old container, boot a fresh one on a NEW port, re-point the serve via
+  `server.setContainerPort` — the proxy reads the port live per request, the
+  `/ws` bridge per upgrade) vs soft-reload (`docker cp` + `docker restart` the
+  SAME container, port preserved); the forever-promise main loop is serve-level
+  so a per-container teardown during reload never tears the serve down. The
+  `cdkl invoke-agentcore` terminal path (interactive over stdin in a TTY) is
   unchanged
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
@@ -578,7 +587,11 @@ compute-locally category for Lambda + API Gateway).
   401 / 403 on deny, forwarding the verified Authorization on pass) + a
   per-request `signRequest` (buffers the POST body, signs it SigV4, injects the
   `Authorization` / `X-Amz-*` headers; drops the inbound chunked
-  `transfer-encoding` since the body is now fixed-length)) + agentcore-serve-auth
+  `transfer-encoding` since the body is now fixed-length). Slice 4b added
+  `setContainerPort(port)` to the handle: the proxy reads `config.containerPort`
+  live per request and the `/ws` bridge per upgrade (its `containerPort` is now a
+  `number | (() => number)` getter), so a `--watch` rebuild re-points the serve
+  at a new warm container without rebinding the listener) + agentcore-serve-auth
   (slice 4a — `buildAgentCoreServeAuthCheck`: the per-request inbound-JWT gate
   for the warm serve, the serve counterpart of `front-door-auth`'s ALB
   `AuthCheck`; reuses `cognito-jwt`'s `verifyJwtViaDiscovery` to verify the

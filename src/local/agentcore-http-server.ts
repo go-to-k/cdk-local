@@ -132,6 +132,14 @@ export interface RunningAgentCoreHttpServer {
   wsUrl?: string;
   /** The bound host port. */
   port: number;
+  /**
+   * Re-point the serve at a NEW warm container's host port without rebinding
+   * the listener (issue #454, slice 4b — `--watch` rebuild). The host serve
+   * stays up; the proxy reads the port live per request and the `/ws` bridge
+   * reads it live per upgrade, so subsequent requests / upgrades hit the new
+   * container. A soft-reload preserves the port and never calls this.
+   */
+  setContainerPort(port: number): void;
   /** Close the server, the `/ws` bridge (if any), and every live connection. */
   close(): Promise<void>;
 }
@@ -319,10 +327,13 @@ export function startAgentCoreHttpServer(
   });
 
   // MCP / A2A have no `/ws` — the bridge is attached for HTTP / AGUI only.
+  // The bridge reads the container port LIVE per upgrade (a getter), so a
+  // `--watch` rebuild that calls setContainerPort re-points new /ws upgrades
+  // too (issue #454, slice 4b).
   const bridge = attachWs
     ? attachAgentCoreWsBridge(httpServer, {
         containerHost: config.containerHost,
-        containerPort: config.containerPort,
+        containerPort: () => config.containerPort,
         ...(config.sessionId && { sessionId: config.sessionId }),
         ...(config.authorization && { authorization: config.authorization }),
       })
@@ -343,6 +354,12 @@ export function startAgentCoreHttpServer(
         httpUrl: `http://${host}:${port}`,
         ...(bridge && { wsUrl: `ws://${host}:${port}${bridge.path}` }),
         port,
+        // The proxy reads `config.containerPort` live per request, so mutating
+        // it re-points subsequent requests (+ the bridge's getter) at the new
+        // warm container — the listener socket is untouched.
+        setContainerPort: (newPort: number) => {
+          config.containerPort = newPort;
+        },
         close: () =>
           new Promise<void>((res) => {
             if (bridge) {

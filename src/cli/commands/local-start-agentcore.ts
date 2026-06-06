@@ -12,6 +12,7 @@ import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
+import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
 import {
   createLocalStateProvider,
@@ -41,6 +42,9 @@ import {
 } from '../../local/agentcore-http-server.js';
 import { selectServeInboundAuth } from '../../local/agentcore-serve-auth.js';
 import { signAgentCoreInvocation } from '../../local/agentcore-sigv4-sign.js';
+import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
+import { classifySourceChange, type ReloadVerdict } from '../../local/source-change-classifier.js';
+import { AssetManifestLoader } from '../../assets/asset-manifest-loader.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -48,7 +52,8 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
-import { resolveProfileCredentials } from './local-start-api.js';
+import { createWatchPredicates, resolveProfileCredentials } from './local-start-api.js';
+import { resolveWatchConfig } from '../config-loader.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -56,10 +61,13 @@ import {
 import {
   buildAgentCoreImageContext,
   buildContainerEnv,
+  deriveOldAssetHash,
+  loadAgentCoreAssetContext,
   parseTimeoutMs,
   resolveAgentCoreImage,
   resolveAgentCoreSigV4Context,
   resolveFromS3BucketIntrinsic,
+  softReloadAgentContainer,
   type LocalInvokeAgentCoreOptions,
 } from './local-invoke-agentcore.js';
 
@@ -189,12 +197,20 @@ async function localStartAgentCoreCommand(
   let server: RunningAgentCoreHttpServer | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
   let stateProvider: LocalStateProvider | undefined;
+  let watcher: FileWatcher | undefined;
   let shuttingDown = false;
   let tornDown = false;
 
   const teardown = async (): Promise<void> => {
     if (tornDown) return;
     tornDown = true;
+    if (watcher) {
+      try {
+        await watcher.close();
+      } catch (err) {
+        logger.debug(`watcher close failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (server) {
       try {
         await server.close();
@@ -339,7 +355,9 @@ async function localStartAgentCoreCommand(
     imageContext
   );
 
-  const containerHostPort = await pickFreePort();
+  // Mutable: a `--watch` rebuild rotates the warm container to a NEW host port
+  // (the signRequest closure + the reload watcher read this live).
+  let containerHostPort = await pickFreePort();
   const containerHost = options.containerHost;
   // Stable `cdkl-`-prefixed name so the orphan sweep (`docker ps --filter
   // name=cdkl-`) used by `/cleanup` + `/run-integ` finds this long-lived
@@ -461,7 +479,208 @@ async function localStartAgentCoreCommand(
   }
   logger.info('Press ^C to shut down.');
 
-  // Block forever — signal handlers exit the process.
+  // --watch (issue #454, slice 4b). Re-synth + reload the warm container in
+  // place on a CDK source change, keeping the HOST serve UP — only the
+  // container rotates (like start-service: the front-door stays, the replicas
+  // roll). A per-firing classifier (shared with invoke-agentcore --ws --watch
+  // + the ECS serves) picks rebuild vs soft-reload; a rebuild boots a fresh
+  // container on a NEW port and re-points the serve via `server.setContainerPort`
+  // (the proxy reads the port live per request, the /ws bridge per upgrade), a
+  // soft-reload `docker cp` + `docker restart`s the SAME container (port
+  // preserved). The forever-promise below is serve-level, so a per-container
+  // teardown during reload never unblocks it.
+  if (options.watch) {
+    const cdkOutDir = options.output;
+    const assetLoader = new AssetManifestLoader();
+    // The CURRENTLY-RUNNING container's asset hash, captured at boot BEFORE any
+    // reload re-synths over cdk.out. The classifier compares it against the
+    // freshly-synthed hash to pick soft-reload (hash flipped: a real source
+    // edit) vs rebuild (unchanged: a CDK construct / unrelated edit). It must be
+    // captured here — deriving it at reload time would read the post-re-synth
+    // manifest and always match the new hash (no flip ever detected). Updated
+    // after each successful reload.
+    let currentAssetHash = await deriveOldAssetHash({
+      resolvedTarget,
+      resolved,
+      stacks,
+      cdkOutDir,
+      assetLoader,
+    });
+    let reloadChain: Promise<unknown> = Promise.resolve();
+
+    const waitReady = async (port: number): Promise<void> => {
+      if (plan.readyPath === undefined) {
+        await waitForAgentCorePing(containerHost, port, options.timeout);
+      } else {
+        await waitForAgentCoreHttpReady(containerHost, port, plan.readyPath, options.timeout);
+      }
+    };
+
+    const watchRoot = process.cwd();
+    const { ignored, shouldTrigger, excludePatterns } = createWatchPredicates({
+      watchRoot,
+      output: options.output,
+      watchConfig: resolveWatchConfig(),
+    });
+    logger.info(
+      `Watching ${watchRoot} for source changes (excluding ${excludePatterns.join(', ')}). ` +
+        `The warm container reloads in place; the serve stays up.`
+    );
+    watcher = createFileWatcher({
+      paths: [watchRoot],
+      ignored,
+      shouldTrigger,
+      onChange: (changedPaths) => {
+        reloadChain = reloadChain.then(async () => {
+          // Re-synth + re-resolve the runtime FRESH (so the asset context reads
+          // the NEW hash — the boot `resolved`'s containerUri / codeAssetHash is
+          // stale after an edit, and with >1 docker asset the single-asset
+          // fallback cannot save it). Then classify rebuild vs soft-reload by
+          // comparing the running (currentResolved/currentStacks) hash against
+          // the fresh one. A synth / classify failure skips this change — a
+          // reload cannot proceed without a fresh synth.
+          let freshStacks: StackInfo[];
+          let freshResolved: ReturnType<typeof resolveAgentCoreTarget>;
+          let freshLoaded: Awaited<ReturnType<typeof buildAgentCoreImageContext>>['loaded'];
+          let freshImageContext: Awaited<ReturnType<typeof buildAgentCoreImageContext>>['context'];
+          let verdict: ReloadVerdict;
+          // The freshly-synthed asset hash (carried out of the try so the
+          // post-reload bookkeeping can advance `currentAssetHash`).
+          let nextAssetHash = currentAssetHash;
+          try {
+            const synthRes = await synthesizer.synthesize(synthOpts);
+            freshStacks = synthRes.stacks;
+            const freshCandidate = pickAgentCoreCandidateStack(resolvedTarget, freshStacks);
+            const ctx =
+              stateProvider && freshCandidate
+                ? await buildAgentCoreImageContext(freshCandidate, stateProvider, options)
+                : { context: undefined, loaded: undefined };
+            freshImageContext = ctx.context;
+            freshLoaded = ctx.loaded;
+            freshResolved = resolveAgentCoreTarget(resolvedTarget, freshStacks, freshImageContext);
+            await resolveFromS3BucketIntrinsic(
+              freshResolved,
+              stateProvider,
+              freshLoaded,
+              freshImageContext
+            );
+            const assetCtx = await loadAgentCoreAssetContext({
+              resolvedTarget,
+              resolved: freshResolved,
+              stacks: freshStacks,
+              cdkOutDir,
+              assetLoader,
+              oldAssetHash: currentAssetHash,
+            });
+            if (assetCtx?.newAssetHash !== undefined) nextAssetHash = assetCtx.newAssetHash;
+            verdict = classifySourceChange(changedPaths, assetCtx);
+            logger.info(
+              `Detected source change (${changedPaths.length} path(s)); verdict=${verdict.kind} (${verdict.reason}).`
+            );
+          } catch (err) {
+            logger.error(
+              `Reload: re-synth / classify failed ` +
+                `(${err instanceof Error ? err.message : String(err)}); skipping this change. ` +
+                `The serve stays up against the current container.`
+            );
+            return;
+          }
+
+          try {
+            if (verdict.kind === 'soft-reload') {
+              if (!containerId) {
+                throw new CdkLocalError(
+                  'Reload: no live container to docker cp / docker restart into.',
+                  'LOCAL_START_AGENTCORE_WATCH_NO_CONTAINER'
+                );
+              }
+              await softReloadAgentContainer(containerId, verdict.newAssetSourceDir);
+              await waitReady(containerHostPort);
+              logger.info(
+                `Reload: soft-reloaded the agent container (docker cp + docker restart; ` +
+                  `container ID + host port preserved).`
+              );
+            } else {
+              // Rebuild: tear down the OLD container, build + run a fresh one on
+              // a NEW port (reusing the fresh resolution above — inbound auth is
+              // NOT re-resolved; the bearer / discovery URL / sigv4 context is
+              // stable across a source edit), and re-point the still-listening
+              // serve at it.
+              if (stopLogs) {
+                try {
+                  stopLogs();
+                } catch {
+                  /* best-effort */
+                }
+                stopLogs = undefined;
+              }
+              if (containerId) {
+                await removeContainer(containerId);
+                containerId = undefined;
+              }
+              const newImage = await resolveAgentCoreImage(
+                freshResolved,
+                options,
+                freshLoaded,
+                stateProvider
+              );
+              const { env: newEnv, sensitiveEnvKeys: newSensitive } = await buildContainerEnv(
+                freshResolved,
+                options,
+                profileCredentials,
+                profileCredsFile,
+                stateProvider,
+                freshLoaded,
+                freshImageContext
+              );
+              const newPort = await pickFreePort();
+              const newName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+              logger.info(
+                `Reload: starting agent container (image=${newImage}, port=${newPort} -> ${plan.containerPortLabel})...`
+              );
+              containerId = await runDetached({
+                image: newImage,
+                mounts: [],
+                env: newEnv,
+                cmd: [],
+                hostPort: newPort,
+                host: containerHost,
+                platform: options.platform,
+                name: newName,
+                ...(plan.containerPort !== undefined && { containerPort: plan.containerPort }),
+                ...(newSensitive.size > 0 && { sensitiveEnvKeys: newSensitive }),
+              });
+              stopLogs = streamLogs(containerId);
+              containerHostPort = newPort;
+              await waitReady(newPort);
+              // Re-point the live serve at the new container (proxy + /ws bridge
+              // read the port live); the OLD container is already gone.
+              server?.setContainerPort(newPort);
+              logger.info(
+                `Reload: rebuilt the agent container; serve re-pointed to port ${newPort}.`
+              );
+            }
+            // The freshly-synthed asset is now the live one — the next edit
+            // compares against its hash.
+            currentAssetHash = nextAssetHash;
+            logger.info('Reload complete.');
+          } catch (err) {
+            // A reload failure keeps the serve up against whatever container is
+            // currently live (a soft-reload leaves the old one; a rebuild that
+            // failed mid-flight may have torn it down — the next edit retries).
+            logger.error(
+              `Reload failed: ${err instanceof Error ? err.message : String(err)}. ` +
+                `The serve stays up; edit + save again to retry.`
+            );
+          }
+        });
+      },
+    });
+  }
+
+  // Block forever — signal handlers exit the process. Serve-level (NOT tied to
+  // any per-container controller), so a reload's container teardown never
+  // unblocks it and tears the serve down.
   await new Promise<never>(() => undefined);
 }
 
@@ -577,6 +796,15 @@ export function addStartAgentCoreSpecificOptions(cmd: Command): Command {
       )
         .choices(['linux/amd64', 'linux/arm64'])
         .default('linux/arm64')
+    )
+    .addOption(
+      new Option(
+        '--watch',
+        'Re-synth + reload the warm container in place on a CDK source change, keeping the serve up. ' +
+          'A per-firing classifier picks rebuild (boot a fresh container, re-point the serve) vs ' +
+          'soft-reload (docker cp + docker restart the same container) — the same pattern as ' +
+          'start-service / invoke-agentcore --ws --watch.'
+      )
     )
     .addOption(
       new Option(

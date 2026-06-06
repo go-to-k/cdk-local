@@ -27,8 +27,14 @@ const DEFAULT_PATH = '/ws';
 export interface AgentCoreWsBridgeServerConfig {
   /** Host the container `/ws` is reachable on (the published-port host). */
   containerHost: string;
-  /** Host port the container's `/ws` is published on. */
-  containerPort: number;
+  /**
+   * Host port the container's `/ws` is published on. A getter resolves the port
+   * LIVE per inbound connection — used by the HTTP serve under `--watch`, where
+   * a rebuild rotates the container to a new port without re-attaching the
+   * bridge (issue #454, slice 4b). A bare number pins it (the standalone
+   * bridge).
+   */
+  containerPort: number | (() => number);
   /** Bind host for the bridge server. Defaults to `127.0.0.1`. */
   host?: string;
   /** Bind port for the bridge server. Defaults to `0` (OS-assigned). */
@@ -99,7 +105,11 @@ export function attachAgentCoreWsBridge(
 
   wss.on('connection', (browser: WebSocket) => {
     const sessionId = config.sessionId ?? randomUUID();
-    const handle = bridgeAgentCoreWs(config.containerHost, config.containerPort, {
+    // Resolve the container port LIVE so a --watch rebuild (which mutates the
+    // getter's source) routes a new inbound connection to the new container.
+    const containerPort =
+      typeof config.containerPort === 'function' ? config.containerPort() : config.containerPort;
+    const handle = bridgeAgentCoreWs(config.containerHost, containerPort, {
       sessionId,
       ...(config.authorization && { authorization: config.authorization }),
       ...(config.webSocketImpl && { webSocketImpl: config.webSocketImpl }),

@@ -53,6 +53,10 @@ JWT_AUD="cdkl-agentcore-aud"
 CDKL_PID=""
 SIDECAR_PID=""
 OUT_FILE="$(mktemp)"
+# Set by the --watch step (step 11): the agent source it edits + its backup, so
+# cleanup always restores the committed fixture even if the test aborts.
+AGENT_SRC=""
+AGENT_SRC_BACKUP=""
 
 stop_server() {
   if [ -n "${CDKL_PID}" ] && kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -72,10 +76,19 @@ stop_sidecar() {
   SIDECAR_PID=""
 }
 
+restore_source() {
+  if [ -n "${AGENT_SRC_BACKUP}" ] && [ -f "${AGENT_SRC_BACKUP}" ]; then
+    cp "${AGENT_SRC_BACKUP}" "${AGENT_SRC}" 2>/dev/null || true
+    rm -f "${AGENT_SRC_BACKUP}"
+  fi
+  AGENT_SRC_BACKUP=""
+}
+
 cleanup() {
   rc=$?
   stop_server
   stop_sidecar
+  restore_source
   rm -f "${OUT_FILE}"
   exit "${rc}"
 }
@@ -291,4 +304,49 @@ echo "[verify]   --sigv4 OK: forwarded request carried an AWS4-HMAC-SHA256 Autho
 stop_server
 assert_no_orphans "sigv4 serve shutdown"
 
-echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), and --sigv4 signing — each against one warm container — and cleaned up"
+echo "[verify] step 11: --watch reloads the warm container in place on a source edit (#454 slice 4b)"
+AGENT_SRC="${TEST_DIR}/agent/server.js"
+AGENT_SRC_BACKUP="$(mktemp)"
+cp "${AGENT_SRC}" "${AGENT_SRC_BACKUP}"
+
+# Boot the HTTP serve with --watch (watches the fixture cwd for source edits).
+: > "${OUT_FILE}"
+${CLI} start-agentcore "${TARGET}" --host 127.0.0.1 --port 0 --watch > "${OUT_FILE}" 2>&1 &
+CDKL_PID=$!
+WATCH_HTTP_URL="$(wait_for_ready 'HTTP contract served on http://[^ ]+' || true)"
+WATCH_HTTP_URL="${WATCH_HTTP_URL#HTTP contract served on }"
+[ -n "${WATCH_HTTP_URL}" ] || fail "--watch serve did not print its HTTP contract URL"
+echo "[verify]   watch http: ${WATCH_HTTP_URL}"
+# Confirm the watcher started.
+grep -q 'Watching .* for source changes' "${OUT_FILE}" || fail "--watch did not start the file watcher"
+
+# Pre-edit: the response does NOT carry the watch marker.
+R_PRE="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"pre-reload"}')"
+echo "${R_PRE}" | grep -q 'WATCH-V2' && fail "watchVersion present before the edit: ${R_PRE}"
+
+# Edit the agent source (interpreted-language handler, no Dockerfile change) so
+# the classifier picks soft-reload: inject a watchVersion field into the
+# /invocations response.
+node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'utf8');s=s.replace(/greeting: process.env.GREETING \?\? 'unset',/g, \"greeting: process.env.GREETING ?? 'unset', watchVersion: 'WATCH-V2',\");fs.writeFileSync(f,s);"
+
+# Wait for the reload to complete (re-synth + classify + soft-reload + ready).
+RELOADED=0
+for _ in $(seq 1 240); do
+  if grep -q 'Reload complete.' "${OUT_FILE}"; then RELOADED=1; break; fi
+  kill -0 "${CDKL_PID}" 2>/dev/null || fail "--watch serve exited during reload"
+  sleep 0.5
+done
+[ "${RELOADED}" = "1" ] || fail "--watch did not complete a reload within 120s"
+grep -q 'verdict=soft-reload' "${OUT_FILE}" || fail "expected verdict=soft-reload for a source-only edit"
+echo "[verify]   reload OK: verdict=soft-reload + Reload complete."
+
+# Post-edit: the SAME warm serve now serves the new code.
+R_POST="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload"}')"
+echo "${R_POST}" | grep -q 'WATCH-V2' || fail "reloaded serve did not serve the new code: ${R_POST}"
+echo "[verify]   --watch OK: source edit -> soft-reload -> new code served on the SAME serve port"
+
+stop_server
+restore_source
+assert_no_orphans "--watch serve shutdown"
+
+echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), --sigv4 signing, and --watch reload (soft-reload in place) — each against one warm container — and cleaned up"

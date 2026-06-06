@@ -88,6 +88,38 @@ describe('startAgentCoreWsBridge', () => {
     expect(sid).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it('resolves a containerPort GETTER live per connection (issue #454, slice 4b --watch rebuild)', async () => {
+    // A --watch rebuild rotates the warm container to a new port without
+    // re-attaching the bridge; the bridge reads the port live via the getter.
+    const a = await startFakeContainer();
+    const b = await startFakeContainer();
+    let livePort = a.port;
+    const bridge = await startAgentCoreWsBridge({
+      containerHost: '127.0.0.1',
+      containerPort: () => livePort,
+    });
+    bridges.push(bridge);
+
+    const echoVia = (label: string): Promise<string> =>
+      new Promise<string>((resolve, reject) => {
+        const browser = connectBrowser(bridge.url);
+        browser.on('open', () => browser.send(label));
+        browser.on('message', (d) => resolve(d.toString()));
+        browser.on('error', reject);
+      });
+
+    // First connection routes to container A.
+    expect(await echoVia('to-a')).toBe('echo:to-a');
+    expect(a.received).toEqual(['to-a']);
+
+    // Flip the getter's source (the rebuild) — a NEW connection routes to B.
+    livePort = b.port;
+    expect(await echoVia('to-b')).toBe('echo:to-b');
+    expect(b.received).toEqual(['to-b']);
+    // A saw no further traffic.
+    expect(a.received).toEqual(['to-a']);
+  });
+
   it('pins the configured session-id and injects the Authorization header', async () => {
     const container = await startFakeContainer();
     const bridge = await startAgentCoreWsBridge({
