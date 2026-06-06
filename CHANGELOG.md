@@ -1,3 +1,10 @@
+# [0.139.0](https://github.com/go-to-k/cdk-local/compare/v0.138.0...v0.139.0) (2026-06-06)
+
+
+### Features
+
+* **start-agentcore:** --watch reloads the warm container in place ([#454](https://github.com/go-to-k/cdk-local/issues/454) slice 4b) ([#462](https://github.com/go-to-k/cdk-local/issues/462)) ([782a09d](https://github.com/go-to-k/cdk-local/commit/782a09dc0d42193f814e8aca5b0016a323e827b1))
+
 # [0.138.0](https://github.com/go-to-k/cdk-local/compare/v0.137.0...v0.138.0) (2026-06-06)
 
 
