@@ -1092,6 +1092,37 @@ curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${ACWS_URL}" "${BODY_FILE}"; then
   echo "FAIL: /api/running did not list the agentcore-ws ws:// endpoint"; cat "${BODY_FILE}"; exit 1
 fi
+
+# Issue #454: start-agentcore now keeps the container WARM and serves its HTTP
+# contract (POST /invocations) too, not just /ws — and studio fronts that
+# http:// endpoint with a capture proxy (alongside the un-proxied ws://). Assert
+# the http:// endpoint is exposed and that a relayed POST /invocations hits the
+# warm container through the proxy (so it lands on the timeline). The agent
+# echoes the request body; the bridge injects a session id.
+ACWS_HTTP_EP=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${BODY_FILE}" | head -1 || true)
+if [[ -z "${ACWS_HTTP_EP}" ]]; then
+  echo "FAIL: /api/running did not list the agentcore-ws http:// contract endpoint"; cat "${BODY_FILE}"; exit 1
+fi
+echo "    OK: agentcore-ws http:// contract endpoint exposed at ${ACWS_HTTP_EP}"
+ACWS_REQ_FILE=$(mktemp)
+ACWS_REQ_HTTP=$(curl -s -o "${ACWS_REQ_FILE}" -w '%{http_code}' --max-time 60 \
+  -X POST "${URL}/api/request" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"${AC_WS_TARGET}\",\"method\":\"POST\",\"path\":\"/invocations\",\"body\":\"{\\\"marker\\\":\\\"studio-454-http\\\"}\"}" || true)
+if [[ "${ACWS_REQ_HTTP}" != "200" ]]; then
+  echo "FAIL: /api/request to /invocations returned HTTP ${ACWS_REQ_HTTP}"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
+fi
+# The relay response carries the agent's echo of the body + the injected session id.
+if ! grep -qF 'studio-454-http' "${ACWS_REQ_FILE}"; then
+  echo "FAIL: warm /invocations response did not echo the request body"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
+fi
+rm -f "${ACWS_REQ_FILE}"
+echo "    OK: warm POST /invocations through the studio capture proxy echoed the body"
+# It landed on the timeline (the capture proxy emitted invocation events).
+curl -fsS "${URL}/api/history" -o "${BODY_FILE}"
+if ! grep -qF '/invocations' "${BODY_FILE}"; then
+  echo "FAIL: the relayed /invocations request did not land on the timeline"; head -c 2000 "${BODY_FILE}"; exit 1
+fi
+echo "    OK: warm /invocations request captured on the timeline"
 # Header-less client (the browser path) drives the agent's /ws REPL through the
 # bridge; asserts the bridge-injected session-id + a frame round-trip.
 cat > "$(pwd)/.studio-agentcore-ws-client.mjs" <<'NODE'
@@ -1869,4 +1900,4 @@ STUDIO_PID=""
 rm -f "${LOG_FILE2}" "${RUN_FILE2}"
 
 echo ""
-echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + reinvoke + agentcore-invoke + agentcore-ws + api/alb/ecs serve + image-override-rebuild + alb-image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"
+echo "==> local-studio test passed (gate + stack-filter + custom-resource-exclusion + watch-mode + boot + UI + all-options-catalog + image-override-picker + targets + SSE + invoke + reinvoke + agentcore-invoke + agentcore-ws + agentcore-warm-http-contract + api/alb/ecs serve + image-override-rebuild + alb-image-override-rebuild + request-composer + ws-console + request capture + history/log-search + per-target-options + raw-args + session-config + flag-threading + shutdown)"

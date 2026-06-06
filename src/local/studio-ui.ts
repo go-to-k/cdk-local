@@ -352,8 +352,8 @@ const STUDIO_CSS = `
 `;
 
 const STUDIO_SCRIPT = `
-  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS Service', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore', 'agentcore-ws': 'AgentCore WS' };
-  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront', 'agentcore-ws']; // long-running serve targets (ecs-task = run-task; agentcore-ws = start-agentcore /ws bridge)
+  const KIND_LABEL = { lambda: 'Lambda', api: 'API', alb: 'ALB', ecs: 'ECS Service', 'ecs-task': 'ECS Task', cloudfront: 'CloudFront', agentcore: 'AgentCore', 'agentcore-ws': 'AgentCore serve' };
+  const SERVE_KINDS = ['api', 'alb', 'ecs', 'ecs-task', 'cloudfront', 'agentcore-ws']; // long-running serve targets (ecs-task = run-task; agentcore-ws = start-agentcore warm serve)
   const INVOKE_KINDS = ['lambda', 'agentcore']; // single-shot invoke targets (event composer)
   const rowsById = new Map();      // invocationId -> timeline row element
   const invById = new Map();       // invocationId -> latest invocation event
@@ -894,6 +894,8 @@ const STUDIO_SCRIPT = `
                 kind: group.kind,
                 pinned: entry.pinned === true,
                 backingPinnedServices: entry.backingPinnedServices || [],
+                agentCoreHasWs: entry.agentCoreHasWs === true,
+                agentCoreContractPath: entry.agentCoreContractPath || null,
               });
               updateServeRow(entry.id);
             }
@@ -1331,13 +1333,25 @@ const STUDIO_SCRIPT = `
       : null;
     if (httpBase) {
       const captured = (st.endpoints || []).indexOf(httpBase) >= 0;
-      ws.appendChild(renderRequestComposer(id, httpBase, captured));
+      // An agentcore serve's contract is POST-only on a fixed path
+      // (/invocations | /mcp | /), so seed the composer with that method + path
+      // instead of the generic GET / (issue #454). Other serves default to GET /.
+      const composerDefaults =
+        meta && meta.kind === 'agentcore-ws'
+          ? { method: 'POST', path: meta.agentCoreContractPath || '/invocations' }
+          : null;
+      ws.appendChild(renderRequestComposer(id, httpBase, captured, composerDefaults));
     }
 
-    // A served WebSocket API exposes a ws:// endpoint — attach a WebSocket
-    // console so the browser can connect + exchange frames (issue #303).
+    // A served WebSocket endpoint (an API Gateway WebSocket API, or an HTTP /
+    // AGUI AgentCore runtime's /ws bridge) gets a WebSocket console so the
+    // browser can connect + exchange frames (issue #303). For an agentcore
+    // serve the console is gated on agentCoreHasWs (HTTP / AGUI expose /ws;
+    // MCP / A2A do not — issue #454); the ws:// endpoint the serve advertises
+    // already encodes that, so this guard is belt-and-suspenders with the spec.
     const wsEndpoint = running ? (st.endpoints || []).find((u) => /^wss?:/.test(u)) : null;
-    if (wsEndpoint) {
+    const wsServable = !meta || meta.kind !== 'agentcore-ws' || meta.agentCoreHasWs === true;
+    if (wsEndpoint && wsServable) {
       ws.appendChild(renderWsConsole(wsEndpoint));
     }
 
@@ -1552,7 +1566,7 @@ const STUDIO_SCRIPT = `
     return sec;
   }
 
-  function renderRequestComposer(id, baseUrl, captured) {
+  function renderRequestComposer(id, baseUrl, captured, defaults) {
     const sec = el('div', 'section req-composer');
     sec.appendChild(el('h3', null, 'Request'));
     const row = el('div', 'req-row');
@@ -1562,9 +1576,12 @@ const STUDIO_SCRIPT = `
       o.value = m;
       method.appendChild(o);
     });
+    // Per-kind defaults (issue #454): an agentcore serve seeds POST + the
+    // protocol contract path; otherwise GET / (the generic default).
+    if (defaults && defaults.method) method.value = defaults.method;
     row.appendChild(method);
     const path = el('input', 'req-path');
-    path.value = '/';
+    path.value = defaults && defaults.path ? defaults.path : '/';
     path.placeholder = '/path?query';
     row.appendChild(path);
     sec.appendChild(row);
