@@ -1,8 +1,12 @@
+import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 
-const { runDockerStreamingMock, isImageInLocalCacheMock } = vi.hoisted(() => ({
+const { runDockerStreamingMock, isImageInLocalCacheMock, warnMock } = vi.hoisted(() => ({
   runDockerStreamingMock: vi.fn(),
   isImageInLocalCacheMock: vi.fn(),
+  warnMock: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/docker-cmd.js', async (importActual) => ({
@@ -12,6 +16,15 @@ vi.mock('../../../src/utils/docker-cmd.js', async (importActual) => ({
 vi.mock('../../../src/local/ecr-puller.js', async (importActual) => ({
   ...(await importActual<object>()),
   isImageInLocalCache: isImageInLocalCacheMock,
+}));
+vi.mock('../../../src/utils/logger.js', async (importActual) => ({
+  ...(await importActual<object>()),
+  getLogger: () => ({
+    info: vi.fn(),
+    debug: vi.fn(),
+    warn: warnMock,
+    error: vi.fn(),
+  }),
 }));
 
 const {
@@ -44,21 +57,25 @@ describe('toCmdArgv', () => {
 });
 
 describe('renderCodeDockerfile', () => {
-  it('generates a Python Dockerfile with conditional pip install + interpreter CMD', () => {
+  it('generates a Python Dockerfile that runs the bundle as-is (NO install)', () => {
     const df = renderCodeDockerfile('python:3.12-slim', ['app.py'], false);
     expect(df).toContain('FROM python:3.12-slim');
     expect(df).toContain('COPY . /app');
-    expect(df).toContain('pip install --no-cache-dir -r requirements.txt');
-    expect(df).toContain('pyproject.toml');
     expect(df).toContain('EXPOSE 8080');
     expect(df).toContain('CMD ["python","app.py"]');
+    // The managed runtime resolves vendored deps; we must NOT pip-install
+    // (doing so would mask a missing-vendored-deps bundle — local pass /
+    // deployed fail).
+    expect(df).not.toContain('pip install');
+    expect(df).not.toMatch(/\bRUN\b/);
   });
 
-  it('generates a Node Dockerfile with npm install + node CMD', () => {
+  it('generates a Node Dockerfile that runs the bundle as-is (NO install)', () => {
     const df = renderCodeDockerfile('node:22-slim', ['server.js'], true);
     expect(df).toContain('FROM node:22-slim');
-    expect(df).toContain('npm install --omit=dev');
     expect(df).toContain('CMD ["node","server.js"]');
+    expect(df).not.toContain('npm install');
+    expect(df).not.toMatch(/\bRUN\b/);
   });
 });
 
@@ -123,7 +140,7 @@ describe('buildAgentCoreCodeImage', () => {
   });
 
   it('wraps a docker build failure with the captured stderr', async () => {
-    const err = Object.assign(new Error('exit 1'), { stderr: 'pip: not found' });
+    const err = Object.assign(new Error('exit 1'), { stderr: 'build error' });
     runDockerStreamingMock.mockRejectedValue(err);
     await expect(
       buildAgentCoreCodeImage({
@@ -132,7 +149,7 @@ describe('buildAgentCoreCodeImage', () => {
         entryPoint: ['app.py'],
         architecture: 'arm64',
       })
-    ).rejects.toThrow(/docker build failed.*pip: not found/);
+    ).rejects.toThrow(/docker build failed.*build error/);
   });
 
   it('with noBuild verifies the cached tag instead of building', async () => {
@@ -159,5 +176,91 @@ describe('buildAgentCoreCodeImage', () => {
         noBuild: true,
       })
     ).rejects.toThrow(/not in local registry/);
+  });
+});
+
+describe('warnIfDependenciesNotVendored (via buildAgentCoreCodeImage)', () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  });
+
+  it('warns when a Python bundle declares requirements.txt without vendored deps', async () => {
+    runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+    dir = await mkdtemp(join(tmpdir(), 'cdkl-codebuild-test-'));
+    await writeFile(join(dir, 'main.py'), 'print(1)');
+    await writeFile(join(dir, 'requirements.txt'), 'bedrock-agentcore');
+    await buildAgentCoreCodeImage({
+      sourceDir: dir,
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['main.py'],
+      architecture: 'arm64',
+    });
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    const msg = warnMock.mock.calls[0]?.[0] as string;
+    expect(msg).toMatch(/does not vendor/);
+    expect(msg).toMatch(/ModuleNotFoundError/);
+    expect(msg).toMatch(/uv pip install .*--target/);
+    expect(msg).toContain('3.12'); // python-version derived from the runtime
+  });
+
+  it('does NOT warn when the Python bundle vendors its deps (a *.dist-info dir)', async () => {
+    runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+    dir = await mkdtemp(join(tmpdir(), 'cdkl-codebuild-test-'));
+    await writeFile(join(dir, 'main.py'), 'print(1)');
+    await writeFile(join(dir, 'requirements.txt'), 'bedrock-agentcore');
+    await mkdir(join(dir, 'bedrock_agentcore-1.0.0.dist-info'));
+    await buildAgentCoreCodeImage({
+      sourceDir: dir,
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['main.py'],
+      architecture: 'arm64',
+    });
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT warn when a Python bundle ships no dependency manifest', async () => {
+    runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+    dir = await mkdtemp(join(tmpdir(), 'cdkl-codebuild-test-'));
+    await writeFile(join(dir, 'main.py'), 'print(1)'); // stdlib-only, no requirements.txt
+    await buildAgentCoreCodeImage({
+      sourceDir: dir,
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['main.py'],
+      architecture: 'arm64',
+    });
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT warn for a comment-only requirements.txt (stdlib-only agent)', async () => {
+    runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+    dir = await mkdtemp(join(tmpdir(), 'cdkl-codebuild-test-'));
+    await writeFile(join(dir, 'main.py'), 'print(1)');
+    await writeFile(
+      join(dir, 'requirements.txt'),
+      '# No third-party dependencies — stdlib only.\n# kept for documentation\n'
+    );
+    await buildAgentCoreCodeImage({
+      sourceDir: dir,
+      runtime: 'PYTHON_3_12',
+      entryPoint: ['main.py'],
+      architecture: 'arm64',
+    });
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it('warns when a Node bundle declares package.json without node_modules', async () => {
+    runDockerStreamingMock.mockResolvedValue({ stdout: '', stderr: '' });
+    dir = await mkdtemp(join(tmpdir(), 'cdkl-codebuild-test-'));
+    await writeFile(join(dir, 'server.js'), 'console.log(1)');
+    await writeFile(join(dir, 'package.json'), '{}');
+    await buildAgentCoreCodeImage({
+      sourceDir: dir,
+      runtime: 'NODE_22',
+      entryPoint: ['server.js'],
+      architecture: 'arm64',
+    });
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(warnMock.mock.calls[0]?.[0] as string).toMatch(/node_modules/);
   });
 });

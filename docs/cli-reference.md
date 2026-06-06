@@ -486,10 +486,20 @@ self-serves the same HTTP (or MCP) contract (typically via the
 `bedrock-agentcore` SDK). cdk-local replicates that with a **local from-source
 build**: it gets the bundle source, generates a Dockerfile for the runtime's
 base image (`PYTHON_3_10`-`PYTHON_3_14` → `python:3.x-slim`, `NODE_22` →
-`node:22-slim`), installs the bundle's dependencies (`requirements.txt` /
-`pyproject.toml` for Python, `package.json` for Node — when present), runs the
-`EntryPoint`, then drives the started container with the same protocol client
-as a container artifact.
+`node:22-slim`), runs the `EntryPoint` **as-is**, then drives the started
+container with the same protocol client as a container artifact.
+
+The build does **not** install dependencies, because the AWS managed runtime
+does not either: dependencies must be **vendored into the bundle** at deploy
+time (e.g. `uv pip install --python-platform aarch64-manylinux2014 --target
+<bundle>`), and the runtime resolves them from the bundle's search path.
+Running the bundle as-is keeps local behavior faithful to deployed — a bundle
+that forgot to vendor its deps fails locally (`ModuleNotFoundError`) the same
+way it fails on AWS, instead of passing locally only because a local install
+papered over it. When a bundle declares a dependency manifest
+(`requirements.txt` / `pyproject.toml` for Python, `package.json` for Node)
+without vendored dependencies present, cdk-local logs a warning with the
+vendoring recipe.
 
 Both bundle shapes are supported:
 

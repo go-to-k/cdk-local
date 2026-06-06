@@ -166,8 +166,13 @@ AWS managed services.
   contract, invoked once locally (`cdkl invoke-agentcore`); covers both the
   container artifact and the CodeConfiguration managed-runtime artifact
   (`fromCodeAsset` AND `fromS3` — Python 3.10-3.14 / Node 22, built from source:
-  a generated Dockerfile installs the bundle's deps and runs the EntryPoint,
-  which self-serves the contract; a `fromS3` bundle's ZIP is downloaded from S3
+  a generated Dockerfile runs the EntryPoint AS-IS — no dependency install,
+  matching the managed runtime, which resolves deps vendored into the bundle at
+  deploy time, NOT a runtime `pip install` — so a bundle that forgot to vendor
+  its deps fails locally the same way it fails deployed; a dependency manifest
+  (`requirements.txt` / `pyproject.toml`) present without vendored deps WARNs
+  with the `uv pip install --target` vendoring recipe), which self-serves the
+  contract; a `fromS3` bundle's ZIP is downloaded from S3
   and extracted first — `Code.S3.Bucket` may be a literal or, under
   `--from-cfn-stack`, a `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput`
   intrinsic resolved against state) on the HTTP and MCP protocols. HTTP runs the

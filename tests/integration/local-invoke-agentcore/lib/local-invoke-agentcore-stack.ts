@@ -96,8 +96,8 @@ export class LocalInvokeAgentCoreStack extends cdk.Stack {
 
     // A CodeConfiguration (managed-runtime) runtime authored as plain source
     // (no Dockerfile) via fromCodeAsset. `cdkl invoke-agentcore` builds it from
-    // source for the declared runtime (pip install + run the entrypoint), which
-    // self-serves the same 8080 HTTP contract.
+    // source for the declared runtime (run the entrypoint as-is, no install),
+    // which self-serves the same 8080 HTTP contract.
     new Runtime(this, 'CodeAgent', {
       agentRuntimeArtifact: AgentRuntimeArtifact.fromCodeAsset({
         path: path.join(__dirname, '../code-agent'),

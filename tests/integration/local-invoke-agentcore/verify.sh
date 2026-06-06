@@ -189,8 +189,8 @@ echo "${RESULT_10}" | grep -q '"text": "5"' || {
 }
 
 # Test 11 — a CodeConfiguration (managed-runtime) runtime authored as plain
-# source (no Dockerfile): cdkl builds it from source (pip install + run the
-# entrypoint) and the entrypoint self-serves the 8080 HTTP contract.
+# source (no Dockerfile): cdkl builds it from source (run the entrypoint as-is,
+# no install) and the entrypoint self-serves the 8080 HTTP contract.
 echo "==> [11/19] CodeAgent (fromCodeAsset) builds from source + responds"
 RESULT_11=$(${CDKL} invoke-agentcore "${CODE}" 2>/dev/null | tail -1)
 echo "    response: ${RESULT_11}"

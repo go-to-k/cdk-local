@@ -1,7 +1,8 @@
 # Minimal Bedrock AgentCore Runtime CodeConfiguration (managed-runtime) agent
 # for the cdkl invoke-agentcore integ test. Authored as plain source (no
-# Dockerfile): cdkl builds it from source for the declared runtime, installs
-# requirements.txt, and runs this entrypoint, which self-serves the AgentCore
+# Dockerfile): cdkl builds it from source for the declared runtime and runs
+# this entrypoint AS-IS (no dependency install — matching the managed runtime;
+# this agent is stdlib-only), which self-serves the AgentCore
 # HTTP contract on 0.0.0.0:8080:
 #   GET  /ping        -> 200 {"status":"Healthy"}
 #   POST /invocations -> echoes the request body + the injected GREETING env var
