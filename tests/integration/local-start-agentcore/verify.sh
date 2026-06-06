@@ -53,10 +53,12 @@ JWT_AUD="cdkl-agentcore-aud"
 CDKL_PID=""
 SIDECAR_PID=""
 OUT_FILE="$(mktemp)"
-# Set by the --watch step (step 11): the agent source it edits + its backup, so
-# cleanup always restores the committed fixture even if the test aborts.
+# Set by the --watch step (step 11): the agent source + Dockerfile it edits +
+# their backups, so cleanup always restores the committed fixture even on abort.
 AGENT_SRC=""
 AGENT_SRC_BACKUP=""
+AGENT_DOCKERFILE=""
+AGENT_DOCKERFILE_BACKUP=""
 
 stop_server() {
   if [ -n "${CDKL_PID}" ] && kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -82,6 +84,11 @@ restore_source() {
     rm -f "${AGENT_SRC_BACKUP}"
   fi
   AGENT_SRC_BACKUP=""
+  if [ -n "${AGENT_DOCKERFILE_BACKUP}" ] && [ -f "${AGENT_DOCKERFILE_BACKUP}" ]; then
+    cp "${AGENT_DOCKERFILE_BACKUP}" "${AGENT_DOCKERFILE}" 2>/dev/null || true
+    rm -f "${AGENT_DOCKERFILE_BACKUP}"
+  fi
+  AGENT_DOCKERFILE_BACKUP=""
 }
 
 cleanup() {
@@ -329,24 +336,55 @@ echo "${R_PRE}" | grep -q 'WATCH-V2' && fail "watchVersion present before the ed
 # /invocations response.
 node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'utf8');s=s.replace(/greeting: process.env.GREETING \?\? 'unset',/g, \"greeting: process.env.GREETING ?? 'unset', watchVersion: 'WATCH-V2',\");fs.writeFileSync(f,s);"
 
-# Wait for the reload to complete (re-synth + classify + soft-reload + ready).
-RELOADED=0
-for _ in $(seq 1 240); do
-  if grep -q 'Reload complete.' "${OUT_FILE}"; then RELOADED=1; break; fi
-  kill -0 "${CDKL_PID}" 2>/dev/null || fail "--watch serve exited during reload"
-  sleep 0.5
-done
-[ "${RELOADED}" = "1" ] || fail "--watch did not complete a reload within 120s"
-grep -q 'verdict=soft-reload' "${OUT_FILE}" || fail "expected verdict=soft-reload for a source-only edit"
-echo "[verify]   reload OK: verdict=soft-reload + Reload complete."
+# Wait until the Nth "Reload complete." line appears (re-synth + classify +
+# reload + ready). Fails if the serve exits or the count never reaches N.
+wait_reload_count() {
+  local want="$1"
+  for _ in $(seq 1 300); do
+    [ "$(grep -c 'Reload complete.' "${OUT_FILE}" 2>/dev/null || echo 0)" -ge "${want}" ] && return 0
+    kill -0 "${CDKL_PID}" 2>/dev/null || fail "--watch serve exited during reload"
+    sleep 0.5
+  done
+  return 1
+}
 
-# Post-edit: the SAME warm serve now serves the new code.
-R_POST="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload"}')"
+# Reload 1 (soft-reload): the source-only edit flips the asset hash.
+wait_reload_count 1 || fail "--watch did not complete the first reload within 150s"
+[ "$(grep -c 'verdict=soft-reload' "${OUT_FILE}")" -ge 1 ] \
+  || fail "expected verdict=soft-reload for a source-only edit"
+R_POST="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload-1"}')"
 echo "${R_POST}" | grep -q 'WATCH-V2' || fail "reloaded serve did not serve the new code: ${R_POST}"
-echo "[verify]   --watch OK: source edit -> soft-reload -> new code served on the SAME serve port"
+echo "[verify]   reload 1 OK: verdict=soft-reload -> WATCH-V2 served on the SAME serve port"
+
+# Reload 2 (soft-reload again) — proves the asset hash ADVANCES per reload: the
+# old hash is now WATCH-V2's, so a WATCH-V2 -> WATCH-V3 edit still flips it. If
+# the old hash had not advanced (stuck at boot), this would misclassify.
+node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'utf8');s=s.replace(/WATCH-V2/g,'WATCH-V3');fs.writeFileSync(f,s);"
+wait_reload_count 2 || fail "--watch did not complete the second reload within 150s"
+[ "$(grep -c 'verdict=soft-reload' "${OUT_FILE}")" -ge 2 ] \
+  || fail "expected a SECOND verdict=soft-reload (asset hash did not advance)"
+R_POST2="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload-2"}')"
+echo "${R_POST2}" | grep -q 'WATCH-V3' || fail "second reload did not serve WATCH-V3: ${R_POST2}"
+echo "[verify]   reload 2 OK: hash advanced -> second soft-reload -> WATCH-V3 served"
+
+# Reload 3 (REBUILD): a Dockerfile edit forces the rebuild path (the classifier
+# routes a Dockerfile change to rebuild). The rebuild boots a fresh container on
+# a NEW port with the CURRENT source (WATCH-V3) and re-points the live serve.
+AGENT_DOCKERFILE="${TEST_DIR}/agent/Dockerfile"
+AGENT_DOCKERFILE_BACKUP="$(mktemp)"
+cp "${AGENT_DOCKERFILE}" "${AGENT_DOCKERFILE_BACKUP}"
+printf '\n# cdkl --watch rebuild marker\n' >> "${AGENT_DOCKERFILE}"
+wait_reload_count 3 || fail "--watch did not complete the third (rebuild) reload within 150s"
+grep -q 'verdict=rebuild' "${OUT_FILE}" || fail "expected verdict=rebuild for a Dockerfile edit"
+grep -q 'rebuilt the agent container; serve re-pointed' "${OUT_FILE}" \
+  || fail "rebuild did not re-point the serve to the new container"
+R_POST3="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-rebuild"}')"
+echo "${R_POST3}" | grep -q 'WATCH-V3' \
+  || fail "rebuild did not serve the current code on the re-pointed serve: ${R_POST3}"
+echo "[verify]   reload 3 OK: verdict=rebuild -> serve re-pointed to a new container -> WATCH-V3 served"
 
 stop_server
 restore_source
 assert_no_orphans "--watch serve shutdown"
 
-echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), --sigv4 signing, and --watch reload (soft-reload in place) — each against one warm container — and cleaned up"
+echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), --sigv4 signing, and --watch reload (soft-reload x2 with hash-advance + rebuild re-point) — each against one warm container — and cleaned up"

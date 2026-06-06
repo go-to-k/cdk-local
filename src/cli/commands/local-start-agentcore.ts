@@ -198,6 +198,10 @@ async function localStartAgentCoreCommand(
   let profileCredsFile: ProfileCredentialsFile | undefined;
   let stateProvider: LocalStateProvider | undefined;
   let watcher: FileWatcher | undefined;
+  // Serializes --watch reload firings; teardown awaits it so an in-flight
+  // reload finishes (and its container becomes the one teardown removes) instead
+  // of racing teardown to leave an orphan container behind.
+  let reloadChain: Promise<unknown> = Promise.resolve();
   let shuttingDown = false;
   let tornDown = false;
 
@@ -210,6 +214,14 @@ async function localStartAgentCoreCommand(
       } catch (err) {
         logger.debug(`watcher close failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+    // Let any reload already queued before tornDown finish its current docker
+    // op (its internal tornDown checks stop it proceeding to a fresh
+    // container), so `containerId` points at the live container teardown removes.
+    try {
+      await reloadChain;
+    } catch {
+      /* a failed reload already logged + left the serve on the prior container */
     }
     if (server) {
       try {
@@ -506,7 +518,6 @@ async function localStartAgentCoreCommand(
       cdkOutDir,
       assetLoader,
     });
-    let reloadChain: Promise<unknown> = Promise.resolve();
 
     const waitReady = async (port: number): Promise<void> => {
       if (plan.readyPath === undefined) {
@@ -532,13 +543,17 @@ async function localStartAgentCoreCommand(
       shouldTrigger,
       onChange: (changedPaths) => {
         reloadChain = reloadChain.then(async () => {
+          // A reload firing queued before shutdown must not start fresh Docker
+          // work — teardown awaits this chain, so bailing here keeps it from
+          // booting an orphan container the shutdown can't see.
+          if (tornDown || shuttingDown) return;
           // Re-synth + re-resolve the runtime FRESH (so the asset context reads
           // the NEW hash — the boot `resolved`'s containerUri / codeAssetHash is
           // stale after an edit, and with >1 docker asset the single-asset
           // fallback cannot save it). Then classify rebuild vs soft-reload by
-          // comparing the running (currentResolved/currentStacks) hash against
-          // the fresh one. A synth / classify failure skips this change — a
-          // reload cannot proceed without a fresh synth.
+          // comparing the boot/last-reloaded hash against the fresh one. A synth
+          // / classify failure skips this change — a reload cannot proceed
+          // without a fresh synth.
           let freshStacks: StackInfo[];
           let freshResolved: ReturnType<typeof resolveAgentCoreTarget>;
           let freshLoaded: Awaited<ReturnType<typeof buildAgentCoreImageContext>>['loaded'];
@@ -585,6 +600,10 @@ async function localStartAgentCoreCommand(
             );
             return;
           }
+
+          // Shutdown may have raced the (slow) synth above — bail before any
+          // container mutation so teardown's container removal is the last word.
+          if (tornDown || shuttingDown) return;
 
           try {
             if (verdict.kind === 'soft-reload') {
