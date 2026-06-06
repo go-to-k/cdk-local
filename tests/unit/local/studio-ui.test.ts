@@ -29,14 +29,16 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
-  it('treats agentcore-ws as a serve kind with the AgentCore serve label', () => {
+  it('treats agentcore-ws as a serve kind with the AgentCore row label', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
     // agentcore-ws is a serve kind (Start/Stop + HTTP composer + WebSocket
     // console for HTTP/AGUI), distinct from the single-shot agentcore invoke
-    // kind. The label is "AgentCore serve" since start-agentcore now serves the
-    // warm HTTP contract too, not just /ws (issue #454).
+    // kind. The per-row label is just "AgentCore" (same as the invoke kind) —
+    // the action (invoke vs serve) is conveyed by the group title
+    // "AgentCore Runtimes (invoke)" / "(serve)", so the row parenthetical stays
+    // symmetric instead of "(AgentCore)" vs "(AgentCore serve)".
     expect(html).toContain("'agentcore-ws'");
-    expect(html).toContain("'agentcore-ws': 'AgentCore serve'");
+    expect(html).toContain("'agentcore-ws': 'AgentCore'");
     // Its per-run serve options are serialized too.
     expect(html).toContain('"--no-verify-auth"');
   });
