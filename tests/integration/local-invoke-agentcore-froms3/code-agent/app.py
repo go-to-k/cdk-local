@@ -2,8 +2,9 @@
 # for the cdkl invoke-agentcore fromS3 integ test. Authored as plain source
 # (no Dockerfile) and shipped as a ZIP uploaded to S3 (the fromS3 shape): cdkl
 # downloads + extracts the bundle, builds it from source for the declared
-# runtime (installs requirements.txt), and runs this entrypoint, which
-# self-serves the AgentCore HTTP contract on 0.0.0.0:8080:
+# runtime and runs this entrypoint AS-IS (no dependency install — matching the
+# managed runtime; this agent is stdlib-only), which self-serves the AgentCore
+# HTTP contract on 0.0.0.0:8080:
 #   GET  /ping        -> 200 {"status":"Healthy"}
 #   POST /invocations -> echoes the request body + the injected GREETING env var
 # Uses only the Python stdlib. Startup logs go to stderr so the host's stdout

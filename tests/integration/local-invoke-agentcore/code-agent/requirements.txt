@@ -1,2 +1,5 @@
 # No third-party dependencies — this agent uses only the Python stdlib.
-# Kept so `cdkl invoke-agentcore` exercises the from-source pip-install build step.
+# Kept (comment-only, declares no deps) so the from-source build exercises the
+# code path WITHOUT triggering the unvendored-deps warning: the AgentCore
+# managed runtime does not install requirements.txt at runtime, so cdkl runs
+# the bundle as-is and only warns when real (unvendored) deps are declared.

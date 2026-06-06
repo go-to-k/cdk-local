@@ -10,7 +10,7 @@
 #   - zip the local `code-agent/` source and upload it as the bundle object,
 #   - synth a stack whose `fromS3(...)` points at that literal bucket + key,
 #   - `cdkl invoke-agentcore` downloads + extracts the bundle, builds it from
-#     source (pip install + run the entrypoint), runs it on 8080, and POSTs the
+#     source (run the entrypoint as-is, no install), runs it on 8080, and POSTs the
 #     event to /invocations,
 #   - assert the response (runtime marker + injected GREETING + echoed event),
 #   - delete the object + bucket.

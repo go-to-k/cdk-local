@@ -24,8 +24,8 @@ export interface LocalInvokeAgentCoreFromS3StackProps extends cdk.StackProps {
  *
  * No CloudFormation deploy: `cdkl invoke-agentcore` downloads the bundle from
  * S3, extracts it, runs the same from-source build the fromCodeAsset path uses
- * (pip install + run the entrypoint), and the entrypoint self-serves the 8080
- * HTTP contract.
+ * (run the entrypoint as-is, no install), and the entrypoint self-serves the
+ * 8080 HTTP contract.
  */
 export class LocalInvokeAgentCoreFromS3Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: LocalInvokeAgentCoreFromS3StackProps) {
