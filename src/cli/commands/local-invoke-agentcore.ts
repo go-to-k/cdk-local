@@ -2253,7 +2253,13 @@ export async function loadAgentCoreAssetContext(args: {
  * the classifier treats `undefined` as "force rebuild", which is the
  * conservative default.
  */
-async function deriveOldAssetHash(args: {
+/**
+ * Resolve the CURRENT (pre-reload) asset hash for the runtime, so the per-firing
+ * classifier can compare it against the freshly-synthed hash. Exported so the
+ * `cdkl start-agentcore --watch` reload watcher (issue #454, slice 4b) reuses
+ * the SAME classification inputs as `invoke-agentcore --ws --watch`.
+ */
+export async function deriveOldAssetHash(args: {
   resolvedTarget: string;
   resolved: ResolvedAgentCoreRuntime;
   stacks: StackInfo[];

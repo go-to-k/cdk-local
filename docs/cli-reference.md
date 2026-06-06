@@ -890,12 +890,19 @@ cdkl start-agentcore MyStack/Agent --from-cfn-stack
 | `--container-host <ip>` | `127.0.0.1` | Host IP used to bind the agent container port. |
 | `--timeout <ms>` | `120000` | Container-ready probe timeout (`GET /ping` for HTTP / AGUI; an HTTP-response probe to the protocol path for MCP / A2A). |
 | `--assume-role [arn]` | — | Assume the runtime's execution role and forward STS credentials to the container. |
+| `--watch` | (off) | Re-synth + reload the warm container in place on a CDK source change, keeping the serve up. A per-firing classifier picks rebuild (boot a fresh container on a new port, re-point the serve) vs soft-reload (`docker cp` + `docker restart` the same container) — the same machinery as `start-service` / `invoke-agentcore --ws --watch`. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR. |
 | `--from-cfn-stack [name]` | — | Resolve intrinsic env values / ECR image URIs against a deployed stack. |
 | `--stack-region <region>` | — | Region of the state record (with `--from-cfn-stack`). |
 
-`--watch` (reload on CDK source changes) is a planned follow-up; for now,
-restart the command to pick up local edits. `start-agentcore` is also runnable
+**`--watch`.** On a CDK source change the serve re-synths and reloads the warm
+container **in place** — the host serve stays up, only the container rotates
+(like `start-service`, where the front-door stays and the replicas roll). An
+interpreted-language source-only edit (no Dockerfile / dependency-manifest /
+compiled-source change) `docker cp`s the freshly-synthed source into the running
+container and restarts it (soft-reload, port preserved); a Dockerfile /
+dependency / ambiguous edit boots a fresh container on a new port and re-points
+the serve. `start-agentcore` is also runnable
 from `cdkl studio` (the `agentcore-ws` serve kind, listed as "AgentCore
 (serve)") with an in-browser HTTP request composer against the warm contract
 plus, for HTTP / AGUI runtimes, an interactive WebSocket console.

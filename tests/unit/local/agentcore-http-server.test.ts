@@ -132,6 +132,35 @@ describe('startAgentCoreHttpServer', () => {
     expect(fake!.invocations[0]?.authorization).toBe('Bearer test-token');
   });
 
+  it('setContainerPort re-points the proxy at a new warm container without rebinding (issue #454, slice 4b)', async () => {
+    const s = await boot();
+    const r1 = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{"to":"first"}'
+    );
+    expect(JSON.parse(r1.body).echo).toBe('{"to":"first"}');
+    expect(fake!.invocations).toHaveLength(1);
+
+    // Stand up a SECOND fake container (a rebuild's replacement) and re-point.
+    const second = await startFakeContainer();
+    try {
+      const portBefore = s.port;
+      s.setContainerPort(second.port);
+      const r2 = await httpReq(
+        { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+        '{"to":"second"}'
+      );
+      // The listener port is unchanged; the request now lands on the NEW container.
+      expect(s.port).toBe(portBefore);
+      expect(JSON.parse(r2.body).echo).toBe('{"to":"second"}');
+      expect(second.invocations).toHaveLength(1);
+      // The original container saw no further traffic.
+      expect(fake!.invocations).toHaveLength(1);
+    } finally {
+      await new Promise<void>((res) => second.server.close(() => res()));
+    }
+  });
+
   it('proxies GET /ping', async () => {
     const s = await boot();
     const r = await httpReq({ host: '127.0.0.1', port: s.port, path: '/ping', method: 'GET' });

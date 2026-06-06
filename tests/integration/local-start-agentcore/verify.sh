@@ -53,6 +53,12 @@ JWT_AUD="cdkl-agentcore-aud"
 CDKL_PID=""
 SIDECAR_PID=""
 OUT_FILE="$(mktemp)"
+# Set by the --watch step (step 11): the agent source + Dockerfile it edits +
+# their backups, so cleanup always restores the committed fixture even on abort.
+AGENT_SRC=""
+AGENT_SRC_BACKUP=""
+AGENT_DOCKERFILE=""
+AGENT_DOCKERFILE_BACKUP=""
 
 stop_server() {
   if [ -n "${CDKL_PID}" ] && kill -0 "${CDKL_PID}" 2>/dev/null; then
@@ -72,10 +78,24 @@ stop_sidecar() {
   SIDECAR_PID=""
 }
 
+restore_source() {
+  if [ -n "${AGENT_SRC_BACKUP}" ] && [ -f "${AGENT_SRC_BACKUP}" ]; then
+    cp "${AGENT_SRC_BACKUP}" "${AGENT_SRC}" 2>/dev/null || true
+    rm -f "${AGENT_SRC_BACKUP}"
+  fi
+  AGENT_SRC_BACKUP=""
+  if [ -n "${AGENT_DOCKERFILE_BACKUP}" ] && [ -f "${AGENT_DOCKERFILE_BACKUP}" ]; then
+    cp "${AGENT_DOCKERFILE_BACKUP}" "${AGENT_DOCKERFILE}" 2>/dev/null || true
+    rm -f "${AGENT_DOCKERFILE_BACKUP}"
+  fi
+  AGENT_DOCKERFILE_BACKUP=""
+}
+
 cleanup() {
   rc=$?
   stop_server
   stop_sidecar
+  restore_source
   rm -f "${OUT_FILE}"
   exit "${rc}"
 }
@@ -291,4 +311,80 @@ echo "[verify]   --sigv4 OK: forwarded request carried an AWS4-HMAC-SHA256 Autho
 stop_server
 assert_no_orphans "sigv4 serve shutdown"
 
-echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), and --sigv4 signing — each against one warm container — and cleaned up"
+echo "[verify] step 11: --watch reloads the warm container in place on a source edit (#454 slice 4b)"
+AGENT_SRC="${TEST_DIR}/agent/server.js"
+AGENT_SRC_BACKUP="$(mktemp)"
+cp "${AGENT_SRC}" "${AGENT_SRC_BACKUP}"
+
+# Boot the HTTP serve with --watch (watches the fixture cwd for source edits).
+: > "${OUT_FILE}"
+${CLI} start-agentcore "${TARGET}" --host 127.0.0.1 --port 0 --watch > "${OUT_FILE}" 2>&1 &
+CDKL_PID=$!
+WATCH_HTTP_URL="$(wait_for_ready 'HTTP contract served on http://[^ ]+' || true)"
+WATCH_HTTP_URL="${WATCH_HTTP_URL#HTTP contract served on }"
+[ -n "${WATCH_HTTP_URL}" ] || fail "--watch serve did not print its HTTP contract URL"
+echo "[verify]   watch http: ${WATCH_HTTP_URL}"
+# Confirm the watcher started.
+grep -q 'Watching .* for source changes' "${OUT_FILE}" || fail "--watch did not start the file watcher"
+
+# Pre-edit: the response does NOT carry the watch marker.
+R_PRE="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"pre-reload"}')"
+echo "${R_PRE}" | grep -q 'WATCH-V2' && fail "watchVersion present before the edit: ${R_PRE}"
+
+# Edit the agent source (interpreted-language handler, no Dockerfile change) so
+# the classifier picks soft-reload: inject a watchVersion field into the
+# /invocations response.
+node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'utf8');s=s.replace(/greeting: process.env.GREETING \?\? 'unset',/g, \"greeting: process.env.GREETING ?? 'unset', watchVersion: 'WATCH-V2',\");fs.writeFileSync(f,s);"
+
+# Wait until the Nth "Reload complete." line appears (re-synth + classify +
+# reload + ready). Fails if the serve exits or the count never reaches N.
+wait_reload_count() {
+  local want="$1"
+  for _ in $(seq 1 300); do
+    [ "$(grep -c 'Reload complete.' "${OUT_FILE}" 2>/dev/null || echo 0)" -ge "${want}" ] && return 0
+    kill -0 "${CDKL_PID}" 2>/dev/null || fail "--watch serve exited during reload"
+    sleep 0.5
+  done
+  return 1
+}
+
+# Reload 1 (soft-reload): the source-only edit flips the asset hash.
+wait_reload_count 1 || fail "--watch did not complete the first reload within 150s"
+[ "$(grep -c 'verdict=soft-reload' "${OUT_FILE}")" -ge 1 ] \
+  || fail "expected verdict=soft-reload for a source-only edit"
+R_POST="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload-1"}')"
+echo "${R_POST}" | grep -q 'WATCH-V2' || fail "reloaded serve did not serve the new code: ${R_POST}"
+echo "[verify]   reload 1 OK: verdict=soft-reload -> WATCH-V2 served on the SAME serve port"
+
+# Reload 2 (soft-reload again) — proves the asset hash ADVANCES per reload: the
+# old hash is now WATCH-V2's, so a WATCH-V2 -> WATCH-V3 edit still flips it. If
+# the old hash had not advanced (stuck at boot), this would misclassify.
+node -e "const f='${AGENT_SRC}';const fs=require('fs');let s=fs.readFileSync(f,'utf8');s=s.replace(/WATCH-V2/g,'WATCH-V3');fs.writeFileSync(f,s);"
+wait_reload_count 2 || fail "--watch did not complete the second reload within 150s"
+[ "$(grep -c 'verdict=soft-reload' "${OUT_FILE}")" -ge 2 ] \
+  || fail "expected a SECOND verdict=soft-reload (asset hash did not advance)"
+R_POST2="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-reload-2"}')"
+echo "${R_POST2}" | grep -q 'WATCH-V3' || fail "second reload did not serve WATCH-V3: ${R_POST2}"
+echo "[verify]   reload 2 OK: hash advanced -> second soft-reload -> WATCH-V3 served"
+
+# Reload 3 (REBUILD): a Dockerfile edit forces the rebuild path (the classifier
+# routes a Dockerfile change to rebuild). The rebuild boots a fresh container on
+# a NEW port with the CURRENT source (WATCH-V3) and re-points the live serve.
+AGENT_DOCKERFILE="${TEST_DIR}/agent/Dockerfile"
+AGENT_DOCKERFILE_BACKUP="$(mktemp)"
+cp "${AGENT_DOCKERFILE}" "${AGENT_DOCKERFILE_BACKUP}"
+printf '\n# cdkl --watch rebuild marker\n' >> "${AGENT_DOCKERFILE}"
+wait_reload_count 3 || fail "--watch did not complete the third (rebuild) reload within 150s"
+grep -q 'verdict=rebuild' "${OUT_FILE}" || fail "expected verdict=rebuild for a Dockerfile edit"
+grep -q 'rebuilt the agent container; serve re-pointed' "${OUT_FILE}" \
+  || fail "rebuild did not re-point the serve to the new container"
+R_POST3="$(curl -s -X POST "${WATCH_HTTP_URL}/invocations" -d '{"q":"post-rebuild"}')"
+echo "${R_POST3}" | grep -q 'WATCH-V3' \
+  || fail "rebuild did not serve the current code on the re-pointed serve: ${R_POST3}"
+echo "[verify]   reload 3 OK: verdict=rebuild -> serve re-pointed to a new container -> WATCH-V3 served"
+
+stop_server
+restore_source
+assert_no_orphans "--watch serve shutdown"
+
+echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), --sigv4 signing, and --watch reload (soft-reload x2 with hash-advance + rebuild re-point) — each against one warm container — and cleaned up"

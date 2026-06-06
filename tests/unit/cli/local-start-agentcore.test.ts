@@ -38,6 +38,7 @@ describe('createLocalStartAgentCoreCommand', () => {
       '--bearer-token',
       '--no-verify-auth',
       '--sigv4',
+      '--watch',
       '--env-vars',
       '--platform',
       '--no-pull',
