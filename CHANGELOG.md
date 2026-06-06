@@ -1,3 +1,10 @@
+## [0.134.1](https://github.com/go-to-k/cdk-local/compare/v0.134.0...v0.134.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **invoke-agentcore:** don't install deps for CodeConfiguration builds; warn to vendor ([#456](https://github.com/go-to-k/cdk-local/issues/456)) ([7e49b29](https://github.com/go-to-k/cdk-local/commit/7e49b29d8f70f925defe8ee1bc1c1f48d8af4ad7))
+
 # [0.134.0](https://github.com/go-to-k/cdk-local/compare/v0.133.0...v0.134.0) (2026-06-06)
 
 
