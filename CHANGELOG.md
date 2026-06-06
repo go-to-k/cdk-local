@@ -1,3 +1,10 @@
+## [0.139.1](https://github.com/go-to-k/cdk-local/compare/v0.139.0...v0.139.1) (2026-06-06)
+
+
+### Bug Fixes
+
+* **studio:** symmetric AgentCore (invoke)/(serve) group names + drop dead invoke row button ([#463](https://github.com/go-to-k/cdk-local/issues/463)) ([a80954d](https://github.com/go-to-k/cdk-local/commit/a80954d3278e1953b06ced13eeb8a62e65edcccf))
+
 # [0.139.0](https://github.com/go-to-k/cdk-local/compare/v0.138.0...v0.139.0) (2026-06-06)
 
 
