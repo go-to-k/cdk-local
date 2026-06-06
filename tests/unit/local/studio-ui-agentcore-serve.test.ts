@@ -19,6 +19,7 @@ const EXPOSE = `
 window.__t = {
   renderServeWorkspace: renderServeWorkspace,
   renderRequestComposer: renderRequestComposer,
+  loadTargets: loadTargets,
   serveState: serveState,
   serveMeta: serveMeta,
 };
@@ -34,8 +35,9 @@ interface AcHarness extends StudioHarness {
         captured: boolean,
         defaults?: { method?: string; path?: string }
       ) => HTMLElement;
+      loadTargets: () => Promise<void>;
       serveState: Map<string, unknown>;
-      serveMeta: Map<string, unknown>;
+      serveMeta: Map<string, { agentCoreHasWs?: boolean; agentCoreContractPath?: string | null }>;
     };
   };
 }
@@ -121,5 +123,55 @@ describe('studio agentcore-ws serve workspace (issue #454)', () => {
     const sec = harness.window.__t.renderRequestComposer('S/Api', 'http://127.0.0.1:9999', true);
     expect((sec.querySelector('.req-method') as HTMLSelectElement).value).toBe('GET');
     expect((sec.querySelector('.req-path') as HTMLInputElement).value).toBe('/');
+  });
+
+  it('loadTargets copies agentCoreHasWs + agentCoreContractPath from the target JSON into serveMeta', async () => {
+    // Covers the entry -> serveMeta hop the direct-seed tests above bypass: the
+    // `/api/targets` projection carries agentCoreHasWs + agentCoreContractPath,
+    // and the targets-pane render must thread them onto serveMeta so the serve
+    // workspace can gate the WS console + seed the composer path per protocol.
+    harness = createStudioHarness({ epilogue: EXPOSE }) as AcHarness;
+    const win = harness.window as AcHarness['window'];
+    (win as unknown as { fetch: unknown }).fetch = (url: string) => {
+      if (url === '/api/targets') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              groups: [
+                {
+                  kind: 'agentcore-ws',
+                  title: 'AgentCore (serve)',
+                  entries: [
+                    {
+                      id: 'S/Http',
+                      qualifiedId: 'S:Http',
+                      agentCoreHasWs: true,
+                      agentCoreContractPath: '/invocations',
+                    },
+                    {
+                      id: 'S/Mcp',
+                      qualifiedId: 'S:Mcp',
+                      agentCoreHasWs: false,
+                      agentCoreContractPath: '/mcp',
+                    },
+                  ],
+                },
+              ],
+              dockerfiles: [],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+
+    await win.__t.loadTargets();
+
+    const http = win.__t.serveMeta.get('S/Http');
+    const mcp = win.__t.serveMeta.get('S/Mcp');
+    expect(http?.agentCoreHasWs).toBe(true);
+    expect(http?.agentCoreContractPath).toBe('/invocations');
+    expect(mcp?.agentCoreHasWs).toBe(false);
+    expect(mcp?.agentCoreContractPath).toBe('/mcp');
   });
 });

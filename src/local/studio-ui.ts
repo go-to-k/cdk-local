@@ -1343,10 +1343,15 @@ const STUDIO_SCRIPT = `
       ws.appendChild(renderRequestComposer(id, httpBase, captured, composerDefaults));
     }
 
-    // A served WebSocket API exposes a ws:// endpoint — attach a WebSocket
-    // console so the browser can connect + exchange frames (issue #303).
+    // A served WebSocket endpoint (an API Gateway WebSocket API, or an HTTP /
+    // AGUI AgentCore runtime's /ws bridge) gets a WebSocket console so the
+    // browser can connect + exchange frames (issue #303). For an agentcore
+    // serve the console is gated on agentCoreHasWs (HTTP / AGUI expose /ws;
+    // MCP / A2A do not — issue #454); the ws:// endpoint the serve advertises
+    // already encodes that, so this guard is belt-and-suspenders with the spec.
     const wsEndpoint = running ? (st.endpoints || []).find((u) => /^wss?:/.test(u)) : null;
-    if (wsEndpoint) {
+    const wsServable = !meta || meta.kind !== 'agentcore-ws' || meta.agentCoreHasWs === true;
+    if (wsEndpoint && wsServable) {
       ws.appendChild(renderWsConsole(wsEndpoint));
     }
 
