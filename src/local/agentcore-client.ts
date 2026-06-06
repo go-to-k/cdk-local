@@ -116,6 +116,60 @@ async function pingProbe(
 }
 
 /**
+ * Wait until the container's HTTP server on `host:port` answers a probe `POST`
+ * at `path` with ANY HTTP status, or throw after `timeoutMs`. This is the
+ * readiness gate for the MCP / A2A warm serve (`cdkl start-agentcore`), which —
+ * unlike the HTTP / AGUI protocol — have no `GET /ping`: an HTTP response (even
+ * a 4xx for the probe's empty body) proves the app's HTTP server is bound and
+ * routing the protocol path, so the warm serve can advertise its endpoint
+ * without racing container boot. Only transient connect failures (the
+ * container still coming up) are retried; the probe does NOT interpret the
+ * protocol — the real client drives the MCP handshake / A2A JSON-RPC through
+ * the serve.
+ *
+ * A TCP-only probe would be too early (Docker's port forwarder accepts the
+ * connection before the agent's HTTP server binds); an HTTP response is the
+ * honest "the app is up" signal.
+ */
+export async function waitForAgentCoreHttpReady(
+  host: string,
+  port: number,
+  path: string,
+  timeoutMs = 30_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastDetail = '';
+
+  while (Date.now() < deadline) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1000);
+    try {
+      const response = await fetch(`http://${host}:${port}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        signal: controller.signal,
+      });
+      await response.text().catch(() => undefined);
+      // Any HTTP status means the server is bound and routing — ready.
+      return;
+    } catch (err) {
+      if (!isTransientNetworkError(err)) throw err;
+      lastDetail = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(timer);
+    }
+    await delay(150);
+  }
+
+  const tail = lastDetail ? `: ${lastDetail}` : '';
+  throw new Error(
+    `AgentCore agent did not become ready on ${host}:${port} within ${timeoutMs}ms${tail}. ` +
+      `The container may have exited early or may not serve POST ${path} — check 'docker logs' output.`
+  );
+}
+
+/**
  * `fetch()` failures during container boot manifest as a generic
  * `TypeError: fetch failed` whose `.cause` carries the underlying Node
  * `ECONNRESET` / `ECONNREFUSED` / `UND_ERR_SOCKET`. Treat all of those —

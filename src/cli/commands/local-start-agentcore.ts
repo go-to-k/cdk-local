@@ -29,11 +29,13 @@ import {
   AGENTCORE_MCP_PROTOCOL,
   pickAgentCoreCandidateStack,
   resolveAgentCoreTarget,
-  type ResolvedAgentCoreRuntime,
 } from '../../local/agentcore-resolver.js';
-import { waitForAgentCorePing } from '../../local/agentcore-client.js';
+import { waitForAgentCorePing, waitForAgentCoreHttpReady } from '../../local/agentcore-client.js';
+import { MCP_CONTAINER_PORT, MCP_PATH } from '../../local/agentcore-mcp-client.js';
+import { A2A_CONTAINER_PORT, A2A_PATH } from '../../local/agentcore-a2a-client.js';
 import {
   startAgentCoreHttpServer,
+  type AgentCoreServeRoute,
   type RunningAgentCoreHttpServer,
 } from '../../local/agentcore-http-server.js';
 import {
@@ -61,14 +63,14 @@ import {
 /**
  * Options for `cdkl start-agentcore`. A superset of the single-shot
  * `invoke-agentcore` options (so the shared boot / env / auth / image helpers
- * can be reused verbatim) plus the bridge-server bind controls. The
- * invoke-only fields (`--ws` / `--sigv4` / `--event` / `--event-stdin`) are
- * absent — this command never single-shots; it serves the `/ws` endpoint.
+ * can be reused verbatim) plus the serve bind controls. The invoke-only fields
+ * (`--ws` / `--sigv4` / `--event` / `--event-stdin`) are absent — this command
+ * never single-shots; it keeps the container warm and serves its contract.
  */
 interface LocalStartAgentCoreOptions extends LocalInvokeAgentCoreOptions {
-  /** Bridge-server bind port (`--port`, default 0 = OS-assigned). */
+  /** Serve bind port (`--port`, default 0 = OS-assigned). */
   port: number;
-  /** Bridge-server bind host (`--host`, default 127.0.0.1). */
+  /** Serve bind host (`--host`, default 127.0.0.1). */
   host: string;
 }
 
@@ -84,44 +86,90 @@ function parsePort(raw: string): number {
 }
 
 /**
- * Reject MCP / A2A runtimes: the `/ws` WebSocket endpoint this command serves
- * exists only on the HTTP / AGUI protocols. MCP (`POST /mcp`) and A2A
- * (`POST /`) are single-shot request/response contracts with no bidirectional
- * socket. Exported so a unit test can drive the gate without the Docker
- * pipeline.
+ * How `cdkl start-agentcore` serves a warm container for a given runtime
+ * protocol. The HTTP serve proxy is protocol-agnostic — only the published
+ * container port, the routing table, the `/ws`-attach decision, and the
+ * readiness probe differ per protocol. Exported so a unit test can lock the
+ * per-protocol mapping without the Docker pipeline.
  */
-export function assertAgentCoreWsServable(
-  resolved: Pick<ResolvedAgentCoreRuntime, 'protocol' | 'logicalId'>
-): void {
-  if (
-    resolved.protocol === AGENTCORE_MCP_PROTOCOL ||
-    resolved.protocol === AGENTCORE_A2A_PROTOCOL
-  ) {
-    throw new CdkLocalError(
-      `${getEmbedConfig().cliName} start-agentcore serves the HTTP / AGUI /ws WebSocket endpoint, but ` +
-        `'${resolved.logicalId}' is a ${resolved.protocol} runtime, which has no /ws. ` +
-        `Use \`${getEmbedConfig().cliName} invoke-agentcore\` for ${resolved.protocol} runtimes.`,
-      'LOCAL_START_AGENTCORE_PROTOCOL_UNSUPPORTED'
-    );
+export interface AgentCoreServePlan {
+  /**
+   * Container port the host port maps to (`runDetached.containerPort`), or
+   * `undefined` to use the default 8080 (HTTP / AGUI).
+   */
+  containerPort: number | undefined;
+  /** Human label for the boot log (`<port>` or `<port><path>`). */
+  containerPortLabel: string;
+  /** `{method, path}` pairs the serve forwards to the warm container. */
+  routes: AgentCoreServeRoute[];
+  /** Whether to attach the `/ws` bridge (HTTP / AGUI only). */
+  attachWs: boolean;
+  /**
+   * Path for the post-boot HTTP readiness probe (MCP / A2A, which have no
+   * `GET /ping`), or `undefined` to use the `GET /ping` wait (HTTP / AGUI).
+   */
+  readyPath: string | undefined;
+}
+
+/**
+ * Map a resolved runtime's protocol to its warm-serve plan. All four protocols
+ * are served (issue #454): HTTP / AGUI on 8080 (`POST /invocations` + `GET
+ * /ping` + the `/ws` bridge), MCP on 8000 (`POST /mcp`), A2A on 9000
+ * (`POST /`). MCP / A2A are pure request/response pass-through with no `/ws`.
+ */
+export function resolveAgentCoreServePlan(protocol: string): AgentCoreServePlan {
+  if (protocol === AGENTCORE_MCP_PROTOCOL) {
+    return {
+      containerPort: MCP_CONTAINER_PORT,
+      containerPortLabel: `${MCP_CONTAINER_PORT}${MCP_PATH}`,
+      routes: [{ method: 'POST', path: MCP_PATH }],
+      attachWs: false,
+      readyPath: MCP_PATH,
+    };
   }
+  if (protocol === AGENTCORE_A2A_PROTOCOL) {
+    return {
+      containerPort: A2A_CONTAINER_PORT,
+      containerPortLabel: `${A2A_CONTAINER_PORT}${A2A_PATH}`,
+      routes: [{ method: 'POST', path: A2A_PATH }],
+      attachWs: false,
+      readyPath: A2A_PATH,
+    };
+  }
+  // HTTP / AGUI: 8080, the default routes (POST /invocations + GET /ping) +
+  // the /ws bridge, GET /ping readiness.
+  return {
+    containerPort: undefined,
+    containerPortLabel: '8080',
+    routes: [
+      { method: 'POST', path: '/invocations' },
+      { method: 'GET', path: '/ping' },
+    ],
+    attachWs: true,
+    readyPath: undefined,
+  };
 }
 
 /**
  * `cdkl start-agentcore <target>` — boot a Bedrock AgentCore Runtime container
- * locally and serve its bidirectional `/ws` WebSocket endpoint behind a
- * long-running host bridge, so a browser (or any WebSocket client) can hold an
- * interactive multi-frame session against it.
+ * locally ONCE, keep it warm, and serve its native contract on one host port
+ * until SIGINT / SIGTERM, so a client can hit the agent repeatedly against the
+ * SAME warm container (issue #454).
  *
- * Why a bridge rather than the published container port directly: the
- * AgentCore `/ws` upgrade requires the session-id (and, under a
- * `customJwtAuthorizer`, `Authorization`) header, which a browser `WebSocket`
- * cannot set. The bridge accepts a header-less client and injects those
- * headers on the container leg. HTTP / AGUI protocols only — MCP / A2A
- * runtimes have no `/ws`.
+ * All four protocols are served (the proxy is protocol-agnostic; only the
+ * routing + readiness differ per {@link resolveAgentCoreServePlan}):
+ *  - HTTP / AGUI (8080): `POST /invocations` + `GET /ping`, plus the
+ *    bidirectional `/ws` endpoint behind a host bridge. The `/ws` upgrade
+ *    requires the session-id (and, under a `customJwtAuthorizer`,
+ *    `Authorization`) header a browser `WebSocket` cannot set, so the bridge
+ *    accepts a header-less client and injects those headers on the container
+ *    leg.
+ *  - MCP (8000): `POST /mcp`. A2A (9000): `POST /`. No `/ws` — pure
+ *    request/response pass-through (the client drives the handshake).
  *
  * The container is booted once via the SAME image / env / auth resolution as
  * `cdkl invoke-agentcore`; the process then blocks until SIGINT / SIGTERM,
- * tearing down the bridge and the container.
+ * tearing down the serve and the container.
  */
 async function localStartAgentCoreCommand(
   target: string | undefined,
@@ -241,13 +289,14 @@ async function localStartAgentCoreCommand(
   const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
   logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
 
-  // The /ws WebSocket endpoint exists only on the HTTP / AGUI protocols.
-  assertAgentCoreWsServable(resolved);
+  // Protocol -> warm-serve plan (container port + routes + /ws-attach +
+  // readiness). All four protocols are served (issue #454).
+  const plan = resolveAgentCoreServePlan(resolved.protocol);
 
   // Inbound JWT auth: when the runtime declares a customJwtAuthorizer, verify
   // the supplied --bearer-token against its OIDC discovery URL BEFORE any
-  // Docker work and resolve the Authorization header the bridge injects on the
-  // container leg (the bridge speaks to the same authorizer the cloud would).
+  // Docker work and resolve the Authorization header injected on every
+  // forwarded request + /ws leg (the same authorizer the cloud would speak to).
   const authorization = await resolveInboundAuthorization(resolved, options);
 
   // Resolve a fromS3 bundle's intrinsic bucket before the image step.
@@ -270,7 +319,9 @@ async function localStartAgentCoreCommand(
   // name=cdkl-`) used by `/cleanup` + `/run-integ` finds this long-lived
   // container if the process is killed before teardown.
   const containerName = `${getEmbedConfig().resourceNamePrefix}-agentcore-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  logger.info(`Starting agent container (image=${image}, port=${containerHostPort} -> 8080)...`);
+  logger.info(
+    `Starting agent container (image=${image}, port=${containerHostPort} -> ${plan.containerPortLabel})...`
+  );
   containerId = await runDetached({
     image,
     mounts: [],
@@ -280,14 +331,16 @@ async function localStartAgentCoreCommand(
     host: containerHost,
     platform: options.platform,
     name: containerName,
+    // MCP / A2A publish the host port to 8000 / 9000 (HTTP / AGUI -> 8080).
+    ...(plan.containerPort !== undefined && { containerPort: plan.containerPort }),
     ...(sensitiveEnvKeys.size > 0 && { sensitiveEnvKeys }),
   });
   stopLogs = streamLogs(containerId);
 
   // Wire the shutdown handlers NOW — immediately after the container is booted,
-  // BEFORE the (potentially slow) /ping wait + bridge bind — so a SIGINT /
+  // BEFORE the (potentially slow) readiness wait + serve bind — so a SIGINT /
   // SIGTERM arriving during boot still tears the container down instead of
-  // orphaning it. `teardown` is null-safe (the bridge may not exist yet) and
+  // orphaning it. `teardown` is null-safe (the server may not exist yet) and
   // idempotent, so the boot-error catch below and a racing signal cannot
   // double-tear-down.
   const shutdown = async (signal: string, exitCode: number): Promise<void> => {
@@ -300,15 +353,28 @@ async function localStartAgentCoreCommand(
   process.on('SIGINT', () => void shutdown('SIGINT', 130));
   process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
 
-  // A failure in the post-boot setup (/ping wait or server bind) must stop the
-  // booted container before rethrowing.
+  // A failure in the post-boot setup (readiness wait or server bind) must stop
+  // the booted container before rethrowing.
   try {
-    await waitForAgentCorePing(containerHost, containerHostPort, options.timeout);
+    // HTTP / AGUI wait on GET /ping; MCP / A2A (no /ping) wait on an HTTP
+    // response to the protocol path.
+    if (plan.readyPath === undefined) {
+      await waitForAgentCorePing(containerHost, containerHostPort, options.timeout);
+    } else {
+      await waitForAgentCoreHttpReady(
+        containerHost,
+        containerHostPort,
+        plan.readyPath,
+        options.timeout
+      );
+    }
     server = await startAgentCoreHttpServer({
       containerHost,
       containerPort: containerHostPort,
       host: options.host,
       port: options.port,
+      routes: plan.routes,
+      attachWs: plan.attachWs,
       ...(authorization && { authorization }),
       ...(options.sessionId && { sessionId: options.sessionId }),
     });
@@ -317,15 +383,26 @@ async function localStartAgentCoreCommand(
     throw err;
   }
 
-  // The warm container serves its HTTP contract (POST /invocations + GET /ping)
-  // AND the /ws bridge on one port (issue #454). The `Server listening on
-  // ws://...` line is kept verbatim so studio's serve-manager readyRe still
-  // captures the ws:// endpoint for its WebSocket console; the HTTP line below
-  // points humans / curl at the request endpoints.
-  logger.info(`Server listening on ${server.wsUrl}  (${resolved.logicalId} (AgentCore WebSocket))`);
-  logger.info(
-    `HTTP contract served on ${server.httpUrl} — POST ${server.httpUrl}/invocations, GET ${server.httpUrl}/ping`
-  );
+  // Ready lines. For HTTP / AGUI the warm container serves its HTTP contract
+  // (POST /invocations + GET /ping) AND the /ws bridge on one port; the
+  // `Server listening on ws://...` line is kept VERBATIM so studio's
+  // serve-manager readyRe still captures the ws:// endpoint for its WebSocket
+  // console, and the HTTP line points humans / curl at the request endpoints.
+  // MCP / A2A have no /ws, so they print the http:// listen line + the protocol
+  // contract path instead.
+  if (server.wsUrl) {
+    logger.info(
+      `Server listening on ${server.wsUrl}  (${resolved.logicalId} (AgentCore WebSocket))`
+    );
+    logger.info(
+      `HTTP contract served on ${server.httpUrl} — POST ${server.httpUrl}/invocations, GET ${server.httpUrl}/ping`
+    );
+  } else {
+    const contractPath = plan.routes[0]?.path ?? '/';
+    const contractUrl = `${server.httpUrl}${contractPath}`;
+    logger.info(`Server listening on ${server.httpUrl}  (${resolved.logicalId})`);
+    logger.info(`${resolved.protocol} contract served on ${contractUrl} — POST ${contractUrl}`);
+  }
   logger.info('Press ^C to shut down.');
 
   // Block forever — signal handlers exit the process.
@@ -339,10 +416,12 @@ export interface CreateLocalStartAgentCoreCommandOptions {
 }
 
 /**
- * `cdkl start-agentcore <target>` — long-running serve for a Bedrock AgentCore
- * Runtime's `/ws` WebSocket endpoint, fronted by a host bridge that injects the
- * session-id / Authorization upgrade headers a browser `WebSocket` cannot set.
- * The serve counterpart of the single-shot `cdkl invoke-agentcore`; the studio
+ * `cdkl start-agentcore <target>` — long-running warm serve for a Bedrock
+ * AgentCore Runtime. Boots the container once and serves its native contract on
+ * one host port: HTTP / AGUI get `POST /invocations` + `GET /ping` plus the
+ * `/ws` bridge (which injects the session-id / Authorization upgrade headers a
+ * browser `WebSocket` cannot set), MCP gets `POST /mcp`, A2A gets `POST /`. The
+ * serve counterpart of the single-shot `cdkl invoke-agentcore`; the studio
  * `agentcore-ws` serve kind spawns this command.
  */
 export function createLocalStartAgentCoreCommand(
@@ -351,14 +430,15 @@ export function createLocalStartAgentCoreCommand(
   setEmbedConfig(opts.embedConfig);
   const cmd = new Command('start-agentcore')
     .description(
-      "Serve a Bedrock AgentCore Runtime's bidirectional /ws WebSocket endpoint locally for an " +
-        'interactive multi-frame session. Boots the AWS::BedrockAgentCore::Runtime container (same ' +
-        'image / env / credential resolution as invoke-agentcore), then runs a host WebSocket bridge ' +
-        'that injects the AgentCore session-id (and Authorization under a customJwtAuthorizer) on the ' +
-        'container upgrade so a header-less client (e.g. a browser) can connect. HTTP / AGUI protocols ' +
-        'only (MCP / A2A runtimes have no /ws). Target accepts a CDK display path (MyStack/MyAgent) or ' +
-        'stack-qualified logical ID; single-stack apps may omit the prefix. Omit <target> in a TTY to ' +
-        'pick from a list. Runs until ^C.'
+      "Serve a Bedrock AgentCore Runtime's contract locally against a warm container. Boots the " +
+        'AWS::BedrockAgentCore::Runtime container ONCE (same image / env / credential resolution as ' +
+        'invoke-agentcore) and keeps it warm, so a client can hit it repeatedly. HTTP / AGUI runtimes ' +
+        'serve POST /invocations + GET /ping plus the bidirectional /ws endpoint behind a host bridge ' +
+        '(injects the AgentCore session-id, and Authorization under a customJwtAuthorizer, so a ' +
+        'header-less client like a browser can connect); MCP runtimes serve POST /mcp, A2A POST /. ' +
+        'Target accepts a CDK display path (MyStack/MyAgent) or stack-qualified logical ID; ' +
+        'single-stack apps may omit the prefix. Omit <target> in a TTY to pick from a list. Runs ' +
+        'until ^C.'
     )
     .argument(
       '[target]',
@@ -388,19 +468,19 @@ export function addStartAgentCoreSpecificOptions(cmd: Command): Command {
     .addOption(
       new Option(
         '--port <n>',
-        'Bridge-server bind port the client (browser) connects to. Default 0 (OS-assigned).'
+        'Serve bind port the client connects to (HTTP contract + /ws on the same port). Default 0 (OS-assigned).'
       )
         .default(0)
         .argParser(parsePort)
     )
     .addOption(
-      new Option('--host <ip>', 'Bridge-server bind host. Default 127.0.0.1.').default('127.0.0.1')
+      new Option('--host <ip>', 'Serve bind host. Default 127.0.0.1.').default('127.0.0.1')
     )
     .addOption(
       new Option(
         '--session-id <id>',
-        'Pin one AgentCore runtime session id header value for every connection ' +
-          '(default: a fresh random UUID per connection, so each client is its own session).'
+        'Pin one AgentCore runtime session id header value for every forwarded request / /ws ' +
+          'connection (default: a fresh random UUID each, so each is its own session).'
       )
     )
     .addOption(
@@ -408,7 +488,7 @@ export function addStartAgentCoreSpecificOptions(cmd: Command): Command {
         '--bearer-token <jwt>',
         'Bearer JWT to present when the runtime declares a customJwtAuthorizer. Verified against ' +
           "the runtime's OIDC discovery URL before the container starts, then injected as " +
-          'Authorization: Bearer <jwt> on the container /ws upgrade for every bridged connection.'
+          'Authorization: Bearer <jwt> on every forwarded request and the container /ws upgrade.'
       )
     )
     .addOption(

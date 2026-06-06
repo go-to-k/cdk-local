@@ -18,7 +18,7 @@ cdk-local has eight subcommands, all under the `cdkl` binary:
 | `cdkl run-task <target>` | ECS `RunTask` for one task | docker network + ECS metadata sidecar (`amazon/amazon-ecs-local-container-endpoints`) |
 | `cdkl start-service <targets...>` | Long-running ECS `Service` emulator (replicas only, no load balancer) | `run-task` machinery per replica + shared docker network + restart-on-exit watcher |
 | `cdkl start-alb <targets...>` | ECS service(s) behind an ALB + a local front-door on each listener port | `start-service` machinery + host-side `node:http` reverse proxy round-robining the replicas |
-| `cdkl start-agentcore <target>` | Long-running warm serve of an HTTP / AGUI AgentCore Runtime — `POST /invocations` + `GET /ping` (repeatable, against one warm container) **and** the `/ws` WebSocket endpoint | Agent container (booted once, kept warm) + a host HTTP server proxying `/invocations` / `/ping` and a `/ws` bridge that injects the session-id / `Authorization` headers a browser can't set, all on one port |
+| `cdkl start-agentcore <target>` | Long-running warm serve of an AgentCore Runtime — HTTP / AGUI (`POST /invocations` + `GET /ping` **and** the `/ws` WebSocket endpoint), MCP (`POST /mcp`), or A2A (`POST /`), all repeatable against one warm container | Agent container (booted once, kept warm) + a host HTTP server proxying the protocol's routes, plus (HTTP / AGUI only) a `/ws` bridge that injects the session-id / `Authorization` headers a browser can't set, all on one port |
 | `cdkl studio` | Interactive web console over every runnable target — invoke / serve from the browser, watch a live activity timeline | `node:http` server hosting the embedded UI; spawns the same `invoke` / `start-api` / `start-alb` / `start-service` runners as child processes |
 
 The run commands (`invoke` / `invoke-agentcore` / `start-api` / `run-task` /
@@ -822,21 +822,36 @@ the container `/ws` with those headers injected — a fresh session-id UUID per
 inbound connection (so each browser tab is its own AgentCore session), unless
 `--session-id` pins one.
 
-It prints `Server listening on ws://127.0.0.1:<port>/ws` and `HTTP contract
-served on http://127.0.0.1:<port>` ready lines and runs until `^C`.
+For HTTP / AGUI it prints `Server listening on ws://127.0.0.1:<port>/ws` and
+`HTTP contract served on http://127.0.0.1:<port>` ready lines and runs until
+`^C`.
 
-**Protocols.** HTTP and AGUI runtimes only. MCP (`POST /mcp` on 8000) and A2A
-(`POST /` on 9000) are not served by this command and are rejected up front
-with an actionable error (use `cdkl invoke-agentcore` for those).
+**Protocols.** All four are served. HTTP and AGUI runtimes get
+`POST /invocations` + `GET /ping` plus the `/ws` bridge above. **MCP** runtimes
+serve `POST /mcp` and **A2A** runtimes serve `POST /` — both pure
+request/response pass-through (the client drives the JSON-RPC; the serve does
+not interpret the protocol) with **no** `/ws`, so they print a
+`Server listening on http://127.0.0.1:<port>` line plus a
+`<PROTOCOL> contract served on http://127.0.0.1:<port><path>` line. MCP / A2A
+have no `GET /ping`, so the warm-serve readiness gate is an HTTP-response probe
+to the protocol path instead.
 
 ```bash
 # Pick an AgentCore Runtime interactively (TTY), serve it on a free port
 cdkl start-agentcore
 
-# Serve a named runtime on a fixed port, then hit it repeatedly:
+# Serve a named HTTP runtime on a fixed port, then hit it repeatedly:
 cdkl start-agentcore MyStack/Agent --port 8080
 curl -X POST http://127.0.0.1:8080/invocations -d '{"prompt":"hello"}'
 curl -X POST http://127.0.0.1:8080/invocations -d '{"prompt":"again"}'   # same warm container
+
+# Serve an MCP runtime warm and drive its JSON-RPC contract repeatedly:
+cdkl start-agentcore MyStack/McpAgent --port 8000
+curl -X POST http://127.0.0.1:8000/mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# Serve an A2A runtime warm (POST / on the root):
+cdkl start-agentcore MyStack/A2aAgent --port 9000
+curl -X POST http://127.0.0.1:9000/ -d '{"jsonrpc":"2.0","id":1,"method":"agent/getCard"}'
 
 # Forward a bearer token (verified against the runtime's OIDC discovery URL)
 # on every forwarded request + bridged container upgrade
@@ -851,13 +866,13 @@ cdkl start-agentcore MyStack/Agent --from-cfn-stack
 | `--port <n>` | `0` | Serve bind port the client connects to — HTTP `/invocations` / `/ping` + `/ws`, same port (0 = OS-assigned). |
 | `--host <ip>` | `127.0.0.1` | Serve bind host. |
 | `--session-id <id>` | random UUID per request / connection | Pin one AgentCore session-id header value for every forwarded request + `/ws` connection. |
-| `--bearer-token <jwt>` | — | Bearer JWT for a `customJwtAuthorizer`; verified against the runtime's OIDC discovery URL, then injected as `Authorization: Bearer <jwt>` on every container `/ws` upgrade. |
+| `--bearer-token <jwt>` | — | Bearer JWT for a `customJwtAuthorizer`; verified against the runtime's OIDC discovery URL, then injected as `Authorization: Bearer <jwt>` on every forwarded request + container `/ws` upgrade. |
 | `--no-verify-auth` | (verify on) | Skip inbound JWT verification (local-dev escape hatch); a `--bearer-token`, if given, is still forwarded. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides for the agent container. |
 | `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container. |
 | `--no-pull` / `--no-build` | (on) | Skip the image pull / local build. |
 | `--container-host <ip>` | `127.0.0.1` | Host IP used to bind the agent container port. |
-| `--timeout <ms>` | `120000` | `GET /ping` container-ready probe timeout. |
+| `--timeout <ms>` | `120000` | Container-ready probe timeout (`GET /ping` for HTTP / AGUI; an HTTP-response probe to the protocol path for MCP / A2A). |
 | `--assume-role [arn]` | — | Assume the runtime's execution role and forward STS credentials to the container. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating against ECR. |
 | `--from-cfn-stack [name]` | — | Resolve intrinsic env values / ECR image URIs against a deployed stack. |

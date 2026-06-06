@@ -328,6 +328,7 @@ export {
 } from './local/agentcore-code-build.js';
 export {
   waitForAgentCorePing,
+  waitForAgentCoreHttpReady,
   invokeAgentCore,
   AGENTCORE_SESSION_ID_HEADER,
   type AgentCoreInvokeResult,
@@ -361,6 +362,7 @@ export {
 export {
   startAgentCoreHttpServer,
   type AgentCoreHttpServerConfig,
+  type AgentCoreServeRoute,
   type RunningAgentCoreHttpServer,
 } from './local/agentcore-http-server.js';
 export {
