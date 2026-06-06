@@ -141,7 +141,7 @@ describe('studio agentcore-ws serve workspace (issue #454)', () => {
               groups: [
                 {
                   kind: 'agentcore-ws',
-                  title: 'AgentCore (serve)',
+                  title: 'AgentCore Runtimes (serve)',
                   entries: [
                     {
                       id: 'S/Http',
@@ -173,5 +173,50 @@ describe('studio agentcore-ws serve workspace (issue #454)', () => {
     expect(http?.agentCoreContractPath).toBe('/invocations');
     expect(mcp?.agentCoreHasWs).toBe(false);
     expect(mcp?.agentCoreContractPath).toBe('/mcp');
+  });
+
+  it('invoke rows carry no action button (click-to-open); serve rows keep Start', async () => {
+    // An invoke needs a composed payload, so the row has no button — it opens
+    // the composer on click (the .runnable class supplies cursor + hover). A
+    // serve start is parameterless, so the serve row keeps an acting button.
+    harness = createStudioHarness({ epilogue: EXPOSE }) as AcHarness;
+    const win = harness.window as AcHarness['window'];
+    (win as unknown as { fetch: unknown }).fetch = (url: string) => {
+      if (url === '/api/targets') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              groups: [
+                {
+                  kind: 'agentcore',
+                  title: 'AgentCore Runtimes (invoke)',
+                  entries: [{ id: 'S/Inv', qualifiedId: 'S:Inv' }],
+                },
+                {
+                  kind: 'agentcore-ws',
+                  title: 'AgentCore Runtimes (serve)',
+                  entries: [{ id: 'S/Srv', qualifiedId: 'S:Srv', agentCoreContractPath: '/mcp' }],
+                },
+              ],
+              dockerfiles: [],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+
+    await win.__t.loadTargets();
+
+    const doc = win.document;
+    const invokeRow = doc.querySelector('.target[data-tid="s/inv"]') as HTMLElement;
+    const serveRow = doc.querySelector('.target[data-tid="s/srv"]') as HTMLElement;
+    expect(invokeRow).toBeTruthy();
+    expect(serveRow).toBeTruthy();
+    // Invoke row: runnable + clickable, but NO action button.
+    expect(invokeRow.classList.contains('runnable')).toBe(true);
+    expect(invokeRow.querySelector('button')).toBeNull();
+    // Serve row: keeps an acting Start button.
+    expect(serveRow.querySelector('button')?.textContent).toBe('Start');
   });
 });

@@ -869,9 +869,11 @@ compute-locally category for Lambda + API Gateway).
   straight to its ws:// endpoint, with the socket + frame log held in module
   state so a log-driven serve re-render never drops the connection (issue
   #303); the SAME console renders for an `agentcore-ws` serve when the runtime
-  exposes `/ws` (HTTP / AGUI). The `agentcore-ws` serve group (relabeled
-  "AgentCore (serve)", issue #454, since start-agentcore now serves the warm
-  HTTP contract too, not just `/ws`) lists EVERY AgentCore runtime alongside its
+  exposes `/ws` (HTTP / AGUI). The two AgentCore groups are titled
+  "AgentCore Runtimes (invoke)" (the `agentcore` invoke kind) and
+  "AgentCore Runtimes (serve)" (the `agentcore-ws` serve kind, issue #454 —
+  start-agentcore serves the warm HTTP contract now, not just `/ws`); the serve
+  group lists EVERY AgentCore runtime alongside its
   single-shot invoke entry — the same dual listing as the ecs / ecs-task split —
   because `cdkl start-agentcore` serves all four protocols warm (slices 1-2).
   Each serve renders the api/alb-style HTTP request composer against the warm

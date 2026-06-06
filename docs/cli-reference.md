@@ -1854,8 +1854,9 @@ The console is a three-pane layout:
   serve targets get a `[Start]` / `[Stop]` control with a `running ● :port`
   indicator (an ECS service shows `running` with no port — it is pure
   compute with no host endpoint; only servable ECS *services* are runnable,
-  not task definitions). Every AgentCore runtime additionally appears in an
-  **AgentCore (serve)** group (the `agentcore-ws` serve kind): a `[Start]` /
+  not task definitions). Every AgentCore runtime is listed in two groups —
+  **AgentCore Runtimes (invoke)** (the single-shot `[Invoke]` composer) and
+  **AgentCore Runtimes (serve)** (the `agentcore-ws` serve kind): a `[Start]` /
   `[Stop]` control that runs `cdkl start-agentcore`, which keeps the container
   warm and serves its native protocol contract. Once running, the serve renders
   an HTTP request composer against the warm container's contract, pre-filled

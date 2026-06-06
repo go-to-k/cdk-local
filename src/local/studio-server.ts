@@ -104,7 +104,11 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     // `ecs`-kind group) annotates the servable services and NOT the task defs.
     { kind: 'ecs', title: 'ECS Services', entries: map(listing.ecsServices, { servable: true }) },
     { kind: 'ecs-task', title: 'ECS Task Definitions', entries: map(listing.ecsTaskDefinitions) },
-    { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
+    {
+      kind: 'agentcore',
+      title: 'AgentCore Runtimes (invoke)',
+      entries: map(listing.agentCoreRuntimes),
+    },
     // Every AgentCore runtime ALSO appears as an `agentcore-ws` serve group: a
     // [Start]/[Stop] control that runs `cdkl start-agentcore`, which keeps the
     // container warm and serves its native protocol contract (issue #454) — all
@@ -115,7 +119,7 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     // ecs-task split — invoke once vs hold a warm session are different ops.
     {
       kind: 'agentcore-ws',
-      title: 'AgentCore (serve)',
+      title: 'AgentCore Runtimes (serve)',
       entries: map(listing.agentCoreRuntimes).map((t, i) => {
         const src = listing.agentCoreRuntimes[i];
         if (src?.agentCoreHasWs !== undefined) t.agentCoreHasWs = src.agentCoreHasWs;
