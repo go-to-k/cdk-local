@@ -159,6 +159,16 @@ interface ServeKindSpec {
   readyRe: RegExp;
   /** Front each HTTP endpoint with a capture proxy (api / alb yes, ecs no). */
   capturesHttp: boolean;
+  /**
+   * An ADDITIONAL endpoint line (capture group 1 = URL) emitted alongside the
+   * `readyRe` line. Used by the `agentcore-ws` serve, which prints both `Server
+   * listening on ws://...` (the readiness signal + WebSocket-console endpoint)
+   * AND `HTTP contract served on http://...` (the warm container's HTTP
+   * contract): the ws:// endpoint passes straight through for the console while
+   * the http:// endpoint is fronted by the capture proxy so `/invocations`
+   * requests land on the timeline. Optional — only `agentcore-ws` sets it.
+   */
+  extraEndpointRe?: RegExp;
 }
 
 /**
@@ -216,18 +226,22 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     capturesHttp: true,
   },
   'agentcore-ws': {
-    // start-agentcore boots an AgentCore Runtime container and serves its
-    // bidirectional /ws endpoint behind a host bridge (issue start-agentcore).
-    // It binds an OS-assigned bridge port with --port 0 and logs `Server
-    // listening on ws://...`. The endpoint is ws:// so it is NOT proxied
-    // (the capture-proxy gate is /^https?:/); the browser connects directly
-    // to the bridge, which renders the same WebSocket console an API Gateway
-    // WebSocket API gets. readyRe anchors on the ws:// scheme so a stray boot
-    // log line cannot flip the serve to running.
+    // start-agentcore boots an AgentCore Runtime container ONCE, keeps it warm,
+    // and serves its native protocol contract on one host port (issue #454). It
+    // binds an OS-assigned port with --port 0 and prints `Server listening on
+    // <url>` — `ws://...` for HTTP / AGUI (which ALSO serve the /ws bridge),
+    // `http://...` for MCP / A2A. readyRe captures whichever scheme so all four
+    // protocols flip to running. capturesHttp is TRUE: a ws:// endpoint passes
+    // straight through (the capture-proxy gate is /^https?:/) for the WebSocket
+    // console, while an http:// endpoint is fronted by the capture proxy so
+    // contract requests land on the timeline. For HTTP / AGUI the listen line
+    // is ws://, so the http:// contract endpoint arrives on a SECOND line
+    // (`HTTP contract served on http://...`) — extraEndpointRe captures it.
     command: 'start-agentcore',
     portArgs: ['--port', '0', '--host', '127.0.0.1'],
-    readyRe: /Server listening on (ws:\/\/\S+)/,
-    capturesHttp: false,
+    readyRe: /Server listening on (\S+)/,
+    capturesHttp: true,
+    extraEndpointRe: /HTTP contract served on (https?:\/\/\S+)/,
   },
 };
 
@@ -557,6 +571,14 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         // m[1] is the endpoint URL for api / alb; undefined for ecs (no
         // capture group) — a ready line with no host endpoint.
         if (m) void onReady(m[1]);
+        // An additional endpoint line (agentcore-ws: the http:// contract
+        // alongside the ws:// listen line). It does NOT flip the serve to
+        // running on its own (the readyRe line already did, or will) — onReady
+        // appends + re-emits the endpoint, fronting it with the capture proxy.
+        if (spec.extraEndpointRe) {
+          const me = spec.extraEndpointRe.exec(line);
+          if (me) void onReady(me[1]);
+        }
         // An `ecs` serve auto-publishes its replica host port(s) (issue #392);
         // surface the FIRST one as `hostUrl` so the request composer fires —
         // unless an explicit `--host-port` already set it. The publish line can

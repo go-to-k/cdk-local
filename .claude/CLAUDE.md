@@ -825,13 +825,20 @@ compute-locally category for Lambda + API Gateway).
   (`renderWsConsole` — connect / send-frame / received-frame log) wired
   straight to its ws:// endpoint, with the socket + frame log held in module
   state so a log-driven serve re-render never drops the connection (issue
-  #303); the SAME console renders for an `agentcore-ws` serve (an HTTP / AGUI
-  AgentCore runtime's `/ws` endpoint served by `cdkl start-agentcore` behind a
-  host bridge — the runtime is listed in a second "AgentCore WebSocket" group
-  alongside its single-shot invoke entry, the same dual listing as the
-  ecs / ecs-task split; only HTTP / AGUI runtimes appear there since MCP / A2A
-  have no `/ws`), because the bridge's `ws://` endpoint flows through the same
-  un-proxied `endpoints` path; every composer (invoke + serve) carries a collapsed "All options"
+  #303); the SAME console renders for an `agentcore-ws` serve when the runtime
+  exposes `/ws` (HTTP / AGUI). The `agentcore-ws` serve group (relabeled
+  "AgentCore (serve)", issue #454, since start-agentcore now serves the warm
+  HTTP contract too, not just `/ws`) lists EVERY AgentCore runtime alongside its
+  single-shot invoke entry — the same dual listing as the ecs / ecs-task split —
+  because `cdkl start-agentcore` serves all four protocols warm (slices 1-2).
+  Each serve renders the api/alb-style HTTP request composer against the warm
+  container's contract endpoint, pre-filled with the protocol's `POST` path
+  (`/invocations` for HTTP / AGUI, `/mcp` for MCP, `/` for A2A — carried on the
+  target as `agentCoreContractPath`); HTTP / AGUI runtimes (`agentCoreHasWs`)
+  ADDITIONALLY render the WebSocket console, since the bridge's `ws://` endpoint
+  flows through the same un-proxied `endpoints` path while the http:// contract
+  endpoint is fronted by the capture proxy so a relayed `/invocations` lands on
+  the timeline; every composer (invoke + serve) carries a collapsed "All options"
   `<details>` (`buildAllOptions`) with a raw extra-args input + the
   read-only auto-derived flag catalog from studio-option-catalog, so the
   curated controls handle common flags richly while every other flag the
@@ -958,9 +965,15 @@ compute-locally category for Lambda + API Gateway).
   to the UI are the proxy URLs (slice C2 capture), while `ecs`
   (`start-service`) is pure compute — no capture proxy, just the running
   replicas + their streamed logs. `agentcore-ws` (`start-agentcore`) resolves
-  running on `Server listening on (ws://...)`; its `ws://` endpoint is NOT
-  proxied (the capture-proxy gate is `/^https?:/`), so the browser connects
-  straight to the bridge and the UI renders the WebSocket console. The `ecs` serve's `hostUrl` is set from an
+  running on `Server listening on (<url>)` (`ws://` for HTTP / AGUI, `http://`
+  for MCP / A2A) and has `capturesHttp: true`: a `ws://` endpoint passes
+  straight through (the capture-proxy gate is `/^https?:/`) so the browser
+  connects directly to the bridge for the WebSocket console, while an `http://`
+  endpoint is fronted by the capture proxy so warm-contract requests land on the
+  timeline (issue #454). For HTTP / AGUI the `http://` contract endpoint arrives
+  on a SECOND ready line (`HTTP contract served on http://...`) captured by the
+  spec's `extraEndpointRe`, alongside the `ws://` listen line; MCP / A2A emit
+  only the `http://` listen line. The `ecs` serve's `hostUrl` is set from an
   explicit `--host-port` OR (issue #392) parsed from the child's
   `... published on <ip>:<port> ...` log line when start-service auto-publishes
   / auto-remaps a replica port (`parsePublishedHostEndpoint`, first endpoint

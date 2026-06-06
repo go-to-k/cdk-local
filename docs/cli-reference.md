@@ -880,8 +880,9 @@ cdkl start-agentcore MyStack/Agent --from-cfn-stack
 
 `--watch` (reload on CDK source changes) is a planned follow-up; for now,
 restart the command to pick up local edits. `start-agentcore` is also runnable
-from `cdkl studio` (the `agentcore-ws` serve kind) with an in-browser WebSocket
-console.
+from `cdkl studio` (the `agentcore-ws` serve kind, listed as "AgentCore
+(serve)") with an in-browser HTTP request composer against the warm contract
+plus, for HTTP / AGUI runtimes, an interactive WebSocket console.
 
 ## `cdkl start-api` (long-running local API server)
 
@@ -1830,14 +1831,17 @@ The console is a three-pane layout:
   serve targets get a `[Start]` / `[Stop]` control with a `running ● :port`
   indicator (an ECS service shows `running` with no port — it is pure
   compute with no host endpoint; only servable ECS *services* are runnable,
-  not task definitions). An HTTP / AGUI AgentCore runtime additionally
-  appears in an **AgentCore WebSocket** group (the `agentcore-ws` serve kind):
-  a `[Start]` / `[Stop]` control that runs `cdkl start-agentcore` and, once
-  running, renders an interactive WebSocket console wired to the served `/ws`
-  bridge — the same console a served API Gateway WebSocket API gets. The dual
-  listing (invoke once vs hold a live session) mirrors the ECS service /
-  task-definition split; MCP / A2A runtimes have no `/ws` and are not listed
-  there.
+  not task definitions). Every AgentCore runtime additionally appears in an
+  **AgentCore (serve)** group (the `agentcore-ws` serve kind): a `[Start]` /
+  `[Stop]` control that runs `cdkl start-agentcore`, which keeps the container
+  warm and serves its native protocol contract. Once running, the serve renders
+  an HTTP request composer against the warm container's contract, pre-filled
+  with the protocol's `POST` path (`/invocations` for HTTP / AGUI, `/mcp` for
+  MCP, `/` for A2A); an HTTP / AGUI runtime ADDITIONALLY renders an interactive
+  WebSocket console wired to the served `/ws` bridge — the same console a served
+  API Gateway WebSocket API gets (MCP / A2A have no `/ws`, so no console). The
+  dual listing (invoke once vs hold a warm session) mirrors the ECS service /
+  task-definition split.
 - **Workspace** — the composer for the selected target (event JSON for a
   Lambda or AgentCore invoke; start / stop for a serve). An **Options**
   section exposes the per-target run options as controls — a checkbox per

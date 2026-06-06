@@ -331,7 +331,7 @@ describe('toStudioTargetGroups', () => {
       'ECS Services',
       'ECS Task Definitions',
       'AgentCore Runtimes',
-      'AgentCore WebSocket',
+      'AgentCore (serve)',
       'Application Load Balancers',
       'CloudFront Distributions',
     ]);
@@ -351,21 +351,49 @@ describe('toStudioTargetGroups', () => {
     expect(groups[7].entries).toEqual([{ id: 'S/Dist', qualifiedId: 'S:Dist' }]);
   });
 
-  it('lists only WS-capable runtimes in the agentcore-ws serve group', () => {
+  it('lists ALL runtimes in the agentcore serve group, carrying hasWs + contract path', () => {
+    // start-agentcore serves all four protocols warm (issue #454), so the serve
+    // group lists every runtime — not just the /ws-capable ones. The per-entry
+    // agentCoreHasWs flag (decides whether to ALSO render the WS console) and
+    // agentCoreContractPath (seeds the HTTP composer) ride along.
     const listing: TargetListing = {
       ...emptyListing(),
       agentCoreRuntimes: [
-        { qualifiedId: 'S:Http', displayPath: 'S/Http', agentCoreHasWs: true },
-        { qualifiedId: 'S:Mcp', displayPath: 'S/Mcp', agentCoreHasWs: false },
+        {
+          qualifiedId: 'S:Http',
+          displayPath: 'S/Http',
+          agentCoreHasWs: true,
+          agentCoreContractPath: '/invocations',
+        },
+        {
+          qualifiedId: 'S:Mcp',
+          displayPath: 'S/Mcp',
+          agentCoreHasWs: false,
+          agentCoreContractPath: '/mcp',
+        },
+        {
+          qualifiedId: 'S:A2a',
+          displayPath: 'S/A2a',
+          agentCoreHasWs: false,
+          agentCoreContractPath: '/',
+        },
       ],
     };
     const groups = toStudioTargetGroups(listing);
     const invoke = groups.find((g) => g.kind === 'agentcore');
-    const wsServe = groups.find((g) => g.kind === 'agentcore-ws');
-    // Both runtimes are invoke-able...
-    expect(invoke?.entries.map((e) => e.id)).toEqual(['S/Http', 'S/Mcp']);
-    // ...but only the HTTP runtime (agentCoreHasWs) is WS-servable.
-    expect(wsServe?.entries.map((e) => e.id)).toEqual(['S/Http']);
+    const serve = groups.find((g) => g.kind === 'agentcore-ws');
+    // Both invoke and serve groups list every runtime.
+    expect(invoke?.entries.map((e) => e.id)).toEqual(['S/Http', 'S/Mcp', 'S/A2a']);
+    expect(serve?.entries.map((e) => e.id)).toEqual(['S/Http', 'S/Mcp', 'S/A2a']);
+    // The serve entries carry hasWs (HTTP yes, MCP / A2A no) + the contract path.
+    expect(serve?.entries.map((e) => e.agentCoreHasWs)).toEqual([true, false, false]);
+    expect(serve?.entries.map((e) => e.agentCoreContractPath)).toEqual([
+      '/invocations',
+      '/mcp',
+      '/',
+    ]);
+    // The invoke group does NOT carry the serve-only fields.
+    expect(invoke?.entries.every((e) => e.agentCoreHasWs === undefined)).toBe(true);
   });
 
   it('falls back to the qualified id when no display path exists', () => {

@@ -49,6 +49,20 @@ export interface StudioTarget {
    * empty when the ALB fronts no pinned service.
    */
   backingPinnedServices?: { id: string; label: string }[];
+  /**
+   * Set on an `agentcore-ws` serve entry: whether the runtime exposes a `/ws`
+   * WebSocket endpoint (HTTP / AGUI yes; MCP / A2A no). `cdkl start-agentcore`
+   * serves all four protocols (issue #454), so the serve group lists every
+   * runtime — this flag decides only whether the serve workspace ALSO renders
+   * the interactive WebSocket console.
+   */
+  agentCoreHasWs?: boolean;
+  /**
+   * Set on an `agentcore-ws` serve entry: the POST path the runtime's protocol
+   * contract is served on (`/invocations` / `/mcp` / `/`). Seeds the serve's
+   * HTTP request composer so a one-click invoke hits the right endpoint.
+   */
+  agentCoreContractPath?: string;
 }
 
 /** A category of targets, grouped by the studio kind that runs them. */
@@ -91,16 +105,24 @@ export function toStudioTargetGroups(listing: TargetListing): StudioTargetGroup[
     { kind: 'ecs', title: 'ECS Services', entries: map(listing.ecsServices, { servable: true }) },
     { kind: 'ecs-task', title: 'ECS Task Definitions', entries: map(listing.ecsTaskDefinitions) },
     { kind: 'agentcore', title: 'AgentCore Runtimes', entries: map(listing.agentCoreRuntimes) },
-    // The same runtimes that have a /ws endpoint (HTTP / AGUI — MCP / A2A
-    // don't) ALSO appear as an `agentcore-ws` serve group: a [Start]/[Stop]
-    // control that runs `cdkl start-agentcore` and renders an interactive
-    // WebSocket console (like the API Gateway WebSocket console). The dual
-    // listing mirrors the ecs / ecs-task split — invoke once vs hold a live
-    // session are genuinely different operations.
+    // Every AgentCore runtime ALSO appears as an `agentcore-ws` serve group: a
+    // [Start]/[Stop] control that runs `cdkl start-agentcore`, which keeps the
+    // container warm and serves its native protocol contract (issue #454) — all
+    // four protocols (HTTP/AGUI POST /invocations, MCP POST /mcp, A2A POST /),
+    // not just /ws. The serve workspace renders an HTTP request composer for the
+    // contract; HTTP / AGUI runtimes ALSO get the interactive WebSocket console
+    // (`agentCoreHasWs`). The dual listing (invoke vs serve) mirrors the ecs /
+    // ecs-task split — invoke once vs hold a warm session are different ops.
     {
       kind: 'agentcore-ws',
-      title: 'AgentCore WebSocket',
-      entries: map(listing.agentCoreRuntimes.filter((e) => e.agentCoreHasWs)),
+      title: 'AgentCore (serve)',
+      entries: map(listing.agentCoreRuntimes).map((t, i) => {
+        const src = listing.agentCoreRuntimes[i];
+        if (src?.agentCoreHasWs !== undefined) t.agentCoreHasWs = src.agentCoreHasWs;
+        if (src?.agentCoreContractPath !== undefined)
+          t.agentCoreContractPath = src.agentCoreContractPath;
+        return t;
+      }),
     },
     { kind: 'alb', title: 'Application Load Balancers', entries: map(listing.loadBalancers) },
     // CloudFront distributions are a serve target (start-cloudfront -> Start),

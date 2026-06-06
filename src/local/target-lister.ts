@@ -44,11 +44,20 @@ export interface TargetEntry {
   /**
    * For `agentCoreRuntimes` entries only: whether the runtime exposes a
    * bidirectional `/ws` WebSocket endpoint (HTTP / AGUI protocols do; MCP /
-   * A2A do not). Drives the studio `agentcore-ws` serve group, which only
-   * lists runtimes `cdkl start-agentcore` can serve. Omitted for non-agentcore
-   * targets.
+   * A2A do not). `cdkl start-agentcore` serves ALL four protocols (issue #454),
+   * so the studio serve group lists every runtime — this marker decides only
+   * whether to ALSO render the interactive WebSocket console (HTTP / AGUI yes;
+   * MCP / A2A no). Omitted for non-agentcore targets.
    */
   agentCoreHasWs?: boolean;
+  /**
+   * For `agentCoreRuntimes` entries only: the POST path the runtime's protocol
+   * contract is served on (`/invocations` for HTTP / AGUI, `/mcp` for MCP, `/`
+   * for A2A — matching `resolveAgentCoreServePlan`). The studio serve's HTTP
+   * request composer pre-fills `POST <this>` so a one-click invoke hits the
+   * right endpoint. Omitted for non-agentcore targets.
+   */
+  agentCoreContractPath?: string;
 }
 
 /**
@@ -123,10 +132,14 @@ function scanByType(stacks: readonly StackInfo[], type: string): TargetEntry[] {
 /**
  * Enumerate `AWS::BedrockAgentCore::Runtime` targets, marking each with
  * {@link TargetEntry.agentCoreHasWs} — true for HTTP / AGUI runtimes (which
- * expose a `/ws` WebSocket endpoint), false for MCP / A2A (which do not). The
- * marker lets the studio `agentcore-ws` serve group list only the runtimes
- * `cdkl start-agentcore` can serve. The protocol is read the same way the
- * resolver reads it (`Properties.ProtocolConfiguration`, default HTTP).
+ * expose a `/ws` WebSocket endpoint), false for MCP / A2A (which do not) — and
+ * {@link TargetEntry.agentCoreContractPath}, the POST path the runtime's
+ * protocol contract is served on (`/invocations` / `/mcp` / `/`). `cdkl
+ * start-agentcore` serves every protocol (issue #454), so the studio serve
+ * group lists every runtime; the `hasWs` marker decides only whether to render
+ * the WebSocket console too, and the contract path seeds the HTTP composer. The
+ * protocol is read the same way the resolver reads it
+ * (`Properties.ProtocolConfiguration`, default HTTP).
  */
 function scanAgentCoreRuntimes(stacks: readonly StackInfo[]): TargetEntry[] {
   const entries: TargetEntry[] = [];
@@ -140,6 +153,14 @@ function scanAgentCoreRuntimes(stacks: readonly StackInfo[]): TargetEntry[] {
       ];
       entry.agentCoreHasWs =
         protocol !== AGENTCORE_MCP_PROTOCOL && protocol !== AGENTCORE_A2A_PROTOCOL;
+      // The contract POST path, matching `resolveAgentCoreServePlan`: MCP -> /mcp,
+      // A2A -> /, everything else (HTTP / AGUI) -> /invocations.
+      entry.agentCoreContractPath =
+        protocol === AGENTCORE_MCP_PROTOCOL
+          ? '/mcp'
+          : protocol === AGENTCORE_A2A_PROTOCOL
+            ? '/'
+            : '/invocations';
       entries.push(entry);
     }
   }

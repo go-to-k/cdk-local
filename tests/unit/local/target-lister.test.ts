@@ -154,13 +154,15 @@ describe('listTargets — AgentCore Runtimes', () => {
         stackName: 'App',
         qualifiedId: 'App:ChatAgent',
         displayPath: 'App/ChatAgent',
-        // No ProtocolConfiguration -> defaults to HTTP -> has a /ws endpoint.
+        // No ProtocolConfiguration -> defaults to HTTP -> has a /ws endpoint
+        // and serves its contract on POST /invocations.
         agentCoreHasWs: true,
+        agentCoreContractPath: '/invocations',
       },
     ]);
   });
 
-  it('marks agentCoreHasWs per protocol (HTTP/AGUI true, MCP/A2A false)', () => {
+  it('marks agentCoreHasWs + contract path per protocol', () => {
     const stack = buildStack('App', {
       HttpAgent: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
       AguiAgent: {
@@ -177,9 +179,19 @@ describe('listTargets — AgentCore Runtimes', () => {
       },
     });
     const byId = Object.fromEntries(
-      listTargets([stack]).agentCoreRuntimes.map((e) => [e.logicalId, e.agentCoreHasWs])
+      listTargets([stack]).agentCoreRuntimes.map((e) => [
+        e.logicalId,
+        { hasWs: e.agentCoreHasWs, path: e.agentCoreContractPath },
+      ])
     );
-    expect(byId).toEqual({ HttpAgent: true, AguiAgent: true, McpAgent: false, A2aAgent: false });
+    expect(byId).toEqual({
+      // HTTP / AGUI: /ws + POST /invocations.
+      HttpAgent: { hasWs: true, path: '/invocations' },
+      AguiAgent: { hasWs: true, path: '/invocations' },
+      // MCP: no /ws, POST /mcp. A2A: no /ws, POST /.
+      McpAgent: { hasWs: false, path: '/mcp' },
+      A2aAgent: { hasWs: false, path: '/' },
+    });
   });
 });
 

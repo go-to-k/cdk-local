@@ -29,12 +29,14 @@ describe('renderStudioHtml', () => {
     expect(html).not.toMatch(/__OPTION_SPECS__ = [^;]*<\//);
   });
 
-  it('treats agentcore-ws as a serve kind with the AgentCore WS label', () => {
+  it('treats agentcore-ws as a serve kind with the AgentCore serve label', () => {
     const html = renderStudioHtml('MyStack', 'cdkl');
-    // agentcore-ws is a serve kind (Start/Stop + WebSocket console), distinct
-    // from the single-shot agentcore invoke kind.
+    // agentcore-ws is a serve kind (Start/Stop + HTTP composer + WebSocket
+    // console for HTTP/AGUI), distinct from the single-shot agentcore invoke
+    // kind. The label is "AgentCore serve" since start-agentcore now serves the
+    // warm HTTP contract too, not just /ws (issue #454).
     expect(html).toContain("'agentcore-ws'");
-    expect(html).toContain("'agentcore-ws': 'AgentCore WS'");
+    expect(html).toContain("'agentcore-ws': 'AgentCore serve'");
     // Its per-run serve options are serialized too.
     expect(html).toContain('"--no-verify-auth"');
   });
@@ -212,7 +214,7 @@ describe('renderStudioHtml', () => {
     expect(html).toContain("fetch('/api/request'");
     // Gated on a running serve having an http base URL (proxy endpoint or the
     // ecs --host-port host URL).
-    expect(html).toContain('renderRequestComposer(id, httpBase, captured)');
+    expect(html).toContain('renderRequestComposer(id, httpBase, captured, composerDefaults)');
     expect(html).toContain('isEcs ? st.hostUrl');
     // The ecs host URL is shown in Endpoints with a note that composer requests
     // ARE captured on the timeline (the direct relay self-emits — issue #432).

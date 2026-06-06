@@ -153,7 +153,7 @@ describe('createStudioServeManager', () => {
     expect(serves[1].endpoints).toEqual([PROXIED]);
   });
 
-  it('spawns `cdkl start-agentcore <target> --port 0` and surfaces the ws:// endpoint un-proxied', async () => {
+  it('serves an HTTP/AGUI agentcore runtime: ws:// un-proxied + http:// contract proxied (issue #454)', async () => {
     const bus = new StudioEventBus();
     const { serves } = collect(bus);
     const child = makeFakeChild();
@@ -170,21 +170,66 @@ describe('createStudioServeManager', () => {
     });
 
     const p = mgr.start({ targetId: 'MyAgent', kind: 'agentcore-ws' });
+    // start-agentcore prints BOTH lines for HTTP / AGUI: the ws:// listen line
+    // (readiness + WebSocket-console endpoint) and the http:// contract line.
     child.stdout.emit(
       'data',
       'Server listening on ws://127.0.0.1:49160/ws  (MyAgent (AgentCore WebSocket))\n'
     );
     const state = await p;
+    // The http:// contract endpoint arrives on a second line; let its async
+    // proxy startup settle before asserting endpoints.
+    child.stdout.emit(
+      'data',
+      'HTTP contract served on http://127.0.0.1:51234 — POST http://127.0.0.1:51234/invocations, GET http://127.0.0.1:51234/ping\n'
+    );
+    await new Promise((r) => setTimeout(r, 0));
 
     const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
     expect(argv.slice(1, 6)).toEqual(['start-agentcore', 'MyAgent', '--port', '0', '--host']);
 
     expect(state.status).toBe('running');
-    // ws:// endpoints are NOT proxied (the capture-proxy gate is /^https?:/),
-    // so the browser connects straight to the bridge.
-    expect(state.endpoints).toEqual(['ws://127.0.0.1:49160/ws']);
-    expect(fp.upstreams).toEqual([]);
-    expect(serves.map((s) => s.status)).toEqual(['starting', 'running']);
+    // ws:// passes straight through (the capture-proxy gate is /^https?:/) so the
+    // browser connects directly to the bridge; http:// is fronted by the capture
+    // proxy so /invocations requests land on the timeline.
+    const live = mgr.list().find((s) => s.targetId === 'MyAgent');
+    expect(live?.endpoints).toEqual(['ws://127.0.0.1:49160/ws', PROXIED]);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+    expect(serves.map((s) => s.status)).toEqual(['starting', 'running', 'running']);
+  });
+
+  it('serves an MCP/A2A agentcore runtime: the http:// listen line is proxied, no ws:// (issue #454)', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const fp = fakeProxies();
+
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+
+    const p = mgr.start({ targetId: 'McpAgent', kind: 'agentcore-ws' });
+    // MCP / A2A have no /ws: the listen line is http:// (proxied), and the
+    // protocol contract line (`MCP contract served on http://...<path>`) is NOT
+    // an extra endpoint (it carries a path — the listen line is the base).
+    child.stdout.emit('data', 'Server listening on http://127.0.0.1:51234  (McpAgent)\n');
+    child.stdout.emit(
+      'data',
+      'MCP contract served on http://127.0.0.1:51234/mcp — POST http://127.0.0.1:51234/mcp\n'
+    );
+    const state = await p;
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(state.status).toBe('running');
+    // Exactly one endpoint — the proxied http:// base. No ws://, no double-proxy
+    // from the contract-path line.
+    const live = mgr.list().find((s) => s.targetId === 'McpAgent');
+    expect(live?.endpoints).toEqual([PROXIED]);
+    expect(fp.upstreams).toEqual(['http://127.0.0.1:51234']);
   });
 
   it('spawns the serve child with CDKL_LOG_STREAM=stdout so its logs are single-stream (issue #403)', async () => {
