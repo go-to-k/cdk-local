@@ -57,8 +57,6 @@ export interface AgentCoreHttpServerConfig {
   sessionId?: string;
   /** `Authorization` header injected on every forwarded request + `/ws` leg. */
   authorization?: string;
-  /** Extra headers injected on every forwarded HTTP request (e.g. `--sigv4`). */
-  extraHeaders?: Record<string, string>;
 }
 
 export interface RunningAgentCoreHttpServer {
@@ -90,7 +88,6 @@ function proxyToContainer(
   delete headers['host'];
   headers[AGENTCORE_SESSION_ID_HEADER] = config.sessionId ?? randomUUID();
   if (config.authorization) headers['authorization'] = config.authorization;
-  for (const [k, v] of Object.entries(config.extraHeaders ?? {})) headers[k] = v;
 
   const upstream = httpRequest(
     {
@@ -102,6 +99,11 @@ function proxyToContainer(
     },
     (upRes) => {
       clientRes.writeHead(upRes.statusCode ?? 502, upRes.headers);
+      // A mid-stream upstream drop (e.g. while an SSE response is in flight)
+      // errors `upRes` AFTER headers are sent; `pipe` does not forward that, so
+      // without this the unhandled `error` crashes the long-running serve. Tear
+      // the inbound socket down instead.
+      upRes.on('error', () => clientRes.destroy());
       upRes.pipe(clientRes);
     }
   );
@@ -111,6 +113,12 @@ function proxyToContainer(
       clientRes.writeHead(502, { 'content-type': 'application/json' });
     }
     clientRes.end(JSON.stringify({ error: `upstream error: ${err.message}` }));
+  });
+  // A client that aborts mid-upload errors `clientReq`; with no listener that
+  // is an unhandled `error` that crashes the serve. Abort the upstream leg.
+  clientReq.on('error', (err) => {
+    getLogger().debug(`agentcore http serve client error: ${err.message}`);
+    upstream.destroy();
   });
   clientReq.pipe(upstream);
 }

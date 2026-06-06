@@ -151,4 +151,26 @@ describe('startAgentCoreHttpServer', () => {
     expect(s.httpUrl).toBe(`http://127.0.0.1:${s.port}`);
     expect(s.wsUrl).toBe(`ws://127.0.0.1:${s.port}/ws`);
   });
+
+  it('returns a clean 502 (no crash) when the upstream container is unreachable', async () => {
+    // Grab a free port, then close the listener so nothing is there: the
+    // forwarded request hits ECONNREFUSED -> the upstream `error` handler.
+    const dead = await startFakeContainer();
+    const deadPort = dead.port;
+    await new Promise<void>((res) => dead.server.close(() => res()));
+    serve = await startAgentCoreHttpServer({
+      containerHost: '127.0.0.1',
+      containerPort: deadPort,
+      host: '127.0.0.1',
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: serve.port, path: '/invocations', method: 'POST' },
+      '{}'
+    );
+    expect(r.status).toBe(502);
+    expect(JSON.parse(r.body).error).toMatch(/upstream error/);
+    // The serve survived — a second request also gets a clean 502, not a crash.
+    const r2 = await httpReq({ host: '127.0.0.1', port: serve.port, path: '/ping', method: 'GET' });
+    expect(r2.status).toBe(502);
+  });
 });
