@@ -330,8 +330,8 @@ describe('toStudioTargetGroups', () => {
       'APIs',
       'ECS Services',
       'ECS Task Definitions',
-      'AgentCore Runtimes',
-      'AgentCore (serve)',
+      'AgentCore Runtimes (invoke)',
+      'AgentCore Runtimes (serve)',
       'Application Load Balancers',
       'CloudFront Distributions',
     ]);

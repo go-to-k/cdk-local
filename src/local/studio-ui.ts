@@ -5,8 +5,9 @@
  * the studio HTTP server (`startStudioServer`) at `GET /`.
  *
  * 3-pane shell (decision D6), framework-free vanilla JS (decision D7):
- *   - left   = target list (from `GET /api/targets`); each Lambda or
- *     AgentCore runtime has an [Invoke] button, each API a [Start] / [Stop]
+ *   - left   = target list (from `GET /api/targets`); a Lambda or AgentCore
+ *     runtime row opens its [Invoke] composer on click (no row button -- an
+ *     invoke needs a composed payload), each API a [Start] / [Stop]
  *     serve control with a `running ● :port` indicator (slice C1), plus a
  *     selected-highlight.
  *   - center = the WORKSPACE for the selected target: for a Lambda or an
@@ -874,9 +875,12 @@ const STUDIO_SCRIPT = `
             const kindLabel = entry.surface || KIND_LABEL[group.kind] || group.kind;
             t.appendChild(el('span', 'kind', '(' + kindLabel + ')'));
             if (isInvoke) {
-              const btn = el('button', 'invoke-btn', 'Invoke');
-              btn.onclick = (e) => { e.stopPropagation(); selectTarget(entry.id, group.kind); };
-              t.appendChild(btn);
+              // No row-level action button: an invoke needs a composed payload,
+              // so the row just opens the composer (clicking anywhere on the
+              // .runnable row selects it -- cursor + hover signal it). A button
+              // labeled "Invoke" that only opened the composer (never invoked)
+              // read as broken. Serve rows DO get a Start/Stop button below
+              // because a serve start is parameterless and acts immediately.
               t.onclick = () => selectTarget(entry.id, group.kind);
               targetEls.set(entry.id, t);
             } else if (isServe) {
