@@ -353,9 +353,16 @@ export {
 } from './local/agentcore-ws-client.js';
 export {
   startAgentCoreWsBridge,
+  attachAgentCoreWsBridge,
   type AgentCoreWsBridgeServerConfig,
   type RunningAgentCoreWsBridge,
+  type AttachedAgentCoreWsBridge,
 } from './local/agentcore-ws-bridge.js';
+export {
+  startAgentCoreHttpServer,
+  type AgentCoreHttpServerConfig,
+  type RunningAgentCoreHttpServer,
+} from './local/agentcore-http-server.js';
 export {
   a2aInvokeOnce,
   A2A_CONTAINER_PORT,

@@ -33,9 +33,9 @@ import {
 } from '../../local/agentcore-resolver.js';
 import { waitForAgentCorePing } from '../../local/agentcore-client.js';
 import {
-  startAgentCoreWsBridge,
-  type RunningAgentCoreWsBridge,
-} from '../../local/agentcore-ws-bridge.js';
+  startAgentCoreHttpServer,
+  type RunningAgentCoreHttpServer,
+} from '../../local/agentcore-http-server.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -133,7 +133,7 @@ async function localStartAgentCoreCommand(
 
   let containerId: string | undefined;
   let stopLogs: (() => void) | undefined;
-  let bridge: RunningAgentCoreWsBridge | undefined;
+  let server: RunningAgentCoreHttpServer | undefined;
   let profileCredsFile: ProfileCredentialsFile | undefined;
   let stateProvider: LocalStateProvider | undefined;
   let shuttingDown = false;
@@ -142,11 +142,11 @@ async function localStartAgentCoreCommand(
   const teardown = async (): Promise<void> => {
     if (tornDown) return;
     tornDown = true;
-    if (bridge) {
+    if (server) {
       try {
-        await bridge.close();
+        await server.close();
       } catch (err) {
-        logger.debug(`bridge close failed: ${err instanceof Error ? err.message : String(err)}`);
+        logger.debug(`server close failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     if (stopLogs) {
@@ -300,11 +300,11 @@ async function localStartAgentCoreCommand(
   process.on('SIGINT', () => void shutdown('SIGINT', 130));
   process.on('SIGTERM', () => void shutdown('SIGTERM', 0));
 
-  // A failure in the post-boot setup (/ping wait or bridge bind) must stop the
+  // A failure in the post-boot setup (/ping wait or server bind) must stop the
   // booted container before rethrowing.
   try {
     await waitForAgentCorePing(containerHost, containerHostPort, options.timeout);
-    bridge = await startAgentCoreWsBridge({
+    server = await startAgentCoreHttpServer({
       containerHost,
       containerPort: containerHostPort,
       host: options.host,
@@ -317,10 +317,15 @@ async function localStartAgentCoreCommand(
     throw err;
   }
 
-  // start-api shares the "Server listening on <url>" prefix so studio's
-  // serve-manager readyRe captures the ws:// endpoint and renders its
-  // WebSocket console.
-  logger.info(`Server listening on ${bridge.url}  (${resolved.logicalId} (AgentCore WebSocket))`);
+  // The warm container serves its HTTP contract (POST /invocations + GET /ping)
+  // AND the /ws bridge on one port (issue #454). The `Server listening on
+  // ws://...` line is kept verbatim so studio's serve-manager readyRe still
+  // captures the ws:// endpoint for its WebSocket console; the HTTP line below
+  // points humans / curl at the request endpoints.
+  logger.info(`Server listening on ${server.wsUrl}  (${resolved.logicalId} (AgentCore WebSocket))`);
+  logger.info(
+    `HTTP contract served on ${server.httpUrl} — POST ${server.httpUrl}/invocations, GET ${server.httpUrl}/ping`
+  );
   logger.info('Press ^C to shut down.');
 
   // Block forever — signal handlers exit the process.

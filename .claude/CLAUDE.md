@@ -208,22 +208,34 @@ AWS managed services.
   single-shot HTTP `POST /invocations`, MCP `POST /mcp`, and A2A
   `POST /` paths logs a one-line WARN and proceeds single-shot.
   `cdkl start-agentcore` is the long-running serve counterpart of the
-  single-shot `invoke-agentcore --ws`: it boots the agent
-  container once (same image / env / `--from-cfn-stack` / `--assume-role`
-  / `--bearer-token` resolution as `invoke-agentcore`) and serves the
-  bidirectional `/ws` endpoint behind a host WebSocket BRIDGE so a
-  header-less client — a browser `WebSocket`, which cannot set the
-  `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` (or `Authorization`)
-  upgrade header — can hold an interactive multi-frame session. The
-  bridge accepts the header-less client on its own `--port` (default 0)
-  and opens a `ws` connection to the container `/ws` with those headers
-  injected (a fresh session-id UUID per inbound connection, unless
-  `--session-id` pins one), piping frames both ways. HTTP / AGUI
-  protocols only — MCP / A2A runtimes have no `/ws` (hard-rejected at
-  resolution). It prints a `Server listening on ws://...` ready line and
-  runs until `^C` (`--watch` is a follow-up). The `cdkl invoke-agentcore`
-  terminal path (interactive over stdin in a TTY) is unchanged; the
-  bridge exists for clients that cannot drive a terminal
+  single-shot `invoke-agentcore`: it boots the agent
+  container ONCE (same image / env / `--from-cfn-stack` / `--assume-role`
+  / `--bearer-token` resolution as `invoke-agentcore`) and keeps it warm,
+  serving its native HTTP contract on one host port until `^C` — so a
+  client can hit `POST /invocations` (+ `GET /ping`) **repeatedly against
+  the SAME warm container** (issue #454), mirroring AgentCore's deployed
+  model where many `InvokeAgentRuntime` calls on one `runtimeSessionId`
+  reuse one warm microVM (vs single-shot `invoke-agentcore`, which boots +
+  tears down per call). The request body is streamed up and the response —
+  JSON or an SSE `text/event-stream` — streamed back. The boot-resolved
+  `Authorization` (a `--bearer-token` validated once under a
+  `customJwtAuthorizer`, or the `--sigv4` header set) is injected on every
+  forwarded request; per-request inbound JWT verification is a follow-up.
+  On the SAME port it also serves the bidirectional `/ws` endpoint behind a
+  host WebSocket BRIDGE so a header-less client — a browser `WebSocket`,
+  which cannot set the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` (or
+  `Authorization`) upgrade header — can hold an interactive multi-frame
+  session. The bridge accepts the header-less client on the serve `--port`
+  (default 0) and opens a `ws` connection to the container `/ws` with those
+  headers injected (a fresh session-id UUID per inbound connection / per
+  forwarded HTTP request, unless `--session-id` pins one), piping frames
+  both ways. HTTP / AGUI protocols only — MCP / A2A runtimes (on 8000 /
+  9000) are NOT served by this slice (hard-rejected at resolution; a
+  follow-up). It prints a `Server listening on ws://...` ready line (kept
+  verbatim for studio's agentcore-ws serve) plus an `HTTP contract served
+  on http://...` line, and runs until `^C` (`--watch` is a follow-up). The
+  `cdkl invoke-agentcore` terminal path (interactive over stdin in a TTY)
+  is unchanged
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 - CloudFront distributions — the `viewer-request` -> S3 origin ->
@@ -423,10 +435,14 @@ compute-locally category for Lambda + API Gateway).
   `createLocalInvokeAgentCoreCommand`: it reuses that command's exported
   boot helpers (`resolveAgentCoreImage` / `buildContainerEnv` /
   `resolveInboundAuthorization` / `buildAgentCoreImageContext`) to boot the
-  agent container once, then runs `startAgentCoreWsBridge` (a host
-  WebSocket server) in front of the container `/ws` so a header-less
-  browser client can hold an interactive session. HTTP / AGUI only
-  (`assertAgentCoreWsServable` hard-rejects MCP / A2A). New CLI options
+  agent container once, then runs `startAgentCoreHttpServer` (a host HTTP
+  server, issue #454) in front of the warm container: it proxies
+  `POST /invocations` + `GET /ping` to the container (streaming request /
+  response, SSE included) AND, on the SAME port, delegates the `/ws`
+  upgrade to the existing bridge (`attachAgentCoreWsBridge`, extracted from
+  `startAgentCoreWsBridge`) so a header-less browser client can still hold
+  an interactive session. HTTP / AGUI only (`assertAgentCoreWsServable`
+  hard-rejects MCP / A2A — a follow-up). New CLI options
   live in `addStartAgentCoreSpecificOptions` (`--port` / `--host` /
   `--session-id` / `--bearer-token` / `--no-verify-auth` / `--env-vars` /
   `--platform` / `--from-cfn-stack` / `--assume-role` / ...).
@@ -509,11 +525,20 @@ compute-locally category for Lambda + API Gateway).
   the caller-driven relay primitive `bridgeAgentCoreWs` — which
   opens the container `/ws` with the session-id / Authorization headers
   injected and sends NO initial frame, so a caller drives every frame) +
-  agentcore-ws-bridge (`startAgentCoreWsBridge`: the host
-  WebSocket server behind `cdkl start-agentcore`; accepts a header-less client
+  agentcore-ws-bridge (`startAgentCoreWsBridge`: a standalone host
+  WebSocket server; accepts a header-less client
   (a browser, which cannot set the upgrade headers) and bridges each
   connection to the container `/ws` via `bridgeAgentCoreWs`, injecting a
-  per-connection session-id UUID + optional Authorization) + agentcore-s3-bundle
+  per-connection session-id UUID + optional Authorization. `attachAgentCoreWsBridge`
+  extracts the `/ws` wiring so it can be attached to an existing
+  `http.Server` — used by agentcore-http-server) + agentcore-http-server
+  (`startAgentCoreHttpServer`, issue #454 — the host HTTP serve behind
+  `cdkl start-agentcore`: one `http.Server` proxies `POST /invocations` +
+  `GET /ping` to the warm container, streaming request / response (SSE
+  included) and injecting the session-id (fresh per request unless pinned)
+  + Authorization headers, AND delegates the `/ws` upgrade on the same port
+  to `attachAgentCoreWsBridge` — so a warm container serves both the HTTP
+  contract repeatedly and the browser `/ws` bridge) + agentcore-s3-bundle
   (downloads + extracts a fromS3 CodeConfiguration bundle for the from-source
   build), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
 # Real-Docker validation for `cdkl start-agentcore` — the long-running serve
-# that boots a Bedrock AgentCore Runtime container and fronts its /ws
+# that boots a Bedrock AgentCore Runtime container ONCE and serves its native
+# HTTP contract (POST /invocations + GET /ping, issue #454) AND fronts its /ws
 # WebSocket endpoint with a host bridge so a header-less client (the browser
-# path) can hold an interactive multi-frame session.
+# path) can hold an interactive multi-frame session — both on one warm
+# container, on one host port, until SIGTERM.
 #
 # Fully local — no AWS resources are deployed. The fixture's single
 # HTTP-protocol Runtime (EchoAgent) is built from a local Dockerfile; the
@@ -89,11 +91,33 @@ if ! node ws-probe.mjs "${WS_URL}"; then
   fail "WebSocket probe did not succeed"
 fi
 
-echo "[verify] step 5: SIGTERM tears the container down (no orphan)"
+echo "[verify] step 5: HTTP contract serve (POST /invocations + GET /ping) on the same warm container (#454)"
+# Ready line: "HTTP contract served on http://127.0.0.1:<port> - POST .../invocations, GET .../ping"
+HTTP_URL="$(grep -Eo 'HTTP contract served on http://[^ ]+' "${OUT_FILE}" | head -1 | sed 's/HTTP contract served on //')"
+[ -n "${HTTP_URL}" ] || fail "start-agentcore did not print its HTTP serve URL"
+echo "[verify]   http: ${HTTP_URL}"
+# Two sequential POSTs hit the SAME warm container booted at step 3 — no
+# re-boot per request (the warm-serve guarantee). The serve injects a
+# per-request session-id (the header-less curl never sent one).
+R1="$(curl -s -X POST "${HTTP_URL}/invocations" -d '{"hello":"http-1"}')"
+echo "${R1}" | grep -q 'http-1' || fail "first /invocations did not echo the body: ${R1}"
+echo "${R1}" | grep -q '"sessionId":null' && fail "serve did not inject a session-id: ${R1}"
+echo "${R1}" | grep -q '"sessionId":"' || fail "serve did not inject a session-id: ${R1}"
+R2="$(curl -s -X POST "${HTTP_URL}/invocations" -d '{"hello":"http-2"}')"
+echo "${R2}" | grep -q 'http-2' || fail "second /invocations (warm reuse) did not echo the body: ${R2}"
+# An SSE response streams through the proxy pipe untouched.
+SSE="$(curl -s -X POST "${HTTP_URL}/invocations" -d '{"stream":true}')"
+echo "${SSE}" | grep -q '\[DONE\]' || fail "SSE /invocations did not stream through the serve: ${SSE}"
+# GET /ping proxies to the container.
+PING="$(curl -s "${HTTP_URL}/ping")"
+echo "${PING}" | grep -q 'Healthy' || fail "/ping did not proxy through the serve: ${PING}"
+echo "[verify]   HTTP serve OK: 2x /invocations + SSE + /ping handled by the one warm container"
+
+echo "[verify] step 6: SIGTERM tears the container down (no orphan)"
 stop_server
 # Give Docker a moment to reflect the removal.
 sleep 1
 ORPHANS="$(docker ps -a --filter name=cdkl-agentcore- --format '{{.Names}}' || true)"
 [ -z "${ORPHANS}" ] || fail "leftover agent container(s) after shutdown: ${ORPHANS}"
 
-echo "[verify] PASS: start-agentcore served /ws through the bridge (session-id injected, frame round-trip) and cleaned up its container"
+echo "[verify] PASS: start-agentcore served the HTTP contract (POST /invocations + SSE + GET /ping) AND /ws through the bridge on one warm container, and cleaned up"

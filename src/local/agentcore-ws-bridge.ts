@@ -69,21 +69,31 @@ function decodeBrowserFrame(data: RawData, isBinary: boolean): string {
   return buf.toString('utf-8');
 }
 
+/** Handle returned by {@link attachAgentCoreWsBridge}. */
+export interface AttachedAgentCoreWsBridge {
+  /** URL path the bridge accepts `/ws` upgrades on. */
+  path: string;
+  /** Close every live bridged connection + the WebSocketServer. */
+  close(): Promise<void>;
+}
+
 /**
- * Start the bridge server. Resolves once it is listening; the returned handle
- * carries the connectable `url` and a `close()` that tears down the server and
- * every live bridged connection.
+ * Attach the AgentCore `/ws` bridge to an EXISTING `http.Server`: registers a
+ * `WebSocketServer` on `config.path` and, for each inbound (header-less)
+ * client, opens a container `/ws` leg with the session-id / Authorization
+ * headers injected (via {@link bridgeAgentCoreWs}), piping frames both ways.
+ *
+ * Shared by {@link startAgentCoreWsBridge} (a standalone `/ws`-only bridge) and
+ * the HTTP serve (`startAgentCoreHttpServer`, issue #454), which serves the
+ * same warm container's `POST /invocations` + `GET /ping` on the SAME port and
+ * delegates the `/ws` upgrade here. The caller owns `httpServer.listen()` and
+ * the host port; this helper only owns the WebSocket layer.
  */
-export function startAgentCoreWsBridge(
-  config: AgentCoreWsBridgeServerConfig
-): Promise<RunningAgentCoreWsBridge> {
-  const host = config.host ?? '127.0.0.1';
+export function attachAgentCoreWsBridge(
+  httpServer: Server,
+  config: Omit<AgentCoreWsBridgeServerConfig, 'host' | 'port'>
+): AttachedAgentCoreWsBridge {
   const path = config.path ?? DEFAULT_PATH;
-  const httpServer: Server = createServer((_req, res) => {
-    // The bridge speaks WebSocket only; a plain HTTP hit gets a hint.
-    res.writeHead(426, { 'Content-Type': 'text/plain' });
-    res.end('Upgrade required: connect over WebSocket.\n');
-  });
   const wss = new WebSocketServer({ server: httpServer, path });
   const liveCloses = new Set<() => void>();
 
@@ -134,6 +144,33 @@ export function startAgentCoreWsBridge(
     });
   });
 
+  return {
+    path,
+    close: () =>
+      new Promise<void>((res) => {
+        for (const closeLeg of liveCloses) closeLeg();
+        liveCloses.clear();
+        wss.close(() => res());
+      }),
+  };
+}
+
+/**
+ * Start a standalone `/ws`-only bridge server. Resolves once it is listening;
+ * the returned handle carries the connectable `url` and a `close()` that tears
+ * down the server and every live bridged connection.
+ */
+export function startAgentCoreWsBridge(
+  config: AgentCoreWsBridgeServerConfig
+): Promise<RunningAgentCoreWsBridge> {
+  const host = config.host ?? '127.0.0.1';
+  const httpServer: Server = createServer((_req, res) => {
+    // The bridge speaks WebSocket only; a plain HTTP hit gets a hint.
+    res.writeHead(426, { 'Content-Type': 'text/plain' });
+    res.end('Upgrade required: connect over WebSocket.\n');
+  });
+  const attached = attachAgentCoreWsBridge(httpServer, config);
+
   return new Promise<RunningAgentCoreWsBridge>((resolve, reject) => {
     httpServer.once('error', reject);
     httpServer.listen(config.port ?? 0, host, () => {
@@ -147,13 +184,11 @@ export function startAgentCoreWsBridge(
       );
       const port = (httpServer.address() as AddressInfo).port;
       resolve({
-        url: `ws://${host}:${port}${path}`,
+        url: `ws://${host}:${port}${attached.path}`,
         port,
         close: () =>
           new Promise<void>((res) => {
-            for (const closeLeg of liveCloses) closeLeg();
-            liveCloses.clear();
-            wss.close(() => httpServer.close(() => res()));
+            void attached.close().then(() => httpServer.close(() => res()));
           }),
       });
     });
