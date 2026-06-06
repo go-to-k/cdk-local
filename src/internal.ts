@@ -713,6 +713,7 @@ export {
   resolveCloudFrontTarget,
   parseOriginOverrides,
   parseKvsFileOverrides,
+  normalizeKvsFileKeys,
   LocalStartCloudFrontError,
 } from './cli/commands/local-start-cloudfront.js';
 
