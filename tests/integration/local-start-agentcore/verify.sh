@@ -161,12 +161,17 @@ echo "[verify]   mcp: ${MCP_URL}"
 # An MCP runtime has no /ws — the ws:// line must NOT be printed.
 grep -q 'Server listening on ws://' "${OUT_FILE}" && fail "MCP serve unexpectedly advertised a /ws endpoint"
 # Two JSON-RPC tools/list POSTs hit the SAME warm container booted once above.
+# The fixture embeds a per-process `_warmCount`; it goes 1 -> 2 ONLY if the
+# same warm process served both (a boot-per-request would reset it to 1 each
+# time), so this proves the warm-reuse guarantee, not just "served twice".
 MCP_JSONRPC='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 M1="$(curl -s -X POST "${MCP_URL}" -H 'content-type: application/json' -d "${MCP_JSONRPC}")"
 echo "${M1}" | grep -q 'add_numbers' || fail "first POST /mcp tools/list did not return the tool list: ${M1}"
+echo "${M1}" | grep -q '"_warmCount":1' || fail "first POST /mcp did not report warm count 1: ${M1}"
 M2="$(curl -s -X POST "${MCP_URL}" -H 'content-type: application/json' -d "${MCP_JSONRPC}")"
 echo "${M2}" | grep -q 'add_numbers' || fail "second POST /mcp (warm reuse) did not return the tool list: ${M2}"
-echo "[verify]   MCP serve OK: 2x POST /mcp tools/list handled by the one warm container"
+echo "${M2}" | grep -q '"_warmCount":2' || fail "second POST /mcp did not hit the SAME warm process (expected warm count 2): ${M2}"
+echo "[verify]   MCP serve OK: 2x POST /mcp tools/list, warm count 1 -> 2 on the one warm container"
 stop_server
 assert_no_orphans "MCP serve shutdown"
 
@@ -179,11 +184,14 @@ A2A_URL="${A2A_URL#A2A contract served on }"
 echo "[verify]   a2a: ${A2A_URL}"
 grep -q 'Server listening on ws://' "${OUT_FILE}" && fail "A2A serve unexpectedly advertised a /ws endpoint"
 # Two JSON-RPC POSTs (getCard then tasks/send) against the SAME warm container.
+# The embedded `_warmCount` goes 1 -> 2 only if one warm process served both.
 A1="$(curl -s -X POST "${A2A_URL}" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"agent/getCard"}')"
 echo "${A1}" | grep -q 'fixture-a2a-agent' || fail "first POST / agent/getCard did not return the agent card: ${A1}"
+echo "${A1}" | grep -q '"_warmCount":1' || fail "first POST / did not report warm count 1: ${A1}"
 A2="$(curl -s -X POST "${A2A_URL}" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tasks/send","params":{"id":"t1","message":"hi"}}')"
 echo "${A2}" | grep -q '"completed"' || fail "second POST / tasks/send (warm reuse) did not complete: ${A2}"
-echo "[verify]   A2A serve OK: getCard + tasks/send handled by the one warm container"
+echo "${A2}" | grep -q '"_warmCount":2' || fail "second POST / did not hit the SAME warm process (expected warm count 2): ${A2}"
+echo "[verify]   A2A serve OK: getCard + tasks/send, warm count 1 -> 2 on the one warm container"
 stop_server
 assert_no_orphans "A2A serve shutdown"
 

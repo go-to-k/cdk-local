@@ -103,6 +103,19 @@ describe('waitForAgentCoreHttpReady', () => {
       /did not become ready/
     );
   });
+
+  it('rethrows a non-transient error immediately without retrying', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error('boom: not a connect error');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    // A non-transient failure is fatal — it propagates as-is (not wrapped in
+    // "did not become ready") and the probe does not keep retrying.
+    await expect(waitForAgentCoreHttpReady('127.0.0.1', 8000, '/mcp', 2000)).rejects.toThrow(
+      /boom: not a connect error/
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('invokeAgentCore', () => {

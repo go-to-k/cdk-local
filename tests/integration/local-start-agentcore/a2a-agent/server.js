@@ -7,6 +7,13 @@
 // Startup logs go to stderr so the host's stdout carries only the cdkl result.
 const http = require('node:http');
 
+// Per-process request counter. start-agentcore boots this container ONCE and
+// keeps it warm; embedding an incrementing count in the JSON-RPC responses
+// lets the integ PROVE repeated POSTs hit the SAME warm process (a boot per
+// request would reset it to 1). The readiness probe POSTs an empty body (an
+// unrecognized method), so it does not bump the count.
+let warmCount = 0;
+
 function sendJsonRpc(res, id, payload) {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ jsonrpc: '2.0', id, ...payload }));
@@ -32,8 +39,10 @@ const server = http.createServer((req, res) => {
     const { id, method, params } = msg;
 
     if (method === 'agent/getCard') {
+      warmCount += 1;
       sendJsonRpc(res, id, {
         result: {
+          _warmCount: warmCount,
           name: 'fixture-a2a-agent',
           description: 'integ-test A2A agent',
           version: '1.0.0',
@@ -44,10 +53,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (method === 'tasks/send') {
+      warmCount += 1;
       const taskId = (params && params.id) || 'unknown';
       const message = (params && params.message) || null;
       sendJsonRpc(res, id, {
-        result: { id: taskId, status: { state: 'completed' }, echoedMessage: message },
+        result: { _warmCount: warmCount, id: taskId, status: { state: 'completed' }, echoedMessage: message },
       });
       return;
     }

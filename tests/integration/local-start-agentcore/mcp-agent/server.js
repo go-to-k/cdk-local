@@ -10,6 +10,13 @@
 // carries only the cdkl result.
 const http = require('node:http');
 
+// Per-process request counter. start-agentcore boots this container ONCE and
+// keeps it warm; embedding an incrementing count in the tools/list response
+// lets the integ PROVE repeated POSTs hit the SAME warm process (a boot per
+// request would reset it to 1 every time). The readiness probe POSTs an empty
+// body (no `method`), so it does not bump the count.
+let warmCount = 0;
+
 function send(res, status, headers, body) {
   res.writeHead(status, headers);
   res.end(body);
@@ -71,8 +78,10 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (method === 'tools/list') {
+      warmCount += 1;
       sendSseJsonRpc(res, id, {
         result: {
+          _warmCount: warmCount,
           tools: [
             {
               name: 'add_numbers',
