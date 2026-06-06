@@ -1,3 +1,10 @@
+## [0.139.2](https://github.com/go-to-k/cdk-local/compare/v0.139.1...v0.139.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **studio:** symmetric "(AgentCore)" row label across invoke/serve groups ([#464](https://github.com/go-to-k/cdk-local/issues/464)) ([e5d07d5](https://github.com/go-to-k/cdk-local/commit/e5d07d505d7c6bfb215d159260a06599917c3816))
+
 ## [0.139.1](https://github.com/go-to-k/cdk-local/compare/v0.139.0...v0.139.1) (2026-06-06)
 
 
