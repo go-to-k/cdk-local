@@ -205,6 +205,164 @@ function startProtocolFake(): Promise<ProtocolFake> {
   );
 }
 
+interface RecordingContainer {
+  server: Server;
+  port: number;
+  requests: Array<{ method: string; url: string; body: string; headers: Record<string, string> }>;
+}
+
+// A fake container that records the full header set + body of every request, so
+// the auth-gate + sigv4 tests can assert exactly what reached the warm container.
+function startRecordingContainer(): Promise<RecordingContainer> {
+  const requests: RecordingContainer['requests'] = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      requests.push({
+        method: req.method ?? '',
+        url: req.url ?? '',
+        body,
+        headers: req.headers as Record<string, string>,
+      });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  return new Promise((resolve) =>
+    server.listen(0, '127.0.0.1', () =>
+      resolve({ server, port: (server.address() as AddressInfo).port, requests })
+    )
+  );
+}
+
+describe('startAgentCoreHttpServer (per-request inbound auth + sigv4, issue #454)', () => {
+  let fake: RecordingContainer | undefined;
+  let serve: RunningAgentCoreHttpServer | undefined;
+
+  afterEach(async () => {
+    if (serve) await serve.close().catch(() => undefined);
+    if (fake) await new Promise<void>((res) => fake!.server.close(() => res()));
+    serve = undefined;
+    fake = undefined;
+  });
+
+  async function boot(
+    extra: Partial<Parameters<typeof startAgentCoreHttpServer>[0]>
+  ): Promise<RunningAgentCoreHttpServer> {
+    fake = await startRecordingContainer();
+    serve = await startAgentCoreHttpServer({
+      containerHost: '127.0.0.1',
+      containerPort: fake.port,
+      host: '127.0.0.1',
+      ...extra,
+    });
+    return serve;
+  }
+
+  it('returns the authCheck deny status (401) and does NOT forward to the container', async () => {
+    const s = await boot({
+      authCheck: async () => ({ allow: false, status: 401, message: 'missing token' }),
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{}'
+    );
+    expect(r.status).toBe(401);
+    expect(JSON.parse(r.body).error).toBe('missing token');
+    expect(fake!.requests).toHaveLength(0);
+  });
+
+  it('returns 403 when the authCheck rejects the token', async () => {
+    const s = await boot({
+      authCheck: async () => ({ allow: false, status: 403, message: 'invalid token' }),
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{}'
+    );
+    expect(r.status).toBe(403);
+    expect(fake!.requests).toHaveLength(0);
+  });
+
+  it('forwards the authCheck-returned Authorization when it allows', async () => {
+    const s = await boot({
+      authorization: 'Bearer boot-default',
+      authCheck: async () => ({ allow: true, authorization: 'Bearer verified-per-request' }),
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{"turn":1}'
+    );
+    expect(r.status).toBe(200);
+    // The per-request verified Authorization wins over the static boot default.
+    expect(fake!.requests[0]?.headers['authorization']).toBe('Bearer verified-per-request');
+    expect(fake!.requests[0]?.body).toBe('{"turn":1}');
+  });
+
+  it('does NOT gate GET /ping even when authCheck is set (health is unauthenticated)', async () => {
+    let pingChecked = false;
+    const s = await boot({
+      authCheck: async () => {
+        pingChecked = true;
+        return { allow: false, status: 401 };
+      },
+    });
+    const r = await httpReq({ host: '127.0.0.1', port: s.port, path: '/ping', method: 'GET' });
+    expect(r.status).toBe(200);
+    expect(pingChecked).toBe(false);
+    expect(fake!.requests.map((q) => q.url)).toEqual(['/ping']);
+  });
+
+  it('buffers + signs the POST body and injects the signed headers when signRequest is set', async () => {
+    let signed: { method: string; path: string; body: string; sessionId: string } | undefined;
+    const s = await boot({
+      signRequest: async ({ method, path, body, sessionId }) => {
+        signed = { method, path, body: body.toString('utf-8'), sessionId };
+        return {
+          Authorization: 'AWS4-HMAC-SHA256 Credential=AKIA.../bedrock-agentcore',
+          'X-Amz-Date': '20260101T000000Z',
+          'X-Amz-Content-Sha256': 'abc123',
+        };
+      },
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{"q":"hi"}'
+    );
+    expect(r.status).toBe(200);
+    // signRequest saw the full buffered body + the same session id the proxy
+    // forwarded, on the contract path.
+    expect(signed?.body).toBe('{"q":"hi"}');
+    expect(signed?.path).toBe('/invocations');
+    expect(signed?.sessionId).toBeTruthy();
+    // The container received the signed headers + the body + the same session id.
+    const got = fake!.requests[0];
+    expect(got?.headers['authorization']).toBe(
+      'AWS4-HMAC-SHA256 Credential=AKIA.../bedrock-agentcore'
+    );
+    expect(got?.headers['x-amz-date']).toBe('20260101T000000Z');
+    expect(got?.headers['x-amz-content-sha256']).toBe('abc123');
+    expect(got?.body).toBe('{"q":"hi"}');
+    expect(got?.headers['x-amzn-bedrock-agentcore-runtime-session-id']).toBe(signed?.sessionId);
+  });
+
+  it('returns 500 (no crash) when signRequest throws', async () => {
+    const s = await boot({
+      signRequest: async () => {
+        throw new Error('no creds');
+      },
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: s.port, path: '/invocations', method: 'POST' },
+      '{}'
+    );
+    expect(r.status).toBe(500);
+    expect(JSON.parse(r.body).error).toMatch(/sigv4 signing failed: no creds/);
+    expect(fake!.requests).toHaveLength(0);
+  });
+});
+
 describe('startAgentCoreHttpServer (MCP / A2A routing)', () => {
   let fake: ProtocolFake | undefined;
   let serve: RunningAgentCoreHttpServer | undefined;

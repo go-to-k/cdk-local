@@ -217,10 +217,21 @@ AWS managed services.
   model where many `InvokeAgentRuntime` calls on one `runtimeSessionId`
   reuse one warm microVM (vs single-shot `invoke-agentcore`, which boots +
   tears down per call). The request body is streamed up and the response —
-  JSON or an SSE `text/event-stream` — streamed back. The boot-resolved
-  `Authorization` (a `--bearer-token` validated once under a
-  `customJwtAuthorizer`, or the `--sigv4` header set) is injected on every
-  forwarded request; per-request inbound JWT verification is a follow-up.
+  JSON or an SSE `text/event-stream` — streamed back. Inbound auth mirrors
+  the cloud PER REQUEST (issue #454, slice 4a — unlike single-shot
+  invoke-agentcore, which validates a `--bearer-token` ONCE at boot): when the
+  runtime declares a `customJwtAuthorizer`, each `POST` contract request's
+  `Authorization` is verified against the runtime's OIDC discovery URL /
+  JWKS (signature + issuer + expiry + audience + scopes + custom claims) —
+  `401` when no token, `403` when invalid, forwarded on pass; `GET /ping`
+  stays an unauthenticated health check; `--bearer-token` is the default
+  injected when an inbound request carries none, `--no-verify-auth` disables
+  the gate. `--sigv4` (no `customJwtAuthorizer`) signs each forwarded request
+  with AWS SigV4 (service `bedrock-agentcore`) so the container sees the same
+  `Authorization` / `X-Amz-*` header set the cloud receives — mutually
+  exclusive with `--bearer-token`; the body is buffered to sign. The
+  per-request gate is the serve counterpart of `front-door-auth`'s ALB
+  `AuthCheck`.
   For HTTP / AGUI runtimes, on the SAME port it also serves the
   bidirectional `/ws` endpoint behind a host WebSocket BRIDGE so a
   header-less client — a browser `WebSocket`, which cannot set the
@@ -455,10 +466,18 @@ compute-locally category for Lambda + API Gateway).
   forwarded routes (`POST /invocations` + `GET /ping` / `POST /mcp` /
   `POST /`), the `/ws`-attach flag (HTTP / AGUI only), and the readiness
   probe (`GET /ping` for HTTP / AGUI, an HTTP-response probe via
-  `waitForAgentCoreHttpReady` for MCP / A2A, which have no `/ping`). New CLI
+  `waitForAgentCoreHttpReady` for MCP / A2A, which have no `/ping`). Inbound
+  auth is per-request (slice 4a): when the runtime declares a
+  `customJwtAuthorizer` the boot wires a per-request `authCheck`
+  (`buildAgentCoreServeAuthCheck`, the serve counterpart of `front-door-auth`'s
+  ALB `AuthCheck`) into the HTTP server; `--sigv4` (no authorizer) wires a
+  per-request `signRequest` that signs the buffered POST body via the shared
+  `resolveAgentCoreSigV4Context` (extracted from invoke's
+  `buildSigV4HeadersIfRequested` so both verbs resolve creds + region
+  identically). New CLI
   options live in `addStartAgentCoreSpecificOptions` (`--port` / `--host` /
-  `--session-id` / `--bearer-token` / `--no-verify-auth` / `--env-vars` /
-  `--platform` / `--from-cfn-stack` / `--assume-role` / ...).
+  `--session-id` / `--bearer-token` / `--no-verify-auth` / `--sigv4` /
+  `--env-vars` / `--platform` / `--from-cfn-stack` / `--assume-role` / ...).
   `createLocalStudioCommand` (`cdkl studio`, issue #282) is the
   interactive web console over the same target enumeration — a control
   plane that spawns the SAME `invoke` / `start-api` / `start-alb` /
@@ -554,7 +573,18 @@ compute-locally category for Lambda + API Gateway).
   port to `attachAgentCoreWsBridge`. So one warm container serves the HTTP /
   AGUI contract (`POST /invocations` + `GET /ping` + `/ws`), the MCP contract
   (`POST /mcp`), or the A2A contract (`POST /`) repeatedly; MCP / A2A are
-  pure pass-through with no `/ws`) + agentcore-s3-bundle
+  pure pass-through with no `/ws`. Slice 4a added a per-request `authCheck`
+  (gates each `POST` contract request — `GET /ping` is never gated — returning
+  401 / 403 on deny, forwarding the verified Authorization on pass) + a
+  per-request `signRequest` (buffers the POST body, signs it SigV4, injects the
+  `Authorization` / `X-Amz-*` headers; drops the inbound chunked
+  `transfer-encoding` since the body is now fixed-length)) + agentcore-serve-auth
+  (slice 4a — `buildAgentCoreServeAuthCheck`: the per-request inbound-JWT gate
+  for the warm serve, the serve counterpart of `front-door-auth`'s ALB
+  `AuthCheck`; reuses `cognito-jwt`'s `verifyJwtViaDiscovery` to verify the
+  caller's token against the runtime's `customJwtAuthorizer` per request —
+  401 missing / 403 invalid / pass, with `--bearer-token` the default and
+  `--no-verify-auth` the off-switch) + agentcore-s3-bundle
   (downloads + extracts a fromS3 CodeConfiguration bundle for the from-source
   build), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver

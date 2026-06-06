@@ -114,6 +114,7 @@ const {
   resolveAssumeRoleArn,
   resolveFromS3BucketIntrinsic,
   buildSigV4HeadersIfRequested,
+  resolveAgentCoreSigV4Context,
   parseTimeoutMs,
   buildA2aRequest,
   emitA2aResult,
@@ -1116,6 +1117,69 @@ describe('buildSigV4HeadersIfRequested — --sigv4 gate', () => {
       'sess'
     );
     expect(headers?.['Authorization']).toContain('/ap-northeast-1/bedrock-agentcore/aws4_request');
+  });
+});
+
+// The extracted boot-time signing-context resolver (issue #454) that
+// `cdkl start-agentcore --sigv4` reuses to sign each forwarded request. The
+// buildSigV4HeadersIfRequested suite above exercises it transitively; this
+// suite locks the direct contract the serve depends on (region + credentials).
+describe('resolveAgentCoreSigV4Context — shared --sigv4 boot context', () => {
+  const ENV_BACKUP = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stsSendMock.mockReset();
+    for (const k of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_REGION', 'AWS_DEFAULT_REGION']) {
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) delete process.env[k];
+    Object.assign(process.env, ENV_BACKUP);
+  });
+
+  function runtime(jwtAuthorizer?: ResolvedAgentCoreRuntime['jwtAuthorizer']): ResolvedAgentCoreRuntime {
+    return {
+      stack: { stackName: 'App', region: 'us-east-1' } as never,
+      logicalId: 'Agent',
+      resource: { Type: 'AWS::BedrockAgentCore::Runtime', Properties: {} },
+      containerUri: 'r:t',
+      environmentVariables: {},
+      protocol: 'HTTP',
+      ...(jwtAuthorizer && { jwtAuthorizer }),
+    };
+  }
+  type Opts = Parameters<typeof resolveAgentCoreSigV4Context>[0];
+  const opts = (over: Partial<Opts> = {}): Opts =>
+    ({ sigv4: true, region: 'us-east-1', ...over }) as unknown as Opts;
+
+  it('returns undefined when --sigv4 is off', async () => {
+    expect(await resolveAgentCoreSigV4Context(opts({ sigv4: false }), runtime(), undefined)).toBeUndefined();
+  });
+
+  it('returns undefined (JWT path wins) when a customJwtAuthorizer is declared', async () => {
+    const ctx = await resolveAgentCoreSigV4Context(
+      opts(),
+      runtime({ discoveryUrl: 'https://idp.example.com/.well-known/openid-configuration' }),
+      undefined
+    );
+    expect(ctx).toBeUndefined();
+  });
+
+  it('rejects --sigv4 + --bearer-token together', async () => {
+    await expect(
+      resolveAgentCoreSigV4Context(opts({ bearerToken: 'tok' }), runtime(), undefined)
+    ).rejects.toThrow(/mutually exclusive/);
+  });
+
+  it('resolves { credentials, region } from shell env credentials', async () => {
+    process.env['AWS_ACCESS_KEY_ID'] = 'AKIDCTX';
+    process.env['AWS_SECRET_ACCESS_KEY'] = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const ctx = await resolveAgentCoreSigV4Context(opts({ region: 'eu-west-1' }), runtime(), undefined);
+    expect(ctx?.region).toBe('eu-west-1');
+    expect(ctx?.credentials.accessKeyId).toBe('AKIDCTX');
   });
 });
 

@@ -36,8 +36,11 @@ import { A2A_CONTAINER_PORT, A2A_PATH } from '../../local/agentcore-a2a-client.j
 import {
   startAgentCoreHttpServer,
   type AgentCoreServeRoute,
+  type AgentCoreServeSignRequest,
   type RunningAgentCoreHttpServer,
 } from '../../local/agentcore-http-server.js';
+import { selectServeInboundAuth } from '../../local/agentcore-serve-auth.js';
+import { signAgentCoreInvocation } from '../../local/agentcore-sigv4-sign.js';
 import {
   ensureDockerAvailable,
   pickFreePort,
@@ -55,8 +58,8 @@ import {
   buildContainerEnv,
   parseTimeoutMs,
   resolveAgentCoreImage,
+  resolveAgentCoreSigV4Context,
   resolveFromS3BucketIntrinsic,
-  resolveInboundAuthorization,
   type LocalInvokeAgentCoreOptions,
 } from './local-invoke-agentcore.js';
 
@@ -64,8 +67,10 @@ import {
  * Options for `cdkl start-agentcore`. A superset of the single-shot
  * `invoke-agentcore` options (so the shared boot / env / auth / image helpers
  * can be reused verbatim) plus the serve bind controls. The invoke-only fields
- * (`--ws` / `--sigv4` / `--event` / `--event-stdin`) are absent — this command
- * never single-shots; it keeps the container warm and serves its contract.
+ * (`--ws` / `--event` / `--event-stdin`) are absent — this command never
+ * single-shots; it keeps the container warm and serves its contract. `--sigv4`
+ * IS accepted (issue #454): it signs each forwarded request, the serve
+ * counterpart of invoke's single-shot signing.
  */
 interface LocalStartAgentCoreOptions extends LocalInvokeAgentCoreOptions {
   /** Serve bind port (`--port`, default 0 = OS-assigned). */
@@ -293,11 +298,32 @@ async function localStartAgentCoreCommand(
   // readiness). All four protocols are served (issue #454).
   const plan = resolveAgentCoreServePlan(resolved.protocol);
 
-  // Inbound JWT auth: when the runtime declares a customJwtAuthorizer, verify
-  // the supplied --bearer-token against its OIDC discovery URL BEFORE any
-  // Docker work and resolve the Authorization header injected on every
-  // forwarded request + /ws leg (the same authorizer the cloud would speak to).
-  const authorization = await resolveInboundAuthorization(resolved, options);
+  // Inbound auth (issue #454). Unlike single-shot invoke-agentcore (which
+  // validates the --bearer-token ONCE at boot), the warm serve verifies the
+  // CALLER's token PER REQUEST against the customJwtAuthorizer (as the cloud
+  // does). Resolve the strategy before any Docker work:
+  //  - customJwtAuthorizer => a per-request authCheck gates each POST contract
+  //    request (401 missing / 403 invalid); the --bearer-token (if any) is the
+  //    default injected when the inbound request carries none.
+  //  - else --sigv4 => resolve the SigV4 signing context (creds + region; same
+  //    resolution as invoke-agentcore) and sign each forwarded POST.
+  //  - else => forward the --bearer-token verbatim (pass-through), if given.
+  // The conflict / region / creds checks live in resolveAgentCoreSigV4Context
+  // (shared with invoke); it returns undefined when --sigv4 is off or an
+  // authorizer is declared (the JWT path wins, warns).
+  const sigv4Context = await resolveAgentCoreSigV4Context(
+    options,
+    resolved,
+    loadedState,
+    stateProvider
+  );
+  const authPlan = selectServeInboundAuth(resolved, options, sigv4Context !== undefined);
+  if (authPlan.authCheck && resolved.jwtAuthorizer) {
+    logger.info(
+      `Inbound JWT: each request verified per-request against ${resolved.jwtAuthorizer.discoveryUrl}` +
+        `${options.verifyAuth === false ? ' (verification DISABLED via --no-verify-auth)' : ''}.`
+    );
+  }
 
   // Resolve a fromS3 bundle's intrinsic bucket before the image step.
   await resolveFromS3BucketIntrinsic(resolved, stateProvider, loadedState, imageContext);
@@ -368,6 +394,34 @@ async function localStartAgentCoreCommand(
         options.timeout
       );
     }
+    // --sigv4: sign each forwarded POST against the warm container's host:port
+    // (built here, now that the port is known). Reuses the boot-resolved
+    // credentials + region from resolveAgentCoreSigV4Context.
+    const signRequest: AgentCoreServeSignRequest | undefined =
+      authPlan.sign && sigv4Context
+        ? async ({ method, path, body, sessionId }) => {
+            const signed = await signAgentCoreInvocation({
+              credentials: sigv4Context.credentials,
+              region: sigv4Context.region,
+              host: containerHost,
+              port: containerHostPort,
+              path,
+              // Pass the raw Buffer (not a re-encoded string) so the signature
+              // commits to the exact bytes the proxy forwards.
+              body,
+              sessionId,
+              method,
+            });
+            const h: Record<string, string> = {
+              Authorization: signed.authorization,
+              'X-Amz-Date': signed.amzDate,
+              'X-Amz-Content-Sha256': signed.amzContentSha256,
+            };
+            if (signed.amzSecurityToken) h['X-Amz-Security-Token'] = signed.amzSecurityToken;
+            return h;
+          }
+        : undefined;
+
     server = await startAgentCoreHttpServer({
       containerHost,
       containerPort: containerHostPort,
@@ -375,7 +429,9 @@ async function localStartAgentCoreCommand(
       port: options.port,
       routes: plan.routes,
       attachWs: plan.attachWs,
-      ...(authorization && { authorization }),
+      ...(authPlan.bridgeAuthorization && { authorization: authPlan.bridgeAuthorization }),
+      ...(authPlan.authCheck && { authCheck: authPlan.authCheck }),
+      ...(signRequest && { signRequest }),
       ...(options.sessionId && { sessionId: options.sessionId }),
     });
   } catch (err) {
@@ -496,6 +552,15 @@ export function addStartAgentCoreSpecificOptions(cmd: Command): Command {
         '--no-verify-auth',
         'Skip inbound JWT verification even when the runtime declares a customJwtAuthorizer ' +
           '(local-dev escape hatch). A --bearer-token, if given, is still forwarded.'
+      )
+    )
+    .addOption(
+      new Option(
+        '--sigv4',
+        'Sign each forwarded request with AWS SigV4 (service bedrock-agentcore) when the runtime ' +
+          'declares NO customJwtAuthorizer, so the warm container sees the same Authorization / ' +
+          'X-Amz-* headers the cloud receives. Mutually exclusive with --bearer-token; ignored ' +
+          '(with a warning) when a customJwtAuthorizer is declared.'
       )
     )
     .addOption(

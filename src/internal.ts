@@ -363,8 +363,20 @@ export {
   startAgentCoreHttpServer,
   type AgentCoreHttpServerConfig,
   type AgentCoreServeRoute,
+  type AgentCoreServeSignRequest,
   type RunningAgentCoreHttpServer,
 } from './local/agentcore-http-server.js';
+// Per-request inbound-JWT gate for a host CLI's `start-agentcore` warm serve
+// (issue #454) — consumed by cdkd's `local start-agentcore` provider to verify
+// the caller's token against the runtime's customJwtAuthorizer per request.
+export {
+  buildAgentCoreServeAuthCheck,
+  selectServeInboundAuth,
+  type AgentCoreServeAuthCheck,
+  type AgentCoreServeAuthResult,
+  type BuildAgentCoreServeAuthCheckOptions,
+  type ServeInboundAuthPlan,
+} from './local/agentcore-serve-auth.js';
 export {
   a2aInvokeOnce,
   A2A_CONTAINER_PORT,

@@ -807,10 +807,21 @@ cold-start each time.
 
 **HTTP contract.** The serve proxies `POST /invocations` and `GET /ping` to the
 warm container, streaming the request body up and the response — JSON or an SSE
-`text/event-stream` — back. The boot-resolved `Authorization` (a
-`--bearer-token` validated once under a `customJwtAuthorizer`, or the `--sigv4`
-header set) is injected on every forwarded request, and a session-id header is
-injected (a fresh UUID per request, unless `--session-id` pins one).
+`text/event-stream` — back. A session-id header is injected (a fresh UUID per
+request, unless `--session-id` pins one).
+
+**Inbound auth is per-request** (unlike single-shot `invoke-agentcore`, which
+validates a `--bearer-token` once at boot). When the runtime declares a
+`customJwtAuthorizer`, each `POST` contract request's `Authorization` is
+verified against the runtime's OIDC discovery URL / JWKS — exactly as the cloud
+does on every `InvokeAgentRuntime`: **401** when no token is present, **403**
+when the token is invalid (bad signature / issuer / expiry / audience / scope),
+forwarded on pass. `GET /ping` is an unauthenticated health check. A
+`--bearer-token` is the default injected when an inbound request carries none;
+`--no-verify-auth` disables the gate. `--sigv4` (a runtime with **no**
+`customJwtAuthorizer`) signs each forwarded request with AWS SigV4 (service
+`bedrock-agentcore`) so the container sees the same `Authorization` / `X-Amz-*`
+header set the cloud receives — mutually exclusive with `--bearer-token`.
 
 **`/ws` bridge (same port).** The serve also fronts the agent's bidirectional
 `/ws` WebSocket endpoint behind a host **bridge** on the same port. The
@@ -853,9 +864,13 @@ curl -X POST http://127.0.0.1:8000/mcp -d '{"jsonrpc":"2.0","id":1,"method":"too
 cdkl start-agentcore MyStack/A2aAgent --port 9000
 curl -X POST http://127.0.0.1:9000/ -d '{"jsonrpc":"2.0","id":1,"method":"agent/getCard"}'
 
-# Forward a bearer token (verified against the runtime's OIDC discovery URL)
-# on every forwarded request + bridged container upgrade
+# A JWT-protected runtime: each request's Authorization is verified per request
+# (401 missing / 403 invalid). --bearer-token is the default when none is sent.
 cdkl start-agentcore MyStack/Agent --bearer-token "$JWT"
+curl -X POST http://127.0.0.1:8080/invocations -H "authorization: Bearer $CALLER_JWT" -d '{}'
+
+# A runtime with no customJwtAuthorizer: sign each forwarded request with SigV4
+cdkl start-agentcore MyStack/Agent --sigv4
 
 # Bind to a deployed stack so intrinsic env values / ECR image URIs resolve
 cdkl start-agentcore MyStack/Agent --from-cfn-stack
@@ -866,8 +881,9 @@ cdkl start-agentcore MyStack/Agent --from-cfn-stack
 | `--port <n>` | `0` | Serve bind port the client connects to — HTTP `/invocations` / `/ping` + `/ws`, same port (0 = OS-assigned). |
 | `--host <ip>` | `127.0.0.1` | Serve bind host. |
 | `--session-id <id>` | random UUID per request / connection | Pin one AgentCore session-id header value for every forwarded request + `/ws` connection. |
-| `--bearer-token <jwt>` | — | Bearer JWT for a `customJwtAuthorizer`; verified against the runtime's OIDC discovery URL, then injected as `Authorization: Bearer <jwt>` on every forwarded request + container `/ws` upgrade. |
-| `--no-verify-auth` | (verify on) | Skip inbound JWT verification (local-dev escape hatch); a `--bearer-token`, if given, is still forwarded. |
+| `--bearer-token <jwt>` | — | Default Bearer JWT injected when an inbound `POST` carries no `Authorization` (a `customJwtAuthorizer` runtime); also injected on the container `/ws` upgrade. Each request's effective token is verified per request against the runtime's OIDC discovery URL. Mutually exclusive with `--sigv4`. |
+| `--no-verify-auth` | (verify on) | Skip the per-request inbound JWT verification (local-dev escape hatch); a `--bearer-token`, if given, is still forwarded. |
+| `--sigv4` | off | Sign each forwarded `POST` with AWS SigV4 (service `bedrock-agentcore`) when the runtime declares **no** `customJwtAuthorizer`, so the container sees the cloud's `Authorization` / `X-Amz-*` headers. Mutually exclusive with `--bearer-token`; ignored (with a warning) on a JWT-protected runtime. |
 | `--env-vars <file>` | — | SAM-shape JSON env-var overrides for the agent container. |
 | `--platform <platform>` | `linux/arm64` | `docker --platform` for the agent container. |
 | `--no-pull` / `--no-build` | (on) | Skip the image pull / local build. |

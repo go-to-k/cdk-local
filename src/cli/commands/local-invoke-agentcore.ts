@@ -758,27 +758,24 @@ export async function resolveInboundAuthorization(
 }
 
 /**
- * Compute the SigV4 headers for the `/invocations` POST when `--sigv4` is
- * requested. Returns `undefined` (no header overlay) when:
+ * Resolve the boot-time SigV4 signing context (`{ credentials, region }`) when
+ * `--sigv4` is requested, or `undefined` when it is not applicable (`--sigv4`
+ * off, or a `customJwtAuthorizer` is declared — the JWT path wins, warns).
+ * Throws a {@link CdkLocalError} on a `--bearer-token` conflict, an unresolved
+ * region, or no resolvable credentials.
  *
- * - `--sigv4` is not set,
- * - the runtime declares a `customJwtAuthorizer` (the JWT path wins; warns),
- *
- * Throws a {@link CdkLocalError} when `--sigv4` conflicts with
- * `--bearer-token`, or when no AWS credentials are resolvable for signing.
- *
- * Exported so a unit test can drive the gate without the full Docker pipeline.
+ * Extracted from {@link buildSigV4HeadersIfRequested} so both the single-shot
+ * `cdkl invoke-agentcore` (signs ONE body) and the warm `cdkl start-agentcore`
+ * serve (signs each forwarded body per request — issue #454) resolve the
+ * credentials + region the SAME way. Exported so the serve boot + a unit test
+ * can reuse it.
  */
-export async function buildSigV4HeadersIfRequested(
+export async function resolveAgentCoreSigV4Context(
   options: LocalInvokeAgentCoreOptions,
   resolved: ResolvedAgentCoreRuntime,
   loaded: LocalStateRecord | undefined,
-  host: string,
-  port: number,
-  event: unknown,
-  sessionId: string,
   stateProvider?: LocalStateProvider
-): Promise<Record<string, string> | undefined> {
+): Promise<{ credentials: SigV4Credentials; region: string } | undefined> {
   if (!options.sigv4) return undefined;
   if (options.bearerToken) {
     throw new CdkLocalError(
@@ -812,9 +809,36 @@ export async function buildSigV4HeadersIfRequested(
     region,
     stateProvider
   );
+  return { credentials, region };
+}
+
+/**
+ * Compute the SigV4 headers for the `/invocations` POST when `--sigv4` is
+ * requested. Returns `undefined` (no header overlay) when:
+ *
+ * - `--sigv4` is not set,
+ * - the runtime declares a `customJwtAuthorizer` (the JWT path wins; warns),
+ *
+ * Throws a {@link CdkLocalError} when `--sigv4` conflicts with
+ * `--bearer-token`, or when no AWS credentials are resolvable for signing.
+ *
+ * Exported so a unit test can drive the gate without the full Docker pipeline.
+ */
+export async function buildSigV4HeadersIfRequested(
+  options: LocalInvokeAgentCoreOptions,
+  resolved: ResolvedAgentCoreRuntime,
+  loaded: LocalStateRecord | undefined,
+  host: string,
+  port: number,
+  event: unknown,
+  sessionId: string,
+  stateProvider?: LocalStateProvider
+): Promise<Record<string, string> | undefined> {
+  const ctx = await resolveAgentCoreSigV4Context(options, resolved, loaded, stateProvider);
+  if (!ctx) return undefined;
   const signed = await signAgentCoreInvocation({
-    credentials,
-    region,
+    credentials: ctx.credentials,
+    region: ctx.region,
     host,
     port,
     path: '/invocations',
@@ -827,7 +851,7 @@ export async function buildSigV4HeadersIfRequested(
     'X-Amz-Content-Sha256': signed.amzContentSha256,
   };
   if (signed.amzSecurityToken) headers['X-Amz-Security-Token'] = signed.amzSecurityToken;
-  getLogger().info(`Signed /invocations with SigV4 (region=${region}).`);
+  getLogger().info(`Signed /invocations with SigV4 (region=${ctx.region}).`);
   return headers;
 }
 
