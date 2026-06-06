@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, it } from 'vite-plus/test';
 import {
   createLocalStartAgentCoreCommand,
   addStartAgentCoreSpecificOptions,
-  assertAgentCoreWsServable,
+  resolveAgentCoreServePlan,
 } from '../../../src/cli/commands/local-start-agentcore.js';
 import { Command } from 'commander';
 import { getEmbedConfig, setEmbedConfig } from '../../../src/local/embed-config.js';
@@ -79,22 +79,37 @@ describe('createLocalStartAgentCoreCommand', () => {
   });
 });
 
-describe('assertAgentCoreWsServable', () => {
-  it('accepts HTTP and AGUI runtimes', () => {
-    expect(() =>
-      assertAgentCoreWsServable({ protocol: AGENTCORE_HTTP_PROTOCOL, logicalId: 'A' })
-    ).not.toThrow();
-    expect(() =>
-      assertAgentCoreWsServable({ protocol: AGENTCORE_AGUI_PROTOCOL, logicalId: 'A' })
-    ).not.toThrow();
+describe('resolveAgentCoreServePlan', () => {
+  it('serves HTTP / AGUI on 8080 (POST /invocations + GET /ping) with the /ws bridge and /ping readiness', () => {
+    for (const protocol of [AGENTCORE_HTTP_PROTOCOL, AGENTCORE_AGUI_PROTOCOL]) {
+      const plan = resolveAgentCoreServePlan(protocol);
+      expect(plan.containerPort).toBeUndefined(); // default 8080
+      expect(plan.containerPortLabel).toBe('8080');
+      expect(plan.attachWs).toBe(true);
+      // No explicit readiness path -> GET /ping wait.
+      expect(plan.readyPath).toBeUndefined();
+      expect(plan.routes).toEqual([
+        { method: 'POST', path: '/invocations' },
+        { method: 'GET', path: '/ping' },
+      ]);
+    }
   });
 
-  it('rejects MCP and A2A runtimes with an actionable error', () => {
-    expect(() =>
-      assertAgentCoreWsServable({ protocol: AGENTCORE_MCP_PROTOCOL, logicalId: 'McpAgent' })
-    ).toThrow(/McpAgent.*no \/ws|no \/ws.*McpAgent|MCP runtime/);
-    expect(() =>
-      assertAgentCoreWsServable({ protocol: AGENTCORE_A2A_PROTOCOL, logicalId: 'A2aAgent' })
-    ).toThrow(/A2A/);
+  it('serves MCP on 8000 (POST /mcp), no /ws, with HTTP-response readiness on /mcp', () => {
+    const plan = resolveAgentCoreServePlan(AGENTCORE_MCP_PROTOCOL);
+    expect(plan.containerPort).toBe(8000);
+    expect(plan.containerPortLabel).toBe('8000/mcp');
+    expect(plan.attachWs).toBe(false);
+    expect(plan.readyPath).toBe('/mcp');
+    expect(plan.routes).toEqual([{ method: 'POST', path: '/mcp' }]);
+  });
+
+  it('serves A2A on 9000 (POST /), no /ws, with HTTP-response readiness on /', () => {
+    const plan = resolveAgentCoreServePlan(AGENTCORE_A2A_PROTOCOL);
+    expect(plan.containerPort).toBe(9000);
+    expect(plan.containerPortLabel).toBe('9000/');
+    expect(plan.attachWs).toBe(false);
+    expect(plan.readyPath).toBe('/');
+    expect(plan.routes).toEqual([{ method: 'POST', path: '/' }]);
   });
 });

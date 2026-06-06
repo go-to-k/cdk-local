@@ -174,3 +174,107 @@ describe('startAgentCoreHttpServer', () => {
     expect(r2.status).toBe(502);
   });
 });
+
+interface ProtocolFake {
+  server: Server;
+  port: number;
+  requests: Array<{ method: string; path: string; body: string; sessionId?: string }>;
+}
+
+// A stand-in for an MCP / A2A warm container: echoes the request path + a
+// running count back so a test can prove repeated POSTs hit the SAME warm
+// "container" and that the serve forwarded the protocol path verbatim.
+function startProtocolFake(): Promise<ProtocolFake> {
+  const requests: ProtocolFake['requests'] = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const sessionId = req.headers['x-amzn-bedrock-agentcore-runtime-session-id'] as
+        | string
+        | undefined;
+      requests.push({ method: req.method ?? '', path: req.url ?? '', body, sessionId });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { path: req.url, count: requests.length } }));
+    });
+  });
+  return new Promise((resolve) =>
+    server.listen(0, '127.0.0.1', () =>
+      resolve({ server, port: (server.address() as AddressInfo).port, requests })
+    )
+  );
+}
+
+describe('startAgentCoreHttpServer (MCP / A2A routing)', () => {
+  let fake: ProtocolFake | undefined;
+  let serve: RunningAgentCoreHttpServer | undefined;
+
+  afterEach(async () => {
+    if (serve) await serve.close().catch(() => undefined);
+    if (fake) await new Promise<void>((res) => fake!.server.close(() => res()));
+    serve = undefined;
+    fake = undefined;
+  });
+
+  it('forwards POST /mcp to the warm container (no /ws), repeated POSTs hit the SAME one', async () => {
+    fake = await startProtocolFake();
+    serve = await startAgentCoreHttpServer({
+      containerHost: '127.0.0.1',
+      containerPort: fake.port,
+      host: '127.0.0.1',
+      routes: [{ method: 'POST', path: '/mcp' }],
+      attachWs: false,
+    });
+    const r1 = await httpReq(
+      { host: '127.0.0.1', port: serve.port, path: '/mcp', method: 'POST' },
+      '{"method":"tools/list"}'
+    );
+    const r2 = await httpReq(
+      { host: '127.0.0.1', port: serve.port, path: '/mcp', method: 'POST' },
+      '{"method":"tools/list"}'
+    );
+    expect(r1.status).toBe(200);
+    expect(JSON.parse(r1.body).result.path).toBe('/mcp');
+    expect(JSON.parse(r1.body).result.count).toBe(1);
+    expect(JSON.parse(r2.body).result.count).toBe(2); // warm reuse
+    expect(fake.requests.every((q) => q.path === '/mcp' && q.method === 'POST')).toBe(true);
+    // MCP has no /ws.
+    expect(serve.wsUrl).toBeUndefined();
+    expect(serve.httpUrl).toBe(`http://127.0.0.1:${serve.port}`);
+  });
+
+  it('forwards POST / to the warm container for A2A (no /ws) and injects the session-id', async () => {
+    fake = await startProtocolFake();
+    serve = await startAgentCoreHttpServer({
+      containerHost: '127.0.0.1',
+      containerPort: fake.port,
+      host: '127.0.0.1',
+      routes: [{ method: 'POST', path: '/' }],
+      attachWs: false,
+    });
+    const r = await httpReq(
+      { host: '127.0.0.1', port: serve.port, path: '/', method: 'POST' },
+      '{"method":"agent/getCard"}'
+    );
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body).result.path).toBe('/');
+    expect(fake.requests[0]?.sessionId).toBeTruthy();
+    expect(serve.wsUrl).toBeUndefined();
+  });
+
+  it('404s a non-served path with a hint naming only the served route (no /ws pointer)', async () => {
+    fake = await startProtocolFake();
+    serve = await startAgentCoreHttpServer({
+      containerHost: '127.0.0.1',
+      containerPort: fake.port,
+      host: '127.0.0.1',
+      routes: [{ method: 'POST', path: '/mcp' }],
+      attachWs: false,
+    });
+    const r = await httpReq({ host: '127.0.0.1', port: serve.port, path: '/ping', method: 'GET' });
+    expect(r.status).toBe(404);
+    const hint = JSON.parse(r.body).hint;
+    expect(hint).toBe('POST /mcp');
+    expect(hint).not.toMatch(/WebSocket/);
+  });
+});

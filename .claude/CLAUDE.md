@@ -221,21 +221,29 @@ AWS managed services.
   `Authorization` (a `--bearer-token` validated once under a
   `customJwtAuthorizer`, or the `--sigv4` header set) is injected on every
   forwarded request; per-request inbound JWT verification is a follow-up.
-  On the SAME port it also serves the bidirectional `/ws` endpoint behind a
-  host WebSocket BRIDGE so a header-less client — a browser `WebSocket`,
-  which cannot set the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` (or
-  `Authorization`) upgrade header — can hold an interactive multi-frame
-  session. The bridge accepts the header-less client on the serve `--port`
-  (default 0) and opens a `ws` connection to the container `/ws` with those
-  headers injected (a fresh session-id UUID per inbound connection / per
-  forwarded HTTP request, unless `--session-id` pins one), piping frames
-  both ways. HTTP / AGUI protocols only — MCP / A2A runtimes (on 8000 /
-  9000) are NOT served by this slice (hard-rejected at resolution; a
-  follow-up). It prints a `Server listening on ws://...` ready line (kept
-  verbatim for studio's agentcore-ws serve) plus an `HTTP contract served
-  on http://...` line, and runs until `^C` (`--watch` is a follow-up). The
-  `cdkl invoke-agentcore` terminal path (interactive over stdin in a TTY)
-  is unchanged
+  For HTTP / AGUI runtimes, on the SAME port it also serves the
+  bidirectional `/ws` endpoint behind a host WebSocket BRIDGE so a
+  header-less client — a browser `WebSocket`, which cannot set the
+  `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` (or `Authorization`)
+  upgrade header — can hold an interactive multi-frame session. The bridge
+  accepts the header-less client on the serve `--port` (default 0) and opens
+  a `ws` connection to the container `/ws` with those headers injected (a
+  fresh session-id UUID per inbound connection / per forwarded HTTP request,
+  unless `--session-id` pins one), piping frames both ways. All four
+  protocols are served (issue #454, slice 2 dropped the MCP / A2A reject):
+  HTTP / AGUI on 8080 (`POST /invocations` + `GET /ping` + `/ws`), MCP on
+  8000 (`POST /mcp`), and A2A on 9000 (`POST /`). The proxy is
+  protocol-agnostic — only the routing table, the `/ws`-attach decision, and
+  the readiness probe differ per protocol (MCP / A2A have no `GET /ping`, so
+  readiness is an HTTP response to the protocol path; they are pure
+  request/response pass-through with no `/ws`, the client driving the
+  handshake). HTTP / AGUI print a `Server listening on ws://...` ready line
+  (kept verbatim for studio's agentcore-ws serve) plus an `HTTP contract
+  served on http://...` line; MCP / A2A print a `Server listening on
+  http://...` line plus a `<PROTOCOL> contract served on http://...<path>`
+  line. Runs until `^C` (`--watch` is a follow-up). The `cdkl
+  invoke-agentcore` terminal path (interactive over stdin in a TTY) is
+  unchanged
 - API Gateway authorizers — Lambda authorizers, Cognito User Pool JWT
   verification, IAM SigV4 verification
 - CloudFront distributions — the `viewer-request` -> S3 origin ->
@@ -436,14 +444,19 @@ compute-locally category for Lambda + API Gateway).
   boot helpers (`resolveAgentCoreImage` / `buildContainerEnv` /
   `resolveInboundAuthorization` / `buildAgentCoreImageContext`) to boot the
   agent container once, then runs `startAgentCoreHttpServer` (a host HTTP
-  server, issue #454) in front of the warm container: it proxies
-  `POST /invocations` + `GET /ping` to the container (streaming request /
-  response, SSE included) AND, on the SAME port, delegates the `/ws`
-  upgrade to the existing bridge (`attachAgentCoreWsBridge`, extracted from
+  server, issue #454) in front of the warm container: it proxies the
+  protocol's routes to the container (streaming request / response, SSE
+  included) and, for HTTP / AGUI, delegates the `/ws` upgrade on the SAME
+  port to the existing bridge (`attachAgentCoreWsBridge`, extracted from
   `startAgentCoreWsBridge`) so a header-less browser client can still hold
-  an interactive session. HTTP / AGUI only (`assertAgentCoreWsServable`
-  hard-rejects MCP / A2A — a follow-up). New CLI options
-  live in `addStartAgentCoreSpecificOptions` (`--port` / `--host` /
+  an interactive session. All four protocols are served (slice 2):
+  `resolveAgentCoreServePlan(protocol)` maps the runtime protocol to its warm
+  serve plan — the published container port (8080 / 8000 / 9000), the
+  forwarded routes (`POST /invocations` + `GET /ping` / `POST /mcp` /
+  `POST /`), the `/ws`-attach flag (HTTP / AGUI only), and the readiness
+  probe (`GET /ping` for HTTP / AGUI, an HTTP-response probe via
+  `waitForAgentCoreHttpReady` for MCP / A2A, which have no `/ping`). New CLI
+  options live in `addStartAgentCoreSpecificOptions` (`--port` / `--host` /
   `--session-id` / `--bearer-token` / `--no-verify-auth` / `--env-vars` /
   `--platform` / `--from-cfn-stack` / `--assume-role` / ...).
   `createLocalStudioCommand` (`cdkl studio`, issue #282) is the
@@ -533,12 +546,15 @@ compute-locally category for Lambda + API Gateway).
   extracts the `/ws` wiring so it can be attached to an existing
   `http.Server` — used by agentcore-http-server) + agentcore-http-server
   (`startAgentCoreHttpServer`, issue #454 — the host HTTP serve behind
-  `cdkl start-agentcore`: one `http.Server` proxies `POST /invocations` +
-  `GET /ping` to the warm container, streaming request / response (SSE
-  included) and injecting the session-id (fresh per request unless pinned)
-  + Authorization headers, AND delegates the `/ws` upgrade on the same port
-  to `attachAgentCoreWsBridge` — so a warm container serves both the HTTP
-  contract repeatedly and the browser `/ws` bridge) + agentcore-s3-bundle
+  `cdkl start-agentcore`, protocol-aware via a `routes` + `attachWs` config:
+  one `http.Server` proxies the declared `{method, path}` routes to the warm
+  container, streaming request / response (SSE included) and injecting the
+  session-id (fresh per request unless pinned) + Authorization headers, and
+  — for HTTP / AGUI (`attachWs`) — delegates the `/ws` upgrade on the same
+  port to `attachAgentCoreWsBridge`. So one warm container serves the HTTP /
+  AGUI contract (`POST /invocations` + `GET /ping` + `/ws`), the MCP contract
+  (`POST /mcp`), or the A2A contract (`POST /`) repeatedly; MCP / A2A are
+  pure pass-through with no `/ws`) + agentcore-s3-bundle
   (downloads + extracts a fromS3 CodeConfiguration bundle for the from-source
   build), embed-config
   (embed-time branding overrides for host CLIs), ssm-parameter-resolver

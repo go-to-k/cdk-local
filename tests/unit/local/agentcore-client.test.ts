@@ -3,6 +3,7 @@ import {
   AGENTCORE_SESSION_ID_HEADER,
   invokeAgentCore,
   waitForAgentCorePing,
+  waitForAgentCoreHttpReady,
 } from '../../../src/local/agentcore-client.js';
 
 afterEach(() => {
@@ -59,6 +60,48 @@ describe('waitForAgentCorePing', () => {
     vi.stubGlobal('fetch', fetchMock);
     await expect(waitForAgentCorePing('127.0.0.1', 9000, 2000)).resolves.toBeUndefined();
     expect(calls).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('waitForAgentCoreHttpReady', () => {
+  it('POSTs the probe path and returns once ANY HTTP status is received', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('http://127.0.0.1:8000/mcp');
+      expect(init.method).toBe('POST');
+      // A 4xx for the probe's empty body still proves the server is up.
+      return new Response('bad request', { status: 400 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(waitForAgentCoreHttpReady('127.0.0.1', 8000, '/mcp', 2000)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('retries transient connection errors until an HTTP response arrives', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new TypeError('fetch failed');
+        (err as { cause?: unknown }).cause = { code: 'ECONNREFUSED' };
+        throw err;
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(waitForAgentCoreHttpReady('127.0.0.1', 9000, '/', 2000)).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('throws on timeout when the container never accepts a connection', async () => {
+    const fetchMock = vi.fn(async () => {
+      const err = new TypeError('fetch failed');
+      (err as { cause?: unknown }).cause = { code: 'ECONNREFUSED' };
+      throw err;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(waitForAgentCoreHttpReady('127.0.0.1', 8000, '/mcp', 250)).rejects.toThrow(
+      /did not become ready/
+    );
   });
 });
 

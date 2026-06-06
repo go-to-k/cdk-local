@@ -14,22 +14,26 @@ import { getLogger } from '../utils/logger.js';
 
 /**
  * Host HTTP serve in front of a warm AgentCore runtime container, the serving
- * primitive behind `cdkl start-agentcore` for HTTP / AGUI protocols (issue
- * #454). Unlike the single-shot `cdkl invoke-agentcore` — which boots a
- * container, POSTs ONE `/invocations`, and tears it down — this keeps the
- * container warm and serves its native HTTP contract until `^C`, so a client
- * can hit `POST /invocations` (and `GET /ping`) repeatedly against the SAME
- * warm container. That mirrors AgentCore's deployed model, where many
- * `InvokeAgentRuntime` calls on the same `runtimeSessionId` reuse one warm
- * microVM.
+ * primitive behind `cdkl start-agentcore` for ALL four protocols (issue #454).
+ * Unlike the single-shot `cdkl invoke-agentcore` — which boots a container,
+ * POSTs ONE request, and tears it down — this keeps the container warm and
+ * serves its native HTTP contract until `^C`, so a client can hit the agent
+ * repeatedly against the SAME warm container. That mirrors AgentCore's
+ * deployed model, where many `InvokeAgentRuntime` calls on the same
+ * `runtimeSessionId` reuse one warm microVM.
  *
- * One host `http.Server` serves all three:
- *  - `GET  /ping`         -> proxied to the container's `/ping`
- *  - `POST /invocations`  -> proxied to the container's `/invocations`
- *    (request body streamed up, response — JSON or SSE — streamed back)
- *  - `/ws` upgrade        -> the existing header-injecting bridge
- *    ({@link attachAgentCoreWsBridge}) on the same port, so a header-less
- *    browser `WebSocket` still works exactly as before.
+ * The serve is protocol-aware via {@link AgentCoreHttpServerConfig.routes} +
+ * {@link AgentCoreHttpServerConfig.attachWs} — the proxy itself is
+ * protocol-agnostic, only the routing table and the `/ws`-attach decision
+ * change:
+ *  - HTTP / AGUI (default): `POST /invocations` + `GET /ping`, plus the `/ws`
+ *    upgrade bridged on the same port ({@link attachAgentCoreWsBridge}), so a
+ *    header-less browser `WebSocket` works exactly as before.
+ *  - MCP: `POST /mcp` (container port 8000), no `/ws`.
+ *  - A2A: `POST /` (container port 9000), no `/ws`.
+ * Each declared route is forwarded verbatim to the warm container; MCP / A2A
+ * are pure pass-through (the client drives the handshake / JSON-RPC — the serve
+ * does not interpret the protocol).
  *
  * Auth parity: the boot-resolved `authorization` (the `--bearer-token`
  * validated once at boot under a `customJwtAuthorizer`, or the `--sigv4`
@@ -41,10 +45,24 @@ import { getLogger } from '../utils/logger.js';
 const PING_PATH = '/ping';
 const INVOCATIONS_PATH = '/invocations';
 
+/** A `{method, path}` the serve forwards verbatim to the warm container. */
+export interface AgentCoreServeRoute {
+  /** HTTP method to match (e.g. `GET`, `POST`). */
+  method: string;
+  /** Inbound path to match; forwarded verbatim as the upstream path. */
+  path: string;
+}
+
+/** Default routing table — the HTTP / AGUI contract (POST /invocations + GET /ping). */
+const DEFAULT_ROUTES: AgentCoreServeRoute[] = [
+  { method: 'POST', path: INVOCATIONS_PATH },
+  { method: 'GET', path: PING_PATH },
+];
+
 export interface AgentCoreHttpServerConfig {
   /** Host the warm container is reachable on (the published-port host). */
   containerHost: string;
-  /** Host port the container's 8080 contract is published on. */
+  /** Host port the container's contract port is published on. */
   containerPort: number;
   /** Bind host for the serve. Defaults to `127.0.0.1`. */
   host?: string;
@@ -57,16 +75,30 @@ export interface AgentCoreHttpServerConfig {
   sessionId?: string;
   /** `Authorization` header injected on every forwarded request + `/ws` leg. */
   authorization?: string;
+  /**
+   * The `{method, path}` pairs forwarded to the warm container. Defaults to
+   * the HTTP / AGUI contract ({@link DEFAULT_ROUTES}); MCP / A2A pass a single
+   * route (`POST /mcp` / `POST /`).
+   */
+  routes?: AgentCoreServeRoute[];
+  /**
+   * Attach the header-injecting `/ws` bridge on the same port (HTTP / AGUI
+   * only — MCP / A2A have no `/ws`). Defaults to `true`.
+   */
+  attachWs?: boolean;
 }
 
 export interface RunningAgentCoreHttpServer {
-  /** `http://host:port` — the HTTP contract base (POST /invocations, GET /ping). */
+  /** `http://host:port` — the HTTP contract base. */
   httpUrl: string;
-  /** `ws://host:port/ws` — the bridged WebSocket endpoint on the same port. */
-  wsUrl: string;
+  /**
+   * `ws://host:port/ws` — the bridged WebSocket endpoint on the same port.
+   * Present only when the `/ws` bridge is attached (HTTP / AGUI).
+   */
+  wsUrl?: string;
   /** The bound host port. */
   port: number;
-  /** Close the server, the `/ws` bridge, and every live bridged connection. */
+  /** Close the server, the `/ws` bridge (if any), and every live connection. */
   close(): Promise<void>;
 }
 
@@ -132,29 +164,29 @@ export function startAgentCoreHttpServer(
   config: AgentCoreHttpServerConfig
 ): Promise<RunningAgentCoreHttpServer> {
   const host = config.host ?? '127.0.0.1';
+  const routes = config.routes ?? DEFAULT_ROUTES;
+  const attachWs = config.attachWs ?? true;
+  const notFoundHint = buildNotFoundHint(routes, attachWs);
+
   const httpServer: Server = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0];
-    if (req.method === 'GET' && path === PING_PATH) {
-      return proxyToContainer(req, res, config, PING_PATH);
-    }
-    if (req.method === 'POST' && path === INVOCATIONS_PATH) {
-      return proxyToContainer(req, res, config, INVOCATIONS_PATH);
+    const match = routes.find((r) => r.method === req.method && r.path === path);
+    if (match) {
+      return proxyToContainer(req, res, config, match.path);
     }
     res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        error: 'not found',
-        hint: 'POST /invocations or GET /ping (WebSocket: connect to /ws)',
-      })
-    );
+    res.end(JSON.stringify({ error: 'not found', hint: notFoundHint }));
   });
 
-  const bridge = attachAgentCoreWsBridge(httpServer, {
-    containerHost: config.containerHost,
-    containerPort: config.containerPort,
-    ...(config.sessionId && { sessionId: config.sessionId }),
-    ...(config.authorization && { authorization: config.authorization }),
-  });
+  // MCP / A2A have no `/ws` — the bridge is attached for HTTP / AGUI only.
+  const bridge = attachWs
+    ? attachAgentCoreWsBridge(httpServer, {
+        containerHost: config.containerHost,
+        containerPort: config.containerPort,
+        ...(config.sessionId && { sessionId: config.sessionId }),
+        ...(config.authorization && { authorization: config.authorization }),
+      })
+    : undefined;
 
   return new Promise<RunningAgentCoreHttpServer>((resolve, reject) => {
     httpServer.once('error', reject);
@@ -169,13 +201,28 @@ export function startAgentCoreHttpServer(
       const port = (httpServer.address() as AddressInfo).port;
       resolve({
         httpUrl: `http://${host}:${port}`,
-        wsUrl: `ws://${host}:${port}${bridge.path}`,
+        ...(bridge && { wsUrl: `ws://${host}:${port}${bridge.path}` }),
         port,
         close: () =>
           new Promise<void>((res) => {
-            void bridge.close().then(() => httpServer.close(() => res()));
+            if (bridge) {
+              void bridge.close().then(() => httpServer.close(() => res()));
+            } else {
+              httpServer.close(() => res());
+            }
           }),
       });
     });
   });
+}
+
+/**
+ * Build the 404 hint from the served routes, appending the `/ws` pointer when
+ * the WebSocket bridge is attached. e.g. HTTP / AGUI ->
+ * `POST /invocations or GET /ping (WebSocket: connect to /ws)`; MCP ->
+ * `POST /mcp`.
+ */
+function buildNotFoundHint(routes: AgentCoreServeRoute[], attachWs: boolean): string {
+  const base = routes.map((r) => `${r.method} ${r.path}`).join(' or ');
+  return attachWs ? `${base} (WebSocket: connect to /ws)` : base;
 }
