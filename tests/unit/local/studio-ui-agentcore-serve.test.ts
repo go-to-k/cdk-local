@@ -225,4 +225,57 @@ describe('studio agentcore-ws serve workspace (issue #454)', () => {
     expect(invokeRow.querySelector('.kind')?.textContent).toBe('(AgentCore)');
     expect(serveRow.querySelector('.kind')?.textContent).toBe('(AgentCore)');
   });
+
+  it('selecting the invoke row highlights it, not the serve row with the same id', async () => {
+    // The same runtime id appears in BOTH the agentcore invoke group and the
+    // agentcore-ws serve group. The selection highlight must land on the row
+    // the user clicked — keyed by (kind, id), not id alone (which collided so
+    // the later-rendered serve row always won).
+    harness = createStudioHarness({ epilogue: EXPOSE }) as AcHarness;
+    const win = harness.window as AcHarness['window'];
+    (win as unknown as { fetch: unknown }).fetch = (url: string) => {
+      if (url === '/api/targets') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              groups: [
+                {
+                  kind: 'agentcore',
+                  title: 'AgentCore Runtimes (invoke)',
+                  entries: [{ id: 'S/Agent', qualifiedId: 'S:Agent' }],
+                },
+                {
+                  kind: 'agentcore-ws',
+                  title: 'AgentCore Runtimes (serve)',
+                  entries: [
+                    { id: 'S/Agent', qualifiedId: 'S:Agent', agentCoreContractPath: '/invocations' },
+                  ],
+                },
+              ],
+              dockerfiles: [],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+
+    await win.__t.loadTargets();
+
+    const doc = win.document;
+    const rows = doc.querySelectorAll('.target[data-tid="s/agent"]');
+    expect(rows.length).toBe(2);
+    const invokeRow = rows[0] as HTMLElement; // agentcore group rendered first
+    const serveRow = rows[1] as HTMLElement;
+
+    // Click the INVOKE row -> only it is highlighted.
+    invokeRow.click();
+    expect(invokeRow.classList.contains('sel')).toBe(true);
+    expect(serveRow.classList.contains('sel')).toBe(false);
+
+    // Click the SERVE row -> highlight moves to it, off the invoke row.
+    serveRow.click();
+    expect(serveRow.classList.contains('sel')).toBe(true);
+    expect(invokeRow.classList.contains('sel')).toBe(false);
+  });
 });

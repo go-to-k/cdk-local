@@ -362,7 +362,11 @@ const STUDIO_SCRIPT = `
   let lastHeaderMode = 'kv';       // remember the request-composer Headers editor mode (issue #345)
   let serveLogId = null;           // serve target whose LOGS <pre> is live (issue #334)
   let serveLogPre = null;          // the live serve LOGS <pre>, updated surgically on log events
-  const targetEls = new Map();     // targetId -> left-pane element
+  const targetEls = new Map();     // kind+id -> left-pane element (a runtime
+                                   // listed in two groups — agentcore invoke +
+                                   // agentcore-ws serve — shares an id, so the
+                                   // key includes the kind to avoid collision)
+  const targetElKey = (kind, id) => kind + '|' + id;
   const serveMeta = new Map();     // serve targetId -> { dot, btnSlot } row controls
   const serveState = new Map();    // serve targetId -> { status, endpoints }
   const stoppingIds = new Set();   // serve targetIds with a Stop in flight — button shows "Stopping..." until the stopped/error event (issue #394)
@@ -882,7 +886,7 @@ const STUDIO_SCRIPT = `
               // read as broken. Serve rows DO get a Start/Stop button below
               // because a serve start is parameterless and acts immediately.
               t.onclick = () => selectTarget(entry.id, group.kind);
-              targetEls.set(entry.id, t);
+              targetEls.set(targetElKey(group.kind, entry.id), t);
             } else if (isServe) {
               // A serve target: a running-state dot + a Start/Stop button
               // slot, both refreshed by updateServeRow on serve events.
@@ -891,7 +895,7 @@ const STUDIO_SCRIPT = `
               t.appendChild(dot);
               t.appendChild(btnSlot);
               t.onclick = () => selectTarget(entry.id, group.kind);
-              targetEls.set(entry.id, t);
+              targetEls.set(targetElKey(group.kind, entry.id), t);
               serveMeta.set(entry.id, {
                 dot,
                 btnSlot,
@@ -992,9 +996,9 @@ const STUDIO_SCRIPT = `
     if (shownServeId === id) renderServeWorkspace(id);
   }
 
-  function highlightTarget(id) {
+  function highlightTarget(id, kind) {
     document.querySelectorAll('.target.sel').forEach((n) => n.classList.remove('sel'));
-    const t = targetEls.get(id);
+    const t = targetEls.get(targetElKey(kind, id));
     if (t) t.classList.add('sel');
   }
 
@@ -1003,7 +1007,7 @@ const STUDIO_SCRIPT = `
     // a previously-shown serve (a log-driven re-render keeps it, an explicit
     // navigation drops it — see renderWsConsole).
     closeActiveWs();
-    highlightTarget(id);
+    highlightTarget(id, kind);
     // Navigating to a composer leaves no timeline row "selected" — a stale
     // row.sel from a previously-clicked event is confusing once the middle
     // pane has moved on (issue #336).
@@ -2054,7 +2058,7 @@ const STUDIO_SCRIPT = `
     document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'));
     const row = rowsById.get(id);
     if (row) row.classList.add('sel');
-    highlightTarget(ev.target);
+    highlightTarget(ev.target, ev.kind);
     if (INVOKE_KINDS.includes(ev.kind)) {
       // A single-shot invocation row (Lambda or AgentCore) reloads into the
       // re-invokable composer, pre-filled with the captured event and wired to
