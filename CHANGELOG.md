@@ -1,3 +1,10 @@
+# [0.134.0](https://github.com/go-to-k/cdk-local/compare/v0.133.0...v0.134.0) (2026-06-06)
+
+
+### Features
+
+* **studio:** label targets-pane rows by API surface + "ECS Service" ([#453](https://github.com/go-to-k/cdk-local/issues/453)) ([884d585](https://github.com/go-to-k/cdk-local/commit/884d58563bc85465674f415d1b23d83b8159b683))
+
 # [0.133.0](https://github.com/go-to-k/cdk-local/compare/v0.132.2...v0.133.0) (2026-06-05)
 
 
