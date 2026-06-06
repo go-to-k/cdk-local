@@ -11,6 +11,13 @@
 #   - MCP   (McpAgent)  — POST /mcp on 8000 (JSON-RPC, no /ws).
 #   - A2A   (A2aAgent)  — POST / on 9000 (JSON-RPC, no /ws).
 #
+# Plus the slice-4a inbound-auth surface (issue #454):
+#   - JwtAgent (HTTP + customJwtAuthorizer) — the warm serve verifies the
+#     caller's token PER REQUEST against a LOCAL JWKS sidecar: 401 (missing) /
+#     403 (wrong audience) / 200 (valid), and GET /ping stays unauthenticated.
+#   - EchoAgent --sigv4 — each forwarded request is AWS4-HMAC-SHA256 signed
+#     (service bedrock-agentcore) so the container sees the cloud's header set.
+#
 # Fully local — no AWS resources are deployed. Each Runtime is built from a
 # local Dockerfile. For each protocol the serve is booted, hit TWICE against
 # the SAME warm container, then torn down. The HTTP /ws probe connects with the
@@ -37,7 +44,14 @@ MCP_TARGET="${STACK}/McpAgent"
 A2A_TARGET="${STACK}/A2aAgent"
 BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
 
+JWT_TARGET="${STACK}/JwtAgent"
+# Must match JWKS_SIDECAR_PORT / JWT_AUDIENCE in lib/local-start-agentcore-stack.ts.
+SIDECAR_PORT=19010
+SIDECAR_ISSUER="http://127.0.0.1:${SIDECAR_PORT}"
+JWT_AUD="cdkl-agentcore-aud"
+
 CDKL_PID=""
+SIDECAR_PID=""
 OUT_FILE="$(mktemp)"
 
 stop_server() {
@@ -49,9 +63,19 @@ stop_server() {
   CDKL_PID=""
 }
 
+stop_sidecar() {
+  if [ -n "${SIDECAR_PID}" ] && kill -0 "${SIDECAR_PID}" 2>/dev/null; then
+    kill -TERM "${SIDECAR_PID}" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "${SIDECAR_PID}" 2>/dev/null || break; sleep 0.25; done
+    kill -KILL "${SIDECAR_PID}" 2>/dev/null || true
+  fi
+  SIDECAR_PID=""
+}
+
 cleanup() {
   rc=$?
   stop_server
+  stop_sidecar
   rm -f "${OUT_FILE}"
   exit "${rc}"
 }
@@ -195,4 +219,76 @@ echo "[verify]   A2A serve OK: getCard + tasks/send, warm count 1 -> 2 on the on
 stop_server
 assert_no_orphans "A2A serve shutdown"
 
-echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), and A2A (POST /) — each against one warm container — and cleaned up"
+echo "[verify] step 9: JWT-protected warm serve — per-request inbound JWT gate (401/403/200) (#454)"
+# Boot the local JWKS sidecar the JwtAgent's customJwtAuthorizer discovery URL
+# points at. The HOST-side verifier (in cdkl) fetches the discovery + JWKS from
+# it to verify each caller's token per request.
+SIDECAR_LOG="$(mktemp)"
+node jwks-sidecar.mjs "${SIDECAR_PORT}" > "${SIDECAR_LOG}" 2>&1 &
+SIDECAR_PID=$!
+for _ in $(seq 1 40); do
+  curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1 && break
+  kill -0 "${SIDECAR_PID}" 2>/dev/null || { echo "----- sidecar output -----"; cat "${SIDECAR_LOG}"; rm -f "${SIDECAR_LOG}"; fail "JWKS sidecar exited before becoming reachable"; }
+  sleep 0.25
+done
+curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1 \
+  || { rm -f "${SIDECAR_LOG}"; fail "JWKS sidecar never reachable at ${SIDECAR_ISSUER}"; }
+rm -f "${SIDECAR_LOG}"
+echo "[verify]   JWKS sidecar reachable at ${SIDECAR_ISSUER}"
+
+# Boot the JWT serve with NO --bearer-token: the per-request inbound gate is the
+# surface (the cloud verifies the CALLER's token, not a boot default).
+boot_serve "${JWT_TARGET}"
+JWT_HTTP_URL="$(wait_for_ready 'HTTP contract served on http://[^ ]+' || true)"
+JWT_HTTP_URL="${JWT_HTTP_URL#HTTP contract served on }"
+[ -n "${JWT_HTTP_URL}" ] || fail "JWT serve did not print its HTTP contract URL"
+echo "[verify]   jwt http: ${JWT_HTTP_URL}"
+
+# 401 — no Authorization on a customJwtAuthorizer runtime.
+S401="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${JWT_HTTP_URL}/invocations" -d '{"q":"no-token"}')"
+[ "${S401}" = "401" ] || fail "expected 401 for a missing token, got ${S401}"
+# 403 — valid signature + issuer + expiry, but the wrong audience.
+BAD_JWT="$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud wrong-aud --exp-offset 300)"
+S403="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${JWT_HTTP_URL}/invocations" \
+  -H "authorization: Bearer ${BAD_JWT}" -d '{"q":"bad-aud"}')"
+[ "${S403}" = "403" ] || fail "expected 403 for a wrong-audience token, got ${S403}"
+# 200 — a token signed by the sidecar key with the right iss + aud.
+GOOD_JWT="$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${JWT_AUD}" --exp-offset 300)"
+GOOD_RESP="$(curl -s -w $'\n%{http_code}' -X POST "${JWT_HTTP_URL}/invocations" \
+  -H "authorization: Bearer ${GOOD_JWT}" -d '{"q":"valid"}')"
+GOOD_CODE="$(printf '%s' "${GOOD_RESP}" | tail -1)"
+GOOD_BODY="$(printf '%s' "${GOOD_RESP}" | sed '$d')"
+[ "${GOOD_CODE}" = "200" ] || fail "expected 200 for a valid token, got ${GOOD_CODE}: ${GOOD_BODY}"
+printf '%s' "${GOOD_BODY}" | grep -q 'valid' || fail "valid-token /invocations did not echo the body: ${GOOD_BODY}"
+# GET /ping is an unauthenticated health check even on a JWT-protected serve.
+PING_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${JWT_HTTP_URL}/ping")"
+[ "${PING_CODE}" = "200" ] || fail "GET /ping should be unauthenticated, got ${PING_CODE}"
+echo "[verify]   JWT gate OK: 401 (missing) / 403 (wrong aud) / 200 (valid) + unauthenticated /ping"
+stop_server
+assert_no_orphans "JWT serve shutdown"
+stop_sidecar
+
+echo "[verify] step 10: --sigv4 signs each forwarded request (EchoAgent, no authorizer) (#454)"
+# cdkl signs host-side with shell credentials; the warm container receives the
+# AWS4-HMAC-SHA256 Authorization + X-Amz-* headers and echoes the Authorization.
+: > "${OUT_FILE}"
+# shellcheck disable=SC2086
+AWS_ACCESS_KEY_ID=AKIDINTEGTESTSIGV4 \
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYINTEGEXAMPLEKEY \
+AWS_REGION=us-east-1 \
+  ${CLI} start-agentcore "${TARGET}" --host 127.0.0.1 --port 0 --sigv4 > "${OUT_FILE}" 2>&1 &
+CDKL_PID=$!
+SIG_HTTP_URL="$(wait_for_ready 'HTTP contract served on http://[^ ]+' || true)"
+SIG_HTTP_URL="${SIG_HTTP_URL#HTTP contract served on }"
+[ -n "${SIG_HTTP_URL}" ] || fail "--sigv4 serve did not print its HTTP contract URL"
+echo "[verify]   sigv4 http: ${SIG_HTTP_URL}"
+SIGR="$(curl -s -X POST "${SIG_HTTP_URL}/invocations" -d '{"q":"sigv4"}')"
+echo "${SIGR}" | grep -q 'AWS4-HMAC-SHA256' \
+  || fail "--sigv4 did not inject a signed Authorization into the forwarded request: ${SIGR}"
+echo "${SIGR}" | grep -q 'bedrock-agentcore' \
+  || fail "--sigv4 signature was not scoped to the bedrock-agentcore service: ${SIGR}"
+echo "[verify]   --sigv4 OK: forwarded request carried an AWS4-HMAC-SHA256 Authorization (bedrock-agentcore)"
+stop_server
+assert_no_orphans "sigv4 serve shutdown"
+
+echo "[verify] PASS: start-agentcore served HTTP (POST /invocations + SSE + GET /ping + /ws bridge), MCP (POST /mcp), A2A (POST /), the per-request JWT gate (401/403/200), and --sigv4 signing — each against one warm container — and cleaned up"

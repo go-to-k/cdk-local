@@ -3,7 +3,20 @@ import { fileURLToPath } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
-import { Runtime, AgentRuntimeArtifact, ProtocolType } from 'aws-cdk-lib/aws-bedrockagentcore';
+import {
+  Runtime,
+  AgentRuntimeArtifact,
+  ProtocolType,
+  RuntimeAuthorizerConfiguration,
+} from 'aws-cdk-lib/aws-bedrockagentcore';
+
+// The local JWKS sidecar port the JwtAgent's customJwtAuthorizer discovery URL
+// points at (issue #454). verify.sh boots `jwks-sidecar.mjs` on this port; the
+// host-side per-request inbound-JWT verifier fetches the discovery + JWKS from
+// it. Kept distinct from other fixtures' sidecar ports so a stray concurrent
+// run does not collide.
+const JWKS_SIDECAR_PORT = 19010;
+const JWT_AUDIENCE = 'cdkl-agentcore-aud';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +62,25 @@ export class LocalStartAgentCoreStack extends cdk.Stack {
         platform: Platform.LINUX_ARM64,
       }),
       protocolConfiguration: ProtocolType.A2A,
+    });
+
+    // A JWT-protected HTTP runtime (same `agent/` container) whose
+    // customJwtAuthorizer points at the LOCAL JWKS sidecar (issue #454, slice
+    // 4a). Unlike the unreachable-discovery runtimes the invoke-agentcore
+    // fixture uses (which exercise only the pass-through fallback), this
+    // discovery URL is REACHABLE, so the warm serve verifies the caller's token
+    // PER REQUEST against a real JWKS — exercising the 401 (missing) / 403
+    // (wrong audience) / 200 (valid) gate end-to-end.
+    new Runtime(this, 'JwtAgent', {
+      agentRuntimeArtifact: AgentRuntimeArtifact.fromAsset(path.join(__dirname, '../agent'), {
+        platform: Platform.LINUX_ARM64,
+      }),
+      environmentVariables: { GREETING: 'hello-from-agent' },
+      authorizerConfiguration: RuntimeAuthorizerConfiguration.usingJWT(
+        `http://127.0.0.1:${JWKS_SIDECAR_PORT}/.well-known/openid-configuration`,
+        ['cdkl-agentcore-client'],
+        [JWT_AUDIENCE]
+      ),
     });
   }
 }

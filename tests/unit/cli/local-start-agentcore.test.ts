@@ -37,6 +37,7 @@ describe('createLocalStartAgentCoreCommand', () => {
       '--session-id',
       '--bearer-token',
       '--no-verify-auth',
+      '--sigv4',
       '--env-vars',
       '--platform',
       '--no-pull',
@@ -50,9 +51,9 @@ describe('createLocalStartAgentCoreCommand', () => {
     ]) {
       expect(flags, `missing ${f}`).toContain(f);
     }
-    // Invoke-only flags must NOT leak onto the serve command.
+    // The single-shot invoke-only `--ws` flag must NOT leak onto the serve
+    // command. (`--sigv4` IS a serve flag as of issue #454 — asserted above.)
     expect(flags).not.toContain('--ws');
-    expect(flags).not.toContain('--sigv4');
   });
 
   it('defaults --port to 0 and --host to 127.0.0.1', () => {

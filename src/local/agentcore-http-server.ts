@@ -10,6 +10,7 @@ import {
 import type { AddressInfo } from 'node:net';
 import { attachAgentCoreWsBridge } from './agentcore-ws-bridge.js';
 import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
+import type { AgentCoreServeAuthCheck } from './agentcore-serve-auth.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -53,6 +54,21 @@ export interface AgentCoreServeRoute {
   path: string;
 }
 
+/**
+ * Compute the SigV4 header overlay for one forwarded `POST` request (the
+ * `--sigv4` serve path, issue #454). Called with the buffered request body and
+ * the per-request session id; returns the `Authorization` + `X-Amz-*` headers
+ * to inject so the warm container sees the same signed header set the cloud
+ * AgentCore Runtime would. Requires buffering the body (so the proxy switches
+ * off streaming for the signed path).
+ */
+export type AgentCoreServeSignRequest = (opts: {
+  method: string;
+  path: string;
+  body: Buffer;
+  sessionId: string;
+}) => Promise<Record<string, string>>;
+
 /** Default routing table — the HTTP / AGUI contract (POST /invocations + GET /ping). */
 const DEFAULT_ROUTES: AgentCoreServeRoute[] = [
   { method: 'POST', path: INVOCATIONS_PATH },
@@ -86,6 +102,24 @@ export interface AgentCoreHttpServerConfig {
    * only — MCP / A2A have no `/ws`). Defaults to `true`.
    */
   attachWs?: boolean;
+  /**
+   * Per-request inbound-JWT gate (issue #454). When set, every `POST` contract
+   * request is verified against the runtime's `customJwtAuthorizer` before being
+   * forwarded — 401 (missing token) / 403 (invalid) on deny. `GET /ping` is a
+   * health check and is never gated. On allow, the check's returned
+   * `authorization` is forwarded (overriding {@link authorization}). Absent for
+   * a runtime with no authorizer (or under `--no-verify-auth`, where the check
+   * always allows).
+   */
+  authCheck?: AgentCoreServeAuthCheck;
+  /**
+   * Per-request SigV4 signer for the `--sigv4` serve path (issue #454). When
+   * set, every `POST` contract request's body is buffered and signed; the
+   * returned headers are injected so the warm container sees the same signed
+   * header set the cloud receives. Mutually exclusive with a
+   * `customJwtAuthorizer` (the JWT path wins) and with {@link authorization}.
+   */
+  signRequest?: AgentCoreServeSignRequest;
 }
 
 export interface RunningAgentCoreHttpServer {
@@ -103,42 +137,24 @@ export interface RunningAgentCoreHttpServer {
 }
 
 /**
- * Proxy one inbound HTTP request to the warm container, injecting the
- * session-id + Authorization (+ any extra) headers, and stream the response
- * back. Used for both `GET /ping` and `POST /invocations`; piping the response
- * preserves an SSE (`text/event-stream`) stream.
+ * Wire an upstream (container-leg) request's response back to the inbound
+ * client, piping the body so an SSE (`text/event-stream`) stream stays
+ * incremental, and mapping an upstream error to a `502`. Shared by the
+ * streaming and buffered (`--sigv4`) proxy paths.
  */
-function proxyToContainer(
-  clientReq: IncomingMessage,
-  clientRes: ServerResponse,
-  config: AgentCoreHttpServerConfig,
-  upstreamPath: string
+function wireUpstreamResponse(
+  upstream: ReturnType<typeof httpRequest>,
+  clientRes: ServerResponse
 ): void {
-  const headers: OutgoingHttpHeaders = { ...clientReq.headers };
-  // `host` must reflect the upstream, not the inbound serve; drop it so node
-  // sets it for the container leg.
-  delete headers['host'];
-  headers[AGENTCORE_SESSION_ID_HEADER] = config.sessionId ?? randomUUID();
-  if (config.authorization) headers['authorization'] = config.authorization;
-
-  const upstream = httpRequest(
-    {
-      host: config.containerHost,
-      port: config.containerPort,
-      path: upstreamPath,
-      method: clientReq.method,
-      headers,
-    },
-    (upRes) => {
-      clientRes.writeHead(upRes.statusCode ?? 502, upRes.headers);
-      // A mid-stream upstream drop (e.g. while an SSE response is in flight)
-      // errors `upRes` AFTER headers are sent; `pipe` does not forward that, so
-      // without this the unhandled `error` crashes the long-running serve. Tear
-      // the inbound socket down instead.
-      upRes.on('error', () => clientRes.destroy());
-      upRes.pipe(clientRes);
-    }
-  );
+  upstream.on('response', (upRes) => {
+    clientRes.writeHead(upRes.statusCode ?? 502, upRes.headers);
+    // A mid-stream upstream drop (e.g. while an SSE response is in flight)
+    // errors `upRes` AFTER headers are sent; `pipe` does not forward that, so
+    // without this the unhandled `error` crashes the long-running serve. Tear
+    // the inbound socket down instead.
+    upRes.on('error', () => clientRes.destroy());
+    upRes.pipe(clientRes);
+  });
   upstream.on('error', (err) => {
     getLogger().debug(`agentcore http serve upstream error: ${err.message}`);
     if (!clientRes.headersSent) {
@@ -146,6 +162,90 @@ function proxyToContainer(
     }
     clientRes.end(JSON.stringify({ error: `upstream error: ${err.message}` }));
   });
+}
+
+/**
+ * Proxy one inbound HTTP request to the warm container, injecting the
+ * session-id + Authorization (+ any per-request / signed) headers, and stream
+ * the response back. Used for both `GET /ping` and `POST /invocations`; piping
+ * the response preserves an SSE (`text/event-stream`) stream.
+ *
+ * `perRequest.authorization` overrides {@link AgentCoreHttpServerConfig.authorization}
+ * with the value the per-request inbound-JWT gate verified / injected (issue
+ * #454). When {@link AgentCoreHttpServerConfig.signRequest} is set and this is a
+ * `POST`, the body is buffered, signed (SigV4), and forwarded — signing needs
+ * the whole body, so the streaming fast-path is bypassed for that case only.
+ */
+function proxyToContainer(
+  clientReq: IncomingMessage,
+  clientRes: ServerResponse,
+  config: AgentCoreHttpServerConfig,
+  upstreamPath: string,
+  perRequest?: { authorization?: string }
+): void {
+  const sessionId = config.sessionId ?? randomUUID();
+  const headers: OutgoingHttpHeaders = { ...clientReq.headers };
+  // `host` must reflect the upstream, not the inbound serve; drop it so node
+  // sets it for the container leg.
+  delete headers['host'];
+  headers[AGENTCORE_SESSION_ID_HEADER] = sessionId;
+  const authorization = perRequest?.authorization ?? config.authorization;
+  if (authorization) headers['authorization'] = authorization;
+
+  // --sigv4: buffer the POST body, sign it, inject the signed headers, then
+  // forward the buffered body. Signing needs the whole body, so this path does
+  // not stream the request (the response is still piped — SSE-safe).
+  if (config.signRequest && clientReq.method === 'POST') {
+    const signRequest = config.signRequest;
+    const chunks: Buffer[] = [];
+    clientReq.on('data', (c: Buffer) => chunks.push(c));
+    clientReq.on('error', (err) => {
+      getLogger().debug(`agentcore http serve client error: ${err.message}`);
+      if (!clientRes.headersSent) {
+        clientRes.writeHead(400, { 'content-type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: `client error: ${err.message}` }));
+      }
+    });
+    clientReq.on('end', () => {
+      const body = Buffer.concat(chunks);
+      void signRequest({ method: 'POST', path: upstreamPath, body, sessionId })
+        .then((signed) => {
+          const signedHeaders: OutgoingHttpHeaders = { ...headers, ...signed };
+          // The body is now buffered + sent fixed-length, so drop any inbound
+          // `transfer-encoding: chunked` (illegal alongside `content-length` —
+          // the upstream would 400) and declare the real length.
+          delete signedHeaders['transfer-encoding'];
+          signedHeaders['content-length'] = String(body.length);
+          const upstream = httpRequest({
+            host: config.containerHost,
+            port: config.containerPort,
+            path: upstreamPath,
+            method: 'POST',
+            headers: signedHeaders,
+          });
+          wireUpstreamResponse(upstream, clientRes);
+          upstream.end(body);
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          getLogger().debug(`agentcore http serve sigv4 sign error: ${msg}`);
+          if (!clientRes.headersSent) {
+            clientRes.writeHead(500, { 'content-type': 'application/json' });
+            clientRes.end(JSON.stringify({ error: `sigv4 signing failed: ${msg}` }));
+          }
+        });
+    });
+    return;
+  }
+
+  const upstream = httpRequest({
+    host: config.containerHost,
+    port: config.containerPort,
+    path: upstreamPath,
+    method: clientReq.method,
+    headers,
+  });
+  wireUpstreamResponse(upstream, clientRes);
   // A client that aborts mid-upload errors `clientReq`; with no listener that
   // is an unhandled `error` that crashes the serve. Abort the upstream leg.
   clientReq.on('error', (err) => {
@@ -171,11 +271,39 @@ export function startAgentCoreHttpServer(
   const httpServer: Server = createServer((req, res) => {
     const path = (req.url ?? '/').split('?')[0];
     const match = routes.find((r) => r.method === req.method && r.path === path);
-    if (match) {
-      return proxyToContainer(req, res, config, match.path);
+    if (!match) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found', hint: notFoundHint }));
+      return;
     }
-    res.writeHead(404, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'not found', hint: notFoundHint }));
+    // Per-request inbound-JWT gate (issue #454). Only the contract POST is
+    // gated — `GET /ping` is an unauthenticated health check, matching the
+    // cloud (the customJwtAuthorizer guards InvokeAgentRuntime, not the health
+    // probe). On allow, forward the verified / injected Authorization.
+    if (config.authCheck && req.method === 'POST') {
+      void config
+        .authCheck(req.headers)
+        .then((result) => {
+          if (!result.allow) {
+            res.writeHead(result.status ?? 403, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: result.message ?? 'forbidden' }));
+            return;
+          }
+          proxyToContainer(req, res, config, match.path, {
+            ...(result.authorization && { authorization: result.authorization }),
+          });
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          getLogger().debug(`agentcore http serve auth-check error: ${msg}`);
+          if (!res.headersSent) {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: `auth check failed: ${msg}` }));
+          }
+        });
+      return;
+    }
+    proxyToContainer(req, res, config, match.path);
   });
 
   // MCP / A2A have no `/ws` — the bridge is attached for HTTP / AGUI only.
