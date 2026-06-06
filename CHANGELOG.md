@@ -1,3 +1,10 @@
+# [0.138.0](https://github.com/go-to-k/cdk-local/compare/v0.137.0...v0.138.0) (2026-06-06)
+
+
+### Features
+
+* **start-agentcore:** per-request inbound JWT + --sigv4 on the warm serve ([#454](https://github.com/go-to-k/cdk-local/issues/454) slice 4a) ([#461](https://github.com/go-to-k/cdk-local/issues/461)) ([9582920](https://github.com/go-to-k/cdk-local/commit/9582920197e2ae92ef9707e077b5625efdfe54ac))
+
 # [0.137.0](https://github.com/go-to-k/cdk-local/compare/v0.136.0...v0.137.0) (2026-06-06)
 
 
