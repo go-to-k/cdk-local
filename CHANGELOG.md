@@ -1,3 +1,10 @@
+## [0.139.3](https://github.com/go-to-k/cdk-local/compare/v0.139.2...v0.139.3) (2026-06-06)
+
+
+### Bug Fixes
+
+* **studio:** selection highlight follows the clicked row, not its same-id twin ([#466](https://github.com/go-to-k/cdk-local/issues/466)) ([67a8bc5](https://github.com/go-to-k/cdk-local/commit/67a8bc590098cfbdeec57e87837e46b900f8c3ad))
+
 ## [0.139.2](https://github.com/go-to-k/cdk-local/compare/v0.139.1...v0.139.2) (2026-06-06)
 
 
