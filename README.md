@@ -18,13 +18,13 @@ Or drive it all from a browser with `cdkl studio` — pick a target, invoke or s
 
 Requires **Docker** (running) and **Node.js 20+**.
 
+`cdkl` synths your CDK app and runs the selected resource locally in Docker. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
+
 ```bash
 npm install -g cdk-local      # installs the `cdkl` command
 cd your-cdk-app               # the directory holding cdk.json
 cdkl invoke                   # pick a Lambda from the list, then run it locally
 ```
-
-`cdkl` synths your CDK app and runs the selected resource locally in Docker. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
 
 **Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real Secrets / DynamoDB / Cognito the deployed app uses (see [Why cdk-local](#why-cdk-local) below).
 
@@ -63,20 +63,7 @@ Run every `cdkl` command from your CDK project root (the directory containing `c
 Every command takes its target two ways:
 
 - **Leave it off** and cdk-local lists every matching target for you to pick with the arrow keys — no need to know or type the CDK path (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select).
-- **Or name it** — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
-
-```bash
-cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
-cdkl run-task MyStack/Task                     # ECS task, run once
-cdkl start-service MyStack/Worker              # ECS service replicas (no load balancer)
-cdkl start-alb MyStack/WebAlb                  # ECS behind an ALB (front-door per listener)
-cdkl start-api MyStack/Api                     # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
-cdkl start-cloudfront MyStack/SiteDist         # CloudFront: S3 / Lambda Function URL origins + Functions (static site / SPA / SSR)
-cdkl invoke-agentcore MyStack/Agent            # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
-cdkl start-agentcore MyStack/Agent             # serve an AgentCore Runtime warm: HTTP (POST /invocations + /ws) / MCP (POST /mcp) / A2A (POST /), repeatable
-cdkl list                                      # every runnable target, grouped by command (alias: ls)
-cdkl studio                                    # interactive web console over every target
-```
+- **Or name it** — pass the CDK display path (e.g. `cdkl invoke MyStack/Fn`) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ![cdkl invoke against a local sample CDK app — standalone, no deploy](assets/cdkl-invoke.gif)
 
@@ -100,6 +87,21 @@ Per-command notes — full capabilities are in [Supported resources](#supported-
 - **`start-agentcore`** serves an AgentCore Runtime warm — one container you hit repeatedly until `^C` ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
 - **`studio`** opens a local web console over the same targets, no target needed: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
+
+The full command list:
+
+```bash
+cdkl invoke             # Lambda (ZIP or container image)
+cdkl run-task           # ECS task, run once
+cdkl start-service      # ECS service replicas (no load balancer)
+cdkl start-alb          # ECS behind an ALB (front-door per listener)
+cdkl start-api          # API Gateway REST v1 / HTTP v2 / WebSocket + Function URLs
+cdkl start-cloudfront   # CloudFront: S3 / Lambda Function URL origins + Functions (static site / SPA / SSR)
+cdkl invoke-agentcore   # Bedrock AgentCore Runtime (HTTP / MCP / A2A / AGUI)
+cdkl start-agentcore    # serve an AgentCore Runtime warm: HTTP (POST /invocations + /ws) / MCP (POST /mcp) / A2A (POST /), repeatable
+cdkl list               # every runnable target, grouped by command (alias: ls)
+cdkl studio             # interactive web console over every target
+```
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
 
@@ -135,10 +137,10 @@ Each target's composer surfaces its per-run options as controls:
 `--from-cfn-stack` binds to the deployed CloudFormation stack whose name matches your CDK stack. The bare form resolves the stack name from the target; pass an explicit name only when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden):
 
 ```bash
-cdkl invoke MyStack/Fn --from-cfn-stack                              # bare: uses resolved stack name
-cdkl invoke MyStack/Fn --from-cfn-stack MyExplicitCfnName            # explicit when names differ
-cdkl invoke MyStack/Fn --from-cfn-stack --stack-region eu-west-1     # cross-region CFn client
-cdkl invoke MyStack/Fn --from-cfn-stack --assume-role                # auto-assume deployed execution role
+cdkl invoke --from-cfn-stack                            # bare: uses resolved stack name
+cdkl invoke --from-cfn-stack MyExplicitCfnName          # explicit when names differ
+cdkl invoke --from-cfn-stack --stack-region eu-west-1   # cross-region CFn client
+cdkl invoke --from-cfn-stack --assume-role              # auto-assume deployed execution role
 ```
 
 Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
@@ -148,9 +150,9 @@ Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with th
 Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
-cdkl invoke MyStack/Fn --env-vars ./env.json
-cdkl start-service MyStack/MyService --env-vars ./env.json
-cdkl start-alb MyStack/MyAlb --env-vars ./env.json
+cdkl invoke --env-vars ./env.json
+cdkl start-service --env-vars ./env.json
+cdkl start-alb --env-vars ./env.json
 ```
 
 ```json
