@@ -293,6 +293,12 @@ const STUDIO_CSS = `
   .log-hit .lt { color: #777; }
   .log-hit .lg { color: #6aa9ff; }
   .log-hits-meta { padding: 6px 12px; color: #888; font-size: 11px; }
+  /* Per-line log severity colour (parsed from the WARN: / ERROR: prefix the
+     compact logger emits) so warn / error stand out in the LOGS panel + search
+     even with no ANSI colour over the child pipe. */
+  .log-row { display: block; }
+  .log-warn { color: #e5b567; }
+  .log-error { color: #e0707a; }
   #conn { font-size: 11px; }
   #conn.up { color: #7bd88f; }
   #conn.down { color: #e0707a; }
@@ -430,6 +436,40 @@ const STUDIO_SCRIPT = `
     if (cls) e.className = cls;
     if (text != null) e.textContent = text;
     return e;
+  }
+
+  // Classify a streamed log line by its level prefix so warn / error stand out
+  // even though the captured child output carries no ANSI color (serve children
+  // run colorless under a pipe). cdk-local's compact logger prefixes warn /
+  // error lines with WARN: / ERROR: (utils/logger.ts) -- the one severity
+  // signal that survives the pipe. An optional leading child-logger [module]
+  // tag is tolerated. A container's own runtime logs that happen to start
+  // ERROR: / WARN: are coloured too, which is desirable. Written with string
+  // ops (no regex) because backslash escapes do not survive the STUDIO_SCRIPT
+  // template literal.
+  function logLineClass(line) {
+    let s = line == null ? '' : String(line);
+    if (s.charAt(0) === '[') {
+      const close = s.indexOf('] ');
+      if (close !== -1) s = s.slice(close + 2);
+    }
+    if (s.indexOf('ERROR: ') === 0) return 'log-error';
+    if (s.indexOf('WARN: ') === 0) return 'log-warn';
+    return null;
+  }
+  // Render lines into a <pre> as one block span each so a per-line level colour
+  // can apply (a single textContent join cannot be partially coloured).
+  function fillLogPre(pre, lines) {
+    pre.textContent = '';
+    if (!lines || !lines.length) {
+      pre.textContent = '(none)';
+      return;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      const span = el('span', logLineClass(lines[i]), lines[i]);
+      span.classList.add('log-row');
+      pre.appendChild(span);
+    }
   }
 
   // Per-target run options (issue #301 slice 2). The descriptor table is
@@ -1506,7 +1546,8 @@ const STUDIO_SCRIPT = `
     };
     logClearRow.appendChild(logClear);
     logSec.appendChild(logClearRow);
-    const logPre = el('pre', null, logs.length ? logs.join('\\n') : '(none)');
+    const logPre = el('pre', null);
+    fillLogPre(logPre, logs);
     logSec.appendChild(logPre);
     ws.appendChild(logSec);
     // Register the live LOGS <pre> so streamed log events update it surgically
@@ -2126,7 +2167,9 @@ const STUDIO_SCRIPT = `
     const logs = logsById.get(invId) || [];
     const logSec = el('div', 'section');
     logSec.appendChild(el('h3', null, 'Logs'));
-    logSec.appendChild(el('pre', null, logs.length ? logs.join('\\n') : '(none)'));
+    const invLogPre = el('pre', null);
+    fillLogPre(invLogPre, logs);
+    logSec.appendChild(invLogPre);
     result.appendChild(logSec);
   }
 
@@ -2275,7 +2318,7 @@ const STUDIO_SCRIPT = `
       const res = await fetch('/api/invocations/' + encodeURIComponent(id) + '/logs');
       const data = await res.json();
       const lines = (data.logs || []).map((l) => l.line);
-      if (shownDetailId === id) pre.textContent = lines.length ? lines.join('\\n') : '(none)';
+      if (shownDetailId === id) fillLogPre(pre, lines);
     } catch (err) {
       if (shownDetailId === id) pre.textContent = '(failed to load logs)';
     }
@@ -2313,7 +2356,7 @@ const STUDIO_SCRIPT = `
         const row = el('div', 'log-hit');
         row.appendChild(el('span', 'lt', new Date(h.ts).toLocaleTimeString() + '  '));
         row.appendChild(el('span', 'lg', (h.target || '') + '  '));
-        row.appendChild(document.createTextNode(h.line));
+        row.appendChild(el('span', logLineClass(h.line), h.line));
         results.appendChild(row);
       }
     } catch (err) {
@@ -2390,7 +2433,7 @@ const STUDIO_SCRIPT = `
       // last response). Update only the live LOGS <pre> surgically instead
       // (issue #334). A status change still re-renders via onServeEvent.
       if (shownServeId === ev.containerId && serveLogId === ev.containerId && serveLogPre) {
-        serveLogPre.textContent = arr.join('\\n');
+        fillLogPre(serveLogPre, arr);
       }
     });
     setInterval(() => {

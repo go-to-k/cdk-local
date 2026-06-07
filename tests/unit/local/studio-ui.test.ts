@@ -196,7 +196,9 @@ describe('renderStudioHtml', () => {
     // composer inputs + the last response).
     expect(html).toContain('serveLogPre');
     expect(html).toContain('serveLogId');
-    expect(html).toContain('serveLogPre.textContent = arr.join(');
+    // The live LOGS <pre> is refilled surgically per log event (one level-
+    // coloured span per line via fillLogPre, issue: warn/error legibility).
+    expect(html).toContain('fillLogPre(serveLogPre, arr)');
     // The log handler no longer full-re-renders a shown serve.
     expect(html).not.toContain('if (shownServeId === ev.containerId) renderServeWorkspace(ev.containerId)');
   });

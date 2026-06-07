@@ -3,6 +3,7 @@ import {
   resolveConfiguredLogLevel,
   resolveDefaultUseColors,
   ConsoleLogger,
+  setLogger,
 } from '../../../src/utils/logger.js';
 
 /**
@@ -85,8 +86,8 @@ describe('ConsoleLogger CDKL_LOG_STREAM=stdout unification (issue #403)', () => 
       // reads only one stream sees them ordered.
       expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
         'an info line',
-        'a warning',
-        'an error',
+        'WARN: a warning',
+        'ERROR: an error',
       ]);
       // None went to the stderr-backed channels.
       expect(warnSpy).not.toHaveBeenCalled();
@@ -210,7 +211,7 @@ describe('ConsoleLogger color gating by default (issue #2)', () => {
       const logger = new ConsoleLogger('info');
       logger.error('boom');
       const line = errSpy.mock.calls[0]?.[0] as string;
-      expect(line).toBe('boom');
+      expect(line).toBe('ERROR: boom');
       expect(line).not.toContain(ANSI_RED);
     } finally {
       errSpy.mockRestore();
@@ -246,7 +247,7 @@ describe('ConsoleLogger color gating by default (issue #2)', () => {
       const logger = new ConsoleLogger('info');
       logger.error('boom');
       const line = logSpy.mock.calls[0]?.[0] as string;
-      expect(line).toBe('boom');
+      expect(line).toBe('ERROR: boom');
       expect(line).not.toContain(ANSI_RED);
     } finally {
       logSpy.mockRestore();
@@ -267,6 +268,64 @@ describe('ConsoleLogger color gating by default (issue #2)', () => {
       expect(line).toContain(ANSI_RED);
     } finally {
       errSpy.mockRestore();
+    }
+  });
+});
+
+describe('ConsoleLogger compact-mode level prefix', () => {
+  const prevLogStream = process.env['CDKL_LOG_STREAM'];
+
+  afterEach(() => {
+    if (prevLogStream === undefined) delete process.env['CDKL_LOG_STREAM'];
+    else process.env['CDKL_LOG_STREAM'] = prevLogStream;
+  });
+
+  it('prefixes warn / error so severity survives a colorless pipe; info stays bare', () => {
+    // The severity signal that crosses the studio child pipe (no ANSI there).
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const logger = new ConsoleLogger('info', false);
+      logger.info('progress');
+      logger.warn('heads up');
+      logger.error('broke');
+      expect(infoSpy.mock.calls[0]?.[0]).toBe('progress');
+      expect(warnSpy.mock.calls[0]?.[0]).toBe('WARN: heads up');
+      expect(errSpy.mock.calls[0]?.[0]).toBe('ERROR: broke');
+    } finally {
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it('keeps the prefix INSIDE the color wrap when colors are on', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const logger = new ConsoleLogger('info', true);
+      logger.error('broke');
+      const line = errSpy.mock.calls[0]?.[0] as string;
+      // red ... ERROR: broke ... reset
+      expect(line).toBe(`\x1b[31mERROR: broke\x1b[0m`);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a child logger in compact mode also carries the prefix (no [module] tag)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The child syncs its LEVEL from the global logger; pin it to info so the
+      // compact (not debug) branch is exercised regardless of cross-test state.
+      const parent = new ConsoleLogger('info', false);
+      setLogger(parent);
+      const child = parent.child('docker');
+      child.warn('heads up');
+      // compact mode omits the [module] tag but keeps the level prefix.
+      expect(warnSpy.mock.calls[0]?.[0]).toBe('WARN: heads up');
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 });
