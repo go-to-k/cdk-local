@@ -1,4 +1,4 @@
-# cdk-local
+# cdk-local (`cdkl`)
 
 [![npm version](https://img.shields.io/npm/v/cdk-local.svg)](https://www.npmjs.com/package/cdk-local)
 [![Downloads](https://img.shields.io/npm/dw/cdk-local.svg)](https://www.npmjs.com/package/cdk-local)
