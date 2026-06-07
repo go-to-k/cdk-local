@@ -33,6 +33,12 @@ cdkl start-api --from-cfn-stack            # local API on real AWS data; JWT ver
 cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / S3 / Secrets
 ```
 
+**Prefer a browser?** `cdkl studio` opens a local web console over the same targets — pick one, invoke or serve it, and watch every request, response, and log line on a live timeline.
+
+```bash
+cdkl studio                                # open the web console (no target needed)
+```
+
 ## Why cdk-local
 
 - **Zero-friction local execution** — run standalone with just Docker and your CDK app, no AWS account or deploy needed. Verify the parts of your app that don't touch AWS in seconds — handy as a zero-setup first run, or in CI where no credentials are available:
