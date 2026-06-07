@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   FAST_TERMINATE_KEY,
+  LOW_KEEPALIVE_DISPATCHER_OPTS,
   REAL_EXIT_KEY,
   TERMINATE_SIGNALS,
+  UNDICI_GLOBAL_DISPATCHER,
   installTerminateGuard,
   pruneForeignSignalListeners,
+  reinstallLowKeepAliveDispatcher,
   resolveRealExit,
   type SignalProcessLike,
 } from '../setup-helpers.js';
@@ -139,5 +142,56 @@ describe('pruneForeignSignalListeners', () => {
     for (const signal of TERMINATE_SIGNALS) {
       expect(proc.listeners(signal)).toEqual([guard]);
     }
+  });
+});
+
+/** Records the options its constructor was last handed + whether destroy ran. */
+class FakeDispatcher {
+  static lastOpts: unknown;
+  destroyed = false;
+  constructor(opts?: unknown) {
+    FakeDispatcher.lastOpts = opts;
+  }
+  async destroy(): Promise<void> {
+    this.destroyed = true;
+  }
+}
+
+describe('reinstallLowKeepAliveDispatcher', () => {
+  it('destroys the current dispatcher and reinstalls one with low-keepalive opts', async () => {
+    FakeDispatcher.lastOpts = undefined;
+    const slot: Record<symbol, unknown> = {};
+    const original = new FakeDispatcher();
+    slot[UNDICI_GLOBAL_DISPATCHER] = original;
+
+    const installed = await reinstallLowKeepAliveDispatcher(slot);
+
+    expect(installed).toBe(true);
+    expect(original.destroyed).toBe(true);
+    const replacement = slot[UNDICI_GLOBAL_DISPATCHER];
+    expect(replacement).toBeInstanceOf(FakeDispatcher);
+    expect(replacement).not.toBe(original);
+    // The replacement was constructed with the keep-alive-minimizing options.
+    expect(FakeDispatcher.lastOpts).toEqual(LOW_KEEPALIVE_DISPATCHER_OPTS);
+  });
+
+  it('returns false (no-op) when no dispatcher exists yet (no fetch issued)', async () => {
+    const slot: Record<symbol, unknown> = {};
+    expect(await reinstallLowKeepAliveDispatcher(slot)).toBe(false);
+  });
+
+  it('returns false when the slot holds a non-dispatcher (no destroy method)', async () => {
+    const slot: Record<symbol, unknown> = { [UNDICI_GLOBAL_DISPATCHER]: {} };
+    expect(await reinstallLowKeepAliveDispatcher(slot)).toBe(false);
+    // The bogus value is left untouched.
+    expect(slot[UNDICI_GLOBAL_DISPATCHER]).toEqual({});
+  });
+
+  it('low-keepalive opts close idle sockets immediately (keepAliveTimeout minimal)', () => {
+    // Lock the intent: a tiny keepAliveTimeout + no pipelining is what removes
+    // the dangling-pooled-socket window the crash variant depends on.
+    expect(LOW_KEEPALIVE_DISPATCHER_OPTS.keepAliveTimeout).toBeLessThanOrEqual(1);
+    expect(LOW_KEEPALIVE_DISPATCHER_OPTS.keepAliveMaxTimeout).toBeLessThanOrEqual(1);
+    expect(LOW_KEEPALIVE_DISPATCHER_OPTS.pipelining).toBe(0);
   });
 });
