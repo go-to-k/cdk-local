@@ -157,7 +157,8 @@ cdkl start-alb --env-vars ./env.json
 ```json
 {
   "Parameters": { "LOG_LEVEL": "debug" },
-  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000", "PROD_FEATURE_FLAG": null },
+  "MyStack/Fn": { "TABLE_ENDPOINT": "http://localhost:8000" },
+  "MyStack/Worker": { "WEBHOOK_URL": null },
   "AppContainer": { "DB_HOST": "host.docker.internal", "DB_PORT": "13306" }
 }
 ```
@@ -192,7 +193,7 @@ Reload classifier (interpreted-language fast path vs Dockerfile rebuild), shadow
 
 ## Local build override — `--image-override`
 
-`cdkl start-service` / `cdkl start-alb` against a service whose CDK source uses `ContainerImage.fromEcrRepository(...)` (typical under `--from-cfn-stack`) runs the deployed image bytes locally — local source edits don't take effect, even with `--watch`. `--image-override` swaps in a local `docker build` so iteration still works while real DynamoDB / Secrets / SSM stay wired in.
+When a service's image is pinned to a deployed registry — `ContainerImage.fromEcrRepository(...)`, typical under `--from-cfn-stack` — `cdkl start-service` / `cdkl start-alb` run those deployed image bytes locally, so your source edits never take effect, even with `--watch`. `--image-override` rebuilds the image locally with `docker build` instead, so iteration works while real DynamoDB / Secrets / SSM stay wired in.
 
 Boot in a TTY and the command walks each detected pinned target with an interactive Dockerfile picker:
 
