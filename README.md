@@ -146,7 +146,7 @@ Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with th
 
 ## Environment variables — `--env-vars`
 
-Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
+Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
 ```bash
 cdkl invoke --env-vars ./env.json
@@ -184,10 +184,11 @@ When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster rea
 cdkl start-api --watch                       # reload API routes on save
 cdkl start-service --watch                   # roll ECS replicas on save
 cdkl start-alb --watch                       # roll ALB-fronted ECS replicas on save
+cdkl start-cloudfront --watch                # reload CloudFront Functions + origins on save
 cdkl invoke-agentcore --ws --watch           # reload an open /ws agent session
 ```
 
-Edit a handler and the next request hits the new code — no server restart. ECS reloads roll replicas one at a time so the service stays available across the reload (an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services). Synth failures keep the previous replica(s) serving. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
+Edit a handler and the next request hits the new code — no server restart. ECS reloads roll replicas one at a time so the service stays available across the reload (an external request stream against the ALB listener port sees zero connection refusals, even on multi-replica services). Synth failures keep the previous replica(s) serving. `start-cloudfront --watch` swaps its CloudFront Functions and origins in place; its Lambda@Edge / Function URL warm containers are boot-time only, so restart to pick up changes to their code. Honors `cdk.json`'s `watch.include` / `watch.exclude` globs, so no separate `cdk watch` process is needed.
 
 Reload classifier (interpreted-language fast path vs Dockerfile rebuild), shadow-replica TCP-probe timeout (`--shadow-ready-timeout`), and per-runtime caveats: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
