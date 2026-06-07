@@ -63,8 +63,8 @@ Run every `cdkl` command from your CDK project root (the directory containing `c
 
 Every command takes its target two ways:
 
-- **No target** opens an arrow-key picker — `invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select.
-- **A named target** is the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form) — single-stack apps may drop the stack prefix.
+- **Leave it off** and cdk-local lists every matching target for you to pick with the arrow keys — no need to know or type the CDK path (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select).
+- **Or name it** — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
 
 ```bash
 cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
@@ -93,22 +93,23 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its depl
 Per-command notes — full capabilities are in [Supported resources](#supported-resources):
 
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
-- **`run-task`** and single-replica **`start-service`** publish declared container ports on the host — a privileged port like 80 auto-remaps to a free high port with a WARN, or `--host-port <container>=<host>` pins one. **`start-service`** and **`start-alb`** print each host URL in a `Service endpoints:` banner after boot.
+- **`run-task`** runs one ECS task to completion; declared container ports publish on the host (a privileged port like 80 auto-remaps to a free high port with a WARN, or `--host-port <container>=<host>` pins one).
+- **`start-service`** runs the service's replicas with no load balancer; a single-replica run publishes host ports the same way. Both `start-service` and `start-alb` print each host URL in a `Service endpoints:` banner after boot.
 - **`start-alb`** stands up the ECS service(s) behind an ALB with full listener-rule routing, auth, and WebSocket proxying ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
 - **`start-cloudfront`** serves the `viewer-request` -> origin -> `viewer-response` pipeline over S3 / Lambda Function URL origins, running CloudFront Functions and Lambda@Edge locally ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
-- **`invoke-agentcore`** runs a Bedrock AgentCore Runtime agent once ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)); **`start-agentcore`** keeps one warm container you hit repeatedly ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
+- **`invoke-agentcore`** runs a Bedrock AgentCore Runtime agent once ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
+- **`start-agentcore`** serves an AgentCore Runtime warm — one container you hit repeatedly until `^C` ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
 - **`studio`** opens a local web console over the same targets, no target needed: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
 
-### Web console — `cdkl studio`
+## Web console — `cdkl studio`
 
-`cdkl studio` is a point-and-click front over the same runners — it takes no target and lists them all. From the browser you can:
+`cdkl studio` is a point-and-click front over the same runners — it takes no target and lists them all. Beyond running a target, it gives you what the CLI can't:
 
-- invoke a Lambda or AgentCore runtime;
-- start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` / `start-agentcore` serve;
-- watch invocations and captured serve requests stream onto a live timeline with their bound logs.
+- a live timeline where every invocation and captured serve request lands, each with its container logs bound;
+- replay — re-open any past row with an edited payload and re-invoke, or re-send a captured serve request.
 
 A served WebSocket endpoint — an API Gateway WebSocket API, or an HTTP / AGUI AgentCore runtime's `/ws` from `start-agentcore` — also gets an interactive WebSocket console (connect / send / receive frames).
 
@@ -130,7 +131,7 @@ Each target's composer surfaces its per-run options as controls:
 - an **All options** panel with the underlying command's full flag set plus a raw extra-args input for anything not surfaced as a control;
 - a Dockerfile picker for an ECS service pinned to a deployed registry (where local edits otherwise don't take effect), rebuilding it from local source.
 
-### Deployed stack binding — `--from-cfn-stack`
+## Deployed stack binding — `--from-cfn-stack`
 
 `--from-cfn-stack` binds to the deployed CloudFormation stack whose name matches your CDK stack. The bare form resolves the stack name from the target; pass an explicit name only when the deployed CFn stack name differs (e.g. CDK's `stackName` prop was overridden):
 
@@ -143,7 +144,7 @@ cdkl invoke MyStack/Fn --from-cfn-stack --assume-role                # auto-assu
 
 Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
 
-### Environment variables — `--env-vars`
+## Environment variables — `--env-vars`
 
 Every command accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:
 
@@ -176,7 +177,7 @@ Each top-level JSON key picks which target to overlay:
 
 When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.
 
-### Hot reload — `--watch`
+## Hot reload — `--watch`
 
 ```bash
 cdkl start-api --watch                       # reload API routes on save
@@ -189,7 +190,7 @@ Edit a handler and the next request hits the new code — no server restart. ECS
 
 Reload classifier (interpreted-language fast path vs Dockerfile rebuild), shadow-replica TCP-probe timeout (`--shadow-ready-timeout`), and per-runtime caveats: [docs/local-emulation.md#hot-reload---watch](docs/local-emulation.md#hot-reload---watch).
 
-### Local build override — `--image-override`
+## Local build override — `--image-override`
 
 `cdkl start-service` / `cdkl start-alb` against a service whose CDK source uses `ContainerImage.fromEcrRepository(...)` (typical under `--from-cfn-stack`) runs the deployed image bytes locally — local source edits don't take effect, even with `--watch`. `--image-override` swaps in a local `docker build` so iteration still works while real DynamoDB / Secrets / SSM stay wired in.
 
@@ -211,7 +212,7 @@ cdkl start-alb --from-cfn-stack \
 
 Per-service build inputs (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for target), monorepo recipes, private-registry npmrc threading, `--no-interactive-overrides` / `--strict-overrides`, and the `--watch` rebuild loop: [docs/local-emulation.md#local-build-override---image-override](docs/local-emulation.md#local-build-override---image-override).
 
-### start-service vs start-alb — which one?
+## start-service vs start-alb — which one?
 
 Most CDK ECS apps boot multiple replicas behind an ALB. cdk-local exposes each layer separately so you can target the slice you care about:
 
