@@ -1,3 +1,10 @@
+# [0.140.0](https://github.com/go-to-k/cdk-local/compare/v0.139.3...v0.140.0) (2026-06-07)
+
+
+### Features
+
+* **start-cloudfront:** accept a construct path / bare id for --kvs-file key ([#467](https://github.com/go-to-k/cdk-local/issues/467)) ([0447ac3](https://github.com/go-to-k/cdk-local/commit/0447ac3ddc6004abbd432d6a6727e64ff2176d77))
+
 ## [0.139.3](https://github.com/go-to-k/cdk-local/compare/v0.139.2...v0.139.3) (2026-06-06)
 
 
