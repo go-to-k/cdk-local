@@ -75,6 +75,35 @@ describe('createStudioDispatcher', () => {
     expect(result.invocationId).toBe('inv-1');
   });
 
+  it('builds the auto-rendered "All options" catalog controls into the invoke argv', async () => {
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+
+    const dispatcher = createStudioDispatcher({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-cat',
+    });
+
+    const p = dispatcher.run({
+      targetId: 'Stack/Fn',
+      kind: 'lambda',
+      event: {},
+      // --no-pull is a renderable boolean catalog flag for `cdkl invoke`.
+      catalogArgs: { '--no-pull': true },
+    });
+    child.stdout.emit('data', '"ok"');
+    child.emit('close', 0);
+    await p;
+
+    const argv = (spawnFn.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(argv).toContain('--no-pull');
+  });
+
   it('emits an invocation start then end event keyed by the same id', async () => {
     const bus = new StudioEventBus();
     const { invocations } = collect(bus);

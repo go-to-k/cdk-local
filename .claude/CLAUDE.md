@@ -888,10 +888,19 @@ compute-locally category for Lambda + API Gateway).
   flows through the same un-proxied `endpoints` path while the http:// contract
   endpoint is fronted by the capture proxy so a relayed `/invocations` lands on
   the timeline; every composer (invoke + serve) carries a collapsed "All options"
-  `<details>` (`buildAllOptions`) with a raw extra-args input + the
-  read-only auto-derived flag catalog from studio-option-catalog, so the
-  curated controls handle common flags richly while every other flag the
-  underlying command accepts stays reachable (issue #301); a PINNED ecs
+  `<details>` (`buildAllOptions`) that AUTO-RENDERS a real control (checkbox for
+  a boolean / negate flag, text input for a value flag, `<select>` for a
+  `.choices()` flag) for every RENDERABLE catalog flag — i.e. every flag the
+  underlying command accepts that is NEITHER curated (a rich control already
+  exists in OPTION_SPECS) NOR studio-managed (`CATALOG_MANAGED_FLAGS`:
+  `--event` / `--response-file` / `--host` / `--port` / `--watch` / the
+  `--image-*` override family, injected by studio itself), plus a raw
+  extra-args input as the final escape hatch; the collected values
+  (`collectCatalog` -> the `catalogArgs` map keyed by long flag) are built into
+  argv by `buildCatalogArgs` and appended after the curated per-run args (before
+  the raw args). So the curated controls handle common flags richly AND a user
+  no longer has to hand-type `--flag value` for the long tail of simple flags
+  (issue #301 + the all-options-controls slice); a PINNED ecs
   service (deployed-registry image, marked `pinned` in the target list)
   additionally gets an image-override Dockerfile picker
   (`buildImageOverridePicker`) populated from the boot-scanned Dockerfiles,
@@ -991,21 +1000,33 @@ compute-locally category for Lambda + API Gateway).
   that backs the composer's collapsed "All options" section.
   `buildFlagCatalog` introspects each runnable kind's Commander command
   factory (`createLocalInvoke*` / `createLocalStart*`) and emits every
-  flag (name + description), minus the session-global flags
-  (`CATALOG_EXCLUDED_FLAGS`: `--from-cfn-stack` / `--assume-role` /
-  `--app` / `--profile` / `--region` / `-c`, handled by the Session bar)
-  and the auto-added `--help` / `--version`; the curated OPTION_SPECS is a
-  rich-control subset, this is the complete reference so the UI is never
-  strictly less capable than the headless CLI. Memoized; each factory is
+  flag — its `flags` string + `description` PLUS the derived control
+  metadata (`long` / `takesValue` / `negate` / `variadic` / `placeholder`
+  parsed from the value token / `choices`) and a `renderable` flag — minus
+  the session-global flags (`CATALOG_EXCLUDED_FLAGS`: `--from-cfn-stack` /
+  `--assume-role` / `--app` / `--profile` / `--region` / `-c`, handled by
+  the Session bar) and the auto-added `--help` / `--version`. A flag is
+  `renderable` (the UI auto-renders an editable control for it) when it is
+  NEITHER curated (in OPTION_SPECS — a rich control already exists) NOR
+  studio-managed (`CATALOG_MANAGED_FLAGS`: `--event` / `--response-file` /
+  `--host` / `--port` / `--watch` / the `--image-*` override family, which
+  studio injects itself). `buildCatalogArgs(kind, catalogArgs)` is the
+  counterpart of OPTION_SPECS' `buildPerRunArgs`: it validates the UI-posted
+  `CatalogValues` (a `{ long-flag -> boolean|string }` map) against the
+  kind's renderable catalog flags and builds the argv fragment (bare flag for
+  a checked boolean, `flag value` otherwise) appended after the curated args
+  by both studio-dispatch and studio-serve-manager — so the UI is never
+  strictly less capable than the headless CLI AND the long-tail flags are
+  click/type-able, not raw-string-only. Memoized; each factory is
   re-handed the active embed config so host branding survives + the
   derived descriptions reflect it. `tokenizeRawArgs` is the quote-aware
   splitter for the section's raw extra-args input — the tokens are
-  appended verbatim (LAST, so they can override a curated flag) to the
-  spawned child argv by both studio-dispatch and studio-serve-manager;
-  studio spawns children WITHOUT a shell, so there is no injection
-  surface. `coerceRunRequest` validates the `rawArgs` string at the
-  `/api/run` boundary (tokenized eagerly so an unterminated quote is a
-  clean 400)),
+  appended verbatim (LAST, so they can override an earlier flag) to the
+  spawned child argv; studio spawns children WITHOUT a shell, so there is no
+  injection surface. `coerceRunRequest` validates BOTH the `catalogArgs` map
+  (via `buildCatalogArgs`) and the `rawArgs` string (tokenized eagerly) at the
+  `/api/run` boundary so an unknown / non-overridable flag or an unterminated
+  quote is a clean 400)),
   studio-serve-manager (issue #282 — the
   long-running serve lifecycle, parameterized by a per-kind
   `ServeKindSpec`: `api` (`start-api`) + `alb` (`start-alb`) +

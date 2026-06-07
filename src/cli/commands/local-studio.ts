@@ -46,7 +46,11 @@ import {
   resolveEnvVars,
   type OptionValues,
 } from '../../local/studio-option-specs.js';
-import { tokenizeRawArgs } from '../../local/studio-option-catalog.js';
+import {
+  buildCatalogArgs,
+  tokenizeRawArgs,
+  type CatalogValues,
+} from '../../local/studio-option-catalog.js';
 import { relayServeRequest, type ServeRequestResult } from '../../local/studio-request-relay.js';
 import { resolveEcsServiceTarget } from '../../local/ecs-service-resolver.js';
 import { isLocalCdkAssetImage } from '../../local/image-pin-detector.js';
@@ -93,10 +97,8 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
   if (typeof body !== 'object' || body === null) {
     throw new Error('Request body must be a JSON object.');
   }
-  const { targetId, kind, event, options, rawArgs, imageOverride, imageOverrides } = body as Record<
-    string,
-    unknown
-  >;
+  const { targetId, kind, event, options, catalogArgs, rawArgs, imageOverride, imageOverrides } =
+    body as Record<string, unknown>;
   if (typeof targetId !== 'string' || targetId.trim() === '') {
     throw new Error('Request body must include a non-empty "targetId" string.');
   }
@@ -114,6 +116,17 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     // resolveEnvVars both throw on malformed input).
     buildPerRunArgs(kind as StudioTargetKind, runOptions);
     resolveEnvVars(kind as StudioTargetKind, runOptions);
+  }
+  let runCatalogArgs: CatalogValues | undefined;
+  if (catalogArgs !== undefined) {
+    if (typeof catalogArgs !== 'object' || catalogArgs === null || Array.isArray(catalogArgs)) {
+      throw new Error('Request body "catalogArgs" must be a JSON object keyed by flag.');
+    }
+    runCatalogArgs = catalogArgs as CatalogValues;
+    // Validate the values against the kind's flag catalog NOW so an unknown /
+    // non-overridable flag or a type mismatch fails as a clean 400 at the
+    // boundary, not mid-spawn (buildCatalogArgs throws on either).
+    buildCatalogArgs(kind as StudioTargetKind, runCatalogArgs);
   }
   let runRawArgs: string | undefined;
   if (rawArgs !== undefined) {
@@ -159,6 +172,7 @@ export function coerceRunRequest(body: unknown): StudioRunRequest {
     kind: kind as StudioTargetKind,
     event,
     ...(runOptions !== undefined ? { options: runOptions } : {}),
+    ...(runCatalogArgs !== undefined ? { catalogArgs: runCatalogArgs } : {}),
     ...(runRawArgs !== undefined ? { rawArgs: runRawArgs } : {}),
     ...(runImageOverride !== undefined ? { imageOverride: runImageOverride } : {}),
     ...(runImageOverrides !== undefined ? { imageOverrides: runImageOverrides } : {}),

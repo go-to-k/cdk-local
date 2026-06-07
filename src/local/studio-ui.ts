@@ -335,10 +335,18 @@ const STUDIO_CSS = `
      read — kept small as it is secondary. */
   .io-label { color: #d7dde5; font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
   .io-hint { color: #e3b34a; font-size: 11px; }
-  .flag-catalog { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
-  .flag-row { display: flex; gap: 8px; align-items: baseline; font-size: 11px; }
-  .flag-name { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
-  .flag-desc { color: #999; }
+  /* Auto-rendered controls for the residual (non-curated) command flags in the
+     "All options" section: one stacked row per flag (label + input/select +
+     description hint), styled to match the curated .options controls. */
+  .flag-controls { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .all-options input.flag-control, .all-options select.flag-control {
+    width: 100%; box-sizing: border-box; background: #111; color: #ddd; border: 1px solid #333;
+    border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace;
+  }
+  .all-options input.flag-control:focus, .all-options select.flag-control:focus {
+    outline: none; border-color: #4ec97a;
+  }
+  .all-options .opt-label { color: #9aa4ad; }
   .started-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
   .started-flag { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
   .envkv-modes { display: flex; gap: 0; }
@@ -433,7 +441,7 @@ const STUDIO_SCRIPT = `
   // prefill (issue #398): the option map a stopped serve was last Started with
   // (serveApplied.options), so the re-rendered composer comes back filled.
   // rawPrefill is the raw-extra-args string (serveApplied.rawArgs).
-  function buildOptions(kind, prefill, rawPrefill) {
+  function buildOptions(kind, prefill, rawPrefill, catalogPrefill) {
     const specs = OPTION_SPECS[kind] || [];
     // The composer always shows an "All options" section (raw extra args + the
     // auto-derived flag reference), even for kinds with no curated controls.
@@ -584,7 +592,7 @@ const STUDIO_SCRIPT = `
       }
       sec.appendChild(row);
     });
-    const allOpts = buildAllOptions(kind, rawPrefill);
+    const allOpts = buildAllOptions(kind, rawPrefill, catalogPrefill);
     wrap.appendChild(allOpts.node);
     return {
       node: wrap,
@@ -596,21 +604,96 @@ const STUDIO_SCRIPT = `
         // body identical to before this section existed.
         return Object.keys(out).length ? out : undefined;
       },
+      collectCatalog: allOpts.collectCatalog,
       collectRaw: allOpts.collectRaw,
     };
   }
 
-  // The collapsed "All options" section: a raw extra-args input (appended
-  // verbatim to the spawned child) + the auto-derived, read-only catalog of
-  // every flag the underlying command accepts. The curated controls above
-  // cover the common flags with rich UI; this exposes the rest so the studio
-  // UI is never strictly less capable than the headless CLI (issue #301).
+  // The collapsed "All options" section. The curated controls above cover the
+  // common flags with rich UI; this section auto-renders a real control
+  // (checkbox / input / select) for EVERY other flag the underlying command
+  // accepts (the catalog's renderable flags), so the studio UI is never
+  // strictly less capable than the headless CLI AND a user does not have to
+  // hand-type "--flag value" for the long tail of simple flags. A raw
+  // extra-args input remains as the final escape hatch for anything the
+  // auto-render cannot express (issue #301 + the all-options-controls slice).
   const FLAG_CATALOG = window.__FLAG_CATALOG__ || {};
 
-  function buildAllOptions(kind, rawPrefill) {
+  function buildAllOptions(kind, rawPrefill, catalogPrefill) {
     const cat = FLAG_CATALOG[kind] || { command: '', flags: [] };
     const det = el('details', 'all-options');
     det.appendChild(el('summary', null, 'All options'));
+
+    // Auto-rendered controls for every renderable (non-curated, non-managed)
+    // flag. The collected value map is keyed by the long flag.
+    const catGetters = [];
+    const renderable = (cat.flags || []).filter(function (f) {
+      return f.renderable;
+    });
+    const preCat = function (flag) {
+      return catalogPrefill ? catalogPrefill[flag] : undefined;
+    };
+    if (renderable.length) {
+      const grid = el('div', 'flag-controls');
+      renderable.forEach(function (f) {
+        const row = el('div', 'opt-row opt-col');
+        if (!f.takesValue) {
+          // Boolean (bare / negate) flag -> checkbox; emits the bare flag.
+          const cb = el('input');
+          cb.type = 'checkbox';
+          if (preCat(f.long) === true) {
+            cb.checked = true;
+            det.open = true;
+          }
+          const lab = el('label', 'opt-bool');
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(' ' + f.long));
+          row.appendChild(lab);
+          catGetters.push(function () {
+            return [f.long, cb.checked];
+          });
+        } else if (f.choices && f.choices.length) {
+          // Value flag with a fixed choice set -> select (blank = unset).
+          row.appendChild(el('span', 'opt-label', f.long));
+          const sel = el('select', 'flag-control');
+          const none = el('option', null, '(default)');
+          none.value = '';
+          sel.appendChild(none);
+          f.choices.forEach(function (c) {
+            const o = el('option', null, c);
+            o.value = c;
+            sel.appendChild(o);
+          });
+          const pv = preCat(f.long);
+          if (pv != null && pv !== '') {
+            sel.value = String(pv);
+            det.open = true;
+          }
+          row.appendChild(sel);
+          catGetters.push(function () {
+            return [f.long, sel.value];
+          });
+        } else {
+          // Value flag -> text input. The placeholder is the flag's own value
+          // token (e.g. file, from the flags' angle-bracket token).
+          row.appendChild(el('span', 'opt-label', f.long));
+          const inp = el('input', 'flag-control');
+          inp.placeholder = f.placeholder || 'value';
+          const pv = preCat(f.long);
+          if (pv != null && pv !== '') {
+            inp.value = String(pv);
+            det.open = true;
+          }
+          row.appendChild(inp);
+          catGetters.push(function () {
+            return [f.long, inp.value];
+          });
+        }
+        if (f.description) row.appendChild(el('div', 'opt-hint', f.description));
+        grid.appendChild(row);
+      });
+      det.appendChild(grid);
+    }
 
     const rawRow = el('div', 'opt-row opt-col');
     rawRow.appendChild(el('span', 'opt-label', 'Raw extra args'));
@@ -628,20 +711,25 @@ const STUDIO_SCRIPT = `
     rawRow.appendChild(el('div', 'opt-hint', hint));
     det.appendChild(rawRow);
 
-    if (cat.flags.length) {
-      const ref = el('div', 'flag-catalog');
-      ref.appendChild(el('div', 'opt-label', 'Available flags'));
-      cat.flags.forEach(function (f) {
-        const row = el('div', 'flag-row');
-        row.appendChild(el('code', 'flag-name', f.flags));
-        if (f.description) row.appendChild(el('span', 'flag-desc', f.description));
-        ref.appendChild(row);
-      });
-      det.appendChild(ref);
-    }
-
     return {
       node: det,
+      // Collect the auto-rendered control values, omitting unset ones (an
+      // unchecked checkbox / a blank input or select) so the posted map carries
+      // only flags the user actually set. Returns undefined when nothing is set.
+      collectCatalog: function () {
+        const out = {};
+        catGetters.forEach(function (g) {
+          const kv = g();
+          const flag = kv[0];
+          const val = kv[1];
+          if (typeof val === 'boolean') {
+            if (val) out[flag] = true;
+          } else if (typeof val === 'string' && val.trim() !== '') {
+            out[flag] = val.trim();
+          }
+        });
+        return Object.keys(out).length ? out : undefined;
+      },
       collectRaw: function () {
         const v = rawIn.value.trim();
         return v === '' ? undefined : v;
@@ -1060,6 +1148,16 @@ const STUDIO_SCRIPT = `
         }
       });
     }
+    // Auto-rendered "All options" controls (the catalog flags). Surface each
+    // set flag so the running view does not look like the picks vanished (the
+    // issue #356 contract): the bare flag for a checked boolean, flag + value
+    // otherwise.
+    if (applied && applied.catalogArgs) {
+      Object.keys(applied.catalogArgs).forEach(function (flag) {
+        const v = applied.catalogArgs[flag];
+        lines.push(v === true ? flag : flag + ' ' + v);
+      });
+    }
     if (applied && applied.imageOverride) {
       lines.push('--image-override ' + applied.imageOverride);
     }
@@ -1078,7 +1176,7 @@ const STUDIO_SCRIPT = `
     return lines;
   }
 
-  async function startServe(id, options, rawArgs, imageOverride, imageOverrides) {
+  async function startServe(id, options, catalogArgs, rawArgs, imageOverride, imageOverrides) {
     // The serve kind (api / alb / ecs) drives which headless command the
     // server spawns; it is recorded on the row when the target list loads.
     const meta = serveMeta.get(id);
@@ -1094,6 +1192,7 @@ const STUDIO_SCRIPT = `
     const watchEl = document.getElementById('sess-watch');
     serveApplied.set(id, {
       options: options,
+      catalogArgs: catalogArgs,
       rawArgs: rawArgs,
       imageOverride: imageOverride,
       imageOverrides: imageOverrides,
@@ -1108,6 +1207,7 @@ const STUDIO_SCRIPT = `
     try {
       const body = { targetId: id, kind };
       if (options) body.options = options;
+      if (catalogArgs) body.catalogArgs = catalogArgs;
       if (rawArgs) body.rawArgs = rawArgs;
       if (imageOverride) body.imageOverride = imageOverride;
       if (imageOverrides) body.imageOverrides = imageOverrides;
@@ -1214,6 +1314,7 @@ const STUDIO_SCRIPT = `
     }
     // Per-run options are only set before a start; collected on the Start click.
     let collectOpts = function () { return undefined; };
+    let collectCatalog = function () { return undefined; };
     let collectRaw = function () { return undefined; };
     let collectImageOverride = function () { return undefined; };
     let collectImageOverrides = function () { return undefined; };
@@ -1227,7 +1328,14 @@ const STUDIO_SCRIPT = `
         serveState.set(id, { status: 'stopped', endpoints: [] });
         renderServeWorkspace(id);
       } else {
-        startServe(id, collectOpts(), collectRaw(), collectImageOverride(), collectImageOverrides());
+        startServe(
+          id,
+          collectOpts(),
+          collectCatalog(),
+          collectRaw(),
+          collectImageOverride(),
+          collectImageOverrides()
+        );
       }
     };
     head.appendChild(btn);
@@ -1267,9 +1375,15 @@ const STUDIO_SCRIPT = `
         ws.appendChild(io.node);
         collectImageOverrides = io.collect;
       }
-      const opt = buildOptions(kind, applied && applied.options, applied && applied.rawArgs);
+      const opt = buildOptions(
+        kind,
+        applied && applied.options,
+        applied && applied.rawArgs,
+        applied && applied.catalogArgs
+      );
       if (opt.node) ws.appendChild(opt.node);
       collectOpts = opt.collect;
+      collectCatalog = opt.collectCatalog;
       collectRaw = opt.collectRaw;
     }
 
@@ -1888,7 +2002,7 @@ const STUDIO_SCRIPT = `
     // target; per-run options are not carried over, so the options section is
     // omitted (the payload is the thing being tweaked). A fresh invoke keeps
     // the per-run options (e.g. env vars) below the event, above Invoke.
-    let opt = { collect: undefined, collectRaw: undefined };
+    let opt = { collect: undefined, collectCatalog: undefined, collectRaw: undefined };
     if (reinvokeOf) {
       composer.appendChild(
         el('div', 'opt-hint', 'Re-invoke runs the edited event through the same target (per-run options use defaults).')
@@ -1916,6 +2030,7 @@ const STUDIO_SCRIPT = `
       msg,
       result,
       collectOpts: opt.collect,
+      collectCatalog: opt.collectCatalog,
       collectRaw: opt.collectRaw,
       reinvokeOf: reinvokeOf || null,
     };
@@ -1954,6 +2069,8 @@ const STUDIO_SCRIPT = `
         body = { targetId: id, kind, event };
         const options = active.collectOpts ? active.collectOpts() : undefined;
         if (options) body.options = options;
+        const catalogArgs = active.collectCatalog ? active.collectCatalog() : undefined;
+        if (catalogArgs) body.catalogArgs = catalogArgs;
         const rawArgs = active.collectRaw ? active.collectRaw() : undefined;
         if (rawArgs) body.rawArgs = rawArgs;
       }

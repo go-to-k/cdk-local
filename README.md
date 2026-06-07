@@ -128,7 +128,7 @@ cdkl studio --stack 'dev/*'                  # scope the displayed target list (
 Each target's composer surfaces its per-run options as controls:
 
 - curated controls per kind — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token`;
-- an **All options** panel with the underlying command's full flag set plus a raw extra-args input for anything not surfaced as a control;
+- an **All options** panel that renders an editable control (checkbox / input / dropdown) for every other flag the underlying command accepts, with a raw extra-args input as the final escape hatch;
 - a Dockerfile picker for an ECS service pinned to a deployed registry (where local edits otherwise don't take effect), rebuilding it from local source.
 
 ## Deployed stack binding — `--from-cfn-stack`

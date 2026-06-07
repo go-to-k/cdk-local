@@ -204,6 +204,34 @@ describe('coerceRunRequest', () => {
     ).toThrow(/unterminated/i);
   });
 
+  it('threads well-formed catalogArgs (auto-rendered All-options controls) through', () => {
+    expect(
+      coerceRunRequest({
+        targetId: 'Stack/SiteDist',
+        kind: 'cloudfront',
+        catalogArgs: { '--no-pull': true, '--stack-region': 'us-west-2' },
+      })
+    ).toEqual({
+      targetId: 'Stack/SiteDist',
+      kind: 'cloudfront',
+      event: undefined,
+      catalogArgs: { '--no-pull': true, '--stack-region': 'us-west-2' },
+    });
+  });
+
+  it.each([null, 42, 'str', [1, 2]])('rejects a non-object catalogArgs %p', (catalogArgs) => {
+    expect(() => coerceRunRequest({ targetId: 'T', kind: 'cloudfront', catalogArgs })).toThrow(
+      /"catalogArgs" must be a JSON object/
+    );
+  });
+
+  it('rejects a non-overridable / unknown catalogArgs flag at the boundary', () => {
+    // --event is studio-managed — not reachable via the catalog path.
+    expect(() =>
+      coerceRunRequest({ targetId: 'T', kind: 'lambda', catalogArgs: { '--event': 'x' } })
+    ).toThrow(/non-overridable|Unknown/i);
+  });
+
   it('threads a well-formed imageOverride string through', () => {
     expect(
       coerceRunRequest({ targetId: 'Stack/Svc', kind: 'ecs', imageOverride: './Dockerfile' })
