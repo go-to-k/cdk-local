@@ -18,15 +18,13 @@ Or drive it all from a browser with `cdkl studio` — pick a target, invoke or s
 
 Requires **Docker** (running) and **Node.js 20+**.
 
-`cdkl` synths your CDK app and runs the selected resource locally in Docker. Run any command with no target and it opens an arrow-key picker, so you rarely type a CDK path.
-
 ```bash
 npm install -g cdk-local      # installs the `cdkl` command
 cd your-cdk-app               # the directory holding cdk.json
 cdkl invoke                   # pick a Lambda from the list, then run it locally
 ```
 
-**Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real Secrets / DynamoDB / Cognito the deployed app uses (see [Why cdk-local](#why-cdk-local) below).
+**Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real AWS the deployed app uses: DynamoDB, S3, Secrets, Cognito, and more (see [Why cdk-local](#why-cdk-local) below).
 
 ```bash
 cdkl start-api --from-cfn-stack   # local API on real AWS data; JWT verified against the real Cognito User Pool
