@@ -100,6 +100,26 @@ describe('buildFlagCatalog', () => {
     expect(renderable).toContain('--no-pull');
   });
 
+  it('derives the choices set for a `.choices()` flag (drives the UI <select>)', () => {
+    const cat = buildFlagCatalog();
+    // agentcore (invoke-agentcore) --platform is a renderable choices flag.
+    const platform = (cat.agentcore?.flags ?? []).find((f) => f.long === '--platform');
+    expect(platform).toBeDefined();
+    expect(platform?.takesValue).toBe(true);
+    expect(platform?.renderable).toBe(true);
+    expect(platform?.choices).toEqual(['linux/amd64', 'linux/arm64']);
+  });
+
+  it('derives the variadic flag (`<x...>`) from the command', () => {
+    const cat = buildFlagCatalog();
+    // ecs --host-port is a repeatable (variadic) value flag.
+    const hostPort = (cat.ecs?.flags ?? []).find((f) => f.long === '--host-port');
+    expect(hostPort?.variadic).toBe(true);
+    // A plain scalar flag is not variadic.
+    const stackRegion = (cat.cloudfront?.flags ?? []).find((f) => f.long === '--stack-region');
+    expect(stackRegion?.variadic).toBe(false);
+  });
+
   it('does not wipe the active embed config and reflects host branding in descriptions', () => {
     // A host CLI installs custom branding; building the catalog instantiates
     // the command factories (each calls setEmbedConfig at construction, which

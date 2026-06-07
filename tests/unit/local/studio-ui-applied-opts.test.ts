@@ -59,6 +59,11 @@ describe('studio serve "Started with" summary (issue #356)', () => {
         '--image-override ./Dockerfile',
         '--foo bar',
       ]);
+      // catalogArgs (auto-rendered "All options" controls): bare flag for a
+      // checked boolean, "flag value" otherwise (all-options-controls slice).
+      expect(
+        t.formatAppliedOptions({ catalogArgs: { '--no-pull': true, '--stack-region': 'us-west-2' } })
+      ).toEqual(['--no-pull', '--stack-region us-west-2']);
       // nothing applied -> empty list (the UI shows a "(defaults)" hint)
       expect(t.formatAppliedOptions(undefined)).toEqual([]);
       expect(t.formatAppliedOptions({ options: undefined })).toEqual([]);

@@ -338,3 +338,95 @@ describe('studio UI buildHeaderEditor (issue #305)', () => {
     expect(second.collect()).toEqual({ A: 'b' });
   });
 });
+
+describe('studio UI "All options" auto-rendered controls (all-options-controls slice)', () => {
+  // buildOptions(...) returns collectCatalog alongside collect/collectRaw; the
+  // shared harness type predates it, so read it through a widened shape.
+  type WithCatalog = ReturnType<StudioHarness['buildOptions']> & {
+    collectCatalog: () => Record<string, boolean | string> | undefined;
+  };
+
+  it('auto-renders a checkbox for a boolean flag and an input for a value flag, then collects them (cloudfront)', () => {
+    harness = createStudioHarness();
+    const opts = harness.buildOptions('cloudfront') as WithCatalog;
+    const node = opts.node;
+    // The controls live inside the collapsed "All options" <details>, under
+    // the .flag-controls container.
+    const controls = node.querySelector('details.all-options .flag-controls');
+    expect(controls).toBeTruthy();
+
+    // --no-pull is a renderable boolean -> checkbox labeled with the bare flag.
+    const noPullRow = [...controls!.querySelectorAll('.opt-row')].find((r) =>
+      (r.textContent || '').includes('--no-pull'),
+    )!;
+    const noPull = noPullRow.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(noPull).toBeTruthy();
+    noPull.checked = true;
+
+    // --stack-region is a renderable value flag -> text input.
+    const regionRow = [...controls!.querySelectorAll('.opt-row')].find((r) =>
+      (r.textContent || '').includes('--stack-region'),
+    )!;
+    const regionInput = regionRow.querySelector('input.flag-control') as HTMLInputElement;
+    expect(regionInput).toBeTruthy();
+    regionInput.value = 'us-west-2';
+
+    const collected = opts.collectCatalog()!;
+    expect(collected['--no-pull']).toBe(true);
+    expect(collected['--stack-region']).toBe('us-west-2');
+    // A curated flag (none for cloudfront beyond --tls/--origin) / managed flag
+    // is NOT rendered here — only renderable residual flags.
+    expect(collected['--watch']).toBeUndefined();
+  });
+
+  it('omits unset controls (unchecked box / blank input) from the collected map', () => {
+    harness = createStudioHarness();
+    const opts = harness.buildOptions('cloudfront') as WithCatalog;
+    // Nothing touched -> no catalog args posted (keeps the run body minimal).
+    expect(opts.collectCatalog()).toBeUndefined();
+  });
+
+  it('auto-renders a <select> for a .choices() flag and collects the picked value (agentcore --platform)', () => {
+    harness = createStudioHarness();
+    const opts = harness.buildOptions('agentcore') as WithCatalog;
+    const controls = opts.node.querySelector('details.all-options .flag-controls')!;
+
+    const platformRow = [...controls.querySelectorAll('.opt-row')].find((r) =>
+      (r.textContent || '').includes('--platform'),
+    )!;
+    const select = platformRow.querySelector('select.flag-control') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    // The options are the (default) sentinel + the two declared choices.
+    const optionValues = [...select.options].map((o) => o.value);
+    expect(optionValues).toEqual(['', 'linux/amd64', 'linux/arm64']);
+
+    // Blank (default) selection -> omitted.
+    expect(opts.collectCatalog()).toBeUndefined();
+    // Pick a choice -> collected.
+    select.value = 'linux/arm64';
+    expect(opts.collectCatalog()!['--platform']).toBe('linux/arm64');
+  });
+
+  it('prefills the controls from a recorded catalogArgs map and opens the panel', () => {
+    harness = createStudioHarness();
+    // buildOptions(kind, prefill, rawPrefill, catalogPrefill) — the harness type
+    // only declares the kind arg, so call through a widened signature.
+    const build = harness.buildOptions as unknown as (
+      kind: string,
+      prefill?: unknown,
+      rawPrefill?: unknown,
+      catalogPrefill?: Record<string, boolean | string>,
+    ) => WithCatalog;
+    const opts = build('cloudfront', undefined, undefined, {
+      '--no-pull': true,
+      '--stack-region': 'eu-west-1',
+    });
+    const details = opts.node.querySelector('details.all-options') as HTMLDetailsElement;
+    // A prefilled value auto-expands the collapsed panel.
+    expect(details.open).toBe(true);
+    // The recorded values round-trip back out of the re-rendered controls.
+    const collected = opts.collectCatalog()!;
+    expect(collected['--no-pull']).toBe(true);
+    expect(collected['--stack-region']).toBe('eu-west-1');
+  });
+});
