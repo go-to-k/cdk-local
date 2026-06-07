@@ -256,6 +256,17 @@ semantics, and chokidar / network plumbing drift even when the
 repo doesn't, so a marker more than two weeks old no longer proves
 today's local code path actually works.
 
+**Scope short-circuit.** Before consulting the marker, the hook diffs
+the PR vs `origin/main` (`git diff origin/main...HEAD --name-only`, the
+same base `create-integ-gate.sh` / `cdkd-parity-gate.sh` use) and exits
+0 when NEITHER `src/**` nor `tests/integration/**` is touched. Without
+this, `markgate verify integ` reports "no marker" in EVERY fresh
+worktree (per-worktree marker isolation means a new worktree starts
+with none), so a docs / hooks / skills-only PR would be wrongly blocked
+and forced into an irrelevant Docker run. The short-circuit only fires
+when the diff is computable; if `origin/main` is unresolvable it falls
+through to the marker check (conservative — never weaker than before).
+
 The skill is the ONLY legitimate setter of this marker — never
 call `markgate set integ` directly from a shell.
 
