@@ -84,6 +84,25 @@ fi
 
 cd "$target_dir" 2>/dev/null || exit 0
 
+# Scope short-circuit: the `integ` marker only matters for PRs that touch
+# the Docker-exercised surface (`src/**` or `tests/integration/**`). When the
+# PR diff vs origin/main touches NEITHER, skip the marker check so a docs /
+# hooks / skills-only PR is not blocked by a stale-or-absent integ marker —
+# which otherwise fires on EVERY merge from a fresh worktree (a new worktree
+# has no per-worktree marker, so `markgate verify integ` reports "no marker"
+# regardless of what the PR actually changed). Mirrors the origin/main diff
+# base used by `create-integ-gate.sh` / `cdkd-parity-gate.sh`.
+#
+# Only short-circuit when the diff is computable. If origin/main is
+# unresolvable (fresh clone, detached state), fall through to the marker
+# check — the conservative choice, never weaker than the prior behavior.
+if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  if ! git diff origin/main...HEAD --name-only 2>/dev/null \
+      | grep -qE '^(src/|tests/integration/)'; then
+    exit 0
+  fi
+fi
+
 if command -v mise >/dev/null 2>&1; then
   markgate=(mise exec -- markgate)
 elif command -v markgate >/dev/null 2>&1; then
