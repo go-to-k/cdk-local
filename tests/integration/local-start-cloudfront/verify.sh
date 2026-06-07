@@ -68,29 +68,18 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
-# Synth once so we can read the AWS::CloudFront::KeyValueStore logical id (the
-# --kvs-file key is the resource logical id) out of the template, rather than
-# hardcoding its hash-suffixed value (which a CDK version bump could change).
-echo "==> Synth + extract the KeyValueStore logical id"
-# CDK App auto-synths only under the CDK CLI (i.e. when CDK_OUTDIR is set);
-# set it so a standalone `node bin/app.ts` writes the assembly to cdk.out.
-CDK_OUTDIR=cdk.out node bin/app.ts >/dev/null 2>&1 || fail "standalone synth (node bin/app.ts) failed"
-KVS_ID=$(node -e '
-const fs = require("fs");
-for (const f of fs.readdirSync("cdk.out").filter((x) => x.endsWith(".template.json"))) {
-  const t = JSON.parse(fs.readFileSync("cdk.out/" + f, "utf-8"));
-  for (const [id, r] of Object.entries(t.Resources || {})) {
-    if (r.Type === "AWS::CloudFront::KeyValueStore") { console.log(id); process.exit(0); }
-  }
-}
-process.exit(1);
-') || fail "could not find an AWS::CloudFront::KeyValueStore in the synthesized template"
-echo "    KeyValueStore logical id: ${KVS_ID}"
+# The --kvs-file key is a KeyValueStore HANDLE: its logical id, its construct
+# path, or its bare construct id (issue #465). We pass the bare construct id
+# `RoutesKvs` — the stable, ergonomic form — instead of the hash-suffixed logical
+# id, so this run exercises the construct-id -> logical-id normalization
+# end-to-end (the binding still matches strictly by logical id). cdkl resolves it
+# from the synthesized template's aws:cdk:path; no standalone synth + grep needed.
+KVS_KEY="RoutesKvs"
 KVS_FILE="$(pwd)/kvs.json"
 
-echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --watch --kvs-file ${KVS_ID}=${KVS_FILE}"
+echo "==> Booting: cdkl start-cloudfront ${TARGET} --port ${PORT} --watch --kvs-file ${KVS_KEY}=${KVS_FILE}"
 ${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --watch \
-  --kvs-file "${KVS_ID}=${KVS_FILE}" > "${OUT_FILE}" 2>&1 &
+  --kvs-file "${KVS_KEY}=${KVS_FILE}" > "${OUT_FILE}" 2>&1 &
 CDKL_PID=$!
 
 echo "==> Waiting for the server banner"
@@ -124,9 +113,11 @@ echo "${FOO_BODY}" | grep -qi "foo page" \
 # 2b. KeyValueStore-backed viewer-request rewrite (--kvs-file): the /kv/*
 #     behavior's function reads cf.kvs().get('/kv/go') -> '/foo/index.html'
 #     from the local JSON map, exercising the import-cf-from-cloudfront
-#     transform + cf.kvs() runtime path with no AWS. (issue #399)
+#     transform + cf.kvs() runtime path with no AWS (issue #399). The
+#     --kvs-file key here is the BARE CONSTRUCT ID `RoutesKvs`, so a passing
+#     rewrite proves the construct-id -> logical-id normalization too (#465).
 # ---------------------------------------------------------------------------
-echo "==> GET /kv/go (KeyValueStore rewrite -> /foo/index.html via --kvs-file)"
+echo "==> GET /kv/go (KeyValueStore rewrite -> /foo/index.html via --kvs-file RoutesKvs=...)"
 KV_BODY=$(curl -fsS "${BASE}/kv/go") || fail "GET /kv/go failed"
 echo "${KV_BODY}" | grep -qi "foo page" \
   || fail "KeyValueStore-backed rewrite did not resolve /kv/go to /foo/index.html"
@@ -230,4 +221,4 @@ CDKL_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite (--kvs-file), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."

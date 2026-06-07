@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import {
   createLocalStartCloudFrontCommand,
+  normalizeKvsFileKeys,
   parseKvsFileOverrides,
   parseOriginOverrides,
   resolveCloudFrontTarget,
@@ -85,8 +86,98 @@ describe('parseKvsFileOverrides', () => {
   });
 
   it('rejects a malformed value', () => {
-    expect(() => parseKvsFileOverrides(['nope'])).toThrow(/Expected <kvsLogicalId>=<file.json>/);
-    expect(() => parseKvsFileOverrides(['=x.json'])).toThrow(/Expected <kvsLogicalId>=<file.json>/);
+    expect(() => parseKvsFileOverrides(['nope'])).toThrow(/Expected <key>=<file.json>/);
+    expect(() => parseKvsFileOverrides(['=x.json'])).toThrow(/Expected <key>=<file.json>/);
+  });
+});
+
+describe('normalizeKvsFileKeys', () => {
+  const kvsTemplate: CloudFormationTemplate = {
+    Resources: {
+      RoutesKvs8B16D3AA: {
+        Type: 'AWS::CloudFront::KeyValueStore',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'App/RoutesKvs/Resource' },
+      },
+      OtherStoreABC123: {
+        Type: 'AWS::CloudFront::KeyValueStore',
+        Properties: {},
+        Metadata: { 'aws:cdk:path': 'App/Nested/OtherStore/Resource' },
+      },
+    },
+  };
+
+  it('passes a logical-id key through unchanged', () => {
+    const out = normalizeKvsFileKeys(new Map([['RoutesKvs8B16D3AA', './kvs.json']]), kvsTemplate);
+    expect(out.get('RoutesKvs8B16D3AA')).toBe('./kvs.json');
+  });
+
+  it('resolves a construct path to the logical id', () => {
+    const out = normalizeKvsFileKeys(new Map([['App/RoutesKvs', './kvs.json']]), kvsTemplate);
+    expect(out.get('RoutesKvs8B16D3AA')).toBe('./kvs.json');
+    expect(out.has('App/RoutesKvs')).toBe(false);
+  });
+
+  it('resolves the full L1 aws:cdk:path (with /Resource) to the logical id', () => {
+    const out = normalizeKvsFileKeys(new Map([['App/RoutesKvs/Resource', './kvs.json']]), kvsTemplate);
+    expect(out.get('RoutesKvs8B16D3AA')).toBe('./kvs.json');
+  });
+
+  it('resolves a bare construct id to the logical id', () => {
+    const out = normalizeKvsFileKeys(new Map([['OtherStore', './o.json']]), kvsTemplate);
+    expect(out.get('OtherStoreABC123')).toBe('./o.json');
+  });
+
+  it('returns the same empty map without scanning', () => {
+    const empty = new Map<string, string>();
+    expect(normalizeKvsFileKeys(empty, kvsTemplate)).toBe(empty);
+  });
+
+  it('throws with candidates when the key matches no store', () => {
+    expect(() => normalizeKvsFileKeys(new Map([['Nope', './x.json']]), kvsTemplate)).toThrow(
+      /matched no AWS::CloudFront::KeyValueStore.*RoutesKvs8B16D3AA \(App\/RoutesKvs\)/s
+    );
+  });
+
+  it('throws on an ambiguous bare id shared by two stores', () => {
+    const ambiguous: CloudFormationTemplate = {
+      Resources: {
+        A1: {
+          Type: 'AWS::CloudFront::KeyValueStore',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'App/One/Store/Resource' },
+        },
+        B2: {
+          Type: 'AWS::CloudFront::KeyValueStore',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'App/Two/Store/Resource' },
+        },
+      },
+    };
+    expect(() => normalizeKvsFileKeys(new Map([['Store', './x.json']]), ambiguous)).toThrow(
+      /ambiguous.*A1, B2/s
+    );
+  });
+
+  it('prefers an exact logical id over a colliding bare id', () => {
+    const collide: CloudFormationTemplate = {
+      Resources: {
+        // A store whose logical id equals another store's bare construct id.
+        Store: {
+          Type: 'AWS::CloudFront::KeyValueStore',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'App/Primary/Resource' },
+        },
+        Other: {
+          Type: 'AWS::CloudFront::KeyValueStore',
+          Properties: {},
+          Metadata: { 'aws:cdk:path': 'App/Store/Resource' },
+        },
+      },
+    };
+    const out = normalizeKvsFileKeys(new Map([['Store', './x.json']]), collide);
+    expect(out.get('Store')).toBe('./x.json');
+    expect(out.has('Other')).toBe(false);
   });
 });
 

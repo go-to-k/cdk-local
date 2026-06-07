@@ -47,7 +47,7 @@ import {
 import { parseEcsTarget } from '../../local/ecs-task-resolver.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
-import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cdk-path.js';
+import { buildCdkPathIndex, readCdkPath, resolveCdkPathToLogicalIds } from '../cdk-path.js';
 import { matchStacks } from '../stack-matcher.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import {
@@ -62,6 +62,7 @@ import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getLogger } from '../../utils/logger.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
+import type { CloudFormationTemplate } from '../../types/resource.js';
 import { CLOUDFRONT_DISTRIBUTION_TYPE } from '../../local/cloudfront-resolver.js';
 import { createWatchPredicates } from './local-start-api.js';
 
@@ -155,12 +156,13 @@ export function parseOriginOverrides(values: string[] | undefined): Map<string, 
 }
 
 /**
- * Parse the repeatable `--kvs-file <kvsLogicalId>=<file.json>` overrides into a
+ * Parse the repeatable `--kvs-file <key>=<file.json>` overrides into a
  * map. Each entry backs a CloudFront Function's `cf.kvs()` reads with a local
  * JSON map instead of the deployed store — the AWS-free escape hatch for KVS,
- * symmetric with `--origin <id>=<dir>`. The key is the
- * `AWS::CloudFront::KeyValueStore` resource logical id (surfaced in the
- * unbound-KVS boot warning when missing).
+ * symmetric with `--origin <id>=<dir>`. The key is a KeyValueStore handle —
+ * its `AWS::CloudFront::KeyValueStore` resource logical id, its construct path,
+ * or its bare construct id — resolved to a logical id by
+ * {@link normalizeKvsFileKeys} once the template is known.
  */
 export function parseKvsFileOverrides(values: string[] | undefined): Map<string, string> {
   const out = new Map<string, string>();
@@ -168,10 +170,93 @@ export function parseKvsFileOverrides(values: string[] | undefined): Map<string,
     const eq = raw.indexOf('=');
     if (eq <= 0 || eq === raw.length - 1) {
       throw new LocalStartCloudFrontError(
-        `Invalid --kvs-file '${raw}'. Expected <kvsLogicalId>=<file.json> (e.g. MyKvsStore=./kvs.json).`
+        `Invalid --kvs-file '${raw}'. Expected <key>=<file.json> (e.g. RoutesKvs=./kvs.json).`
       );
     }
     out.set(raw.slice(0, eq).trim(), raw.slice(eq + 1).trim());
+  }
+  return out;
+}
+
+/** A KeyValueStore resource identity, indexed for `--kvs-file` key matching. */
+interface KvsStoreIdentity {
+  logicalId: string;
+  /** The L1 `aws:cdk:path`, e.g. `App/RoutesKvs/Resource` (absent if unsynthed). */
+  cdkPath?: string;
+  /** The construct path the user thinks in, e.g. `App/RoutesKvs` (no `/Resource`). */
+  constructPath?: string;
+  /** The bare construct id, the last `constructPath` segment, e.g. `RoutesKvs`. */
+  constructId?: string;
+}
+
+/** Index every `AWS::CloudFront::KeyValueStore` in a template for key matching. */
+function collectKvsStoreIdentities(template: CloudFormationTemplate): KvsStoreIdentity[] {
+  const out: KvsStoreIdentity[] = [];
+  for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
+    if (resource.Type !== 'AWS::CloudFront::KeyValueStore') continue;
+    const cdkPath = readCdkPath(resource) || undefined;
+    // CDK synthesizes the L1 path as `<...>/<construct>/Resource`; strip the
+    // trailing `/Resource` so the construct path is what the user wrote in CDK.
+    const constructPath = cdkPath?.endsWith('/Resource')
+      ? cdkPath.slice(0, -'/Resource'.length)
+      : cdkPath;
+    const constructId = constructPath?.split('/').pop();
+    out.push({
+      logicalId,
+      ...(cdkPath !== undefined && { cdkPath }),
+      ...(constructPath !== undefined && { constructPath }),
+      ...(constructId !== undefined && constructId !== '' && { constructId }),
+    });
+  }
+  return out;
+}
+
+/**
+ * Resolve the `--kvs-file` keys (a logical id, a construct path, or a bare
+ * construct id) to `AWS::CloudFront::KeyValueStore` resource logical ids, so the
+ * binding layer — which matches strictly by logical id — finds them. Mirrors the
+ * construct-path ergonomics the `start-cloudfront` target argument already has,
+ * removing the need to synth + grep the template for the hash-suffixed logical
+ * id (issue #465).
+ *
+ * Match priority per key: exact logical id, then exact construct path (the
+ * `aws:cdk:path` with or without the synthesized `/Resource` leaf), then bare
+ * construct id. A key matching no store, or a bare id matching more than one,
+ * throws a {@link LocalStartCloudFrontError} listing the candidates.
+ */
+export function normalizeKvsFileKeys(
+  kvsFiles: Map<string, string>,
+  template: CloudFormationTemplate
+): Map<string, string> {
+  if (kvsFiles.size === 0) return kvsFiles;
+  const stores = collectKvsStoreIdentities(template);
+  const candidates = (): string =>
+    stores
+      .map((s) => (s.constructPath ? `${s.logicalId} (${s.constructPath})` : s.logicalId))
+      .join(', ') || '(none in this distribution)';
+
+  const out = new Map<string, string>();
+  for (const [key, filePath] of kvsFiles) {
+    // Priority order: exact logical id -> exact construct path -> bare id.
+    const tiers: KvsStoreIdentity[][] = [
+      stores.filter((s) => s.logicalId === key),
+      stores.filter((s) => s.constructPath === key || s.cdkPath === key),
+      stores.filter((s) => s.constructId === key),
+    ];
+    const matched = tiers.find((t) => t.length > 0) ?? [];
+    if (matched.length === 0) {
+      throw new LocalStartCloudFrontError(
+        `--kvs-file key '${key}' matched no AWS::CloudFront::KeyValueStore in the distribution. ` +
+          `Pass a store's logical id, construct path, or bare construct id. Candidates: ${candidates()}.`
+      );
+    }
+    if (matched.length > 1) {
+      throw new LocalStartCloudFrontError(
+        `--kvs-file key '${key}' is ambiguous — it matched ${matched.length} KeyValueStores ` +
+          `(${matched.map((s) => s.logicalId).join(', ')}). Use the logical id or full construct path.`
+      );
+    }
+    out.set(matched[0]!.logicalId, filePath);
   }
   return out;
 }
@@ -192,9 +277,13 @@ async function attachKvsModules(
   logger: ReturnType<typeof getLogger>,
   extraStateProviders: ExtraStateProviders | undefined
 ): Promise<void> {
-  const kvsFiles = parseKvsFileOverrides(options.kvsFile);
   const stack = stacks.find((s) => s.stackName === distribution.stackName);
   const synthRegion = stack?.region;
+  // Accept a logical id, construct path, or bare construct id for the --kvs-file
+  // key; normalize to the logical id the binding layer matches on (issue #465).
+  const kvsFiles = stack
+    ? normalizeKvsFileKeys(parseKvsFileOverrides(options.kvsFile), stack.template)
+    : parseKvsFileOverrides(options.kvsFile);
 
   const resolveDeployedKvs = isCfnFlagPresent(options)
     ? async (kvsLogicalId: string): Promise<DeployedKvsRef | undefined> => {
@@ -906,9 +995,10 @@ export function addStartCloudFrontSpecificOptions(cmd: Command): Command {
     )
     .addOption(
       new Option(
-        '--kvs-file <kvsLogicalId=file.json>',
+        '--kvs-file <key=file.json>',
         "Back a CloudFront Function's KeyValueStore reads (cf.kvs().get()) with a local JSON map " +
-          '(repeatable). The key is the AWS::CloudFront::KeyValueStore resource logical id; the file is a flat ' +
+          '(repeatable). The key is a KeyValueStore handle — its AWS::CloudFront::KeyValueStore resource ' +
+          'logical id, its construct path, or its bare construct id; the file is a flat ' +
           '{ "key": "value" } object. The AWS-free alternative to --from-cfn-stack, which instead reads the ' +
           'deployed store via the GetKey API.'
       ).argParser((value: string, prev: string[] | undefined) => [...(prev ?? []), value])

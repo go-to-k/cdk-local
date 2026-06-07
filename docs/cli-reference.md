@@ -1683,11 +1683,14 @@ its `DistributionConfig`:
     control-plane `ListKeyValueStores`), and the read hits the real
     `cloudfront-keyvaluestore` `GetKey` data-plane API. The deployed store's
     data is read live — exactly like a Lambda reaching a real managed service.
-  - **`--kvs-file <kvsLogicalId>=<file.json>`** — a local
+  - **`--kvs-file <key>=<file.json>`** — a local
     `{ "key": "value" }` map backs the reads with no AWS (the AWS-free escape
-    hatch, symmetric with `--origin`). The key is the
-    `AWS::CloudFront::KeyValueStore` resource logical id (named in the boot
-    warning when a read is unbound).
+    hatch, symmetric with `--origin`). The key is a KeyValueStore handle — its
+    `AWS::CloudFront::KeyValueStore` resource logical id, its construct path
+    (e.g. `MyStack/RoutesKvs`), or its bare construct id (e.g. `RoutesKvs`) —
+    so you don't have to synth + grep for the hash-suffixed logical id. An
+    unrecognized key fails fast listing the distribution's KeyValueStore
+    candidates.
 
   A read with neither binding fails with an actionable error naming both
   flags. `cf.kvs().meta()` / `count()` and KVS writes are not reproduced.
@@ -1772,7 +1775,7 @@ On top of the [common flags](#common-flags):
 | `--port <port>` | `0` (auto-allocate) | Host port for the local server. |
 | `--host <host>` | `127.0.0.1` | Bind address. |
 | `--origin <originId=dir>` | — | Point a distribution origin at a local directory (repeatable). Use when cdk-local cannot resolve the origin's BucketDeployment source automatically AND you do not want the deployed-S3 read-through (content uploaded out of band, or a non-CDK bucket). Wins over both the BucketDeployment source and the `--from-cfn-stack` deployed-S3 path. |
-| `--kvs-file <kvsLogicalId=file.json>` | — | Back a CloudFront Function's KeyValueStore reads (`cf.kvs().get()`) with a local JSON map (repeatable). The key is the `AWS::CloudFront::KeyValueStore` resource logical id; the file is a flat `{ "key": "value" }` object path. The AWS-free alternative to `--from-cfn-stack`, which instead reads the deployed store via `GetKey`. |
+| `--kvs-file <key=file.json>` | — | Back a CloudFront Function's KeyValueStore reads (`cf.kvs().get()`) with a local JSON map (repeatable). The key is a KeyValueStore handle — its `AWS::CloudFront::KeyValueStore` resource logical id, its construct path (`MyStack/RoutesKvs`), or its bare construct id (`RoutesKvs`); the file is a flat `{ "key": "value" }` object path. The AWS-free alternative to `--from-cfn-stack`, which instead reads the deployed store via `GetKey`. |
 | `--tls` | off | Terminate real HTTPS. Uses `--tls-cert` / `--tls-key` when supplied, else an auto-generated self-signed cert (cached under `$XDG_CACHE_HOME/cdk-local/alb-https/`; requires `openssl` on PATH). Implied by `--tls-cert` / `--tls-key`. |
 | `--tls-cert <path>` | unset | PEM server certificate. Implies `--tls`; must be set with `--tls-key`. |
 | `--tls-key <path>` | unset | PEM server private key matching `--tls-cert`. Implies `--tls`; must be set with `--tls-cert`. |

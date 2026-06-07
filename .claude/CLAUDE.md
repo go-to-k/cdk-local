@@ -368,8 +368,10 @@ AWS managed services.
   the `AWS::CloudFront::KeyValueStore` ARN from state — the physical id is the
   store NAME, looked up to its ARN via the control-plane `ListKeyValueStores` —
   and reads it through the real `cloudfront-keyvaluestore` `GetKey` data-plane
-  API, SigV4A-signed) or a local JSON map (`--kvs-file <kvsLogicalId>=<file>`,
-  the AWS-free escape hatch symmetric with `--origin`). A KVS read with no
+  API, SigV4A-signed) or a local JSON map (`--kvs-file <key>=<file>`, the
+  AWS-free escape hatch symmetric with `--origin`; the `<key>` is a
+  KeyValueStore handle — its resource logical id, construct path, or bare
+  construct id, normalized to the logical id, issue #465). A KVS read with no
   binding fails with an actionable error naming both flags; `cf.kvs().meta()` /
   `count()` and KVS writes are not reproduced. A behavior's
   **Lambda@Edge** functions (`LambdaFunctionAssociations`) ARE run (issue
@@ -451,9 +453,11 @@ compute-locally category for Lambda + API Gateway).
   `--origin
   <id>=<dir>` is the local-directory escape hatch when neither resolves;
   `--no-pull` skips the Lambda
-  origin image pull; `--kvs-file <kvsLogicalId>=<file>` backs a CloudFront
+  origin image pull; `--kvs-file <key>=<file>` backs a CloudFront
   Function's KeyValueStore reads with a local JSON map (issue #399; the
-  deployed-store alternative is `--from-cfn-stack`).
+  `<key>` accepts the KeyValueStore logical id, construct path, or bare
+  construct id — `normalizeKvsFileKeys` resolves it to the logical id, issue
+  #465; the deployed-store alternative is `--from-cfn-stack`).
   `start-service` and `start-alb` share one neutral orchestration
   in `commands/ecs-service-emulator.ts` (synth + shared docker network +
   Cloud Map + restart watcher + optional front-door); each command is a
