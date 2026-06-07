@@ -1,12 +1,10 @@
 /// <reference types="node" />
 
-import { afterAll, beforeAll, vi } from 'vite-plus/test';
+import { afterAll, vi } from 'vite-plus/test';
 import {
   installTerminateGuard,
   pruneForeignSignalListeners,
-  reinstallLowKeepAliveDispatcher,
   resolveRealExit,
-  UNDICI_GLOBAL_DISPATCHER,
 } from './setup-helpers.js';
 
 /**
@@ -125,63 +123,43 @@ const realProcessExit = resolveRealExit(workerGlobals, process);
 const fastTerminate = installTerminateGuard(workerGlobals, process, realProcessExit);
 
 /**
- * Undici (Node global `fetch`) keep-alive defense against the "Worker exited
- * unexpectedly" crash variant (issue #402).
+ * Per-file teardown: destroy the undici (Node global `fetch`) keep-alive pool
+ * so no pooled socket survives into the forked worker's teardown.
  *
- *   A forked vitest worker is reused across several test files. A test that
- *   `fetch`es a real HTTP server leaves an idle keep-alive socket pooled in
- *   undici's global dispatcher after the response — even when the body is fully
- *   read. The test's `afterEach` closes the SERVER but not that client socket,
- *   so a now-dangling pooled socket lingers. On CI (slower, contended) its
- *   native handle can crash the reused worker ("Worker exited unexpectedly")
- *   AFTER every assertion has already passed — vitest then propagates the crash
- *   as a non-zero exit even though the suite is green. It is intermittent and
- *   not locally reproducible.
+ * Background (issue #402):
  *
- *   Two layers, both via the helper that reuses the dispatcher's own
- *   constructor (so undici need not be imported — it is a transitive dep only):
+ *   A forked vitest worker is reused across several test files. Tests that
+ *   drive a real HTTP server with the global `fetch` leave an idle keep-alive
+ *   socket pooled in undici's global dispatcher after the request finishes.
+ *   When the worker process is later told to exit, that pooled socket's
+ *   native handle can crash the worker ("Worker exited unexpectedly") AFTER
+ *   every assertion has already passed — vitest then propagates the crash as
+ *   a non-zero exit even though the suite is green. The crash is intermittent
+ *   (timing-dependent)
+ *   and not locally reproducible, so the only robust defense is to guarantee
+ *   the pool is empty at every file boundary.
  *
- *     1. `beforeAll` bootstrap, ONCE per worker: install a keep-alive-minimized
- *        global dispatcher BEFORE the worker's first real test `fetch`, so no
- *        socket is ever pooled long enough to dangle past an `afterEach`
- *        server-close. The dispatcher is created lazily on first `fetch`, so a
- *        throwaway `fetch` to a closed port forces it into existence first.
- *     2. `afterAll` per file: re-destroy + reinstall the low-keep-alive
- *        dispatcher, so any churn during the file leaves a clean slot for the
- *        next file in the reused worker.
+ *   Node stores the global dispatcher on a well-known global symbol
+ *   (`Symbol.for('undici.globalDispatcher.1')`) — the same slot the public
+ *   `undici` package reads/writes — so we can clear it WITHOUT adding undici
+ *   as a dependency. We `destroy()` the current dispatcher (forcibly aborting
+ *   any leftover/idle socket) and install a fresh `Agent` of the same
+ *   constructor so subsequent files in the same worker get a clean pool. The
+ *   symbol slot is non-configurable but writable, so reassignment is allowed;
+ *   reusing the existing dispatcher's constructor avoids importing `Agent`.
  *
+ *   This is a per-FILE hook (`afterAll`), not per-test, so within-file
+ *   connection reuse is unchanged — only the file boundary resets the pool.
  *   Tests that drive raw `node:http` sockets (their own `agent: false` /
  *   `req.destroy()` teardown) are unaffected: they do not use the undici
  *   global dispatcher.
  */
-const UNDICI_LOW_KEEPALIVE_KEY = '__cdk_local_test_undici_low_keepalive__';
+const UNDICI_GLOBAL_DISPATCHER = Symbol.for('undici.globalDispatcher.1');
 
-beforeAll(async () => {
-  if (workerGlobals[UNDICI_LOW_KEEPALIVE_KEY]) {
-    return;
-  }
-  workerGlobals[UNDICI_LOW_KEEPALIVE_KEY] = true;
-  const slot = globalThis as Record<symbol, unknown>;
-  // The global dispatcher is created lazily on the first `fetch`. Force it into
-  // existence with a throwaway request to a closed port (fails fast with
-  // ECONNREFUSED, pools nothing) so the constructor is available to reuse.
-  if (slot[UNDICI_GLOBAL_DISPATCHER] === undefined) {
-    const controller = new AbortController();
-    const guard = setTimeout(() => controller.abort(), 250);
-    try {
-      await fetch('http://127.0.0.1:1/', { signal: controller.signal });
-    } catch {
-      // Expected — the connection is refused / aborted; no socket is pooled.
-    } finally {
-      clearTimeout(guard);
-    }
-  }
-  try {
-    await reinstallLowKeepAliveDispatcher(slot);
-  } catch {
-    // Best-effort — never fail a green suite over dispatcher setup.
-  }
-});
+interface UndiciDispatcher {
+  destroy(): Promise<void>;
+  constructor: new () => UndiciDispatcher;
+}
 
 afterAll(async () => {
   // Prune any SIGTERM / SIGINT handlers a CLI command action registered while
@@ -191,11 +169,16 @@ afterAll(async () => {
   // our prepended fast-terminate guard is preserved.
   pruneForeignSignalListeners(process, fastTerminate);
 
-  // Destroy + reinstall the low-keep-alive dispatcher so no pooled socket
-  // survives into the next file / the worker's teardown. No-op until the
-  // worker has issued its first `fetch`.
+  const slot = globalThis as Record<symbol, unknown>;
+  const dispatcher = slot[UNDICI_GLOBAL_DISPATCHER] as UndiciDispatcher | undefined;
+  // Undefined until the worker issues its first `fetch`; nothing to clear.
+  if (!dispatcher || typeof dispatcher.destroy !== 'function') {
+    return;
+  }
+
   try {
-    await reinstallLowKeepAliveDispatcher(globalThis as Record<symbol, unknown>);
+    await dispatcher.destroy();
+    slot[UNDICI_GLOBAL_DISPATCHER] = new dispatcher.constructor();
   } catch {
     // Best-effort teardown — never fail a green suite over pool cleanup.
   }
