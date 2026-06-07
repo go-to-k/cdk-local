@@ -29,8 +29,7 @@ cdkl invoke                   # pick a Lambda from the list, then run it locally
 **Add `--from-cfn-stack`** to bind to a deployed stack — your handler still runs locally in Docker, but reads and writes against the real Secrets / DynamoDB / Cognito the deployed app uses (see [Why cdk-local](#why-cdk-local) below).
 
 ```bash
-cdkl start-api --from-cfn-stack            # local API on real AWS data; JWT verified against the real Cognito User Pool
-cdkl invoke MyStack/Fn --from-cfn-stack    # one Lambda against real DynamoDB / S3 / Secrets
+cdkl start-api --from-cfn-stack   # local API on real AWS data; JWT verified against the real Cognito User Pool
 ```
 
 **Prefer a browser?** `cdkl studio` opens a local web console over the same targets — pick one, invoke or serve it, and watch every request, response, and log line on a live timeline.
@@ -84,10 +83,10 @@ cdkl studio                                    # interactive web console over ev
 `invoke` runs one Lambda in a real RIE container; the options you reach for most:
 
 ```bash
-cdkl invoke MyStack/Fn --event ./event.json             # run with a JSON event payload
-cdkl invoke MyStack/Fn --env-vars ./env.json            # overlay env vars (SAM-shape file)
-cdkl invoke MyStack/Fn --from-cfn-stack                 # bind env to the deployed stack's real values
-cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its deployed execution role
+cdkl invoke --event ./event.json             # run with a JSON event payload
+cdkl invoke --env-vars ./env.json            # overlay env vars (SAM-shape file)
+cdkl invoke --from-cfn-stack                 # bind env to the deployed stack's real values
+cdkl invoke --from-cfn-stack --assume-role   # ...and run as its deployed execution role
 ```
 
 Per-command notes — full capabilities are in [Supported resources](#supported-resources):
