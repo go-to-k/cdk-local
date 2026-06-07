@@ -1,3 +1,10 @@
+# [0.142.0](https://github.com/go-to-k/cdk-local/compare/v0.141.0...v0.142.0) (2026-06-07)
+
+
+### Features
+
+* **start-cloudfront:** WARN when --cache-origin is set without --from-cfn-stack ([#476](https://github.com/go-to-k/cdk-local/issues/476)) ([8015335](https://github.com/go-to-k/cdk-local/commit/80153350f14251289ffb359e4b0fcd0834a2f59a))
+
 # [0.141.0](https://github.com/go-to-k/cdk-local/compare/v0.140.0...v0.141.0) (2026-06-07)
 
 
