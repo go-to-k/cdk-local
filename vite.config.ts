@@ -72,6 +72,20 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
+    // Diagnostics for issue #402's "Worker exited unexpectedly" crash variant:
+    // a reused forks worker occasionally dies on a native handle AFTER all
+    // assertions pass. It is intermittent and not locally reproducible, so we
+    // arm Node's diagnostic report on the forks workers — a fatal C++ error or
+    // an uncaught exception writes a `report.*.json` (native + JS stack, open
+    // libuv handles) to cwd, which CI dumps to the log on failure (see
+    // `.github/workflows/ci.yml`). No overhead on a clean run — a report is
+    // written ONLY when a worker actually crashes.
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        execArgv: ['--report-on-fatalerror', '--report-uncaught-exception'],
+      },
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

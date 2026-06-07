@@ -84,7 +84,11 @@ function frontDoorOptions(pool: FrontDoorEndpointPool) {
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+// 15s (not 3s): under CI's parallel forks workers the worker is CPU-starved,
+// so the small async restart / re-register work can take wall-clock seconds
+// even though it is logically near-instant. The tighter 3s budget flaked on CI
+// ("waitFor timed out") despite the assertion being correct (issue #402).
+async function waitFor(predicate: () => boolean, timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('waitFor timed out');

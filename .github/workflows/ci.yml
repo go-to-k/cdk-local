@@ -22,6 +22,25 @@ jobs:
       - run: vp run test
       - run: vp run build
 
+      # Issue #402 diagnostics: if a forks worker crashed ("Worker exited
+      # unexpectedly"), Node's --report-on-fatalerror / --report-uncaught-exception
+      # (armed in vite.config.ts) wrote a report.*.json with the native + JS
+      # stack and open libuv handles. Dump any report to the log on failure so
+      # the next crash pinpoints the offending native handle. No-op on success.
+      - name: Dump Node diagnostic reports (on failure)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          found=0
+          for f in report.*.json; do
+            found=1
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          [ "$found" = 0 ] && echo "No Node diagnostic report written (worker did not hit a fatal/uncaught crash)."
+          exit 0
+
   runtime-compat:
     runs-on: ubuntu-latest
     needs: check-build-test

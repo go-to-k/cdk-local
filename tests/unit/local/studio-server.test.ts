@@ -653,8 +653,13 @@ describe('startStudioServer', () => {
     // Re-request the SAME concrete port the first server bound; the bump
     // logic must pick a different one rather than throwing EADDRINUSE.
     const second = await boot({ port: first.port });
-    expect(second.port).not.toBe(first.port);
-    expect(second.port).toBe(first.port + 1);
+    // The bump must land on a DIFFERENT, higher free port. Assert `> first`
+    // rather than exactly `first + 1`: under CI's parallel workers another
+    // process can hold `first + 1`, so the bump legitimately skips to
+    // `first + 2` (etc.) — asserting an exact `+1` flaked (issue #402). The
+    // contract under test is "pick a free port instead of throwing
+    // EADDRINUSE", not the exact offset.
+    expect(second.port).toBeGreaterThan(first.port);
   });
 
   it('rejects when the preferred port is taken and no bumps are allowed', async () => {

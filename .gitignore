@@ -55,3 +55,6 @@ cdk.context.json
 .pr-body*.txt
 .gh-body*.md
 .gh-body*.txt
+
+# Node diagnostic reports (issue #402, --report-on-fatalerror)
+report.*.json
