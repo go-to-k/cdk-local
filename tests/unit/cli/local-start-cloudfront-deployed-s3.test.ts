@@ -37,9 +37,10 @@ vi.mock('../../../src/local/cloudfront-distribution-config.js', () => ({
   resolveDeployedOriginBucket: bucketResolverMock,
 }));
 
-const { resolveDeployedS3Origins, annotateDeployedS3Origins } = await import(
+const { resolveDeployedS3Origins, annotateDeployedS3Origins, warnUnusedCacheOrigin } = await import(
   '../../../src/cli/commands/local-start-cloudfront.js'
 );
+const { setLogger } = await import('../../../src/utils/logger.js');
 
 const logger = { info: vi.fn(), warn: vi.fn() } as never;
 
@@ -255,5 +256,40 @@ describe('annotateDeployedS3Origins', () => {
     const dist = distribution({ kind: 's3', originId: 'o1', localDirs: ['/tmp/site'] });
     annotateDeployedS3Origins(dist, new Map([['o1', 'my-site-bucket']]));
     expect(dist.origins.get('o1')?.kind).toBe('s3');
+  });
+});
+
+describe('warnUnusedCacheOrigin', () => {
+  function captureWarns(): string[] {
+    const warns: string[] = [];
+    setLogger({
+      info: () => undefined,
+      warn: (m: string) => warns.push(m),
+      error: () => undefined,
+      debug: () => undefined,
+    } as never);
+    return warns;
+  }
+
+  it('warns when --cache-origin is set without --from-cfn-stack (no-op flag)', () => {
+    cfnPresentMock.mockReturnValueOnce(false);
+    const warns = captureWarns();
+    warnUnusedCacheOrigin({ cacheOrigin: true } as never);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('--cache-origin has no effect without --from-cfn-stack');
+  });
+
+  it('is silent when --cache-origin is set WITH --from-cfn-stack', () => {
+    cfnPresentMock.mockReturnValueOnce(true);
+    const warns = captureWarns();
+    warnUnusedCacheOrigin({ cacheOrigin: true, fromCfnStack: 'Stack' } as never);
+    expect(warns).toHaveLength(0);
+  });
+
+  it('is silent when --cache-origin is not set', () => {
+    cfnPresentMock.mockReturnValueOnce(false);
+    const warns = captureWarns();
+    warnUnusedCacheOrigin({} as never);
+    expect(warns).toHaveLength(0);
   });
 });

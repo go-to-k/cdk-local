@@ -43,6 +43,9 @@ cleanup() {
     done
     kill -KILL "${CDKL_PID}" 2>/dev/null || true
   fi
+  if [[ -n "${WARN_PID:-}" ]] && kill -0 "${WARN_PID}" 2>/dev/null; then
+    kill -KILL "${WARN_PID}" 2>/dev/null || true
+  fi
   # Restore any file the --watch scenario edited.
   if [[ -f site/index.html.bak ]]; then
     mv -f site/index.html.bak site/index.html
@@ -221,4 +224,35 @@ CDKL_PID=""
 sleep 0.5
 if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then fail "port ${PORT} still bound after shutdown"; fi
 
-echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), and a --watch reload."
+# ---------------------------------------------------------------------------
+# 7. --cache-origin without --from-cfn-stack: the flag only feeds the
+#    deployed-S3 read-through reader (built solely under --from-cfn-stack), so
+#    here it is a no-op. A boot-time WARN must fire so the no-op is never
+#    silent (the main port was freed above, so reuse it).
+# ---------------------------------------------------------------------------
+echo "==> Booting with --cache-origin (no --from-cfn-stack): expect the no-op WARN"
+WARN_OUT=$(mktemp)
+${CDKL} start-cloudfront "${TARGET}" --port "${PORT}" --cache-origin > "${WARN_OUT}" 2>&1 &
+WARN_PID=$!
+WARNED=0
+for _ in $(seq 1 120); do
+  if grep -q "cache-origin has no effect without --from-cfn-stack" "${WARN_OUT}"; then WARNED=1; break; fi
+  if ! kill -0 "${WARN_PID}" 2>/dev/null; then break; fi
+  sleep 0.5
+done
+kill -TERM "${WARN_PID}" 2>/dev/null || true
+for _ in $(seq 1 40); do
+  if ! kill -0 "${WARN_PID}" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+kill -KILL "${WARN_PID}" 2>/dev/null || true
+if [[ "${WARNED}" -ne 1 ]]; then
+  echo "----- --cache-origin server output -----" >&2
+  cat "${WARN_OUT}" >&2 || true
+  rm -f "${WARN_OUT}"
+  echo "FAIL: --cache-origin without --from-cfn-stack did not emit the no-op WARN" >&2
+  exit 1
+fi
+rm -f "${WARN_OUT}"
+
+echo "PASS: cdkl start-cloudfront served the viewer-request -> S3 origin -> viewer-response pipeline, a KeyValueStore-backed rewrite via a bare-construct-id --kvs-file key (issues #399 + #465), a Buffer-using Basic-Auth function (issue #410), the SPA fallback, ResponseHeadersPolicy CORS (preflight + actual-response), a --watch reload, and the --cache-origin-without--from-cfn-stack no-op WARN."
