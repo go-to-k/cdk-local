@@ -61,7 +61,10 @@ The locally executable resources are listed under [Supported resources](#support
 
 Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
 
-Run any command with no target for an arrow-key picker (`invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select). Or name a target — the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form); single-stack apps may drop the stack prefix.
+Every command takes its target two ways:
+
+- **No target** opens an arrow-key picker — `invoke` / `invoke-agentcore` / `start-agentcore` / `run-task` / `start-cloudfront` pick one; `start-service` / `start-alb` / `start-api` multi-select.
+- **A named target** is the CDK display path (recommended) or a stack-qualified logical ID (`MyStack:Fn1234ABCD`, the SAM-compatible form) — single-stack apps may drop the stack prefix.
 
 ```bash
 cdkl invoke MyStack/Fn --event ./event.json   # Lambda (ZIP or container image)
@@ -87,20 +90,27 @@ cdkl invoke MyStack/Fn --from-cfn-stack                 # bind env to the deploy
 cdkl invoke MyStack/Fn --from-cfn-stack --assume-role   # ...and run as its deployed execution role
 ```
 
+Per-command notes — full capabilities are in [Supported resources](#supported-resources):
+
 - **`start-api`** serves one HTTP server per API; a bare `start-api` in a multi-stack app needs `--all-stacks` or `--stack <name>`.
-- **`run-task`** / single-replica **`start-service`** publish declared container ports on the host (a privileged port like 80 auto-remaps to a free high host port with a WARN; `--host-port <container>=<host>` pins a specific one). **`start-service`** / **`start-alb`** also list each host URL in a `Service endpoints:` banner after boot so the access URL stays visible.
-- **`start-alb`** stands up the ECS service(s) behind an ALB plus a host-side front-door on each listener port, honoring all six listener-rule conditions, weighted forwards, redirect / fixed-response actions, mixed ECS + Lambda targets, `authenticate-cognito` / `authenticate-oidc` actions (local Bearer-JWT enforcement), and WebSocket `Upgrade` proxying to ECS targets ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
-- **`start-cloudfront`** serves a CloudFront distribution's `viewer-request` -> origin -> `viewer-response` pipeline locally — CloudFront Functions in-process (incl. **KeyValueStore** reads via the deployed store with `--from-cfn-stack` or a local map with `--kvs-file`) and **Lambda@Edge** functions in a real RIE container (all four event types — viewer / origin request / response) over an **S3 origin** (BucketDeployment source, or — when there's no local source, e.g. files uploaded out of band by a separate frontend repo — the deployed bucket read from **real S3 on demand** with `--from-cfn-stack`) or a **Lambda Function URL origin** (the backing Lambda run locally), with the behavior's **`ResponseHeadersPolicy` CORS** (preflight + response headers) reproduced at the edge, so a routing / rewrite / auth / SPA-fallback / CDN-fronted-Lambda / CORS change is verifiable in seconds. `--origin`, `--tls`, `--watch` ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
-- **`invoke-agentcore`** invokes a Bedrock AgentCore Runtime agent locally — container or `fromCodeAsset` / `fromS3` managed runtime, all four runtime protocols (HTTP and AGUI on 8080, MCP on 8000, A2A on 9000; SSE and WebSocket are HTTP wire-shape variants on the same 8080 container), with `customJwtAuthorizer` and `--sigv4` enforcement ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)).
-- **`start-agentcore`** boots an AgentCore Runtime container **once** and keeps it **warm**, serving the agent's contract on one port until `^C` — so you hit it **repeatedly against the same warm container** (vs single-shot `invoke-agentcore`, which boots + tears down per call), mirroring AgentCore's deployed warm-session model. All four protocols are served: HTTP / AGUI get `POST /invocations` (+ `GET /ping`) plus the bidirectional `/ws` endpoint behind a host bridge that injects the session-id / `Authorization` upgrade headers a header-less browser `WebSocket` can't set; MCP gets `POST /mcp`, A2A gets `POST /`. Request body / SSE responses stream through, and inbound auth mirrors the cloud per request — a `customJwtAuthorizer` runtime verifies each caller's token (401 / 403 / pass), or `--sigv4` signs each forwarded request ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
-- **`studio`** opens a local web console over the same synthesized targets — a point-and-click front over the same CLI runners. Takes no target (it lists them all). Flags + in-UI controls: [Web console — `cdkl studio`](#web-console--cdkl-studio).
+- **`run-task`** and single-replica **`start-service`** publish declared container ports on the host — a privileged port like 80 auto-remaps to a free high port with a WARN, or `--host-port <container>=<host>` pins one. **`start-service`** and **`start-alb`** print each host URL in a `Service endpoints:` banner after boot.
+- **`start-alb`** stands up the ECS service(s) behind an ALB with full listener-rule routing, auth, and WebSocket proxying ([details](docs/cli-reference.md#cdkl-start-alb-run-an-alb-fronted-service-locally)).
+- **`start-cloudfront`** serves the `viewer-request` -> origin -> `viewer-response` pipeline over S3 / Lambda Function URL origins, running CloudFront Functions and Lambda@Edge locally ([details](docs/cli-reference.md#cdkl-start-cloudfront-serve-a-cloudfront-distribution-locally)).
+- **`invoke-agentcore`** runs a Bedrock AgentCore Runtime agent once ([details](docs/cli-reference.md#cdkl-invoke-agentcore-run-bedrock-agentcore-runtime-agents-locally)); **`start-agentcore`** keeps one warm container you hit repeatedly ([details](docs/cli-reference.md#cdkl-start-agentcore-serve-an-agentcore-runtimes-http-contract--ws-locally)).
+- **`studio`** opens a local web console over the same targets, no target needed: [Web console — `cdkl studio`](#web-console--cdkl-studio).
 - Non-TTY (CI / pipes): every command except a bare `start-api` needs an explicit target.
 
 Full flags, precedence, and `--from-cfn-stack` resolution: [docs/cli-reference.md](docs/cli-reference.md) and [docs/local-emulation.md](docs/local-emulation.md).
 
 ### Web console — `cdkl studio`
 
-`cdkl studio` is a point-and-click front over the same runners: pick a Lambda or AgentCore runtime and invoke it, start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` / `start-agentcore` serve, and watch invocations + captured serve requests stream onto a live timeline with their bound logs. It takes no target — it lists them all. A `start-agentcore` warm serve (listed under "AgentCore Runtimes (serve)") gets an in-browser HTTP request composer against the warm container's contract; an HTTP / AGUI runtime's `/ws` endpoint — and a served API Gateway WebSocket API — additionally get an interactive in-browser WebSocket console (connect / send / receive frames).
+`cdkl studio` is a point-and-click front over the same runners — it takes no target and lists them all. From the browser you can:
+
+- invoke a Lambda or AgentCore runtime;
+- start / stop a `start-api` / `start-alb` / `start-service` / `start-cloudfront` / `start-agentcore` serve;
+- watch invocations and captured serve requests stream onto a live timeline with their bound logs.
+
+A served WebSocket endpoint — an API Gateway WebSocket API, or an HTTP / AGUI AgentCore runtime's `/ws` from `start-agentcore` — also gets an interactive WebSocket console (connect / send / receive frames).
 
 ```bash
 cdkl studio                                  # open the console (launches your browser)
@@ -114,7 +124,11 @@ cdkl studio --stack 'dev/*'                  # scope the displayed target list (
 
 `--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too.
 
-Each target's composer surfaces its per-run options as controls — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token` — plus an **All options** panel listing the underlying command's full flag set with a raw extra-args input for anything not surfaced as a control. An ECS service whose image is pinned to a deployed registry (local edits don't take effect) also gets a Dockerfile picker that rebuilds it from local source.
+Each target's composer surfaces its per-run options as controls:
+
+- curated controls per kind — a Lambda's `--env-vars` as KEY/VALUE or JSON, ALB `--tls` / `--lb-port`, ECS `--max-tasks` / `--host-port`, an AgentCore runtime's `--ws` / `--sigv4` / `--bearer-token`;
+- an **All options** panel with the underlying command's full flag set plus a raw extra-args input for anything not surfaced as a control;
+- a Dockerfile picker for an ECS service pinned to a deployed registry (where local edits otherwise don't take effect), rebuilding it from local source.
 
 ### Deployed stack binding — `--from-cfn-stack`
 
