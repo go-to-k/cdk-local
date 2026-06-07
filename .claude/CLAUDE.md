@@ -936,7 +936,14 @@ compute-locally category for Lambda + API Gateway).
   Request/Response detail whose [Re-invoke] reuses that serve's request
   composer (pre-filled), and a re-invoked row is visually linked to its
   source; a log search box queries the store and a captured request's
-  detail shows its bound logs. The header `● live` / `● disconnected`
+  detail shows its bound logs. The LOGS panel + log search colour each
+  line by its level (`fillLogPre` / `logLineClass`): a line whose text
+  starts `WARN:` / `ERROR:` (optionally after a `[module]` tag) is
+  rendered amber / red, so warn / error stand out even though the captured
+  child output carries no ANSI colour (serve children run colourless under
+  a pipe) — the text prefix is the only severity signal that survives, and
+  the compact logger now emits it (see logger note below). The header
+  `● live` / `● disconnected`
   indicator is driven by `connect()`'s liveness logic: it binds to the
   FIRST `/api/events` `hello` instanceId, flips to disconnected (latched,
   socket closed) when a reconnect lands on a DIFFERENT instanceId (a second
@@ -1068,7 +1075,12 @@ compute-locally category for Lambda + API Gateway).
   WARN (e.g. the pinned-image boot warning) could surface in the studio LOG
   panel AFTER a later stdout line like `Press ^C to shut down.`. The serve
   path is safe to unify (ready-line detection greps stdout; error detection
-  is via the child `error` / `close` events, not stderr content). Under
+  is via the child `error` / `close` events, not stderr content).
+  Complementing this, the compact-mode logger (`utils/logger.ts`) prefixes
+  warn / error lines with `WARN:` / `ERROR:` (info stays prefix-less) so the
+  severity is legible even when ANSI colour is stripped — a piped /
+  redirected CLI run, `NO_COLOR`, or the colourless studio child pipe; the
+  studio LOGS panel re-colours each line off that prefix. Under
   `cdkl studio --watch` it appends
   `--watch` to each serve child — read off the mutable config per
   `start()`, so a Session-bar toggle applies to the next serve. Issue #355

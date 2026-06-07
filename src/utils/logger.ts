@@ -126,14 +126,20 @@ export class ConsoleLogger implements Logger {
       return `${timestamp} ${levelStr} ${message}${formattedArgs}`;
     }
 
-    if (this.useColors) {
-      if (level === 'error') {
-        return `${colors.red}${message}${formattedArgs}${colors.reset}`;
-      }
-      if (level === 'warn') {
-        return `${colors.yellow}${message}${formattedArgs}${colors.reset}`;
-      }
-      return `${message}${formattedArgs}`;
+    // Compact mode (info level) prefixes warn / error with an UPPERCASE level
+    // tag so the severity is legible even when ANSI color is stripped — a
+    // piped / redirected CLI run, `NO_COLOR`, or the `cdkl studio` serve child
+    // (captured over a pipe, so colorless). Color, when available, still wraps
+    // the whole line. info stays prefix-less so the common-case progress output
+    // is unchanged. The prefix is the one severity signal that survives a pipe,
+    // and studio's LOG panel re-colors off it (studio-ui).
+    if (level === 'error') {
+      const line = `ERROR: ${message}${formattedArgs}`;
+      return this.useColors ? `${colors.red}${line}${colors.reset}` : line;
+    }
+    if (level === 'warn') {
+      const line = `WARN: ${message}${formattedArgs}`;
+      return this.useColors ? `${colors.yellow}${line}${colors.reset}` : line;
     }
 
     return `${message}${formattedArgs}`;
