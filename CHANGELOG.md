@@ -1,3 +1,10 @@
+# [0.141.0](https://github.com/go-to-k/cdk-local/compare/v0.140.0...v0.141.0) (2026-06-07)
+
+
+### Features
+
+* **studio:** auto-render editable controls for every flag in "All options" ([#472](https://github.com/go-to-k/cdk-local/issues/472)) ([038d3bc](https://github.com/go-to-k/cdk-local/commit/038d3bc66dcd2ba735f2731d9cfc3a9f8486af3d))
+
 # [0.140.0](https://github.com/go-to-k/cdk-local/compare/v0.139.3...v0.140.0) (2026-06-07)
 
 
