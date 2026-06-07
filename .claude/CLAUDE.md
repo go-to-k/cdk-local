@@ -308,7 +308,12 @@ AWS managed services.
   the dev creds cannot read) warns with the `--origin` escape hatch.
   `--cache-origin` opts into an in-memory read-through cache of fetched
   objects for the session (cleared on each `--watch` reload; off by default
-  so every request re-reads / is always current). Reads use
+  so every request re-reads / is always current). It only feeds the
+  deployed-S3 reader, so it is a no-op without `--from-cfn-stack` — a
+  boot-time WARN (`warnUnusedCacheOrigin`) fires when it is set without the
+  state flag so the no-op is never silent (not an error: it is harmless on
+  its own, and studio's `--from-cfn-stack` binding is editable per session).
+  Reads use
   the `--profile` / default credential chain. Path patterns route across
   `DefaultCacheBehavior` +
   `CacheBehaviors[]` (the existing ALB `*`/`?` glob matcher). A

@@ -560,6 +560,29 @@ function warnUnsupported(distribution: ResolvedDistribution): void {
 }
 
 /**
+ * WARN once at boot when `--cache-origin` is set but `--from-cfn-stack` is not.
+ * `--cache-origin` only feeds the deployed-S3 read-through reader, which is built
+ * exclusively under `--from-cfn-stack` (see {@link resolveDeployedS3Origins}); a
+ * local-BucketDeployment / `--origin <id>=<dir>` distribution serves from disk and
+ * never caches. So without the state flag the flag is a silent no-op — surface that
+ * (loud-but-non-fatal, like the ECR-pin / intrinsic-env-drop WARNs) so the user is
+ * not misled into thinking caching is active. Not an error: `--cache-origin` is
+ * harmless on its own, and in `cdkl studio` the `--from-cfn-stack` binding is
+ * editable per-session, so a hard failure here would be brittle.
+ */
+export function warnUnusedCacheOrigin(options: LocalStartCloudFrontOptions): void {
+  if (options.cacheOrigin === true && !isCfnFlagPresent(options)) {
+    getLogger().warn(
+      '--cache-origin has no effect without --from-cfn-stack: it caches a deployed-S3 ' +
+        'read-through origin, which is only built under --from-cfn-stack. A local ' +
+        'BucketDeployment / --origin <id>=<dir> origin serves from disk and is not cached. ' +
+        'Pass --from-cfn-stack to enable the deployed-S3 origin (then --cache-origin applies), ' +
+        'or drop --cache-origin.'
+    );
+  }
+}
+
+/**
  * Promote each S3 origin with no local BucketDeployment source (`s3-unresolved`)
  * to a deployed-S3 read-through origin (issue #405), building one
  * {@link S3OriginReader} per origin. This is the front/back-split path: the CDK
@@ -766,6 +789,7 @@ async function localStartCloudFrontCommand(
   );
 
   warnUnsupported(initial.distribution);
+  warnUnusedCacheOrigin(options);
   // State-source + assume-role options threaded into the shared container-env
   // resolver so a Function URL origin Lambda gets its env vars + deployed
   // values + execution role, exactly like `cdkl invoke` (issue #380).
