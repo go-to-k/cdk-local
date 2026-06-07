@@ -264,6 +264,13 @@ if ! grep -qF "buildAllOptions" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the All options / raw extra-args builder"
   exit 1
 fi
+# The "All options" panel auto-renders a real control for every renderable
+# (non-curated, non-managed) flag (all-options-controls slice): the controls
+# container class + the collector are in the page.
+if ! grep -qF "flag-controls" "${BODY_FILE}" || ! grep -qF "collectCatalog" "${BODY_FILE}"; then
+  echo "FAIL: GET / did not include the auto-rendered All options controls"
+  exit 1
+fi
 # The pinned-service image-override Dockerfile picker (issue #301).
 if ! grep -qF "buildImageOverridePicker" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the image-override Dockerfile picker"
@@ -278,8 +285,9 @@ if ! grep -qF 'io-label' "${BODY_FILE}" || ! grep -qF 'io-hint' "${BODY_FILE}"; 
 fi
 # Serve composer input preservation (issue #398): a stopped serve re-renders
 # its composer pre-filled from the recorded serveApplied values, so the
-# render path threads the applied options + rawArgs into buildOptions.
-if ! grep -qF 'buildOptions(kind, applied' "${BODY_FILE}"; then
+# render path threads the applied options + rawArgs (+ catalogArgs) into
+# buildOptions.
+if ! grep -qF 'applied && applied.options' "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the serve-composer input-preservation wiring (issue #398)"
   exit 1
 fi
@@ -601,6 +609,49 @@ if ! grep -qF "${RAW_STACK}" "${BODY_FILE}"; then
   exit 1
 fi
 echo "    OK: rawArgs string tokenized + threaded to the child invoke argv"
+
+# ---------------------------------------------------------------------------
+# 6b2b. "All options" auto-rendered controls (all-options-controls slice):
+#       POST /api/run with a `catalogArgs` map (the auto-rendered control values
+#       keyed by long flag). The server validates it against the kind's flag
+#       catalog (buildCatalogArgs) and appends the built args to the child argv.
+#       Pass `--debug-port` (a renderable lambda flag) a NON-NUMERIC value: the
+#       child `cdkl invoke` rejects it and NAMES the value in the error, proving
+#       the control's value reached the child argv (UI control -> catalogArgs ->
+#       /api/run -> buildCatalogArgs -> child argv). Creds-free + deterministic.
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run threads an 'All options' catalog control value into the invoke argv"
+CAT_TOKEN="CATALOGARGSBOGUS301"
+CAT_RUN=$(mktemp)
+curl -s -o "${CAT_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"catalogArgs\":{\"--debug-port\":\"${CAT_TOKEN}\"}}" >/dev/null || true
+# The rejected value is surfaced in the run result's error AND the bound logs;
+# the run-response body is the deterministic, binding-independent check.
+if ! grep -qF "${CAT_TOKEN}" "${CAT_RUN}"; then
+  echo "FAIL: the catalogArgs --debug-port value did not reach the child (token absent from run result)"
+  echo "----- run response -----"; head -c 2000 "${CAT_RUN}"; echo; echo "------------------------"
+  rm -f "${CAT_RUN}"; exit 1
+fi
+rm -f "${CAT_RUN}"
+echo "    OK: catalogArgs control value threaded to the child invoke argv"
+
+# ---------------------------------------------------------------------------
+# 6b2c. catalogArgs boundary validation: a non-overridable flag (a
+#       studio-managed flag like --event, which studio injects itself) is
+#       rejected at the /api/run boundary (buildCatalogArgs throws -> non-200),
+#       NOT silently appended. Proves the renderable-flag guard runs server-side.
+# ---------------------------------------------------------------------------
+echo "==> POST /api/run rejects a non-overridable catalogArgs flag at the boundary"
+NEG_RUN=$(mktemp)
+HTTP_NEG=$(curl -s -o "${NEG_RUN}" -w '%{http_code}' --max-time 60 \
+  -X POST "${URL}/api/run" -H 'content-type: application/json' \
+  -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"catalogArgs\":{\"--event\":\"x\"}}" || true)
+if [[ "${HTTP_NEG}" == "200" ]]; then
+  echo "FAIL: a non-overridable catalogArgs flag (--event) was not rejected at the boundary (HTTP ${HTTP_NEG})"
+  cat "${NEG_RUN}"; rm -f "${NEG_RUN}"; exit 1
+fi
+rm -f "${NEG_RUN}"
+echo "    OK: non-overridable catalogArgs flag rejected at the /api/run boundary (HTTP ${HTTP_NEG})"
 
 # ---------------------------------------------------------------------------
 # 6c. Editable Session config (issue #301 slice 3): GET /api/config exposes
