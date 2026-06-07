@@ -41,10 +41,10 @@ cdkl studio                                # open the web console (no target nee
   - pure handler logic — validation, transforms, branching
   - Lambda authorizers, running in real local containers
   - API Gateway routing and request shaping
-- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs and Secret values into the container — no `.env` file to maintain, no manual ARN copy-paste — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but you'd still own the cost of seeding it:
-  - dumping production data into a local DB
-  - mirroring Secret values into local Secrets Manager
-  - anonymizing fixtures across schema changes
+- **Iterate against your real deployed stack — including its data.** `--from-cfn-stack` reads the deployed CloudFormation stack and injects its real ARNs and Secret values into the container — **no `.env` file to maintain, no manual ARN copy-paste** — so you stay on the real DynamoDB rows, S3 objects, Cognito users, and Secret values your IAM credentials reach. An offline emulator can fake the API surface, but **you'd still own the cost of seeding it**:
+  - dumping real data into a local DB
+  - mirroring Secret values into a local secret store
+  - re-anonymizing that test data every time the schema changes
   - scripting realistic Cognito test users
 
 ## What runs locally
