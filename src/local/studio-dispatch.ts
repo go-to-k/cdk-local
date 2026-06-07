@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
-import { tokenizeRawArgs } from './studio-option-catalog.js';
+import { buildCatalogArgs, tokenizeRawArgs, type CatalogValues } from './studio-option-catalog.js';
 
 /**
  * The single-shot invoke kinds this dispatcher drives, mapped to the `cdkl`
@@ -32,6 +32,14 @@ export interface StudioRunRequest {
   event: unknown;
   /** Per-run option values (issue #301 slice 2), keyed by option flag. */
   options?: OptionValues;
+  /**
+   * Auto-rendered "All options" control values, keyed by long flag (e.g.
+   * `{ '--no-pull': true, '--platform': 'linux/amd64' }`). Built into argv by
+   * {@link buildCatalogArgs} and appended after the curated per-run args (but
+   * before {@link rawArgs}), so every non-curated command flag is reachable
+   * through a real control instead of only the raw extra-args input.
+   */
+  catalogArgs?: CatalogValues;
   /**
    * Raw extra args from the "All options" section — tokenized (quote-aware)
    * and appended verbatim to the spawned child, after the curated per-run
@@ -200,6 +208,7 @@ export function createStudioDispatcher(config: StudioDispatchConfig): StudioDisp
         // reads `--app <assemblyDir>` and skips its own synth.
         ...buildSharedChildArgs(config, { preferAssembly: true }),
         ...buildPerRunArgs(req.kind, req.options),
+        ...buildCatalogArgs(req.kind, req.catalogArgs),
         ...(responseFilePath ? ['--response-file', responseFilePath] : []),
       ];
 

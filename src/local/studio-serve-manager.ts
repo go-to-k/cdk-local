@@ -10,7 +10,7 @@ import {
 } from './studio-proxy.js';
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
-import { tokenizeRawArgs } from './studio-option-catalog.js';
+import { buildCatalogArgs, tokenizeRawArgs, type CatalogValues } from './studio-option-catalog.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -20,6 +20,13 @@ export interface StudioServeRequest {
   kind: StudioTargetKind;
   /** Per-run option values (issue #301 slice 2), keyed by option flag. */
   options?: OptionValues;
+  /**
+   * Auto-rendered "All options" control values, keyed by long flag. Built into
+   * argv by {@link buildCatalogArgs} and appended after the curated per-run
+   * args (before {@link rawArgs}), so every non-curated serve flag is reachable
+   * through a real control instead of only the raw extra-args input.
+   */
+  catalogArgs?: CatalogValues;
   /**
    * Raw extra args from the "All options" section — tokenized (quote-aware)
    * and appended verbatim to the spawned serve child, so a flag the curated
@@ -384,6 +391,9 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       ...spec.portArgs,
       ...buildSharedChildArgs(config, { preferAssembly }),
       ...buildPerRunArgs(req.kind, req.options),
+      // Auto-rendered "All options" controls: every non-curated, non-managed
+      // command flag, built into argv and validated against the flag catalog.
+      ...buildCatalogArgs(req.kind, req.catalogArgs),
       // The `--env-vars` per-run option takes a FILE (issue #355) — the env-kv
       // KV rows / JSON were materialized into a SAM-shape temp file by the
       // caller; point start-service / start-alb at it so the override applies

@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vite-plus/test';
 import {
   buildFlagCatalog,
+  buildCatalogArgs,
+  parseFlagPlaceholder,
   tokenizeRawArgs,
   CATALOG_EXCLUDED_FLAGS,
+  CATALOG_MANAGED_FLAGS,
   __resetFlagCatalogCacheForTest,
 } from '../../../src/local/studio-option-catalog.js';
+import { OPTION_SPECS } from '../../../src/local/studio-option-specs.js';
 import { getEmbedConfig, setEmbedConfig, resetEmbedConfig } from '../../../src/local/embed-config.js';
 
 describe('buildFlagCatalog', () => {
@@ -56,6 +60,44 @@ describe('buildFlagCatalog', () => {
 
   it('is memoized — repeated calls return the same object', () => {
     expect(buildFlagCatalog()).toBe(buildFlagCatalog());
+  });
+
+  it('classifies each flag value type (boolean vs value, negate, variadic, placeholder)', () => {
+    const cat = buildFlagCatalog();
+    // --no-pull is a bare boolean (negate form): takes no value.
+    const noPull = (cat.lambda?.flags ?? []).find((f) => f.long === '--no-pull');
+    expect(noPull).toBeDefined();
+    expect(noPull?.takesValue).toBe(false);
+    expect(noPull?.negate).toBe(true);
+    // --event <file> takes a value; its placeholder is parsed from <file>.
+    const event = (cat.lambda?.flags ?? []).find((f) => f.long === '--event');
+    expect(event?.takesValue).toBe(true);
+    expect(event?.placeholder).toBe('file');
+  });
+
+  it('marks renderable=false for curated and studio-managed flags', () => {
+    const cat = buildFlagCatalog();
+    // --event is studio-managed (injected per run) — not auto-rendered.
+    const event = (cat.lambda?.flags ?? []).find((f) => f.long === '--event');
+    expect(event?.renderable).toBe(false);
+    // A curated flag (in OPTION_SPECS) is not auto-rendered either: --tls is a
+    // curated alb control.
+    const albCurated = new Set((OPTION_SPECS.alb ?? []).map((s) => s.flag));
+    expect(albCurated.has('--tls')).toBe(true);
+    const tls = (cat.alb?.flags ?? []).find((f) => f.long === '--tls');
+    expect(tls?.renderable).toBe(false);
+    // No renderable flag is ever a managed flag.
+    for (const kind of Object.keys(cat) as (keyof typeof cat)[]) {
+      for (const f of cat[kind]?.flags ?? []) {
+        if (f.renderable) expect(CATALOG_MANAGED_FLAGS.has(f.long)).toBe(false);
+      }
+    }
+  });
+
+  it('exposes at least one renderable residual flag (e.g. cloudfront --no-pull)', () => {
+    const cat = buildFlagCatalog();
+    const renderable = (cat.cloudfront?.flags ?? []).filter((f) => f.renderable).map((f) => f.long);
+    expect(renderable).toContain('--no-pull');
   });
 
   it('does not wipe the active embed config and reflects host branding in descriptions', () => {
@@ -141,5 +183,61 @@ describe('tokenizeRawArgs', () => {
   it('throws on an unterminated quote', () => {
     expect(() => tokenizeRawArgs('--name "unterminated')).toThrow(/unterminated/i);
     expect(() => tokenizeRawArgs("--x 'oops")).toThrow(/unterminated/i);
+  });
+});
+
+describe('parseFlagPlaceholder', () => {
+  it('extracts the value token from a flags string', () => {
+    expect(parseFlagPlaceholder('-e, --event <file>')).toBe('file');
+    expect(parseFlagPlaceholder('--platform <platform>')).toBe('platform');
+    expect(parseFlagPlaceholder('--max-tasks [count]')).toBe('count');
+  });
+
+  it('drops a trailing variadic ellipsis', () => {
+    expect(parseFlagPlaceholder('--stack <glob...>')).toBe('glob');
+  });
+
+  it('returns undefined for a boolean flag with no value token', () => {
+    expect(parseFlagPlaceholder('--tls')).toBeUndefined();
+    expect(parseFlagPlaceholder('--no-pull')).toBeUndefined();
+  });
+});
+
+describe('buildCatalogArgs', () => {
+  beforeEach(() => __resetFlagCatalogCacheForTest());
+
+  it('returns [] for undefined values', () => {
+    expect(buildCatalogArgs('lambda', undefined)).toEqual([]);
+  });
+
+  it('emits a bare flag for a checked boolean and flag+value for a string', () => {
+    // cloudfront has renderable --no-pull (boolean) and --stack-region (value).
+    const args = buildCatalogArgs('cloudfront', {
+      '--no-pull': true,
+      '--stack-region': 'us-west-2',
+    });
+    expect(args).toContain('--no-pull');
+    expect(args.join(' ')).toContain('--stack-region us-west-2');
+  });
+
+  it('omits a false boolean and a blank value', () => {
+    expect(buildCatalogArgs('cloudfront', { '--no-pull': false })).toEqual([]);
+    expect(buildCatalogArgs('cloudfront', { '--stack-region': '   ' })).toEqual([]);
+  });
+
+  it('throws on an unknown / non-renderable flag (curated or managed)', () => {
+    // --event is studio-managed; passing it through the catalog path is rejected.
+    expect(() => buildCatalogArgs('lambda', { '--event': 'x' })).toThrow(/non-overridable|Unknown/i);
+    // A made-up flag is rejected too.
+    expect(() => buildCatalogArgs('lambda', { '--nope': 'x' })).toThrow(/Unknown/i);
+  });
+
+  it('throws on a type mismatch', () => {
+    expect(() => buildCatalogArgs('cloudfront', { '--no-pull': 'yes' as never })).toThrow(
+      /must be a boolean/i
+    );
+    expect(() => buildCatalogArgs('cloudfront', { '--stack-region': true as never })).toThrow(
+      /must be a string/i
+    );
   });
 });

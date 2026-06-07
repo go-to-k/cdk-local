@@ -29,6 +29,7 @@ import { createLocalStartCloudFrontCommand } from '../cli/commands/local-start-c
 import { createLocalStartAgentCoreCommand } from '../cli/commands/local-start-agentcore.js';
 import { createLocalRunTaskCommand } from '../cli/commands/local-run-task.js';
 import { getEmbedConfig, setEmbedConfig, type CdkLocalEmbedConfig } from './embed-config.js';
+import { OPTION_SPECS } from './studio-option-specs.js';
 import type { StudioTargetKind } from './studio-events.js';
 import type { Command } from 'commander';
 
@@ -38,6 +39,26 @@ export interface FlagInfo {
   flags: string;
   /** The option's help description (may be empty). */
   description: string;
+  /** The long flag name, e.g. `--tls` / `--no-pull` (the control's value key). */
+  long: string;
+  /** True when the flag takes a value (`<x>` / `[x]`) — render an input/select. */
+  takesValue: boolean;
+  /** True for a `--no-xxx` negate flag (a boolean that emits the bare flag). */
+  negate: boolean;
+  /** True for a variadic value flag (`<x...>`). */
+  variadic: boolean;
+  /** The placeholder parsed from the flags' value token (`<file>` -> `file`). */
+  placeholder?: string;
+  /** The allowed values when the option declares `.choices(...)`. */
+  choices?: string[];
+  /**
+   * True when the studio UI should auto-render an input control for this flag
+   * in the "All options" section: it is NEITHER curated (a rich control already
+   * exists in {@link OPTION_SPECS}) NOR studio-managed (injected by studio
+   * itself — see {@link CATALOG_MANAGED_FLAGS}). A non-renderable flag stays in
+   * the catalog (so the count / reference is complete) but the UI skips it.
+   */
+  renderable: boolean;
 }
 
 /** The full flag catalog for one runnable kind. */
@@ -66,6 +87,37 @@ export const CATALOG_EXCLUDED_FLAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Long flags studio INJECTS or binds itself per run, so the "All options"
+ * section must NOT auto-render an editable control for them (a user-set value
+ * would collide with — or break — studio's own wiring). They still appear in
+ * the catalog (so it stays a complete reference), just `renderable: false`; a
+ * power user can still force one via the raw extra-args input, which is
+ * appended last.
+ *
+ * - `--event` / `--response-file`: studio writes the composed event /
+ *   response-capture file and passes these itself (the invoke kinds).
+ * - `--host` / `--port`: the serve-manager binds the listen host/port and the
+ *   capture proxy fronts it; a user override would desync the proxy URL.
+ * - `--watch`: the session-global Session-bar toggle (appended by the
+ *   serve-manager from the mutable config), not a per-run flag.
+ * - the `--image-*` override family: handled by the dedicated Dockerfile
+ *   picker (a partial control here would produce a half-wired override).
+ */
+export const CATALOG_MANAGED_FLAGS: ReadonlySet<string> = new Set([
+  '--event',
+  '--response-file',
+  '--host',
+  '--port',
+  '--watch',
+  '--image-override',
+  '--image-build-arg',
+  '--image-build-secret',
+  '--image-target',
+  '--no-interactive-overrides',
+  '--strict-overrides',
+]);
+
+/**
  * The runnable kind -> command factory + headless subcommand name. Mirrors
  * the kind->verb maps in `studio-dispatch` (`INVOKE_VERBS`) and
  * `studio-serve-manager` (`SERVE_SPECS`); studio spawns these commands as
@@ -85,6 +137,20 @@ const KIND_FACTORIES: Record<StudioTargetKind, { command: string; factory: FlagC
 };
 
 let cached: Partial<Record<StudioTargetKind, KindFlagCatalog>> | undefined;
+
+/**
+ * Parse the value-token placeholder out of a Commander flags string for a
+ * value-taking option: `-e, --event <file>` -> `file`,
+ * `--platform <platform>` -> `platform`, `--lb-port <listener=host>` ->
+ * `listener=host`. The trailing `...` of a variadic token is dropped. Returns
+ * undefined for a boolean flag (no `<...>` / `[...]` token), so the input
+ * placeholder falls back to a generic hint.
+ */
+export function parseFlagPlaceholder(flags: string): string | undefined {
+  const m = /[<[]([^>\]]+)[>\]]/.exec(flags);
+  if (!m || m[1] === undefined) return undefined;
+  return m[1].replace(/\.\.\.$/, '').trim() || undefined;
+}
 
 /**
  * Build (and memoize) the full per-kind flag catalog by introspecting each
@@ -107,11 +173,36 @@ export function buildFlagCatalog(): Partial<Record<StudioTargetKind, KindFlagCat
     for (const kind of Object.keys(KIND_FACTORIES) as StudioTargetKind[]) {
       const { command, factory } = KIND_FACTORIES[kind];
       const cmd = factory({ embedConfig: savedEmbedConfig });
+      // The flags this kind already renders a rich curated control for — they
+      // must NOT also get an auto-rendered control in the "All options"
+      // section. A `showWhen`-gated curated scalar (e.g. `--tls-cert`) is in
+      // OPTION_SPECS too, so it is covered by the same set.
+      const curated = new Set((OPTION_SPECS[kind] ?? []).map((s) => s.flag));
       const flags: FlagInfo[] = [];
       for (const opt of cmd.options) {
         if (opt.hidden) continue;
         if (opt.long && CATALOG_EXCLUDED_FLAGS.has(opt.long)) continue;
-        flags.push({ flags: opt.flags, description: opt.description ?? '' });
+        const long = opt.long ?? '';
+        // Commander marks a value-taking option via `.required` (`<x>`) or
+        // `.optional` (`[x]`); a bare / negate flag is a boolean.
+        const takesValue = Boolean(opt.required || opt.optional);
+        const negate = Boolean(opt.negate);
+        const variadic = Boolean(opt.variadic);
+        const choices = Array.isArray(opt.argChoices) ? [...opt.argChoices] : undefined;
+        const placeholder = parseFlagPlaceholder(opt.flags);
+        const renderable = long !== '' && !curated.has(long) && !CATALOG_MANAGED_FLAGS.has(long);
+        const info: FlagInfo = {
+          flags: opt.flags,
+          description: opt.description ?? '',
+          long,
+          takesValue,
+          negate,
+          variadic,
+          renderable,
+        };
+        if (placeholder !== undefined) info.placeholder = placeholder;
+        if (choices) info.choices = choices;
+        flags.push(info);
       }
       out[kind] = { command, flags };
     }
@@ -189,4 +280,61 @@ export function tokenizeRawArgs(raw: string | undefined): string[] {
   }
   if (inToken) tokens.push(current);
   return tokens;
+}
+
+/**
+ * Per-run values for the auto-rendered "All options" controls, keyed by the
+ * long flag (e.g. `{ '--no-pull': true, '--platform': 'linux/amd64' }`). A
+ * boolean value drives a checkbox flag; a string value drives an input / select
+ * flag. This is the catalog counterpart of `OPTION_SPECS`' {@link OptionValues}
+ * — kept separate because these flags carry NO curated control / validation
+ * spec; they are validated structurally against the flag catalog instead.
+ */
+export type CatalogValues = Record<string, boolean | string>;
+
+/**
+ * Build the argv fragment for the auto-rendered "All options" controls from the
+ * UI-posted {@link CatalogValues}, validating each key against the kind's flag
+ * catalog. Emits `--flag` for a checked boolean (bare/negate) flag and
+ * `--flag <value>` for a non-empty value flag. Blank / false values are
+ * omitted.
+ *
+ * Throws (→ a clean 400 at the `/api/run` boundary) on a key that is not a
+ * RENDERABLE catalog flag for the kind — an unknown flag, a session-global /
+ * studio-managed flag, or a curated flag (which belongs to the `options` path,
+ * not here). The studio UI only ever posts renderable flags; the validation
+ * guards a hand-rolled curl body. studio spawns children WITHOUT a shell, so
+ * each emitted token is a discrete argv element with no injection surface.
+ */
+export function buildCatalogArgs(
+  kind: StudioTargetKind,
+  values: CatalogValues | undefined
+): string[] {
+  if (values === undefined) return [];
+  const catalog = buildFlagCatalog()[kind];
+  const byFlag = new Map(
+    (catalog?.flags ?? []).filter((f) => f.renderable).map((f) => [f.long, f])
+  );
+
+  const args: string[] = [];
+  for (const [flag, value] of Object.entries(values)) {
+    const info = byFlag.get(flag);
+    if (!info) {
+      throw new Error(`Unknown / non-overridable option '${flag}' for target kind '${kind}'.`);
+    }
+    if (info.takesValue) {
+      if (typeof value !== 'string') {
+        throw new Error(`Option '${flag}' must be a string value.`);
+      }
+      const trimmed = value.trim();
+      if (trimmed !== '') args.push(flag, trimmed);
+    } else {
+      // Boolean (bare / negate) flag — emit the bare flag only when checked.
+      if (typeof value !== 'boolean') {
+        throw new Error(`Option '${flag}' must be a boolean.`);
+      }
+      if (value) args.push(flag);
+    }
+  }
+  return args;
 }
