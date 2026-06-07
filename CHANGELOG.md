@@ -1,3 +1,15 @@
+# [0.143.0](https://github.com/go-to-k/cdk-local/compare/v0.142.0...v0.143.0) (2026-06-07)
+
+
+### Features
+
+* **logger:** prefix warn/error with WARN:/ERROR: + colour studio LOGS by level ([#478](https://github.com/go-to-k/cdk-local/issues/478)) ([bcdd00d](https://github.com/go-to-k/cdk-local/commit/bcdd00d0cac85433470aa87967be44b55e9f117d))
+
+
+### Reverts
+
+* undici keep-alive minimization (disproven [#402](https://github.com/go-to-k/cdk-local/issues/402) crash fix) ([#477](https://github.com/go-to-k/cdk-local/issues/477)) ([b6a70e0](https://github.com/go-to-k/cdk-local/commit/b6a70e0518df434e4090eca66ea032912582e340))
+
 # [0.142.0](https://github.com/go-to-k/cdk-local/compare/v0.141.0...v0.142.0) (2026-06-07)
 
 
