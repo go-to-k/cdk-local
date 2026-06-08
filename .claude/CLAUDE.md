@@ -1206,8 +1206,14 @@ vp run runtime:smoke
   rather than branching in the main worktree (shared state across
   parallel agents).
 
-- **Squash merge only**: prefer `gh pr merge <N> --squash --delete-branch`.
-  PR #1 was squash-merged; keep the history flat.
+- **Squash merge only, via `/merge-pr`**: merge every PR with the
+  `/merge-pr <N>` skill — it squash-merges (flat history) from inside the
+  feature worktree and cleans up the worktree + local + remote branch in one
+  pass. Do NOT hand-run `gh pr merge <N> --squash --delete-branch` from a side
+  worktree: `--delete-branch` trips the `'main' is already used by worktree`
+  fatal (the remote merge lands but local cleanup fails), and `gh-pr-merge-
+  worktree-gate.sh` blocks a hand-run worktree merge unless `/merge-pr` set the
+  `merge-pr` marker. PR #1 was squash-merged; keep the history flat.
 
 - **Always add unit tests for new functionality**: don't wait to be
   asked. `tests/unit/**` mirrors `src/**`. Mock external boundaries

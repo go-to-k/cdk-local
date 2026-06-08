@@ -125,6 +125,13 @@
             "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
             "timeout": 15,
             "statusMessage": "Verifying create-integ markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/gh-pr-merge-worktree-gate.sh",
+            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Checking worktree merge policy (/merge-pr)..."
           }
         ]
       }
