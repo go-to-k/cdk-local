@@ -178,6 +178,23 @@ Each top-level JSON key picks which target to overlay:
 
 When pointing a container at a tunneled VPC resource (e.g. an Aurora cluster reached via a local port forward), use `host.docker.internal` instead of `127.0.0.1` — `127.0.0.1` inside the container is the container itself, not the host where the tunnel listens.
 
+### Selective local backends
+
+The same overlay can redirect the AWS SDK itself. Set the SDK's standard per-service endpoint variables to point individual services at a local AWS-compatible endpoint you run yourself, while every other service stays on real AWS:
+
+```json
+{
+  "Parameters": {
+    "AWS_ENDPOINT_URL_DYNAMODB": "http://host.docker.internal:8000",
+    "AWS_ENDPOINT_URL_S3": "http://host.docker.internal:9000"
+  }
+}
+```
+
+DynamoDB and S3 calls resolve to the local endpoint; Secrets Manager, SSM Parameter Store, and everything else have no override, so they hit real AWS through your `--assume-role` / `--from-cfn-stack` credentials. The suffix is the service name uppercased (`DYNAMODB`, `S3`, `SECRETS_MANAGER`, ...); the bare `AWS_ENDPOINT_URL` (no suffix) redirects every service at once, so the per-service form is what makes the split selective. cdk-local only injects these variables — it does not run the endpoint for you; start the local server separately and point the URL at it.
+
+On Docker Desktop (macOS / Windows), `host.docker.internal` reaches a server on the host out of the box. On Linux native dockerd, the `cdkl invoke` / `run-task` / ECS serve paths do not add the `host-gateway` alias, so use the Docker bridge address (e.g. `http://172.17.0.1:8000`) or put the local server on the same Docker network.
+
 ## Hot reload — `--watch`
 
 ```bash
