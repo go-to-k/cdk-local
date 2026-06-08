@@ -1,3 +1,10 @@
+## [0.146.2](https://github.com/go-to-k/cdk-local/compare/v0.146.1...v0.146.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **synth:** drop the leaked toolkit "Supply a stack id" multi-stack hint ([#489](https://github.com/go-to-k/cdk-local/issues/489)) ([f2e3e4e](https://github.com/go-to-k/cdk-local/commit/f2e3e4e3c31b3a7da82781d2e3781c8373475927))
+
 ## [0.146.1](https://github.com/go-to-k/cdk-local/compare/v0.146.0...v0.146.1) (2026-06-08)
 
 
