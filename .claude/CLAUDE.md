@@ -898,9 +898,13 @@ compute-locally category for Lambda + API Gateway).
   `.choices()` flag) for every RENDERABLE catalog flag — i.e. every flag the
   underlying command accepts that is NEITHER curated (a rich control already
   exists in OPTION_SPECS) NOR studio-managed (`CATALOG_MANAGED_FLAGS`:
-  `--event` / `--response-file` / `--host` / `--port` / `--watch` / the
-  `--image-*` override family, injected by studio itself), plus a raw
-  extra-args input as the final escape hatch; the collected values
+  `--event` / `--response-file` / `--host` / `--port` / `--watch` + the
+  override-selection flags `--image-override` / `--no-interactive-overrides`
+  / `--strict-overrides`, injected by studio itself — but NOT the build-input
+  pass-throughs `--image-build-arg` / `--image-build-secret` / `--image-target`,
+  which DO auto-render since the Dockerfile picker only threads
+  `--image-override`), plus a raw extra-args input as the final escape hatch;
+  the collected values
   (`collectCatalog` -> the `catalogArgs` map keyed by long flag) are built into
   argv by `buildCatalogArgs` and appended after the curated per-run args (before
   the raw args). So the curated controls handle common flags richly AND a user
@@ -1021,8 +1025,12 @@ compute-locally category for Lambda + API Gateway).
   `renderable` (the UI auto-renders an editable control for it) when it is
   NEITHER curated (in OPTION_SPECS — a rich control already exists) NOR
   studio-managed (`CATALOG_MANAGED_FLAGS`: `--event` / `--response-file` /
-  `--host` / `--port` / `--watch` / the `--image-*` override family, which
-  studio injects itself). `buildCatalogArgs(kind, catalogArgs)` is the
+  `--host` / `--port` / `--watch` + the override-selection flags
+  `--image-override` / `--no-interactive-overrides` / `--strict-overrides`,
+  which studio injects itself; the build-input pass-throughs
+  `--image-build-arg` / `--image-build-secret` / `--image-target` are NOT
+  managed — they auto-render, since the picker only threads
+  `--image-override`). `buildCatalogArgs(kind, catalogArgs)` is the
   counterpart of OPTION_SPECS' `buildPerRunArgs`: it validates the UI-posted
   `CatalogValues` (a `{ long-flag -> boolean|string }` map) against the
   kind's renderable catalog flags and builds the argv fragment (bare flag for

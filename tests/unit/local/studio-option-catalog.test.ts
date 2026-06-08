@@ -100,6 +100,20 @@ describe('buildFlagCatalog', () => {
     expect(renderable).toContain('--no-pull');
   });
 
+  it('renders the image-override BUILD-INPUT pass-throughs but not the override-selection flags (alb)', () => {
+    const cat = buildFlagCatalog();
+    const renderable = new Set((cat.alb?.flags ?? []).filter((f) => f.renderable).map((f) => f.long));
+    // The build inputs are reachable as controls (the picker only threads
+    // --image-override, so excluding these would strand them in raw-args).
+    expect(renderable.has('--image-build-secret')).toBe(true);
+    expect(renderable.has('--image-build-arg')).toBe(true);
+    expect(renderable.has('--image-target')).toBe(true);
+    // The override-selection flags stay managed (handled by the picker / TTY).
+    expect(renderable.has('--image-override')).toBe(false);
+    expect(renderable.has('--no-interactive-overrides')).toBe(false);
+    expect(renderable.has('--strict-overrides')).toBe(false);
+  });
+
   it('derives the choices set for a `.choices()` flag (drives the UI <select>)', () => {
     const cat = buildFlagCatalog();
     // agentcore (invoke-agentcore) --platform is a renderable choices flag.

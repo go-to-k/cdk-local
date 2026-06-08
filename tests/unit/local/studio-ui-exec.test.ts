@@ -429,4 +429,25 @@ describe('studio UI "All options" auto-rendered controls (all-options-controls s
     expect(collected['--no-pull']).toBe(true);
     expect(collected['--stack-region']).toBe('eu-west-1');
   });
+
+  it('renders the image-override build-input flags as controls (alb --image-build-secret)', () => {
+    harness = createStudioHarness();
+    const opts = harness.buildOptions('alb') as WithCatalog;
+    const controls = opts.node.querySelector('details.all-options .flag-controls')!;
+    // The Dockerfile picker only threads --image-override, so the build-input
+    // pass-throughs must auto-render here (else they'd be raw-args-only).
+    const secretRow = [...controls.querySelectorAll('.opt-row')].find((r) =>
+      (r.textContent || '').includes('--image-build-secret'),
+    )!;
+    expect(secretRow).toBeTruthy();
+    const secretInput = secretRow.querySelector('input.flag-control') as HTMLInputElement;
+    expect(secretInput).toBeTruthy();
+    secretInput.value = 'npmrc=./.npmrc';
+    expect(opts.collectCatalog()!['--image-build-secret']).toBe('npmrc=./.npmrc');
+    // The override-selection flag --image-override is NOT auto-rendered (picker).
+    // Match on the control LABEL, not textContent — the build-input descriptions
+    // mention "--image-override", which would falsely match a substring search.
+    const labels = [...controls.querySelectorAll('.opt-label')].map((l) => (l.textContent || '').trim());
+    expect(labels).not.toContain('--image-override');
+  });
 });

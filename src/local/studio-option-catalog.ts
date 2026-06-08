@@ -100,8 +100,20 @@ export const CATALOG_EXCLUDED_FLAGS: ReadonlySet<string> = new Set([
  *   capture proxy fronts it; a user override would desync the proxy URL.
  * - `--watch`: the session-global Session-bar toggle (appended by the
  *   serve-manager from the mutable config), not a per-run flag.
- * - the `--image-*` override family: handled by the dedicated Dockerfile
- *   picker (a partial control here would produce a half-wired override).
+ * - `--image-override` / `--no-interactive-overrides` / `--strict-overrides`:
+ *   the OVERRIDE-SELECTION flags. `--image-override` is threaded by the
+ *   dedicated Dockerfile picker (a generic control would produce a half-wired
+ *   override); the other two govern the picker's TTY prompt / strictness,
+ *   which studio drives itself (the child is non-interactive).
+ *
+ * Deliberately NOT managed (so they auto-render as controls): the build-input
+ * pass-throughs `--image-build-arg` / `--image-build-secret` / `--image-target`.
+ * The Dockerfile picker only threads `--image-override`, so excluding these
+ * would leave them reachable ONLY via the raw extra-args box — the exact UX
+ * gap the auto-rendered controls exist to close. A user rebuilding a pinned
+ * image from a local Dockerfile legitimately needs to pass build args /
+ * secrets / a target stage, so they get a control (variadic → one value per
+ * control; the raw-args box remains for multiple).
  */
 export const CATALOG_MANAGED_FLAGS: ReadonlySet<string> = new Set([
   '--event',
@@ -110,9 +122,6 @@ export const CATALOG_MANAGED_FLAGS: ReadonlySet<string> = new Set([
   '--port',
   '--watch',
   '--image-override',
-  '--image-build-arg',
-  '--image-build-secret',
-  '--image-target',
   '--no-interactive-overrides',
   '--strict-overrides',
 ]);
