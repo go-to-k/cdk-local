@@ -49,8 +49,14 @@ export class LocalStudioStack extends cdk.Stack {
     super(scope, id, props);
 
     // Lambda function — inline code so synth has no asset / bundling step.
+    // arm64 so the RIE container runs NATIVELY on an Apple Silicon dev host
+    // (where this Docker integ runs) instead of under QEMU x86 emulation, which
+    // is slow + unstable (the RIE Go binary can panic / the 30s invoke timeout
+    // can trip). The integ exercises studio orchestration, not arch fidelity,
+    // so native arm64 is the right default for this fixture.
     const fn = new lambda.Function(this, 'MyHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
       handler: 'index.handler',
       // Echoes the STUDIO_ENV_PROBE env var into the body so the per-target
       // `--env-vars` option (issue #301 slice 2) is observable end-to-end;
@@ -124,6 +130,8 @@ export class LocalStudioStack extends cdk.Stack {
     // The body-action selection expression routes every message to `$default`.
     const wsFn = new lambda.Function(this, 'WsEchoHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      // arm64 for native execution on the Apple Silicon dev host (see MyHandler).
+      architecture: lambda.Architecture.ARM_64,
       handler: 'index.handler',
       code: lambda.Code.fromInline(
         [
