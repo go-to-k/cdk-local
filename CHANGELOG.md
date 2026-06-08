@@ -1,3 +1,10 @@
+# [0.147.0](https://github.com/go-to-k/cdk-local/compare/v0.146.2...v0.147.0) (2026-06-08)
+
+
+### Features
+
+* **studio:** surface a browser hint when a pinned ECS image is unresolvable ([#490](https://github.com/go-to-k/cdk-local/issues/490)) ([f431fba](https://github.com/go-to-k/cdk-local/commit/f431fba43e7439ee056ec0bf81e02ff65a06b065))
+
 ## [0.146.2](https://github.com/go-to-k/cdk-local/compare/v0.146.1...v0.146.2) (2026-06-08)
 
 
