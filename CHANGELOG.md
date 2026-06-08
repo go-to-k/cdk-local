@@ -1,3 +1,10 @@
+# [0.145.0](https://github.com/go-to-k/cdk-local/compare/v0.144.1...v0.145.0) (2026-06-08)
+
+
+### Features
+
+* **studio:** make the "Started with" summary collapsible (open by default) ([#486](https://github.com/go-to-k/cdk-local/issues/486)) ([b0bfd4e](https://github.com/go-to-k/cdk-local/commit/b0bfd4e584a331d95c602a1a877031bfcc960b3a))
+
 ## [0.144.1](https://github.com/go-to-k/cdk-local/compare/v0.144.0...v0.144.1) (2026-06-08)
 
 
