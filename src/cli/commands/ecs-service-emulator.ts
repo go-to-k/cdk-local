@@ -2423,7 +2423,8 @@ export async function buildEcsImageResolutionContext(
   target: string,
   stacks: StackInfo[],
   options: EcsServiceEmulatorOptions,
-  stateProvider: LocalStateProvider | undefined
+  stateProvider: LocalStateProvider | undefined,
+  opts: { suppressStateWarning?: boolean } = {}
 ): Promise<EcsImageResolutionContext | undefined> {
   const logger = getLogger();
   const parsed = parseEcsTarget(target);
@@ -2495,15 +2496,24 @@ export async function buildEcsImageResolutionContext(
       }
     }
   } else if (!stateProvider && needs.needsStateResources) {
-    logger.warn(
-      'Container Image references a same-stack AWS::ECR::Repository. Pass a state-source flag ' +
-        '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI.'
-    );
+    // `suppressStateWarning` is set by the pre-boot pin-classification peek
+    // (`resolveAndBuildImageOverrides`), which calls this builder purely to
+    // classify each target's image kind and handles its OWN resolution errors
+    // as DEBUG. Without the guard the peek + the real boot both emit this WARN
+    // for the same target, so the user sees it twice (once per call site).
+    if (!opts.suppressStateWarning) {
+      logger.warn(
+        'Container Image references a same-stack AWS::ECR::Repository. Pass a state-source flag ' +
+          '(e.g. --from-cfn-stack or a host-provided extension) to substitute the deployed repository URI.'
+      );
+    }
   } else if (!stateProvider && needs.needsEnvOrSecretSubstitution) {
-    logger.warn(
-      'Container Environment / Secrets entries contain CloudFormation intrinsics. ' +
-        'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against the deployed state.'
-    );
+    if (!opts.suppressStateWarning) {
+      logger.warn(
+        'Container Environment / Secrets entries contain CloudFormation intrinsics. ' +
+          'Pass a state-source flag (e.g. --from-cfn-stack or a host-provided extension) to substitute them against the deployed state.'
+      );
+    }
   }
 
   return ctx;
@@ -2769,7 +2779,12 @@ async function resolveAndBuildImageOverrides(args: {
     let imageContext: EcsImageResolutionContext | undefined;
     let service: ResolvedEcsService | undefined;
     try {
-      imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider);
+      // Suppress the "needs deployed state" WARN here: this is the pre-boot
+      // classification peek (its own errors are DEBUG, line below), and the
+      // real boot path emits the WARN once. Without this the user sees it twice.
+      imageContext = await buildEcsImageResolutionContext(target, stacks, options, stateProvider, {
+        suppressStateWarning: true,
+      });
       service = resolveEcsServiceTarget(target, stacks, imageContext, {
         suppressLoadBalancerWarning: true,
       });
