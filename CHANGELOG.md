@@ -1,3 +1,10 @@
+## [0.143.2](https://github.com/go-to-k/cdk-local/compare/v0.143.1...v0.143.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **studio:** readability/color pass on the embedded UI + amber image-override prominence ([#480](https://github.com/go-to-k/cdk-local/issues/480)) ([342fcd3](https://github.com/go-to-k/cdk-local/commit/342fcd3977f379d80dfd0d1cc498a26caa39f5b8))
+
 ## [0.143.1](https://github.com/go-to-k/cdk-local/compare/v0.143.0...v0.143.1) (2026-06-08)
 
 
