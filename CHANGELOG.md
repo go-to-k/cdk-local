@@ -1,3 +1,10 @@
+# [0.146.0](https://github.com/go-to-k/cdk-local/compare/v0.145.0...v0.146.0) (2026-06-08)
+
+
+### Features
+
+* **hooks:** force worktree PR merges through /merge-pr via a markgate gate ([#487](https://github.com/go-to-k/cdk-local/issues/487)) ([49f192c](https://github.com/go-to-k/cdk-local/commit/49f192ca9fffc408a866baab2c42979f70ff0544))
+
 # [0.145.0](https://github.com/go-to-k/cdk-local/compare/v0.144.1...v0.145.0) (2026-06-08)
 
 
