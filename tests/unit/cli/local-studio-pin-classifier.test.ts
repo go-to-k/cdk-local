@@ -371,6 +371,56 @@ describe('makePinClassifier', () => {
       expect.stringContaining('set --from-cfn-stack in the Session bar')
     );
   });
+
+  it('fires onUnresolved with the id when classify throws AND state is NOT bound', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockImplementation(() => {
+      throw new Error('cannot resolve image');
+    });
+    const onUnresolved = vi.fn();
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: false,
+      onUnresolved,
+    });
+    classify('dev/Svc');
+    expect(onUnresolved).toHaveBeenCalledWith('dev/Svc');
+  });
+
+  it('does NOT fire onUnresolved when state IS bound (the resolver error explains it)', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockImplementation(() => {
+      throw new Error('cannot resolve image');
+    });
+    const onUnresolved = vi.fn();
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: true,
+      onUnresolved,
+    });
+    classify('dev/Svc');
+    expect(onUnresolved).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire onUnresolved on a clean classify', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockReturnValue({});
+    hoisted.isLocalCdkAssetImage.mockReturnValue(false);
+    const onUnresolved = vi.fn();
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: false,
+      onUnresolved,
+    });
+    expect(classify('dev/Svc')).toBe(true);
+    expect(onUnresolved).not.toHaveBeenCalled();
+  });
 });
 
 describe('makeTaskPinClassifier (issue #388)', () => {
@@ -445,6 +495,40 @@ describe('makeTaskPinClassifier (issue #388)', () => {
       expect.stringContaining('set --from-cfn-stack in the Session bar')
     );
   });
+
+  it('fires onUnresolved with the id when classify throws AND state is NOT bound', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockImplementation(() => {
+      throw new Error('cannot resolve task image');
+    });
+    const onUnresolved = vi.fn();
+    const classify = makeTaskPinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: false,
+      onUnresolved,
+    });
+    classify('dev/Task');
+    expect(onUnresolved).toHaveBeenCalledWith('dev/Task');
+  });
+
+  it('does NOT fire onUnresolved when state IS bound', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockImplementation(() => {
+      throw new Error('cannot resolve task image');
+    });
+    const onUnresolved = vi.fn();
+    const classify = makeTaskPinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: true,
+      onUnresolved,
+    });
+    classify('dev/Task');
+    expect(onUnresolved).not.toHaveBeenCalled();
+  });
 });
 
 describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack toggle)', () => {
@@ -485,6 +569,9 @@ describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack 
       logger,
     });
     expect(off.groups[0]?.entries[0]?.pinned).toBeUndefined();
+    // Unresolved without state => flagged so the browser composer can hint at
+    // the Session-bar --from-cfn-stack remedy (the terminal WARN already does).
+    expect(off.groups[0]?.entries[0]?.pinUnresolved).toBe(true);
     expect(off.dockerfiles).toEqual([]);
     expect(hoisted.discoverDockerfiles).not.toHaveBeenCalled();
     // Without --from-cfn-stack, the classify WARN tells the user how to surface
@@ -505,6 +592,8 @@ describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack 
       logger,
     });
     expect(on.groups[0]?.entries[0]?.pinned).toBe(true);
+    // Resolved + pinned => the picker is offered, NOT the unresolved hint.
+    expect(on.groups[0]?.entries[0]?.pinUnresolved).toBeUndefined();
     expect(on.dockerfiles).toEqual(['./Dockerfile']);
     expect(hoisted.discoverDockerfiles).toHaveBeenCalledTimes(1);
 

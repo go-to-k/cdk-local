@@ -714,8 +714,18 @@ export function makePinClassifier(args: {
    * flag they already passed.
    */
   stateBound?: boolean;
+  /**
+   * Called with the target id when classification THREW and `--from-cfn-stack`
+   * is NOT bound (`stateBound === false`) — the case the {@link pinClassifyStateHint}
+   * remedy addresses (a likely INTRINSIC-ECR image that only resolves against
+   * deployed state). `classifyStudioTargets` uses it to mark the entry
+   * `pinUnresolved` so the browser composer can render the same Session-bar
+   * hint the terminal WARN already prints. Not called when state IS bound (the
+   * resolver's own error names the real failure) nor on a clean classify.
+   */
+  onUnresolved?: (id: string) => void;
 }): (id: string) => boolean {
-  const { stacks, contextByStack, logger, stateBound } = args;
+  const { stacks, contextByStack, logger, stateBound, onUnresolved } = args;
   return (id: string): boolean => {
     try {
       const stack = resolveEcsServiceStack(id, stacks);
@@ -731,6 +741,9 @@ export function makePinClassifier(args: {
             err instanceof Error ? err.message : String(err)
           }`
       );
+      // Gate the browser hint on the SAME condition as the terminal remedy
+      // (state not bound) so the in-UI hint and the WARN stay in lockstep.
+      if (stateBound === false) onUnresolved?.(id);
       return false;
     }
   };
@@ -772,8 +785,10 @@ export function makeTaskPinClassifier(args: {
   logger: ReturnType<typeof getLogger>;
   /** See {@link makePinClassifier} — gates the Session-bar remedy hint. */
   stateBound?: boolean;
+  /** See {@link makePinClassifier} — fires the browser `pinUnresolved` hint. */
+  onUnresolved?: (id: string) => void;
 }): (id: string) => boolean {
-  const { stacks, contextByStack, logger, stateBound } = args;
+  const { stacks, contextByStack, logger, stateBound, onUnresolved } = args;
   return (id: string): boolean => {
     try {
       const stack = resolveEcsServiceStack(id, stacks);
@@ -788,6 +803,7 @@ export function makeTaskPinClassifier(args: {
             stateBound
           )} ${err instanceof Error ? err.message : String(err)}`
       );
+      if (stateBound === false) onUnresolved?.(id);
       return false;
     }
   };
@@ -907,17 +923,38 @@ export async function classifyStudioTargets(args: {
   // (set --from-cfn-stack to surface the picker). Computed off the same flag
   // bag prepareEcsImageContexts consumes.
   const stateBound = isCfnFlagPresent(classifyOptions);
+  // Collect the ids the classifiers could not resolve while `--from-cfn-stack`
+  // is unbound (likely INTRINSIC-ECR images). After the annotate passes, the
+  // matching ecs / ecs-task entries are flagged `pinUnresolved` so the browser
+  // composer renders the same Session-bar remedy the terminal WARN prints — the
+  // terminal-only #484 hint never reaches a browser-only user.
+  const unresolvedPinIds = new Set<string>();
+  const onUnresolved = (id: string): void => {
+    unresolvedPinIds.add(id);
+  };
   const anyPinned = annotatePinnedEcsTargets(
     groups,
-    makePinClassifier({ stacks, contextByStack, logger, stateBound })
+    makePinClassifier({ stacks, contextByStack, logger, stateBound, onUnresolved })
   );
   // Issue #388 — classify ECS task definitions (the `ecs-task` kind) too, so a
   // pinned task-def image gets the same image-override picker. The `ecs-task`
   // composer spawns `cdkl run-task`, which accepts `--image-override`.
   const anyTaskPinned = annotateEcsTaskPinnedTargets(
     groups,
-    makeTaskPinClassifier({ stacks, contextByStack, logger, stateBound })
+    makeTaskPinClassifier({ stacks, contextByStack, logger, stateBound, onUnresolved })
   );
+  // Mark the unresolved (but not pinned) ecs / ecs-task entries so the UI can
+  // hint at `--from-cfn-stack`. A successfully-classified pin already carries
+  // the Dockerfile picker, so `pinUnresolved` is kept mutually exclusive with
+  // `pinned`.
+  if (unresolvedPinIds.size > 0) {
+    for (const g of groups) {
+      if (g.kind !== 'ecs' && g.kind !== 'ecs-task') continue;
+      for (const e of g.entries) {
+        if (!e.pinned && unresolvedPinIds.has(e.id)) e.pinUnresolved = true;
+      }
+    }
+  }
   const pinnedEcsByQualifiedId = new Map<string, string>();
   for (const g of groups) {
     if (g.kind !== 'ecs') continue;

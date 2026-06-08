@@ -549,7 +549,14 @@ compute-locally category for Lambda + API Gateway).
   `--from-cfn-stack`, e.g. `ContainerImage.fromEcrRepository(repo)`) is
   detected as pinned — matching `cdkl start-service --from-cfn-stack`; a
   service that cannot be classified now WARNs instead of silently going
-  unmarked. Issue #385 made this re-runnable: a Session-bar
+  unmarked. When that classify failure happens WITHOUT `--from-cfn-stack`
+  (the likely-INTRINSIC-ECR case), the service / task-def entry is also
+  marked `pinUnresolved` (the classifiers' `onUnresolved` callback ->
+  `classifyStudioTargets`), so the studio composer renders an in-UI hint
+  pointing at the Session-bar `--from-cfn-stack` remedy — the terminal WARN
+  alone never reaches a browser-only user. `pinUnresolved` is mutually
+  exclusive with `pinned` (a resolved pin gets the Dockerfile picker, not the
+  hint). Issue #385 made this re-runnable: a Session-bar
   `--from-cfn-stack` change (`PATCH /api/config`) re-runs the classification
   (`classifyStudioTargets` against a fresh clone of the un-annotated base) and
   swaps the served target list under the live socket (`RunningStudioServer.
