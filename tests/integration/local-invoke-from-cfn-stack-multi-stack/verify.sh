@@ -23,6 +23,8 @@
 #   3. cdk deploy (producer + consumer, in that order — cdk handles the
 #      ordering automatically from `addDependency`)
 #   4. read the producer's exported value via list-exports
+#   4b. assert the multi-stack "Supply a stack id ... to display its
+#      template." toolkit hint is suppressed (synth-only `cdkl list`)
 #   5. baseline: cdkl invoke (no --from-cfn-stack) — assert
 #      SHARED_VALUE comes through as "unset" (warn-and-drop on
 #      intrinsics)
@@ -156,6 +158,22 @@ invoke_with_retry() {
   ${CLI} invoke "${args[@]}" 2>&1 | tail -10 >&2
   return 1
 }
+
+echo "[verify] step 4b: assert the multi-stack 'Supply a stack id' toolkit hint is suppressed"
+# `@aws-cdk/toolkit-lib`'s Toolkit.synth() prints a CDK-CLI hint
+# ("Supply a stack id (<stack>, <stack>, ...) to display its template.")
+# whenever the assembly has 2+ stacks. cdk-local synthesizes the whole
+# app and never prints templates, so CdklIoHost drops that codeless info
+# line. This fixture is the only committed multi-stack app, so it is the
+# only place the suppression can be exercised end-to-end. `cdkl list` is
+# synth-only (no Docker) and runs the same Toolkit.synth() path as invoke.
+SYNTH_OUT=$(${CLI} list 2>&1 || true)
+if echo "${SYNTH_OUT}" | grep -q "Supply a stack id"; then
+  echo "[verify] FAIL: leaked toolkit 'Supply a stack id' hint present in multi-stack synth output:"
+  echo "${SYNTH_OUT}" | grep "Supply a stack id"
+  exit 1
+fi
+echo "[verify]   ok: no 'Supply a stack id' hint in multi-stack synth output"
 
 echo "[verify] step 5: cdkl invoke (no --from-cfn-stack) — expect SHARED_VALUE=unset"
 RESULT_BASELINE=$(invoke_with_retry "${CONSUMER_STACK}/EchoSharedHandler" --no-pull)

@@ -39,6 +39,16 @@ import { resolveConfiguredLogLevel } from '../utils/logger.js';
  * synthesized to ..." / asset-bundling noise; real synth failures still
  * surface (toolkit raises `AssemblyError` on non-zero subprocess exit, and
  * `warn` / `error` messages still pass through).
+ *
+ * It also DROPS the "Supply a stack id (...) to display its template."
+ * line `Toolkit.synth()` emits when an assembly has more than one stack.
+ * That hint is CDK CLI advice for picking a single stack to print a
+ * template for — irrelevant to cdk-local, which synthesizes the whole app
+ * and never prints templates. toolkit-lib emits it via
+ * `ioHelper.defaults.info(...)` with NO message `code`, so it can only be
+ * matched on its text; left unfiltered it pollutes the output of every
+ * multi-stack `start-alb` / `start-service` / `studio` synth (it surfaced
+ * in the studio ALB-serve LOGS panel).
  */
 export class CdklIoHost extends NonInteractiveIoHost {
   private readonly suppressNonWarnings = (() => {
@@ -47,6 +57,10 @@ export class CdklIoHost extends NonInteractiveIoHost {
   })();
 
   async notify(msg: IoMessage<unknown>): Promise<void> {
+    if (isStackIdTemplateHint(msg)) {
+      return;
+    }
+
     const reclassified =
       msg.code === 'CDK_ASSEMBLY_E1002' ||
       msg.code === 'CDK_TOOLKIT_I1901' ||
@@ -63,4 +77,19 @@ export class CdklIoHost extends NonInteractiveIoHost {
     }
     return super.notify(reclassified);
   }
+}
+
+/**
+ * Detects the multi-stack "Supply a stack id (...) to display its template."
+ * hint `Toolkit.synth()` emits with no message `code`. The stack ids inside
+ * the parens may carry chalk colour codes, but the literal prefix and suffix
+ * are plain text, so a prefix+suffix text match is robust to colour.
+ */
+function isStackIdTemplateHint(msg: IoMessage<unknown>): boolean {
+  return (
+    msg.code === undefined &&
+    typeof msg.message === 'string' &&
+    msg.message.startsWith('Supply a stack id ') &&
+    msg.message.includes('to display its template')
+  );
 }

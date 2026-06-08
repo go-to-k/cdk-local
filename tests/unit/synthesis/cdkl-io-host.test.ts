@@ -54,6 +54,51 @@ describe('CdklIoHost', () => {
     stderrSpy.mockRestore();
   });
 
+  describe('multi-stack "Supply a stack id" hint', () => {
+    it('drops the codeless "Supply a stack id (...) to display its template." line', async () => {
+      const host = new CdklIoHost({ isCI: false });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+      // toolkit-lib's Toolkit.synth() emits this via ioHelper.defaults.info,
+      // so it carries NO message code and can only be matched on its text.
+      await host.notify({
+        time: new Date(),
+        level: 'info',
+        action: 'synth',
+        code: undefined,
+        message: 'Supply a stack id (StackA, StackB) to display its template.',
+        data: undefined,
+      } as never);
+
+      const written =
+        stderrSpy.mock.calls.map((c) => String(c[0])).join('') +
+        stdoutSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).not.toContain('Supply a stack id');
+      expect(written).not.toContain('to display its template');
+      stderrSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    });
+
+    it('does NOT drop an unrelated codeless info message', async () => {
+      const host = new CdklIoHost({ isCI: false });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      await host.notify({
+        time: new Date(),
+        level: 'info',
+        action: 'synth',
+        code: undefined,
+        message: 'Some other informational line',
+        data: undefined,
+      } as never);
+
+      const written = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain('Some other informational line');
+      stderrSpy.mockRestore();
+    });
+  });
+
   describe('CDKL_LOG_LEVEL=warn suppression (studio child)', () => {
     const prev = process.env['CDKL_LOG_LEVEL'];
     afterEach(() => {
