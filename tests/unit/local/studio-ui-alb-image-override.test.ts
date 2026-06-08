@@ -54,6 +54,23 @@ describe('alb composer image-override picker (issue #384)', () => {
     }
   });
 
+  it('marks the picker section with the image-override class (the boxed amber prominence treatment)', () => {
+    // The CSS gives `.section.image-override` a boxed amber accent so the most
+    // consequential ECS knob stands out from the ordinary blue option blocks;
+    // the class is what drives that treatment, so lock it here.
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      albComposer(h, [{ id: 'S:SvcA', label: 'S/SvcA' }]);
+      const sel = h.document.querySelector('.image-override-select');
+      const section = sel.closest('.section');
+      expect(section.classList.contains('image-override')).toBe(true);
+      const heading = section.querySelector('h3');
+      expect(heading.textContent).toBe('Image override (pinned backing services)');
+    } finally {
+      h.close();
+    }
+  });
+
   it('lays each picker row out vertically with a legible label + amber hint (issue #396)', () => {
     const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
     try {

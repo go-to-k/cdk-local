@@ -165,7 +165,7 @@ describe('renderStudioHtml', () => {
     // from both the neutral-grey rows and the blue-navy stack sub-header below.
     expect(html).toContain('background: rgba(227, 194, 114, 0.12);');
     expect(html).toContain('color: #e7cd86;');
-    expect(html).toContain('.group-title .count { color: #8a8a8a; flex: none; }');
+    expect(html).toContain('.group-title .count { color: #bdbdbd; flex: none; }');
     // A long group label (e.g. "Application Load Balancers") ellipsises on one
     // line instead of wrapping + shoving the count off (issue: ALB label fit).
     expect(html).toContain('.group-title .group-name {');
@@ -223,11 +223,13 @@ describe('renderStudioHtml', () => {
     // The ecs host URL is shown in Endpoints with a note that composer requests
     // ARE captured on the timeline (the direct relay self-emits — issue #432).
     expect(html).toContain('composer requests are captured on the timeline');
-    // The major output-section headings — the result Request / Response pair
-    // AND the serve LOGS — are emphasised pale-yellow (grouped selector),
-    // distinct from the blue structural labels.
+    // The major output-section headings — the result Request / Response pair,
+    // the serve LOGS, AND the timeline-detail Request / Response / Logs trio
+    // (.detail-out) — are emphasised pale-yellow (grouped selector), distinct
+    // from the blue structural labels.
     expect(html).toContain('.req-composer .req-result .req-req h3,');
-    expect(html).toContain('.section.serve-logs h3 { color: #e3d18a; }');
+    expect(html).toContain('.section.serve-logs h3,');
+    expect(html).toContain('.section.detail-out h3 { color: #e3d18a; }');
     // The serve workspace's structural labels (Started with / Endpoints + the
     // request-composer form's Request / Headers / Body) are blue — the
     // .section.NAME form lifts specificity over the later `.section h3`.
