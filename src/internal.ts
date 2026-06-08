@@ -173,8 +173,18 @@ export { bufferToBody } from './local/websocket-body.js';
  * `--add-host=...:host-gateway` mapping WebSocket Lambda containers need to
  * reach the host server on Linux native dockerd. Exposed only as the
  * consuming host's `import` statements require them.
+ *
+ * `resolveHostGatewayExtraHosts` is the memoized, never-throwing resolver a
+ * host CLI wrapping the `invoke` / `run-task` / ECS-serve container runs
+ * reuses to inject `host.docker.internal` reachability (best-effort: `[]`
+ * on a pre-20.10 / unavailable daemon).
  */
-export { HOST_GATEWAY_MIN_VERSION, probeHostGatewaySupport } from './local/docker-version.js';
+export {
+  HOST_GATEWAY_MIN_VERSION,
+  probeHostGatewaySupport,
+  resolveHostGatewayExtraHosts,
+  HOST_DOCKER_INTERNAL_GATEWAY,
+} from './local/docker-version.js';
 
 /**
  * `start-api` API-server grouping — splits a flat discovered-route list into

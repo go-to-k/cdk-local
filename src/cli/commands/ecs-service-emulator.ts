@@ -16,6 +16,7 @@ import { singleFlight } from '../../utils/single-flight.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp, resolveWatchConfig } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { createFileWatcher, type FileWatcher } from '../../local/file-watcher.js';
 import { resolveProfileCredentials, createWatchPredicates } from './local-start-api.js';
 import { buildStsClientConfig } from '../../utils/profile-resolver.js';
@@ -1824,6 +1825,12 @@ async function resolveServiceAndRunnerOpts(
       profileName: profileCredsFile.profileName,
     };
   }
+  // Let each replica's containers reach a server on the host (an
+  // `AWS_ENDPOINT_URL_*` local endpoint / tunneled VPC resource) via
+  // `host.docker.internal`. Memoized — one `docker version` probe per
+  // process regardless of service / replica count.
+  const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
+  if (hostGatewayExtraHosts.length > 0) taskOpts.hostGatewayExtraHosts = hostGatewayExtraHosts;
 
   // Issue #238 — when an --image-override resolved a local Dockerfile
   // build for this service target, inject the pre-built local tag

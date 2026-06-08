@@ -193,7 +193,7 @@ The same overlay can redirect the AWS SDK itself. Set the SDK's standard per-ser
 
 DynamoDB and S3 calls resolve to the local endpoint; Secrets Manager, SSM Parameter Store, and everything else have no override, so they hit real AWS through your `--assume-role` / `--from-cfn-stack` credentials. The suffix is the service name uppercased (`DYNAMODB`, `S3`, `SECRETS_MANAGER`, ...); the bare `AWS_ENDPOINT_URL` (no suffix) redirects every service at once, so the per-service form is what makes the split selective. cdk-local only injects these variables — it does not run the endpoint for you; start the local server separately and point the URL at it.
 
-On Docker Desktop (macOS / Windows), `host.docker.internal` reaches a server on the host out of the box. On Linux native dockerd, the `cdkl invoke` / `run-task` / ECS serve paths do not add the `host-gateway` alias, so use the Docker bridge address (e.g. `http://172.17.0.1:8000`) or put the local server on the same Docker network.
+`host.docker.internal` resolves to the host from inside the container — Docker Desktop (macOS / Windows) provides it natively, and on Linux native dockerd `cdkl` adds the `host-gateway` alias for you on the `invoke` / `run-task` / `start-service` / `start-alb` container runs (Docker 20.10+). On an older daemon the alias is skipped; use the Docker bridge address (e.g. `http://172.17.0.1:8000`) or put the local server on the same Docker network.
 
 ## Hot reload — `--watch`
 

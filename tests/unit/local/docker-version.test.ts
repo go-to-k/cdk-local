@@ -1,10 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, it, vi } from 'vite-plus/test';
+import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
   compareDockerVersions,
+  HOST_DOCKER_INTERNAL_GATEWAY,
   HOST_GATEWAY_MIN_VERSION,
   parseDockerVersion,
   probeHostGatewaySupport,
+  resetHostGatewayExtraHostsCache,
+  resolveHostGatewayExtraHosts,
 } from '../../../src/local/docker-version.js';
 
 describe('parseDockerVersion', () => {
@@ -117,5 +120,48 @@ describe('probeHostGatewaySupport', () => {
     const fakeErr = new Error('Failed to find and execute \'docker\'');
     dockerCmd.runDockerStreaming.mockRejectedValueOnce(fakeErr);
     await expect(probeHostGatewaySupport()).rejects.toThrow(/Failed to find and execute/);
+  });
+});
+
+describe('resolveHostGatewayExtraHosts', () => {
+  beforeEach(() => {
+    resetHostGatewayExtraHostsCache();
+    dockerCmd.runDockerStreaming.mockReset();
+  });
+
+  it('returns the host.docker.internal:host-gateway mapping on a supported daemon (>= 20.10)', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValue({ stdout: '24.0.7\n', stderr: '' });
+    await expect(resolveHostGatewayExtraHosts()).resolves.toEqual([HOST_DOCKER_INTERNAL_GATEWAY]);
+    expect(HOST_DOCKER_INTERNAL_GATEWAY).toEqual({ host: 'host.docker.internal', ip: 'host-gateway' });
+  });
+
+  it('returns [] on a pre-20.10 daemon (passing --add-host host-gateway would fail the run)', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValue({ stdout: '19.03.15\n', stderr: '' });
+    await expect(resolveHostGatewayExtraHosts()).resolves.toEqual([]);
+  });
+
+  it('returns [] when the probe throws (daemon down / binary missing) rather than rejecting', async () => {
+    dockerCmd.runDockerStreaming.mockRejectedValue(new Error('docker daemon not running'));
+    await expect(resolveHostGatewayExtraHosts()).resolves.toEqual([]);
+  });
+
+  it('returns [] on empty probe output (daemon unreachable / stripped)', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValue({ stdout: '', stderr: '' });
+    await expect(resolveHostGatewayExtraHosts()).resolves.toEqual([]);
+  });
+
+  it('memoizes — the docker version probe fires at most once per process', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValue({ stdout: '24.0.7\n', stderr: '' });
+    const first = await resolveHostGatewayExtraHosts();
+    const second = await resolveHostGatewayExtraHosts();
+    expect(second).toEqual(first);
+    expect(dockerCmd.runDockerStreaming).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a fresh array copy so a caller cannot mutate the shared constant', async () => {
+    dockerCmd.runDockerStreaming.mockResolvedValue({ stdout: '24.0.7\n', stderr: '' });
+    const hosts = await resolveHostGatewayExtraHosts();
+    expect(hosts[0]).not.toBe(HOST_DOCKER_INTERNAL_GATEWAY);
+    expect(hosts[0]).toEqual(HOST_DOCKER_INTERNAL_GATEWAY);
   });
 });

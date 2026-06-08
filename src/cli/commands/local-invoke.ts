@@ -62,6 +62,7 @@ import {
   runDetached,
   streamLogs,
 } from '../../local/docker-runner.js';
+import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { architectureToPlatform, buildContainerImage } from '../../local/docker-image-builder.js';
 import { pullEcrImage, parseEcrUri } from '../../local/ecr-puller.js';
 import { invokeRie, waitForRieReady } from '../../local/rie-client.js';
@@ -402,6 +403,10 @@ async function localInvokeCommand(
           },
         ]
       : imagePlan.extraMounts;
+    // Let the Lambda container reach a server on the host (an
+    // `AWS_ENDPOINT_URL_*` local endpoint / tunneled VPC resource) via
+    // `host.docker.internal`.
+    const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
     containerId = await runDetached({
       image: imagePlan.image,
       mounts: imagePlan.mounts,
@@ -410,6 +415,7 @@ async function localInvokeCommand(
       ...(containerEnv.sensitiveEnvKeys.length > 0 && {
         sensitiveEnvKeys: new Set(containerEnv.sensitiveEnvKeys),
       }),
+      ...(hostGatewayExtraHosts.length > 0 && { extraHosts: hostGatewayExtraHosts }),
       cmd: imagePlan.cmd,
       hostPort,
       host: containerHost,
