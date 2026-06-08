@@ -703,8 +703,19 @@ export function makePinClassifier(args: {
   stacks: StackInfo[];
   contextByStack: Map<string, EcsImageResolutionContext | undefined>;
   logger: ReturnType<typeof getLogger>;
+  /**
+   * Whether `--from-cfn-stack` is currently bound for the session. An
+   * INTRINSIC-ECR image (`ContainerImage.fromEcrRepository(repo)`) is only
+   * resolvable WITH deployed state, so without the binding it cannot be
+   * classified and the picker is not offered. When `false`, the WARN appends
+   * the Session-bar remedy so a studio-from user discovers why the picker is
+   * absent; when `true` (already bound) the resolver's own error already
+   * explains the real failure, so the remedy is omitted to avoid suggesting a
+   * flag they already passed.
+   */
+  stateBound?: boolean;
 }): (id: string) => boolean {
-  const { stacks, contextByStack, logger } = args;
+  const { stacks, contextByStack, logger, stateBound } = args;
   return (id: string): boolean => {
     try {
       const stack = resolveEcsServiceStack(id, stacks);
@@ -716,13 +727,30 @@ export function makePinClassifier(args: {
       // a misconfigured / unresolvable image is visible at boot.
       logger.warn(
         `studio: could not classify image-pin status for ECS service '${id}'; leaving it unmarked ` +
-          `(the image-override picker will not be offered). ${
+          `(the image-override picker will not be offered).${pinClassifyStateHint(stateBound)} ${
             err instanceof Error ? err.message : String(err)
           }`
       );
       return false;
     }
   };
+}
+
+/**
+ * The Session-bar `--from-cfn-stack` remedy appended to a pin-classify WARN
+ * when the binding is NOT set (the common reason an INTRINSIC-ECR service
+ * cannot be classified, so the override picker is silently absent). Returns an
+ * empty string when the binding IS set — the resolver's own appended error
+ * already names the real failure, and re-suggesting a flag the user already
+ * passed is misleading. Shared by the service + task-def classifiers.
+ */
+function pinClassifyStateHint(stateBound: boolean | undefined): string {
+  if (stateBound !== false) return '';
+  return (
+    ' If this image is pinned to a deployed registry (e.g.' +
+    ' ContainerImage.fromEcrRepository), set --from-cfn-stack in the Session bar so studio can' +
+    ' resolve it and offer the image-override picker.'
+  );
 }
 
 /**
@@ -742,8 +770,10 @@ export function makeTaskPinClassifier(args: {
   stacks: StackInfo[];
   contextByStack: Map<string, EcsImageResolutionContext | undefined>;
   logger: ReturnType<typeof getLogger>;
+  /** See {@link makePinClassifier} — gates the Session-bar remedy hint. */
+  stateBound?: boolean;
 }): (id: string) => boolean {
-  const { stacks, contextByStack, logger } = args;
+  const { stacks, contextByStack, logger, stateBound } = args;
   return (id: string): boolean => {
     try {
       const stack = resolveEcsServiceStack(id, stacks);
@@ -754,9 +784,9 @@ export function makeTaskPinClassifier(args: {
     } catch (err) {
       logger.warn(
         `studio: could not classify image-pin status for ECS task definition '${id}'; leaving it ` +
-          `unmarked (the image-override picker will not be offered). ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          `unmarked (the image-override picker will not be offered).${pinClassifyStateHint(
+            stateBound
+          )} ${err instanceof Error ? err.message : String(err)}`
       );
       return false;
     }
@@ -872,16 +902,21 @@ export async function classifyStudioTargets(args: {
     options: classifyOptions,
     logger,
   });
+  // When --from-cfn-stack is NOT bound, an INTRINSIC-ECR service cannot be
+  // resolved/classified, so the classifier WARN appends the Session-bar remedy
+  // (set --from-cfn-stack to surface the picker). Computed off the same flag
+  // bag prepareEcsImageContexts consumes.
+  const stateBound = isCfnFlagPresent(classifyOptions);
   const anyPinned = annotatePinnedEcsTargets(
     groups,
-    makePinClassifier({ stacks, contextByStack, logger })
+    makePinClassifier({ stacks, contextByStack, logger, stateBound })
   );
   // Issue #388 — classify ECS task definitions (the `ecs-task` kind) too, so a
   // pinned task-def image gets the same image-override picker. The `ecs-task`
   // composer spawns `cdkl run-task`, which accepts `--image-override`.
   const anyTaskPinned = annotateEcsTaskPinnedTargets(
     groups,
-    makeTaskPinClassifier({ stacks, contextByStack, logger })
+    makeTaskPinClassifier({ stacks, contextByStack, logger, stateBound })
   );
   const pinnedEcsByQualifiedId = new Map<string, string>();
   for (const g of groups) {
