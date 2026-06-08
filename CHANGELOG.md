@@ -1,3 +1,10 @@
+## [0.144.1](https://github.com/go-to-k/cdk-local/compare/v0.144.0...v0.144.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **start-service:** emit the same-stack-ECR boot WARN once, not twice ([#485](https://github.com/go-to-k/cdk-local/issues/485)) ([551fd0c](https://github.com/go-to-k/cdk-local/commit/551fd0c418e67b1302fc4a4eab985c0a5c5a01ae))
+
 # [0.144.0](https://github.com/go-to-k/cdk-local/compare/v0.143.3...v0.144.0) (2026-06-08)
 
 
