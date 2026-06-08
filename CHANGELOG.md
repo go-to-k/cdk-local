@@ -1,3 +1,10 @@
+## [0.146.1](https://github.com/go-to-k/cdk-local/compare/v0.146.0...v0.146.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **start-alb:** emit listener warnings once, not "WARN:   WARN:" + repair the alb-https integ fixture ([#488](https://github.com/go-to-k/cdk-local/issues/488)) ([a71ea57](https://github.com/go-to-k/cdk-local/commit/a71ea5796f65eb26159865efef51f69c57aa6706))
+
 # [0.146.0](https://github.com/go-to-k/cdk-local/compare/v0.145.0...v0.146.0) (2026-06-08)
 
 
