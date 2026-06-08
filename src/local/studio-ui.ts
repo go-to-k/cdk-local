@@ -252,6 +252,12 @@ const STUDIO_CSS = `
   .section.req-composer > h3,
   .section.options h3,
   .req-composer > .opt-label { color: #6cb6ff; }
+  /* The "Started with" section is a collapsible <details> (open by default):
+     the <summary> carries the blue h3 heading + the disclosure toggle. The
+     h3's own bottom margin only applies while open, so collapse it onto the
+     summary line. */
+  .section.started-with > summary { cursor: pointer; user-select: none; list-style-position: inside; }
+  .section.started-with > summary > h3 { display: inline; margin: 0; }
   /* Image override is the single most consequential ECS knob — a pinned image
      silently ignores local source edits — so its block gets a boxed amber
      accent to stand out from the ordinary blue option headings (the same amber
@@ -1462,8 +1468,15 @@ const STUDIO_SCRIPT = `
       // visible instead of silently vanishing after Start). A FAILED serve
       // keeps this too, so a crash does not read as "my inputs disappeared".
       const lines = formatAppliedOptions(serveApplied.get(id));
-      const startedSec = el('div', 'section started-with');
-      startedSec.appendChild(el('h3', null, 'Started with'));
+      // Collapsible (a long launch config can crowd out the Endpoints / Logs
+      // below), open by default so the config stays visible at a glance. The
+      // h3 lives inside the <summary> so it keeps its blue section-heading
+      // styling while the summary provides the disclosure toggle.
+      const startedSec = el('details', 'section started-with');
+      startedSec.open = true;
+      const startedSum = el('summary');
+      startedSum.appendChild(el('h3', null, 'Started with'));
+      startedSec.appendChild(startedSum);
       if (lines.length) {
         const list = el('div', 'started-list');
         lines.forEach(function (ln) { list.appendChild(el('code', 'started-flag', ln)); });
