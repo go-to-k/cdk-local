@@ -1,3 +1,10 @@
+## [0.143.3](https://github.com/go-to-k/cdk-local/compare/v0.143.2...v0.143.3) (2026-06-08)
+
+
+### Bug Fixes
+
+* **studio:** point users to --from-cfn-stack when an ECS image can't be pin-classified ([#484](https://github.com/go-to-k/cdk-local/issues/484)) ([b581741](https://github.com/go-to-k/cdk-local/commit/b5817419959e84bfb975c463e23ee338ba8f5fc8))
+
 ## [0.143.2](https://github.com/go-to-k/cdk-local/compare/v0.143.1...v0.143.2) (2026-06-08)
 
 
