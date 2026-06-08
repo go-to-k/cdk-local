@@ -1,3 +1,10 @@
+## [0.143.1](https://github.com/go-to-k/cdk-local/compare/v0.143.0...v0.143.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **studio:** expose the image-override build-input flags as "All options" controls ([#479](https://github.com/go-to-k/cdk-local/issues/479)) ([0259083](https://github.com/go-to-k/cdk-local/commit/0259083979c4b45f01cbf376ecd00c8d07994e73))
+
 # [0.143.0](https://github.com/go-to-k/cdk-local/compare/v0.142.0...v0.143.0) (2026-06-07)
 
 
