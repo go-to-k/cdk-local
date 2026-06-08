@@ -110,3 +110,53 @@ export async function probeHostGatewaySupport(): Promise<HostGatewayProbeResult>
   const supported = parsed === null || compareDockerVersions(parsed, HOST_GATEWAY_MIN_VERSION) >= 0;
   return { rawVersion, parsed, supported };
 }
+
+/**
+ * The `host.docker.internal:host-gateway` extra-host mapping that lets a
+ * container reach a server bound on the host loopback. Docker Desktop
+ * (macOS / Windows) resolves `host.docker.internal` natively, but Linux
+ * native dockerd needs this explicit `--add-host` (since Docker 20.10).
+ */
+export const HOST_DOCKER_INTERNAL_GATEWAY: { host: string; ip: string } = {
+  host: 'host.docker.internal',
+  ip: 'host-gateway',
+};
+
+let hostGatewayExtraHostsCache: Promise<{ host: string; ip: string }[]> | undefined;
+
+/**
+ * Resolve the `extraHosts` entries to inject so a launched container can
+ * reach a server on the host via `host.docker.internal` — the
+ * load-bearing primitive behind pointing a Lambda / ECS container at a
+ * local endpoint (e.g. `AWS_ENDPOINT_URL_*` to a local server, or a
+ * tunneled VPC resource).
+ *
+ * Returns `[{@link HOST_DOCKER_INTERNAL_GATEWAY}]` when the Docker daemon
+ * supports the `host-gateway` alias (>= 20.10, or an unparseable
+ * podman / finch version per {@link probeHostGatewaySupport}), else `[]`
+ * — passing `--add-host ...:host-gateway` to a pre-20.10 daemon would
+ * fail the `docker run`, so an old / unknown-failed daemon silently
+ * degrades to "no mapping" (Docker Desktop still resolves the name
+ * natively; Linux native dockerd loses host reachability, matching the
+ * pre-fix behavior). A probe error (daemon down, binary missing)
+ * resolves to `[]` rather than throwing — reachability is best-effort
+ * convenience here, NOT a hard requirement like the start-api WebSocket
+ * path. Memoized per process: the probe (`docker version`) fires at most
+ * once regardless of how many containers / replicas are launched.
+ */
+export async function resolveHostGatewayExtraHosts(): Promise<{ host: string; ip: string }[]> {
+  if (hostGatewayExtraHostsCache === undefined) {
+    hostGatewayExtraHostsCache = probeHostGatewaySupport()
+      .then((probe) => (probe.supported ? [{ ...HOST_DOCKER_INTERNAL_GATEWAY }] : []))
+      .catch(() => []);
+  }
+  return hostGatewayExtraHostsCache;
+}
+
+/**
+ * Test-only: reset the {@link resolveHostGatewayExtraHosts} memo so each
+ * test controls the underlying probe mock.
+ */
+export function resetHostGatewayExtraHostsCache(): void {
+  hostGatewayExtraHostsCache = undefined;
+}

@@ -15,6 +15,7 @@ import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable } from '../../local/docker-runner.js';
+import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
 import { resolveProfileCredentials } from './local-start-api.js';
 import { buildStsClientConfig } from '../../utils/profile-resolver.js';
 import {
@@ -461,6 +462,11 @@ async function localRunTaskCommand(
         );
       };
     }
+
+    // Let task containers reach a server on the host (an `AWS_ENDPOINT_URL_*`
+    // local endpoint / tunneled VPC resource) via `host.docker.internal`.
+    const hostGatewayExtraHosts = await resolveHostGatewayExtraHosts();
+    if (hostGatewayExtraHosts.length > 0) runOpts.hostGatewayExtraHosts = hostGatewayExtraHosts;
 
     const result = await runEcsTask(task, runOpts, state);
 
