@@ -2163,7 +2163,7 @@ export async function buildFrontDoor(
         if (code === 'EACCES' && listener.hostPort < 1024) {
           server = await startFrontDoorServer({ ...fdBase, port: 0 });
           logger.warn(
-            `  WARN: listener port ${listener.listenerPort} is privileged (< 1024) and cannot be ` +
+            `listener port ${listener.listenerPort} is privileged (< 1024) and cannot be ` +
               `bound without root; serving it on host port ${server.port} instead. Pass ` +
               `--lb-port ${listener.listenerPort}=<hostPort> to pin a fixed port.`
           );
@@ -2178,7 +2178,7 @@ export async function buildFrontDoor(
       );
       if (degradedHttps) {
         logger.warn(
-          `  WARN: listener port ${listener.listenerPort} is HTTPS in the cloud but serving HTTP ` +
+          `listener port ${listener.listenerPort} is HTTPS in the cloud but serving HTTP ` +
             'locally (X-Forwarded-Proto: https preserved). Pass --tls to terminate TLS locally ' +
             'with a self-signed or user-supplied cert.'
         );

@@ -73,8 +73,13 @@ trap 'rm -f "${OUT_FILE}"; cleanup' EXIT
 echo "==> start-alb: HTTP on ${LB_HTTP_PORT}, HTTPS on ${LB_HTTPS_PORT}"
 # Listener ports 80 and 443 are both privileged; remap each to a
 # non-privileged host port so the front-door binds without root.
+# `--tls` opts the HTTPS:443 listener into real local TLS termination with an
+# auto-generated self-signed cert (the path this fixture asserts) — without it
+# a cloud-HTTPS listener is served over plain HTTP locally by default, so the
+# HTTPS front-door banner never appears.
 ${CDKL} start-alb CdkLocalStartAlbHttpsFixture:WebLB \
   --container-host 127.0.0.1 \
+  --tls \
   --lb-port "80=${LB_HTTP_PORT}" \
   --lb-port "443=${LB_HTTPS_PORT}" \
   > "${OUT_FILE}" 2>&1 &
