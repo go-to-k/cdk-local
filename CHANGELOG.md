@@ -1,3 +1,10 @@
+# [0.144.0](https://github.com/go-to-k/cdk-local/compare/v0.143.3...v0.144.0) (2026-06-08)
+
+
+### Features
+
+* **docker:** reach the host via host.docker.internal on invoke/run-task/ECS runs ([#483](https://github.com/go-to-k/cdk-local/issues/483)) ([4b957f4](https://github.com/go-to-k/cdk-local/commit/4b957f44d9e7944f13305b0dee7475cafff7ec61))
+
 ## [0.143.3](https://github.com/go-to-k/cdk-local/compare/v0.143.2...v0.143.3) (2026-06-08)
 
 
