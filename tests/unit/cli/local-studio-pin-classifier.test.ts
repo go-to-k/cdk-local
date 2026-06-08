@@ -332,6 +332,45 @@ describe('makePinClassifier', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve image'));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("'dev/Svc'"));
   });
+
+  it('appends the Session-bar --from-cfn-stack remedy when state is NOT bound', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockImplementation(() => {
+      throw new Error('cannot resolve image');
+    });
+
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: false,
+    });
+
+    classify('dev/Svc');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('set --from-cfn-stack in the Session bar')
+    );
+  });
+
+  it('omits the remedy when state IS bound (the resolver error already explains it)', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsServiceTarget.mockImplementation(() => {
+      throw new Error('cannot resolve image');
+    });
+
+    const classify = makePinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: true,
+    });
+
+    classify('dev/Svc');
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve image'));
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('set --from-cfn-stack in the Session bar')
+    );
+  });
 });
 
 describe('makeTaskPinClassifier (issue #388)', () => {
@@ -389,6 +428,23 @@ describe('makeTaskPinClassifier (issue #388)', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve task image'));
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('task definition'));
   });
+
+  it('appends the Session-bar --from-cfn-stack remedy when state is NOT bound', () => {
+    const logger = fakeLogger();
+    hoisted.resolveEcsTaskTarget.mockImplementation(() => {
+      throw new Error('cannot resolve task image');
+    });
+    const classify = makeTaskPinClassifier({
+      stacks: [stack('dev')],
+      contextByStack: new Map(),
+      logger,
+      stateBound: false,
+    });
+    classify('dev/Task');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('set --from-cfn-stack in the Session bar')
+    );
+  });
 });
 
 describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack toggle)', () => {
@@ -431,6 +487,13 @@ describe('classifyStudioTargets (issue #385 — re-classify on --from-cfn-stack 
     expect(off.groups[0]?.entries[0]?.pinned).toBeUndefined();
     expect(off.dockerfiles).toEqual([]);
     expect(hoisted.discoverDockerfiles).not.toHaveBeenCalled();
+    // Without --from-cfn-stack, the classify WARN tells the user how to surface
+    // the picker (set --from-cfn-stack in the Session bar) — the studio-from
+    // discoverability fix. End-to-end: classifyStudioTargets derives stateBound
+    // from the (absent) binding and threads it into the classifier.
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('set --from-cfn-stack in the Session bar')
+    );
 
     // ON: context built -> resolve returns -> service is pinned + Dockerfiles scanned.
     const on = await classifyStudioTargets({
