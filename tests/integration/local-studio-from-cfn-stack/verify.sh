@@ -19,7 +19,10 @@
 #      entry in GET /api/targets has "pinned":true (the issue #354 fix), and
 #   2. boots `cdkl studio` WITHOUT --from-cfn-stack as a NEGATIVE CONTROL and
 #      asserts the SAME service is NOT pinned (the intrinsic URI is
-#      unresolvable without the deployed-state context).
+#      unresolvable without the deployed-state context) AND carries
+#      "pinUnresolved":true, the browser-hint flag that makes the composer
+#      surface the Session-bar --from-cfn-stack remedy a browser-only user
+#      would otherwise never see (the terminal WARN does not reach the browser).
 #
 # The service deploys with desiredCount:0 so no task ever launches and no image
 # is pushed to the repo — the deploy only needs to CREATE the ECR repository so
@@ -167,12 +170,51 @@ print("PINNED" if entry.get("pinned") is True else "NOT_PINNED")
 PY
 }
 
+# Report whether the service entry carries "pinUnresolved":true — the
+# browser-hint flag the composer renders the Session-bar --from-cfn-stack
+# remedy from. Set when the intrinsic-ECR image cannot be classified AND
+# --from-cfn-stack is unbound; absent once the service resolves + pins.
+service_pin_unresolved() {
+  python3 - "$1" "${SERVICE_ID}" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+target_id = sys.argv[2]
+def walk(obj):
+    found = []
+    if isinstance(obj, dict):
+        if obj.get("id") == target_id:
+            found.append(obj)
+        for v in obj.values():
+            found += walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            found += walk(v)
+    return found
+matches = walk(data)
+if not matches:
+    print("MISSING")
+    sys.exit(0)
+entry = matches[0]
+print("UNRESOLVED" if entry.get("pinUnresolved") is True else "NOT_UNRESOLVED")
+PY
+}
+
 echo "[verify] step 4: studio --from-cfn-stack — expect the service is pinned:true (issue #354 fix)"
 boot_studio_and_fetch_targets --from-cfn-stack "${STACK}"
 STATUS_CFN=$(service_is_pinned "${BODY_FILE}")
 echo "[verify]   ${SERVICE_ID} under --from-cfn-stack: ${STATUS_CFN}"
 if [ "${STATUS_CFN}" != "PINNED" ]; then
   echo "[verify] FAIL: expected ${SERVICE_ID} to be pinned:true under --from-cfn-stack, got ${STATUS_CFN}"
+  echo "[verify]   /api/targets payload:"; cat "${BODY_FILE}"
+  exit 1
+fi
+# A resolved + pinned service offers the Dockerfile picker, NOT the unresolved
+# hint, so pinUnresolved must be absent here.
+UNRES_CFN=$(service_pin_unresolved "${BODY_FILE}")
+echo "[verify]   ${SERVICE_ID} under --from-cfn-stack pinUnresolved: ${UNRES_CFN}"
+if [ "${UNRES_CFN}" = "UNRESOLVED" ]; then
+  echo "[verify] FAIL: ${SERVICE_ID} should NOT be pinUnresolved under --from-cfn-stack (it is pinned)"
   echo "[verify]   /api/targets payload:"; cat "${BODY_FILE}"
   exit 1
 fi
@@ -195,6 +237,17 @@ if [ "${STATUS_NO_CFN}" = "MISSING" ]; then
   echo "[verify]   /api/targets payload:"; cat "${BODY_FILE}"
   exit 1
 fi
+# The new browser-hint flag: an unresolvable intrinsic-ECR service WITHOUT
+# --from-cfn-stack must be marked pinUnresolved:true so the composer can render
+# the Session-bar remedy a browser-only user would otherwise never see (the
+# terminal WARN does not reach the browser).
+UNRES_NO_CFN=$(service_pin_unresolved "${BODY_FILE}")
+echo "[verify]   ${SERVICE_ID} without --from-cfn-stack pinUnresolved: ${UNRES_NO_CFN}"
+if [ "${UNRES_NO_CFN}" != "UNRESOLVED" ]; then
+  echo "[verify] FAIL: expected ${SERVICE_ID} to be pinUnresolved:true without --from-cfn-stack, got ${UNRES_NO_CFN}"
+  echo "[verify]   /api/targets payload:"; cat "${BODY_FILE}"
+  exit 1
+fi
 
 echo "[verify] step 6: cdk destroy --force (handled by the cleanup trap on exit)"
 
@@ -202,4 +255,5 @@ echo ""
 echo "[verify] All checks passed:"
 echo "[verify]   - issue #354: studio --from-cfn-stack marks the intrinsic-ECR-image ECS service pinned:true,"
 echo "[verify]     so the UI offers the image-override Dockerfile picker."
-echo "[verify]   - negative control: WITHOUT --from-cfn-stack the same service is left unmarked (unresolvable intrinsic image)."
+echo "[verify]   - negative control: WITHOUT --from-cfn-stack the same service is left unmarked (unresolvable intrinsic image)"
+echo "[verify]     AND carries pinUnresolved:true so the browser composer hints at the Session-bar --from-cfn-stack remedy."

@@ -867,6 +867,26 @@ const STUDIO_SCRIPT = `
     };
   }
 
+  // Shown for an ecs / ecs-task target whose image-pin status could not be
+  // classified because --from-cfn-stack is unbound (likely an INTRINSIC-ECR
+  // image, e.g. ContainerImage.fromEcrRepository). The terminal boot WARN says
+  // the same thing, but a browser-only user never sees it, so surface the
+  // Session-bar remedy in the composer where the Dockerfile picker would be.
+  function buildPinUnresolvedHint() {
+    const sec = el('div', 'section options image-override');
+    sec.appendChild(el('h3', null, 'Image override unavailable'));
+    sec.appendChild(
+      el(
+        'div',
+        'opt-hint io-hint',
+        'This image could not be classified without deployed state. If it is pinned to a deployed ' +
+          'registry (e.g. ContainerImage.fromEcrRepository), set --from-cfn-stack in the Session bar ' +
+          'so studio can resolve it and offer a Dockerfile picker to rebuild it locally.'
+      )
+    );
+    return sec;
+  }
+
   // Per-backing-service image-override pickers for a pinned ALB (issue #384):
   // one Dockerfile select per deployed-registry-pinned service the ALB fronts.
   // collect() returns a { [serviceId]: dockerfile } map threaded as
@@ -1063,6 +1083,7 @@ const STUDIO_SCRIPT = `
                 btnSlot,
                 kind: group.kind,
                 pinned: entry.pinned === true,
+                pinUnresolved: entry.pinUnresolved === true,
                 backingPinnedServices: entry.backingPinnedServices || [],
                 agentCoreHasWs: entry.agentCoreHasWs === true,
                 agentCoreContractPath: entry.agentCoreContractPath || null,
@@ -1436,6 +1457,15 @@ const STUDIO_SCRIPT = `
         const io = buildImageOverridePicker(applied && applied.imageOverride);
         ws.appendChild(io.node);
         collectImageOverride = io.collect;
+      } else if (
+        meta &&
+        (meta.kind === 'ecs' || meta.kind === 'ecs-task') &&
+        meta.pinUnresolved
+      ) {
+        // Could not classify the image-pin status (no --from-cfn-stack); hint
+        // at the Session-bar remedy instead of a Dockerfile picker (the
+        // terminal-only #484 WARN never reaches a browser-only user).
+        ws.appendChild(buildPinUnresolvedHint());
       }
       // An ALB boots its backing ECS services (issue #384); a pinned backing
       // service has the same "local edits do not take effect" problem, so offer

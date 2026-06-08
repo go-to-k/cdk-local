@@ -37,6 +37,20 @@ export interface StudioTarget {
    */
   pinned?: boolean;
   /**
+   * Set on a servable `ecs` service OR an `ecs-task` task definition whose
+   * image-pin status could NOT be classified at boot AND `--from-cfn-stack` is
+   * not bound (issue follow-up to #354 / #484). The usual cause is an INTRINSIC
+   * ECR image (`ContainerImage.fromEcrRepository(repo)`), which is only
+   * resolvable against deployed state — so without the binding the target is
+   * neither marked `pinned` (no Dockerfile picker) nor obviously broken. The
+   * terminal boot WARN already explains this, but a browser-only studio user
+   * never sees it; this flag lets the composer render an in-UI hint to set
+   * `--from-cfn-stack` in the Session bar so the picker can appear. Mutually
+   * exclusive with `pinned` (a successfully-classified pin gets the picker, not
+   * the hint).
+   */
+  pinUnresolved?: boolean;
+  /**
    * Set on an `alb` entry: the deployed-registry-pinned ECS services this ALB
    * fronts (issue #384). `start-alb` boots the ALB's backing services, so a
    * pinned backing service has the same "local edits do not take effect"
