@@ -14,8 +14,8 @@ The hooks split into three classes:
 3. **Markgate-backed gates** — block `git commit` / `gh pr create` /
    `gh pr merge` when the matching markgate marker is stale, forcing
    the corresponding skill (`/check`, `/check-docs`, `/run-integ`,
-   `/review-pr`, `/verify-pr`) to be re-run before the gated action
-   can proceed.
+   `/review-pr`, `/verify-pr`, `/merge-pr`) to be re-run before the
+   gated action can proceed.
 
 ## 1. Universal-shape safety hooks
 
@@ -141,9 +141,9 @@ The hooks split into three classes:
 
 ## 3. Markgate-backed gates
 
-The six markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
-`pr-review-gate.sh`, `integ-gate.sh`, `cdkd-parity-gate.sh`, and
-`create-integ-gate.sh`) are
+The seven markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
+`pr-review-gate.sh`, `integ-gate.sh`, `cdkd-parity-gate.sh`,
+`create-integ-gate.sh`, and `gh-pr-merge-worktree-gate.sh`) are
 all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
 parses leading `cd <path>` and the last `git -C <path>` /
 `gh -C <path>` flag from the command, then `cd`s to that resolved
@@ -378,3 +378,41 @@ call `markgate set integ` directly from a shell.
   Fail-open: `gh` / `markgate` / `git` missing, or `origin/main`
   unresolvable -> exit 0 silently. The skill is the ONLY legitimate
   setter — never `markgate set create-integ` directly from a shell.
+
+### gh-pr-merge-worktree-gate (worktree merge)
+
+- **`gh-pr-merge-worktree-gate.sh`** blocks a hand-run `gh pr merge`
+  (incl. `gh -C <path> pr merge` / `cd <path> && gh pr merge` /
+  `--auto`) from inside a `.claude/worktrees/<branch>/` **side
+  worktree** unless the `merge-pr` markgate marker is fresh — forcing
+  every worktree merge through the `/merge-pr` skill, the single
+  chokepoint that:
+  - merges WITHOUT `--delete-branch` (so gh runs no local cleanup and
+    never trips the `'main' is already used by worktree` fatal that a
+    hand-run `gh pr merge --squash --delete-branch` hits from a side
+    worktree), and
+  - then cleans the worktree + local branch + remote branch correctly
+    via `git -C <main>`.
+
+  Routing every worktree merge through one skill means any future step
+  added to the merge flow runs automatically — there is one path, not
+  two. `/merge-pr` runs `markgate set merge-pr` in its own step BEFORE
+  its `gh pr merge` call (a PreToolUse hook evaluates the whole command
+  string before any line runs, so the set + merge must be SEPARATE Bash
+  calls — see [[markgate-set-separate-bash-call]]), so the skill's own
+  merge passes; a hand-run merge has no fresh marker and is blocked with
+  an error naming `/merge-pr <N>`.
+
+  Scope: ONLY side worktrees (`*/.claude/worktrees/*`, resolved via
+  `git rev-parse --show-toplevel` after the same cwd resolution the
+  other gates use). A merge from the main worktree does not hit the
+  fatal and is left alone (fail-open). The `merge-pr` gate is TTL-only
+  (`ttl: 30m`, see `.markgate.yml`): a merge changes no tracked files,
+  so a content digest would stay fresh forever after a set — the short
+  TTL bounds the window so a stale marker left by a crashed `/merge-pr`
+  cannot authorize a later hand-run merge.
+
+  Fail-open when `git` / `markgate` are missing or the target is not a
+  side worktree. The `/merge-pr` skill is the ONLY legitimate setter of
+  the `merge-pr` marker — never `markgate set merge-pr` directly from a
+  shell to bypass this gate.

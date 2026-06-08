@@ -61,7 +61,23 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
    the worktree-remove in step 4 (there is nothing to detach) but still delete
    the local branch.
 
-2. **Merge, WITHOUT `--delete-branch`** (run in the worktree so the merge-time
+2. **Authorize this merge through the worktree-merge gate** — in its OWN Bash
+   call, BEFORE the merge call:
+
+   ```bash
+   mise exec -- markgate set merge-pr
+   ```
+
+   `gh-pr-merge-worktree-gate.sh` blocks a hand-run `gh pr merge` from a side
+   worktree unless this marker is fresh — that is what forces every worktree
+   merge through THIS skill. It MUST be a separate Bash invocation from the
+   merge in step 3: a PreToolUse hook evaluates the whole command string before
+   any line runs, so chaining `markgate set merge-pr && gh pr merge` would still
+   see a stale marker and block. (The `merge-pr` gate has a 30m TTL so this
+   authorization does not linger.) This is the ONLY place `markgate set
+   merge-pr` is ever called — never run it by hand to merge outside this skill.
+
+3. **Merge, WITHOUT `--delete-branch`** (run in the worktree so the merge-time
    gates fire):
 
    ```bash
@@ -73,7 +89,7 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
    gates block this — stale `verify-pr` / `pr-review` / `integ` marker — stop and
    run the named skill; do NOT work around the block.)
 
-3. **Confirm the remote merge landed** before touching anything local:
+4. **Confirm the remote merge landed** before touching anything local:
 
    ```bash
    gh pr view "$PR" --json state,mergedAt -q '"state=\(.state) mergedAt=\(.mergedAt)"'
@@ -82,7 +98,7 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
    Expect `state=MERGED`. If it is not MERGED, STOP — do not delete the worktree
    (the branch is your only copy of un-merged work).
 
-4. **Clean up local artifacts** from the main worktree (a worktree cannot remove
+5. **Clean up local artifacts** from the main worktree (a worktree cannot remove
    itself while you are cd'd into it):
 
    ```bash
@@ -94,7 +110,7 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
    `branch -D` succeeds because the branch is no longer checked out in any
    worktree once the worktree is removed.
 
-5. **Confirm the remote branch is gone** (the repo's `delete_branch_on_merge`
+6. **Confirm the remote branch is gone** (the repo's `delete_branch_on_merge`
    auto-deletes it on merge). Only if it somehow survived, delete it via the API
    — NOT `git push origin --delete`, which `post-merge-orphan-push-gate.sh` may
    flag:
@@ -105,13 +121,15 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
      || echo "remote branch already deleted"
    ```
 
-6. **Report**: PR `#<N>` merged (squash), worktree removed, local + remote branch
+7. **Report**: PR `#<N>` merged (squash), worktree removed, local + remote branch
    deleted, `git worktree list` no longer shows the feature worktree.
 
 ## Notes
 
-- The `cd` into the main worktree happens only via `git -C "$MAIN"` in step 4 —
-  the working directory of the merge command in step 2 stays inside the feature
+- The `cd` into the main worktree happens only via `git -C "$MAIN"` in step 5 —
+  the working directory of the merge command in step 3 stays inside the feature
   worktree so the gates resolve the correct per-worktree markgate state dir.
-- This skill never sets any markgate marker. It assumes the gates are already
-  satisfied; it only performs the merge + cleanup.
+- This skill sets exactly ONE markgate marker: `merge-pr` (step 2), which
+  authorizes its own `gh pr merge` past `gh-pr-merge-worktree-gate.sh`. It does
+  NOT set / re-run the `verify-pr` / `pr-review` / `integ` gates — those must
+  already be satisfied; this skill is the merge + cleanup mechanic.

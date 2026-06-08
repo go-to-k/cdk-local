@@ -107,3 +107,20 @@ gates:
     # later edit on the same PR doesn't re-block.
     include:
       - "src/cli/commands/**"
+
+  merge-pr:
+    # `gh-pr-merge-worktree-gate.sh` blocks a hand-run `gh pr merge` from a
+    # side worktree (`*/.claude/worktrees/*`) unless this marker is fresh —
+    # forcing every worktree merge through the `/merge-pr` skill (the single
+    # chokepoint that merges WITHOUT `--delete-branch`, so it never trips the
+    # `'main' is already used by worktree` fatal, then cleans the worktree +
+    # local + remote branch). `/merge-pr` runs `markgate set merge-pr` in its
+    # own step BEFORE its `gh pr merge` call so its own merge passes; a
+    # hand-run merge has no fresh marker and is blocked.
+    #
+    # TTL-only (no file-hash): a merge does not change tracked files, so a
+    # content digest would stay "fresh" indefinitely after `/merge-pr` set
+    # it. The short TTL bounds the window so a stale marker left by a crashed
+    # `/merge-pr` cannot authorize a later hand-run merge (re-run `/merge-pr`,
+    # which re-sets it). 30m comfortably covers a merge + cleanup pass.
+    ttl: 30m
