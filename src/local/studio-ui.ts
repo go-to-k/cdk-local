@@ -42,7 +42,7 @@ const STUDIO_CSS = `
     display: flex; align-items: center; gap: 10px;
   }
   header .brand { font-weight: 700; color: #fff; }
-  header .meta { color: #888; font-size: 12px; }
+  header .meta { color: #bdbdbd; font-size: 12px; }
   #session-bar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     padding: 5px 14px; background: #141414; border-bottom: 1px solid #2a2a2a;
@@ -60,7 +60,7 @@ const STUDIO_CSS = `
   }
   #session-bar button:hover { background: #314b34; }
   #session-bar #sess-msg { color: #7bd88f; min-width: 40px; }
-  #session-bar .sess-synth { color: #777; margin-left: auto; }
+  #session-bar .sess-synth { color: #bdbdbd; margin-left: auto; }
   main {
     display: grid; grid-template-columns: 280px 5px 1fr 5px 320px;
     /* Body is a flex column (header + session-bar + main); main fills the
@@ -72,7 +72,7 @@ const STUDIO_CSS = `
   .splitter:hover, .splitter.dragging { background: #4ec97a; }
   .pane h2 {
     margin: 0; padding: 8px 12px; font-size: 11px; text-transform: uppercase;
-    letter-spacing: 0.5px; color: #888; background: #151515;
+    letter-spacing: 0.5px; color: #cfcfcf; background: #151515;
     position: sticky; top: 0; border-bottom: 1px solid #2a2a2a; z-index: 1;
   }
   .pane-head {
@@ -102,7 +102,7 @@ const STUDIO_CSS = `
     border-bottom: 1px solid rgba(227, 194, 114, 0.3);
   }
   .group-title:hover { background: rgba(227, 194, 114, 0.18); }
-  .group-title .caret { color: #9a9a9a; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
+  .group-title .caret { color: #bdbdbd; font-size: 9px; width: 9px; display: inline-block; transition: transform .1s; }
   .group-title.open .caret { transform: rotate(90deg); }
   /* A long group label (e.g. "Application Load Balancers") would wrap onto a
      second line in the 280px pane and shove the count off to the right; keep
@@ -112,7 +112,7 @@ const STUDIO_CSS = `
     flex: 0 1 auto; min-width: 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .group-title .count { color: #8a8a8a; flex: none; }
+  .group-title .count { color: #bdbdbd; flex: none; }
   .group-body.collapsed { display: none; }
   .target {
     padding: 6px 12px; display: flex; align-items: center; gap: 8px;
@@ -156,7 +156,7 @@ const STUDIO_CSS = `
     background: #18223a; border-bottom: 1px solid #2b3c5e;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .target .kind { color: #8f8f8f; font-size: 11px; }
+  .target .kind { color: #bdbdbd; font-size: 11px; }
   .target .invoke-btn {
     padding: 2px 10px; font: 11px ui-monospace, Menlo, monospace; font-weight: 700;
     color: #0d1f12; background: #4ec97a; border: 0; border-radius: 3px; cursor: pointer;
@@ -177,7 +177,7 @@ const STUDIO_CSS = `
   }
   .row:hover { background: #222; }
   .row.sel { background: #2a3550; }
-  .row .ts { color: #777; }
+  .row .ts { color: #bdbdbd; }
   .row .label { color: #ddd; flex: 1; overflow: hidden; text-overflow: ellipsis; }
   .row.reinvoke .label::before { content: '\\21A9 '; color: #6aa0ff; margin-right: 2px; }
   .row .status { color: #7bd88f; }
@@ -223,7 +223,7 @@ const STUDIO_CSS = `
     text-transform: uppercase; letter-spacing: 0.7px; color: #6cb6ff;
   }
   .req-composer .req-result .req-line { color: #cdd6e0; font-weight: 600; }
-  .req-composer .req-result .req-resp-headers { color: #8b8b8b; }
+  .req-composer .req-result .req-resp-headers { color: #c2c2c2; }
   .req-composer .req-result .req-resp-body { color: #d6d6d6; }
   /* Make the major output-section headings (the result REQUEST / RESPONSE pair
      + the serve LOGS) prominent (vs the muted 11px grey .section h3): larger,
@@ -233,13 +233,15 @@ const STUDIO_CSS = `
      order (.section h3 is declared later in this stylesheet). */
   .req-composer .req-result .req-req h3,
   .req-composer .req-result .req-resp h3,
-  .section.serve-logs h3 {
+  .section.serve-logs h3,
+  .section.detail-out h3 {
     font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
     padding-bottom: 4px; margin-bottom: 8px; border-bottom: 1px solid #2c2c2c;
   }
   .req-composer .req-result .req-req h3,
   .req-composer .req-result .req-resp h3,
-  .section.serve-logs h3 { color: #e3d18a; }
+  .section.serve-logs h3,
+  .section.detail-out h3 { color: #e3d18a; }
   /* The serve workspace's structural labels (Started with / Endpoints, and the
      request-composer form's Request / Headers / Body) are blue — matching the
      result's blue Headers / Body sub-labels, distinct from the yellow output
@@ -248,7 +250,17 @@ const STUDIO_CSS = `
   .section.started-with h3,
   .section.endpoints h3,
   .section.req-composer > h3,
+  .section.options h3,
   .req-composer > .opt-label { color: #6cb6ff; }
+  /* Image override is the single most consequential ECS knob — a pinned image
+     silently ignores local source edits — so its block gets a boxed amber
+     accent to stand out from the ordinary blue option headings (the same amber
+     as its "local edits do not take effect" io-hint caveat). Declared AFTER the
+     blue .section.options h3 (equal specificity) so amber wins by source order. */
+  .section.image-override { background: #211d12; border-left: 3px solid #e3b34a; }
+  .section.image-override h3 {
+    color: #e3b34a; font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
+  }
   .composer button:disabled { background: #333; color: #888; cursor: default; }
   .composer .reinvoke-btn { margin-top: 6px; padding: 4px 14px; }
   .log-clear {
@@ -262,7 +274,11 @@ const STUDIO_CSS = `
   .clear-row { display: flex; justify-content: flex-end; margin: 4px 0; }
   .composer .err { color: #e0707a; margin-top: 6px; min-height: 18px; }
   .section { padding: 8px 12px; border-bottom: 1px solid #222; }
-  .section h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
+  /* Default block-section heading is blue (the WebSocket console heading + any
+     section without a more specific colour) — the yellow output headings
+     (.serve-logs / .detail-out / result req-req/req-resp) and amber
+     image-override override it; the muted grey it used to be is gone. */
+  .section h3 { margin: 0 0 6px; font-size: 11px; color: #6cb6ff; text-transform: uppercase; }
   .section h3 .ok { color: #7bd88f; }
   .section h3 .bad { color: #e0707a; }
   .section pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: #cfcfcf; }
@@ -290,9 +306,9 @@ const STUDIO_CSS = `
   #log-results.active { display: block; }
   .log-hit { padding: 4px 12px; border-bottom: 1px solid #222; white-space: pre-wrap;
     word-break: break-word; }
-  .log-hit .lt { color: #777; }
+  .log-hit .lt { color: #bdbdbd; }
   .log-hit .lg { color: #6aa9ff; }
-  .log-hits-meta { padding: 6px 12px; color: #888; font-size: 11px; }
+  .log-hits-meta { padding: 6px 12px; color: #bdbdbd; font-size: 11px; }
   /* Per-line log severity colour (parsed from the WARN: / ERROR: prefix the
      compact logger emits) so warn / error stand out in the LOGS panel + search
      even with no ANSI colour over the child pipe. */
@@ -304,7 +320,12 @@ const STUDIO_CSS = `
   #conn.down { color: #e0707a; }
   .options .opt-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
   .options .opt-row.opt-col { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
-  .opt-label { color: #aaa; font-size: 12px; min-width: 120px; }
+  /* Curated-composer block labels (Listener port remap / Bearer token / Env
+     vars / scalar labels) are blue — matching the serve-workspace structural
+     labels + the .section.options headings — so they read on the dark pane
+     instead of vanishing as faint grey. The all-options + io-label overrides
+     below keep their own (white / light) colours. */
+  .opt-label { color: #6cb6ff; font-size: 12px; min-width: 120px; }
   .opt-bool { color: #ddd; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
   .options input[type=text], .options input[type=number] {
     flex: 1; background: #111; color: #ddd; border: 1px solid #333; border-radius: 3px;
@@ -315,7 +336,7 @@ const STUDIO_CSS = `
   .pair-row { display: flex; align-items: center; gap: 6px; }
   .pair-in { width: 1px; flex: 1; background: #111; color: #ddd; border: 1px solid #333;
     border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
-  .pair-sep { color: #888; }
+  .pair-sep { color: #bdbdbd; }
   .pair-x { background: #2a2a2a; color: #bbb; border: none; border-radius: 3px; cursor: pointer;
     padding: 2px 7px; font: 12px ui-monospace, monospace; }
   .pair-x:hover { background: #3a2a2a; color: #e0707a; }
@@ -326,15 +347,19 @@ const STUDIO_CSS = `
     padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace; min-width: 0; }
   .options select:focus { outline: none; border-color: #4ec97a; }
   details.all-options { margin: 8px 0; border-top: 1px solid #2a2a2a; padding-top: 6px; }
-  details.all-options > summary { color: #8a8a8a; font-size: 12px; cursor: pointer; user-select: none; }
-  details.all-options > summary:hover { color: #bbb; }
+  details.all-options > summary { color: #6cb6ff; font-size: 12px; cursor: pointer; user-select: none; }
+  details.all-options > summary:hover { color: #8ec7ff; }
   .all-options .opt-row { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin: 6px 0; }
   .all-options input.raw-args {
     width: 100%; box-sizing: border-box; background: #111; color: #ddd; border: 1px solid #333;
     border-radius: 3px; padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace;
   }
   .all-options input.raw-args:focus { outline: none; border-color: #4ec97a; }
-  .opt-hint { color: #777; font-size: 11px; }
+  /* Secondary prose (flag descriptions, the raw-args hint, "(defaults...)"
+     notes) is a readable light grey, not the near-invisible #777 it used to be
+     on the dark pane — still dimmer than primary content, but legible. The
+     amber io-hint caveat keeps its own colour via the two-class override. */
+  .opt-hint { color: #c2c2c2; font-size: 11px; }
   /* Image-override picker legibility (issue #396): the construct-path label is
      a readable light color (long paths wrap cleanly), and the caveat hint is an
      attention amber so the "local edits do not take effect" note is actually
@@ -352,7 +377,10 @@ const STUDIO_CSS = `
   .all-options input.flag-control:focus, .all-options select.flag-control:focus {
     outline: none; border-color: #4ec97a;
   }
-  .all-options .opt-label { color: #9aa4ad; }
+  /* All-options flag labels are white, matching the checkbox (.opt-bool) flag
+     labels in the same section — so a value-input flag name and a boolean flag
+     name read uniformly instead of one being faint grey, the other white. */
+  .all-options .opt-label { color: #ddd; }
   .started-list { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
   .started-flag { color: #7bd88f; font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
   .envkv-modes { display: flex; gap: 0; }
@@ -816,7 +844,7 @@ const STUDIO_SCRIPT = `
   }
 
   function buildImageOverridePicker(prefillValue) {
-    const sec = el('div', 'section options');
+    const sec = el('div', 'section options image-override');
     sec.appendChild(el('h3', null, 'Image override'));
     const r = buildImageOverrideRow('Local Dockerfile', prefillValue);
     sec.appendChild(r.row);
@@ -838,7 +866,7 @@ const STUDIO_SCRIPT = `
   // collect() returns a { [serviceId]: dockerfile } map threaded as
   // imageOverrides (one --image-override service=df per entry).
   function buildAlbImageOverridePicker(services, prefillMap) {
-    const sec = el('div', 'section options');
+    const sec = el('div', 'section options image-override');
     sec.appendChild(el('h3', null, 'Image override (pinned backing services)'));
     const rows = services.map(function (svc) {
       const r = buildImageOverrideRow(svc.label, prefillMap ? prefillMap[svc.id] : undefined);
@@ -2148,12 +2176,12 @@ const STUDIO_SCRIPT = `
     const ev = invById.get(invId);
     if (!ev) return;
 
-    const reqSec = el('div', 'section');
+    const reqSec = el('div', 'section detail-out');
     reqSec.appendChild(el('h3', null, 'Request'));
     reqSec.appendChild(el('pre', null, ev.request != null ? fmt(ev.request) : '(none)'));
     result.appendChild(reqSec);
 
-    const respSec = el('div', 'section');
+    const respSec = el('div', 'section detail-out');
     const h = el('h3', null, 'Response');
     if (ev.status != null) {
       const cls = ev.status >= 200 && ev.status < 300 ? 'ok' : 'bad';
@@ -2165,7 +2193,7 @@ const STUDIO_SCRIPT = `
     result.appendChild(respSec);
 
     const logs = logsById.get(invId) || [];
-    const logSec = el('div', 'section');
+    const logSec = el('div', 'section detail-out');
     logSec.appendChild(el('h3', null, 'Logs'));
     const invLogPre = el('pre', null);
     fillLogPre(invLogPre, logs);
@@ -2288,12 +2316,12 @@ const STUDIO_SCRIPT = `
     head.appendChild(newReqBtn);
     ws.appendChild(head);
 
-    const reqSec = el('div', 'section');
+    const reqSec = el('div', 'section detail-out');
     reqSec.appendChild(el('h3', null, 'Request'));
     reqSec.appendChild(el('pre', null, ev.request != null ? fmt(ev.request) : '(none)'));
     ws.appendChild(reqSec);
 
-    const respSec = el('div', 'section');
+    const respSec = el('div', 'section detail-out');
     const h = el('h3', null, 'Response');
     if (ev.status != null) {
       const cls = ev.status >= 200 && ev.status < 300 ? 'ok' : 'bad';
@@ -2305,7 +2333,7 @@ const STUDIO_SCRIPT = `
 
     // Logs bound to THIS request at CloudWatch granularity (D5), fetched
     // from the server store.
-    const logSec = el('div', 'section');
+    const logSec = el('div', 'section detail-out');
     logSec.appendChild(el('h3', null, 'Logs'));
     const logPre = el('pre', null, '(loading…)');
     logSec.appendChild(logPre);

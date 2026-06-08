@@ -44,6 +44,17 @@ describe('ecs-task composer image-override picker (issue #388)', () => {
     }
   });
 
+  it('marks the picker section with the image-override class (the boxed amber prominence treatment)', () => {
+    const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
+    try {
+      ecsTaskComposer(h, true);
+      const section = (h.document.querySelector('.image-override-select') as any).closest('.section');
+      expect(section.classList.contains('image-override')).toBe(true);
+    } finally {
+      h.close();
+    }
+  });
+
   it('does NOT render the picker for a local-asset task definition', () => {
     const h = createStudioHarness({ epilogue: EXPOSE }) as Harness;
     try {
