@@ -356,8 +356,10 @@ if ! grep -qF 'function stackSections' "${BODY_FILE}" \
 fi
 echo "    OK: targets pane folds the per-stack construct-path prefix + scrollable path tail"
 # Composer send-flow (issues #334 / #335 / #336): surgical serve-log update,
-# timeline deselect, and the New request back affordance.
-if ! grep -qF 'serveLogPre.textContent = arr.join(' "${BODY_FILE}" \
+# timeline deselect, and the New request back affordance. The surgical update
+# now goes through fillLogPre (the colour-by-level helper, #478) instead of a
+# raw `serveLogPre.textContent = arr.join(...)` assignment.
+if ! grep -qF 'fillLogPre(serveLogPre, arr)' "${BODY_FILE}" \
   || ! grep -qF "el('button', 'reinvoke-btn', 'New request')" "${BODY_FILE}" \
   || ! grep -qF "document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'))" "${BODY_FILE}"; then
   echo "FAIL: GET / did not include the composer send-flow fixes (issues #334 / #335 / #336)"
