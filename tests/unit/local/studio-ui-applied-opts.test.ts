@@ -109,6 +109,28 @@ describe('studio serve "Started with" summary (issue #356)', () => {
     }
   });
 
+  it('renders "Started with" as a collapsible <details>, open by default', () => {
+    const h = createStudioHarness({ epilogue: EXPOSE });
+    try {
+      const t = exposed(h);
+      t.serveMeta.set('Stk/Svc', { kind: 'ecs' });
+      t.serveApplied.set('Stk/Svc', { options: { '--max-tasks': '3' } });
+      t.serveState.set('Stk/Svc', { status: 'running', endpoints: [] });
+      t.renderServeWorkspace('Stk/Svc');
+
+      const sec = h.document.querySelector('.started-with') as any;
+      expect(sec).toBeTruthy();
+      // Collapsible so a long launch config can be hidden, but open by default
+      // so it stays visible at a glance.
+      expect(sec.tagName.toLowerCase()).toBe('details');
+      expect(sec.open).toBe(true);
+      // The heading lives inside the <summary> (the disclosure toggle).
+      expect(sec.querySelector('summary > h3')?.textContent).toBe('Started with');
+    } finally {
+      h.close();
+    }
+  });
+
   it('shows a "(defaults)" hint when a serve was started with no options', () => {
     const h = createStudioHarness({ epilogue: EXPOSE });
     try {
