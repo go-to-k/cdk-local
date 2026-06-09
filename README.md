@@ -53,11 +53,13 @@ cdk-local runs your **application compute** in Docker, using your CDK app as the
 
 It deliberately does NOT emulate AWS managed services: your code reaches DynamoDB / S3 / Secrets Manager / Cognito / SNS / SQS / etc. as **real AWS** through your IAM credentials (or pass `--assume-role <arn>` to assume a different role). Add `--from-cfn-stack` to also bind env vars to a deployed stack's real ARNs and Secret values.
 
+Prefer a local stand-in for some services? `--env-vars` can point the AWS SDK's per-service endpoint at a local AWS-compatible server you run yourself, while everything else stays on real AWS — see [Selective local backends](#selective-local-backends).
+
 The locally executable resources are listed under [Supported resources](#supported-resources).
 
 ## Commands
 
-Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`).
+Run every `cdkl` command from your CDK project root (the directory containing `cdk.json`). Every command accepts `--app` to override the source — either a CDK app command (`--app "node bin/app.js"`) or a path to an already-synthesized cloud assembly directory (`--app ./cdk.out`); the latter skips synthesis and runs straight from the existing assembly. Without it, `cdkl` falls back to the `app` field in `cdk.json` (or the `CDKL_APP` env var).
 
 Every command takes its target two ways:
 
@@ -123,7 +125,7 @@ cdkl studio --watch                          # serves started from the UI hot-re
 cdkl studio --stack 'dev/*'                  # scope the displayed target list (multi-stack apps)
 ```
 
-`--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too.
+`--from-cfn-stack` / `--assume-role` / `--watch` are session-global and also editable live from the Session bar — they apply to every invoke / serve you start from the UI. The standard synth flags (`--app` / `--profile` / `--region` / `-c`) work here too — including `--app ./cdk.out` to open the console straight from a pre-synthesized assembly.
 
 Each target's composer surfaces its per-run options as controls:
 
@@ -228,6 +230,12 @@ cdkl start-alb --from-cfn-stack \
   --image-build-secret npmrc=./.npmrc \
   --image-target builder
 ```
+
+The build inputs feed the `docker build` that `--image-override` runs, so each one only takes effect on an overridden target:
+
+- **`--image-build-arg KEY=VAL`** — a `docker build --build-arg`, e.g. to flip `NODE_ENV` or pass a base-image tag.
+- **`--image-build-secret id=src`** — a `docker build --secret`, the safe way to thread a private-registry `.npmrc`, an SSH key, or any credential a `RUN --mount=type=secret` step consumes (never baked into a layer).
+- **`--image-target <stage>`** — a `docker build --target`, to build a specific stage of a multi-stage Dockerfile (e.g. stop at `builder` instead of the production stage).
 
 Per-service build inputs (`<svc>:KEY=VAL` for build-arg / build-secret, `<svc>=stage` for target), monorepo recipes, private-registry npmrc threading, `--no-interactive-overrides` / `--strict-overrides`, and the `--watch` rebuild loop: [docs/local-emulation.md#local-build-override---image-override](docs/local-emulation.md#local-build-override---image-override).
 
