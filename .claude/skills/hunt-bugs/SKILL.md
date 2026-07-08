@@ -119,9 +119,11 @@ out-of-scope feature is correct behavior, not a defect.
 ### 1. Worktree + build
 
 Per `.claude/CLAUDE.md`, never work in the main checkout:
-`git worktree add .claude/worktrees/<name> -b <branch> origin/main` →
-`( cd .claude/worktrees/<name> && pnpm install )` → `vp run build` (the CLI runs
-from `dist/` — `node dist/cli.js`, or the `cdkl` bin).
+`git worktree add .claude/worktrees/<name> -b <branch> origin/main` → then, inside
+it, `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, so
+`vp` / `markgate` won't resolve until this) → `pnpm install` (worktrees have no
+`node_modules`) → `vp run build` (the CLI runs from `dist/` — `node dist/cli.js`,
+or the `cdkl` bin).
 
 ### 2. Scaffold the fixture
 

@@ -145,7 +145,9 @@ there). Per lane:
 
 ```bash
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
-( cd .claude/worktrees/<name> && pnpm install )     # worktrees have no node_modules
+( cd .claude/worktrees/<name> \
+  && mise trust && mise install \    # a fresh worktree's .mise.toml is untrusted — vp / markgate won't resolve until this
+  && pnpm install )                  # worktrees have no node_modules
 ```
 
 Do the fix in the worktree (match the existing module/pattern exactly; ESM relative
