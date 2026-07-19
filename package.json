@@ -38,7 +38,7 @@
     "url": "https://github.com/go-to-k/cdk-local/issues"
   },
   "type": "module",
-  "packageManager": "pnpm@11.1.0",
+  "packageManager": "pnpm@11.15.0",
   "keywords": [
     "aws",
     "cdk",
