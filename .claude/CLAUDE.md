@@ -1410,6 +1410,32 @@ vp run runtime:smoke
   collisions → claim → file-disjoint lanes → `/verify-pr` → `/merge-pr`);
   `/hunt-bugs` is the companion sweep that files the issues. Skip the claim
   only for a trivial change you will PR within minutes.
+- **Every session-wrap / task-complete report MUST end with a "Remaining
+  work" section AND a "Session close" verdict — unprompted** (mirrors
+  go-to-k/cdkd#1257 and #1262; the user should never have to ask "any
+  follow-up tasks?" or "can I close this session?"). **Scope: only work
+  THIS session created or touched.** The section reports residuals of the
+  task just finished: gaps in what was shipped, polish deferred while doing
+  it, and issues filed BECAUSE of this work. It is NOT a backlog dump. Do
+  not list pre-existing open issues that merely happen to be unresolved,
+  and once the session moves on to an unrelated task, stop carrying forward
+  items from the earlier unrelated work. If the current work leaves nothing
+  behind, the answer is "Nothing remaining" even when the repo has open
+  issues elsewhere. **Remaining work** — exactly one of: **TODO (issue
+  #N)** (work that still needs doing later; the ONLY bucket meaning
+  follow-ups exist — every entry MUST have a GitHub issue number, filed
+  BEFORE reporting); **Won't-do (decided + recorded)** (things consciously
+  decided AGAINST doing, with a one-line reason and where the decision is
+  recorded — PR body, in-code comment, issue comment; no action needed);
+  **Nothing remaining** (an explicit statement after actually auditing for
+  deferred polish and reviewer nits). Same taxonomy as the `/verify-pr`
+  nit sweep. **Session close** — a one-line verdict: **CLOSEABLE** or
+  **NOT CLOSEABLE (waiting on: ...)** naming the blocker. CLOSEABLE
+  requires ALL of: working tree clean and no dangling feature branch; no
+  open PRs owned by this session; no running background tasks / integs /
+  subagents; no leftover Docker containers or networks from local runs
+  (`docker ps --filter name=cdkl-`, `docker network ls --filter
+  name=cdkl-task-`); every TODO filed as an issue.
 
 ## Positioning when communicating
 

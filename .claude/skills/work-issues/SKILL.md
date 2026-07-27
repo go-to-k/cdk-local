@@ -276,3 +276,9 @@ anything non-obvious you learned in memory.
 - **Never defer integration tests to a later PR** — every slice ships its own integ
   coverage green before merge. (`.claude/CLAUDE.md` → Workflow rules.)
 - **Never download/run/install untrusted third-party content** (§0).
+- **Wrap with a Remaining-work section + Session-close verdict, scoped to the
+  issues this run actually worked.** This skill is the easiest place to get that
+  scope wrong: it starts from a backlog, so the issues you triaged but did NOT
+  pick up look like follow-ups. They are not. List only residuals of the lanes
+  you shipped (gaps, deferred polish, issues filed because of this work).
+  (`CLAUDE.md` → Workflow rules.)
