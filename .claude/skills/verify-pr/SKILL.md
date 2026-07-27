@@ -116,10 +116,10 @@ Run each check and report pass/fail:
 
 12. **Residual review-nit sweep**
     - For every `/review-pr` reviewer agent output during this session (including re-reviews after fix-back), walk the reviewer's "Minor / Nit / Informational" section.
-    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker:
-      - (a) **Addressed in this PR** — point at the fix commit / file:line that resolves the nit.
-      - (b) **Filed as a follow-up issue** — a GitHub issue exists AND this PR's body references it.
-      - (c) **Explicitly accepted as known cost** — the PR body or a comment names the nit and explains why it's acceptable to ship as-is.
+    - For EACH item there, confirm ONE of the following is true BEFORE setting the `verify-pr` marker (same taxonomy as the session-wrap remaining-work buckets, go-to-k/cdkd#1257 — Fixed here / TODO / Won't-do):
+      - (a) **Fixed in this PR** — point at the fix commit / file:line that resolves the nit.
+      - (b) **TODO (issue #N)** — a GitHub issue exists AND this PR's body references it. This is the only bucket that leaves future work.
+      - (c) **Won't-do (decided + recorded)** — the PR body or a comment names the nit and explains why shipping as-is is the right call. Requires no future action.
     - If NONE of (a) / (b) / (c) is true for any nit, file a bundled follow-up issue NOW (one issue per session, listing every uncovered nit) and update the PR body to reference it. Do not set the `verify-pr` marker until every reviewer-flagged item is on one of those three paths.
     - **Auto-close audit**: read the PR body (`gh pr view <PR> --json body -q .body`). For every `(#N)` parens-form reference, check whether it's adjacent to a close keyword (`closes` / `fixes` / `resolves`, case-insensitive). If yes: the merge will NOT auto-close the target issue. Either rewrite to parens-free `Closes #N` (auto-close fires), OR add a manual `gh issue close <N>` step to the merge sequence and note it in the PR body. The `closes-paren-form-gate.sh` hook ALREADY blocks `gh pr merge` for the `Closes (#N)` pattern — this skill step is the human-readable backup that catches the issue BEFORE the merge attempt.
 
@@ -166,7 +166,7 @@ Present results as a table:
 | code review (incl. shared-utility callers) | pass/issues found |
 | live-test changed behavior | pass/skipped/issues found |
 | retrospective + rule proposals | done/skipped |
-| residual review-nit sweep (filed / addressed / accepted) | N items / 0 unhandled |
+| residual review-nit sweep (fixed / TODO-issue / won't-do) | N items / 0 unhandled |
 | auto-close audit (no `Closes (#N)` in body) | clean / N traps fixed |
 | PR title + body freshness | up-to-date/stale (updated)/n-a (no PR yet) |
 
