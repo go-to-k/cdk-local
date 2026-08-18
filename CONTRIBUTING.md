@@ -15,6 +15,10 @@ mise trust       # one-time, when you check out a fresh clone
 pnpm install     # workspace deps
 ```
 
+Re-run `mise install` whenever a pull changes `.mise.toml` — the pinned
+markgate version and `.markgate.yml` move together, and an older binary
+rejects a newer config outright rather than degrading gracefully.
+
 The shipped runtime targets **Node 20+**; CI runs the Node 20 / 22 / 24
 matrix.
 

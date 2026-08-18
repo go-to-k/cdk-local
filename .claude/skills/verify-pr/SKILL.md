@@ -26,7 +26,7 @@ Run each check and report pass/fail:
 2. **Tests**
    - `vp run test` — all unit tests pass
    - Report test count (files and tests)
-   - **Test coverage check**: compare `git diff main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding.
+   - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding.
 
 3. **CI status**
    - If PR number is not provided as argument, auto-detect via `gh pr view --json number -q .number`
@@ -63,7 +63,7 @@ Run each check and report pass/fail:
 
    ```bash
    # Only check when the PR diff actually touches the gate scope.
-   if git diff main...HEAD --name-only | grep -qE '^src/|^tests/integration/'; then
+   if git diff origin/main...HEAD --name-only | grep -qE '^src/|^tests/integration/'; then
      mise exec -- markgate verify integ
    fi
    ```
@@ -84,7 +84,7 @@ Run each check and report pass/fail:
 
      The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down). Trust the recommendation; override only when you have a concrete reason (note the reason here).
    - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
-   - `git diff main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
+   - `git diff origin/main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?
    - Check for:
      - Logic errors or unhandled edge cases.
@@ -128,9 +128,9 @@ Run each check and report pass/fail:
     - **Title check**: read `gh pr view <PR> --json title -q .title` and confirm it still describes the union of commits on the branch. Update via `gh api -X PATCH repos/{owner}/{repo}/pulls/{number} -f title="..."` (NOT `gh pr edit --title`, which fails silently due to GraphQL Projects-classic deprecation — see hook `gh-pr-edit-deprecation-gate.sh`).
     - **Body freshness commands**:
       - `gh pr view <PR> --json commits -q '.commits | length'` — commit count on the PR
-      - `git log main..HEAD --oneline | wc -l` — commit count locally
+      - `git log origin/main..HEAD --oneline | wc -l` — commit count locally
       - If they match and > 1, the PR has been iterated on; the initial body is almost certainly stale.
-    - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff main...HEAD`). Flag any of:
+    - Read the current body (`gh pr view <PR> --json body -q .body`) and compare against the actual final diff (`git diff origin/main...HEAD`). Flag any of:
       - Bullets describing behavior that was reverted in a later commit.
       - Bullets describing checks/validations the code no longer performs.
       - File:line citations that no longer exist.

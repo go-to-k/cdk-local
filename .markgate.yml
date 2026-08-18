@@ -1,9 +1,15 @@
 # markgate configuration — https://github.com/go-to-k/markgate
 #
-# Seven gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
+# Eight gates back the pre-commit / pre-PR / pre-merge checks for cdk-local.
 # cdk-local does NOT deploy to AWS (no destroy path, no schema migration,
 # no broad real-AWS integ matrix), so the destroy / broad / schema-migration
 # gates from cdkd are not needed.
+#
+# After pulling a change to this file OR to `.mise.toml`, run `mise install`.
+# An older markgate binary rejects a newer config outright — an unknown
+# `hash:` value fails parsing for EVERY gate, not just the one using it —
+# and the gate hooks discard markgate's stderr, so the symptom is a
+# misleading "run /check first" that re-running `/check` cannot clear.
 #
 # Gates:
 #   check          — typecheck/lint/build/unit tests
@@ -37,6 +43,9 @@
 #                    brand-new subcommand) MUST ship its own integ fixture.
 #                    Set ONLY by /create-integ, which scaffolds + RUNS the
 #                    new fixture. Pre-create only, like cdkd-parity.
+#   merge-pr       — Forces a worktree `gh pr merge` through the /merge-pr
+#                    skill. TTL-only (30m), no file hash — see its block
+#                    below for why a content digest cannot work here.
 
 gates:
   check:
@@ -79,8 +88,9 @@ gates:
     # `integ` only: re-running it costs a Docker fixture run, so the
     # strictness `hash: files` buys is worth trading here. The narrower
     # `cdkd-parity` / `create-integ` gates stay on `hash: files` — both are
-    # scoped to the small, hot `src/cli/commands/**` directory where half
-    # the invalidations are genuine overlaps, so the mode would buy almost
+    # centred on the small, hot `src/cli/commands/**` directory (cdkd-parity
+    # also covers `src/internal.ts` / `src/index.ts`) where half the
+    # invalidations are genuine overlaps, so the mode would buy almost
     # nothing; `check` / `docs` stay strict because re-running them is
     # cheap. Measurement + accepted limitation (a caller broken by this
     # branch changing A while `main` changes B is invisible to `hash: diff`,

@@ -187,6 +187,15 @@ construction.
   `.markgate.yml`) need neither. The hook is a safety net, not the
   primary trigger.
 
+  **Run `mise install` after pulling a change to `.mise.toml`.** An
+  older markgate binary rejects a newer `.markgate.yml` (an unknown
+  `hash:` value fails config parsing for EVERY gate, not just the one
+  that uses it), and this hook discards markgate's stderr — so the
+  symptom is a misleading "run /check first" that re-running `/check`
+  cannot clear. The hook's preferred `mise exec -- markgate` path
+  installs the pinned version on demand; its `command -v markgate`
+  fallback, used when mise is absent, does not.
+
 ### verify-pr-gate (pre-create + pre-merge)
 
 - **`verify-pr-gate.sh`** blocks `gh pr create` and `gh pr merge`
@@ -280,19 +289,37 @@ deltas never overlap and the marker stays fresh though the combination
 is unverified. `hash: files` caught that incidentally; the 14d TTL
 still forces a periodic Docker run. See issue #498 for the measurement
 behind adopting it here and NOT for `cdkd-parity` / `create-integ`
-(both scoped to the small, hot `src/cli/commands/**` directory, where
+(both centred on the small, hot `src/cli/commands/**` directory —
+`cdkd-parity` also covers `src/internal.ts` / `src/index.ts` — where
 half the invalidations are genuine overlaps) or `check` / `docs`
 (cheap to re-run, so strictness costs nothing).
 
-One operational consequence: `hash: diff` refuses (exit 2, "no delta
-against merge-base") when run from a branch with an empty delta vs its
-base — a clean `main`, typically. That is louder than a silent pass,
-and it does not reach the gate in practice: the scope short-circuit
-below exits 0 first for any PR whose diff touches neither `src/**` nor
-`tests/integration/**`, and a PR that does touch them has a non-empty
-delta by construction. If the error ever does surface, `markgate
-status` writes it to stderr, the reason extraction yields nothing, and
-the hook falls back to its generic blocked message.
+Two operational consequences, both louder than a silent pass:
+
+- **Empty TOTAL delta is refused** (exit 2, "no delta against
+  merge-base") — typically a clean `main`. The empty check runs BEFORE
+  include/exclude filtering, so it cannot be reached through the gate: a
+  branch with no delta at all also has no diff, and the scope
+  short-circuit below exits 0 first. If the error ever does surface,
+  `markgate status` writes it to stderr, the reason extraction yields
+  nothing, and the hook falls back to its generic blocked message.
+- **Empty IN-SCOPE delta is ACCEPTED**, with a warning and exit 0:
+  `hash=diff recorded an empty in-scope delta (include: src/**,
+  tests/integration/**); this branch changes nothing the gate covers,
+  so the marker stays fresh until it does`. A docs-only branch is the
+  normal case. Do not read that warning as the refusal above — the
+  marker IS written, and `verify` returns 0.
+
+**Unresolvable `base` ref is a hard stop, and `/run-integ` cannot clear
+it.** When `origin/main` does not resolve (fresh clone, a worktree that
+has never fetched), markgate exits 2 for `verify`, `status` AND `set`
+alike: `hash=diff: base ref "origin/main" does not resolve; fetch it
+first (git fetch origin)`. The hook's short-circuit is skipped in that
+state too (it needs the same ref), so the merge is blocked with the
+generic message — and re-running `/run-integ` cannot fix it, because
+its `markgate set integ` fails identically. **The fix is `git fetch
+origin`**, after which `set` succeeds normally. Under `hash: files`
+this situation degraded to an ordinary marker check; it no longer does.
 
 **Scope short-circuit.** Before consulting the marker, the hook diffs
 the PR vs `origin/main` (`git diff origin/main...HEAD --name-only`, the
@@ -303,7 +330,9 @@ worktree (per-worktree marker isolation means a new worktree starts
 with none), so a docs / hooks / skills-only PR would be wrongly blocked
 and forced into an irrelevant Docker run. The short-circuit only fires
 when the diff is computable; if `origin/main` is unresolvable it falls
-through to the marker check (conservative — never weaker than before).
+through — but under `hash: diff` that is no longer a marker check, it
+is an unconditional block (markgate exits 2 on the unresolvable base,
+see above). Run `git fetch origin`, not `/run-integ`.
 
 The skill is the ONLY legitimate setter of this marker — never
 call `markgate set integ` directly from a shell.

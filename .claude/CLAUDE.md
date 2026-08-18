@@ -1243,7 +1243,10 @@ vp run runtime:smoke
   scopes need neither). `/verify-pr` refreshes both in one shot.
   Per-gate scopes, error-message decoding, and other details:
   [.claude/rules/hooks.md](.claude/rules/hooks.md). Install `vp` +
-  `markgate` via `mise install` at the repo root.
+  `markgate` via `mise install` at the repo root, and re-run it after
+  any pull that changes `.mise.toml` — an older markgate binary rejects
+  a newer `.markgate.yml` for every gate at once, and the hook hides the
+  parse error behind a misleading "run /check first".
 
 - **Before opening or merging any PR**: `verify-pr-gate.sh` blocks
   `gh pr create` / `gh pr merge` unless the `verify-pr` marker

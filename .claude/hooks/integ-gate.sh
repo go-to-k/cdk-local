@@ -101,8 +101,13 @@ cd "$target_dir" 2>/dev/null || exit 0
 # base used by `create-integ-gate.sh` / `cdkd-parity-gate.sh`.
 #
 # Only short-circuit when the diff is computable. If origin/main is
-# unresolvable (fresh clone, detached state), fall through to the marker
-# check — the conservative choice, never weaker than the prior behavior.
+# unresolvable (fresh clone, a worktree that never fetched), fall
+# through — but note that under `hash: diff` this is NOT a marker check
+# any more: markgate exits 2 on an unresolvable base ref for `verify`,
+# `status` and `set` alike, so the merge is blocked with the generic
+# message and re-running `/run-integ` CANNOT clear it (its own
+# `markgate set integ` fails the same way). The fix is `git fetch
+# origin`. Still conservative — it blocks rather than passes.
 if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   if ! git diff origin/main...HEAD --name-only 2>/dev/null \
       | grep -qE '^(src/|tests/integration/)'; then
@@ -136,11 +141,13 @@ fi
 # above, so this awk still finds the parenthetical.
 #
 # Under `hash: diff`, `markgate status` can also exit 2 with a
-# "no delta against merge-base" error (empty branch delta, i.e. a
-# clean base branch). That writes to stderr, so `reason` comes back
-# empty and the generic message below is used. The scope
-# short-circuit above already exits 0 in that situation for any PR
-# that touches neither src/** nor tests/integration/**.
+# "no delta against merge-base" error (empty TOTAL branch delta, i.e.
+# a clean base branch) or a 'base ref does not resolve' error. Both
+# write to stderr, so `reason` comes back empty and the generic
+# message below is used. The empty-delta one cannot actually reach
+# here: an empty delta means an empty diff, so the scope short-circuit
+# above always exits 0 first. Note an empty IN-SCOPE delta is a
+# different thing — markgate ACCEPTS it with a warning and exit 0.
 reason=$("${markgate[@]}" status integ 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 
