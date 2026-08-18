@@ -3,13 +3,20 @@
 #
 # PreToolUse hook. Blocks `gh pr merge` (including --auto) and
 # `git merge` unless the `integ` markgate marker is fresh for
-# the current content state. The gate's scope (see .markgate.yml)
-# covers `src/**` and `tests/integration/**`; editing any of them
-# invalidates the marker and forces a successful Docker-based
-# `/run-integ <test-name>` run before the PR can be merged.
+# the current branch delta. The gate's scope (see .markgate.yml)
+# covers `src/**` and `tests/integration/**`; a change THIS BRANCH
+# makes to any of them invalidates the marker and forces a successful
+# Docker-based `/run-integ <test-name>` run before the PR can be merged.
+#
+# The gate runs on markgate's `hash: diff` mode (0.4+): the digest is
+# this branch's delta against `merge-base(origin/main, HEAD)` restricted
+# to that scope, NOT the working tree's content. So a `main` merge /
+# rebase that moves an in-scope file this branch did not touch leaves
+# the marker fresh, while an overlapping `main` change still stales it.
+# See .claude/rules/hooks.md "integ-gate (pre-merge)" and issue #498.
 #
 # The `.markgate.yml` integ gate also carries a 14-day TTL on top
-# of the file-scope check, so the marker decays even when nothing
+# of the diff-scope check, so the marker decays even when nothing
 # changed in the repo — Docker base-image behavior, RIE binary, and
 # host network plumbing drift over time, so a marker more than two
 # weeks old no longer proves today's local code path works.
@@ -94,8 +101,13 @@ cd "$target_dir" 2>/dev/null || exit 0
 # base used by `create-integ-gate.sh` / `cdkd-parity-gate.sh`.
 #
 # Only short-circuit when the diff is computable. If origin/main is
-# unresolvable (fresh clone, detached state), fall through to the marker
-# check — the conservative choice, never weaker than the prior behavior.
+# unresolvable (fresh clone, a worktree that never fetched), fall
+# through — but note that under `hash: diff` this is NOT a marker check
+# any more: markgate exits 2 on an unresolvable base ref for `verify`,
+# `status` and `set` alike, so the merge is blocked with the generic
+# message and re-running `/run-integ` CANNOT clear it (its own
+# `markgate set integ` fails the same way). The fix is `git fetch
+# origin`. Still conservative — it blocks rather than passes.
 if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   if ! git diff origin/main...HEAD --name-only 2>/dev/null \
       | grep -qE '^(src/|tests/integration/)'; then
@@ -122,8 +134,20 @@ fi
 # Extract the parenthesized reason from `markgate status integ` so
 # the error message tells the user *why* the gate is stale. With the
 # 14d TTL configured in .markgate.yml, the stale reason is either
-# "(digest differs)" (a src/** or tests/integration/** file changed)
-# or "(expired by ttl: 14d, marker is Nd old)" (the marker aged out).
+# "(digest differs)" (this branch's src/** or tests/integration/**
+# delta changed) or "(expired by ttl: 14d, marker is Nd old)" (the
+# marker aged out). The `state:` line format is unchanged by the
+# `hash: diff` mode — it only adds `base:` / `merge base:` lines
+# above, so this awk still finds the parenthetical.
+#
+# Under `hash: diff`, `markgate status` can also exit 2 with a
+# "no delta against merge-base" error (empty TOTAL branch delta, i.e.
+# a clean base branch) or a 'base ref does not resolve' error. Both
+# write to stderr, so `reason` comes back empty and the generic
+# message below is used. The empty-delta one cannot actually reach
+# here: an empty delta means an empty diff, so the scope short-circuit
+# above always exits 0 first. Note an empty IN-SCOPE delta is a
+# different thing — markgate ACCEPTS it with a warning and exit 0.
 reason=$("${markgate[@]}" status integ 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 

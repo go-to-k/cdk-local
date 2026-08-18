@@ -65,14 +65,22 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    record the gate so subsequent `gh pr merge` calls are unblocked:
 
    ```bash
-   mise exec -- markgate set integ
+   mise exec -- markgate set integ || echo "MARKER NOT RECORDED — read the error above"
    ```
 
-   If any of the above failed, do NOT set the marker — that is the whole point of the gate. The `integ` gate (see `.markgate.yml`) blocks `gh pr merge` for any PR that touches `src/**` or `tests/integration/**` until this marker is fresh.
+   **Check the exit code; do not assume the set succeeded.** Under `hash: files` this command could not fail, so it was safe to fire and forget. Under `hash: diff` it CAN fail, and it reports the reason on stderr — an unchecked call looks silent and successful while nothing was recorded. The failure modes and their fixes:
+
+   - `no delta against merge-base(origin/main, HEAD)` — you are on the base branch. Re-run from the PR's own worktree, on the PR branch.
+   - `base ref "origin/main" does not resolve` — run `git fetch origin`, then set again. Re-running the whole integ does NOT help; the set fails identically until the ref exists.
+   - `hash=diff recorded an empty in-scope delta` — this is a WARNING, not a failure: the marker WAS saved and the exit code is 0. It only means the branch changes nothing under `src/**` / `tests/integration/**`.
+
+   Confirm with `mise exec -- markgate status integ` (expect `state: match`) before reporting the run as complete. The expensive failure this prevents: a full Docker fixture run finishes, the marker is silently not recorded, the merge stays blocked, and the natural reaction is to run the integ AGAIN rather than fetch.
+
+   If any of the above failed, do NOT set the marker — that is the whole point of the gate. The `integ` gate (see `.markgate.yml`) blocks `gh pr merge` for any PR that touches `src/**` or `tests/integration/**` until this marker is fresh. Set the marker from the PR's own worktree, on the PR branch: the gate uses markgate's `hash: diff` mode, whose digest is that branch's delta against `merge-base(origin/main, HEAD)`.
 
 ## Important
 
 - **Never bypass this skill** by invoking the fixture's `verify.sh` directly from a shell — the cleanup verification + markgate set are part of the contract.
 - **Never call `markgate set integ` directly** to skip the verification. The marker only earns its place by completing the full sequence above.
 - Always confirm the test name is on the official list (`ls tests/integration/`) — typos lead to confusing "no verify.sh" errors.
-- The 14-day TTL on the marker (see `.markgate.yml`) accepts that Docker base-image behavior drifts over time even when the repo doesn't; re-running an integ after two weeks is the explicit revalidation.
+- The 14-day TTL on the marker (see `.markgate.yml`) accepts that Docker base-image behavior drifts over time even when the repo doesn't; re-running an integ after two weeks is the explicit revalidation. It is also what bounds `hash: diff`'s accepted blind spot — a caller broken by this branch changing A while `main` changed B produces no delta overlap, so only the TTL forces the eventual re-run.

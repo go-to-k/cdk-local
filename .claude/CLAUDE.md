@@ -1243,7 +1243,10 @@ vp run runtime:smoke
   scopes need neither). `/verify-pr` refreshes both in one shot.
   Per-gate scopes, error-message decoding, and other details:
   [.claude/rules/hooks.md](.claude/rules/hooks.md). Install `vp` +
-  `markgate` via `mise install` at the repo root.
+  `markgate` via `mise install` at the repo root, and re-run it after
+  any pull that changes `.mise.toml` — an older markgate binary rejects
+  a newer `.markgate.yml` for every gate at once, and the hook hides the
+  parse error behind a misleading "run /check first".
 
 - **Before opening or merging any PR**: `verify-pr-gate.sh` blocks
   `gh pr create` / `gh pr merge` unless the `verify-pr` marker
@@ -1309,7 +1312,15 @@ vp run runtime:smoke
   Skipping any step risks setting the `integ` marker on incomplete
   verification. The `integ-gate.sh` hook blocks
   `gh pr merge` when `src/**` or `tests/integration/**` is touched
-  and the marker is stale.
+  and the marker is stale. `integ` is the one gate on markgate's
+  `hash: diff` mode (0.4+): its digest is THIS branch's delta against
+  `merge-base(origin/main, HEAD)` within that scope, so merging an
+  updated `main` that moved an in-scope file this branch did not touch
+  no longer forces a Docker re-run, while your own in-scope changes
+  (and the 14d TTL) still stale it. Set the marker from the PR's own
+  worktree on the PR branch — on a clean `main` the empty delta makes
+  markgate refuse rather than silently pass.
+  Details: [.claude/rules/hooks.md](.claude/rules/hooks.md).
 
 - **After running integration tests**: verify no leftover Docker
   containers / networks remain (`docker ps --filter name=cdkl-`,

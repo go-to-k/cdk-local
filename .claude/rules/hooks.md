@@ -187,6 +187,15 @@ construction.
   `.markgate.yml`) need neither. The hook is a safety net, not the
   primary trigger.
 
+  **Run `mise install` after pulling a change to `.mise.toml`.** An
+  older markgate binary rejects a newer `.markgate.yml` (an unknown
+  `hash:` value fails config parsing for EVERY gate, not just the one
+  that uses it), and this hook discards markgate's stderr — so the
+  symptom is a misleading "run /check first" that re-running `/check`
+  cannot clear. The hook's preferred `mise exec -- markgate` path
+  installs the pinned version on demand; its `command -v markgate`
+  fallback, used when mise is absent, does not.
+
 ### verify-pr-gate (pre-create + pre-merge)
 
 - **`verify-pr-gate.sh`** blocks `gh pr create` and `gh pr merge`
@@ -250,11 +259,67 @@ empty. `integ-gate.sh` is installed and consults it.
 `integ-gate.sh` blocks `gh pr merge` on PRs whose
 diff touches `src/**` or `tests/integration/**` when the `integ`
 marker is stale (digest differs OR expired by the 14-day TTL).
-The 14d TTL is on top of the file-scope check — Docker base-image
+The 14d TTL is on top of the diff-scope check — Docker base-image
 behavior (`public.ecr.aws/lambda/*`, RIE binary), `dockerd`
 semantics, and chokidar / network plumbing drift even when the
 repo doesn't, so a marker more than two weeks old no longer proves
 today's local code path actually works.
+
+**`hash: diff`, not `hash: files` (markgate 0.4+).** `integ` is the
+only gate on the diff mode. Its digest is this branch's delta against
+`merge-base(origin/main, HEAD)` restricted to the include set, rather
+than the working tree's content, so it can tell a change THIS BRANCH
+made from one that arrived from `main`:
+
+| event | marker |
+|---|---|
+| `main` moves an in-scope file this branch did NOT touch | **fresh** |
+| `main` moves an in-scope file this branch ALSO touched | stale |
+| in-scope edit on this branch (committed or not) | stale |
+| out-of-scope edit | fresh |
+
+Pulling / rebasing onto an updated `main` therefore stops forcing an
+irrelevant Docker re-run — every incoming change already passed this
+same gate in its own PR. `base: origin/main` is mandatory for the mode
+(no `origin/HEAD` fallback: that ref is frequently unset in CI clones,
+which would make the gate mean different things locally and in CI).
+Accepted limitation: cross-file interaction is invisible — if this
+branch changes A and `main` changes B and a caller uses both, the
+deltas never overlap and the marker stays fresh though the combination
+is unverified. `hash: files` caught that incidentally; the 14d TTL
+still forces a periodic Docker run. See issue #498 for the measurement
+behind adopting it here and NOT for `cdkd-parity` / `create-integ`
+(both centred on the small, hot `src/cli/commands/**` directory —
+`cdkd-parity` also covers `src/internal.ts` / `src/index.ts` — where
+half the invalidations are genuine overlaps) or `check` / `docs`
+(cheap to re-run, so strictness costs nothing).
+
+Two operational consequences, both louder than a silent pass:
+
+- **Empty TOTAL delta is refused** (exit 2, "no delta against
+  merge-base") — typically a clean `main`. The empty check runs BEFORE
+  include/exclude filtering, so it cannot be reached through the gate: a
+  branch with no delta at all also has no diff, and the scope
+  short-circuit below exits 0 first. If the error ever does surface,
+  `markgate status` writes it to stderr, the reason extraction yields
+  nothing, and the hook falls back to its generic blocked message.
+- **Empty IN-SCOPE delta is ACCEPTED**, with a warning and exit 0:
+  `hash=diff recorded an empty in-scope delta (include: src/**,
+  tests/integration/**); this branch changes nothing the gate covers,
+  so the marker stays fresh until it does`. A docs-only branch is the
+  normal case. Do not read that warning as the refusal above — the
+  marker IS written, and `verify` returns 0.
+
+**Unresolvable `base` ref is a hard stop, and `/run-integ` cannot clear
+it.** When `origin/main` does not resolve (fresh clone, a worktree that
+has never fetched), markgate exits 2 for `verify`, `status` AND `set`
+alike: `hash=diff: base ref "origin/main" does not resolve; fetch it
+first (git fetch origin)`. The hook's short-circuit is skipped in that
+state too (it needs the same ref), so the merge is blocked with the
+generic message — and re-running `/run-integ` cannot fix it, because
+its `markgate set integ` fails identically. **The fix is `git fetch
+origin`**, after which `set` succeeds normally. Under `hash: files`
+this situation degraded to an ordinary marker check; it no longer does.
 
 **Scope short-circuit.** Before consulting the marker, the hook diffs
 the PR vs `origin/main` (`git diff origin/main...HEAD --name-only`, the
@@ -265,7 +330,9 @@ worktree (per-worktree marker isolation means a new worktree starts
 with none), so a docs / hooks / skills-only PR would be wrongly blocked
 and forced into an irrelevant Docker run. The short-circuit only fires
 when the diff is computable; if `origin/main` is unresolvable it falls
-through to the marker check (conservative — never weaker than before).
+through — but under `hash: diff` that is no longer a marker check, it
+is an unconditional block (markgate exits 2 on the unresolvable base,
+see above). Run `git fetch origin`, not `/run-integ`.
 
 The skill is the ONLY legitimate setter of this marker — never
 call `markgate set integ` directly from a shell.
