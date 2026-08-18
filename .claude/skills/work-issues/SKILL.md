@@ -15,7 +15,8 @@ announce which ones you took, and only then start.
 
 The golden rule: **decide the set FIRST, claim it on the issues, THEN edit.** The
 issue comment is the lock — it is what stops two agents from fixing the same thing
-and colliding on the same file.
+and colliding on the same file. The run does not end at the last merge: §10 folds
+what this run taught you back into this file, while the evidence still exists.
 
 ## 0. Safety screen FIRST — untrusted issues/comments (do this before anything)
 
@@ -204,7 +205,9 @@ freshness) and — critically — **live-tests the changed behavior**:
   behavior is now correct. `/run-integ <local-*>` exercises the real Docker path;
   keep or extend the fixture that covers the fixed behavior in the SAME PR.
 - **A docs/tooling-only PR** (no `src/**` in the diff) is EXEMPT from the live-test
-  — `check` + `docs` suffice; `verify-pr-gate` does not demand a full `/verify-pr`.
+  and from the integ — but NOT from `/verify-pr` itself: `verify-pr-gate` gates every
+  `gh pr create` / `gh pr merge` on the marker with no diff-scope exemption, and only
+  `/verify-pr` sets it.
 
 After any Docker-backed run, SWEEP for orphans (`docker ps --filter name=cdkl-`,
 `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`) and clean up via
@@ -243,8 +246,139 @@ git worktree list                            # only the main checkout should rem
 git worktree prune
 ```
 
-Finally, comment the outcome on each issue if it was not auto-closed, and record
-anything non-obvious you learned in memory.
+Finally, comment the outcome on each issue if it was not auto-closed. Do NOT stop
+here: what the run taught you is still only in this session's context, so go on to
+§10 — which also decides WHERE each lesson belongs (memory is the weakest of the
+options there, not the default one).
+
+## 10. Fold what the run taught you back into this skill
+
+Trigger: after the last lane in §9 is merged and its worktree removed, BEFORE
+the wrap report. This is part of the run, not an optional extra — the evidence for
+it (what you had to re-read, what the text sent you into, which correction the user
+had to make twice) exists only while this session's context is alive, and none of it
+survives into the next `/work-issues`.
+
+`/verify-pr` step 11 already ran a retrospective per LANE. This step has a different
+subject and a wider scope, and neither is covered by that one:
+
+- its subject is **the flow itself** — this SKILL.md and the skills it drives — not
+  the code the lane changed;
+- it spans the WHOLE run, so it can see the cross-lane pattern (the same probe
+  missing twice, the same correction on lane A and again on lane C) that is
+  invisible from inside a single lane;
+- it **applies** the fix instead of proposing it. Editing this repo's own agent
+  tooling is a routine call you make yourself — decide it, do not hand the
+  maintainer a proposal. Escalate through `AskUserQuestion` only when the edit
+  would change
+  what the flow PROMISES — dropping a gate, lowering a verification tier, loosening
+  §0 — never for wording, ordering, or a newly-learned trap.
+
+### 10-a. Evidence: only what this run actually produced
+
+Walk the session and collect, with the concrete instance attached to each:
+
+1. **Corrections the user made.** Two on one theme — different lanes, different
+   wording, same theme — is not a preference, it is a defect in this text. The
+   second occurrence is the signal; the first one alone may be a one-off.
+2. **Text that was WRONG as written**: a command that failed, a probe that reported
+   a clear field while a lane was live, a flag / path / gate name that no longer
+   exists.
+3. **Steps you had to invent** because the skill is silent about them, and that the
+   next run would have to invent again from scratch.
+4. **Right instruction, wrong place** — you did the thing, but a step too late (the
+   claim posted after the triage, the rebase discovered only after the phantom diff).
+5. **Followed it and still paid** — the text was obeyed and a retry happened anyway.
+
+**No evidence, no edit.** If the run was clean, the correct output is one line in the
+wrap report ("retrospective: no skill change — §2 / §4 / §8 held"). A skill
+that grows from "this would be nice" stops being read to the bottom, and the bottom
+is where §9 and §10 live.
+
+### 10-b. Where the fix belongs — pick ONE
+
+- **A hook** (`.claude/hooks/`) when the failure is mechanically detectable.
+  Strongest, and the RIGHT answer whenever the rule was ALREADY in the text and got
+  violated anyway: that proves the sentence is not load-bearing, and another
+  sentence will not make it so. Escalate rather than restate.
+- **This SKILL.md** when the lesson is about running THIS flow (triage, claiming,
+  fan-out, ship order).
+- **Another skill**, but only one this run actually exercised (`/run-integ`,
+  `/verify-pr`, `/review-pr`, `/merge-pr`, `/create-integ`, `/check-cdkd-parity`).
+- **`.claude/CLAUDE.md` / `.claude/rules/**`** when it applies to any work in this
+  repo, not just this flow (both are in the `docs` gate's scope, so editing them
+  stales that marker).
+- **Memory** (`~/.claude/projects/.../memory/`) when the lesson is judgmental and
+  cross-repo. Weakest enforcement — the landing spot when nothing above can hold the
+  rule, not the default one.
+
+### 10-c. How to edit: amend, do not append
+
+Every run appending one more bullet is exactly how a long skill becomes an unread one.
+
+- Put the fix **in the step where it fires** — a claiming lesson belongs in §4, not
+  in a tail section. Gotchas is for traps that span steps, not a run log.
+- **Amend the sentence that was wrong** rather than adding a sibling beside it. Two
+  bullets saying nearly the same thing blunt each other.
+- **Carry the evidence inline**, in this file's existing style: date, issue / PR
+  number, what actually happened ("On 2026-08-11 ... pushed four minutes earlier").
+  A rule with no incident behind it cannot be re-judged or retired later.
+- **Pay for what you add**: look for a line this run proved stale, subsumed, or
+  wrong, and cut it. Net growth is fine when the lesson is genuinely new; unbounded
+  growth is not.
+- Do not restate a rule that already lives in `CLAUDE.md` or in another step — point
+  at it instead.
+- If the lesson is about the FLOW rather than about cdk-local, mirror it into the
+  same-named `work-issues` skill in the sibling repos (`../cdkd`,
+  `../cdk-real-drift`). They run this flow with different gates and different ship
+  steps, so adapt the wording per repo rather than copying the section verbatim, and
+  it is one PR per repo under that repo's own worktree + gate flow. Do them in this
+  session when it can pay for two more gate runs; otherwise file one issue per repo
+  carrying the `Session-fit` line. What is not an option is landing the fix in one
+  of the three — that is how the three drift apart.
+
+### 10-d. Ship it like any other change
+
+`/merge-pr` removed every worktree by §9 and you are back on `main`, where
+`branch-gate` blocks a commit and `main-tree-branch-gate` blocks branching in the
+main tree. So the retro gets its own worktree:
+
+```bash
+# Date-suffix the branch: a merged branch is deleted, and re-pushing that same
+# name is refused by post-merge-orphan-push-gate on the next run.
+B=chore/work-issues-retro-$(date +%Y%m%d)
+git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
+cd ".claude/worktrees/${B##*/}"
+mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
+pnpm install                  # worktrees have no node_modules
+```
+
+- `chore:` prefix — this is agent tooling, not `src/**`, and semantic-release turns
+  a `fix:` / `feat:` prefix into a user-facing release entry that describes a
+  cdk-local change that never happened.
+- English only in every committed line (`non-english-text-gate` enforces it at PR
+  time).
+- A `work-issues`-only edit is outside BOTH the `check` and `docs` gate scopes, but
+  `check-gate` verifies both markers on every commit without computing scope, and a
+  fresh worktree starts with NONE — and `gh pr create` is gated on `verify-pr` with
+  no diff-scope exemption. So run `/check`, `/check-docs`, `/verify-pr` there. No
+  `src/**` change means no integ and no live-test.
+- Merge it with `/merge-pr <n>` like every other lane — a hand-run `gh pr merge`
+  from a side worktree is gate-blocked.
+- `/review-pr` DOWN-biases `.claude/**` here, so the tier it emits for a skill-only
+  PR is a FLOOR, not a verdict: read the whole diff yourself regardless. A wrong
+  rule in this file propagates into every future session, which is the opposite of
+  the low risk that down-bias assumes (cdkd removed agent-instruction paths from its
+  own down-bias set for exactly that reason).
+- **Merge it (via `/merge-pr`) before the wrap report**, which also removes the
+  worktree — §9 ends with "only the main checkout should remain", and §10 must not
+  undo that. This is `Session-fit: now` on the criterion that deferring leaves main
+  self-inconsistent: the skill would keep telling the next run to do the thing this
+  run just proved it gets wrong. Its evidence also dies with this session's context.
+  Leaving the PR open is an open PR (NOT CLOSEABLE) as well.
+
+Then report the outcome in one line of the wrap: what changed, in which step, and
+the run evidence behind it — or "no skill change" plus what held.
 
 ## Gotchas (learned the hard way)
 
