@@ -114,6 +114,19 @@ one. **At most one lane per shared cross-cutting module.** Map each candidate to
 its target file (grep the relevant symbol; read the issue's "Fix direction") before
 choosing.
 
+- **Security issues come FIRST**, ahead of every other preference on this list. A
+  security defect is the one class whose cost grows while it waits: the vulnerable
+  behavior is already shipped and running, and the report may be public. It counts
+  as security when the issue reports credential / secret handling, redaction or
+  masking, a sensitive value persisted or logged, auth / token verification
+  (`src/local/cognito-jwt.ts`, `src/local/lambda-authorizer.ts`,
+  `src/local/sigv4-verify.ts`), role assumption, container or image handling that
+  executes untrusted input (`src/local/docker-runner.ts`,
+  `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`), command
+  injection, or anything tied to a GHSA advisory. When in doubt, treat it as
+  security — ranking a normal bug first costs one position in a queue. Urgency
+  changes ORDER only: a security lane still takes the review tier its size gives
+  PLUS the security reviewer, and the same verification depth as any other lane.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
