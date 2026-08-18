@@ -250,11 +250,49 @@ empty. `integ-gate.sh` is installed and consults it.
 `integ-gate.sh` blocks `gh pr merge` on PRs whose
 diff touches `src/**` or `tests/integration/**` when the `integ`
 marker is stale (digest differs OR expired by the 14-day TTL).
-The 14d TTL is on top of the file-scope check — Docker base-image
+The 14d TTL is on top of the diff-scope check — Docker base-image
 behavior (`public.ecr.aws/lambda/*`, RIE binary), `dockerd`
 semantics, and chokidar / network plumbing drift even when the
 repo doesn't, so a marker more than two weeks old no longer proves
 today's local code path actually works.
+
+**`hash: diff`, not `hash: files` (markgate 0.4+).** `integ` is the
+only gate on the diff mode. Its digest is this branch's delta against
+`merge-base(origin/main, HEAD)` restricted to the include set, rather
+than the working tree's content, so it can tell a change THIS BRANCH
+made from one that arrived from `main`:
+
+| event | marker |
+|---|---|
+| `main` moves an in-scope file this branch did NOT touch | **fresh** |
+| `main` moves an in-scope file this branch ALSO touched | stale |
+| in-scope edit on this branch (committed or not) | stale |
+| out-of-scope edit | fresh |
+
+Pulling / rebasing onto an updated `main` therefore stops forcing an
+irrelevant Docker re-run — every incoming change already passed this
+same gate in its own PR. `base: origin/main` is mandatory for the mode
+(no `origin/HEAD` fallback: that ref is frequently unset in CI clones,
+which would make the gate mean different things locally and in CI).
+Accepted limitation: cross-file interaction is invisible — if this
+branch changes A and `main` changes B and a caller uses both, the
+deltas never overlap and the marker stays fresh though the combination
+is unverified. `hash: files` caught that incidentally; the 14d TTL
+still forces a periodic Docker run. See issue #498 for the measurement
+behind adopting it here and NOT for `cdkd-parity` / `create-integ`
+(both scoped to the small, hot `src/cli/commands/**` directory, where
+half the invalidations are genuine overlaps) or `check` / `docs`
+(cheap to re-run, so strictness costs nothing).
+
+One operational consequence: `hash: diff` refuses (exit 2, "no delta
+against merge-base") when run from a branch with an empty delta vs its
+base — a clean `main`, typically. That is louder than a silent pass,
+and it does not reach the gate in practice: the scope short-circuit
+below exits 0 first for any PR whose diff touches neither `src/**` nor
+`tests/integration/**`, and a PR that does touch them has a non-empty
+delta by construction. If the error ever does surface, `markgate
+status` writes it to stderr, the reason extraction yields nothing, and
+the hook falls back to its generic blocked message.
 
 **Scope short-circuit.** Before consulting the marker, the hook diffs
 the PR vs `origin/main` (`git diff origin/main...HEAD --name-only`, the

@@ -27,6 +27,7 @@
 #                    chokidar / network behavior, dockerd semantics drift
 #                    over time, so a marker that's been clean for two
 #                    weeks no longer proves today's local code path works.
+#                    The only gate on `hash: diff` (see its block below).
 #   cdkd-parity    — Host-CLI (cdkd) parity review for library-surface
 #                    changes (new subcommand factory / new CLI option /
 #                    new public helper / behavior change). Set ONLY by
@@ -68,8 +69,29 @@ gates:
       - ".markgate-pr-review-sha"
 
   integ:
-    hash: files
-    # Wall-clock TTL on top of the file-scope check (markgate 0.3+).
+    # `hash: diff` (markgate 0.4+) digests this branch's delta against
+    # `merge-base(origin/main, HEAD)` restricted to the include set below,
+    # NOT the working tree's content. So a `main` merge / rebase that moves
+    # an in-scope file this branch did NOT touch leaves the marker fresh —
+    # that change already passed this same gate in its own PR — while a
+    # `main` change to a file this branch ALSO changed still stales it, as
+    # does any in-scope edit on this branch (committed or not). Adopted for
+    # `integ` only: re-running it costs a Docker fixture run, so the
+    # strictness `hash: files` buys is worth trading here. The narrower
+    # `cdkd-parity` / `create-integ` gates stay on `hash: files` — both are
+    # scoped to the small, hot `src/cli/commands/**` directory where half
+    # the invalidations are genuine overlaps, so the mode would buy almost
+    # nothing; `check` / `docs` stay strict because re-running them is
+    # cheap. Measurement + accepted limitation (a caller broken by this
+    # branch changing A while `main` changes B is invisible to `hash: diff`,
+    # bounded by the TTL below): issue #498.
+    #
+    # `base` is mandatory for `hash: diff` — there is no `origin/HEAD`
+    # fallback, since that ref is frequently unset in CI clones and the gate
+    # must mean the same thing locally and in CI.
+    hash: diff
+    base: origin/main
+    # Wall-clock TTL on top of the diff-scope check (markgate 0.3+).
     # Docker base-image behavior (`public.ecr.aws/lambda/*`, RIE binary),
     # `dockerd` semantics, and chokidar / network plumbing drift even
     # when the repo doesn't. 14d matches cdkd's integ-local gate —

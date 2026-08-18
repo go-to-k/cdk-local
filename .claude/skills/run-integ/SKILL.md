@@ -68,11 +68,11 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    mise exec -- markgate set integ
    ```
 
-   If any of the above failed, do NOT set the marker — that is the whole point of the gate. The `integ` gate (see `.markgate.yml`) blocks `gh pr merge` for any PR that touches `src/**` or `tests/integration/**` until this marker is fresh.
+   If any of the above failed, do NOT set the marker — that is the whole point of the gate. The `integ` gate (see `.markgate.yml`) blocks `gh pr merge` for any PR that touches `src/**` or `tests/integration/**` until this marker is fresh. Set the marker from the PR's own worktree, on the PR branch: the gate uses markgate's `hash: diff` mode, whose digest is that branch's delta against `merge-base(origin/main, HEAD)` — so a marker recorded on a clean `main` is not just wrong, it is refused (`no delta against merge-base`, exit 2).
 
 ## Important
 
 - **Never bypass this skill** by invoking the fixture's `verify.sh` directly from a shell — the cleanup verification + markgate set are part of the contract.
 - **Never call `markgate set integ` directly** to skip the verification. The marker only earns its place by completing the full sequence above.
 - Always confirm the test name is on the official list (`ls tests/integration/`) — typos lead to confusing "no verify.sh" errors.
-- The 14-day TTL on the marker (see `.markgate.yml`) accepts that Docker base-image behavior drifts over time even when the repo doesn't; re-running an integ after two weeks is the explicit revalidation.
+- The 14-day TTL on the marker (see `.markgate.yml`) accepts that Docker base-image behavior drifts over time even when the repo doesn't; re-running an integ after two weeks is the explicit revalidation. It is also what bounds `hash: diff`'s accepted blind spot — a caller broken by this branch changing A while `main` changed B produces no delta overlap, so only the TTL forces the eventual re-run.

@@ -3,13 +3,20 @@
 #
 # PreToolUse hook. Blocks `gh pr merge` (including --auto) and
 # `git merge` unless the `integ` markgate marker is fresh for
-# the current content state. The gate's scope (see .markgate.yml)
-# covers `src/**` and `tests/integration/**`; editing any of them
-# invalidates the marker and forces a successful Docker-based
-# `/run-integ <test-name>` run before the PR can be merged.
+# the current branch delta. The gate's scope (see .markgate.yml)
+# covers `src/**` and `tests/integration/**`; a change THIS BRANCH
+# makes to any of them invalidates the marker and forces a successful
+# Docker-based `/run-integ <test-name>` run before the PR can be merged.
+#
+# The gate runs on markgate's `hash: diff` mode (0.4+): the digest is
+# this branch's delta against `merge-base(origin/main, HEAD)` restricted
+# to that scope, NOT the working tree's content. So a `main` merge /
+# rebase that moves an in-scope file this branch did not touch leaves
+# the marker fresh, while an overlapping `main` change still stales it.
+# See .claude/rules/hooks.md "integ-gate (pre-merge)" and issue #498.
 #
 # The `.markgate.yml` integ gate also carries a 14-day TTL on top
-# of the file-scope check, so the marker decays even when nothing
+# of the diff-scope check, so the marker decays even when nothing
 # changed in the repo — Docker base-image behavior, RIE binary, and
 # host network plumbing drift over time, so a marker more than two
 # weeks old no longer proves today's local code path works.
@@ -122,8 +129,18 @@ fi
 # Extract the parenthesized reason from `markgate status integ` so
 # the error message tells the user *why* the gate is stale. With the
 # 14d TTL configured in .markgate.yml, the stale reason is either
-# "(digest differs)" (a src/** or tests/integration/** file changed)
-# or "(expired by ttl: 14d, marker is Nd old)" (the marker aged out).
+# "(digest differs)" (this branch's src/** or tests/integration/**
+# delta changed) or "(expired by ttl: 14d, marker is Nd old)" (the
+# marker aged out). The `state:` line format is unchanged by the
+# `hash: diff` mode — it only adds `base:` / `merge base:` lines
+# above, so this awk still finds the parenthetical.
+#
+# Under `hash: diff`, `markgate status` can also exit 2 with a
+# "no delta against merge-base" error (empty branch delta, i.e. a
+# clean base branch). That writes to stderr, so `reason` comes back
+# empty and the generic message below is used. The scope
+# short-circuit above already exits 0 in that situation for any PR
+# that touches neither src/** nor tests/integration/**.
 reason=$("${markgate[@]}" status integ 2>/dev/null \
   | awk '/^state:/ { if (match($0, /\([^)]+\)/)) print substr($0, RSTART, RLENGTH); exit }')
 

@@ -59,7 +59,7 @@ Run each check and report pass/fail:
 
 7. **Docker + integ verification** (for src/** or tests/integration/** touches)
 
-   The `integ` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-gate.sh` once shipped). The merge-time gate has a known blind spot: it reads the **local working tree** digest, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, the digest matches the old content and the gate passes silently — so an unverified change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
+   The `integ` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-gate.sh`). The gate runs on markgate's `hash: diff` mode, so the digest is **this branch's delta** against `merge-base(origin/main, HEAD)` within `src/**` / `tests/integration/**` — a `main` change to an in-scope file this branch did not touch no longer stales it, but any in-scope change this branch made does. The merge-time gate has a known blind spot: it reads the **local** git state, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, that tree's diff vs `origin/main` is empty, the hook's scope short-circuit exits 0, and the marker is never consulted — so an unverified change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
 
    ```bash
    # Only check when the PR diff actually touches the gate scope.
