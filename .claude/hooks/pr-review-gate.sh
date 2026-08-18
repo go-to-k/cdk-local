@@ -178,7 +178,17 @@ UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lamb
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed -> no down-bias.
-DOWN_DOCS_REGEX='^(\.gitignore|CLAUDE\.md|README\.md|.*\.md|docs/.*|\.claude/CLAUDE\.md|\.claude/skills/.*|\.claude/agents/.*|\.claude/hooks/.*|\.claude/rules/.*|\.claude/settings.*\.json|\.markgate\.yml|package\.json)$'
+#
+# Down-bias covers INERT documentation only. Files that change how the AGENT
+# behaves -- CLAUDE.md, .claude/** (skills, agents, hooks, rules, settings),
+# .markgate.yml -- were in this bucket and are not any more (issue #501): a
+# wrong rule there propagates into every future session, which is the opposite
+# of the low risk a down-bias assumes, and the `.*\.md` entry below would
+# otherwise re-admit every SKILL.md through the back door. cdkd made the same
+# change in its own copy of this gate; keep this regex, that one, and
+# `/review-pr`'s down-bias list in sync.
+AGENT_INSTRUCTION_REGEX='^(CLAUDE\.md|\.claude/.*|\.markgate\.yml)$'
+DOWN_DOCS_REGEX='^(\.gitignore|README\.md|.*\.md|docs/.*|package\.json)$'
 DOWN_TESTS_REGEX='^tests/.*'
 
 all_docs=1
@@ -190,7 +200,10 @@ while IFS= read -r p; do
   if printf '%s' "$p" | grep -qE "$UP_PATH_REGEX"; then
     up_bias=1
   fi
-  if ! printf '%s' "$p" | grep -qE "$DOWN_DOCS_REGEX"; then
+  # An agent-instruction path is never "docs" for tier purposes, even though
+  # it is markdown and would match DOWN_DOCS_REGEX.
+  if printf '%s' "$p" | grep -qE "$AGENT_INSTRUCTION_REGEX" \
+    || ! printf '%s' "$p" | grep -qE "$DOWN_DOCS_REGEX"; then
     all_docs=0
   fi
   if ! printf '%s' "$p" | grep -qE "$DOWN_TESTS_REGEX"; then
