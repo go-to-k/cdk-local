@@ -188,13 +188,15 @@ go-to-k/cdkd#1972 reported one dead path in a security-surface path list; auditi
 the whole list found a second dead path (stale since an unrelated directory rename)
 plus four live authn / credential / exec surfaces that had never been added, so the
 list under-protected considerably more than it over-claimed. The same shape exists
-here: `/review-pr`'s up-bias path list is written out three times
+here: `/review-pr`'s up-bias path list is written out FOUR times
 (`UP_PATH_REGEX` in `.claude/hooks/pr-review-gate.sh`,
-`.claude/skills/review-pr/SKILL.md`, `.claude/rules/hooks.md`), so an audit checks
-every copy, not just the one the issue quotes. Then ask what makes the recurrence
-mechanical: if a list must stay in sync with the repo, that is a test asserting
-every entry resolves and that the copies agree, not a sentence asking the next
-reader to remember.
+`.claude/skills/review-pr/SKILL.md`, `.claude/rules/hooks.md`, and
+`.claude/agents/pr-code-reviewer.md`), so an audit checks every copy, not just the
+one the issue quotes — the first draft of THIS paragraph said "three times" and
+missed the reviewer-agent copy, which is also the one already out of sync.
+Then ask what makes the recurrence mechanical: if a list must stay in sync with
+the repo, that is a test asserting every entry resolves and that the copies agree,
+not a sentence asking the next reader to remember.
 
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
