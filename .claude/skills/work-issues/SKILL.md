@@ -110,7 +110,9 @@ narrow resolver is naturally disjoint from the others.
 The parallel-integration constraint (same as the worktree rule): **two lanes must
 edit DISJOINT files.** Two issues that both land in `ecs-service-emulator.ts`
 cannot be parallelized — bundle them into ONE lane (one worktree, one PR) or defer
-one. **At most one lane per shared cross-cutting module.** Map each candidate to
+one. §3-a at the end of this step is a second HARD gate and applies before any of the
+preferences below: it holds back issues filed within the last hour, subject to the
+three exemptions it names. **At most one lane per shared cross-cutting module.** Map each candidate to
 its target file (grep the relevant symbol; read the issue's "Fix direction") before
 choosing.
 
@@ -125,9 +127,9 @@ choosing.
   `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`), command
   injection, or anything tied to a GHSA advisory. When in doubt, treat it as
   security — ranking a normal bug first costs one position in a queue. Urgency
-  changes ORDER only: a security lane takes the tier its size gives, moved UP one
-  step by `/review-pr`'s security up-bias, and the same verification depth as any
-  other lane. Note that up-bias is PATH-keyed (the files listed above), so a
+  changes ORDER, and waives §3-a's freshness gate; it never changes verification
+  depth — a security lane takes the tier its size gives, moved UP one step by
+  `/review-pr`'s security up-bias, and the same depth as any other lane. Note that up-bias is PATH-keyed (the files listed above), so a
   security fix landing outside them gets no automatic bump — raise the tier by hand
   and say why.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
@@ -140,6 +142,77 @@ choosing.
 Scale the count to the backlog and to how many shared modules are free. 2–3 clean
 lanes is typical; do not force a lane into a contested file just to raise the count
 — report the deferred ones instead.
+
+### 3-a. A FRESH issue belongs to the lane that FILED it
+
+An issue you are cleared to act on is maintainer-authored (§0), so `.author.login`
+cannot tell you WHICH session filed it — and the session that did is usually a lane
+still running. It filed the issue as its own deferral, it still holds the context
+the issue was derived from, and it is therefore the cheapest agent alive to fix it:
+it may pick the issue up the moment its current lane merges. Taking it from under
+that lane pays for the same re-read twice, and risks two lanes on one fix even when
+the §2 probes look clear — a lane's own deferral names the files that lane is STILL
+editing, which is the worst case for the disjointness rule above rather than the
+best.
+
+Nothing identifies the filing session reliably, so do not try to build a reliable
+signal. Use the cheap conservative one and accept its false positives:
+
+**Skip every issue created less than 60 minutes ago.** Roughly the span between a
+lane filing a deferral and coming back to it, and comfortably longer than the window
+in which nothing LINKS a live lane to the issue it just filed: `git worktree list` /
+`git branch -a` show the lane but not its deferral, `gh pr list` shows nothing until
+it pushes, and §4's claim comment is never posted for an issue merely FILED.
+
+```bash
+CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' +%Y-%m-%dT%H:%M:%SZ)
+# An empty $CUT matches nothing and reads as an empty backlog, so stop rather than warn.
+[ -n "$CUT" ] || { echo 'CUTOFF FAILED — do not treat the empty result as an empty backlog'; exit 1; }
+
+gh issue list --state open --limit 60 --json number,title,createdAt \
+  --jq ".[] | select(.createdAt < \"$CUT\") | [.number, .createdAt, .title] | @tsv"
+```
+
+(`createdAt` — camelCase, unlike `gh api`'s `created_at` — comes back as ISO-8601
+UTC, which compares correctly as a plain string, so no date parsing. Flip `<` to
+`>=` to list what you are holding back, and report those as HELD FOR THEIR FILER,
+never as backlog you declined.)
+
+**Recompute `CUT` as you pick each lane, not once at triage.** A run lasts hours, so
+an issue held at 09:00 is an ordinary candidate at 10:05. A cutoff computed once
+silently excludes a whole cohort for the rest of the run, and that is the common case
+rather than the edge: this backlog arrives in `/hunt-bugs`-shaped bursts filed
+minutes apart.
+
+Three exemptions, and only these three. Each lifts §3-a ALONE — §2's disjointness
+gate and §4's claim-then-re-check still apply unchanged:
+
+- **You filed it yourself this run, meaning to work it yourself.** `/hunt-bugs` files
+  an issue and then sends you here to fix it, and §4 has you claim exactly that kind.
+  The window protects OTHER lanes' deferrals, never your own, and your own claim
+  comment on it is the proof — which is also why the exemption stops there: §4 gives
+  an issue you filed FOR A LATER SESSION no claim, and taking one back minutes after
+  handing it off contradicts the handoff rather than being exempted by it.
+- **The maintainer named the issue in the invocation** (`/work-issues #<n>`) — an
+  explicit instruction outranks a heuristic about who else might want it.
+- **A security issue** (the security-first rule above) — an extra hour of a shipped
+  vulnerability costs more than a duplicated context. Take it, and say in the claim
+  (§4) that you took it inside the window and why.
+
+Once the window passes the issue is PRESUMED free, and that presumption is the whole
+test: no §2 probe, no open PR, no live claim referencing it. Do not try to establish
+that the filing session has ENDED — you cannot; a live session and a dead one look
+identical from outside. What may still hold the issue back is §2 or §4, on their own
+grounds rather than this one.
+
+What the gate accepts in exchange: an issue filed by a session that has since ended
+waits up to an hour. That is the cheap side — the backlog is not going anywhere,
+while the expensive side is two agents deriving one fix from scratch. Mirrored from
+cdkd on 2026-08-19, where the window was watched live the same morning: cdkd#1973 was
+filed at 03:14Z, claimed by its filing lane at 03:30Z, and that lane's branch reached
+`origin` only at 04:06Z. For 16 minutes the issue had no branch, no PR and no comment,
+so every probe in §2 reported it free; for 52 minutes nothing but a time-based gate
+could have kept a second run off it.
 
 ## 4. CLAIM the chosen issues BEFORE editing
 
@@ -154,6 +227,18 @@ Claiming to avoid collision with parallel agents."
 comes BEFORE the first edit. It is the issue-level twin of the worktree
 DISJOINT-FILE rule. Re-check for a competing claim/PR right before you start; if
 one appeared, pick a different issue.
+
+**Claim what you FILE, too — filing is not claiming.** An issue this run files as
+its own deferral is invisible to every ownership probe: no branch, no PR, no comment,
+and only §3-a's hour covers it. So when the issue is one THIS run means to pick up
+itself (a `Session-fit: now` line in the body, where you write one), post the claim
+comment in the same turn you file it. Name the LANE and what it defers from, not just
+your current branch: a merged branch is deleted, so a claim naming the branch you are
+on now reads stale at exactly the moment you come back for the issue — re-post the
+claim with the real branch when you open that lane. An issue you are handing off to a
+later session gets NO claim at filing time — that would park a released issue under a
+session that has decided not to do it — but this says nothing about the LATER run
+that takes it: that run claims it normally, per the mandatory rule above.
 
 ## 5. One worktree per lane, then implement
 
@@ -484,6 +569,9 @@ the run evidence behind it — or "no skill change" plus what held.
 
 - **Claim before editing, always** — the whole point. An unclaimed lane races a
   parallel agent onto the same shared module.
+- **A fresh issue is someone's deferral, not free backlog** (§3-a). The author field
+  proves nothing about which session filed it, so the 60-minute window is the whole
+  defence — and §4 is its other half: claim what you FILE, not only what you take.
 - **One lane per shared cross-cutting module.** `ecs-service-emulator.ts` /
   the `resolveLambdaContainerEnv` helper in `local-invoke.ts` /
   `front-door-server.ts` / `cloudfront-server.ts` each absorb many fixes; you
