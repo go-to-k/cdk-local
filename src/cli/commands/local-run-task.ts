@@ -8,7 +8,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
@@ -540,30 +540,7 @@ async function assumeTaskRole(
   region: string | undefined,
   profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  // Thread `--profile` so AssumeRole is signed with the profile's
-  // credentials, not the default env-shadowed chain (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
-  try {
-    const response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-run-task-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
-    const creds = response.Credentials;
-    if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
-    }
-    return {
-      accessKeyId: creds.AccessKeyId,
-      secretAccessKey: creds.SecretAccessKey,
-      sessionToken: creds.SessionToken,
-    };
-  } finally {
-    sts.destroy();
-  }
+  return assumeRoleCredentials({ roleArn, region, profile, sessionNameSuffix: 'run-task' });
 }
 
 /**

@@ -3,6 +3,65 @@ import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import { buildStsClientConfig } from './profile-resolver.js';
 
+/** Temporary credentials minted by {@link assumeRoleCredentials}. */
+export interface AssumedRoleCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+}
+
+/**
+ * Issue an STS AssumeRole for `roleArn` and return the temporary
+ * credentials (issue #509).
+ *
+ * This is the single shared implementation behind every command's
+ * `--assume-role` / `--assume-task-role` path (`cdkl invoke`,
+ * `start-api`, `run-task`, and the `start-service` / `start-alb`
+ * emulator) — each previously carried its own near-identical copy,
+ * which kept credential-minting logic OFF this module (the one
+ * `/review-pr`'s up-bias security surface lists) and duplicated the
+ * issue #245 `--profile` threading fix four times.
+ *
+ * `sessionNameSuffix` distinguishes the callers in CloudTrail
+ * (`<resourceNamePrefix>-<suffix>-<epochMs>`). `makeError` lets a
+ * caller surface the no-usable-credentials failure as its own error
+ * class (the ECS emulator throws `LocalStartServiceError`); STS
+ * transport errors always propagate unwrapped.
+ */
+export async function assumeRoleCredentials(opts: {
+  roleArn: string;
+  region: string | undefined;
+  profile: string | undefined;
+  sessionNameSuffix: string;
+  makeError?: (message: string) => Error;
+}): Promise<AssumedRoleCredentials> {
+  // Thread `--profile` so the AssumeRole call is signed with the
+  // profile's credentials (matching `aws sts assume-role --profile
+  // <p>`), not the default env-shadowed chain (issue #245).
+  const sts = new STSClient(buildStsClientConfig({ region: opts.region, profile: opts.profile }));
+  try {
+    const response = await sts.send(
+      new AssumeRoleCommand({
+        RoleArn: opts.roleArn,
+        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-${opts.sessionNameSuffix}-${Date.now()}`,
+        DurationSeconds: 3600,
+      })
+    );
+    const creds = response.Credentials;
+    if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
+      const message = `AssumeRole(${opts.roleArn}) returned no usable credentials.`;
+      throw opts.makeError ? opts.makeError(message) : new Error(message);
+    }
+    return {
+      accessKeyId: creds.AccessKeyId,
+      secretAccessKey: creds.SecretAccessKey,
+      sessionToken: creds.SessionToken,
+    };
+  } finally {
+    sts.destroy();
+  }
+}
+
 /**
  * Resolve the role-arn argument (CLI flag or `CDKL_ROLE_ARN` env var) and,
  * when set, assume the role and write the resulting temporary credentials

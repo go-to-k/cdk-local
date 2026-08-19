@@ -15,7 +15,7 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
@@ -3143,39 +3143,17 @@ export function resolveContainerFallbackRegion(args: {
 }
 
 /**
- * Issue an STS AssumeRole and return temporary credentials. Mirrors
- * `cdkl invoke`'s helper byte-for-byte; lifted here so the
- * start-api command stays self-contained.
+ * Issue an STS AssumeRole and return temporary credentials, via the
+ * shared `assumeRoleCredentials` helper in `utils/role-arn.ts`
+ * (issue #509 — previously a byte-for-byte copy of `cdkl invoke`'s
+ * inline helper).
  */
 async function assumeLambdaExecutionRole(
   roleArn: string,
   region: string | undefined,
   profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  // Thread `--profile` so AssumeRole is signed with the profile's
-  // credentials, not the default env-shadowed chain (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
-  try {
-    const response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-start-api-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
-    const creds = response.Credentials;
-    if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
-    }
-    return {
-      accessKeyId: creds.AccessKeyId,
-      secretAccessKey: creds.SecretAccessKey,
-      sessionToken: creds.SessionToken,
-    };
-  } finally {
-    sts.destroy();
-  }
+  return assumeRoleCredentials({ roleArn, region, profile, sessionNameSuffix: 'start-api' });
 }
 
 /**
