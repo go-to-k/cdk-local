@@ -84,12 +84,29 @@ For each active worktree, find what it ACTUALLY edits (not the stale-base noise)
 
 ```bash
 git -C .claude/worktrees/<w> log --oneline -1     # its own commit subject → the issue it owns
-git -C .claude/worktrees/<w> show --stat HEAD     # the files that commit touches
+git -C .claude/worktrees/<w> show --stat HEAD     # the files that commit HAS FINISHED
+git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
 ```
 
-Read any "working on this" comments already on candidate issues. **A file another
-agent is editing is OFF-LIMITS.** In practice the contested files are the SHARED,
-cross-cutting runtime modules that many fixes route through:
+**A file another agent is editing is OFF-LIMITS** — and the third probe is the one
+that catches a live lane, so do not stop at the first two. A lane's committed diff is
+what it has finished; its dirty tree is what it is holding. Read the "working on this"
+comments on candidate issues too, but treat the dirty tree, not the comment, as the
+authority on what a lane currently owns: a claim is written once at the start and goes
+stale as the lane's scope grows. On 2026-08-19 the #506 lane (PR #513) was editing
+THIS file's §4 and §8 while its claim comment on #506 named five other files and not
+this one — the comment said free, and only `status --porcelain` (plus an mtime seconds
+old) said otherwise.
+
+When the contested file is one you cannot avoid because the issue names it, the choice
+is not just wait-or-collide: shape your edit to rebase cleanly over theirs. Leave the
+anchors their hunks sit on — list indentation, heading levels, surrounding blank lines
+— untouched, so no line belongs to both diffs. #516 restructured §8 into two arms
+while #513 was inserting a bullet into §8's trap list; keeping the trap bullets at
+their original indentation is why that rebase applied with no conflict.
+
+In practice the contested files are the SHARED, cross-cutting runtime modules that
+many fixes route through:
 
 - `src/cli/commands/ecs-service-emulator.ts` — shared `start-service` /
   `start-alb` orchestration (synth + docker network + Cloud Map + reload watcher).
