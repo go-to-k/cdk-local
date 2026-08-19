@@ -514,6 +514,19 @@ merge is blocked by `gh-pr-merge-worktree-gate.sh` unless `/merge-pr` set the
 are disjoint — which is also why a clean merge says nothing about whether a
 collision happened (§7).
 
+**When one lane fixes a full-suite flake, merge THAT lane first** — every other
+lane's `/check` and `/verify-pr` runs the same suite, so until the fix is on
+`main` each of them rolls the same dice. On 2026-08-19 the go-to-k/cdk-local#509
+lane's suite runs hit the go-to-k/cdk-local#515 timeout twice (2/2 in that
+worktree) while the fix sat unmerged in a sibling lane; merging the fix
+(go-to-k/cdk-local#522) and rebasing made the very next run green. The rebase is
+what delivers the fix — a lane branched before the merge keeps flaking on its
+own stale base. Corollary for a PR's CI: it runs on the MERGE ref (branch +
+current `main`), so a red check can be caused by a PEER's just-merged content
+your local green never saw — go-to-k/cdk-local#524's new reference harness
+failed CI on a line go-to-k/cdk-local#520 had merged in parallel; the fix was
+fetch + rebase + re-run, not distrusting the harness.
+
 ```bash
 git checkout main && git pull origin main    # bring the merges local
 ```
@@ -742,6 +755,26 @@ the run evidence behind it — or "no skill change" plus what held.
   cannot tell a finished lane from a session working right now, already-merged
   branch tip included. The closing check is "mine are gone", not "only main
   remains".
+- **Start every marker / gate command with an explicit `cd <worktree> &&`** — the
+  shell cwd does not reliably persist across tool calls, and a `markgate set` /
+  sha-sentinel write that lands in the WRONG worktree surfaces later as a
+  mystifying `no marker` (each worktree has its own markgate store). On
+  2026-08-19 this fired twice in one run: a `markgate status check` diagnosed
+  "no marker" because it ran in the main checkout while the marker sat in the
+  lane's store, and a `.markgate-pr-review-sha` was written into the main
+  checkout before the mistake was caught and redone from the lane. `pwd` costs
+  nothing; a marker in the wrong store costs a re-diagnosis.
+- **A gated command must be the ONLY thing in its Bash call.** A PreToolUse hook
+  denial aborts the WHOLE command string BEFORE any line runs — including
+  preamble side effects you assumed happened. On 2026-08-19 a
+  `cat > body.md <<EOF ... && gh pr create --body-file body.md` was blocked by
+  `verify-pr-gate`, so the body file was never written; a later `cat >>` append
+  then CREATED the file as a fragment, and PR go-to-k/cdk-local#525 opened with
+  only its review section — no summary and no `Closes` line, which silently
+  cost the issue's auto-close at merge. Same mechanism as the documented
+  markgate-set rule (`.claude/rules/hooks.md`, gh-pr-merge-worktree-gate): write
+  files and set markers in their own calls, then run `git commit` /
+  `gh pr create` / `gh pr merge` alone.
 - **`/merge-pr`, not a hand-run merge** — a hand-run `gh pr merge --delete-branch`
   from a side worktree trips the `'main' is already used by worktree` fatal (the
   remote merge lands but local cleanup fails) and is gate-blocked besides.
