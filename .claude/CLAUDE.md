@@ -1162,6 +1162,9 @@ vp run test
 vp run test:watch
 vp run test:coverage
 
+# Hook smoke tests (bash, run in CI alongside the unit suite)
+vp run test:hooks
+
 # verify = check + test + build
 vp run verify
 
