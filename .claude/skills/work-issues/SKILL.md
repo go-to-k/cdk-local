@@ -228,32 +228,39 @@ freshness) and — critically — **live-tests the changed behavior**:
   run it BEFORE and AFTER, and drive the FAILURE direction too — a change that
   swallows an exit code looks exactly like one that fixes the gate. Three traps,
   measured here on 2026-08-19 (#504):
-  - **Repeating a `vp run <task>` re-runs nothing.** `run.cache.tasks` is on in
-    `vite.config.ts`, so `vp run check` replayed a cached rc=0 on runs 2-5
-    (`cache hit, 2.01s saved`) — five identical greens, one execution. Call the
-    underlying command directly (`vp check` / `vp lint` / `vp fmt --check`) when the
-    POINT is to watch the exit code repeatedly; that path is uncached (5x rc=0,
-    ~420ms each).
+  - **Repeating a CACHED `vp run <task>` re-runs nothing.** `run.cache.tasks` is on
+    in `vite.config.ts`, and a task that does not opt out with `cache: false` (the
+    `check` / `test` / `lint` / `typecheck` family does not) replays its recorded exit
+    code: `vp run check` printed `cache hit, 2.01s saved` on runs 2-5 — five identical
+    greens, one execution. When the POINT is to watch the exit code repeatedly, call
+    the underlying command directly (`vp check` / `vp lint` / `vp fmt --check`), which
+    is never cached.
   - **Inject the failure into `src/**`, never into `tests/**`.** `lint.ignorePatterns`
-    / `fmt.ignorePatterns` are source-only (`['**/*', '!src', '!src/**']`): an unused
-    variable in a `src` file fails `vp check` rc=1 (`eslint(no-unused-vars)` +
-    `typescript(TS6133)`), while the same injection under `tests/unit/**` returns
-    rc=0 with the file count unmoved. A probe that lands in `tests/` proves nothing
-    and reads as "the gate is broken".
+    / `fmt.ignorePatterns` are source-only (`['**/*', '!src', '!src/**']`): a
+    non-`_`-prefixed unused variable in a `src` file fails `vp check` rc=1
+    (`eslint(no-unused-vars)` + `typescript(TS6133)`), while the same injection under
+    `tests/unit/**` returns rc=0 with the linted file count unmoved. A probe that
+    lands in `tests/` — or that a `varsIgnorePattern: '^_'` name exempts — proves
+    nothing and reads as "the gate is broken".
   - **Then guard the SHAPE of the fix**, because nothing else re-checks a config or
     hook line. For a `.claude/hooks/**` fix the repo's own mechanism is a bash smoke
     test beside the hook — `.claude/hooks/pr-review-gate.test.sh`, run by
     `vp run test:hooks` and wired into CI — added for #501 precisely because a
     heuristic edit has no other regression net.
 
-  Why repeatedly, concretely: go-to-k/cdk-real-drift#1761 / #1765 had `vp run check`
-  flapping rc=0/rc=1 across identical runs, so one green would have "proved" either
-  verdict. The same shape is live HERE, on a different task — `vp test run` returned
-  rc=0,0,1,0,1 across five identical runs on a clean branch (2026-08-19) with all
-  3126 tests passing every time: the #402 forks-worker exit, which kills a reused
-  worker AFTER its assertions pass. So on this repo one run proves neither that a
-  command is broken nor that it is fixed. (`vp check` itself was stable, 5x rc=0 —
-  the flap is task-specific, which is exactly why you measure rather than assume.)
+  Why BOTH directions, concretely. An exit code can lie in either direction, and the
+  two repos supply one example each. **Non-zero that means nothing**:
+  go-to-k/cdk-real-drift#1761 / #1765 — `vp run check` exited 134 on a clean tree
+  while finding 0 errors (a Vite+ stdout `EAGAIN` panic), deterministically, 3/3 runs
+  before and 3/3 after the fix. The fix was one line of build config, and the risk it
+  carried was the opposite of a flake: a redirect that swallows the exit code turns a
+  RED tree green, which is why #1765 shipped a test asserting the `exit 1` survives.
+  **Zero that means nothing**: right here, `vp test run` returned rc=0,0,1,0,1 across
+  five identical runs on a clean branch (2026-08-19) with all 3126 tests passing every
+  time — the #402 forks-worker exit, which kills a reused worker AFTER its assertions
+  pass. So one green proves neither that a command is broken nor that it is fixed.
+  Note the flap is task-specific (`vp check` was stable, 5x rc=0), which is the point:
+  measure the command you actually changed rather than assuming its behavior.
 
 After a Docker-backed run, sweep for orphans and clean up via `/cleanup` (the
 container / network filters and the `*-from-cfn-stack` stack check are in
