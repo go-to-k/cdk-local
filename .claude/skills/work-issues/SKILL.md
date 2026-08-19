@@ -329,10 +329,21 @@ Confirm the TRUE diff and rebase:
 
 ```bash
 git diff --stat $(git merge-base origin/main <branch>)..<branch>   # the real change
-git -C .claude/worktrees/<name> rebase origin/main                 # clean if disjoint
+git -C .claude/worktrees/<name> rebase origin/main                 # only SHARED LINES conflict
 ```
 
 Re-run gates, `git push --force-with-lease`.
+
+**A clean rebase — and a clean merge — is NOT evidence that §3's one-lane-per-file
+rule held.** Git conflicts only where the two sides touched the same LINES, so two
+lanes editing disjoint SECTIONS of one file both land intact and §3 fails
+*silently*, without the loud signal this step otherwise gives you. Measured in
+cdk-real-drift on 2026-08-19 (go-to-k/cdk-real-drift#1775): PRs
+go-to-k/cdk-real-drift#1772 and go-to-k/cdk-real-drift#1773 both rewrote
+`.claude/skills/work-issues/SKILL.md` and merged NINE SECONDS apart (04:30:51Z and
+04:31:00Z); both survived by luck, not by design. When your PR lands into a file
+another PR touched in the same window, the absent conflict proves nothing — confirm
+it after the pull in §9.
 
 ## 8. Verify before merge (`/verify-pr`)
 
@@ -455,18 +466,34 @@ already used by worktree` fatal a hand-run merge hits from a side worktree), the
 cleans the worktree + local branch + remote branch in one pass. A hand-run worktree
 merge is blocked by `gh-pr-merge-worktree-gate.sh` unless `/merge-pr` set the
 `merge-pr` marker. If a later PR is behind, GitHub still merges it when the files
-are disjoint.
+are disjoint — which is also why a clean merge says nothing about whether a
+collision happened (§7).
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
 ```
 
-`/merge-pr` already removes the worktree it merged; confirm nothing lingers:
+So when your PR landed into a file another PR touched in the same window, grep the
+pulled `main` for a marker string from EACH side before believing both survived —
+one side silently overwriting the other looks exactly like a clean merge.
+
+`/merge-pr` already removes the worktree it merged; the check is that **every
+worktree THIS run added is gone** — never that only the main checkout remains:
 
 ```bash
-git worktree list                            # only the main checkout should remain
-git worktree prune
+git worktree list      # yours gone; one you did NOT add may be a LIVE peer lane
+git worktree prune     # drops entries whose directory a peer already removed
 ```
+
+`git worktree list` cannot tell you whose a worktree is: a finished lane and a
+session working right now look identical, an already-on-`main` branch tip included
+— a peer lane merges its own PR and keeps working. Before removing one you did not
+add, confirm it is finished (`git log --oneline -1 <branch>`, then `gh pr list
+--state all --head <branch>` for an OPEN PR), and when in doubt leave it and say so
+in the wrap. In cdk-real-drift on 2026-08-19 (go-to-k/cdk-real-drift#1775) a run
+read a peer's worktree as residue of the previous run — the reading the old wording
+invites — and that lane merged go-to-k/cdk-real-drift#1773 while the reading lane
+was still open.
 
 Finally, comment the outcome on each issue if it was not auto-closed. Do NOT stop
 here: what the run taught you is still only in this session's context, so go on to
@@ -624,11 +651,12 @@ pnpm install                  # worktrees have no node_modules
   treating a small text diff as low risk. A wrong rule in this file propagates into
   every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes the
-  worktree — §9 ends with "only the main checkout should remain", and §10 must not
-  undo that. This is `Session-fit: now` on the criterion that deferring leaves main
-  self-inconsistent: the skill would keep telling the next run to do the thing this
-  run just proved it gets wrong. Its evidence also dies with this session's context.
-  Leaving the PR open is an open PR (NOT CLOSEABLE) as well.
+  worktree — §9's closing check is "every worktree THIS run added is gone", and
+  §10 must not undo that. This is `Session-fit: now` on the criterion that
+  deferring leaves main self-inconsistent: the skill would keep telling the next
+  run to do the thing this run just proved it gets wrong. Its evidence also dies
+  with this session's context. Leaving the PR open is an open PR (NOT CLOSEABLE)
+  as well.
 
 Then report the outcome in one line of the wrap: what changed, in which step, and
 the run evidence behind it — or "no skill change" plus what held.
@@ -648,7 +676,13 @@ the run evidence behind it — or "no skill change" plus what held.
   fix needs a value that lives in a helper another agent owns, prefer a small
   SELF-CONTAINED change in YOUR file over editing theirs.
 - **Stale-base phantom diff** (§7) — never "restore" the peer's lines a stale
-  `git diff origin/main` appears to have removed; rebase instead.
+  `git diff origin/main` appears to have removed; rebase instead. And the converse:
+  a rebase / merge with no conflict is not proof the lanes were disjoint — same
+  file, different sections lands silently (§7, confirmed in §9).
+- **A worktree you did not add may be a LIVE peer** (§9) — `git worktree list`
+  cannot tell a finished lane from a session working right now, already-merged
+  branch tip included. The closing check is "mine are gone", not "only main
+  remains".
 - **`/merge-pr`, not a hand-run merge** — a hand-run `gh pr merge --delete-branch`
   from a side worktree trips the `'main' is already used by worktree` fatal (the
   remote merge lands but local cleanup fails) and is gate-blocked besides.
