@@ -9,6 +9,18 @@ const EMULATOR_SOURCE = path.join(
   '../../../src/cli/commands/ecs-service-emulator.ts'
 );
 
+// Issue #515 — the emulator module is one of the largest in the repo, and
+// importing it INSIDE an it() body charged the whole module load against
+// that single case's 5s testTimeout (observed at 2312ms on a passing run,
+// and over 5s on a loaded worker). Pay the load ONCE at module scope —
+// outside any per-case budget — matching the top-level `await import`
+// pattern the sibling emulator test files use. This file has no vi.mock,
+// so the import order is unconstrained.
+const { enforceStrictOverrides } = await import(
+  '../../../src/cli/commands/ecs-service-emulator.js'
+);
+const { LocalStartServiceError } = await import('../../../src/utils/error-handler.js');
+
 /**
  * Issue #238 site-level binding test (mirrors the
  * `feedback_site_level_binding_test.md` pattern used by
@@ -272,11 +284,7 @@ describe('enforceStrictOverrides (issue #238 strict-overrides guard, behavioral)
   // entire emulator (synth + resolvers + docker) just to exercise the
   // one if-statement. The boot path's call site is locked via the
   // source-grep test below.
-  it('throws LocalStartServiceError naming every uncovered target when strict=true', async () => {
-    const { enforceStrictOverrides } = await import(
-      '../../../src/cli/commands/ecs-service-emulator.js'
-    );
-    const { LocalStartServiceError } = await import('../../../src/utils/error-handler.js');
+  it('throws LocalStartServiceError naming every uncovered target when strict=true', () => {
     expect(() => enforceStrictOverrides(true, ['AppService', 'AuthService'])).toThrow(
       LocalStartServiceError
     );
@@ -293,17 +301,11 @@ describe('enforceStrictOverrides (issue #238 strict-overrides guard, behavioral)
     }
   });
 
-  it('is a no-op when strict=false (even with uncovered targets)', async () => {
-    const { enforceStrictOverrides } = await import(
-      '../../../src/cli/commands/ecs-service-emulator.js'
-    );
+  it('is a no-op when strict=false (even with uncovered targets)', () => {
     expect(() => enforceStrictOverrides(false, ['AppService'])).not.toThrow();
   });
 
-  it('is a no-op when strict=true but no targets are uncovered', async () => {
-    const { enforceStrictOverrides } = await import(
-      '../../../src/cli/commands/ecs-service-emulator.js'
-    );
+  it('is a no-op when strict=true but no targets are uncovered', () => {
     expect(() => enforceStrictOverrides(true, [])).not.toThrow();
   });
 
