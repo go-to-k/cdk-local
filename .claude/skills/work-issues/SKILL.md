@@ -96,6 +96,41 @@ Skim titles: most cdk-local issues are runtime-behavior gaps — a serve routing
 `fix(watch)` reload that boots a stale container, a `fix(agentcore)` protocol gap.
 If everything is maintainer-authored, proceed; otherwise apply §0.
 
+**The other half of the already-shipped screen above: a residue can be OWNED rather
+than shipped.** A lane that works an issue and cannot close it files the remainder as
+a CHILD issue, says so in its closing comment, and leaves the parent OPEN on purpose —
+so the parent still reads as ordinary backlog while its remaining work belongs to the
+child's lane. Read the thread to the END (the ownership is in the LAST comment, not
+the body), then check the CLAIM STATE of every issue that thread names, before
+claiming the parent. Measured in cdkd on 2026-08-19: go-to-k/cdkd#2018's own lane held
+it open at 08:14:47Z with acceptance item 2 unmet and that item's mechanism already
+filed as go-to-k/cdkd#2026; a later run took the parent for ordinary backlog, claimed
+it at 08:32:33Z — 114 seconds after the child's claim at 08:30:39Z — and stood the
+claim down again at 08:46:15Z, because two of the parent's three admissible remedies
+land in exactly the two files the child's claim had declared. Reading the thread to
+its last comment costs one command; that run paid 14 minutes instead.
+
+```bash
+N=<candidate issue>
+# the thread oldest -> newest: a spawned child is named in the CLOSING comment
+gh api repos/{owner}/{repo}/issues/$N/comments \
+  --jq '.[] | [.created_at, .user.login, (.body | gsub("\n"; " "))] | @tsv'
+
+# every SAME-REPO issue the body + thread name (the `/` in the guard drops a
+# cross-repo go-to-k/<other>#N, which would otherwise query the wrong repo)
+{ gh api repos/{owner}/{repo}/issues/$N --jq .body
+  gh api repos/{owner}/{repo}/issues/$N/comments --jq '.[].body'; } \
+  | grep -oE '(cdk-local#|[^[:alnum:]_/]#)[0-9]+' | grep -oE '[0-9]+' | sort -un
+
+# then per number: is it claimed? §4's comment is the ONLY record a lane leaves
+# before its first write (§2), so read an empty result as "no record", not "free"
+gh api repos/{owner}/{repo}/issues/<m>/comments --jq '.[] | [.created_at, .user.login] | @tsv'
+```
+
+Measured here on 2026-08-19: run against go-to-k/cdk-local#528 the extractor returned
+`512 523 526` — the cross-repo `go-to-k/cdkd#2009` in the same body correctly dropped
+— and each of the three carried a claim comment.
+
 ## 2. Map the collision landscape (parallel agents may already own files)
 
 ```bash
@@ -107,7 +142,7 @@ gh pr list --state open --json number,title,headRefName   # their PRs
 For each active worktree, find what it ACTUALLY edits (not the stale-base noise):
 
 ```bash
-git -C .claude/worktrees/<w> log --oneline -1     # its own commit subject → the issue it owns
+git -C .claude/worktrees/<w> log --oneline -1     # its tip — `origin/main`'s until it commits
 git -C .claude/worktrees/<w> show --stat HEAD     # the files that commit HAS FINISHED
 git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
 ```
@@ -120,7 +155,20 @@ authority on what a lane currently owns: a claim is written once at the start an
 stale as the lane's scope grows. On 2026-08-19 the go-to-k/cdk-local#506 lane (PR go-to-k/cdk-local#513) was editing
 THIS file's §4 and §8 while its claim comment on go-to-k/cdk-local#506 named five other files and not
 this one — the comment said free, and only `status --porcelain` (plus an mtime seconds
-old) said otherwise.
+old) said otherwise. That ranking answers WHICH FILES a live lane owns, and it has one
+bounded blind spot at the other end of a lane's life: between `git worktree add` and
+the lane's FIRST WRITE it cannot see that the lane exists at all, because the dirty
+tree is empty — nothing has been written yet — and the §4 claim comment is the only
+artifact in existence. Measured here on 2026-08-19 while creating the lane that wrote
+this paragraph: seconds after `git worktree add`, `log --oneline -1` and
+`show --stat HEAD` reported `87d694e` — a PEER's merge commit (go-to-k/cdk-local#532),
+inherited from `origin/main`, not this lane's work — `status --porcelain` was empty,
+`rev-parse HEAD` equalled `origin/main`, `git ls-remote --heads origin <branch>` was
+empty and `gh pr list` returned `[]`; its claim on go-to-k/cdk-local#533 (filed
+08:58Z, claimed 09:08Z) was the whole record. So the window is bounded on both ends:
+before the first write only the claim comment can see the lane, and from the first
+write on the ranking above applies unchanged. Both halves are the same rule as §9's —
+every probe here establishes LIFE, never absence.
 
 When the contested file is one you cannot avoid because the issue names it, the choice
 is not just wait-or-collide: shape your edit to rebase cleanly over theirs. Leave the
@@ -236,10 +284,10 @@ gate and §4's claim-then-re-check still apply unchanged:
   handing it off contradicts the handoff rather than being exempted by it.
 - **The maintainer named the issue in the invocation** (`/work-issues #<n>`) — an
   explicit instruction outranks a heuristic about who else might want it. It lifts
-  the freshness hold ONLY, never §1's already-shipped check: a named issue is by
-  construction a fresh issue, so it is MORE exposed to that staleness than average,
-  not less — go-to-k/cdk-local#514, named in an invocation on 2026-08-19, had half
-  its asks land on `main` between filing and pickup.
+  the freshness hold ONLY, never §1's already-shipped / already-owned checks: a named
+  issue is by construction a fresh issue, so it is MORE exposed to that staleness
+  than average, not less — go-to-k/cdk-local#514, named in an invocation on
+  2026-08-19, had half its asks land on `main` between filing and pickup.
 - **A security issue** (the security-first rule above) — an extra hour of a shipped
   vulnerability costs more than a duplicated context. Take it, and say in the claim
   (§4) that you took it inside the window and why.
@@ -718,14 +766,33 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   growth is not.
 - Do not restate a rule that already lives in `CLAUDE.md` or in another step — point
   at it instead.
-- If the lesson is about the FLOW rather than about cdk-local, mirror it into the
-  same-named `work-issues` skill in the sibling repos (`../cdkd`,
-  `../cdk-real-drift`). They run this flow with different gates and different ship
-  steps, so adapt the wording per repo rather than copying the section verbatim, and
-  it is one PR per repo under that repo's own worktree + gate flow. Do them in this
-  session when it can pay for two more gate runs; otherwise file one issue per repo
-  carrying the `Session-fit` line. What is not an option is landing the fix in one
-  of the three — that is how the three drift apart.
+- If the lesson is about the FLOW rather than about cdk-local, it belongs in the
+  same-named `work-issues` skill in ALL THREE repos (`../cdkd`,
+  `../cdk-real-drift`), and **the session that FINDS it owns all three landings** —
+  three worktrees, three PRs, three gate cycles — before it ends. They run this flow
+  with different gates and different ship steps, so adapt the wording per repo rather
+  than copying the section verbatim; it is one PR per repo under that repo's own
+  worktree + gate flow, and **that one PR carries ALL of the run's lessons for that
+  repo, not one PR per lesson** — the gate cycle is the per-PR cost, so a run that
+  learned five things still ships three PRs. Landing the fix in one of the three is
+  how they drift apart, and landing it in two is the same defect with a smaller
+  number. **Filing mirror issues instead is a WHOLE-REMAINDER exception, not the
+  fallback of first resort**: when the session genuinely cannot pay for the remaining
+  gate cycles, it files into EVERY remaining repo in the SAME turn, and each issue
+  names the other filings plus the repo the lesson already landed in, so the next
+  reader can see the set is complete instead of re-deriving it (each carries the
+  `Session-fit` line, in English, per §4). Partial filing is what manufactures
+  duplicates: go-to-k/cdk-local#531 (filed 2026-08-19T06:46:00Z) mirrors three
+  lessons that are a SUBSET of go-to-k/cdk-local#528's four (06:37:46Z) — two hops
+  eight minutes apart, neither seeing the other, both then closed by one PR
+  (go-to-k/cdk-local#532, merged 07:00:28Z); the sibling holds the same shape open —
+  go-to-k/cdkd#2011 (06:17:34Z) and go-to-k/cdkd#2016 (06:37:52Z) mirror the same
+  three cdk-local lessons 20 minutes apart, filed by two hops of one lesson set.
+  **And a lane WORKING a mirror issue does not mirror onward** — this is the clause
+  that stops the generator. The originating session already owns all three landings,
+  so re-filing the lesson you RECEIVED into the other two only manufactures a second
+  and third copy of it. What IS new is whatever your ADAPTATION taught you, and that
+  is subject to the same rule in turn: all three repos, this session.
   **Verify the copy against the TARGET repo, claim by claim, before shipping it.**
   Their gates, hooks and ship steps differ, so a sentence that is true here reads as
   authoritative there while being false, and nothing lints instruction prose — the
@@ -756,12 +823,9 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   is a dead link or — worse — resolves to a real, unrelated issue. This
   paragraph had the defect while the rule was being written: it cited `#1761`
   and `#1765` bare, and `gh issue view 1765` here answered `Could not resolve
-  to an issue or pull request`. The earlier form of this rule kept same-repo refs
-  bare "so the distinction carries information", but that distinction is
-  exactly what a mirror destroys — the qualified form carries the same
-  information and survives the trip (go-to-k/cdk-local#514). The rule is
-  mechanized, per §10-b's "a rule already in the text that got violated anyway
-  is a TEST": `tests/unit/skills/work-issues-skill-refs.test.ts` fails CI on
+  to an issue or pull request`. The rule is mechanized, per §10-b's "a rule
+  already in the text that got violated anyway is a TEST":
+  `tests/unit/skills/work-issues-skill-refs.test.ts` fails CI on
   any unqualified `#N` in this file's plain prose — frontmatter, fenced code
   blocks, and backtick spans are exempt, so a paragraph can still show a bare
   `#N` as its own counter-example (this one does).
