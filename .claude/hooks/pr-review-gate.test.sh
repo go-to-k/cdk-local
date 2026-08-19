@@ -183,15 +183,27 @@ RULES_PATHS=$(extract_paths .claude/rules/hooks.md \
 AGENT_PATHS=$(extract_paths .claude/agents/pr-code-reviewer.md \
   'Pay extra attention to the security surface')
 
-# A copy that extracts to nothing means its anchor drifted, not that it agrees.
+# Every quoted entry in the array must be one the extractor actually sees.
+# `grep -oE 'src/[A-Za-z0-9_./-]+\.ts'` drops an entry containing anything
+# outside that class, and a dropped entry is invisible to EVERY assertion below
+# -- not existence-checked, not behaviour-tested, free to differ across the
+# copies. Counting the quoted lines independently is what notices.
 n_hook=$(printf '%s\n' "$HOOK_PATHS" | grep -c . || true)
-[ "$n_hook" -ge 7 ] && check "hook UP_PATHS extracts a non-trivial list" 0 \
-  || check "hook UP_PATHS extracts a non-trivial list" 1 "got $n_hook entries"
+n_decl=$(sed -n '\%^UP_PATHS=[(]%,\%^[)]%p' "$REPO_ROOT/.claude/hooks/pr-review-gate.sh" \
+  | grep -c "^  '" || true)
+if [ "$n_hook" -eq "$n_decl" ] && [ "$n_hook" -ge 7 ]; then
+  check "every UP_PATHS entry is extractable ($n_hook)" 0
+else
+  check "every UP_PATHS entry is extractable" 1 "extracted $n_hook of $n_decl declared"
+fi
 
 # Duplicates in the hook's own region would make every copy comparison ambiguous.
 dupes=$(printf '%s\n' "$HOOK_PATHS" | sort | uniq -d | tr '\n' ' ')
-[ -z "${dupes// /}" ] && check "UP_PATHS has no duplicate entries" 0 \
-  || check "UP_PATHS has no duplicate entries" 1 "$dupes"
+if [ -z "${dupes// /}" ]; then
+  check "UP_PATHS has no duplicate entries" 0
+else
+  check "UP_PATHS has no duplicate entries" 1 "$dupes"
+fi
 
 # Every listed path must resolve to a real file: a rename that leaves the list
 # behind removes the up-bias without removing the appearance of one.
@@ -200,16 +212,22 @@ while IFS= read -r p; do
   [ -n "$p" ] || continue
   [ -f "$REPO_ROOT/$p" ] || missing="$missing $p"
 done <<<"$HOOK_PATHS"
-[ -z "$missing" ] && check "every UP_PATHS entry resolves to a real file" 0 \
-  || check "every UP_PATHS entry resolves to a real file" 1 "missing:$missing"
+if [ -z "$missing" ]; then
+  check "every UP_PATHS entry resolves to a real file" 0
+else
+  check "every UP_PATHS entry resolves to a real file" 1 "missing:$missing"
+fi
 
 # The three prose copies must carry exactly the hook's set.
 # Same paths, same order, no extras. See extract_paths on why order matters.
 compare_copy() {
   local name="$1" got="$2" diff_out
   diff_out=$(diff <(printf '%s\n' "$HOOK_PATHS") <(printf '%s\n' "$got") || true)
-  [ -z "$diff_out" ] && check "$name matches UP_PATHS" 0 \
-    || check "$name matches UP_PATHS" 1 "$(printf '%s' "$diff_out" | tr '\n' ' ')"
+  if [ -z "$diff_out" ]; then
+    check "$name matches UP_PATHS" 0
+  else
+    check "$name matches UP_PATHS" 1 "$(printf '%s' "$diff_out" | tr '\n' ' ')"
+  fi
 }
 compare_copy ".claude/skills/review-pr/SKILL.md"    "$SKILL_PATHS"
 compare_copy ".claude/rules/hooks.md"               "$RULES_PATHS"

@@ -223,8 +223,14 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-(English only — committed/public artifacts are English.) This is mandatory and
-comes BEFORE the first edit. It is the issue-level twin of the worktree
+(English only — committed/public artifacts are English, and that includes every
+issue this run FILES, not just the claim comment. The `Session-fit` line's
+parenthetical gloss is part of the issue body, so write it in English —
+`Session-fit: next (not this session)` / `Effort: ~1-3 h`. On 2026-08-19 the #506
+follow-up (#509) shipped with the Japanese gloss and had to be patched after
+creation; `non-english-text-gate` guards the PR diff, not `gh issue create`, so
+nothing catches this for you.) The claim is mandatory and comes BEFORE the first
+edit. It is the issue-level twin of the worktree
 DISJOINT-FILE rule. Re-check for a competing claim/PR right before you start; if
 one appeared, pick a different issue.
 
@@ -363,6 +369,14 @@ freshness) and — critically — **live-tests the changed behavior**:
     `tests/unit/**` returns rc=0 with the linted file count unmoved. A probe that
     lands in `tests/` — or that a `varsIgnorePattern: '^_'` name exempts — proves
     nothing and reads as "the gate is broken".
+  - **Run a `$0`-relative harness from beside its subject.** Comparing before/after
+    means running the OLD suite against the NEW code, and the obvious move — dump
+    `git show origin/main:<test>` into `/tmp` and run it — silently breaks any
+    harness that derives its subject from `$(dirname "$0")`. On 2026-08-19 the #506
+    lane read `pass: 0  fail: 9` from `pr-review-gate.test.sh` in `/tmp` and briefly
+    took it for a regression; the same file run from `.claude/hooks/` gave
+    `pass: 9  fail: 0`. Write the old copy next to the real one under a temporary
+    name and delete it after, or the probe measures its own path resolution.
   - **Then guard the SHAPE of the fix**, because nothing else re-checks a config or
     hook line. For a `.claude/hooks/**` fix the repo's own mechanism is a bash smoke
     test beside the hook — `.claude/hooks/pr-review-gate.test.sh`, run by
