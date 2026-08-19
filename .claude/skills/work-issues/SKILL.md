@@ -502,7 +502,11 @@ git checkout main && git pull origin main    # bring the merges local
 
 So when your PR landed into a file another PR touched in the same window, grep the
 pulled `main` for a marker string from EACH side before believing both survived —
-one side silently overwriting the other looks exactly like a clean merge.
+one side silently overwriting the other looks exactly like a clean merge. Take each
+marker from that PR's own DIFF (`gh pr diff <n>`), never from its title: on
+2026-08-19 a marker lifted from #518's title ("uncommitted-work probe") was absent
+from `main` while its actual text — `status --porcelain`, "dirty tree" — was
+present, i.e. the check reported a lost merge that had not happened.
 
 `/merge-pr` already removes the worktree it merged; the check is that **every
 worktree THIS run added is gone** — never that only the main checkout remains:
