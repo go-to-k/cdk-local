@@ -13,7 +13,7 @@ import {
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
@@ -817,38 +817,6 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-async function assumeLambdaExecutionRole(
-  roleArn: string,
-  region: string | undefined,
-  profile: string | undefined
-): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
-  const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
-  // Thread `--profile` so the AssumeRole call is signed with the profile's
-  // credentials (matching `aws sts assume-role --profile <p>`), not the
-  // default env-shadowed chain (issue #245).
-  const sts = new STSClient(buildStsClientConfig({ region, profile }));
-  try {
-    const response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: roleArn,
-        RoleSessionName: `${getEmbedConfig().resourceNamePrefix}-invoke-${Date.now()}`,
-        DurationSeconds: 3600,
-      })
-    );
-    const creds = response.Credentials;
-    if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
-    }
-    return {
-      accessKeyId: creds.AccessKeyId,
-      secretAccessKey: creds.SecretAccessKey,
-      sessionToken: creds.SessionToken,
-    };
-  } finally {
-    sts.destroy();
-  }
-}
-
 function forwardAwsEnv(env: Record<string, string>): void {
   const passThrough = [
     'AWS_ACCESS_KEY_ID',
@@ -1057,11 +1025,12 @@ export async function resolveLambdaContainerEnv(
     const stsRegion =
       options.region ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'];
     try {
-      const creds = await assumeLambdaExecutionRole(
-        resolvedAssumeRoleArn,
-        stsRegion,
-        options.profile
-      );
+      const creds = await assumeRoleCredentials({
+        roleArn: resolvedAssumeRoleArn,
+        region: stsRegion,
+        profile: options.profile,
+        sessionNameSuffix: 'invoke',
+      });
       dockerEnv['AWS_ACCESS_KEY_ID'] = creds.accessKeyId;
       dockerEnv['AWS_SECRET_ACCESS_KEY'] = creds.secretAccessKey;
       dockerEnv['AWS_SESSION_TOKEN'] = creds.sessionToken;

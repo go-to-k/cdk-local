@@ -4,8 +4,8 @@ import type { ResolvedLambda } from '../../../src/local/lambda-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 
 // Mock STS so the explicit `--assume-role <arn>` path resolves to deterministic
-// temp credentials without a real AWS call (the helper's `assumeLambdaExecutionRole`
-// dynamically imports @aws-sdk/client-sts).
+// temp credentials without a real AWS call (the shared `assumeRoleCredentials`
+// helper in utils/role-arn.ts imports @aws-sdk/client-sts).
 vi.mock('@aws-sdk/client-sts', () => ({
   STSClient: class {
     async send(): Promise<unknown> {
