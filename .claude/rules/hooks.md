@@ -241,7 +241,13 @@ construction.
   `fix:`-prefixed commit on the PR branch) move the tier UP one
   step (clamped at `3-axis`). Down-bias triggers (every path under
   docs/infra OR every path under `tests/`) move it DOWN one step
-  (clamped at `inline`). When both fire, up wins.
+  (clamped at `inline`). When both fire, up wins. **Agent-instruction
+  files are NOT docs for this purpose** (issue #501): `CLAUDE.md`,
+  anything under `.claude/**` and `.markgate.yml` are excluded from the
+  docs bucket by `AGENT_INSTRUCTION_REGEX`, because a wrong rule there
+  propagates into every future session — and since they are markdown,
+  the bucket's `.*\.md` entry (which exists for integ-test READMEs)
+  would otherwise re-admit them.
 
   `inline`-tier PRs always pass through. `gh pr create` is
   intentionally NOT gated — small PRs should be openable freely.

@@ -185,8 +185,10 @@ UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lamb
 # wrong rule there propagates into every future session, which is the opposite
 # of the low risk a down-bias assumes, and the `.*\.md` entry below would
 # otherwise re-admit every SKILL.md through the back door. cdkd made the same
-# change in its own copy of this gate; keep this regex, that one, and
-# `/review-pr`'s down-bias list in sync.
+# change in its own copy of this gate; keep this regex, that one,
+# `/review-pr`'s down-bias list, `.claude/skills/work-issues/SKILL.md` (its
+# section 10-d describes this tier for skill-only PRs) and
+# `.claude/rules/hooks.md` in sync.
 AGENT_INSTRUCTION_REGEX='^(CLAUDE\.md|\.claude/.*|\.markgate\.yml)$'
 DOWN_DOCS_REGEX='^(\.gitignore|README\.md|.*\.md|docs/.*|package\.json)$'
 DOWN_TESTS_REGEX='^tests/.*'
@@ -209,9 +211,10 @@ while IFS= read -r p; do
   if ! printf '%s' "$p" | grep -qE "$DOWN_TESTS_REGEX"; then
     all_tests=0
   fi
-done <<EOF_PATHS
-$paths
-EOF_PATHS
+# Herestring, not an unquoted heredoc: a heredoc body is expanded, so a PR
+# file path containing `$(...)` or backticks would be command-substituted here
+# on attacker-supplied data (any fork can open a PR adding such a path).
+done <<<"$paths"
 
 if [ "$saw_path" -eq 1 ] && { [ "$all_docs" -eq 1 ] || [ "$all_tests" -eq 1 ]; }; then
   down_bias=1

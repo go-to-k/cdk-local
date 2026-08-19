@@ -83,30 +83,43 @@ run_case() {
 SIX_SKILLS=(.claude/skills/a/SKILL.md .claude/skills/b/SKILL.md .claude/skills/c/SKILL.md
             .claude/skills/d/SKILL.md .claude/skills/e/SKILL.md .claude/skills/f/SKILL.md)
 SIX_DOCS=(README.md docs/a.md docs/b.md docs/c.md docs/d.md docs/e.md)
-SIX_INTEG_READMES=(tests/integration/a/README.md tests/integration/b/README.md
-                   tests/integration/c/README.md tests/integration/d/README.md
-                   tests/integration/e/README.md tests/integration/f/README.md)
+# Markdown outside docs/** and tests/**: the only shape that pins the
+# `.*\.md` entry itself. An all-under-tests/ list would down-bias through the
+# tests bucket even if that entry were deleted, so it proves nothing about it.
+SIX_LOOSE_MD=(CONTRIBUTING.md docs/a.md tests/integration/a/README.md
+              CHANGELOG.md docs/b.md tests/integration/b/README.md)
 SIX_HOOKS=(.claude/hooks/a.sh .claude/hooks/b.sh .claude/hooks/c.sh
            .claude/hooks/d.sh .claude/hooks/e.sh .claude/hooks/f.sh)
 
 # Issue #501: agent-instruction paths must NOT down-bias.
 run_case "skills-only keeps its tier (blocked)"        2 500 "${SIX_SKILLS[@]}"
 run_case "hooks-only keeps its tier (blocked)"         2 500 "${SIX_HOOKS[@]}"
-run_case "CLAUDE.md + .markgate.yml keep their tier"   2 500 CLAUDE.md .claude/CLAUDE.md .markgate.yml \
-                                                              .claude/rules/a.md .claude/agents/b.md .claude/settings.json
+# The markdown-shaped agent paths are the ones that need AGENT_INSTRUCTION_REGEX:
+# they all match the docs bucket's `.*\.md`, so only the exclusion keeps them out.
+run_case "markdown agent-instruction files keep tier"  2 500 CLAUDE.md .claude/CLAUDE.md \
+                                                              .claude/rules/a.md .claude/rules/b.md \
+                                                              .claude/agents/c.md .claude/skills/d/SKILL.md
+# Non-markdown agent paths are held out by the trimmed docs list alone; kept as a
+# separate case so a later widening of that list cannot silently un-gate them.
+run_case "non-markdown agent files keep their tier"    2 500 .markgate.yml .claude/settings.json \
+                                                              .claude/settings.local.json .claude/hooks/a.sh \
+                                                              .claude/hooks/b.sh .claude/hooks/c.sh
 run_case "mixed skills + docs keeps its tier"          2 500 .claude/skills/a/SKILL.md docs/a.md docs/b.md \
                                                               docs/c.md docs/d.md docs/e.md
 
 # Inert documentation still down-biases.
 run_case "docs-only down-biases to inline (pass)"      0 500 "${SIX_DOCS[@]}"
-run_case "integ READMEs down-bias to inline (pass)"    0 500 "${SIX_INTEG_READMES[@]}"
+run_case "loose markdown down-biases to inline (pass)" 0 500 "${SIX_LOOSE_MD[@]}"
 
 # Size floor still applies: a small skills-only diff is inline anyway.
 run_case "small skills-only diff is inline (pass)"     0 100 .claude/skills/a/SKILL.md
 
 # Non-merge commands pass through untouched.
 non_merge_payload='{"tool_input":{"command":"gh pr create --title x"},"cwd":"'"$REPO"'"}'
-if printf '%s' "$non_merge_payload" | bash "$HOOK" >/dev/null 2>&1; then
+GH_FIXTURE=$(fixture 500 .claude/skills/a/SKILL.md)
+export GH_FIXTURE
+if ( cd "$REPO" && export PATH="$TMP/bin:$PATH" \
+     && printf '%s' "$non_merge_payload" | bash "$HOOK" >/dev/null 2>&1 ); then
   printf 'ok   gh pr create passes through (exit 0)\n'; pass=$((pass + 1))
 else
   printf 'FAIL gh pr create should pass through\n'; fail=$((fail + 1))

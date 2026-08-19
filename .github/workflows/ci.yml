@@ -20,6 +20,7 @@ jobs:
       - run: vp install --frozen-lockfile
       - run: vp run check
       - run: vp run test
+      - run: vp run test:hooks
       - run: vp run build
 
       # Issue #402 diagnostics: if a forks worker crashed ("Worker exited
