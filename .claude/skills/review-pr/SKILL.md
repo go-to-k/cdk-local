@@ -51,14 +51,44 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    **Up-bias triggers** (move tier UP by one step, never above 3-axis):
 
-   - Any path matches **security / process-launch surface**:
-     - `src/utils/role-arn.ts`
-     - `src/local/cognito-jwt.ts`
-     - `src/local/lambda-authorizer.ts`
-     - `src/local/docker-runner.ts`
-     - `src/local/docker-image-builder.ts`
-     - `src/local/ecr-puller.ts`
-     - `src/local/sigv4-verify.ts`
+   - Any path matches **security / process-launch surface** — credential or secret material, inbound auth verification, or untrusted-code / image execution:
+     - _Credential / secret material_
+       - `src/utils/role-arn.ts`
+       - `src/utils/profile-resolver.ts`
+       - `src/cli/commands/local-profile-credentials-file.ts`
+       - `src/local/ecs-secrets-resolver.ts`
+       - `src/local/ssm-parameter-resolver.ts`
+       - `src/local/ecs-task-runner.ts`
+     - _Inbound auth: verification, enforcement, request signing_
+       - `src/local/cognito-jwt.ts`
+       - `src/local/lambda-authorizer.ts`
+       - `src/local/sigv4-verify.ts`
+       - `src/local/authorizer-resolver.ts`
+       - `src/local/authorizer-cache.ts`
+       - `src/local/front-door-auth.ts`
+       - `src/local/agentcore-serve-auth.ts`
+       - `src/local/agentcore-sigv4-sign.ts`
+       - `src/local/http-server.ts`
+       - `src/local/front-door-server.ts`
+       - `src/local/agentcore-http-server.ts`
+       - `src/local/websocket-server.ts`
+     - _Untrusted code / argv / archive + path traversal_
+       - `src/utils/docker-cmd.ts`
+       - `src/local/docker-runner.ts`
+       - `src/local/docker-image-builder.ts`
+       - `src/local/ecr-puller.ts`
+       - `src/assets/docker-build.ts`
+       - `src/local/image-override-engine.ts`
+       - `src/local/cloudfront-function-runtime.ts`
+       - `src/local/studio-dispatch.ts`
+       - `src/local/studio-serve-manager.ts`
+       - `src/local/studio-option-catalog.ts`
+       - `src/local/cloudfront-static-origin.ts`
+       - `src/local/lambda-resolver.ts`
+       - `src/local/agentcore-s3-bundle.ts`
+       - `src/local/layer-arn-materializer.ts`
+
+     This list exists in FOUR places — `UP_PATHS` in `.claude/hooks/pr-review-gate.sh`, here, `.claude/rules/hooks.md`, and `.claude/agents/pr-code-reviewer.md` — and issue #506 found it drifted in both directions at once: the reviewer-agent copy had silently dropped an entry, and the list was far too small — the issue named seven missing authn / credential / code-exec modules and an independent sweep of `src/**` found ~18 more, mostly the authorizer *enforcement* points rather than the verifier modules already listed. The list-consistency case in `.claude/hooks/pr-review-gate.test.sh` (run by `vp run test:hooks`, wired into CI) now asserts the four agree and that every entry resolves to a real file, so a rename or a one-copy edit fails CI. Keep adding to it freely — a module listed here costs one extra reviewer, a module missing from it costs a security review that never happened. Do not re-quote an individual path anywhere in this bullet: the test reads the surface out of the list above, and a stray mention would refill an entry a copy had dropped.
    - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
 
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:

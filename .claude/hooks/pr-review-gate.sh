@@ -173,8 +173,73 @@ fi
 up_bias=0
 down_bias=0
 
-# Up-bias path patterns. Sourced verbatim from the skill's list (cdk-local).
-UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lambda-authorizer\.ts|src/local/docker-runner\.ts|src/local/docker-image-builder\.ts|src/local/ecr-puller\.ts|src/local/sigv4-verify\.ts)$'
+# Up-bias path patterns: the security surface. A PR touching any of these is
+# reviewed one tier higher than its size alone would give.
+#
+# The list is written out FOUR times -- here, `.claude/skills/review-pr/SKILL.md`,
+# `.claude/rules/hooks.md` and `.claude/agents/pr-code-reviewer.md` -- and issue
+# #506 found it had drifted in BOTH directions: the reviewer-agent copy had
+# silently dropped one entry, and the list was far too small -- the issue named
+# seven missing authn / credential / code-exec modules and an independent sweep
+# of `src/**` found ~18 more, mostly the authorizer ENFORCEMENT points rather
+# than the verifier modules already listed. 7 entries -> 32.
+#
+# The list-consistency case in `pr-review-gate.test.sh` (run by
+# `vp run test:hooks`, wired into CI) now asserts the four agree, in the same
+# order, and that every entry resolves to a real file, so a rename or a one-copy
+# edit fails CI instead of quietly under-protecting.
+# Adding a module here is the whole cost of covering it; when in doubt, add it.
+UP_PATHS=(
+  # Credential / secret material
+  'src/utils/role-arn.ts'
+  'src/utils/profile-resolver.ts'
+  'src/cli/commands/local-profile-credentials-file.ts'
+  'src/local/ecs-secrets-resolver.ts'
+  'src/local/ssm-parameter-resolver.ts'
+  'src/local/ecs-task-runner.ts'
+  # Inbound auth: verification, enforcement, request signing
+  'src/local/cognito-jwt.ts'
+  'src/local/lambda-authorizer.ts'
+  'src/local/sigv4-verify.ts'
+  'src/local/authorizer-resolver.ts'
+  'src/local/authorizer-cache.ts'
+  'src/local/front-door-auth.ts'
+  'src/local/agentcore-serve-auth.ts'
+  'src/local/agentcore-sigv4-sign.ts'
+  'src/local/http-server.ts'
+  'src/local/front-door-server.ts'
+  'src/local/agentcore-http-server.ts'
+  'src/local/websocket-server.ts'
+  # Untrusted code / argv / archive + path traversal
+  'src/utils/docker-cmd.ts'
+  'src/local/docker-runner.ts'
+  'src/local/docker-image-builder.ts'
+  'src/local/ecr-puller.ts'
+  'src/assets/docker-build.ts'
+  'src/local/image-override-engine.ts'
+  'src/local/cloudfront-function-runtime.ts'
+  'src/local/studio-dispatch.ts'
+  'src/local/studio-serve-manager.ts'
+  'src/local/studio-option-catalog.ts'
+  'src/local/cloudfront-static-origin.ts'
+  'src/local/lambda-resolver.ts'
+  'src/local/agentcore-s3-bundle.ts'
+  'src/local/layer-arn-materializer.ts'
+)
+# Membership is an exact string comparison, deliberately NOT a regex. An earlier
+# draft joined the entries into an anchored ERE and escaped only `.`; a future
+# entry carrying an unbalanced `(` or `[` would then make the whole alternation
+# an INVALID ERE, `grep -qE` would exit 2, and the `if` below would read that as
+# "no match" -- silently disabling the up-bias for every path in the PR. A
+# security gate must not fail open on a typo, so there is no pattern to get
+# wrong: `up_bias_path` compares `$1` against each entry verbatim.
+up_bias_path() {
+  local candidate="$1" up
+  for up in "${UP_PATHS[@]}"; do
+    [ "$candidate" = "$up" ] && return 0
+  done
+  return 1
+}
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed -> no down-bias.
@@ -199,7 +264,7 @@ saw_path=0
 while IFS= read -r p; do
   [ -z "$p" ] && continue
   saw_path=1
-  if printf '%s' "$p" | grep -qE "$UP_PATH_REGEX"; then
+  if up_bias_path "$p"; then
     up_bias=1
   fi
   # An agent-instruction path is never "docs" for tier purposes, even though
