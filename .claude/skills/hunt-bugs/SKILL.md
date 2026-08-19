@@ -236,9 +236,15 @@ Take it all the way to merged — do not leave a green PR hanging:
    fatal) and cleans the worktree + local + remote branch in one pass. Do NOT
    hand-run `gh pr merge --squash --delete-branch` from a side worktree — it's
    gate-blocked (`gh-pr-merge-worktree-gate.sh`).
-2. **Confirm the worktree is gone** — `/merge-pr` removes it; a left-behind worktree
-   is the silent residue of this flow. `git worktree list` should show only the main
-   checkout; `git worktree prune` if anything lingers.
+2. **Confirm the worktree YOU added is gone** — `/merge-pr` removes it; a
+   left-behind worktree is the silent residue of this flow. Check `git worktree
+   list` for yours specifically, NOT for a list with only the main checkout in it:
+   it cannot tell a finished lane from a session working right now (an
+   already-on-`main` branch tip included), so a worktree you did not add may be a
+   live peer lane. Confirm it is finished (`git log --oneline -1 <branch>`, then
+   `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
+   leave it alone when in doubt. `git worktree prune` drops entries whose directory
+   is already gone.
 
 ### 9. Record what you learned
 
