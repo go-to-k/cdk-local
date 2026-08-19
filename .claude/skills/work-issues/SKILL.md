@@ -125,8 +125,11 @@ choosing.
   `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`), command
   injection, or anything tied to a GHSA advisory. When in doubt, treat it as
   security — ranking a normal bug first costs one position in a queue. Urgency
-  changes ORDER only: a security lane still takes the review tier its size gives
-  PLUS the security reviewer, and the same verification depth as any other lane.
+  changes ORDER only: a security lane takes the tier its size gives, moved UP one
+  step by `/review-pr`'s security up-bias, and the same verification depth as any
+  other lane. Note that up-bias is PATH-keyed (the files listed above), so a
+  security fix landing outside them gets no automatic bump — raise the tier by hand
+  and say why.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
@@ -390,11 +393,10 @@ pnpm install                  # worktrees have no node_modules
   `src/**` change means no integ and no live-test.
 - Merge it with `/merge-pr <n>` like every other lane — a hand-run `gh pr merge`
   from a side worktree is gate-blocked.
-- `/review-pr` DOWN-biases `.claude/**` here, so the tier it emits for a skill-only
-  PR is a FLOOR, not a verdict: read the whole diff yourself regardless. A wrong
-  rule in this file propagates into every future session, which is the opposite of
-  the low risk that down-bias assumes (cdkd removed agent-instruction paths from its
-  own down-bias set for exactly that reason).
+- `/review-pr` no longer down-biases `.claude/**` (issue #501), so a skill-only PR
+  keeps the tier its size gives — read the whole diff at that tier rather than
+  treating a small text diff as low risk. A wrong rule in this file propagates into
+  every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes the
   worktree — §9 ends with "only the main checkout should remain", and §10 must not
   undo that. This is `Session-fit: now` on the criterion that deferring leaves main
