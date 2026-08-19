@@ -206,9 +206,9 @@ identical from outside. What may still hold the issue back is §2 or §4, on the
 grounds rather than this one.
 
 What the gate accepts in exchange: an issue filed by a session that has since ended
-waits up to an hour. That is the cheap side — the backlog is not going anywhere,
-while the expensive side is two agents deriving one fix from scratch. Mirrored from
-cdkd on 2026-08-19, where the window was watched live the same morning: cdkd#1973 was
+waits up to an hour. That is the cheap side — the backlog is not going anywhere, while
+the expensive side is two agents deriving one fix from scratch. Mirrored from cdkd on
+2026-08-19, where the window was watched live the same morning: go-to-k/cdkd#1973 was
 filed at 03:14Z, claimed by its filing lane at 03:30Z, and that lane's branch reached
 `origin` only at 04:06Z. For 16 minutes the issue had no branch, no PR and no comment,
 so every probe in §2 reported it free; for 52 minutes nothing but a time-based gate
@@ -346,22 +346,38 @@ freshness) and — critically — **live-tests the changed behavior**:
   FIXED binary (`vp run build` first — the CLI runs from `dist/`) and confirm the
   behavior is now correct. `/run-integ <local-*>` exercises the real Docker path;
   keep or extend the fixture that covers the fixed behavior in the SAME PR.
-- **A docs/tooling-only PR** (no `src/**` in the diff) is EXEMPT from the live-test
-  and from the integ — but NOT from `/verify-pr` itself: `verify-pr-gate` gates every
-  `gh pr create` / `gh pr merge` on the marker with no diff-scope exemption, and only
+- **A diff with no `src/**` change** (docs, skills, rules, hooks, CI, config) is
+  EXEMPT from the live-test, and from the integ unless it touches
+  `tests/integration/**` — `integ-gate` short-circuits on `src/**` OR
+  `tests/integration/**`, so a tooling PR that edits a fixture is still integ-gated.
+  It is never exempt from `/verify-pr` itself: `verify-pr-gate` gates every
+  `gh pr create` / `gh pr merge` on the marker with no diff-shape carve-out, and only
   `/verify-pr` sets it. What the exemption drops is the LIVE test, not the verifying.
-  With no runtime path to drive, **the verification IS the broken command itself**:
-  run it BEFORE and AFTER, and drive the FAILURE direction too — a change that
-  swallows an exit code looks exactly like one that fixes the gate. Three traps,
-  measured here on 2026-08-19 (#504):
+  This is the easy tier to under-verify: with no fixture and no integ that can fail,
+  "the gates are green" reads as "nothing left to check". What SATISFIES the step
+  depends on what the diff changes, and a diff that does both owes BOTH arms.
+
+  **Arm 1 — the diff changes what a command or gate DOES** (hook logic, a
+  `vite.config.ts` task, `ci.yml`, a lint / build config). The verification IS that
+  command, and those runs ARE the live test rather than an exemption from it. Run
+  *the command your own diff changes* — `vp run test:hooks` for a `.claude/hooks/**`
+  edit, the changed task for `vite.config.ts`, `vp check` for the lint / typecheck
+  config. `vp check` is not the universal answer: its lint and fmt are scoped to
+  `src/**` and its typecheck project is `["src/**/*", "types/**/*"]`, so it reads
+  neither `ci.yml` nor any hook, and pointing it at a hook diff is a probe that
+  cannot fail. Run it BEFORE and AFTER, and drive the FAILURE direction too — a
+  change that swallows an exit code looks exactly like one that fixes the gate.
+  Four traps, measured here on 2026-08-19 (#504, #506):
   - **Repeating a CACHED `vp run <task>` re-runs nothing.** `run.cache.tasks` is on
     in `vite.config.ts`, and a task that does not opt out with `cache: false` — which
     is every task you would repeat to watch it: `check`, `test`, `lint`, `typecheck`,
-    `format:check` — replays its recorded exit
+    `format:check`, and `verify`, the one §6 sends you to — replays its recorded exit
     code: `vp run check` printed `cache hit, 2.01s saved` on runs 2-5 — five identical
     greens, one execution. When the POINT is to watch the exit code repeatedly, call
     the underlying command directly (`vp check` / `vp lint` / `vp fmt --check`), which
-    is never cached.
+    is never cached. Do not generalize it the other way either: `test:hooks` and
+    `build` DO set `cache: false`, so the hook harness really does re-run each time.
+    Read the task's own block rather than assuming a direction.
   - **Inject the failure into `src/**`, never into `tests/**`.** `lint.ignorePatterns`
     / `fmt.ignorePatterns` are source-only (`['**/*', '!src', '!src/**']`): a
     non-`_`-prefixed unused variable in a `src` file fails `vp check` rc=1
@@ -385,12 +401,13 @@ freshness) and — critically — **live-tests the changed behavior**:
 
   Why BOTH directions, concretely. An exit code can lie in either direction, and the
   two repos supply one example each. **Non-zero that means nothing**:
-  go-to-k/cdk-real-drift#1761 / #1765 — `vp run check` exited 134 on a clean tree
-  while finding 0 errors (a Vite+ stdout `EAGAIN` panic), deterministically — measured
-  3/3 in each state, 134 before the fix and 0 after. The fix was a one-line change to
-  the `check` task command, and the risk it
-  carried was the opposite of a flake: a redirect that swallows the exit code turns a
-  RED tree green, which is why #1765 shipped a test asserting the `exit 1` survives.
+  go-to-k/cdk-real-drift#1761 / go-to-k/cdk-real-drift#1765 — `vp run check` exited
+  134 on a clean tree while finding 0 errors (a Vite+ stdout `EAGAIN` panic),
+  deterministically — measured 3/3 in each state, 134 before the fix and 0 after. The
+  fix was a one-line change to the `check` task command, and the risk it carried was
+  the opposite of a flake: a redirect that swallows the exit code turns a RED tree
+  green, which is why go-to-k/cdk-real-drift#1765 shipped a test asserting the
+  `exit 1` survives.
   **Zero that means nothing**: right here, `vp test run` returned rc=0,0,1,0,1 across
   five identical runs on a clean branch (2026-08-19) with all 3126 tests passing every
   time — the #402 forks-worker exit, which kills a reused worker AFTER its assertions
@@ -398,13 +415,30 @@ freshness) and — critically — **live-tests the changed behavior**:
   Note the flap is task-specific (`vp check` was stable, 5x rc=0), which is the point:
   measure the command you actually changed rather than assuming its behavior.
 
+  **Arm 2 — the diff changes PROSE only** (a skill, a rule, a doc — including this
+  file). There is no command to re-run, so the CLAIMS are the artifact: resolve every
+  gate, hook, skill, path, task and command the new text names against this repo's
+  own files, and RUN each command the text will send the next agent to run,
+  confirming its output matches what the text promises. That is §10-c's claim-by-claim
+  pass, owed whether or not the text came from a sibling repo. Mirroring #511 into
+  this repo is the worked example: four artifacts the sibling wording named do not
+  exist here — `.claude/hooks/run-tests.sh`, a `tests/unit/scripts/` directory,
+  `matrix-regen-coverage.test.ts`, and a `dirty-path-restore-gate` hook — so a
+  verbatim copy would have sent the next agent to run a harness this repo does not
+  ship. A read-only reviewer whose only job is to resolve each named noun against
+  this repo is what catches these; it also caught the two stale claims this section
+  had accumulated on its own.
+
 After a Docker-backed run, sweep for orphans and clean up via `/cleanup` (the
 container / network filters and the `*-from-cfn-stack` stack check are in
 `.claude/CLAUDE.md` -> "After running integration tests"). Leaving orphan resources
 after a run is never acceptable.
 
-`/verify-pr` sets the `check` + `docs` + `verify-pr` markers, which unblock
-`gh pr merge`.
+`/verify-pr` sets the `check` + `docs` + `verify-pr` markers, which clear
+`verify-pr-gate` — not `gh pr merge` as a whole. That merge is additionally gated by
+`integ-gate` (any `src/**` / `tests/integration/**` touch; only `/run-integ` sets it),
+`pr-review-gate` (size / bias tier; only `/review-pr`), and, from a side worktree,
+`gh-pr-merge-worktree-gate` (only `/merge-pr`).
 
 ## 9. Ship: merge → pull → cleanup (all via `/merge-pr`)
 
@@ -536,16 +570,26 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   caught them. Checking in the rule here rather than in agent memory is deliberate:
   memory is per-project-path and per-machine, so it would not load in the very repos
   this bullet sends you to.
-  **Verify the cited EVIDENCE too, not only the repo-specific nouns — open the issue
-  or PR the source names and confirm it says what the source claims it says.** The
-  nouns fail when a sentence travels between repos; the evidence can be wrong where it
-  was WRITTEN, and then travels intact. On 2026-08-19 (#504) the incoming wording —
-  quoted verbatim into the issue — said "on #1761 the `check` gate flipped rc=0/rc=1
-  across identical runs (the tsgolint budget-cascade artifact)". cdk-real-drift#1761
-  itself records a DETERMINISTIC exit 134 from a Vite+ stdout `EAGAIN` panic, measured
-  3/3 in each state (134 before the fix, 0 after), with tsgolint nowhere in it.
-  Nothing had drifted; the source sentence was already false, and a per-repo noun
-  check would have passed it through. Reading #1761 and #1765 cost one command each.
+  **Verify the cited EVIDENCE too, not only the repo-specific nouns — open the issue or
+  PR the source names and confirm it says what the source claims it says.** The nouns
+  fail when a sentence travels between repos; the evidence can be wrong where it was
+  WRITTEN, and then travels intact. On 2026-08-19 (#504) the incoming wording — quoted
+  verbatim into the issue — said "on [go-to-k/cdk-real-drift#1761] the `check` gate
+  flipped rc=0/rc=1 across identical runs (the tsgolint budget-cascade artifact)".
+  go-to-k/cdk-real-drift#1761 itself records a DETERMINISTIC exit 134 from a Vite+
+  stdout `EAGAIN` panic, measured 3/3 in each state (134 before the fix, 0 after), with
+  tsgolint nowhere in it. Nothing had drifted; the source sentence was already false,
+  and a per-repo noun check would have passed it through. Reading
+  go-to-k/cdk-real-drift#1761 and go-to-k/cdk-real-drift#1765 cost one command each.
+  **Fully qualify every issue reference the mirrored section carries — including the
+  ones already in it.** A bare `#N` means "this repo" to whoever reads it, so one
+  sentence points at three different issues across the three repos and is silently
+  wrong in two of them. This paragraph had the defect while the rule was being
+  written: it cited `#1761 and #1765` bare, and `gh issue view 1765` here answers
+  `Could not resolve to an issue or pull request` — cdk-local has no #1765, so an
+  agent chasing that evidence finds nothing and cannot tell a wrong number from a
+  wrong repo. Write `go-to-k/<repo>#N` for anything outside the repo the file lives
+  in, and leave a same-repo `#N` bare so the distinction carries information.
 
 ### 10-d. Ship it like any other change
 
