@@ -38,9 +38,26 @@ interface FakeContainer {
   headersFor: () => Record<string, string | string[] | undefined>;
 }
 
+/**
+ * Every fake container binds 127.0.0.1 explicitly, never the wildcard: a
+ * wildcard (`::`) bind leaves 127.0.0.1:<port> claimable by a parallel test
+ * process (SO_REUSEADDR permits the specific-over-wildcard bind on macOS),
+ * whose HTTP server then answers this file's 127.0.0.1 clients with its own
+ * 404 on the upgrade — issue #521's "Unexpected server response: 404" flake.
+ */
+const LOOPBACK = '127.0.0.1';
+
+function boundPort(wss: WebSocketServer): number {
+  const addr = wss.address() as AddressInfo;
+  // Regression guard for the wildcard-bind flake — fails if the explicit
+  // host binding is ever dropped.
+  expect(addr.address).toBe(LOOPBACK);
+  return addr.port;
+}
+
 /** Start a fake container `/ws` server that echoes each frame as `echo:<frame>`. */
 async function startFakeContainer(): Promise<FakeContainer> {
-  const wss = new WebSocketServer({ port: 0, path: '/ws' });
+  const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
   containers.push(wss);
   const received: string[] = [];
   let headers: Record<string, string | string[] | undefined> = {};
@@ -53,7 +70,7 @@ async function startFakeContainer(): Promise<FakeContainer> {
     });
   });
   await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
-  return { port: (wss.address() as AddressInfo).port, received, headersFor: () => headers };
+  return { port: boundPort(wss), received, headersFor: () => headers };
 }
 
 /** Connect a header-less browser client to the bridge URL. */
@@ -143,14 +160,14 @@ describe('startAgentCoreWsBridge', () => {
 
   it('gives each browser connection its own session id', async () => {
     const sessions: string[] = [];
-    const wss = new WebSocketServer({ port: 0, path: '/ws' });
+    const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
     containers.push(wss);
     wss.on('connection', (ws, req) => {
       sessions.push(String(req.headers[AGENTCORE_SESSION_ID_HEADER.toLowerCase()]));
       ws.on('message', (d) => ws.send(d.toString()));
     });
     await new Promise<void>((r) => wss.on('listening', () => r()));
-    const containerPort = (wss.address() as AddressInfo).port;
+    const containerPort = boundPort(wss);
 
     const bridge = await startAgentCoreWsBridge({ containerHost: '127.0.0.1', containerPort });
     bridges.push(bridge);
@@ -170,11 +187,11 @@ describe('startAgentCoreWsBridge', () => {
   });
 
   it('closes the browser socket when the container closes', async () => {
-    const wss = new WebSocketServer({ port: 0, path: '/ws' });
+    const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
     containers.push(wss);
     wss.on('connection', (ws) => ws.close());
     await new Promise<void>((r) => wss.on('listening', () => r()));
-    const containerPort = (wss.address() as AddressInfo).port;
+    const containerPort = boundPort(wss);
 
     const bridge = await startAgentCoreWsBridge({ containerHost: '127.0.0.1', containerPort });
     bridges.push(bridge);
