@@ -114,6 +114,22 @@ one. **At most one lane per shared cross-cutting module.** Map each candidate to
 its target file (grep the relevant symbol; read the issue's "Fix direction") before
 choosing.
 
+- **Security issues come FIRST**, ahead of every other preference on this list. A
+  security defect is the one class whose cost grows while it waits: the vulnerable
+  behavior is already shipped and running, and the report may be public. It counts
+  as security when the issue reports credential / secret handling, redaction or
+  masking, a sensitive value persisted or logged, auth / token verification
+  (`src/local/cognito-jwt.ts`, `src/local/lambda-authorizer.ts`,
+  `src/local/sigv4-verify.ts`), role assumption, container or image handling that
+  executes untrusted input (`src/local/docker-runner.ts`,
+  `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`), command
+  injection, or anything tied to a GHSA advisory. When in doubt, treat it as
+  security — ranking a normal bug first costs one position in a queue. Urgency
+  changes ORDER only: a security lane takes the tier its size gives, moved UP one
+  step by `/review-pr`'s security up-bias, and the same verification depth as any
+  other lane. Note that up-bias is PATH-keyed (the files listed above), so a
+  security fix landing outside them gets no automatic bump — raise the tier by hand
+  and say why.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
@@ -336,6 +352,18 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   session when it can pay for two more gate runs; otherwise file one issue per repo
   carrying the `Session-fit` line. What is not an option is landing the fix in one
   of the three — that is how the three drift apart.
+  **Verify the copy against the TARGET repo, claim by claim, before shipping it.**
+  Their gates, hooks and ship steps differ, so a sentence that is true here reads as
+  authoritative there while being false, and nothing lints instruction prose — the
+  next agent simply acts on it. On 2026-08-18 the first mirror of this section
+  carried four such claims: a `verify-pr` gate that exempts a non-`src/**` diff, a
+  review heuristic that still down-biases `.claude/**`, a `CLAUDE.md` rule the
+  sibling does not carry, and a hook it does not ship. A read-only reviewer per
+  target repo — its only job being to check each gate name, hook behavior, skill
+  name, path convention and cross-reference against that repo's own files — is what
+  caught them. Checking in the rule here rather than in agent memory is deliberate:
+  memory is per-project-path and per-machine, so it would not load in the very repos
+  this bullet sends you to.
 
 ### 10-d. Ship it like any other change
 
@@ -365,11 +393,10 @@ pnpm install                  # worktrees have no node_modules
   `src/**` change means no integ and no live-test.
 - Merge it with `/merge-pr <n>` like every other lane — a hand-run `gh pr merge`
   from a side worktree is gate-blocked.
-- `/review-pr` DOWN-biases `.claude/**` here, so the tier it emits for a skill-only
-  PR is a FLOOR, not a verdict: read the whole diff yourself regardless. A wrong
-  rule in this file propagates into every future session, which is the opposite of
-  the low risk that down-bias assumes (cdkd removed agent-instruction paths from its
-  own down-bias set for exactly that reason).
+- `/review-pr` no longer down-biases `.claude/**` (issue #501), so a skill-only PR
+  keeps the tier its size gives — read the whole diff at that tier rather than
+  treating a small text diff as low risk. A wrong rule in this file propagates into
+  every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes the
   worktree — §9 ends with "only the main checkout should remain", and §10 must not
   undo that. This is `Session-fit: now` on the criterion that deferring leaves main
