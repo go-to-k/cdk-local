@@ -173,8 +173,58 @@ fi
 up_bias=0
 down_bias=0
 
-# Up-bias path patterns. Sourced verbatim from the skill's list (cdk-local).
-UP_PATH_REGEX='^(src/utils/role-arn\.ts|src/local/cognito-jwt\.ts|src/local/lambda-authorizer\.ts|src/local/docker-runner\.ts|src/local/docker-image-builder\.ts|src/local/ecr-puller\.ts|src/local/sigv4-verify\.ts)$'
+# Up-bias path patterns: the security surface. A PR touching any of these is
+# reviewed one tier higher than its size alone would give.
+#
+# The list is written out FOUR times -- here, `.claude/skills/review-pr/SKILL.md`,
+# `.claude/rules/hooks.md` and `.claude/agents/pr-code-reviewer.md` -- and issue
+# #506 found it had drifted in BOTH directions: the reviewer-agent copy had
+# silently dropped `src/utils/role-arn.ts`, and seven live authn / credential /
+# code-exec modules were missing from all four. The list-consistency case in
+# `pr-review-gate.test.sh` (run by `vp run test:hooks`, wired into CI) now
+# asserts the four agree and that every entry resolves to a real file, so a
+# rename or a one-copy edit fails CI instead of quietly under-protecting.
+# Adding a module here is the whole cost of covering it; when in doubt, add it.
+UP_PATHS=(
+  # Credential / secret material
+  'src/utils/role-arn.ts'
+  'src/utils/profile-resolver.ts'
+  'src/cli/commands/local-profile-credentials-file.ts'
+  'src/local/ecs-secrets-resolver.ts'
+  'src/local/ssm-parameter-resolver.ts'
+  'src/local/ecs-task-runner.ts'
+  # Inbound auth: verification, enforcement, request signing
+  'src/local/cognito-jwt.ts'
+  'src/local/lambda-authorizer.ts'
+  'src/local/sigv4-verify.ts'
+  'src/local/authorizer-resolver.ts'
+  'src/local/authorizer-cache.ts'
+  'src/local/front-door-auth.ts'
+  'src/local/agentcore-serve-auth.ts'
+  'src/local/agentcore-sigv4-sign.ts'
+  'src/local/http-server.ts'
+  'src/local/front-door-server.ts'
+  'src/local/agentcore-http-server.ts'
+  'src/local/websocket-server.ts'
+  # Untrusted code / argv / archive + path traversal
+  'src/utils/docker-cmd.ts'
+  'src/local/docker-runner.ts'
+  'src/local/docker-image-builder.ts'
+  'src/local/ecr-puller.ts'
+  'src/assets/docker-build.ts'
+  'src/local/image-override-engine.ts'
+  'src/local/cloudfront-function-runtime.ts'
+  'src/local/studio-dispatch.ts'
+  'src/local/studio-serve-manager.ts'
+  'src/local/studio-option-catalog.ts'
+  'src/local/cloudfront-static-origin.ts'
+  'src/local/lambda-resolver.ts'
+  'src/local/agentcore-s3-bundle.ts'
+  'src/local/layer-arn-materializer.ts'
+)
+# Literal paths above, anchored alternation here: escape the dots so `.` cannot
+# match an arbitrary character (`src/localXcognito-jwtXts` must not up-bias).
+UP_PATH_REGEX="^($(printf '%s|' "${UP_PATHS[@]}" | sed 's/|$//; s/\./\\./g'))$"
 
 # Down-bias buckets. Either ALL paths are docs/infra, or ALL paths
 # are tests. Mixed -> no down-bias.

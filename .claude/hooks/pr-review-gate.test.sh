@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke test for pr-review-gate.sh, focused on the down-bias bucket.
+# Smoke test for pr-review-gate.sh: the down-bias bucket, and the up-bias
+# security-surface path list.
 #
 # The gate re-implements /review-pr's tier heuristic in Bash, and the
 # part that is easiest to get wrong is which paths count as "inert
@@ -124,6 +125,104 @@ if ( cd "$REPO" && export PATH="$TMP/bin:$PATH" \
 else
   printf 'FAIL gh pr create should pass through\n'; fail=$((fail + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Up-bias security surface (issue #506).
+#
+# The list of security-sensitive paths is written out FOUR times: `UP_PATHS` in
+# the hook plus three prose copies. #506 found it drifted in BOTH directions --
+# the reviewer-agent copy had silently dropped `src/utils/role-arn.ts`, and
+# seven live authn / credential / code-exec modules were missing from all four.
+# Prose ("re-check when editing this list") is exactly what had failed, so the
+# invariant is asserted here instead: the four copies agree, and every entry
+# resolves to a real file.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT=$(cd "$HOOK_DIR/../.." && pwd)
+
+check() {
+  local name="$1" ok="$2" detail="${3:-}"
+  if [ "$ok" -eq 0 ]; then
+    printf 'ok   %s\n' "$name"; pass=$((pass + 1))
+  else
+    printf 'FAIL %s%s\n' "$name" "${detail:+: $detail}"; fail=$((fail + 1))
+  fi
+}
+
+# Extract the `src/...` paths a file declares, restricted to the region that
+# holds the list. Each region is delimited by anchors asserted to exist below,
+# so a heading rewrite fails loudly instead of yielding an empty set that would
+# trivially "agree" with nothing. `\%...%` addresses, not `/.../`: one anchor
+# contains a literal `/` ("security / process-launch surface").
+# extract_paths <file> <start-re> [<end-re>]   -- omit end-re for a one-liner.
+extract_paths() {
+  local file="$1" start_re="$2" end_re="${3:-}" range
+  if [ -n "$end_re" ]; then
+    range="\%$start_re%,\%$end_re%p"
+  else
+    range="\%$start_re%p"
+  fi
+  # Document order, duplicates preserved -- deliberately NOT `sort -u`. A copy
+  # that drops an entry from its list but names it again in the surrounding
+  # prose would still contain the string, so a set comparison would call it
+  # present; that is the exact #506 defect, and it masked itself on the first
+  # draft of this test. Order + multiplicity catch both the drop (position
+  # moves) and the stray mention (extra entry), and they also keep the four
+  # copies in one canonical order that a human can diff by eye.
+  sed -n "$range" "$REPO_ROOT/$file" \
+    | grep -oE 'src/[A-Za-z0-9_./-]+\.ts'
+}
+
+HOOK_PATHS=$(extract_paths .claude/hooks/pr-review-gate.sh '^UP_PATHS=[(]' '^[)]')
+SKILL_PATHS=$(extract_paths .claude/skills/review-pr/SKILL.md \
+  'Any path matches [*][*]security . process-launch surface[*][*]' \
+  '^   - Branch has')
+RULES_PATHS=$(extract_paths .claude/rules/hooks.md \
+  'The surface is `UP_PATHS` in the hook' \
+  'written out FOUR times')
+AGENT_PATHS=$(extract_paths .claude/agents/pr-code-reviewer.md \
+  'Pay extra attention to the security surface')
+
+# A copy that extracts to nothing means its anchor drifted, not that it agrees.
+n_hook=$(printf '%s\n' "$HOOK_PATHS" | grep -c . || true)
+[ "$n_hook" -ge 7 ] && check "hook UP_PATHS extracts a non-trivial list" 0 \
+  || check "hook UP_PATHS extracts a non-trivial list" 1 "got $n_hook entries"
+
+# Duplicates in the hook's own region would make every copy comparison ambiguous.
+dupes=$(printf '%s\n' "$HOOK_PATHS" | sort | uniq -d | tr '\n' ' ')
+[ -z "${dupes// /}" ] && check "UP_PATHS has no duplicate entries" 0 \
+  || check "UP_PATHS has no duplicate entries" 1 "$dupes"
+
+# Every listed path must resolve to a real file: a rename that leaves the list
+# behind removes the up-bias without removing the appearance of one.
+missing=""
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  [ -f "$REPO_ROOT/$p" ] || missing="$missing $p"
+done <<<"$HOOK_PATHS"
+[ -z "$missing" ] && check "every UP_PATHS entry resolves to a real file" 0 \
+  || check "every UP_PATHS entry resolves to a real file" 1 "missing:$missing"
+
+# The three prose copies must carry exactly the hook's set.
+# Same paths, same order, no extras. See extract_paths on why order matters.
+compare_copy() {
+  local name="$1" got="$2" diff_out
+  diff_out=$(diff <(printf '%s\n' "$HOOK_PATHS") <(printf '%s\n' "$got") || true)
+  [ -z "$diff_out" ] && check "$name matches UP_PATHS" 0 \
+    || check "$name matches UP_PATHS" 1 "$(printf '%s' "$diff_out" | tr '\n' ' ')"
+}
+compare_copy ".claude/skills/review-pr/SKILL.md"    "$SKILL_PATHS"
+compare_copy ".claude/rules/hooks.md"               "$RULES_PATHS"
+compare_copy ".claude/agents/pr-code-reviewer.md"   "$AGENT_PATHS"
+
+# Behavior, not just bookkeeping: each listed path must actually bump the tier.
+# loc=100 / fc=1 is `inline` (pass-through) on size alone, so a block proves the
+# up-bias fired. The control below pins that the size floor is what it is.
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  run_case "up-bias: $p blocks at inline size" 2 100 "$p"
+done <<<"$HOOK_PATHS"
+run_case "control: unlisted src file stays inline (pass)" 0 100 src/local/route-discovery.ts
 
 printf '\npass: %d  fail: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

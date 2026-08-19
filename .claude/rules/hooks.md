@@ -234,12 +234,52 @@ construction.
   - `300 <= loc < 1000 AND 5 <= fc < 10` -> `1-reviewer`
   - `loc >= 1000 OR fc >= 10` -> `3-axis`
 
-  Up-bias triggers (any path under `src/utils/role-arn.ts` /
-  `src/local/cognito-jwt.ts` / `src/local/lambda-authorizer.ts` /
-  `src/local/docker-runner.ts` / `src/local/docker-image-builder.ts`
-  / `src/local/ecr-puller.ts` / `src/local/sigv4-verify.ts`, OR > 1
+  Up-bias triggers (any path in the security surface below, OR > 1
   `fix:`-prefixed commit on the PR branch) move the tier UP one
-  step (clamped at `3-axis`). Down-bias triggers (every path under
+  step (clamped at `3-axis`). The surface is `UP_PATHS` in the hook:
+
+  - credential / secret material -- `src/utils/role-arn.ts`,
+    `src/utils/profile-resolver.ts`,
+    `src/cli/commands/local-profile-credentials-file.ts`,
+    `src/local/ecs-secrets-resolver.ts`,
+    `src/local/ssm-parameter-resolver.ts`,
+    `src/local/ecs-task-runner.ts`
+  - inbound auth verification / enforcement / signing --
+    `src/local/cognito-jwt.ts`, `src/local/lambda-authorizer.ts`,
+    `src/local/sigv4-verify.ts`, `src/local/authorizer-resolver.ts`,
+    `src/local/authorizer-cache.ts`, `src/local/front-door-auth.ts`,
+    `src/local/agentcore-serve-auth.ts`,
+    `src/local/agentcore-sigv4-sign.ts`, `src/local/http-server.ts`,
+    `src/local/front-door-server.ts`,
+    `src/local/agentcore-http-server.ts`,
+    `src/local/websocket-server.ts`
+  - untrusted code / argv / archive + path traversal --
+    `src/utils/docker-cmd.ts`, `src/local/docker-runner.ts`,
+    `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`,
+    `src/assets/docker-build.ts`,
+    `src/local/image-override-engine.ts`,
+    `src/local/cloudfront-function-runtime.ts`,
+    `src/local/studio-dispatch.ts`,
+    `src/local/studio-serve-manager.ts`,
+    `src/local/studio-option-catalog.ts`,
+    `src/local/cloudfront-static-origin.ts`,
+    `src/local/lambda-resolver.ts`,
+    `src/local/agentcore-s3-bundle.ts`,
+    `src/local/layer-arn-materializer.ts`
+
+  That list is written out FOUR times (`UP_PATHS` in the hook, here,
+  `.claude/skills/review-pr/SKILL.md`, `.claude/agents/pr-code-reviewer.md`)
+  and issue #506 found it drifted both ways at once — the reviewer-agent
+  copy had dropped an entry, and seven live surfaces were missing from
+  every copy, on top of which a fresh audit found ~18 more.
+  `.claude/hooks/pr-review-gate.test.sh` (run by `vp run test:hooks`,
+  wired into CI) now asserts the four agree, in the same order, and that
+  every entry resolves to a real file, so drift fails CI rather than
+  silently under-protecting. Do not re-quote an individual path in this
+  paragraph: the test reads the surface out of the list above, and a
+  stray mention would refill an entry a copy had dropped.
+
+  Down-bias triggers (every path under
   docs/infra OR every path under `tests/`) move it DOWN one step
   (clamped at `inline`). When both fire, up wins. **Agent-instruction
   files are NOT docs for this purpose** (issue #501): `CLAUDE.md`,

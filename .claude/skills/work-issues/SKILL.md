@@ -120,18 +120,18 @@ choosing.
   security defect is the one class whose cost grows while it waits: the vulnerable
   behavior is already shipped and running, and the report may be public. It counts
   as security when the issue reports credential / secret handling, redaction or
-  masking, a sensitive value persisted or logged, auth / token verification
-  (`src/local/cognito-jwt.ts`, `src/local/lambda-authorizer.ts`,
-  `src/local/sigv4-verify.ts`), role assumption, container or image handling that
-  executes untrusted input (`src/local/docker-runner.ts`,
-  `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`), command
+  masking, a sensitive value persisted or logged, auth / token verification, role
+  assumption, container or image handling that executes untrusted input, command
   injection, or anything tied to a GHSA advisory. When in doubt, treat it as
   security — ranking a normal bug first costs one position in a queue. Urgency
   changes ORDER, and waives §3-a's freshness gate; it never changes verification
   depth — a security lane takes the tier its size gives, moved UP one step by
-  `/review-pr`'s security up-bias, and the same depth as any other lane. Note that up-bias is PATH-keyed (the files listed above), so a
-  security fix landing outside them gets no automatic bump — raise the tier by hand
-  and say why.
+  `/review-pr`'s security up-bias, and the same depth as any other lane. Note
+  that up-bias is PATH-keyed: the surface is `UP_PATHS` in
+  `.claude/hooks/pr-review-gate.sh` (32 paths as of issue #506) — read it there
+  rather than from a list here, which would be a fifth copy to keep in sync. A
+  security fix landing outside those paths gets no automatic bump, so raise the
+  tier by hand and say why.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
@@ -273,15 +273,25 @@ go-to-k/cdkd#1972 reported one dead path in a security-surface path list; auditi
 the whole list found a second dead path (stale since an unrelated directory rename)
 plus four live authn / credential / exec surfaces that had never been added, so the
 list under-protected considerably more than it over-claimed. The same shape exists
-here: `/review-pr`'s up-bias path list is written out FOUR times
-(`UP_PATH_REGEX` in `.claude/hooks/pr-review-gate.sh`,
+here, and issue #506 played it out end to end: `/review-pr`'s up-bias path list is
+written out FOUR times (`UP_PATHS` in `.claude/hooks/pr-review-gate.sh`,
 `.claude/skills/review-pr/SKILL.md`, `.claude/rules/hooks.md`, and
 `.claude/agents/pr-code-reviewer.md`), so an audit checks every copy, not just the
 one the issue quotes — the first draft of THIS paragraph said "three times" and
-missed the reviewer-agent copy, which is also the one already out of sync.
+missed the reviewer-agent copy, which was also the one already out of sync.
 Then ask what makes the recurrence mechanical: if a list must stay in sync with
 the repo, that is a test asserting every entry resolves and that the copies agree,
-not a sentence asking the next reader to remember.
+not a sentence asking the next reader to remember. #506 shipped exactly that in
+`.claude/hooks/pr-review-gate.test.sh` — and writing it surfaced a trap worth
+carrying: the first draft compared the copies as SORTED SETS, and the evidence
+sentence it added beside each list ("... had silently dropped
+`src/utils/role-arn.ts`") put that path back into the extracted set, so deleting
+the entry from the list still passed. Compare in document order with duplicates
+preserved, and keep path names out of the prose that sits inside the extracted
+region. Run the audit's own backward direction too, with a subagent if the
+surface is wide: #506 named 7 missing paths, and an independent sweep of `src/**`
+found ~18 more (the authorizer ENFORCEMENT points, not just the verifiers), which
+is what actually shipped.
 
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
