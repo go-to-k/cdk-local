@@ -223,12 +223,41 @@ freshness) and — critically — **live-tests the changed behavior**:
 - **A docs/tooling-only PR** (no `src/**` in the diff) is EXEMPT from the live-test
   and from the integ — but NOT from `/verify-pr` itself: `verify-pr-gate` gates every
   `gh pr create` / `gh pr merge` on the marker with no diff-scope exemption, and only
-  `/verify-pr` sets it.
+  `/verify-pr` sets it. What the exemption drops is the LIVE test, not the verifying.
+  With no runtime path to drive, **the verification IS the broken command itself**:
+  run it BEFORE and AFTER, and drive the FAILURE direction too — a change that
+  swallows an exit code looks exactly like one that fixes the gate. Three traps,
+  measured here on 2026-08-19 (#504):
+  - **Repeating a `vp run <task>` re-runs nothing.** `run.cache.tasks` is on in
+    `vite.config.ts`, so `vp run check` replayed a cached rc=0 on runs 2-5
+    (`cache hit, 2.01s saved`) — five identical greens, one execution. Call the
+    underlying command directly (`vp check` / `vp lint` / `vp fmt --check`) when the
+    POINT is to watch the exit code repeatedly; that path is uncached (5x rc=0,
+    ~420ms each).
+  - **Inject the failure into `src/**`, never into `tests/**`.** `lint.ignorePatterns`
+    / `fmt.ignorePatterns` are source-only (`['**/*', '!src', '!src/**']`): an unused
+    variable in a `src` file fails `vp check` rc=1 (`eslint(no-unused-vars)` +
+    `typescript(TS6133)`), while the same injection under `tests/unit/**` returns
+    rc=0 with the file count unmoved. A probe that lands in `tests/` proves nothing
+    and reads as "the gate is broken".
+  - **Then guard the SHAPE of the fix**, because nothing else re-checks a config or
+    hook line. For a `.claude/hooks/**` fix the repo's own mechanism is a bash smoke
+    test beside the hook — `.claude/hooks/pr-review-gate.test.sh`, run by
+    `vp run test:hooks` and wired into CI — added for #501 precisely because a
+    heuristic edit has no other regression net.
 
-After any Docker-backed run, SWEEP for orphans (`docker ps --filter name=cdkl-`,
-`docker network ls --filter name=cdkl-task-` / `cdkl-svc-`) and clean up via
-`/cleanup`; for a `*-from-cfn-stack` test, also confirm no orphan CloudFormation
-stacks remain (`cdk destroy` / `aws cloudformation`). Leaving orphan resources
+  Why repeatedly, concretely: go-to-k/cdk-real-drift#1761 / #1765 had `vp run check`
+  flapping rc=0/rc=1 across identical runs, so one green would have "proved" either
+  verdict. The same shape is live HERE, on a different task — `vp test run` returned
+  rc=0,0,1,0,1 across five identical runs on a clean branch (2026-08-19) with all
+  3126 tests passing every time: the #402 forks-worker exit, which kills a reused
+  worker AFTER its assertions pass. So on this repo one run proves neither that a
+  command is broken nor that it is fixed. (`vp check` itself was stable, 5x rc=0 —
+  the flap is task-specific, which is exactly why you measure rather than assume.)
+
+After a Docker-backed run, sweep for orphans and clean up via `/cleanup` (the
+container / network filters and the `*-from-cfn-stack` stack check are in
+`.claude/CLAUDE.md` -> "After running integration tests"). Leaving orphan resources
 after a run is never acceptable.
 
 `/verify-pr` sets the `check` + `docs` + `verify-pr` markers, which unblock
