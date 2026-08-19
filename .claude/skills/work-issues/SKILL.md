@@ -65,6 +65,20 @@ sections of `.claude/CLAUDE.md` and the global user instructions for the full ru
 
 ## 1. List the backlog + assess volume
 
+**First, refresh your view of `main`: `git fetch origin`.** Every probe and gate
+below diffs against `origin/main`, and §5's worktrees branch from it. Then, for
+each issue you shortlist, check whether its ask has ALREADY shipped — read the
+FIX FILE at `origin/main`, not the issue's open/closed state. An issue is a
+snapshot of the repo at filing time, and with parallel sessions merging, the
+gap between filing and pickup is enough for half of it to land: on 2026-08-19,
+go-to-k/cdk-local#514 was filed at 04:43Z; its first ask merged as
+go-to-k/cdk-local#516 at 05:00Z (a parallel session's lane), and the dead
+reference it cited was fixed on `main` the same way — so at pickup, barely an
+hour after filing, half the issue text was already done. Work only the residual
+delta; note the already-shipped parts in your §4 claim comment instead of
+re-deriving them. (§7 re-checks against a `main` that moved WHILE you worked;
+this check is the cheap triage-time twin, run before a lane is paid for.)
+
 ```bash
 gh api 'repos/{owner}/{repo}/issues?state=open&per_page=60' \
   --jq '.[] | select(.pull_request | not)
@@ -103,16 +117,16 @@ that catches a live lane, so do not stop at the first two. A lane's committed di
 what it has finished; its dirty tree is what it is holding. Read the "working on this"
 comments on candidate issues too, but treat the dirty tree, not the comment, as the
 authority on what a lane currently owns: a claim is written once at the start and goes
-stale as the lane's scope grows. On 2026-08-19 the #506 lane (PR #513) was editing
-THIS file's §4 and §8 while its claim comment on #506 named five other files and not
+stale as the lane's scope grows. On 2026-08-19 the go-to-k/cdk-local#506 lane (PR go-to-k/cdk-local#513) was editing
+THIS file's §4 and §8 while its claim comment on go-to-k/cdk-local#506 named five other files and not
 this one — the comment said free, and only `status --porcelain` (plus an mtime seconds
 old) said otherwise.
 
 When the contested file is one you cannot avoid because the issue names it, the choice
 is not just wait-or-collide: shape your edit to rebase cleanly over theirs. Leave the
 anchors their hunks sit on — list indentation, heading levels, surrounding blank lines
-— untouched, so no line belongs to both diffs. #516 restructured §8 into two arms
-while #513 was inserting a bullet into §8's trap list; keeping the trap bullets at
+— untouched, so no line belongs to both diffs. go-to-k/cdk-local#516 restructured §8 into two arms
+while go-to-k/cdk-local#513 was inserting a bullet into §8's trap list; keeping the trap bullets at
 their original indentation is why that rebase applied with no conflict.
 
 In practice the contested files are the SHARED, cross-cutting runtime modules that
@@ -155,7 +169,7 @@ choosing.
   depth — a security lane takes the tier its size gives, moved UP one step by
   `/review-pr`'s security up-bias, and the same depth as any other lane. Note
   that up-bias is PATH-keyed: the surface is `UP_PATHS` in
-  `.claude/hooks/pr-review-gate.sh` (32 paths as of issue #506) — read it there
+  `.claude/hooks/pr-review-gate.sh` (32 paths as of issue go-to-k/cdk-local#506) — read it there
   rather than from a list here, which would be a fifth copy to keep in sync. A
   security fix landing outside those paths gets no automatic bump, so raise the
   tier by hand and say why.
@@ -221,7 +235,11 @@ gate and §4's claim-then-re-check still apply unchanged:
   an issue you filed FOR A LATER SESSION no claim, and taking one back minutes after
   handing it off contradicts the handoff rather than being exempted by it.
 - **The maintainer named the issue in the invocation** (`/work-issues #<n>`) — an
-  explicit instruction outranks a heuristic about who else might want it.
+  explicit instruction outranks a heuristic about who else might want it. It lifts
+  the freshness hold ONLY, never §1's already-shipped check: a named issue is by
+  construction a fresh issue, so it is MORE exposed to that staleness than average,
+  not less — go-to-k/cdk-local#514, named in an invocation on 2026-08-19, had half
+  its asks land on `main` between filing and pickup.
 - **A security issue** (the security-first rule above) — an extra hour of a shipped
   vulnerability costs more than a duplicated context. Take it, and say in the claim
   (§4) that you took it inside the window and why.
@@ -253,8 +271,8 @@ Claiming to avoid collision with parallel agents."
 (English only — committed/public artifacts are English, and that includes every
 issue this run FILES, not just the claim comment. The `Session-fit` line's
 parenthetical gloss is part of the issue body, so write it in English —
-`Session-fit: next (not this session)` / `Effort: ~1-3 h`. On 2026-08-19 the #506
-follow-up (#509) shipped with the Japanese gloss and had to be patched after
+`Session-fit: next (not this session)` / `Effort: ~1-3 h`. On 2026-08-19 the go-to-k/cdk-local#506
+follow-up (go-to-k/cdk-local#509) shipped with the Japanese gloss and had to be patched after
 creation; `non-english-text-gate` guards the PR diff, not `gh issue create`, so
 nothing catches this for you.) The claim is mandatory and comes BEFORE the first
 edit. It is the issue-level twin of the worktree
@@ -306,7 +324,7 @@ go-to-k/cdkd#1972 reported one dead path in a security-surface path list; auditi
 the whole list found a second dead path (stale since an unrelated directory rename)
 plus four live authn / credential / exec surfaces that had never been added, so the
 list under-protected considerably more than it over-claimed. The same shape exists
-here, and issue #506 played it out end to end: `/review-pr`'s up-bias path list is
+here, and issue go-to-k/cdk-local#506 played it out end to end: `/review-pr`'s up-bias path list is
 written out FOUR times (`UP_PATHS` in `.claude/hooks/pr-review-gate.sh`,
 `.claude/skills/review-pr/SKILL.md`, `.claude/rules/hooks.md`, and
 `.claude/agents/pr-code-reviewer.md`), so an audit checks every copy, not just the
@@ -314,7 +332,7 @@ one the issue quotes — the first draft of THIS paragraph said "three times" an
 missed the reviewer-agent copy, which was also the one already out of sync.
 Then ask what makes the recurrence mechanical: if a list must stay in sync with
 the repo, that is a test asserting every entry resolves and that the copies agree,
-not a sentence asking the next reader to remember. #506 shipped exactly that in
+not a sentence asking the next reader to remember. go-to-k/cdk-local#506 shipped exactly that in
 `.claude/hooks/pr-review-gate.test.sh` — and writing it surfaced a trap worth
 carrying: the first draft compared the copies as SORTED SETS, and the evidence
 sentence it added beside each list ("... had silently dropped
@@ -322,7 +340,7 @@ sentence it added beside each list ("... had silently dropped
 the entry from the list still passed. Compare in document order with duplicates
 preserved, and keep path names out of the prose that sits inside the extracted
 region. Run the audit's own backward direction too, with a subagent if the
-surface is wide: #506 named 7 missing paths, and an independent sweep of `src/**`
+surface is wide: go-to-k/cdk-local#506 named 7 missing paths, and an independent sweep of `src/**`
 found ~18 more (the authorizer ENFORCEMENT points, not just the verifiers), which
 is what actually shipped.
 
@@ -405,7 +423,7 @@ freshness) and — critically — **live-tests the changed behavior**:
   neither `ci.yml` nor any hook, and pointing it at a hook diff is a probe that
   cannot fail. Run it BEFORE and AFTER, and drive the FAILURE direction too — a
   change that swallows an exit code looks exactly like one that fixes the gate.
-  Four traps, measured here on 2026-08-19 (#504, #506):
+  Four traps, measured here on 2026-08-19 (go-to-k/cdk-local#504, go-to-k/cdk-local#506):
   - **Repeating a CACHED `vp run <task>` re-runs nothing.** `run.cache.tasks` is on
     in `vite.config.ts`, and a task that does not opt out with `cache: false` — which
     is every task you would repeat to watch it: `check`, `test`, `lint`, `typecheck`,
@@ -426,7 +444,7 @@ freshness) and — critically — **live-tests the changed behavior**:
   - **Run a `$0`-relative harness from beside its subject.** Comparing before/after
     means running the OLD suite against the NEW code, and the obvious move — dump
     `git show origin/main:<test>` into `/tmp` and run it — silently breaks any
-    harness that derives its subject from `$(dirname "$0")`. On 2026-08-19 the #506
+    harness that derives its subject from `$(dirname "$0")`. On 2026-08-19 the go-to-k/cdk-local#506
     lane read `pass: 0  fail: 9` from `pr-review-gate.test.sh` in `/tmp` and briefly
     took it for a regression; the same file run from `.claude/hooks/` gave
     `pass: 9  fail: 0`. Write the old copy next to the real one under a temporary
@@ -434,7 +452,7 @@ freshness) and — critically — **live-tests the changed behavior**:
   - **Then guard the SHAPE of the fix**, because nothing else re-checks a config or
     hook line. For a `.claude/hooks/**` fix the repo's own mechanism is a bash smoke
     test beside the hook — `.claude/hooks/pr-review-gate.test.sh`, run by
-    `vp run test:hooks` and wired into CI — added for #501 precisely because a
+    `vp run test:hooks` and wired into CI — added for go-to-k/cdk-local#501 precisely because a
     heuristic edit has no other regression net.
 
   Why BOTH directions, concretely. An exit code can lie in either direction, and the
@@ -448,7 +466,7 @@ freshness) and — critically — **live-tests the changed behavior**:
   `exit 1` survives.
   **Zero that means nothing**: right here, `vp test run` returned rc=0,0,1,0,1 across
   five identical runs on a clean branch (2026-08-19) with all 3126 tests passing every
-  time — the #402 forks-worker exit, which kills a reused worker AFTER its assertions
+  time — the go-to-k/cdk-local#402 forks-worker exit, which kills a reused worker AFTER its assertions
   pass. So one green proves neither that a command is broken nor that it is fixed.
   Note the flap is task-specific (`vp check` was stable, 5x rc=0), which is the point:
   measure the command you actually changed rather than assuming its behavior.
@@ -458,7 +476,7 @@ freshness) and — critically — **live-tests the changed behavior**:
   gate, hook, skill, path, task and command the new text names against this repo's
   own files, and RUN each command the text will send the next agent to run,
   confirming its output matches what the text promises. That is §10-c's claim-by-claim
-  pass, owed whether or not the text came from a sibling repo. Mirroring #511 into
+  pass, owed whether or not the text came from a sibling repo. Mirroring go-to-k/cdk-local#511 into
   this repo is the worked example: four artifacts the sibling wording named do not
   exist here — `.claude/hooks/run-tests.sh`, a `tests/unit/scripts/` directory,
   `matrix-regen-coverage.test.ts`, and a `dirty-path-restore-gate` hook — so a
@@ -504,7 +522,7 @@ So when your PR landed into a file another PR touched in the same window, grep t
 pulled `main` for a marker string from EACH side before believing both survived —
 one side silently overwriting the other looks exactly like a clean merge. Take each
 marker from that PR's own DIFF (`gh pr diff <n>`), never from its title: on
-2026-08-19 a marker lifted from #518's title ("uncommitted-work probe") was absent
+2026-08-19 a marker lifted from go-to-k/cdk-local#518's title ("uncommitted-work probe") was absent
 from `main` while its actual text — `status --porcelain`, "dirty tree" — was
 present, i.e. the check reported a lost merge that had not happened.
 
@@ -631,7 +649,7 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   **Verify the cited EVIDENCE too, not only the repo-specific nouns — open the issue or
   PR the source names and confirm it says what the source claims it says.** The nouns
   fail when a sentence travels between repos; the evidence can be wrong where it was
-  WRITTEN, and then travels intact. On 2026-08-19 (#504) the incoming wording — quoted
+  WRITTEN, and then travels intact. On 2026-08-19 (go-to-k/cdk-local#504) the incoming wording — quoted
   verbatim into the issue — said "on [go-to-k/cdk-real-drift#1761] the `check` gate
   flipped rc=0/rc=1 across identical runs (the tsgolint budget-cascade artifact)".
   go-to-k/cdk-real-drift#1761 itself records a DETERMINISTIC exit 134 from a Vite+
@@ -639,15 +657,22 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   tsgolint nowhere in it. Nothing had drifted; the source sentence was already false,
   and a per-repo noun check would have passed it through. Reading
   go-to-k/cdk-real-drift#1761 and go-to-k/cdk-real-drift#1765 cost one command each.
-  **Fully qualify every issue reference the mirrored section carries — including the
-  ones already in it.** A bare `#N` means "this repo" to whoever reads it, so one
-  sentence points at three different issues across the three repos and is silently
-  wrong in two of them. This paragraph had the defect while the rule was being
-  written: it cited `#1761 and #1765` bare, and `gh issue view 1765` here answers
-  `Could not resolve to an issue or pull request` — cdk-local has no #1765, so an
-  agent chasing that evidence finds nothing and cannot tell a wrong number from a
-  wrong repo. Write `go-to-k/<repo>#N` for anything outside the repo the file lives
-  in, and leave a same-repo `#N` bare so the distinction carries information.
+  **Fully qualify EVERY issue / PR reference in this file — same-repo ones
+  included — as `go-to-k/<repo>#N`.** A bare `#N` means "this repo" to whoever
+  reads it, and this whole file travels between the three repos, so mirroring
+  silently rewrites a correct citation into a wrong one: a cross-repo bare ref
+  is a dead link or — worse — resolves to a real, unrelated issue. This
+  paragraph had the defect while the rule was being written: it cited `#1761`
+  and `#1765` bare, and `gh issue view 1765` here answered `Could not resolve
+  to an issue or pull request`. The earlier form of this rule kept same-repo refs
+  bare "so the distinction carries information", but that distinction is
+  exactly what a mirror destroys — the qualified form carries the same
+  information and survives the trip (go-to-k/cdk-local#514). The rule is
+  mechanized, per §10-b's "a rule already in the text that got violated anyway
+  is a TEST": `tests/unit/skills/work-issues-skill-refs.test.ts` fails CI on
+  any unqualified `#N` in this file's plain prose — frontmatter, fenced code
+  blocks, and backtick spans are exempt, so a paragraph can still show a bare
+  `#N` as its own counter-example (this one does).
 
 ### 10-d. Ship it like any other change
 
@@ -680,7 +705,7 @@ pnpm install                  # worktrees have no node_modules
   `src/**` change means no integ and no live-test.
 - Merge it with `/merge-pr <n>` like every other lane — a hand-run `gh pr merge`
   from a side worktree is gate-blocked.
-- `/review-pr` no longer down-biases `.claude/**` (issue #501), so a skill-only PR
+- `/review-pr` no longer down-biases `.claude/**` (issue go-to-k/cdk-local#501), so a skill-only PR
   keeps the tier its size gives — read the whole diff at that tier rather than
   treating a small text diff as low risk. A wrong rule in this file propagates into
   every future session.
