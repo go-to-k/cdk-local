@@ -34,7 +34,7 @@ If any fail, show the error output and STOP — do not write the commit-gate mar
 
 After all three checks pass, record a marker so the `check` gate is fresh. The marker is managed by [markgate](https://github.com/go-to-k/markgate) and captures the current working tree state; any subsequent edits invalidate it and require re-running `/check`.
 
-Run this from the repo root (cdk-local pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active):
+Run this from the WORKTREE you will commit from — not the main checkout (each worktree has its own markgate marker store, so a marker set elsewhere surfaces later as a mystifying "no marker"; see the convention in `.claude/rules/hooks.md`). cdk-local pins markgate via mise, so use `mise exec` to avoid PATH issues when shims aren't active:
 
 ```bash
 mise exec -- markgate set check

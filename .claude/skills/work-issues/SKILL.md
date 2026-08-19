@@ -344,6 +344,25 @@ surface is wide: go-to-k/cdk-local#506 named 7 missing paths, and an independent
 found ~18 more (the authorizer ENFORCEMENT points, not just the verifiers), which
 is what actually shipped.
 
+**When the fix mechanizes a rule as a repo-wide SCANNER test, calibrate the
+detection rule against the PRE-FIX broken tree — do not implement the issue's
+signature literally.** An issue describes the signature as its author noticed ONE
+instance, not as a rule with a measured false-positive rate. Run the candidate
+rule over the unrepaired tree and read every hit before committing to it: in
+go-to-k/cdk-real-drift#1771 -> go-to-k/cdk-real-drift#1782 (2026-08-19) the
+issue's proposed "code span
+immediately followed by an alphanumeric" flagged ~30 spots, mostly idiomatic
+prose; measuring on the broken tree split the hits by side (before-side 5/5
+genuine; after-side 13 with 6 ordinary plural suffixes), yielding a rule with
+zero false positives that still caught all 12 real hits. One markdown-specific
+trap: a code span may WRAP a line break, so decide explicitly whether your
+scanner handles that — either tokenize per PARAGRAPH, or scan per line and
+ENFORCE the single-line-span convention as part of the test, the way this repo's
+`tests/unit/skills/work-issues-skill-refs.test.ts` deliberately does (a per-line
+scan that has not decided pairs one span's closing backtick with the next one's
+opening backtick and invents findings). And report the HIT's own line number,
+not the paragraph start — the consumer of a finding is someone jumping to it.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
@@ -389,6 +408,24 @@ go-to-k/cdk-real-drift#1772 and go-to-k/cdk-real-drift#1773 both rewrote
 04:31:00Z); both survived by luck, not by design. When your PR lands into a file
 another PR touched in the same window, the absent conflict proves nothing — confirm
 it after the pull in §9.
+
+The same silence covers a second shape: a peer PR that adds a **repo-wide check**
+— a test globbing the tree (`git ls-files`, a `readdirSync` over a directory) or a
+new lint rule — gains jurisdiction over CONTENT in files it never touched, so
+file-disjointness says nothing and neither PR's CI exercised the pair (yours ran
+before their check existed, theirs before your content did). `main` can go red on
+a merge where both sides were green. This repo has measured both halves: its own
+§9 CI corollary records go-to-k/cdk-local#524's reference harness failing on a
+line go-to-k/cdk-local#520 merged in parallel, and in cdk-real-drift
+(2026-08-19) go-to-k/cdk-real-drift#1782 merged a `git ls-files "*.md"` scanner
+while go-to-k/cdk-real-drift#1783 was adding ~100 lines of markdown it never
+touched — the rebase was clean, and running the scanner over the new prose (21/21)
+cost one command. So when a peer merges mid-lane, look at **what** it added, not
+only which files it touched: rebase, then RUN any repo-wide check the peer
+introduced over your own diff before merging. This repo is especially exposed —
+it already ships repo-wide consistency tests (the four-copies harness
+`.claude/hooks/pr-review-gate.test.sh`, the reference scanner
+`tests/unit/skills/work-issues-skill-refs.test.ts`).
 
 ## 8. Verify before merge (`/verify-pr`)
 
@@ -512,7 +549,9 @@ cleans the worktree + local branch + remote branch in one pass. A hand-run workt
 merge is blocked by `gh-pr-merge-worktree-gate.sh` unless `/merge-pr` set the
 `merge-pr` marker. If a later PR is behind, GitHub still merges it when the files
 are disjoint — which is also why a clean merge says nothing about whether a
-collision happened (§7).
+collision happened (§7), in either shape: content-vs-content, or a peer's
+repo-wide check judging your content (run the peer's new check over your diff
+after the rebase, per §7).
 
 **When one lane fixes a full-suite flake, merge THAT lane first** — every other
 lane's `/check` and `/verify-pr` runs the same suite, so until the fix is on
