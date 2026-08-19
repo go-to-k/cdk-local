@@ -229,8 +229,9 @@ freshness) and — critically — **live-tests the changed behavior**:
   swallows an exit code looks exactly like one that fixes the gate. Three traps,
   measured here on 2026-08-19 (#504):
   - **Repeating a CACHED `vp run <task>` re-runs nothing.** `run.cache.tasks` is on
-    in `vite.config.ts`, and a task that does not opt out with `cache: false` (the
-    `check` / `test` / `lint` / `typecheck` family does not) replays its recorded exit
+    in `vite.config.ts`, and a task that does not opt out with `cache: false` — which
+    is every task you would repeat to watch it: `check`, `test`, `lint`, `typecheck`,
+    `format:check` — replays its recorded exit
     code: `vp run check` printed `cache hit, 2.01s saved` on runs 2-5 — five identical
     greens, one execution. When the POINT is to watch the exit code repeatedly, call
     the underlying command directly (`vp check` / `vp lint` / `vp fmt --check`), which
@@ -251,8 +252,9 @@ freshness) and — critically — **live-tests the changed behavior**:
   Why BOTH directions, concretely. An exit code can lie in either direction, and the
   two repos supply one example each. **Non-zero that means nothing**:
   go-to-k/cdk-real-drift#1761 / #1765 — `vp run check` exited 134 on a clean tree
-  while finding 0 errors (a Vite+ stdout `EAGAIN` panic), deterministically, 3/3 runs
-  before and 3/3 after the fix. The fix was one line of build config, and the risk it
+  while finding 0 errors (a Vite+ stdout `EAGAIN` panic), deterministically — measured
+  3/3 in each state, 134 before the fix and 0 after. The fix was a one-line change to
+  the `check` task command, and the risk it
   carried was the opposite of a flake: a redirect that swallows the exit code turns a
   RED tree green, which is why #1765 shipped a test asserting the `exit 1` survives.
   **Zero that means nothing**: right here, `vp test run` returned rc=0,0,1,0,1 across
@@ -400,6 +402,16 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   caught them. Checking in the rule here rather than in agent memory is deliberate:
   memory is per-project-path and per-machine, so it would not load in the very repos
   this bullet sends you to.
+  **Verify the cited EVIDENCE too, not only the repo-specific nouns — open the issue
+  or PR the source names and confirm it says what the source claims it says.** The
+  nouns fail when a sentence travels between repos; the evidence can be wrong where it
+  was WRITTEN, and then travels intact. On 2026-08-19 (#504) the incoming wording —
+  quoted verbatim into the issue — said "on #1761 the `check` gate flipped rc=0/rc=1
+  across identical runs (the tsgolint budget-cascade artifact)". cdk-real-drift#1761
+  itself records a DETERMINISTIC exit 134 from a Vite+ stdout `EAGAIN` panic, measured
+  3/3 in each state (134 before the fix, 0 after), with tsgolint nowhere in it.
+  Nothing had drifted; the source sentence was already false, and a per-repo noun
+  check would have passed it through. Reading #1761 and #1765 cost one command each.
 
 ### 10-d. Ship it like any other change
 
