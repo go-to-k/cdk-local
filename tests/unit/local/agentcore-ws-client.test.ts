@@ -25,11 +25,28 @@ interface StartedServer {
   lastHeaders: () => Record<string, string | string[] | undefined>;
 }
 
+/**
+ * Every server here binds 127.0.0.1 explicitly, never the wildcard: a
+ * wildcard (`::`) bind leaves 127.0.0.1:<port> claimable by a parallel test
+ * process (SO_REUSEADDR permits the specific-over-wildcard bind on macOS),
+ * whose HTTP server then answers this file's 127.0.0.1 clients with its own
+ * 404 on the upgrade — issue #521's "Unexpected server response: 404" flake.
+ */
+const LOOPBACK = '127.0.0.1';
+
+function boundPort(wss: WebSocketServer): number {
+  const addr = wss.address() as AddressInfo;
+  // Regression guard for the wildcard-bind flake — fails if the explicit
+  // host binding is ever dropped.
+  expect(addr.address).toBe(LOOPBACK);
+  return addr.port;
+}
+
 /** Start a `/ws` server; `onConn` decides how the server replies/closes. */
 async function startServer(
   onConn: (ws: WebSocket, firstFrame: string) => void
 ): Promise<StartedServer> {
-  const wss = new WebSocketServer({ port: 0, path: '/ws' });
+  const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
   servers.push(wss);
   let headers: Record<string, string | string[] | undefined> = {};
   wss.on('connection', (ws, req) => {
@@ -37,8 +54,7 @@ async function startServer(
     ws.once('message', (data) => onConn(ws, data.toString()));
   });
   await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
-  const port = (wss.address() as AddressInfo).port;
-  return { port, lastHeaders: () => headers };
+  return { port: boundPort(wss), lastHeaders: () => headers };
 }
 
 /**
@@ -49,7 +65,7 @@ async function startServer(
 async function startMultiFrameServer(
   onFrame: (ws: WebSocket, frame: string, index: number) => void
 ): Promise<StartedServer> {
-  const wss = new WebSocketServer({ port: 0, path: '/ws' });
+  const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
   servers.push(wss);
   let headers: Record<string, string | string[] | undefined> = {};
   wss.on('connection', (ws, req) => {
@@ -61,8 +77,7 @@ async function startMultiFrameServer(
     });
   });
   await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
-  const port = (wss.address() as AddressInfo).port;
-  return { port, lastHeaders: () => headers };
+  return { port: boundPort(wss), lastHeaders: () => headers };
 }
 
 async function* fromArray<T>(items: T[]): AsyncIterable<T> {
@@ -309,7 +324,7 @@ describe('bridgeAgentCoreWs', () => {
     sendToClient: (text: string) => void;
     closeClient: () => void;
   }> {
-    const wss = new WebSocketServer({ port: 0, path: '/ws' });
+    const wss = new WebSocketServer({ port: 0, host: LOOPBACK, path: '/ws' });
     servers.push(wss);
     const received: string[] = [];
     let headers: Record<string, string | string[] | undefined> = {};
@@ -321,7 +336,7 @@ describe('bridgeAgentCoreWs', () => {
       onConn?.(ws);
     });
     await new Promise<void>((resolve) => wss.on('listening', () => resolve()));
-    const port = (wss.address() as AddressInfo).port;
+    const port = boundPort(wss);
     return {
       port,
       received,
