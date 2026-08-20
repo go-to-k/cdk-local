@@ -1525,6 +1525,25 @@ vp run runtime:smoke
   defer criterion fires, and if you must defer it anyway, put the EVIDENCE in the
   issue body, not just the diagnosis.
 
+  **`Session-fit: next` is not on the menu inside a cross-repo scope.** When the
+  user framed the work as "do this across the repos in one session", anything
+  discovered inside that scope is `now`, and three tells force it: (a) you are
+  about to file the SAME issue body in more than one repo, which is the split
+  the framing exists to end and not triage; (b) the fix is mechanical and its
+  evidence is live right now, with the repro built, the files open, and a gate
+  cycle already running; (c) the user already said "finish it here" for the
+  surrounding task, so a discovery inside that task inherits the instruction
+  instead of getting a budget of its own. The four fields exist to make a
+  deferral HONEST, not to make one available: a defensible-looking `Effort` /
+  `Estimate` written for work this session is already positioned to do is the
+  tell that the classification has turned into an excuse. On 2026-08-20 a
+  session asked to consolidate one `/work-issues` lesson across cdkd, cdk-local
+  and cdk-real-drift found that every PreToolUse gate was inert, fixed the
+  matchers in all three, and then filed the remaining script-level gap as three
+  separate issues, reproducing exactly the per-repo split the user had asked to
+  end. Fixing it in the same PRs was the correct move, and is what happened
+  once the user objected.
+
   **One field per line — never pack two onto one**, and keep the field
   names and their order identical every time. A field with nothing to
   say gets an explicit `none`, never omission:

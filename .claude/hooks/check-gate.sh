@@ -11,11 +11,20 @@
 # `git worktree`, and markgate stores marker state per-worktree at
 # `<git rev-parse --absolute-git-dir>/markgate/`. We resolve the
 # target working tree from the PreToolUse payload's `cwd` field +
-# leading `cd <path>` + last `git -C <path>` flag, exactly mirroring
-# branch-gate.sh, so the markgate verify runs against the worktree the
-# commit will actually land in.
+# `cd <path>` segments + the matched segment's `git -C <path>` flag
+# (all via the shared `gate_target_dir`), so the markgate verify runs
+# against the worktree the commit will actually land in.
 
 set -u
+
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
 
 # Read the entire stdin payload once; we need both .tool_input.command
 # and .cwd from it. Reading via two separate jq invocations would
@@ -25,56 +34,31 @@ input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate git commit -- any other command passes through. The
-# matcher tolerates `git -C <path> commit` / `git -c <key>=<val> commit`
-# / `git --no-pager commit` / etc. by allowing zero or more flag tokens
-# between `git` and the `commit` subcommand. Line-start anchored so
-# `git commit` substrings inside quoted argument bodies
-# (`gh issue create --body "we should run git commit later"`) do
-# NOT false-positive into a hard block. The optional leading
-# `cd <path> &&` prefix preserves the worktree-aware
-# `cd <side> && git commit` chain shape. Trailing class
-# `([[:space:]]|$|[|;&\`)])` ensures `commit` appears in the GIT
-# SUBCOMMAND POSITION — not as the prefix of `commit-tree` /
-# `commit-graph`.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+commit([[:space:]]|$|[|;&`)])'; then
+# Only gate `git commit`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored.
+gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0
+
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_COMMIT")
+
+# If the resolved target dir is not a git repo, silently pass — we
+# can't audit what we can't see.
+# Repo opt-in scope, mirroring branch-gate (go-to-k/cdkd#1259): this gate belongs
+# to repos that follow the markgate convention. A session rooted in one of them
+# still runs git against OTHER repos — a dotfiles checkout, a scratch clone —
+# where committing to main is normal and no marker exists to be fresh. Without
+# this the gate blocked those commits with a message naming skills that repo does
+# not have (hit on 2026-08-20 from a sibling-repo session).
+target_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ -z "$target_top" ] || [ ! -f "$target_top/.markgate.yml" ]; then
   exit 0
 fi
 
-# Resolve where the git command will actually run (cwd-aware; mirrors
-# branch-gate.sh — keep these in sync if either gains new resolution
-# shapes).
-target_dir="${hook_cwd:-$PWD}"
-
-# `cd <path>` at the start of the command shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
-  target_dir="$cd_target"
-fi
-
-# `git -C <path>` beats any earlier cd; pick the LAST occurrence.
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
-
-# If the resolved target dir is not a git repo, silently pass — we
-# can't audit what we can't see (mirrors branch-gate.sh).
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
   exit 0
 fi

@@ -20,59 +20,46 @@
 # `git worktree`, and markgate stores marker state per-worktree at
 # `<git rev-parse --absolute-git-dir>/markgate/`. We resolve the
 # target working tree from the PreToolUse payload's `cwd` field +
-# leading `cd <path>` + last `gh -C <path>` flag, so the markgate
+# preceding `cd <path>` segments + the last `gh -C <path>` flag, so the markgate
 # verify runs against the worktree the PR will actually open / merge
 # from. Convention: set markers from the worktree you intend to open
 # the PR (and merge it) from.
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+
 input=$(cat 2>/dev/null || true)
 
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr create` and `gh pr merge`. Match both `gh pr merge`
-# and `gh pr merge --auto`. Tolerate an optional `gh -C <path>` between
-# `gh` and `pr`. Line-start anchored so `gh pr create` / `gh pr merge`
-# substrings inside quoted argument bodies
-# (`echo "next step: gh pr create"`) do NOT false-positive into a hard
-# block. The optional leading `cd <path> &&` prefix preserves the
-# worktree-aware `cd <side> && gh pr create` chain shape.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(create|merge)([[:space:]]|$|[|;&`)])'; then
-  exit 0
-fi
-
-# Resolve where the gh command will actually run (cwd-aware; mirrors
-# non-english-text-gate.sh / pr-review-gate.sh).
-target_dir="${hook_cwd:-$PWD}"
-
-# `cd <path>` at the start of the command shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
+# Only gate `gh pr create` and `gh pr merge`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored. `gate_re` keeps whichever verb matched so the target-dir
+# resolution below reads the right segment.
+gate_re=""
+for gate_candidate in "$GATE_RE_GH_PR_CREATE" "$GATE_RE_GH_PR_MERGE"; do
+  if gate_matches "$cmd" "$gate_candidate"; then
+    gate_re="$gate_candidate"
+    break
   fi
-  target_dir="$cd_target"
-fi
+done
+[ -n "$gate_re" ] || exit 0
 
-# Last `gh -C <path>` wins.
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_re")
 
 # If the resolved target dir is not a git repo, silently pass — we
 # can't audit what we can't see.

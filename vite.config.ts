@@ -228,7 +228,10 @@ export default defineConfig({
         command: 'vp run check && vp run test && vp run build',
       },
       'test:hooks': {
-        command: 'bash .claude/hooks/pr-review-gate.test.sh',
+        // Glob, not a hardcoded list: a new `.claude/hooks/*.test.sh` used to be
+        // added and then never run by anything (go-to-k/cdk-local#542 review).
+        command:
+          'for t in .claude/hooks/*.test.sh; do echo "== $t"; bash "$t" || exit 1; done',
         // Spawns throwaway git repos and a PATH-stubbed `gh`, so the result
         // depends on the hook script rather than on a tracked input set the
         // task runner can digest -- no caching.

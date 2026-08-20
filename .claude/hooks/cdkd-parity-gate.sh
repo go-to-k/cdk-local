@@ -37,48 +37,31 @@
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+
 input=$(cat 2>/dev/null || true)
 
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr create`. `gh pr merge` is intentionally NOT gated — the
-# parity question is a pre-create judgment; once the marker has been set,
-# subsequent re-merges shouldn't re-block on a stale marker for a small
-# follow-up. Line-start anchored so `gh pr create` substrings inside quoted
-# argument bodies do NOT false-positive.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+create([[:space:]]|$|[|;&`)])'; then
-  exit 0
-fi
+# Only gate `gh pr create`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored.
+gate_matches "$cmd" "$GATE_RE_GH_PR_CREATE" || exit 0
 
-target_dir="${hook_cwd:-$PWD}"
-
-# `cd <path>` at the start of the command shifts the target dir.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
-  fi
-  target_dir="$cd_target"
-fi
-
-# `gh -C <path>` beats any earlier cd; pick the LAST occurrence.
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GH_PR_CREATE")
 
 # If the resolved target dir is not a git repo, silently pass — we
 # can't audit what we can't see.
@@ -100,7 +83,12 @@ fi
 
 # Fail-open if origin/main is not resolvable (fresh clone with no fetch
 # yet, weird remote setup, etc.).
-if ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+# Read git state from the RESOLVED TARGET DIR, not the hook's own cwd: the hook
+# process runs wherever the client launched it, so a scope decision taken here
+# was about the wrong tree — empty diff in a clean main checkout (gate fires
+# needlessly), or an unrelated tree's diff (gate skips wrongly). Same class as
+# go-to-k/cdk-real-drift#1805.
+if ! git -C "$target_dir" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -117,10 +105,10 @@ fi
 #     `/check-cdkd-parity`'s category 3 walk-through is meant to catch.
 #     Edits to EXISTING `src/local/**` files (`M` / `D`) are excluded
 #     so internal refactors don't fire the gate.
-scope_touched=$(git diff origin/main...HEAD --name-only 2>/dev/null \
+scope_touched=$(git -C "$target_dir" diff origin/main...HEAD --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$' \
   | head -1)
-new_local_file=$(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+new_local_file=$(git -C "$target_dir" diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
   | grep -E '^src/local/.+\.ts$' \
   | head -1)
 if [ -z "$scope_touched" ] && [ -z "$new_local_file" ]; then
@@ -148,19 +136,19 @@ fi
 cat1_new_factory=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  if git diff origin/main...HEAD --diff-filter=A -- "$f" 2>/dev/null \
+  if git -C "$target_dir" diff origin/main...HEAD --diff-filter=A -- "$f" 2>/dev/null \
     | grep -qE '^\+[[:space:]]*export[[:space:]]+function[[:space:]]+createLocal[A-Z][A-Za-z]*Command'; then
     cat1_new_factory="$f"
     break
   fi
-done < <(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+done < <(git -C "$target_dir" diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/local-[^/]+\.ts$')
 
 cat2_new_option=""
 # Same permissive pattern the skill's own detection uses (an added line that
 # carries `addOption(...new Option`), so chained `.addOption(new Option(` /
 # `cmd.addOption(new Option(` forms all match regardless of leading context.
-if git diff origin/main...HEAD -- 'src/cli/commands/*.ts' 2>/dev/null \
+if git -C "$target_dir" diff origin/main...HEAD -- 'src/cli/commands/*.ts' 2>/dev/null \
   | grep -qE '^\+.*addOption.*new Option'; then
   cat2_new_option="yes"
 fi

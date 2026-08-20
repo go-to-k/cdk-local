@@ -39,13 +39,33 @@
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches` and the GATE_RE_* verb regexes every gate now
+# spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate gh invocations that pass a body file. Cheap pre-filter
-# before the more expensive extraction.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+(pr[[:space:]]+(create|edit)|issue[[:space:]]+(create|comment)|api)\b'; then
-  exit 0
-fi
+# Only gate the `gh` writers that take a body; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored. This gate acts on the body FILE, not on a working tree, so
+# the matched regex is only used to decide whether to keep going.
+gate_re=""
+for gate_candidate in "$GATE_RE_GH_PR_CREATE" "$GATE_RE_GH_PR_EDIT" \
+  "$GATE_RE_GH_ISSUE_CREATE" "$GATE_RE_GH_ISSUE_COMMENT" "$GATE_RE_GH_API"; do
+  if gate_matches "$cmd" "$gate_candidate"; then
+    gate_re="$gate_candidate"
+    break
+  fi
+done
+[ -n "$gate_re" ] || exit 0
+
 if ! printf '%s' "$cmd" | grep -qE '(--body-file|body=@)'; then
   exit 0
 fi

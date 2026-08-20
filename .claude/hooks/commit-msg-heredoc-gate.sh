@@ -23,12 +23,23 @@
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches` and the GATE_RE_* verb regexes every gate now
+# spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
+
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate git commit invocations.
-if ! printf '%s' "$cmd" | grep -qE '\bgit[[:space:]]+commit\b'; then
-  exit 0
-fi
+# Only gate `git commit`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored.
+gate_matches "$cmd" "$GATE_RE_GIT_COMMIT" || exit 0
 
 # Block only when `git commit ... (-m|--message) ... <<` appears in
 # the same pipeline segment (no `;` / `&&` / `||` / `|` between them).

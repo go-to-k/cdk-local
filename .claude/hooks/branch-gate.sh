@@ -14,12 +14,22 @@
 # the commit landed on the parent worktree's `main`.
 #
 # Resolution order for "where will the git command actually run":
-#   1. Explicit `git -C <path> commit/push` — last `-C` wins.
-#   2. Leading `cd <path> && ...` — the cd target.
+#   1. Explicit `git -C <path> commit/push` in the matched segment —
+#      last `-C` wins.
+#   2. The last `cd <path>` segment BEFORE the matched one.
 #   3. The hook input's `cwd` field (the Bash tool's persisted cwd).
 #   4. The hook process's own $PWD (fallback, almost never reached).
 
 set -u
+
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
 
 # Read the entire stdin payload once; we need both .tool_input.command
 # and .cwd from it. Reading via two separate jq invocations would
@@ -29,61 +39,25 @@ input=$(cat 2>/dev/null || true)
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate git commit / git push — any other command passes through.
-# The regex matches `git` + optional global flags (e.g. `-C <path>`,
-# `-c <key>=<value>`, `--no-pager`, `--git-dir=<path>`) + the literal
-# subcommand `commit` or `push`, anchored so that `commit` / `push`
-# must appear in the GIT SUBCOMMAND POSITION — not as a substring of
-# a refspec (`<sha>^{commit}`), a pathspec (`-- '*push*.md'`), or a
-# `--grep=push` query.
-#
-# Line-start anchored so `git commit` / `git push` substrings inside
-# quoted argument bodies (`gh issue create --body "git commit later"`)
-# do NOT false-positive into a hard block. The optional leading
-# `cd <path> &&` prefix preserves the worktree-aware
-# `cd <side> && git commit` chain shape.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(commit|push)([[:space:]]|$|[|;&`)])'; then
-  exit 0
-fi
-
-# Start from the Bash session's persisted cwd; fall back to the hook
-# process's own cwd if the payload did not include a `cwd` field.
-target_dir="${hook_cwd:-$PWD}"
-
-# `cd <path>` at the start of the command shifts the target dir. We
-# look at the FIRST `cd` and stop — chained `cd` patterns are rare
-# enough that handling only the leading one covers the realistic
-# foot-gun (the "cd into parent for tooling" case) without parsing
-# arbitrary shell.
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  # Strip surrounding single or double quotes if present.
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  # Resolve relative paths against the inherited cwd.
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
+# Only gate `git commit` / `git push`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored. `gate_re` keeps whichever verb matched so the target-dir
+# resolution below reads the right segment.
+gate_re=""
+for gate_candidate in "$GATE_RE_GIT_COMMIT" "$GATE_RE_GIT_PUSH"; do
+  if gate_matches "$cmd" "$gate_candidate"; then
+    gate_re="$gate_candidate"
+    break
   fi
-  target_dir="$cd_target"
-fi
+done
+[ -n "$gate_re" ] || exit 0
 
-# `git -C <path>` is git's own "run as if from <path>" flag and beats
-# any earlier cd. Find the LAST occurrence so a chained
-# `git -C /a foo && git -C /b commit` resolves to /b.
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_re")
 
 # Repo opt-in scope (cdkd#1259): this gate protects repos that follow
 # the feature-branch + PR + markgate convention. A session rooted in
