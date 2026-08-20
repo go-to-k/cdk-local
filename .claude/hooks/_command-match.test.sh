@@ -196,5 +196,43 @@ EOF' "$C"
 want_match 1 "balanced quotes still hide a separator" 'echo "step && git commit -m x"' "$C"
 want_match 1 "balanced single quotes still hide one" "echo 'step ; git commit -m x'" "$C"
 
+# --- compound statements, wrappers, process substitution (go-to-k/cdkd#2130) ---
+# Every one of these ran UNGATED before, and each is a regression against the
+# unanchored greps some gates used to carry.
+want_match 0 "if ... then <verb>"        'if true; then git commit -m x; fi' "$C"
+want_match 0 "while ... do <verb>"       'while :; do git commit -m x; done' "$C"
+want_match 0 "until ... do <verb>"       'until false; do git commit -m x; done' "$C"
+want_match 0 "negation"                  '! git commit -m x' "$C"
+want_match 0 "sudo wrapper"              'sudo git commit -m x' "$C"
+want_match 0 "xargs wrapper"             'xargs -I{} git commit -m {}' "$C"
+want_match 0 "case arm"                  'case a in a) git commit -m x;; esac' "$C"
+want_match 0 "process substitution"      'diff <(git commit -m x) /dev/null' "$C"
+want_match 0 "output process substitution" 'tee >(git commit -m x) < f' "$C"
+
+# A quoted span that CONTINUES past the newline is one argument: its lines are
+# not separate commands, even when one of them starts with a gated verb.
+want_match 1 "multi-line quoted body line starting with the verb" 'gh pr create --body "intro
+git commit -m x was the step
+end"' "$C"
+# ... and a QUOTED heredoc tag is an ordinary opener, so its body is still data.
+want_match 1 "quoted heredoc tag still hides its body" "cat <<'EOF'
+git commit -m x
+EOF" "$C"
+
+want_dir "/tmp/a&b" "quoted path containing an ampersand" \
+  'cd "/tmp/a&b" && git commit -m x' /fb "$C"
+
+# --- unexpanded paths (go-to-k/cdkd#2130 spec review) -------------------------
+# `cd "$WT" && …` is the spelling this flow MANDATES. Resolving it literally gave
+# `<cwd>/$WT`, which no `git -C` can read, so the gate could not resolve a tree
+# and exited 0. Falling back to the payload cwd fails CLOSED instead.
+want_dir "/base" "cd with an unexpanded variable falls back" 'cd "$WT" && git commit -m x' /base "$C"
+want_dir "/base" "cd with a command substitution falls back" 'cd "$(pwd)" && git commit -m x' /base "$C"
+want_dir "/base" "-C with an unexpanded variable falls back" 'git -C "$WT" commit -m x' /base "$C"
+want_dir "/real/path" "a real quoted path still resolves" 'cd "/real/path" && git commit -m x' /base "$C"
+# The verb is still SEEN in all of those — only the directory falls back.
+want_match 0 "unexpanded cd still matches the verb" 'cd "$WT" && git commit -m x' "$C"
+want_match 0 "xargs behind a pipe" 'echo f | xargs git commit -m x' "$C"
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

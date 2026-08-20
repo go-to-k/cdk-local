@@ -14,11 +14,24 @@ set -euo pipefail
 # Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
 # gives this gate `gate_matches` and the GATE_RE_* verb regexes every gate now
 # spells the same way.
-# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
-# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+# Fail CLOSED if the shared matcher is missing or does not load: a gate that
+# cannot decide must not wave the command through. `[ -r … ] || exit 0` was the
+# first shape here, and it silently disabled the gate whenever the library was
+# unreadable or truncated — with the sibling gates' own comments claiming the
+# opposite (go-to-k/cdkd#2130 review). The `declare -F` check catches a partial
+# source, where `.` succeeds but the function is missing.
 _gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
-[ -r "$_gate_lib" ] || exit 0
+if [ ! -r "$_gate_lib" ]; then
+  echo "Blocked: .claude/hooks/_command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
 . "$_gate_lib"
+if ! declare -F gate_matches >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+  exit 2
+fi
+
 
 input_json=$(cat)
 

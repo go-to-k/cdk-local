@@ -50,6 +50,8 @@ gate_segments_raw() {
         if (q == "") {
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; out = out c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
+          # Process substitution runs its body too: `diff <(git commit) …`.
+          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
           if (c == "`") { out = out "\n"; continue }
           if (c == "&" || c == ";" || c == "|") { out = out "\n"; continue }
           out = out c
@@ -68,11 +70,17 @@ gate_segments_raw() {
     # The line with every QUOTED span blanked, for the heredoc-opener test only:
     # `echo "use <<EOF here"` is a mention, and honouring it blanked the rest of
     # the command (go-to-k/cdkd#2130).
-    function unquoted_part(line,   i, n, c, out, inq) {
+    function unquoted_part(line,   i, n, c, out, inq, prev2) {
       out = ""; inq = ""; n = length(line)
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
+        prev2 = (i > 2) ? substr(line, i - 2, 2) : ""
         if (inq == "") {
+          # A quote right after `<<` (or `<<-`) is part of a heredoc TAG, not a
+          # span: `cat <<'"'"'EOF'"'"'` is an ordinary opener. Blanking it lost the tag,
+          # so the body was treated as commands and this repo blocked its own
+          # scripts (go-to-k/cdkd#2130 review).
+          if ((c == "\"" || c == "'"'"'") && (prev2 == "<<" || substr(line, i - 1, 1) == "-" && substr(line, i - 3, 2) == "<<")) { out = out c; continue }
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { inq = c; out = out " "; continue }
           out = out c
         } else {
@@ -117,10 +125,19 @@ gate_segments_raw() {
         gsub(/^<<-?[ \t]*|["'"'"']/, "", t)
         if (terminated(t, i + 1)) tag = t
       }
-      outbuf[++outn] = neutral
+      # A quoted span that continues past the newline is ONE argument, so its
+      # lines must not become separate segments: a `--body "…"` whose second
+      # line STARTS with a gated verb was matched and blocked (go-to-k/cdkd#2130
+      # review). Join the continuation onto the segment that opened the span.
+      if (open_span != "") {
+        outbuf[outn] = outbuf[outn] " " neutral
+      } else {
+        outbuf[++outn] = neutral
+      }
+      open_span = q
     }
     function run_pass(   i) {
-      q = ""; tag = ""; pending = ""; outn = 0
+      q = ""; tag = ""; pending = ""; outn = 0; open_span = ""
       for (i = 1; i <= total; i++) emit(i)
       if (pending != "") outbuf[++outn] = flush_line(pending)
     }
@@ -138,17 +155,31 @@ gate_segments_raw() {
 # Leading words that introduce a command without being one: env assignments,
 # wrappers, and the keywords that open a compound statement.
 gate_strip_prefix() {
-  local s="$1"
-  # Trim first: a segment split off after a separator starts with a space, and
-  # every verb regex is anchored at the segment start.
+  local s="$1" prev=""
   s="${s#"${s%%[![:space:]]*}"}"
   # `bash -c "<cmd>"` RUNS its argument, so a gated verb inside it is a gated
   # command (go-to-k/cdk-local#542 review).
   if [[ "$s" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+[\"\'](.*)[\"\'][[:space:]]*$ ]]; then
     s="${BASH_REMATCH[2]}"
   fi
-  while [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|\{|\()[[:space:]]+(.*)$ ]]; do
-    s="${BASH_REMATCH[2]}"
+  # Strip leaders until stable: a `case <word> in` opener, a `<pattern>)` arm
+  # label, compound-statement keywords, wrappers, and env assignments can nest
+  # (`case a in a) sudo git commit`). `if|while|until|!|sudo|xargs` were missing,
+  # so `if <verb>; then …`, `! <verb>` and `sudo <verb>` ran UNGATED — a
+  # regression for every gate that traded an unanchored grep for this matcher
+  # (go-to-k/cdkd#2130 review).
+  while [ "$s" != "$prev" ]; do
+    prev="$s"
+    if [[ "$s" =~ ^[[:space:]]*case[[:space:]]+[^[:space:]]+[[:space:]]+in[[:space:]]+(.*)$ ]]; then
+      s="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$s" =~ ^[[:space:]]*[^\(\)\|\;\&[:space:]]+\)[[:space:]]*(.*)$ ]]; then
+      s="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+(.*)$ ]]; then
+      s="${BASH_REMATCH[2]}"
+    fi
+    s="${s#"${s%%[![:space:]]*}"}"
   done
   # Any remaining grouping punctuation at either end (nested subshells).
   while [[ "$s" =~ ^[[:space:]]*[\(\{][[:space:]]*(.*)$ ]]; do s="${BASH_REMATCH[1]}"; done
@@ -162,7 +193,14 @@ gate_strip_prefix() {
 gate_segments() {
   local segment
   while IFS= read -r segment; do
-    segment="${segment//"$GATE_SEP_AMP"/&}"
+    # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
+    # replacement means the MATCHED TEXT, so the placeholder survived and a
+    # quoted path containing `&` came back corrupted — the gate then failed to
+    # resolve the tree and exited 0 (go-to-k/cdkd#2130 review). Version-dependent:
+    # macOS bash 3.2 masks it.
+    while [[ "$segment" == *"$GATE_SEP_AMP"* ]]; do
+      segment="${segment%%"$GATE_SEP_AMP"*}&${segment#*"$GATE_SEP_AMP"}"
+    done
     segment="${segment//"$GATE_SEP_SEMI"/;}"
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
@@ -233,6 +271,12 @@ gate_target_dir() {
   while IFS= read -r segment; do
     if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
       cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # An UNEXPANDED path is not a path. `cd "$WT" && …` is the spelling this
+      # flow mandates, and resolving it literally produced `<cwd>/$WT`, which no
+      # `git -C` can read — so the gate could not resolve a tree and exited 0.
+      # Skipping it falls back to the payload cwd, which fails CLOSED
+      # (go-to-k/cdkd#2130 review).
+      case "$cd_target" in *'$'*|*'`'*) continue ;; esac
       [ -z "$cd_target" ] && continue
       [[ "$cd_target" != /* ]] && cd_target="$target/$cd_target"
       target="$cd_target"
@@ -248,6 +292,7 @@ gate_target_dir() {
         remaining="${remaining#*"${BASH_REMATCH[0]}"}"
       done
       c_target=$(gate_unquote "$c_target")
+      case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
       if [ -n "$c_target" ]; then
         [[ "$c_target" != /* ]] && c_target="$target/$c_target"
         target="$c_target"
