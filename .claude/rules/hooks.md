@@ -269,7 +269,7 @@ construction.
 
   That list is written out FOUR times (`UP_PATHS` in the hook, here,
   `.claude/skills/review-pr/SKILL.md`, `.claude/agents/pr-code-reviewer.md`)
-  and issue #506 found it drifted both ways at once — the reviewer-agent
+  and issue go-to-k/cdk-local#506 found it drifted both ways at once — the reviewer-agent
   copy had dropped an entry, and seven live surfaces were missing from
   every copy, on top of which a fresh audit found ~18 more.
   `.claude/hooks/pr-review-gate.test.sh` (run by `vp run test:hooks`,
@@ -282,7 +282,7 @@ construction.
   Down-bias triggers (every path under
   docs/infra OR every path under `tests/`) move it DOWN one step
   (clamped at `inline`). When both fire, up wins. **Agent-instruction
-  files are NOT docs for this purpose** (issue #501): `CLAUDE.md`,
+  files are NOT docs for this purpose** (issue go-to-k/cdk-local#501): `CLAUDE.md`,
   anything under `.claude/**` and `.markgate.yml` are excluded from the
   docs bucket by `AGENT_INSTRUCTION_REGEX`, because a wrong rule there
   propagates into every future session — and since they are markdown,
@@ -333,7 +333,7 @@ Accepted limitation: cross-file interaction is invisible — if this
 branch changes A and `main` changes B and a caller uses both, the
 deltas never overlap and the marker stays fresh though the combination
 is unverified. `hash: files` caught that incidentally; the 14d TTL
-still forces a periodic Docker run. See issue #498 for the measurement
+still forces a periodic Docker run. See issue go-to-k/cdk-local#498 for the measurement
 behind adopting it here and NOT for `cdkd-parity` / `create-integ`
 (both centred on the small, hot `src/cli/commands/**` directory —
 `cdkd-parity` also covers `src/internal.ts` / `src/index.ts` — where
