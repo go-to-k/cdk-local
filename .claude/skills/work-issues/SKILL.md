@@ -890,6 +890,24 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   so re-filing the lesson you RECEIVED into the other two only manufactures a second
   and third copy of it. What IS new is whatever your ADAPTATION taught you, and that
   is subject to the same rule in turn: all three repos, this session.
+  **Inside this scope, `Session-fit: next` is not an available answer.** A run
+  the user framed as "one session across the repos" cannot classify its own
+  discoveries out of that session, and three tells make the call for you: you
+  are about to file the SAME issue body into more than one repo (that is the
+  split §10 exists to end, not triage); the fix is mechanical and its evidence
+  is live in this run, with the repro built, the files open and a gate cycle
+  already turning; or the user has already said "finish it here" for the
+  surrounding task, which a discovery inside that task inherits rather than
+  re-litigates. The four classification lines of §4 make a deferral HONEST;
+  they do not make one available, and an `Effort` / `Estimate` pair that reads
+  defensibly for work this run is already positioned to do is the tell that the
+  fields are being used as an excuse. Watched here on 2026-08-20: the session
+  carrying one `/work-issues` lesson into cdkd, cdk-local and cdk-real-drift
+  found every PreToolUse gate inert, fixed the matcher in all three, then filed
+  the remaining script-level gap as three separate issues — the per-repo split
+  the user had asked it to end, rebuilt one classification line at a time. The
+  fix rode the same three PRs after the user objected, which is where it should
+  have gone in the first place.
   **Verify the copy against the TARGET repo, claim by claim, before shipping it.**
   Their gates, hooks and ship steps differ, so a sentence that is true here reads as
   authoritative there while being false, and nothing lints instruction prose — the

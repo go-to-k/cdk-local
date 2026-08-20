@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches` and the GATE_RE_* verb regexes every gate now
+# spells the same way.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+
 input_json=$(cat)
 
 tool_name=$(jq -r '.tool_name // empty' <<<"$input_json" 2>/dev/null || true)
@@ -19,14 +24,16 @@ tool_name=$(jq -r '.tool_name // empty' <<<"$input_json" 2>/dev/null || true)
 command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || true)
 [[ -n "$command" ]] || exit 0
 
-# Match `gh pr merge <N>` (allowing `gh -R repo` / `gh -C path` prefixes
-# and any flag order). Extract the LAST `gh pr merge ... N` occurrence
-# so a `# Wait + merge` Bash comment doesn't confuse the parser.
+# Only gate `gh pr merge`; anything else passes through. `gate_matches` splits
+# the command into segments, so the verb is caught in ANY position — after a
+# `git push &&`, after a `cd <wt>;`, inside a subshell — while a mention inside
+# a quoted string or a heredoc body is still ignored (the plain substring test
+# this used to run could not tell those apart).
+gate_matches "$command" "$GATE_RE_GH_PR_MERGE" || exit 0
+
+# Extract the LAST `gh pr merge ... N` occurrence so an earlier mention in the
+# same command line does not confuse the positional parser.
 trimmed="${command}"
-case "$trimmed" in
-  *"gh pr merge"*) ;;
-  *) exit 0 ;;
-esac
 
 # Extract PR number (positional integer after `gh pr merge`)
 args="${trimmed##*gh pr merge}"

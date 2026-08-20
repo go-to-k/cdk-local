@@ -228,7 +228,8 @@ export default defineConfig({
         command: 'vp run check && vp run test && vp run build',
       },
       'test:hooks': {
-        command: 'bash .claude/hooks/pr-review-gate.test.sh',
+        command:
+          'bash .claude/hooks/_command-match.test.sh && bash .claude/hooks/pr-review-gate.test.sh',
         // Spawns throwaway git repos and a PATH-stubbed `gh`, so the result
         // depends on the hook script rather than on a tracked input set the
         // task runner can digest -- no caching.

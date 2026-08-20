@@ -126,6 +126,45 @@ else
   printf 'FAIL gh pr create should pass through\n'; fail=$((fail + 1))
 fi
 
+
+# ---------------------------------------------------------------------------
+# Compound command shapes (issue #541).
+#
+# The gate used to decide whether it applied with a LINE-START-anchored regex,
+# so `gh pr merge` in any position but the first ran UNGATED. These cases pin
+# the segment matcher: the verb blocks wherever it sits in the command list,
+# and a mention inside a quoted string still does not.
+# ---------------------------------------------------------------------------
+
+# run_cmd_case <name> <expected-exit> <command>
+# Uses the 500-loc, six-file skills-only diff -- the same shape as the
+# `skills-only keeps its tier` case above, i.e. a diff that MUST block once the
+# gate recognises the command. Anything that fails to recognise it exits 0, so
+# a `want 2` case can only pass by way of the matcher.
+run_cmd_case() {
+  local name="$1" want="$2" command="$3" got payload
+  GH_FIXTURE=$(fixture 500 "${SIX_SKILLS[@]}")
+  export GH_FIXTURE
+  payload=$(jq -nc --arg c "$command" --arg d "$REPO" \
+    '{tool_input:{command:$c},cwd:$d}')
+  ( cd "$REPO" && export PATH="$TMP/bin:$PATH" \
+    && printf '%s' "$payload" | bash "$HOOK" >/dev/null 2>&1 )
+  got=$?
+  if [ "$got" -eq "$want" ]; then
+    printf 'ok   %s (exit %s)\n' "$name" "$got"; pass=$((pass + 1))
+  else
+    printf 'FAIL %s: want exit %s, got %s\n' "$name" "$want" "$got"; fail=$((fail + 1))
+  fi
+}
+
+run_cmd_case "git add -A && gh pr merge blocks"   2 'git add -A && gh pr merge 42 --squash'
+run_cmd_case "echo x && gh pr merge blocks"       2 'echo x && gh pr merge 42 --squash'
+run_cmd_case "semicolon-separated merge blocks"   2 'echo x; gh pr merge 42 --squash'
+run_cmd_case "quoted mention passes through"      0 'echo "next: gh pr merge 42 --squash"'
+run_cmd_case "heredoc body mention passes through" 0 'cat <<EOF
+gh pr merge 42 --squash
+EOF'
+
 # ---------------------------------------------------------------------------
 # Up-bias security surface (issue #506).
 #

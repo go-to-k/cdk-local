@@ -22,12 +22,19 @@
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches` and the GATE_RE_* verb regexes every gate now
+# spells the same way.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr edit` invocations.
-if ! printf '%s' "$cmd" | grep -qE '\bgh[[:space:]]+pr[[:space:]]+edit\b'; then
-  exit 0
-fi
+# Only gate `gh pr edit`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored.
+gate_matches "$cmd" "$GATE_RE_GH_PR_EDIT" || exit 0
 
 # Only block if the invocation actually sets --title or --body.
 if ! printf '%s' "$cmd" | grep -qE '(--title|--body|--body-file)\b'; then

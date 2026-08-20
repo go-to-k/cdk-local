@@ -16,8 +16,8 @@
 # contention doesn't exist.
 #
 # Resolution order for "where is the git command running":
-#   1. `git -C <path>` — last `-C` wins.
-#   2. Leading `cd <path> && ...` — the cd target.
+#   1. `git -C <path>` in the matched segment — last `-C` wins.
+#   2. The last `cd <path>` segment BEFORE the matched one.
 #   3. The hook's `cwd` field.
 #   4. $PWD.
 #
@@ -38,53 +38,35 @@
 
 set -u
 
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+
 input=$(cat 2>/dev/null || true)
 
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Match `git switch` / `git checkout` in the subcommand position.
-# Line-start anchored so `git switch` / `git checkout` substrings
-# inside quoted argument bodies (`gh issue create --body
-# "remember to git switch back"`) do NOT false-positive into a hard
-# block. The optional leading `cd <path> &&` prefix preserves the
-# worktree-aware `cd <main> && git switch <feat>` chain shape.
-# Reuses the branch-gate flag-token grammar so `git -C <path> switch`
-# / `git -c <key>=<val> switch` / etc. all qualify.
-#
-# We deliberately do NOT match `git worktree` — `git worktree add`
-# is the sanctioned escape and must always pass.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git([[:space:]]+(-[^[:space:]]+([[:space:]]+[^[:space:]-][^[:space:]]*)?))*[[:space:]]+(switch|checkout)([[:space:]]|$|[|;&`)])'; then
-  exit 0
-fi
-
-# Resolve the target dir the same way branch-gate.sh does.
-target_dir="${hook_cwd:-$PWD}"
-
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
+# Only gate `git switch` / `git checkout`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored. `gate_re` keeps whichever verb matched so the target-dir
+# resolution below reads the right segment.
+gate_re=""
+for gate_candidate in "$GATE_RE_GIT_SWITCH" "$GATE_RE_GIT_CHECKOUT"; do
+  if gate_matches "$cmd" "$gate_candidate"; then
+    gate_re="$gate_candidate"
+    break
   fi
-  target_dir="$cd_target"
-fi
+done
+[ -n "$gate_re" ] || exit 0
 
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_re")
 
 # Is the target dir the main worktree (= the top-level of the
 # shared .git directory)? `git rev-parse --show-toplevel` returns

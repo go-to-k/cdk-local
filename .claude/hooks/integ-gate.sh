@@ -23,67 +23,41 @@
 #
 # WHY cwd-aware resolution: this repo is regularly worked in via
 # `git worktree`. We read the actual git working tree the command
-# will run against (via `git -C` or leading `cd <path>`) before
+# will run against (via `git -C` or a preceding `cd <path>`) before
 # consulting markgate. Convention: set markers from the worktree you
 # intend to merge from.
 
 set -u
+
+# Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
+# gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
+# regexes every gate now spells the same way.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
 
 input=$(cat 2>/dev/null || true)
 
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
-# Only gate `gh pr merge` and `git merge`. `gh pr create` is
-# intentionally NOT gated — opening a PR for review should be allowed
-# even when the integ marker is stale; the gate only fires at merge
-# time. Line-start anchored so `gh pr merge` / `git merge` substrings
-# inside quoted argument bodies do NOT false-positive.
-if ! printf '%s' "$cmd" | grep -qE '^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+merge([[:space:]]|$|[|;&`)])|^[[:space:]]*(cd[[:space:]]+[^[:space:]]+[[:space:]]*&&[[:space:]]*)?git[^|;&]*[[:space:]]merge([[:space:]]|$|[|;&`)])'; then
-  exit 0
-fi
-
-target_dir="${hook_cwd:-$PWD}"
-
-if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]\&\;\|]+) ]]; then
-  cd_target="${BASH_REMATCH[1]}"
-  cd_target="${cd_target%\"}"; cd_target="${cd_target#\"}"
-  cd_target="${cd_target%\'}"; cd_target="${cd_target#\'}"
-  if [[ "$cd_target" != /* ]]; then
-    cd_target="$target_dir/$cd_target"
+# Only gate `gh pr merge` and `git merge`; anything else passes through.
+# `gate_matches` splits the command into segments, so the verb is caught in ANY position — after a
+# `git add -A &&`, after a `cd <wt>;`, inside a subshell, behind a leading
+# `VAR=x` assignment — while a mention inside a quoted string or a heredoc body
+# is still ignored. `gate_re` keeps whichever verb matched so the target-dir
+# resolution below reads the right segment.
+gate_re=""
+for gate_candidate in "$GATE_RE_GH_PR_MERGE" "$GATE_RE_GIT_MERGE"; do
+  if gate_matches "$cmd" "$gate_candidate"; then
+    gate_re="$gate_candidate"
+    break
   fi
-  target_dir="$cd_target"
-fi
+done
+[ -n "$gate_re" ] || exit 0
 
-if [[ "$cmd" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ git[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
-
-if [[ "$cmd" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; then
-  c_target=""
-  remaining="$cmd"
-  while [[ "$remaining" =~ gh[[:space:]]+-C[[:space:]]+([^[:space:]]+) ]]; do
-    c_target="${BASH_REMATCH[1]}"
-    remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-  done
-  c_target="${c_target%\"}"; c_target="${c_target#\"}"
-  c_target="${c_target%\'}"; c_target="${c_target#\'}"
-  if [[ "$c_target" != /* ]]; then
-    c_target="$target_dir/$c_target"
-  fi
-  target_dir="$c_target"
-fi
+# Where the gated command will actually run: a `-C <path>` inside the MATCHED
+# segment wins, else the last `cd <path>` segment before it, else the hook
+# payload's cwd (see gate_target_dir in _command-match.sh).
+target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_re")
 
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
   exit 0
