@@ -33,24 +33,28 @@ GATE_SEP_SUBST=$'\004'
 # one RUNS, so `echo "$(git commit -m x)"` is a commit.
 gate_segments_raw() {
   awk '
-    # `q` is deliberately GLOBAL: a quoted span survives a newline, and a
-    # `--body "…multi-line…"` argument is ONE span. Resetting it per line split a
-    # PR body into segments and matched a `&& git commit` inside the prose
-    # (caught in review of go-to-k/cdk-local#542).
-    function flush_line(line,   i, n, c, out, prev) {
+    # `q` (the open quote character) is GLOBAL: a quoted span survives a newline,
+    # and a `--body "…multi-line…"` argument is ONE span. Resetting it per line
+    # split a PR body into segments and matched a `&& git commit` inside the
+    # prose (go-to-k/cdk-local#542 review).
+    #
+    # `ignore_q` is set on the SECOND pass: if the whole input ends with a quote
+    # still open, that character was not a quote at all (an apostrophe in
+    # `echo dont do it`), and treating it as one swallowed every command after it
+    # — fail open. The pass is redone with that character literal
+    # (go-to-k/cdkd#2130).
+    function flush_line(line,   i, n, c, out) {
       out = ""; n = length(line)
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
-        prev = (i > 1) ? substr(line, i - 1, 1) : ""
         if (q == "") {
-          if (c == "\"" || c == "'"'"'") { q = c; out = out c; continue }
+          if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; out = out c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
           if (c == "`") { out = out "\n"; continue }
           if (c == "&" || c == ";" || c == "|") { out = out "\n"; continue }
           out = out c
           continue
         }
-        # inside a quoted span
         if (c == "\\" && q == "\"") { out = out c substr(line, i + 1, 1); i++; continue }
         if (c == q) { q = ""; out = out c; continue }
         if (c == "&") { out = out SEP_AMP; continue }
@@ -61,12 +65,26 @@ gate_segments_raw() {
       }
       return out
     }
-    # Is there a later line equal to `t`? A heredoc opener only blanks what
-    # follows when its delimiter is actually TERMINATED. Honouring an
-    # unterminated one swallows the rest of the command, so `cat <<EOF` + prose +
-    # a real `git commit` measured as NO MATCH — fail open (found while porting
-    # this helper to cdkd, go-to-k/cdkd#2130; the matcher cdkd already had was
-    # fixed for the same shape in go-to-k/cdkd#1455).
+    # The line with every QUOTED span blanked, for the heredoc-opener test only:
+    # `echo "use <<EOF here"` is a mention, and honouring it blanked the rest of
+    # the command (go-to-k/cdkd#2130).
+    function unquoted_part(line,   i, n, c, out, inq) {
+      out = ""; inq = ""; n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (inq == "") {
+          if ((c == "\"" || c == "'"'"'") && c != ignore_q) { inq = c; out = out " "; continue }
+          out = out c
+        } else {
+          if (c == inq) inq = ""
+          out = out " "
+        }
+      }
+      return out
+    }
+    # Does a line equal to `t` appear later? An opener whose delimiter never
+    # reappears is not a heredoc; honouring it swallowed the rest of the command
+    # (go-to-k/cdkd#2130, fixed for the same shape in go-to-k/cdkd#1455).
     function terminated(t, from,   k, probe) {
       for (k = from; k <= total; k++) {
         probe = raw[k]
@@ -76,34 +94,42 @@ gate_segments_raw() {
       }
       return 0
     }
-    BEGIN { tag = ""; pending = ""; q = "" }
-    { raw[NR] = $0; total = NR }
-    END {
-      for (i = 1; i <= total; i++) emit(i)
-      if (pending != "") print flush_line(pending)
-    }
-    function emit(i,   line, t) {
+    function emit(i,   line, t, neutral, bare) {
       line = raw[i]
       sub(/\r$/, "", line)
-      if (tag != "") {                      # inside a heredoc body: data, not commands
+      if (tag != "") {                      # heredoc body: data, not commands
         t = line
         gsub(/^[ \t]+|[ \t]+$/, "", t)
         if (t == tag) tag = ""
-        print ""
+        outbuf[++outn] = ""
         return
       }
       if (pending != "") { line = pending line; pending = "" }
-      if (line ~ /\\$/) {                   # `\`-continuation: join with the next line
+      if (line ~ /\\$/) {                   # `\`-continuation
         sub(/\\$/, "", line)
         pending = line
         return
       }
-      if (match(line, /<<-?[ \t]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*["'"'"']?/)) {
-        t = substr(line, RSTART, RLENGTH)
+      neutral = flush_line(line)
+      bare = unquoted_part(line)
+      if (match(bare, /<<-?[ \t]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*["'"'"']?/)) {
+        t = substr(bare, RSTART, RLENGTH)
         gsub(/^<<-?[ \t]*|["'"'"']/, "", t)
         if (terminated(t, i + 1)) tag = t
       }
-      print flush_line(line)
+      outbuf[++outn] = neutral
+    }
+    function run_pass(   i) {
+      q = ""; tag = ""; pending = ""; outn = 0
+      for (i = 1; i <= total; i++) emit(i)
+      if (pending != "") outbuf[++outn] = flush_line(pending)
+    }
+    BEGIN { ignore_q = "" }
+    { raw[NR] = $0; total = NR }
+    END {
+      run_pass()
+      if (q != "") { ignore_q = q; run_pass() }   # that quote was not a quote
+      for (i = 1; i <= outn; i++) print outbuf[i]
     }
   ' SEP_AMP="$GATE_SEP_AMP" SEP_SEMI="$GATE_SEP_SEMI" SEP_PIPE="$GATE_SEP_PIPE" \
     SEP_SUBST="$GATE_SEP_SUBST" <<< "$1"

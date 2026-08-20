@@ -183,5 +183,18 @@ want_match 1 "a body-only mention is not a command" 'gh pr create --body-file - 
 run git commit when done
 EOF' "$C"
 
+# --- quote recovery + quoted heredoc mention (go-to-k/cdkd#2130) --------------
+# An apostrophe in a word is not a quote: treating it as one left the span open
+# and swallowed every command after it.
+want_match 0 "apostrophe in a word, then a real commit" "echo don't; git commit -m y" "$C"
+want_match 0 "apostrophe with && after it" "echo it's fine && git commit -m x" "$C"
+# A heredoc opener inside a quoted span is a MENTION, not an opener.
+want_match 0 "quoted <<X mention does not open a heredoc" 'echo "use <<EOF here"
+git commit -m x
+EOF' "$C"
+# Balanced quotes must still hide their contents.
+want_match 1 "balanced quotes still hide a separator" 'echo "step && git commit -m x"' "$C"
+want_match 1 "balanced single quotes still hide one" "echo 'step ; git commit -m x'" "$C"
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
