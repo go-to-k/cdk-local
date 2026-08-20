@@ -1,3 +1,10 @@
+## [0.147.4](https://github.com/go-to-k/cdk-local/compare/v0.147.3...v0.147.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hooks:** re-segment a `bash -c` body, and stop splitting on an escaped separator ([#547](https://github.com/go-to-k/cdk-local/issues/547)) ([99bfd25](https://github.com/go-to-k/cdk-local/commit/99bfd25df39f8fdc35594e12979b3a80afbd0e8c))
+
 ## [0.147.3](https://github.com/go-to-k/cdk-local/compare/v0.147.2...v0.147.3) (2026-08-20)
 
 
