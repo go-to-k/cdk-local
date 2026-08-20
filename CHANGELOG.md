@@ -1,3 +1,10 @@
+## [0.147.1](https://github.com/go-to-k/cdk-local/compare/v0.147.0...v0.147.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hooks:** an unterminated heredoc opener is not a heredoc, and never let `set -e` eat a segment ([#544](https://github.com/go-to-k/cdk-local/issues/544)) ([24c966d](https://github.com/go-to-k/cdk-local/commit/24c966db05839c8b4f9cf28f13ebd0bd3381bcd4))
+
 # [0.147.0](https://github.com/go-to-k/cdk-local/compare/v0.146.2...v0.147.0) (2026-06-08)
 
 
