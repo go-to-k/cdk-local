@@ -165,5 +165,23 @@ want_dir "/w t"   "quoted -C path"   'git -C "/w t" commit -m x' /fb "$C"
 want_dir "/fb"    "-C in a NON-matched segment is ignored" \
   'git -C /elsewhere status && git commit -m x' /fb "$C"
 
+# --- heredoc termination (go-to-k/cdkd#2130, found porting this to cdkd) -------
+# An opener whose delimiter never appears again does NOT open a heredoc. Honouring
+# it swallowed the rest of the command: `cat <<EOF` + prose + a real commit was a
+# NO MATCH — fail open, and the shape a PR-body-writing session produces daily.
+want_match 0 "unterminated heredoc does not swallow the command" 'cat <<EOF
+some prose
+git commit -m x' "$C"
+want_match 1 "terminated heredoc blanks its body" 'cat <<EOF
+git commit -m x
+EOF' "$C"
+want_match 0 "command AFTER a terminated heredoc still matches" 'cat <<EOF
+prose
+EOF
+git commit -m x' "$C"
+want_match 1 "a body-only mention is not a command" 'gh pr create --body-file - <<EOF
+run git commit when done
+EOF' "$C"
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
