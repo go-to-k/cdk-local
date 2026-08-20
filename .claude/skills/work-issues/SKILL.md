@@ -906,8 +906,9 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   found every PreToolUse gate inert, fixed the matcher in all three, then filed
   the remaining script-level gap as three separate issues — the per-repo split
   the user had asked it to end, rebuilt one classification line at a time. The
-  fix rode the same three PRs after the user objected, which is where it should
-  have gone in the first place.
+  fix landed in the same SESSION only after the user objected, as a follow-up PR
+  per repo — same session is the bar, same PR only when the work is small enough
+  to review together.
   **Verify the copy against the TARGET repo, claim by claim, before shipping it.**
   Their gates, hooks and ship steps differ, so a sentence that is true here reads as
   authoritative there while being false, and nothing lints instruction prose — the

@@ -25,7 +25,11 @@ set -u
 # Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
 # gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
 # regexes every gate now spells the same way.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
 
 # Read the entire stdin payload once; we need both .tool_input.command
 # and .cwd from it. Reading via two separate jq invocations would

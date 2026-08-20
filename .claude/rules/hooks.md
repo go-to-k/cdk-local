@@ -144,10 +144,13 @@ The hooks split into three classes:
 The seven markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
 `pr-review-gate.sh`, `integ-gate.sh`, `cdkd-parity-gate.sh`,
 `create-integ-gate.sh`, and `gh-pr-merge-worktree-gate.sh`) are
-all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field plus
-parses leading `cd <path>` and the last `git -C <path>` /
-`gh -C <path>` flag from the command, then `cd`s to that resolved
-target dir before invoking `markgate verify`. This preserves
+all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field, then hands
+the command to `gate_target_dir` in `.claude/hooks/_command-match.sh`, which
+resolves the tree in this order: a `git -C <path>` / `gh -C <path>` inside the
+MATCHED segment, else the LAST `cd <path>` segment before it, else the payload
+cwd. (Before go-to-k/cdk-local#542 each gate parsed only a LEADING `cd` and any
+`-C` anywhere in the command.) The hook then `cd`s to that resolved target dir
+before invoking `markgate verify`. This preserves
 markgate's per-worktree marker isolation — each parallel agent's
 worktree has its own markgate state dir
 (`<worktree>/.git/worktrees/<name>/markgate/` for side worktrees,

@@ -20,7 +20,11 @@ set -u
 # Shared, segment-aware command matching (go-to-k/cdk-local#541). Sourcing it
 # gives this gate `gate_matches`, `gate_target_dir`, and the GATE_RE_* verb
 # regexes every gate now spells the same way.
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+# Fail OPEN if the shared matcher is missing: a hook that cannot decide must not
+# break every Bash call with a `command not found` (go-to-k/cdk-local#542 review).
+_gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
+[ -r "$_gate_lib" ] || exit 0
+. "$_gate_lib"
 
 # Read the entire stdin payload once; we need both .tool_input.command
 # and .cwd from it. Reading via two separate jq invocations would
@@ -44,6 +48,17 @@ target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_COMMIT")
 
 # If the resolved target dir is not a git repo, silently pass — we
 # can't audit what we can't see.
+# Repo opt-in scope, mirroring branch-gate (go-to-k/cdkd#1259): this gate belongs
+# to repos that follow the markgate convention. A session rooted in one of them
+# still runs git against OTHER repos — a dotfiles checkout, a scratch clone —
+# where committing to main is normal and no marker exists to be fresh. Without
+# this the gate blocked those commits with a message naming skills that repo does
+# not have (hit on 2026-08-20 from a sibling-repo session).
+target_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ -z "$target_top" ] || [ ! -f "$target_top/.markgate.yml" ]; then
+  exit 0
+fi
+
 if ! git -C "$target_dir" rev-parse --git-dir >/dev/null 2>&1; then
   exit 0
 fi
