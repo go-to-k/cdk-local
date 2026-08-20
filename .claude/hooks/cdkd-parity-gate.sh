@@ -83,7 +83,12 @@ fi
 
 # Fail-open if origin/main is not resolvable (fresh clone with no fetch
 # yet, weird remote setup, etc.).
-if ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+# Read git state from the RESOLVED TARGET DIR, not the hook's own cwd: the hook
+# process runs wherever the client launched it, so a scope decision taken here
+# was about the wrong tree — empty diff in a clean main checkout (gate fires
+# needlessly), or an unrelated tree's diff (gate skips wrongly). Same class as
+# go-to-k/cdk-real-drift#1805.
+if ! git -C "$target_dir" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -100,10 +105,10 @@ fi
 #     `/check-cdkd-parity`'s category 3 walk-through is meant to catch.
 #     Edits to EXISTING `src/local/**` files (`M` / `D`) are excluded
 #     so internal refactors don't fire the gate.
-scope_touched=$(git diff origin/main...HEAD --name-only 2>/dev/null \
+scope_touched=$(git -C "$target_dir" diff origin/main...HEAD --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$' \
   | head -1)
-new_local_file=$(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+new_local_file=$(git -C "$target_dir" diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
   | grep -E '^src/local/.+\.ts$' \
   | head -1)
 if [ -z "$scope_touched" ] && [ -z "$new_local_file" ]; then
@@ -131,19 +136,19 @@ fi
 cat1_new_factory=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  if git diff origin/main...HEAD --diff-filter=A -- "$f" 2>/dev/null \
+  if git -C "$target_dir" diff origin/main...HEAD --diff-filter=A -- "$f" 2>/dev/null \
     | grep -qE '^\+[[:space:]]*export[[:space:]]+function[[:space:]]+createLocal[A-Z][A-Za-z]*Command'; then
     cat1_new_factory="$f"
     break
   fi
-done < <(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+done < <(git -C "$target_dir" diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/local-[^/]+\.ts$')
 
 cat2_new_option=""
 # Same permissive pattern the skill's own detection uses (an added line that
 # carries `addOption(...new Option`), so chained `.addOption(new Option(` /
 # `cmd.addOption(new Option(` forms all match regardless of leading context.
-if git diff origin/main...HEAD -- 'src/cli/commands/*.ts' 2>/dev/null \
+if git -C "$target_dir" diff origin/main...HEAD -- 'src/cli/commands/*.ts' 2>/dev/null \
   | grep -qE '^\+.*addOption.*new Option'; then
   cat2_new_option="yes"
 fi

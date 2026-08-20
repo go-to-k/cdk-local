@@ -78,7 +78,12 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+# Read git state from the RESOLVED TARGET DIR, not the hook's own cwd: the hook
+# process runs wherever the client launched it, so a scope decision taken here
+# was about the wrong tree — empty diff in a clean main checkout (gate fires
+# needlessly), or an unrelated tree's diff (gate skips wrongly). Same class as
+# go-to-k/cdk-real-drift#1805.
+if ! git -C "$target_dir" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -96,7 +101,7 @@ while IFS= read -r added; do
     new_command="$added"
     break
   fi
-done < <(git diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
+done < <(git -C "$target_dir" diff origin/main...HEAD --diff-filter=A --name-only 2>/dev/null \
   | grep -E '^src/cli/commands/local-[^/]+\.ts$')
 if [ -z "$new_command" ]; then
   exit 0

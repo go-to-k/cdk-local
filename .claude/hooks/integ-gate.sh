@@ -86,8 +86,13 @@ cd "$target_dir" 2>/dev/null || exit 0
 # message and re-running `/run-integ` CANNOT clear it (its own
 # `markgate set integ` fails the same way). The fix is `git fetch
 # origin`. Still conservative — it blocks rather than passes.
-if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-  if ! git diff origin/main...HEAD --name-only 2>/dev/null \
+# Read git state from the RESOLVED TARGET DIR, not the hook's own cwd: the hook
+# process runs wherever the client launched it, so a scope decision taken here
+# was about the wrong tree — empty diff in a clean main checkout (gate fires
+# needlessly), or an unrelated tree's diff (gate skips wrongly). Same class as
+# go-to-k/cdk-real-drift#1805.
+if git -C "$target_dir" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  if ! git -C "$target_dir" diff origin/main...HEAD --name-only 2>/dev/null \
       | grep -qE '^(src/|tests/integration/)'; then
     exit 0
   fi
