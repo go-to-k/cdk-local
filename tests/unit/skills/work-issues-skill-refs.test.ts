@@ -94,8 +94,11 @@ export function findUnqualifiedIssueRefs(markdown: string): Violation[] {
       continue;
     }
     if (openFence !== null) continue;
-    // Drop single-line inline code spans; what remains is plain prose.
-    const prose = raw.replace(/`[^`]*`/g, '');
+    // Drop single-line inline code spans; what remains is plain prose. The
+    // DOUBLE-backtick form is stripped first: it is how a counter-example
+    // containing a backtick is written, and a single-span-only strip leaves its
+    // contents exposed as prose (found in review of go-to-k/cdk-local#538).
+    const prose = raw.replace(/``.*?``/g, '').replace(/`[^`]*`/g, '');
     // Every ref must carry the WHOLE `<owner>/<repo>` prefix. Matching on the
     // ref and inspecting what precedes it catches the half-qualified spellings
     // (`cdk-local#5`, `go-to-k#5`) that a "not a word character before `#`"
@@ -137,6 +140,11 @@ describe('mirrored agent-instruction issue references (go-to-k/cdk-local#514)', 
         `cdk-local#N / go-to-k#N does not link at all), or wrap a deliberate ` +
         `counter-example in a single-line backtick span:\n${offenders.join('\n')}`
     ).toEqual([]);
+  });
+
+  it('exempts a double-backtick span, the form used to show a ref inside backticks', () => {
+    expect(findUnqualifiedIssueRefs('A span like ``#609 in `ticks` `` is exempt.')).toEqual([]);
+    expect(findUnqualifiedIssueRefs('But a bare #610 beside it is not.')).toHaveLength(1);
   });
 
   it('flags a bare ref in prose but not frontmatter / fences / code spans (self-test)', () => {

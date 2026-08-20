@@ -452,8 +452,9 @@ that, both run against the real tree rather than reasoned about, and on
   to two of the three ways to break it. `tests/unit/cli/sts-client-profile-audit.test.ts`
   was worse, because its subject is credentials: it matched the literal
   `new STSClient(` and passed an aliased `const { STSClient: STS } = await import(…)`
-  — a spelling this codebase already uses at five sites — plus a space before the
-  paren and a `mod.STSClient` alias. go-to-k/cdkd#2111 is the same shape again: a
+  — a spelling this codebase already uses at ten sites across seven files — plus
+  a space before the paren, a `mod.STSClient` alias, and the member form
+  `new (await import(…)).STSClient(…)`. go-to-k/cdkd#2111 is the same shape again: a
   region scanner calibrated at 19 hits / zero false positives matched `||` only
   while the tree already used `??` at four sites, and widening it surfaced a real
   bug nobody had filed.
@@ -921,10 +922,12 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   and `#1765` bare, and `gh issue view 1765` here answered `Could not resolve
   to an issue or pull request`. The rule is mechanized, per §10-b's "a rule
   already in the text that got violated anyway is a TEST":
-  `tests/unit/skills/work-issues-skill-refs.test.ts` fails CI on
-  any unqualified `#N` in this file's plain prose — frontmatter, fenced code
-  blocks, and backtick spans are exempt, so a paragraph can still show a bare
-  `#N` as its own counter-example (this one does).
+  `tests/unit/skills/work-issues-skill-refs.test.ts` fails CI on any unqualified
+  `#N` in the plain prose of ANY mirrored agent-instruction file — every
+  `.claude/skills/*/SKILL.md`, `.claude/agents/*.md` and `.claude/rules/*.md`,
+  not just this one, since a sentence travels from any of them. Frontmatter,
+  fenced code blocks, and backtick spans are exempt, so a paragraph can still
+  show a bare `#N` as its own counter-example (this one does).
 
 ### 10-d. Ship it like any other change
 
