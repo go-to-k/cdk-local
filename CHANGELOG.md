@@ -1,3 +1,10 @@
+## [0.147.3](https://github.com/go-to-k/cdk-local/compare/v0.147.2...v0.147.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hooks:** see a gated verb behind if/while/sudo/xargs/case and process substitution, and stop corrupting a path containing `&` ([#546](https://github.com/go-to-k/cdk-local/issues/546)) ([b07f319](https://github.com/go-to-k/cdk-local/commit/b07f319efe240f6f5cf2935490114badebbeaff2))
+
 ## [0.147.2](https://github.com/go-to-k/cdk-local/compare/v0.147.1...v0.147.2) (2026-08-20)
 
 
