@@ -1,3 +1,10 @@
+## [0.147.2](https://github.com/go-to-k/cdk-local/compare/v0.147.1...v0.147.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hooks:** an apostrophe is not a quote, and a quoted `<<X` is not a heredoc ([#545](https://github.com/go-to-k/cdk-local/issues/545)) ([ec0ae11](https://github.com/go-to-k/cdk-local/commit/ec0ae1183c27aed918f566ab293246323e39cd6a))
+
 ## [0.147.1](https://github.com/go-to-k/cdk-local/compare/v0.147.0...v0.147.1) (2026-08-20)
 
 
