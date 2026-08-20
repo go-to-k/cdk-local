@@ -1438,7 +1438,8 @@ vp run runtime:smoke
   issues elsewhere. **Remaining work** — exactly one of: **TODO (issue
   #N)** (work that still needs doing later; the ONLY bucket meaning
   follow-ups exist — every entry MUST have a GitHub issue number, filed
-  BEFORE reporting); **Won't-do (decided + recorded)** (things consciously
+  BEFORE reporting, AND the four classification fields described
+  below); **Won't-do (decided + recorded)** (things consciously
   decided AGAINST doing, with a one-line reason and where the decision is
   recorded — PR body, in-code comment, issue comment; no action needed);
   **Nothing remaining** (an explicit statement after actually auditing for
@@ -1450,6 +1451,97 @@ vp run runtime:smoke
   subagents; no leftover Docker containers or networks from local runs
   (`docker ps --filter name=cdkl-`, `docker network ls --filter
   name=cdkl-task-`); every TODO filed as an issue.
+
+  **The four TODO fields — decide them WHEN THE ITEM ARISES, not at wrap
+  time.** By wrap time the evidence for the call (which files were open,
+  which verification cycle was already being paid for) is gone, and a
+  retrospective guess is worth little. Record them **in the issue body**
+  so they outlive the session. The issue body and the report use the
+  SAME four lines, one field per line:
+
+  ```text
+  Session-fit: now (do it in this session) | next (not this session) — <reason>
+  Severity: high | medium | low — <what stays broken while it is undone>
+  Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+  Estimate: <duration, e.g. ~1-3 h> — <what eats the time>
+  ```
+
+  A report adds a fifth line, **`Notes`**, for session-specific context
+  (`none` when there is nothing); the issue body stays at four, because
+  what belongs there is only the part that outlives the session.
+
+  **The four answer four DIFFERENT questions and none derives from
+  another**: `Session-fit` is the decision, `Severity` the cost of
+  leaving it undone, `Effort` which verification cycle the fix drags,
+  `Estimate` the hours. In particular do not collapse `Severity` into
+  `Session-fit` — a `Severity: high` item can still be `next` (it needs
+  a new integ fixture has to be written) and a `low` one can be `now` (it lands in a file
+  this session already has open). The moment the two track each other,
+  `Severity` is a second spelling of the decision and the field is
+  wasted. Likewise `Effort` is not `Estimate`: "one integ run" is a kind
+  of cost, and how many hours it takes depends on which fixture.
+
+  **The keys are spelled identically everywhere** — issue body, English
+  report, Japanese report; never translated or renamed per context.
+  **No bare tokens**, because a value must be readable without knowing
+  the internal scale: write `Session-fit: next (not this session)` and
+  never a lone `next`; `Effort: large (L)` and never a lone `L`;
+  `Severity` as a word and **never as an initial** (the initials collide
+  with `Effort`'s both ways — `M` is `medium` on either scale, and `L`
+  would be *low*, the least urgent thing there is, against *large*, the
+  biggest); and always BOTH `Effort` and `Estimate` — dropping the
+  duration and keeping the letter is exactly the failure this split
+  exists to end.
+
+  **Scales.** `Severity`: `high` = a wrong result, data loss, a security
+  surface, or something a user hits in normal operation; `medium` = a
+  capability is missing but there is a workaround, or it only shows up
+  under a specific condition; `low` = internal tidiness, invisible to
+  users. **Rate what a user experiences, never why this session should do
+  it** — "leaving main self-inconsistent" is a `Session-fit: now` trigger,
+  not a Severity level, and copying it here makes that flavour of `high`
+  permanently un-`next`-able. `Effort` measures the
+  verification tail rather than the edit: `small` = edit plus unit
+  tests, riding verification this session already pays for; `medium` = one
+  re-review round, or a run of an EXISTING integ fixture this session was not
+  otherwise going to run; `large` = a NEW integ fixture has to be WRITTEN, or a
+  behavior change needing its own PR plus review.
+
+  **Calibration: RUNNING an existing integ is not a reason to defer.** Measured
+  over the 268 rows of cdkd's `docs/_generated/integ-last-run.tsv` on 2026-08-20:
+  median run 85 s, mean 4.6 min, p90 8.8 min. A passing run costs a few hundred
+  tokens. If the session is running one for its current lane anyway, a fix riding
+  the same fixture costs zero — the same run refreshes the same gate. What is
+  genuinely expensive is WRITING a new fixture, an integ that FAILS, and above
+  all review of a larger diff, which grows superlinearly because a reviewer reads
+  the whole thing and cross-file interactions multiply. Defer on those.
+
+  **A newly DISCOVERED bug is not a residual.** A residual (deferred polish, a
+  nit, a parity gap) is fully describable, so writing it down loses nothing. A
+  discovery's expensive part is the EVIDENCE behind it — the repro you built,
+  what you watched actually happen, the number you measured — and that is exactly
+  what an issue body cannot carry cheaply. When a bug surfaces mid-session, ask
+  which it is: if the evidence is session-only, finish it now unless a genuine
+  defer criterion fires, and if you must defer it anyway, put the EVIDENCE in the
+  issue body, not just the diagnosis.
+
+  **One field per line — never pack two onto one**, and keep the field
+  names and their order identical every time. A field with nothing to
+  say gets an explicit `none`, never omission:
+
+  ```text
+  ## Remaining work
+  - TODO #<N> — <what it is>
+    - Session-fit: now (do it in this session) | next (not this session) — <one line>
+    - Severity: high | medium | low — <what stays broken while it is undone>
+    - Effort: small (S) | medium (M) | large (L) — <which verification cycle it drags>
+    - Estimate: <duration> — <what eats the time>
+    - Notes: <session-specific context | none>
+  - Won't-do — <what>
+    - Why: <one line>
+    - Recorded: <PR body | in-code comment | issue>
+  (or the single line: Nothing remaining)
+  ```
 
 ## Positioning when communicating
 
