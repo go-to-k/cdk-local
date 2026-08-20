@@ -234,5 +234,21 @@ want_dir "/real/path" "a real quoted path still resolves" 'cd "/real/path" && gi
 want_match 0 "unexpanded cd still matches the verb" 'cd "$WT" && git commit -m x' "$C"
 want_match 0 "xargs behind a pipe" 'echo f | xargs git commit -m x' "$C"
 
+# --- go-to-k/cdkd#2130 test review: two real defects, and the unpinned rest ----
+want_match 0 "bash -c with an inner chain" 'bash -c "cd /w && git commit -m x"' "$C"
+want_match 0 "process substitution"        'diff <(git commit -m x) b' "$C"
+# An escaped separator outside quotes is LITERAL — one `echo`, not two commands.
+want_match 1 "escaped semicolon is literal" 'echo a\; git commit -m x' "$C"
+# Behaviour that was already right but pinned by nothing.
+want_match 1 "ANSI-C quoting hides its contents" "echo \$'x; git commit'" "$C"
+want_match 0 "parameter expansion default runs"  'echo ${V:-a; git commit -m x}' "$C"
+want_match 1 "# comment holding the verb"        'echo hi # git commit -m x' "$C"
+want_match 1 "grep pattern is not a verb"        'git log --grep commit' "$C"
+want_match 1 "grep=pattern is not a verb"        'git log --grep=commit' "$C"
+want_match 1 "an ordinary task run"              'vp run test' "$C"
+# The quoted-span protection is what stops a gate firing on prose: pin it with a
+# separator INSIDE the quotes, which is the only shape that can distinguish it.
+want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

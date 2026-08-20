@@ -48,6 +48,10 @@ gate_segments_raw() {
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
         if (q == "") {
+          # An escaped character outside quotes is LITERAL: `echo a\; git commit`
+          # is ONE echo, and splitting on that `;` blocked it (go-to-k/cdkd#2130
+          # test review).
+          if (c == "\\") { out = out c substr(line, i + 1, 1); i++; continue }
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; out = out c; continue }
           if (c == "$" && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
           # Process substitution runs its body too: `diff <(git commit) …`.
@@ -157,11 +161,6 @@ gate_segments_raw() {
 gate_strip_prefix() {
   local s="$1" prev=""
   s="${s#"${s%%[![:space:]]*}"}"
-  # `bash -c "<cmd>"` RUNS its argument, so a gated verb inside it is a gated
-  # command (go-to-k/cdk-local#542 review).
-  if [[ "$s" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+[\"\'](.*)[\"\'][[:space:]]*$ ]]; then
-    s="${BASH_REMATCH[2]}"
-  fi
   # Strip leaders until stable: a `case <word> in` opener, a `<pattern>)` arm
   # label, compound-statement keywords, wrappers, and env assignments can nest
   # (`case a in a) sudo git commit`). `if|while|until|!|sudo|xargs` were missing,
@@ -189,6 +188,18 @@ gate_strip_prefix() {
   printf '%s' "$s"
 }
 
+# Strip one surrounding quote pair from a whole argument (the `bash -c` body).
+gate_unquote_span() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    \"*\") v="${v#\"}"; v="${v%\"}" ;;
+    \'*\') v="${v#\'}"; v="${v%\'}" ;;
+  esac
+  printf '%s' "$v"
+}
+
 # Print one command segment per line, in the ORIGINAL text (placeholders restored).
 gate_segments() {
   local segment
@@ -205,6 +216,14 @@ gate_segments() {
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
     segment=$(gate_strip_prefix "$segment")
+    # `bash -c "<cmd>"` RUNS its argument, and that argument is a command LIST:
+    # matching it as ONE segment missed `bash -c "cd /w && git commit"`
+    # (go-to-k/cdkd#2130 test review). Recurse ONLY here — re-segmenting every
+    # segment would split a quoted `--body` whose prose contains `&&`.
+    if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
+      gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")"
+      continue
+    fi
     # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
     # false test aborts the whole function, and the segments after it are never
     # emitted — a silent fail-open that depends on which gate sources this.
