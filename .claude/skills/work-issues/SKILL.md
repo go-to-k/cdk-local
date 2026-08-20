@@ -1006,6 +1006,20 @@ the run evidence behind it — or "no skill change" plus what held.
   lane's store, and a `.markgate-pr-review-sha` was written into the main
   checkout before the mistake was caught and redone from the lane. `pwd` costs
   nothing; a marker in the wrong store costs a re-diagnosis.
+- **A hook's `if` takes ONE pattern — ` or ` matches nothing and disables the
+  gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen gates
+  here were written as
+  `"if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)"`
+  and every one was INERT: `git commit` on `main` with no markers reached git,
+  while running `branch-gate.sh` by hand on the same payload blocked with exit 2.
+  Three throwaway hooks separated the causes — an `if`-less hook fired,
+  `if: "Bash(git status*)"` fired, the ` or ` one never did. A gate guarding two
+  verbs gets two ENTRIES, and the pattern is written UNANCHORED
+  (`Bash(*git commit*)`) so a compound command still selects it; the script
+  re-matches precisely anyway. `tests/unit/hooks/gate-if-matchers.test.ts` pins
+  all three properties. **The general shape: a gate you have never watched go RED
+  is not a gate** — the failure here was invisible for as long as nobody typed a
+  command that should have been blocked and noticed that it was not.
 - **A gated command must be the ONLY thing in its Bash call.** A PreToolUse hook
   denial aborts the WHOLE command string BEFORE any line runs — including
   preamble side effects you assumed happened. On 2026-08-19 a
