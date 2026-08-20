@@ -61,31 +61,50 @@ gate_segments_raw() {
       }
       return out
     }
+    # Is there a later line equal to `t`? A heredoc opener only blanks what
+    # follows when its delimiter is actually TERMINATED. Honouring an
+    # unterminated one swallows the rest of the command, so `cat <<EOF` + prose +
+    # a real `git commit` measured as NO MATCH — fail open (found while porting
+    # this helper to cdkd, go-to-k/cdkd#2130; the matcher cdkd already had was
+    # fixed for the same shape in go-to-k/cdkd#1455).
+    function terminated(t, from,   k, probe) {
+      for (k = from; k <= total; k++) {
+        probe = raw[k]
+        sub(/\r$/, "", probe)
+        gsub(/^[ \t]+|[ \t]+$/, "", probe)
+        if (probe == t) return 1
+      }
+      return 0
+    }
     BEGIN { tag = ""; pending = ""; q = "" }
-    {
-      line = $0
+    { raw[NR] = $0; total = NR }
+    END {
+      for (i = 1; i <= total; i++) emit(i)
+      if (pending != "") print flush_line(pending)
+    }
+    function emit(i,   line, t) {
+      line = raw[i]
       sub(/\r$/, "", line)
       if (tag != "") {                      # inside a heredoc body: data, not commands
         t = line
         gsub(/^[ \t]+|[ \t]+$/, "", t)
         if (t == tag) tag = ""
         print ""
-        next
+        return
       }
       if (pending != "") { line = pending line; pending = "" }
       if (line ~ /\\$/) {                   # `\`-continuation: join with the next line
         sub(/\\$/, "", line)
         pending = line
-        next
+        return
       }
       if (match(line, /<<-?[ \t]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*["'"'"']?/)) {
         t = substr(line, RSTART, RLENGTH)
         gsub(/^<<-?[ \t]*|["'"'"']/, "", t)
-        tag = t
+        if (terminated(t, i + 1)) tag = t
       }
       print flush_line(line)
     }
-    END { if (pending != "") print flush_line(pending) }
   ' SEP_AMP="$GATE_SEP_AMP" SEP_SEMI="$GATE_SEP_SEMI" SEP_PIPE="$GATE_SEP_PIPE" \
     SEP_SUBST="$GATE_SEP_SUBST" <<< "$1"
 }
@@ -122,7 +141,10 @@ gate_segments() {
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
     segment=$(gate_strip_prefix "$segment")
-    [ -n "$segment" ] && printf '%s\n' "$segment"
+    # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
+    # false test aborts the whole function, and the segments after it are never
+    # emitted — a silent fail-open that depends on which gate sources this.
+    if [ -n "$segment" ]; then printf '%s\n' "$segment"; fi
   done < <(gate_segments_raw "$1")
 }
 
