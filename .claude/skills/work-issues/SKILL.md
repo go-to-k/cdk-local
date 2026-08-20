@@ -560,6 +560,43 @@ freshness) and — critically — **live-tests the changed behavior**:
   FIXED binary (`vp run build` first — the CLI runs from `dist/`) and confirm the
   behavior is now correct. `/run-integ <local-*>` exercises the real Docker path;
   keep or extend the fixture that covers the fixed behavior in the SAME PR.
+- **A fixture that establishes the fix's PRECONDITION on the happy path cannot
+  test the arm where the FAILING path creates it.** The most expensive shape this
+  flow produces, because every signal says pass: in cdkd (go-to-k/cdkd#2125) a fix
+  keyed on state that only the SUCCESS path persisted cleared unit tests, a
+  real-AWS fixture and four reviewers, and the fifth caught it by tracing the
+  EVIDENCE rather than the code. Here the state is whatever an earlier phase of a
+  `local-*` fixture leaves behind — a started `cdkl` process (`CDKL_PID`), a
+  container or network named `cdkl-*`, a written `.scenario.yaml` — so a fixture
+  that starts the server successfully and only then exercises the failure can
+  never reach the case where ONE operation both creates the situation and has to
+  handle it. Ask **which phase writes the state in the fixture, and which writes it
+  in the reachable case**; if they differ, add the arm where one operation does
+  both, and prove it DISCRIMINATES by mutating the fix and confirming the ORIGINAL
+  arm still passes while the new one fails.
+- **A `cleanup` that ALSO runs before the run must not destroy anything the run
+  then needs.** A scratch path computed at load time (`WORKDIR="$(mktemp -d …)"`),
+  an `rm -rf "$WORKDIR"` inside `cleanup`, and the pre-run `cleanup` call are each
+  correct alone; together the directory is gone before its first write and the
+  symptom is a bare `No such file or directory` from a redirect far from the cause.
+  It cost a real cycle in cdkd. This repo is exposed: `local-*` fixtures DO call
+  `cleanup` pre-run (`local-start-alb-redirect`, `local-start-alb-auth-jwks`,
+  `local-ecs-service-connect` and others), and today they survive only because
+  their `cleanup` sweeps PROCESSES and containers — things a phase re-creates —
+  and no fixture yet computes a scratch dir at variable-definition time. The moment
+  one does, that combination is a live foot-gun. Anything `cleanup` removes must
+  either be re-created by a phase or be created AFTER the pre-run call, and a
+  stubbed end-to-end dry run (pre-run cleanup, then the full run) catches it in
+  seconds instead of a Docker cycle.
+- **When two reviewers CONTRADICT each other, settle it in the code YOURSELF
+  before forwarding either.** In cdkd's run the spec reviewer explicitly CLEARED
+  what the security reviewer called a blocker, both having read the same lines, and
+  the code's own comment settled it in one read. Forwarding both hands the
+  implementing agent a contradiction to adjudicate with LESS context than you have;
+  forwarding only the reassuring one is how a blocker ships. This repo dispatches
+  1 or 3 reviewers by `/review-pr`'s tier, so the collision is routine here, not
+  hypothetical: read the disputed lines, then tell the agent which reviewer was
+  right and why.
 - **A diff with no `src/**` change** (docs, skills, rules, hooks, CI, config) is
   EXEMPT from the live-test, and from the integ unless it touches
   `tests/integration/**` — `integ-gate` short-circuits on `src/**` OR
