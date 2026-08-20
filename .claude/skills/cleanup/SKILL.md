@@ -1,6 +1,6 @@
 ---
 name: cleanup
-description: Detect and delete leftovers from interrupted cdk-local runs — Docker containers / networks, AND orphaned vitest forks worker processes that failed to terminate (issue #402, e.g. a worker spinning at 100% CPU after its parent died).
+description: Detect and delete leftovers from interrupted cdk-local runs — Docker containers / networks, AND orphaned vitest forks worker processes that failed to terminate (issue go-to-k/cdk-local#402, e.g. a worker spinning at 100% CPU after its parent died).
 argument-hint: "[--detect-only]"
 ---
 
@@ -13,7 +13,7 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
 - **Orphaned vitest forks worker processes** — a tinypool fork worker that
   failed to terminate and was reparented when its parent (the `vp test`
   process) died, often spinning at 100% CPU. This is the externally-visible
-  tail of issue #402's hang variant: the in-worker SIGTERM/SIGINT guard only
+  tail of issue go-to-k/cdk-local#402's hang variant: the in-worker SIGTERM/SIGINT guard only
   fires when the parent SIGTERMs the worker, so a worker orphaned by a dead
   parent (no signal sent) can spin forever and must be swept from outside.
 
@@ -62,7 +62,7 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
    docker images --filter reference='cdkl-built:*' --format '{{.ID}}\t{{.Repository}}:{{.Tag}}'
    ```
 
-4. **Scan orphaned vitest forks worker processes** (issue #402): find node
+4. **Scan orphaned vitest forks worker processes** (issue go-to-k/cdk-local#402): find node
    processes running the tinypool fork-worker entry, then classify each by
    parent pid + CPU + working directory.
 

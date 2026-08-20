@@ -437,6 +437,52 @@ scan that has not decided pairs one span's closing backtick with the next one's
 opening backtick and invents findings). And report the HIT's own line number,
 not the paragraph start — the consumer of a finding is someone jumping to it.
 
+**Calibrating on the broken tree proves the rule is not NOISY — not that it is
+load-bearing.** It measures precision plus recall over the instances that HAPPEN
+TO EXIST, and stops there: the spellings the tree does not currently use, and
+the contexts that defeat the exemption logic, are untested. Two probes close
+that, both run against the real tree rather than reasoned about, and on
+2026-08-20 (go-to-k/cdk-local#537) both went red against this repo's own
+`tests/unit/skills/work-issues-skill-refs.test.ts`:
+
+- **Write the defect in EVERY spelling the language allows, and confirm each one
+  is flagged.** That scanner asked for "no word character before the `#`", which
+  flags a bare `#5` and passes BOTH half-qualified spellings — `cdk-local#5` and
+  `go-to-k#5` — neither of which GitHub autolinks at all, so the rule was blind
+  to two of the three ways to break it. `tests/unit/cli/sts-client-profile-audit.test.ts`
+  was worse, because its subject is credentials: it matched the literal
+  `new STSClient(` and passed an aliased `const { STSClient: STS } = await import(…)`
+  — a spelling this codebase already uses at five sites — plus a space before the
+  paren and a `mod.STSClient` alias. go-to-k/cdkd#2111 is the same shape again: a
+  region scanner calibrated at 19 hits / zero false positives matched `||` only
+  while the tree already used `??` at four sites, and widening it surfaced a real
+  bug nobody had filed.
+- **Delete the thing the fence REQUIRES, and watch it fail.** A predicate that
+  ORs whole-file substrings is satisfied by any one of them, which is the trap
+  the four-copies harness above hit from the other side. A STATEFUL scanner
+  fails the same way without any OR: the `#N` scan flipped one `inFence` boolean
+  on any ``` or `~~~` line, so a single nested fence inverted the state and
+  muted every check for the rest of the file — silently, since a scanner that
+  scans nothing reports nothing.
+- **Derive the POPULATION from what the rule is ABOUT, not from where you first
+  saw it break.** That scanner read ONE hardcoded path while the rule it
+  mechanizes exists because these files are MIRRORED. Pointed at every mirrored
+  agent-instruction file it went red immediately: eight bare refs across
+  `.claude/skills/review-pr/SKILL.md`, `.claude/skills/cleanup/SKILL.md`,
+  `.claude/rules/hooks.md` and `.claude/agents/pr-code-reviewer.md`, two of them
+  numbers that resolve in cdkd to real but unrelated issues. A hand-kept root
+  list is the same defect wearing a comment: the STS audit scanned three named
+  directories under `src/`, so the same construction planted in
+  `src/assets/docker-build.ts` was green — and that list had ALREADY been widened
+  once, for `src/utils/role-arn.ts`, after the identical relapse. The sibling repo
+  found four fences of this shape in one tree the same day, the sharpest deriving
+  its population from the DEFECT itself, so deleting the required pattern dropped
+  the subject OUT of the population instead of failing (go-to-k/cdk-real-drift#1797).
+
+A fence is not evidence until you have watched it go red on something you had
+NOT already counted — the calibration hits do not count, and neither does the
+failure direction you drove with the same instances.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
