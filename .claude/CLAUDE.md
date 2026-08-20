@@ -1238,6 +1238,14 @@ vp run runtime:smoke
   This is what CI runs; failing locally is faster feedback than failing
   in GitHub Actions.
 
+- **Registration is not execution — prove the gates are ALIVE before the first
+  commit of a session**: `git commit --dry-run -m "gate liveness probe"` from the
+  repo root. `--dry-run` commits nothing regardless of the tree; a `Blocked by
+  branch-gate` / `Blocked by check-gate` line means the hooks fire, and git's
+  ordinary output means they do not — on 2026-08-20 all seventeen were registered
+  and inert (go-to-k/cdk-real-drift#1801: an `if` holding `A or B` matches
+  nothing), which `/hooks` cannot show because it lists registration, not firing.
+
 - **Before every commit**: `check-gate.sh` blocks `git commit` unless
   both the `check` and `docs` markgate markers are fresh. Run
   `/check` and/or `/check-docs` proactively based on what your diff
