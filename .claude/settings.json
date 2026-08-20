@@ -17,119 +17,203 @@
           {
             "type": "command",
             "command": ".claude/hooks/branch-gate.sh",
-            "if": "Bash(git commit*) or Bash(git push*) or Bash(git -C * commit*) or Bash(git -C * push*) or Bash(cd * && git commit*) or Bash(cd * && git push*)",
+            "if": "Bash(*git commit*)",
+            "timeout": 10,
+            "statusMessage": "Checking current branch..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/branch-gate.sh",
+            "if": "Bash(*git push*)",
             "timeout": 10,
             "statusMessage": "Checking current branch..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/main-tree-branch-gate.sh",
-            "if": "Bash(git switch*) or Bash(git checkout*) or Bash(cd * && git switch*) or Bash(cd * && git checkout*) or Bash(git -C * switch*) or Bash(git -C * checkout*)",
+            "if": "Bash(*git switch*)",
+            "timeout": 10,
+            "statusMessage": "Checking main-tree branch-switch policy..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/main-tree-branch-gate.sh",
+            "if": "Bash(*git checkout*)",
             "timeout": 10,
             "statusMessage": "Checking main-tree branch-switch policy..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/commit-msg-heredoc-gate.sh",
-            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "if": "Bash(*git commit*)",
             "timeout": 10,
             "statusMessage": "Checking commit message form..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/control-char-gate.sh",
-            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "if": "Bash(*git commit*)",
             "timeout": 15,
             "statusMessage": "Scanning staged files for NUL / control bytes..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/gh-pr-edit-deprecation-gate.sh",
-            "if": "Bash(gh pr edit*) or Bash(gh -C * pr edit*)",
+            "if": "Bash(*gh pr edit*)",
             "timeout": 10,
             "statusMessage": "Checking gh pr edit deprecation..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/non-english-text-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr create*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for non-English text..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/non-english-text-gate.sh",
+            "if": "Bash(*gh pr edit*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for non-English text..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/non-english-text-gate.sh",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 30,
             "statusMessage": "Scanning PR diff for non-English text..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/docs-inline-json-flag-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr create*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for inline-JSON file-path flag misuse..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/docs-inline-json-flag-gate.sh",
+            "if": "Bash(*gh pr edit*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR diff for inline-JSON file-path flag misuse..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/docs-inline-json-flag-gate.sh",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 30,
             "statusMessage": "Scanning PR diff for inline-JSON file-path flag misuse..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/post-merge-orphan-push-gate.sh",
-            "if": "Bash(git push*) or Bash(git -C * push*) or Bash(cd * && git push*)",
+            "if": "Bash(*git push*)",
             "timeout": 10,
             "statusMessage": "Checking for orphan-push to merged branch..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/closes-paren-form-gate.sh",
-            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 30,
             "statusMessage": "Checking PR body for Closes (#N) parens-form trap..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/pr-body-item-number-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh pr edit*) or Bash(gh issue create*) or Bash(gh issue comment*) or Bash(gh api*) or Bash(gh -C * pr create*) or Bash(gh -C * pr edit*) or Bash(gh -C * issue create*) or Bash(gh -C * issue comment*) or Bash(gh -C * api*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr edit*) or Bash(cd * && gh issue create*) or Bash(cd * && gh issue comment*) or Bash(cd * && gh api*)",
+            "if": "Bash(*gh pr create*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pr-body-item-number-gate.sh",
+            "if": "Bash(*gh pr edit*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pr-body-item-number-gate.sh",
+            "if": "Bash(*gh issue create*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pr-body-item-number-gate.sh",
+            "if": "Bash(*gh issue comment*)",
+            "timeout": 30,
+            "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/pr-body-item-number-gate.sh",
+            "if": "Bash(*gh api*)",
             "timeout": 30,
             "statusMessage": "Scanning PR/issue body file for #N auto-link traps..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/check-gate.sh",
-            "if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)",
+            "if": "Bash(*git commit*)",
             "timeout": 15,
             "statusMessage": "Verifying check + docs markgate markers..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/pr-review-gate.sh",
-            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 30,
             "statusMessage": "Verifying pr-review marker (sha-bound)..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/verify-pr-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh pr merge*) or Bash(gh -C * pr create*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr create*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr create*)",
+            "timeout": 15,
+            "statusMessage": "Verifying verify-pr markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-pr-gate.sh",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 15,
             "statusMessage": "Verifying verify-pr markgate marker..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/integ-gate.sh",
-            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*) or Bash(git merge*) or Bash(git -C * merge*) or Bash(cd * && git merge*)",
+            "if": "Bash(*gh pr merge*)",
+            "timeout": 15,
+            "statusMessage": "Verifying integ markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/integ-gate.sh",
+            "if": "Bash(*git merge*)",
             "timeout": 15,
             "statusMessage": "Verifying integ markgate marker..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/cdkd-parity-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
+            "if": "Bash(*gh pr create*)",
             "timeout": 15,
             "statusMessage": "Verifying cdkd-parity markgate marker..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/create-integ-gate.sh",
-            "if": "Bash(gh pr create*) or Bash(gh -C * pr create*) or Bash(cd * && gh pr create*)",
+            "if": "Bash(*gh pr create*)",
             "timeout": 15,
             "statusMessage": "Verifying create-integ markgate marker..."
           },
           {
             "type": "command",
             "command": ".claude/hooks/gh-pr-merge-worktree-gate.sh",
-            "if": "Bash(gh pr merge*) or Bash(gh -C * pr merge*) or Bash(cd * && gh pr merge*)",
+            "if": "Bash(*gh pr merge*)",
             "timeout": 15,
             "statusMessage": "Checking worktree merge policy (/merge-pr)..."
           }
