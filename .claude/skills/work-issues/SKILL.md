@@ -484,6 +484,50 @@ A fence is not evidence until you have watched it go red on something you had
 NOT already counted — the calibration hits do not count, and neither does the
 failure direction you drove with the same instances.
 
+**When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
+measure the DELTA against the old implementation.** A classifier is any function
+deciding which of several shapes an input is: a URI-vs-path predicate, a route
+selector, an error categoriser, a registry-host grammar. Its defects live in the
+shapes nobody thought to write down, so a suite of chosen values goes green on
+exactly the regressions that matter. Seen in the sibling repo on 2026-08-21
+(go-to-k/cdkd#2001): a region-vs-stack-name predicate shipped THREE green
+revisions, each fixing the case the previous review named and breaking a
+neighbouring one, and every revision passed a suite that had grown a case per
+round.
+
+The fence that ends it is a differential walk: enumerate the input space, run
+BOTH the new implementation and a transcription of the old one, and fail on any
+difference outside an explicitly enumerated set of intended classes. That
+inverts the burden — a shape nobody imagined is a failure by default rather than
+a silent pass. Two ways it goes inert, both measured on that lane:
+
+- **Classify by the resulting VALUE, not by the input's shape.** The first cut
+  bucketed a differing cell by which input it was, so mutating the fix into a
+  total regression left every cell inside the "intended repair" bucket and the
+  fence stayed GREEN, while nine ordinary cases caught it. Each arm must assert
+  what the function now returns.
+- **Carry a floor per class.** The walk reaches a class only if the input pool
+  contains it; one class there was real, intended and never reached, so a pool
+  that quietly stops covering one would pass as "no regressions".
+
+Get the old implementation from `git show origin/main:<path>` rather than from
+memory, and confirm the two agree on the cells where they SHOULD agree before
+trusting the cells where they differ. The natural subjects in this repo are the
+option and override PARSERS — `parseOriginOverrides` / `parseKvsFileOverrides`
+(`src/cli/commands/local-start-cloudfront.ts`), `parseLbPortOverrides`
+(`local-start-alb.ts`), `parseAssumeRoleToken` and `parseContextOptions`
+(`src/cli/options.ts`) — each of which accepts several spellings over a long
+tail of near-misses, which is exactly the shape case-by-case tests under-cover.
+
+**A VALUE import from a module other suites `vi.mock` reds those suites.** The
+`type`-only import a module already has is invisible to the mock; adding a
+runtime one is not, and the failure names the EXPORT rather than the mock
+(`[vitest] No "<CONST>" export ...`), so it reads as a missing symbol in the
+file you just edited rather than as a mocking problem in a suite you never
+touched. When two modules must agree on a constant and one of them is widely
+mocked, spell it in both and fence the pair with a test that imports both — the
+sync is what matters, not the single definition.
+
 You may fan out **one subagent per lane** (disjoint files) to run them
 concurrently — give each agent its worktree path, its allowed files, and an
 explicit "do NOT touch <the other lanes' / other agents' files>; STOP and report
@@ -1110,6 +1154,15 @@ the run evidence behind it — or "no skill change" plus what held.
   markgate-set rule (`.claude/rules/hooks.md`, gh-pr-merge-worktree-gate): write
   files and set markers in their own calls, then run `git commit` /
   `gh pr create` / `gh pr merge` alone.
+  Its worst signature is not the ABSENT file that case describes but a STALE one
+  left by an earlier session, since these paths are conventional
+  (`/tmp/pr-body.md`) and shared. The gate then inspects that file and reports
+  violations from content this session never wrote — measured 2026-08-21 in the
+  sibling repo, where a `gh pr create` whose heredoc had not run was refused for
+  four bare `#N` refs belonging to a lane days old, none of them in the draft on
+  screen. If a gate names text you do not recognise, check the file's mtime
+  before hunting for the text; and give body files a per-session name for the
+  same reason probe files get one.
 - **`/merge-pr`, not a hand-run merge** — a hand-run `gh pr merge --delete-branch`
   from a side worktree trips the `'main' is already used by worktree` fatal (the
   remote merge lands but local cleanup fails) and is gate-blocked besides.
