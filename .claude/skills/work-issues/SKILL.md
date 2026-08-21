@@ -655,6 +655,54 @@ freshness) and — critically — **live-tests the changed behavior**:
   either be re-created by a phase or be created AFTER the pre-run call, and a
   stubbed end-to-end dry run (pre-run cleanup, then the full run) catches it in
   seconds instead of a Docker cycle.
+- **When a fix round produces the NEXT round's blocker twice, stop reviewing the
+  patch and question its SHAPE.** `/verify-pr` already says to re-review the fix
+  delta; this is what to do when that keeps paying out. Each fix is locally
+  correct and moves the failure one layer out rather than removing it, and the
+  blockers are found by executing a probe or tracing a window — never by
+  re-reading the diff. After round two, ask what the rounds have in COMMON: it is
+  usually one structural absence, and naming it does not skip the rounds but does
+  tell everyone what they are chasing. Then do NOT take the structural fix late
+  in the cascade — adding new code to a command entrypoint at round five is how
+  round six happens. Take the narrow fix, file the structural one, and reference
+  it from the narrow fix so the next reader sees the choice was made rather than
+  missed. Two shapes recur, and they are distinguishable a round apart:
+  - **TWO SPELLINGS OF ONE QUESTION** — the fix is to make both sites use ONE
+    predicate verbatim, not to write a better second spelling. A better spelling
+    looks like a fix and passes its own test, so this is the sub-case that keeps
+    regenerating. Name the SITE THAT OWNS the question and make every other site
+    call or copy it exactly; a paraphrase is another round waiting to happen.
+    Measured in cdkd (go-to-k/cdkd#2134) over three rounds, ending only when the
+    authority's test was copied character for character — the round before, the
+    two spellings still disagreed on the empty string, on the fail-OPEN side.
+  - **A PROXY FOR A QUESTION ONLY ANOTHER COMPONENT CAN ANSWER** — the fix is to
+    make that component REPORT, and the tell is that each proxy is wrong in BOTH
+    directions at once. Two spellings DISAGREE at an edge; a proxy has no access
+    to the fact at all, so every candidate both misses real cases and fires on
+    unreal ones. When a round's fix lands on a new OBSERVABLE rather than a new
+    spelling — "it threw", "the text survived", "a marker exists" — ask whether
+    the thing you want to know is even derivable from outside the component that
+    decides it. If it is not, the rounds are unbounded. Measured in cdkd
+    (go-to-k/cdkd#2157 / go-to-k/cdkd#2166) over three rounds asking "did this
+    reference go unresolved?" from outside the resolver: keying on "it THREW"
+    missed the path that warns and continues without throwing, and over-reported
+    an unrelated failure that merely shared the same bag; keying on "the raw text
+    SURVIVED" missed input a downstream step rewrote without resolving, broke on
+    JSON escaping, and fired permanently on PROSE that merely mentioned the
+    syntax. The local analogue is any question only the Docker daemon or the
+    running `cdkl` process can answer — "did the container actually start", "did
+    the route really bind" — where every outside proxy (a log line, a port probe,
+    a file appearing) fails in both directions the same way.
+- **WITHDRAWING the half that cannot be made right is a legitimate outcome, and
+  the residual issue must carry the MEASUREMENTS, not just the diagnosis.** The
+  rule above says where the fix goes; this says what to do with the code already
+  written for the wrong one. Cut it, ship the part the issues actually scoped,
+  and file the rest — the filing is cheap only if it carries what the session
+  PAID for: each proxy tried, the input that broke it, and the number it
+  produced. A diagnosis alone makes the next session re-run every probe. cdkd's
+  go-to-k/cdkd#2166 is the worked example: three rounds of measurements plus a
+  live arm that was written, passed, mutation-probed and then reverted, so none
+  of it is rebuilt.
 - **When two reviewers CONTRADICT each other, settle it in the code YOURSELF
   before forwarding either.** In cdkd's run the spec reviewer explicitly CLEARED
   what the security reviewer called a blocker, both having read the same lines, and
