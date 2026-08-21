@@ -35,37 +35,37 @@ const SETTINGS = join(here, '..', '..', '..', '.claude', 'settings.json');
 
 /** Which command each gate must be selected for. */
 const REQUIRED: Record<string, string[]> = {
-  'branch-gate.sh': ['Bash(*git commit*)', 'Bash(*git push*)'],
-  'main-tree-branch-gate.sh': ['Bash(*git switch*)', 'Bash(*git checkout*)'],
-  'commit-msg-heredoc-gate.sh': ['Bash(*git commit*)'],
-  'control-char-gate.sh': ['Bash(*git commit*)'],
-  'gh-pr-edit-deprecation-gate.sh': ['Bash(*gh pr edit*)'],
+  'branch-gate.sh': ['Bash(*git*commit*)', 'Bash(*git*push*)'],
+  'main-tree-branch-gate.sh': ['Bash(*git*switch*)', 'Bash(*git*checkout*)'],
+  'commit-msg-heredoc-gate.sh': ['Bash(*git*commit*)'],
+  'control-char-gate.sh': ['Bash(*git*commit*)'],
+  'gh-pr-edit-deprecation-gate.sh': ['Bash(*gh*pr*edit*)'],
   'non-english-text-gate.sh': [
-    'Bash(*gh pr create*)',
-    'Bash(*gh pr edit*)',
-    'Bash(*gh pr merge*)',
+    'Bash(*gh*pr*create*)',
+    'Bash(*gh*pr*edit*)',
+    'Bash(*gh*pr*merge*)',
   ],
   'docs-inline-json-flag-gate.sh': [
-    'Bash(*gh pr create*)',
-    'Bash(*gh pr edit*)',
-    'Bash(*gh pr merge*)',
+    'Bash(*gh*pr*create*)',
+    'Bash(*gh*pr*edit*)',
+    'Bash(*gh*pr*merge*)',
   ],
-  'post-merge-orphan-push-gate.sh': ['Bash(*git push*)'],
-  'closes-paren-form-gate.sh': ['Bash(*gh pr merge*)'],
+  'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
+  'closes-paren-form-gate.sh': ['Bash(*gh*pr*merge*)'],
   'pr-body-item-number-gate.sh': [
-    'Bash(*gh pr create*)',
-    'Bash(*gh pr edit*)',
-    'Bash(*gh issue create*)',
-    'Bash(*gh issue comment*)',
-    'Bash(*gh api*)',
+    'Bash(*gh*pr*create*)',
+    'Bash(*gh*pr*edit*)',
+    'Bash(*gh*issue*create*)',
+    'Bash(*gh*issue*comment*)',
+    'Bash(*gh*api*)',
   ],
-  'check-gate.sh': ['Bash(*git commit*)'],
-  'pr-review-gate.sh': ['Bash(*gh pr merge*)'],
-  'verify-pr-gate.sh': ['Bash(*gh pr create*)', 'Bash(*gh pr merge*)'],
-  'integ-gate.sh': ['Bash(*gh pr merge*)', 'Bash(*git merge*)'],
-  'cdkd-parity-gate.sh': ['Bash(*gh pr create*)'],
-  'create-integ-gate.sh': ['Bash(*gh pr create*)'],
-  'gh-pr-merge-worktree-gate.sh': ['Bash(*gh pr merge*)'],
+  'check-gate.sh': ['Bash(*git*commit*)'],
+  'pr-review-gate.sh': ['Bash(*gh*pr*merge*)'],
+  'verify-pr-gate.sh': ['Bash(*gh*pr*create*)', 'Bash(*gh*pr*merge*)'],
+  'integ-gate.sh': ['Bash(*gh*pr*merge*)', 'Bash(*git*merge*)'],
+  'cdkd-parity-gate.sh': ['Bash(*gh*pr*create*)'],
+  'create-integ-gate.sh': ['Bash(*gh*pr*create*)'],
+  'gh-pr-merge-worktree-gate.sh': ['Bash(*gh*pr*merge*)'],
 };
 
 interface GateHook {
@@ -138,6 +138,39 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
       expect(gaps, `${gate} is missing an entry for ${gaps.join(', ')}`).toEqual([]);
     });
   }
+
+  // `git -C <path> commit` and `gh -R <owner/repo> pr create` put a FLAG between
+  // the command and its verb, so a pattern demanding them adjacent
+  // (`Bash(*git commit*)`) never selects those spellings — while the flow's own
+  // guidance tells an agent to use `git -C` in multi-repo sessions, steering
+  // straight into the gap (found 2026-08-21, the same class as
+  // go-to-k/cdk-real-drift#1801). Simulate the glob to keep it closed.
+  it('a flag between the command and its verb still selects the gate', () => {
+    const globToRe = (pattern: string) =>
+      new RegExp(
+        `^${pattern
+          .replace(/^Bash\(/, '')
+          .replace(/\)$/, '')
+          .split('*')
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*')}$`
+      );
+    const selects = (gate: string, spelling: string) =>
+      hooks.filter((h) => h.name === gate).some((h) => globToRe(h.condition).test(spelling));
+    for (const spelling of [
+      'git commit -m x',
+      'git -C /w/t commit -m x',
+      'git -c user.name=t commit -m x',
+      'git add -A && git commit -m x',
+    ]) {
+      expect(selects('check-gate.sh', spelling), `check-gate misses: ${spelling}`).toBe(true);
+    }
+    for (const spelling of ['gh pr create --fill', 'gh -R go-to-k/x pr create --fill']) {
+      expect(selects('verify-pr-gate.sh', spelling), `verify-pr-gate misses: ${spelling}`).toBe(
+        true
+      );
+    }
+  });
 
   it('the patterns are unanchored, so a compound command still selects the gate', () => {
     const anchored = hooks
