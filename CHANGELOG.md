@@ -1,3 +1,10 @@
+## [0.147.5](https://github.com/go-to-k/cdk-local/compare/v0.147.4...v0.147.5) (2026-08-21)
+
+
+### Bug Fixes
+
+* **hooks:** a flag between the command and its verb no longer skips the gate, and the liveness probe says who runs it ([#549](https://github.com/go-to-k/cdk-local/issues/549)) ([9ec2c84](https://github.com/go-to-k/cdk-local/commit/9ec2c84ee54593a90af3666fdd33b5521183526c))
+
 ## [0.147.4](https://github.com/go-to-k/cdk-local/compare/v0.147.3...v0.147.4) (2026-08-20)
 
 
