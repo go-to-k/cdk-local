@@ -1239,8 +1239,10 @@ vp run runtime:smoke
   in GitHub Actions.
 
 - **Registration is not execution — prove the gates are ALIVE before the first
-  commit of a session**: `git commit --dry-run -m "gate liveness probe"` from the
-  repo root. `--dry-run` commits nothing regardless of the tree; a `Blocked by
+  commit of a session**: run `git commit --dry-run -m "gate liveness probe"` from
+  the repo root **as a Bash TOOL CALL**. PreToolUse hooks gate the AGENT's tool
+  calls only: the same line typed by a human into a terminal never passes through
+  them, so it proves nothing and will always look "unblocked". `--dry-run` commits nothing regardless of the tree; a `Blocked by
   branch-gate` / `Blocked by check-gate` line means the hooks fire, and git's
   ordinary output means they do not — on 2026-08-20 all seventeen were registered
   and inert (go-to-k/cdk-real-drift#1801: an `if` holding `A or B` matches
