@@ -806,6 +806,44 @@ after a run is never acceptable.
 `pr-review-gate` (size / bias tier; only `/review-pr`), and, from a side worktree,
 `gh-pr-merge-worktree-gate` (only `/merge-pr`).
 
+### 8-z. When a mutation probe reports NO discrimination
+
+**A probe that reports NO discrimination is a claim about the FENCE, and three
+other things produce the identical output.** Ask them in order before touching
+the fence, because each was hit in one session (2026-08-25) and each cost a
+working assertion nearly being deleted or rewritten:
+
+1. **Did the edit land?** `sed`/`perl` one-liners fail silently in ways that read
+   as "no match". A `perl -0pi -e "s|^\|...|...|m"` whose pattern is delimited by
+   the same `|` it escapes matches nothing; a `sed -E`-only alternation (`\|`) is
+   a GNU extension that matches nothing on macOS; a `sed: bad flag` prints ABOVE
+   the suite output and scrolls past. Prove it with `grep -c '<the mutated text>'`
+   before reading the result, and prefer `python3` with an `assert anchor in s`
+   over a shell one-liner — an assertion that throws is louder than a quoting
+   slip that quietly matches zero.
+2. **Does the case's execution path REACH the edited line?** The edit can land
+   and still prove nothing. Breaking a hook's branch-lookup call left its suite
+   fully green because every case carried an explicit PR number, so the lookup
+   never ran. The fence was fine; the probe was aimed outside the cases' path.
+   The fix is a case that HAS to take that path, not a change to the fence.
+3. **Did the command run where you think it did?** A relative-path edit under a
+   silently reset cwd lands in another worktree, and the `git status` confirming
+   it runs in that same wrong tree — so "clean" and "clean somewhere else" print
+   identically. Use ABSOLUTE paths and confirm by a property the wrong tree
+   cannot fake (`ls -la` mtime).
+
+And one shape inside the fixture itself: **an expected value must be an
+INDEPENDENT variable from the one under test.** A stub keyed its content on a
+sha whose default was the same literal on both the producing and the consuming
+side, so breaking the producing call still served the content and the case could
+not fail.
+
+Only after all four does "the fence is weak" remain as the explanation. Deleting
+an assertion on the strength of an unexamined green is how a working guard gets
+removed.
+
+Ported from cdkd, where all four shapes were measured in one session (go-to-k/cdkd#2197 / go-to-k/cdkd#2200 / go-to-k/cdkd#2198). The mechanism is the shell and the tooling, not anything cdkd-specific, so it applies here unchanged.
+
 ## 9. Ship: merge → pull → cleanup (all via `/merge-pr`)
 
 Merge every verified PR with the `/merge-pr` skill — NOT a hand-run
