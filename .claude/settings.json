@@ -121,6 +121,20 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/issue-dup-check-gate.sh",
+            "if": "Bash(*gh*issue*create*)",
+            "timeout": 10,
+            "statusMessage": "Checking the issue body for a Dup-check line..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/issue-dup-check-gate.sh",
+            "if": "Bash(*gh*api*)",
+            "timeout": 10,
+            "statusMessage": "Checking the issue body for a Dup-check line..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/pr-body-item-number-gate.sh",
             "if": "Bash(*gh*pr*create*)",
             "timeout": 30,

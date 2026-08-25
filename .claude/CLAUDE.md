@@ -1477,8 +1477,15 @@ vp run runtime:smoke
   ```
 
   A report adds a fifth line, **`Notes`**, for session-specific context
-  (`none` when there is nothing); the issue body stays at four, because
-  what belongs there is only the part that outlives the session.
+  (`none` when there is nothing); the issue body carries no `Notes`,
+  because what belongs there is only the part that outlives the session.
+  Four CLASSIFICATION lines, and they stay four — a filed issue body also
+  carries a **`Dup-check:`** line recording that the OPEN issue list was
+  searched for an issue already covering this root cause
+  (`/work-issues` §5), but that is a filing-time record rather than a
+  classification field: it is written once when the issue is created and
+  never re-decided on a claim. `.claude/hooks/issue-dup-check-gate.sh`
+  refuses `gh issue create` without it.
 
   **The four answer four DIFFERENT questions and none derives from
   another**: `Session-fit` is the decision, `Severity` the cost of

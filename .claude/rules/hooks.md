@@ -80,6 +80,68 @@ The hooks split into three classes:
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
   line-numbered offender output.
 
+- **`issue-dup-check-gate.sh`** blocks `gh issue create` — and
+  `gh api repos/<owner>/<repo>/issues`, the same mint through the REST
+  verb — when the issue body carries no `Dup-check:` line recording
+  that the OPEN issue list was searched for an issue already covering
+  this root cause. `gh issue edit` / `gh issue comment` are
+  deliberately NOT gated: folding a finding into an issue that already
+  exists is the outcome the gate steers toward, so taxing it would
+  penalise the cheap path and leave the costly one free. It is NOT a
+  filing threshold — `/work-issues` §10-0 forbids using it as one; it
+  changes WHERE a finding is written, never whether.
+
+  Why here, since cdk-local does not have its sibling's backlog
+  problem (measured 2026-08-25: 5 open issues, none carrying
+  `Session-fit: next`, nothing umbrella-shaped): the target is the
+  cross-repo MIRROR path, which `/work-issues` §10-c already names as
+  a duplicate generator in its own text. go-to-k/cdk-local#531 was
+  filed nine minutes after go-to-k/cdk-local#528 with a strict SUBSET
+  of its lessons, and go-to-k/cdk-local#511 duplicated
+  go-to-k/cdk-local#504 after 75 minutes. go-to-k/cdk-local#528's body
+  shows the near
+  miss exactly — it checked the merged file and the open PRs and
+  reported them clear, and never checked the open ISSUE list.
+
+  Two marker spellings, and the split is load-bearing. In a body FILE
+  the marker is ANCHORED at line start (optional `-*+>` list prefix,
+  case-insensitive), so a passing mention inside a sentence does not
+  satisfy it. In the raw COMMAND there is no line structure — an
+  inline `--body 'Bug. Dup-check: ...'` is one line — so that scan is
+  unanchored. The threat model is FORGETTING to run the search, not
+  defeating the gate.
+
+  Both scans are scoped to the `gh issue create` / `gh api ... issues`
+  SEGMENT, never the whole command, and that scoping is load-bearing:
+  `-F` is `git commit`'s flag as well as gh's short `--body-file`, and
+  `commit-msg-heredoc-gate.sh` MANDATES `git commit -F <file>` here,
+  so an unscoped extraction reads the COMMIT MESSAGE — which quotes
+  the very lines it describes — and finds the marker there. Fenced in
+  both command orders.
+
+  An unreadable `--body-file` BLOCKS rather than passes ("cannot read"
+  treated as "nothing to object to" is the fail-open shape of
+  go-to-k/cdkd#2027), with ONE deliberate exception: `heredoc -> file
+  -> --body-file` in one command is a legitimate publishing shape and
+  the file does not exist yet at PreToolUse time, so an unreadable
+  path falls back to scanning the WHOLE command with the ANCHORED
+  marker. A `--body-file "$VAR"` whose path is unexpanded gets its own
+  refusal message, because a bare "check the path" is unclearable when
+  the file does carry the line. Repo opt-in via `.markgate.yml` at the
+  resolved cwd's repo root, same as `branch-gate.sh` /
+  `check-gate.sh`, so filing an issue in an unrelated personal repo is
+  not refused; the CWD's repo decides, not any `-R <owner/repo>` in
+  the command, because `-R` names where the issue LANDS while the cwd
+  names whose policy the session is under. Its verb regexes are built on
+  `GATE_GH_CR` rather than the shared `GATE_RE_GH_ISSUE_CREATE`, so
+  `gh -R go-to-k/<target> issue create` — the cross-repo mirror flow's
+  own spelling, and this gate's headline case — is matched without
+  changing any other gate's trigger surface (see §3's note on
+  `GATE_GH_C`). No bypass marker — running
+  the search and writing one line is the entire ask. Covered by
+  `.claude/hooks/issue-dup-check-gate.test.sh` (63 cases) plus
+  recognition cases in `gate-command-recognition.test.sh`.
+
 - **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
   `gh pr edit` / `gh pr merge` (and their `gh -C <path>` / `cd <path>
   && ...` forms) when a Markdown file in the resolved PR diff (or
@@ -149,7 +211,29 @@ the command to `gate_target_dir` in `.claude/hooks/_command-match.sh`, which
 resolves the tree in this order: a `git -C <path>` / `gh -C <path>` inside the
 MATCHED segment, else the LAST `cd <path>` segment before it, else the payload
 cwd. (Before go-to-k/cdk-local#542 each gate parsed only a LEADING `cd` and any
-`-C` anywhere in the command.) The hook then `cd`s to that resolved target dir
+`-C` anywhere in the command.) The verb regexes in that file absorb the
+LEADING FLAGS between the command and its verb: `GATE_FLAGS` for `git`, and for
+`gh` **`GATE_GH_C`, which absorbs `-C <path>` ONLY**. That is a known
+under-approximation — measured 2026-08-25 with the real constants,
+`gh -R go-to-k/cdk-local pr create`,
+`gh --repo go-to-k/cdk-local pr merge 1 --squash` and
+`gh -R go-to-k/cdk-local issue create` match NOTHING, so every gate keyed on a
+`gh` verb regex (`verify-pr-gate`, `pr-review-gate`, `integ-gate`,
+`closes-paren-form-gate`, `gh-pr-merge-worktree-gate`, `non-english-text-gate`,
+`docs-inline-json-flag-gate`, `cdkd-parity-gate`, `create-integ-gate`,
+`pr-body-item-number-gate`) passes an `-R`-carrying command through while
+refusing the identical command without the flag — and the `-R` form is what
+this repo's own `.claude/settings.json` permission allow-list writes for
+cross-repo filing. Widening `GATE_GH_C` would change all ten trigger surfaces at
+once, so it is tracked as its own change rather than done in passing; the
+sibling shipped that fix as go-to-k/cdkd#2027 review round 4. In the meantime
+`GATE_GH_CR` sits beside it, absorbing `-C` / `-R` / `--repo`, and is used ONLY
+by `issue-dup-check-gate.sh`'s verb regexes — the one gate whose stated reason
+for existing IS the `-R` spelling. `_command-match.test.sh` pins both: the
+`GATE_GH_CR` forms match, and `GATE_RE_GH_ISSUE_CREATE` /
+`GATE_RE_GH_PR_CREATE` keep their existing surface, `-R` gap included.
+
+The hook then `cd`s to that resolved target dir
 before invoking `markgate verify`. This preserves
 markgate's per-worktree marker isolation — each parallel agent's
 worktree has its own markgate state dir

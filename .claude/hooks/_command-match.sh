@@ -269,6 +269,37 @@ GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 GATE_RE_GH_ISSUE_COMMENT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
+# `gh` flags for the ISSUE-MINT gate only: `-C <path>` AND `-R <owner/repo>` /
+# `--repo <owner/repo>`, quoted alternatives included, repeatable so
+# `gh -C /w/t -R o/r issue create` is absorbed too.
+#
+# A SEPARATE constant rather than a widening of GATE_GH_C, because GATE_GH_C is
+# the flag absorber for every other gh verb regex in this file --
+# GATE_RE_GH_PR_CREATE / _EDIT / _MERGE, GATE_RE_GH_ISSUE_CREATE,
+# GATE_RE_GH_ISSUE_COMMENT and GATE_RE_GH_API -- which between them decide the
+# trigger surface of verify-pr-gate, pr-review-gate, integ-gate,
+# closes-paren-form-gate, gh-pr-merge-worktree-gate, non-english-text-gate,
+# docs-inline-json-flag-gate, cdkd-parity-gate, create-integ-gate and
+# pr-body-item-number-gate. Those surfaces must not change here.
+#
+# Why the issue mint needs the wider absorber and the others (for now) do not:
+# `gh -R go-to-k/<target> issue create` is the CROSS-REPO MIRROR flow's own
+# spelling -- `/work-issues` section 10-c runs it from one repo's worktree into
+# a sibling -- and that flow is the documented duplicate GENERATOR that
+# issue-dup-check-gate exists to fence (go-to-k/cdk-local#528 /
+# go-to-k/cdk-local#531). A gate whose stated reason for existing is the mirror
+# path but which does not match the mirror path's command is close to inert.
+GATE_GH_CR='([[:space:]]+(-C|-R|--repo)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+))*'
+# The REST spelling of MINTING an issue, for issue-dup-check-gate. `gh api
+# repos/<o>/<r>/issues` with a `title=` field creates an issue, so the gate that
+# refuses `gh issue create` has to refuse this too or the trigger is
+# under-approximated. The path must NOT continue past `issues`, which is what
+# separates a mint from `/issues/<n>/comments` (a comment) and `/issues/<n>`
+# (an edit) -- neither of which mints anything, and both of which are the
+# CHEAP path this gate exists to steer toward. The trailing `\"` alternative
+# catches a fully quoted path argument. Built on GATE_GH_CR: this constant is
+# NEW, so it has no existing consumer whose surface could change.
+GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_CR}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
 
 # Strip one layer of surrounding quotes from a path token.
 gate_unquote() {

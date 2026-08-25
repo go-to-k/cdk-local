@@ -97,6 +97,44 @@ want_match 0 "gh api after a cd"              'cd /w/t && gh api -X PATCH repos/
 want_match 1 "api inside a string"            'echo "next: gh api repos/o/r"' "$API"
 want_match 1 "gh pr create is not gh api"     'gh pr create --fill' "$API"
 
+# --- GATE_GH_CR: `-R <owner/repo>` absorbed, for the ISSUE-MINT gate only -----
+# `gh -R go-to-k/<target> issue create` is the cross-repo mirror flow's own
+# spelling and the reason issue-dup-check-gate exists, so its verb regex is
+# built on GATE_GH_CR rather than the `-C`-only GATE_GH_C.
+MINT="^gh${GATE_GH_CR}[[:space:]]+issue[[:space:]]+create([[:space:]]|\$)"
+want_match 0 "mint: plain"                    'gh issue create -t x' "$MINT"
+want_match 0 "mint: -R <repo>"                'gh -R go-to-k/cdk-local issue create -t x' "$MINT"
+want_match 0 "mint: --repo <repo>"            'gh --repo go-to-k/cdkd issue create -t x' "$MINT"
+want_match 0 "mint: -C <path>"                'gh -C /w/t issue create -t x' "$MINT"
+want_match 0 "mint: -C and -R together"       'gh -C /w/t -R go-to-k/cdkd issue create -t x' "$MINT"
+want_match 0 "mint: quoted -C path"           'gh -C "/a b" issue create -t x' "$MINT"
+want_match 0 "mint: -R after a cd, chained"   'cd /w/t && gh -R go-to-k/cdkd issue create -t x' "$MINT"
+want_match 1 "mint: -R issue comment"         'gh -R go-to-k/cdk-local issue comment 7 --body x' "$MINT"
+want_match 1 "mint: -R pr create"             'gh -R go-to-k/cdk-local pr create --fill' "$MINT"
+want_match 1 "mint: inside a string"          'echo "gh -R o/r issue create"' "$MINT"
+
+# The SHARED constant is deliberately NOT widened: pr-body-item-number-gate.sh
+# consumes it, and the other gh verb regexes share GATE_GH_C, so its surface
+# must stay exactly as it was. These pin that surface in both directions -- the
+# `-R` miss is a KNOWN gap in those gates, reported separately, not something
+# this lane changed.
+want_match 0 "shared IC: plain still matches"  'gh issue create -t x' "$IC"
+want_match 0 "shared IC: -C still matches"     'gh -C /w/t issue create -t x' "$IC"
+want_match 1 "shared IC: -R unchanged (known gap)" 'gh -R go-to-k/cdk-local issue create -t x' "$IC"
+want_match 1 "shared PR create: -R unchanged (known gap)" 'gh -R go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
+
+# --- the REST mint (issue-dup-check-gate) -------------------------------------
+# `gh api repos/<o>/<r>/issues` creates an issue; the path must NOT continue
+# past `issues`, which is what separates a mint from a comment or an edit.
+APIIC="$GATE_RE_GH_API_ISSUE_CREATE"
+want_match 0 "gh api issues POST"             'gh api repos/go-to-k/cdk-local/issues -f title=t' "$APIIC"
+want_match 0 "gh api issues POST after a cd"  'cd /w/t && gh api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
+want_match 0 "gh api issues POST with -R"     'gh -R go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
+want_match 1 "gh api issue comments"          'gh api repos/go-to-k/cdk-local/issues/5/comments -f body=x' "$APIIC"
+want_match 1 "gh api issue PATCH"             'gh api -X PATCH repos/go-to-k/cdk-local/issues/5 -f body=x' "$APIIC"
+want_match 1 "gh api pulls is not issues"     'gh api repos/go-to-k/cdk-local/pulls -f title=t' "$APIIC"
+want_match 1 "gh issue create is not gh api"  'gh issue create --fill' "$APIIC"
+
 want_dir "/w/t" "gh -C on an issue comment"   'gh -C /w/t issue comment 7 --body x' /fallback "$ICM"
 want_dir "/w/t" "cd before a git switch"      'cd /w/t && git switch main' /fallback "$SW"
 

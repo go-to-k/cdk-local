@@ -367,6 +367,108 @@ Two boundaries, so this does not become a licence for unbounded lanes:
   are two issues; one wrong assumption at five call sites is one. The test is
   whether a single sentence describes the fix at every site.
 
+**And whatever you do file, resolve it against the issues ALREADY OPEN first.**
+The sweep above looks for sibling sites in the CODE. This looks for a sibling
+ISSUE, and it is a different search with a different answer: the issue that
+already covers your finding was written from a DIFFERENT angle, by a different
+hop, and names a different section. §10-c already runs a rigorous version of
+this check — the merged file, then open PRs, then open issues — but its subject
+is a mirrored skill LESSON, and it is exactly the path where this repo's
+duplicates come from.
+
+Be honest about which problem this solves here, because the sibling repo's
+argument does not transfer. Measured 2026-08-25: cdk-local has **5 open
+issues**, **none** carrying `Session-fit: next`, and nothing umbrella-shaped.
+There is no unbounded backlog to converge. What there is, is a duplicate
+GENERATOR that §10-c already names in its own text, with two measured pairs out
+of 145 issues filed (41 of them skill-flow / cross-repo-mirror shaped):
+
+- go-to-k/cdk-local#528 (2026-08-19T06:37:46Z) and go-to-k/cdk-local#531
+  (06:46:00Z) — **nine minutes apart**, and go-to-k/cdk-local#531's three lessons
+  (marker-sourcing, `grep -cF`, life-only-probe) are a strict SUBSET of
+  go-to-k/cdk-local#528's four. Both were then closed by one PR, go-to-k/cdk-local#532.
+  go-to-k/cdk-local#528's own body shows the near miss precisely: it checked the merged FILE and the open PRs
+  (go-to-k/cdk-local#523, go-to-k/cdk-local#526) and reported them as carrying
+  different lesson sets — and never checked the open ISSUE list, where its own
+  duplicate landed nine minutes later.
+- go-to-k/cdk-local#504 (03:14:05Z) and go-to-k/cdk-local#511 (04:29:26Z) —
+  **75 minutes apart**, same target section (`/work-issues` §8's no-src
+  verification tier), same upstream lesson.
+
+Two of the three windows were searched both times. The third was not.
+
+```bash
+# Search the CONCEPT, not this instance's spelling — the same reason the code
+# sweep above greps for a SHAPE rather than a name.
+gh issue list --state open --limit 200 --search '<root-cause concept>' \
+  --json number,title
+# Then the body window, which the search index misses: an issue names the
+# section or symbol it targets in the body, not always in the title.
+gh issue list --state open --limit 200 --json number,title,body \
+  --jq '.[] | select((.body // "") | test("<shared symbol / call / assumption>";"i"))
+        | "\(.number)\t\(.title)"'
+# `(.body // "")`, not `.body`: an issue filed with no body makes `test` abort
+# the whole jq program with "null (null) cannot be matched", so one body-less
+# issue silently costs you the entire window.
+```
+
+On a HIT, the finding becomes a CHECKLIST ROW in that issue rather than a new
+issue number:
+
+```bash
+U=$(mktemp)   # NOT a fixed /tmp path — parallel lanes share the scratchpad
+gh issue view <hit> --json body -q .body > "$U" \
+  && [ -s "$U" ] \
+  && printf -- '- [ ] <site>: <one line, plus where the evidence is>\n' >> "$U" \
+  && gh issue edit <hit> --body-file "$U"
+```
+
+**The chaining and the `-s` test are load-bearing, not style.** The redirect
+truncates `$U` before `gh` runs, so an unchained recipe whose `view` fails —
+wrong number, a non-repo cwd, a transient error — leaves an empty file that the
+`printf` fills with the single new row, and the `edit` then replaces the target
+issue's WHOLE body with it. Every previously folded finding would be destroyed
+by the very procedure that exists to preserve them, which is the one outcome
+§10-0 says must never happen. `mktemp` rather than a fixed path for the same
+reason at a different scale: parallel lanes share the scratchpad, and a
+read-modify-write with no concurrency control loses a row when two folds
+overlap — so do not run two folds against the same issue concurrently.
+
+On a MISS — the expected outcome for a genuinely new root cause — file it, and
+record the search in the body so the next hop can see the window was checked:
+
+```text
+Dup-check: searched open issues for <terms> -- none covers this root cause
+```
+
+**This is not a filing threshold, and it must never be used as one.** §10-0
+below is explicit that `filed <= closed` is not a target and that an unfiled
+finding is strictly worse than a filed one. Nothing here changes WHETHER a
+defect gets written down; it changes only WHERE.
+
+Enforced by `.claude/hooks/issue-dup-check-gate.sh`, which refuses
+`gh issue create` without the `Dup-check:` line, and the same refusal covers
+`gh api repos/<o>/<r>/issues`, which mints an issue through the REST verb.
+`gh issue edit` and `gh issue comment` are deliberately NOT gated — folding
+into an existing issue is the outcome this steers toward, so taxing it would
+penalise the cheap path and leave the costly one free.
+
+Be precise about what that buys, because the obvious claim is false: folding is
+not CHEAPER than minting. After the same search, minting is one command and
+folding is three (`view`, `printf`, `edit`). What the gate does is make minting
+non-free while leaving folding untaxed — it removes minting's advantage rather
+than creating one for folding. Two consequences worth stating rather than
+discovering: a folded row carries no `Session-fit` / `Severity`, so §3's ranking
+cannot see it (write the severity into the row's text), and `gh issue edit` is
+NOT one of the verbs `pr-body-item-number-gate.sh` selects — checked against its
+verb list and its `if:` entries, which cover `gh issue create` and
+`gh issue comment` but not `edit` — so a folded row is the ONE issue-body path
+with no `#N` auto-link check in front of it. Write `go-to-k/<repo>#N` or a bare
+number in the row yourself. The gate exists because this
+section's own rule — "N sites of one root cause is ONE issue and ONE PR, never
+N issues", already written and already correct — did not stop either pair above.
+Registration is not execution.
+
 Never edit in the main checkout (`main-tree-branch-gate.sh` blocks branch creation
 there). Per lane:
 
@@ -940,9 +1042,30 @@ subject and a wider scope, and neither is covered by that one:
 ### 10-0. Measure the run's net effect on the backlog
 
 Before anything else in this step, count what the run did to the issue list and put
-both numbers in the wrap report — `closed N / filed M` — and **when M > N, give the
-reason in one more line**. It is almost always one of three, and only the first is
-healthy:
+both numbers in the wrap report. Then split the filed count by what §5's
+open-issue window did with each finding, because the aggregate cannot tell the two
+apart and they mean opposite things:
+
+```bash
+# Folded INTO an existing issue rather than filed as a new one. `updatedAt`
+# alone does NOT answer this: §4 makes every lane post a CLAIM comment on the
+# issue it takes, so a bare updatedAt sweep counts this run's own claims and can
+# never read 0. Count the issues whose BODY gained a checklist row instead.
+gh issue list --state open --limit 200 --json number,updatedAt \
+  --jq '.[] | select(.updatedAt > "<this run start ISO>") | .number' \
+| while read -r n; do
+    gh issue view "$n" --json body -q '.body' \
+      | grep -qE '^[[:space:]]*- \[ \]' && echo "$n"
+  done
+```
+
+Report it as one line — `closed N / filed M (new K / folded J)` — and **when
+M > N, give the reason in one more line**. `J` is the number §5's window exists to
+move, and it is the only one of the three below that can be improved without
+either missing a defect or leaving one unfixed; a run reporting `J = 0` over
+several findings in one area is the signal that the window was searched by this
+instance's spelling rather than by the concept. The reason is almost always one of
+three, and only the first is healthy:
 
 - **the code really does have that many independent defects** — the run walked into
   an untested area. Fine; say which area, so the next hunt aims there.

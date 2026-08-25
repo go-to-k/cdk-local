@@ -63,6 +63,18 @@ run_case "verify-pr-gate: push && pr create"  2 verify-pr-gate.sh 'git push && g
 run_case "verify-pr-gate: pr merge"           2 verify-pr-gate.sh 'gh pr merge 42 --squash'
 run_case "verify-pr-gate: pr view passes"     0 verify-pr-gate.sh 'gh pr view 42'
 
+# issue-dup-check-gate guards the two verbs that MINT an issue, and only those.
+# Driven through the real hook so a gate that sources the helper and then asks
+# the WRONG question is still caught (the reason this file exists).
+run_case "issue-dup: issue create"            2 issue-dup-check-gate.sh 'gh issue create --title t --body-file /nope.md'
+run_case "issue-dup: gh -R issue create"      2 issue-dup-check-gate.sh 'gh -R go-to-k/cdkd issue create --title t --body-file /nope.md'
+run_case "issue-dup: chained issue create"    2 issue-dup-check-gate.sh 'git push && gh issue create --title t --body-file /nope.md'
+run_case "issue-dup: gh api issues POST"      2 issue-dup-check-gate.sh 'gh api repos/go-to-k/cdk-local/issues -f title=t -f body=x'
+run_case "issue-dup: issue comment passes"    0 issue-dup-check-gate.sh 'gh issue comment 7 --body-file /nope.md'
+run_case "issue-dup: issue edit passes"       0 issue-dup-check-gate.sh 'gh issue edit 7 --body-file /nope.md'
+run_case "issue-dup: pr create passes"        0 issue-dup-check-gate.sh 'gh pr create --fill'
+run_case "issue-dup: quoted mention passes"   0 issue-dup-check-gate.sh 'echo \"then gh issue create -t x\"'
+
 # branch-gate guards commit AND push, and only on a protected branch.
 git -C "$repo" checkout -q -b main
 run_case "branch-gate: commit on main"        2 branch-gate.sh 'git commit -m x'

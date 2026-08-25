@@ -192,6 +192,23 @@ Effort: small (S) | medium (M) | large (L) - <which verification cycle it drags>
 Estimate: <duration, e.g. ~1-3 h -- never a bare letter> - <what eats the time>
 ```
 
+Four CLASSIFICATION lines, and they stay four. Alongside them the body carries a
+**`Dup-check:`** line -- a filing-time record, not a fifth classification field:
+
+```text
+Dup-check: searched open issues for <terms> -- none covers this root cause
+```
+
+`.claude/hooks/issue-dup-check-gate.sh` refuses `gh issue create` (and the
+`gh api repos/<o>/<r>/issues` REST mint) without it, so a hunt that skips the
+search is physically blocked from filing. This hunt is the highest-volume filer
+in the repo, so it is where the line matters most: search the CONCEPT the bug
+turns on rather than this instance's spelling, and on a HIT fold the finding into
+that issue as a checklist row via `gh issue edit` instead of minting a new number
+(`/work-issues` §5 carries the full window and the fold recipe). That is not a
+filing threshold -- an unfiled finding is strictly worse than a filed one; what
+changes is WHERE the finding is written, never whether.
+
 A hunt is the single best moment to write them: you have just reproduced the bug,
 so `Severity` is measured rather than guessed, and you already know which fixture
 the fix will drag. Deferring them to whoever picks the issue up throws that
