@@ -17,9 +17,11 @@
 #   - PASS  for a command that merely QUOTES the trigger
 #   - PASS  in a repo that never opted in (no `.markgate.yml`)
 #
-# Measured rather than asserted (2026-08-25, bash 5.3): an always-`exit 0` stub
-# fails 34 of these and an always-`exit 2` stub fails 36, so neither direction
-# can pass vacuously.
+# Measured rather than asserted (2026-08-25, bash 5.3, re-measured against the
+# final case list): an always-`exit 0` stub fails 41 of these and an
+# always-`exit 2` stub fails 45, so neither direction can pass vacuously. Keep
+# these numbers current when cases are added -- a stale count in a comment that
+# exists to prove non-vacuity is itself the thing it warns about.
 
 set -u
 
@@ -56,6 +58,24 @@ run_msg() {
   else
     echo "FAIL: $name (exit $rc, expected $expect carrying '$needle')"
     printf '%s\n' "$out" | sed 's/^/      /' | head -4
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# run_nomsg <name> <command> <cwd> <expected-exit> <substring the stderr must NOT carry>
+# The complement of run_msg. A conditional block in an error message needs BOTH
+# directions pinned; only asserting its presence lets the condition be deleted.
+run_nomsg() {
+  local name="$1" command="$2" cwd="$3" expect="$4" needle="$5"
+  local payload out rc
+  payload=$(jq -n --arg c "$command" --arg d "$cwd" \
+    '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}')
+  out=$(printf '%s' "$payload" | "$HOOK" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq "$expect" ] && ! printf '%s' "$out" | grep -qF "$needle"; then
+    echo "PASS: $name (exit $rc, message correctly omits it)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: $name (exit $rc, expected $expect WITHOUT '$needle')"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -112,6 +132,7 @@ PLUSLIST="$TMPROOT/plus.md"
 COMMITMSG="$TMPBASE/commit-msg.txt"
 printf 'Some defect.\n\nDup-check: searched open issues for `route discovery` -- none covers this root cause\n' > "$WITH"
 printf 'Some defect.\n\nSession-fit: next (not this session) -- needs a new fixture\n' > "$WITHOUT"
+printf 'Some defect, no marker at all.\n' > "$TMPROOT/dup-check-notes.md"
 printf 'Some defect.\n\n- Dup-check: searched open issues for `authorizer cache` -- none covers this\n' > "$LIST"
 printf 'Some defect.\n\ndup-check: searched open issues -- none covers this root cause\n' > "$LOWER"
 # The marker only mid-sentence. This is what fences MARKER_RE_LINE's ANCHOR:
@@ -163,19 +184,26 @@ run "chained after && blocks"            "git push && gh issue create --body-fil
 run "chained after ; blocks"             "echo done; gh issue create --body-file $WITHOUT"  "$TMPROOT" 2
 # `gh -R <owner/repo> issue create` is the CROSS-REPO MIRROR flow's own
 # spelling, and that flow is this gate's whole reason for existing -- so this
-# pair is the headline case, not an edge one. The shared
-# `GATE_RE_GH_ISSUE_CREATE` absorbs `-C <path>` only and does NOT match these;
-# the gate builds its verb on `GATE_GH_CR` instead, leaving the shared
-# constant's surface (pr-body-item-number-gate.sh consumes it) untouched.
+# pair is the headline case, not an edge one. `GATE_GH_C` absorbed `-C <path>`
+# only until 2026-08-25, so `GATE_RE_GH_ISSUE_CREATE` did not match these at all
+# -- the same gap that let `gh -R o/r pr merge` walk past verify-pr-gate and
+# integ-gate. Widening the shared absorber fixed all of them at once.
 run "gh -R <repo> issue create blocks"   "gh -R go-to-k/cdk-local issue create --body-file $WITHOUT" "$TMPROOT" 2
 run "gh -R <repo> with marker passes"    "gh -R go-to-k/cdk-local issue create --body-file $WITH"    "$TMPROOT" 0
 run "gh --repo <repo> blocks"            "gh --repo go-to-k/cdkd issue create --body-file $WITHOUT"  "$TMPROOT" 2
 run "gh --repo <repo> with marker passes" "gh --repo go-to-k/cdkd issue create --body-file $WITH"    "$TMPROOT" 0
-# The `-C` and plain forms must keep the verdicts they had before GATE_GH_CR.
+# The `-C` and plain forms must keep the verdicts they had before the widening.
 run "gh -C <dir> issue create blocks"    "gh -C $TMPROOT issue create --body-file $WITHOUT" "$TMPROOT" 2
 run "gh -C <dir> with marker passes"     "gh -C $TMPROOT issue create --body-file $WITH"    "$TMPROOT" 0
 run "gh -C and -R together blocks"       "gh -C $TMPROOT -R go-to-k/cdkd issue create --body-file $WITHOUT" "$TMPROOT" 2
 run "gh -R on a comment still passes"    "gh -R go-to-k/cdkd issue comment 7 --body-file $WITHOUT"  "$TMPROOT" 0
+# All three separators `gh` accepts. The GLUED form has no separator at all and
+# is the one a hand-written flag alternation misses.
+run "gh --repo=<repo> blocks"            "gh --repo=go-to-k/cdkd issue create --body-file $WITHOUT" "$TMPROOT" 2
+run "gh -R=<repo> blocks"                "gh -R=go-to-k/cdkd issue create --body-file $WITHOUT"     "$TMPROOT" 2
+run "gh -R<repo> glued blocks"           "gh -Rgo-to-k/cdkd issue create --body-file $WITHOUT"      "$TMPROOT" 2
+run "gh -R<repo> glued with marker"      "gh -Rgo-to-k/cdkd issue create --body-file $WITH"         "$TMPROOT" 0
+run "gh api mint with --repo= blocks"    "gh --repo=go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t" "$TMPROOT" 2
 run "subshell blocks"                    "(gh issue create --body-file $WITHOUT)"           "$TMPROOT" 2
 run "command substitution blocks"        "URL=\$(gh issue create --body-file $WITHOUT)"     "$TMPROOT" 2
 
@@ -216,6 +244,39 @@ run "gh api issues POST, no marker" "gh api repos/go-to-k/cdk-local/issues -f ti
 run "gh api issues POST, marker"    "gh api repos/go-to-k/cdk-local/issues -f title=t -f 'body=x Dup-check: none'" "$TMPROOT" 0
 run "gh api comments is not a mint" "gh api repos/go-to-k/cdk-local/issues/5/comments -f body=x"                   "$TMPROOT" 0
 run "gh api issue edit is not a mint" "gh api -X PATCH repos/go-to-k/cdk-local/issues/5 -f body=x"                 "$TMPROOT" 0
+# The issue COLLECTION path is also the LIST endpoint. `gh api .../issues` and
+# `-X GET` are READS and must pass -- refusing them (which this gate did) is
+# pure friction with no duplicate in sight. gh sends GET unless told otherwise
+# or unless fields are supplied, so a `title=` field means mint.
+run "gh api issues GET is a read"    "gh api repos/go-to-k/cdk-local/issues"                         "$TMPROOT" 0
+run "gh api issues -X GET is a read" "gh api -X GET repos/go-to-k/cdk-local/issues -f state=open"    "$TMPROOT" 0
+run "gh api issues -X DELETE"        "gh api -X DELETE repos/go-to-k/cdk-local/issues"               "$TMPROOT" 0
+run "gh api issues -X POST blocks"   "gh api -X POST repos/go-to-k/cdk-local/issues -f title=t -f body=x" "$TMPROOT" 2
+run "gh api quoted body= with marker" "gh api repos/go-to-k/cdk-local/issues -f title=t -f 'body=x Dup-check: none'" "$TMPROOT" 0
+# `--input <file>` / `--input -` implies POST too (confirmed live: `GH_DEBUG=api
+# gh api rate_limit --input f.json` logs `> POST`), so it mints an issue and must
+# be gated like `-f title=`.
+run "gh api --input mints"           "gh api repos/go-to-k/cdk-local/issues --input body.json"  "$TMPROOT" 2
+run "gh api --input - mints"         "gh api repos/go-to-k/cdk-local/issues --input -"          "$TMPROOT" 2
+run "gh api --input on a comment"    "gh api repos/go-to-k/cdk-local/issues/5/comments --input body.json" "$TMPROOT" 0
+
+# The loose inline scan reads the BODY VALUE, not the whole segment. A TITLE is
+# not a record of having searched anything, and `--title 'Dup-check: yes'`
+# satisfied the gate with a marker-free body until this was scoped.
+run "marker in --title does not count" "gh issue create --title 'Dup-check: yes' --body 'no marker here'" "$TMPROOT" 2
+run "marker in --body still counts"    "gh issue create --title 'Dup-check: yes' --body 'x Dup-check: none'" "$TMPROOT" 0
+run "-b short body flag"               "gh issue create -b 'Dup-check: searched, none'"                "$TMPROOT" 0
+run "--body=<v> equals form"           "gh issue create --body=\"Dup-check: none\""                    "$TMPROOT" 0
+# A --body-file PATH containing the word must not satisfy the loose scan: the
+# body flag extractor cannot see `--body-file` (the `-` of `-file` is not `=` or
+# space), so this falls through to the FILE scan and blocks on a marker-free file.
+run "dup-check in the body-file PATH" "gh issue create --body-file $TMPROOT/dup-check-notes.md"       "$TMPROOT" 2
+# ...and the COLON in MARKER_RE_LOOSE needs its own discriminator. The case
+# above is a control: it blocks for the unrelated reason that the FILE carries
+# no marker, so dropping the colon from the pattern is caught by nothing. This
+# one puts `dup-check` WITHOUT a colon in the BODY, where the loose scan reads,
+# so it is the case that fails if the colon goes.
+run "dup-check without a colon in --body" "gh issue create --body 'see the dup-check notes file'" "$TMPROOT" 2
 
 # --- more body-file spellings ----------------------------------------------
 run "--body-file=<p> form"          "gh issue create --body-file=$WITH"        "$TMPROOT" 0
@@ -227,6 +288,10 @@ run "--raw-field body=@ with"       "gh issue create --raw-field body=@$WITH"  "
 # --- both refusal arms carry their own message ------------------------------
 run_msg "missing-marker message"    "gh issue create --body-file $WITHOUT" "$TMPROOT" 2 "carries no"
 run_msg "unreadable-path message"   "gh issue create --body-file $TMPROOT/nope.md" "$TMPROOT" 2 "No readable --body-file"
+# ...and the hint must be SUPPRESSED when a body file WAS read, or `found_body_file`
+# is inert: both needles above appear in the readable-file branch too, so pinning
+# `found_body_file=0` left the suite fully green. This is the missing direction.
+run_nomsg "readable body file omits the path hint" "gh issue create --body-file $WITHOUT" "$TMPROOT" 2 "No readable --body-file"
 # An unexpanded variable is refused through its OWN arm: a bare "check the path"
 # is unclearable when the file does carry the line.
 run_msg "unexpanded \$VAR message"  "gh issue create --body-file \"\$BODY\"" "$TMPROOT" 2 "unexpanded variable"
@@ -241,7 +306,7 @@ lib_fail_closed() {
   out=$(jq -n '{tool_name:"Bash", tool_input:{command:"gh issue create --body-file /nope.md"}, cwd:"/"}' \
         | "$tmp/gate.sh" 2>&1) && rc=0 || rc=$?
   rm -rf "$tmp"
-  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "_command-match.sh"; then
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "is missing or unreadable"; then
     echo "PASS: unloadable library fails CLOSED (exit $rc)"; PASS=$((PASS + 1))
   else
     echo "FAIL: unloadable library should exit 2 naming the library (got $rc)"; FAIL=$((FAIL + 1))
@@ -260,10 +325,13 @@ lib_truncated_fails_closed() {
   out=$(jq -n '{tool_name:"Bash", tool_input:{command:"gh issue create --body-file /nope.md"}, cwd:"/"}' \
         | "$tmp/gate.sh" 2>&1) && rc=0 || rc=$?
   rm -rf "$tmp"
-  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "_command-match.sh"; then
+  # `_command-match.sh` alone appears in BOTH load-failure messages, so it
+  # cannot tell the truncated arm from the missing arm. Pin the wording unique
+  # to arm 2.
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "loaded but is truncated"; then
     echo "PASS: library missing the constant fails CLOSED (exit $rc)"; PASS=$((PASS + 1))
   else
-    echo "FAIL: truncated library should exit 2 naming the library (got $rc)"; FAIL=$((FAIL + 1))
+    echo "FAIL: truncated library should exit 2 naming the TRUNCATED arm (got $rc)"; FAIL=$((FAIL + 1))
   fi
 }
 lib_truncated_fails_closed

@@ -80,9 +80,12 @@ The hooks split into three classes:
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
   line-numbered offender output.
 
-- **`issue-dup-check-gate.sh`** blocks `gh issue create` — and
-  `gh api repos/<owner>/<repo>/issues`, the same mint through the REST
-  verb — when the issue body carries no `Dup-check:` line recording
+- **`issue-dup-check-gate.sh`** blocks `gh issue create` — and a
+  `gh api repos/<owner>/<repo>/issues` that is actually a MINT (an
+  explicit `POST`, or a `title=` field with no explicit method, since gh
+  infers POST from fields); the collection path is also the LIST
+  endpoint, so plain reads and `-X GET` pass — when the issue body
+  carries no `Dup-check:` line recording
   that the OPEN issue list was searched for an issue already covering
   this root cause. `gh issue edit` / `gh issue comment` are
   deliberately NOT gated: folding a finding into an issue that already
@@ -96,20 +99,24 @@ The hooks split into three classes:
   `Session-fit: next`, nothing umbrella-shaped): the target is the
   cross-repo MIRROR path, which `/work-issues` §10-c already names as
   a duplicate generator in its own text. go-to-k/cdk-local#531 was
-  filed nine minutes after go-to-k/cdk-local#528 with a strict SUBSET
+  filed eight minutes after go-to-k/cdk-local#528 with a strict SUBSET
   of its lessons, and go-to-k/cdk-local#511 duplicated
-  go-to-k/cdk-local#504 after 75 minutes. go-to-k/cdk-local#528's body
-  shows the near
-  miss exactly — it checked the merged file and the open PRs and
-  reported them clear, and never checked the open ISSUE list.
+  go-to-k/cdk-local#504 after 75 minutes.
+  go-to-k/cdk-local#528's body shows the near miss exactly — it records
+  a file check and an open-PR scan, and no check of the open ISSUE
+  list. Not one of the four bodies records an open-issue search, which
+  is the window that would have caught either pair.
 
   Two marker spellings, and the split is load-bearing. In a body FILE
   the marker is ANCHORED at line start (optional `-*+>` list prefix,
   case-insensitive), so a passing mention inside a sentence does not
   satisfy it. In the raw COMMAND there is no line structure — an
   inline `--body 'Bug. Dup-check: ...'` is one line — so that scan is
-  unanchored. The threat model is FORGETTING to run the search, not
-  defeating the gate.
+  unanchored, and it reads the BODY VALUES only (`--body` / `-b` /
+  `body=`), never the whole segment: `--title 'Dup-check: yes'` used to
+  satisfy the gate with a marker-free body, and a title is not a record
+  of having searched anything. The threat model is FORGETTING to run the
+  search, not defeating the gate.
 
   Both scans are scoped to the `gh issue create` / `gh api ... issues`
   SEGMENT, never the whole command, and that scoping is load-bearing:
@@ -132,14 +139,15 @@ The hooks split into three classes:
   `check-gate.sh`, so filing an issue in an unrelated personal repo is
   not refused; the CWD's repo decides, not any `-R <owner/repo>` in
   the command, because `-R` names where the issue LANDS while the cwd
-  names whose policy the session is under. Its verb regexes are built on
-  `GATE_GH_CR` rather than the shared `GATE_RE_GH_ISSUE_CREATE`, so
+  names whose policy the session is under.
   `gh -R go-to-k/<target> issue create` — the cross-repo mirror flow's
-  own spelling, and this gate's headline case — is matched without
-  changing any other gate's trigger surface (see §3's note on
-  `GATE_GH_C`). No bypass marker — running
+  own spelling, and this gate's headline case — is matched because
+  `GATE_GH_C` absorbs `-R` in all three of `gh`'s separator forms —
+  space, `=`, and glued (see §3; it did not until 2026-08-25, which is
+  the same bypass that let `gh -R … pr merge` past `verify-pr-gate`).
+  No bypass marker — running
   the search and writing one line is the entire ask. Covered by
-  `.claude/hooks/issue-dup-check-gate.test.sh` (63 cases) plus
+  `.claude/hooks/issue-dup-check-gate.test.sh` (83 cases) plus
   recognition cases in `gate-command-recognition.test.sh`.
 
 - **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
@@ -212,26 +220,144 @@ resolves the tree in this order: a `git -C <path>` / `gh -C <path>` inside the
 MATCHED segment, else the LAST `cd <path>` segment before it, else the payload
 cwd. (Before go-to-k/cdk-local#542 each gate parsed only a LEADING `cd` and any
 `-C` anywhere in the command.) The verb regexes in that file absorb the
-LEADING FLAGS between the command and its verb: `GATE_FLAGS` for `git`, and for
-`gh` **`GATE_GH_C`, which absorbs `-C <path>` ONLY**. That is a known
-under-approximation — measured 2026-08-25 with the real constants,
-`gh -R go-to-k/cdk-local pr create`,
-`gh --repo go-to-k/cdk-local pr merge 1 --squash` and
-`gh -R go-to-k/cdk-local issue create` match NOTHING, so every gate keyed on a
-`gh` verb regex (`verify-pr-gate`, `pr-review-gate`, `integ-gate`,
-`closes-paren-form-gate`, `gh-pr-merge-worktree-gate`, `non-english-text-gate`,
-`docs-inline-json-flag-gate`, `cdkd-parity-gate`, `create-integ-gate`,
-`pr-body-item-number-gate`) passes an `-R`-carrying command through while
-refusing the identical command without the flag — and the `-R` form is what
-this repo's own `.claude/settings.json` permission allow-list writes for
-cross-repo filing. Widening `GATE_GH_C` would change all ten trigger surfaces at
-once, so it is tracked as its own change rather than done in passing; the
-sibling shipped that fix as go-to-k/cdkd#2027 review round 4. In the meantime
-`GATE_GH_CR` sits beside it, absorbing `-C` / `-R` / `--repo`, and is used ONLY
-by `issue-dup-check-gate.sh`'s verb regexes — the one gate whose stated reason
-for existing IS the `-R` spelling. `_command-match.test.sh` pins both: the
-`GATE_GH_CR` forms match, and `GATE_RE_GH_ISSUE_CREATE` /
-`GATE_RE_GH_PR_CREATE` keep their existing surface, `-R` gap included.
+LEADING FLAGS between the command and its verb: `GATE_FLAGS` for `git`, and
+**`GATE_GH_C`, which is literally `GATE_FLAGS`** — the same token shape — for
+`gh`.
+
+It has been wrong twice, and both were **live gate bypasses** rather than
+cosmetic gaps, because every `gh` verb regex is built on it:
+
+1. It absorbed `-C <path>` ONLY, so `gh -R <owner/repo> pr merge 1 --squash`
+   matched nothing and ran ungated.
+2. Replacing it with an explicit `(-C|-R|--repo)` alternation fixed only the
+   SPACE-separated form, because the alternation demanded `[[:space:]]+` between
+   flag and value. `gh` accepts three separators — verified against a real repo,
+   `gh pr list --repo=go-to-k/cdkd`, `-R=go-to-k/cdkd` and the GLUED
+   `-Rgo-to-k/cdkd` all return the same PR number — so `gh --repo=<owner/repo>
+   pr merge --squash` was still a bypass, one keystroke from the one just
+   closed. `-C` had the same hole all along: `gh -C=/w/t pr merge` never matched.
+
+Measured by driving the real hooks with markgate stubbed stale:
+
+| gate | plain | `-R <o/r>` (round 1) | `--repo=<o/r>` / `-R<o/r>` (round 2) |
+|---|---|---|---|
+| `verify-pr-gate` (`pr merge`) | 2 | **0** | **0** |
+| `verify-pr-gate` (`pr create`) | 2 | **0** | **0** |
+| `integ-gate` (`pr merge`) | 2 | **0** | **0** |
+
+So `/verify-pr` and the Docker integ gate were both skippable by adding a flag
+the flow itself tells you to use in multi-repo sessions, and which this repo's
+own `.claude/settings.json` permission allow-list already writes for cross-repo
+filing. (The other `gh` gates shell out to `gh` and fail OPEN when it errors, so
+under a stubbed `gh` they answer 0 to both spellings — a harness limit, not
+evidence they were unaffected; they share the same absorber.)
+
+`GATE_FLAGS`' token is `-[^[:space:]]+`, which swallows `--repo=X`, `-R=X` and
+`-RX` WHOLE, with the value group needed only for the space form. All three
+separators fall out of the token shape instead of being enumerated — which is
+why this is not a curated flag list: an alternation must spell each flag times
+each separator, and the glued form, having no separator at all, is the one it
+misses. Being wider than "repo/dir flags" costs nothing, since a flag regex only
+decides which spellings REACH the verb. Same defect and same fix as
+go-to-k/cdkd#2027 review round 4, whose `GATE_GH_C` is this same `GATE_FLAGS`.
+
+**Widening the absorber is necessary and NOT sufficient**, and this is the part
+that bit hardest. Making the flagged commands REACH a gate does nothing about
+the gate then parsing them, and four gates each rolled their own PR-selector
+extraction with the same `-C`-only shape the absorber had just outgrown.
+Measured against `gh -R go-to-k/cdk-local pr merge 552 --squash`:
+
+| gate | plain resolves | flagged resolved (before) |
+|---|---|---|
+| `closes-paren-form-gate` | `pr view 552` | **`gh` never called — fully bypassed** |
+| `non-english-text-gate` | `pr diff 552` | **`pr diff 999`** (the current branch's PR) |
+| `docs-inline-json-flag-gate` | `pr diff 552` | **`pr diff 999`** |
+| `pr-review-gate` | `pr view 552` | **`pr view 30`** from `sleep 30 && gh -R … merge 552` |
+
+The last one is the worst: the wrong PR's additions / deletions / file count
+chose the review tier, so if that PR is `inline` the real merge passes with no
+reviewer at all. All four now call **`gate_pr_selector`** in
+`_command-match.sh`, which strips `BASH_REMATCH[0]` of the SAME verb ERE that
+armed the gate — whatever flags it absorbed — and scans only what follows. A
+gate can no longer match one way and parse another. Each of the four also
+fails CLOSED if the library predates the helper.
+
+`gate_target_dir`'s `-C` recognition was widened alongside, for the same reason:
+the absorber now admits `gh -C=/w/t pr merge 1`, which previously resolved to the
+payload cwd, so a **different worktree's markgate marker** decided the verdict.
+
+Two further instances of the same shape, both found by review rather than by the
+suite, and both fixed here:
+
+- **The flag enumeration had the wrong polarity.** `gate_pr_selector` skipped an
+  enumerated list of VALUE-TAKERS, so any unlisted value-taking flag left its
+  value in the walk — `gh pr merge -t 42 552` resolved to **42**. The list is now
+  of VALUELESS flags, and every other `-…` consumes its next token. The direction
+  of staleness is the argument: an unlisted value-taker judges a DIFFERENT PR,
+  while an unlisted valueless flag merely empties the selector and the caller
+  falls back to current-branch semantics. A final numeric guard makes a branch
+  name, URL or repo slug yield empty rather than be handed on.
+- **The `-C` scan read inside quoted flag VALUES.**
+  `git -c core.pager="less -C /evil" commit -m y` resolved to `/evil`, and through
+  `branch-gate` on `main` that turns rc=2 into rc=0. The cause was tokenisation,
+  not the scan: `GATE_PATH_TOKEN` is "a quoted span OR a bare run of non-space",
+  so it split `core.pager="less` at the first space and read the tail as a fresh
+  `-C`. `GATE_EMBEDDING_TOKEN` lets a token EMBED quoted spans, and the flag run
+  is now walked token-by-token. Pre-existing on `origin/main`; the widened `-C`
+  scan made it reachable in more shapes.
+
+**Which REPO the gate asks about** was a fourth blind spot with no helper at all:
+a gate resolved the PR number and then ran `gh pr view <N>` from the resolved
+directory WITHOUT the repo flag, so `gh -R go-to-k/OTHER pr merge 552` made every
+gate judge the LOCAL repo's PR 552 — right number, wrong repo, and identical to
+the correct case in both exit code and selector. `gate_cmd_repo` extracts the
+named repo (all three separators, quoted spans embedded, either side of the verb)
+and the four gates pass it through to their own gh calls. Fenced by `run_repo`.
+
+The regression cases live in TWO places on purpose. `_command-match.test.sh`
+pins the absorber at the regex level, in every direction — all three separator
+forms match, the plain / `-C` forms keep the verdicts they already had, no `gh`
+verb matches a DIFFERENT `gh` verb, and a flag VALUE does not swallow the verb
+(`gh --draft pr create` still matches `pr create`, which only backtracking
+saves). But a matcher test can only fail once someone
+already suspects the flag, so `gate-command-recognition.test.sh` adds the
+assertion that would have caught this cold: drive a gate with the plain and the
+flagged spelling of the SAME command and demand the same exit code. Those pairs
+carry an expected plain rc as a guard-the-guard, because a gate that fails open
+under the stub would otherwise satisfy the equality vacuously at 0.
+
+**Equal exit codes are still not enough**, which is how the four selector bugs
+above were certified green. Two harness defects had to be fixed before any of
+them was visible: the payloads carried no `tool_name`, so `closes-paren-form-gate`
+exited at its `tool_name` check before ever reading the command and its pair
+reported "both exit 0" over a live bypass; and nothing asserted **what the gate
+asked GitHub about**. `run_sel` now does exactly that — a `gh` shim logs its argv
+and answers `999` to `pr view --json number`, so a fall-through to
+current-branch resolution shows up as a wrong PR number rather than as silence.
+Every spelling must resolve the SAME PR the plain form does, with the plain arm
+as the control.
+
+**And the same lens has to be turned on every verifier a gate consults, not just
+on `gh`.** Three further blind spots, each of which left a live bypass green:
+
+- **WHICH MARKER a gate verifies.** The markgate stub logged `$PWD` and
+  discarded `$*`, so swapping `verify-pr-gate`'s `markgate verify verify-pr` for
+  `verify check` was fully green — a mutant that merges any PR whose `/check`
+  alone is fresh, i.e. whose `/verify-pr` checklist never ran. The stub now logs
+  argv and `run_marker` asserts the gate name.
+- **WHICH REPO a gate asks about** — see `gate_cmd_repo` above, fenced by
+  `run_repo`.
+- **The directory `cdkd-parity-gate` / `create-integ-gate` resolve.** An earlier
+  revision recorded "(never asked)" for these and called them uncoverable
+  controls. That was FALSE: both expose the resolved directory on their first
+  `git -C "$target_dir" rev-parse --git-dir`, long before markgate. A `git` shim
+  logging argv reads it, and `run_git_dir` asserts it. A comment claiming
+  coverage is impossible is worse than no comment — it is what stops the next
+  person from adding it.
+
+The rule these three share: **assert what the gate ASKS ITS VERIFIER, not only
+what it answers.** An exit code cannot distinguish "asked the right question and
+got no" from "asked the wrong question and got no".
 
 The hook then `cd`s to that resolved target dir
 before invoking `markgate verify`. This preserves

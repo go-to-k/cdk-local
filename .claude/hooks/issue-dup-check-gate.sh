@@ -26,13 +26,14 @@
 #   go-to-k/cdk-local#531  2026-08-19T06:46:00Z  "... marker-sourcing, grep -cF,
 #                                                 and life-only-probe lessons"
 #
-#     NINE MINUTES apart. #531's three lessons are a strict SUBSET of #528's
-#     four -- same three sections, same evidence, different wording. Both were
-#     then closed by one PR, go-to-k/cdk-local#532. #528's body shows the near
-#     miss precisely: it checked the merged FILE and the open PRs
-#     (go-to-k/cdk-local#523, go-to-k/cdk-local#526) and reported them as
-#     carrying different lesson sets -- and never checked the open ISSUE list,
-#     where its own duplicate landed nine minutes later.
+#     EIGHT MINUTES apart (8 m 14 s). #531's three lessons are a strict SUBSET
+#     of #528's four -- same three sections, same evidence, different wording.
+#     Both were then closed by one PR, go-to-k/cdk-local#532. #528's body shows
+#     the near miss precisely: it records a FILE check against the merged
+#     SKILL.md and a scan of the open PRs (go-to-k/cdk-local#523,
+#     go-to-k/cdk-local#526), reporting them as carrying different lesson sets
+#     -- and no check of the open ISSUE list, where its own duplicate landed
+#     eight minutes later.
 #
 #   go-to-k/cdk-local#504  2026-08-19T03:14:05Z  "mirror the no-src verification
 #                                                 tier into `/work-issues` section 8"
@@ -45,9 +46,11 @@
 # So the failure mode this gate fences is not "the backlog grows without
 # bound"; it is "two hops of one lesson file the same issue, because the window
 # nobody searches is the OPEN ISSUE list". Section 10-c already carries a
-# three-window check -- merged file, then open PRs, then open issues -- and
-# both pairs above show the first two windows being searched while the third is
-# not. Registration is not execution; this is the execution half.
+# three-window check -- merged file, then open PRs, then open issues. What the
+# four bodies actually record is thinner than that check: #528 records the file
+# and open-PR windows, #531 records the file window only, and #504 / #511 record
+# no window at all. NONE of the four records an open-ISSUE search, which is the
+# one window that would have caught each pair. Registration is not execution; this is the execution half.
 #
 # WHAT IS AND IS NOT GATED
 #
@@ -104,25 +107,13 @@ fi
 if ! declare -F gate_matches >/dev/null 2>&1 \
   || ! declare -F gate_segments >/dev/null 2>&1 \
   || ! declare -F gate_target_dir >/dev/null 2>&1 \
-  || [ -z "${GATE_GH_CR:-}" ] \
+  || [ -z "${GATE_RE_GH_ISSUE_CREATE:-}" ] \
   || [ -z "${GATE_RE_GH_API_ISSUE_CREATE:-}" ]; then
   echo "Blocked: .claude/hooks/_command-match.sh loaded but is truncated or" >&2
-  echo "predates GATE_GH_CR / GATE_RE_GH_API_ISSUE_CREATE, so" >&2
-  echo "issue-dup-check-gate cannot evaluate the command. Restore the file; do" >&2
-  echo "not work around the gate." >&2
+  echo "predates GATE_RE_GH_API_ISSUE_CREATE, so issue-dup-check-gate cannot" >&2
+  echo "evaluate the command. Restore the file; do not work around the gate." >&2
   exit 2
 fi
-
-# The issue-create verb, built HERE on the shared GATE_GH_CR rather than reusing
-# the shared GATE_RE_GH_ISSUE_CREATE. The shared one absorbs `-C <path>` only
-# (GATE_GH_C), so it does not match `gh -R go-to-k/<target> issue create` -- and
-# that is the CROSS-REPO MIRROR flow's own spelling, which is this gate's whole
-# reason for existing (see the header). Widening GATE_GH_C itself would change
-# the trigger surface of pr-body-item-number-gate.sh, which consumes
-# GATE_RE_GH_ISSUE_CREATE, plus every other gh verb regex in this repo; that is
-# a separate change. So the shared constant is left exactly as it is and the
-# wider absorber is applied only here, where the new surface is wanted.
-GATE_RE_ISSUE_MINT="^gh${GATE_GH_CR}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 
 input=$(cat 2>/dev/null || true)
 # An ABSENT `tool_name` is treated as Bash rather than as "not Bash": the
@@ -137,7 +128,10 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Command-position matching, so a body or comment that merely QUOTES
 # `gh issue create` does not arm the gate (.claude/rules/hooks.md).
-gate_matches "$cmd" "$GATE_RE_ISSUE_MINT" \
+# Over-approximate the TRIGGER, be strict on RESOLUTION: the `gh api` arm here
+# matches the issue COLLECTION path, reads included, and `seg_is_api_mint` below
+# is what separates a POST from a GET. Arming on a read costs one no-op pass.
+gate_matches "$cmd" "$GATE_RE_GH_ISSUE_CREATE" \
   || gate_matches "$cmd" "$GATE_RE_GH_API_ISSUE_CREATE" || exit 0
 
 # --- 0. resolve the target directory ONCE -----------------------------------
@@ -150,10 +144,10 @@ gate_matches "$cmd" "$GATE_RE_ISSUE_MINT" \
 # `gh issue list --search x && cd <repo> && gh issue create ...`, the
 # search-then-file chain this gate's own message prescribes, would never see the
 # `cd`, the opt-in would resolve against the payload cwd, and the gate would
-# exit 0. Deriving it from the two mint regexes also keeps GATE_GH_CR's quoted
+# exit 0. Deriving it from the two mint regexes also keeps GATE_GH_C's quoted
 # alternative, without which `gh -C "/a b" issue create` matches no verb (the
 # go-to-k/cdk-local#542 class .claude/rules/hooks.md records).
-VERB_ERE="^((${GATE_RE_ISSUE_MINT#^})|(${GATE_RE_GH_API_ISSUE_CREATE#^}))"
+VERB_ERE="^((${GATE_RE_GH_ISSUE_CREATE#^})|(${GATE_RE_GH_API_ISSUE_CREATE#^}))"
 target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$VERB_ERE" 2>/dev/null || true)
 [ -n "$target_dir" ] || target_dir="${hook_cwd:-$PWD}"
 
@@ -228,13 +222,73 @@ MARKER_RE_LOOSE='dup-check:'
 #
 # Every matching segment must carry the marker: a command opening two issues
 # must record the search for both.
-seg_has_marker() {
-  local seg="$1" f
-
-  # inline `--body '...'`: the marker is in the segment text itself.
-  if printf '%s' "$seg" | grep -qiE "$MARKER_RE_LOOSE"; then
-    return 0
+# Is this `gh api ... /issues` segment a MINT, or a READ? The path constant
+# matches the collection, and the collection is also the LIST endpoint --
+# `gh api repos/<o>/<r>/issues` and `gh api -X GET ... -f state=open` are reads,
+# and refusing them (which this gate did) is pure friction with no duplicate
+# anywhere in sight. gh sends GET unless told otherwise or unless fields are
+# supplied, so:
+#   explicit POST                      -> mint
+#   any other explicit method          -> read (GET / PATCH / DELETE ...)
+#   no method, but a `title=` field    -> mint (gh implies POST from fields)
+#   otherwise                          -> read
+seg_is_api_mint() {
+  local seg="$1" method
+  if [[ "$seg" =~ (-X|--method)[[:space:]=]+([A-Za-z]+) ]]; then
+    method=$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:lower:]' '[:upper:]')
+    [ "$method" = "POST" ] && return 0
+    return 1
   fi
+  printf '%s' "$seg" | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field)[[:space:]=]+.?title=' && return 0
+  # `--input <file>` (and `--input -`) also implies POST -- confirmed live:
+  # `GH_DEBUG=api gh api rate_limit --input f.json` logs `> POST`. Without this
+  # arm `gh api repos/<o>/<r>/issues --input body.json` mints an issue and the
+  # gate waves it through, which is the same fail-open the `title=` arm exists
+  # to close.
+  printf '%s' "$seg" | grep -qE '(^|[[:space:]])--input([[:space:]=]|$)' && return 0
+  return 1
+}
+
+# The inline body values a segment carries, one per line. The loose scan runs
+# over THESE rather than over the whole segment, because the segment also holds
+# the TITLE: `gh issue create --title 'Dup-check: yes' --body '<no marker>'`
+# satisfied the gate with a marker-free body (verified rc=0). A title is not a
+# record of having searched anything.
+seg_inline_bodies() {
+  printf '%s' "$1" | perl -0777 -ne '
+      my $Q = "\x27";
+      # --body <v> / --body=<v>, quoted either way or bare. `--body-file` does
+      # NOT match: `[=\s]` after `--body` cannot consume the `-` of `-file`.
+      while (/--body[=\s]+("([^"]*)"|${Q}([^${Q}]*)${Q}|([^\s]+))/g) {
+        print((defined($2) ? $2 : defined($3) ? $3 : $4), "\n");
+      }
+      while (/(?:^|\s)-b[=\s]+("([^"]*)"|${Q}([^${Q}]*)${Q}|([^\s]+))/g) {
+        print((defined($2) ? $2 : defined($3) ? $3 : $4), "\n");
+      }
+      # `-f body=<v>` / `--field body=<v>` and friends. The QUOTED forms come
+      # first and may contain spaces -- a single-quoted `body=x Dup-check: none` is one
+      # value, and a bare-token-only pattern truncated it at the first space and
+      # lost the marker. `body=@file` is excluded: that is a body FILE, and the
+      # file scan below owns it.
+      while (/(?:--field|--raw-field|-f|-F)[=\s]+${Q}body=([^${Q}]*)${Q}/g) { print "$1\n"; }
+      while (/(?:--field|--raw-field|-f|-F)[=\s]+"body=([^"]*)"/g)    { print "$1\n"; }
+      while (/(?:--field|--raw-field|-f|-F)[=\s]+body=([^"${Q}\s@][^"${Q}\s]*)/g) { print "$1\n"; }
+    ' 2>/dev/null
+}
+
+seg_has_marker() {
+  local seg="$1" f body
+
+  # inline `--body '...'`: the marker is in the body VALUE, not anywhere in the
+  # segment. `--body-file` values are excluded by construction (`--body-file`
+  # does not match `--body[=\s]`), so a PATH that happens to contain the word
+  # cannot satisfy this either.
+  while IFS= read -r body; do
+    [ -n "$body" ] || continue
+    if printf '%s' "$body" | grep -qiE "$MARKER_RE_LOOSE"; then
+      return 0
+    fi
+  done < <(seg_inline_bodies "$seg")
 
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -267,6 +321,16 @@ seg_has_marker() {
       # is the one place a cross-segment read is allowed, and its window is
       # narrow by construction -- it opens only when the named body file cannot
       # be read at all.
+      #
+      # KNOWN ASYMMETRY, accepted rather than fixed. The fallback is ANCHORED, so
+      # a heredoc (whose body has real line structure) PASSES while the
+      # equivalent `printf 'Dup-check: ...\n' > f.md && gh issue create
+      # --body-file f.md` BLOCKS -- in the printf form the marker sits mid-line,
+      # after `printf '`. Both directions were verified. This is the
+      # fail-CLOSED direction and it is trivially clearable (write the body with
+      # a heredoc, pass `--body` inline, or create the file in an earlier
+      # command), whereas un-anchoring the fallback would let any passing
+      # mention anywhere in the command satisfy the gate.
       if printf '%s' "$cmd" | grep -qiE "$MARKER_RE_LINE"; then
         return 0
       fi
@@ -297,7 +361,14 @@ found_body_file=0
 unresolvable_path=""
 offending=""
 while IFS= read -r seg; do
-  [[ "$seg" =~ $GATE_RE_ISSUE_MINT ]] || [[ "$seg" =~ $GATE_RE_GH_API_ISSUE_CREATE ]] || continue
+  if [[ "$seg" =~ $GATE_RE_GH_ISSUE_CREATE ]]; then
+    :
+  elif [[ "$seg" =~ $GATE_RE_GH_API_ISSUE_CREATE ]]; then
+    # The path alone does not say mint; the collection is the LIST endpoint too.
+    seg_is_api_mint "$seg" || continue
+  else
+    continue
+  fi
   if ! seg_has_marker "$seg"; then
     offending="$seg"
     break
@@ -335,10 +406,10 @@ fi
   fi
   echo ""
   echo "Run the search first -- search the CONCEPT, not this instance's spelling."
-  echo "go-to-k/cdk-local#531 duplicated go-to-k/cdk-local#528 nine minutes later"
+  echo "go-to-k/cdk-local#531 duplicated go-to-k/cdk-local#528 eight minutes later"
   echo "with a strict subset of its lessons, and go-to-k/cdk-local#511 duplicated"
-  echo "go-to-k/cdk-local#504 after 75 minutes, because each hop searched the"
-  echo "merged file and the open PRs but never the open ISSUE list:"
+  echo "go-to-k/cdk-local#504 after 75 minutes. Not one of those four bodies"
+  echo "records an open-ISSUE search:"
   echo ""
   echo "  gh issue list --state open --limit 200 --search '<root-cause concept>' \\"
   echo "    --json number,title"

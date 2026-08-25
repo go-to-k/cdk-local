@@ -249,13 +249,63 @@ gate_matches() {
 # both quote characters inside one bracket expression.
 GATE_PATH_TOKEN='("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)'
 
+# A shell WORD, which may EMBED quoted spans rather than being one: `-c`'s value
+# in `git -c core.pager="less -C /evil" commit` is a single word whose middle is
+# quoted. GATE_PATH_TOKEN cannot express that -- it is "a quoted span OR a bare
+# run of non-space", so it splits `core.pager="less` at the first space and the
+# tail `-C /evil"` reads as a fresh `-C` flag. That is how a QUOTED FLAG VALUE
+# steered the target directory: `git -c core.pager="less -C /evil" commit -m y`
+# resolved to /evil, and through branch-gate with the repo on `main` that turned
+# rc=2 into rc=0. Pre-existing on origin/main, but the widened `-C` scan makes it
+# reachable in more shapes, so it is fixed here.
+GATE_EMBEDDING_TOKEN='(("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'])+)'
+
 # The regexes, kept here so every gate spells its verb the same way. Each is
 # anchored at the START of a segment; `git -C <path>` / `git -c k=v` and
 # `gh -C <path>` are absorbed — including a QUOTED path containing spaces, which
 # an earlier version could not parse, so `git -C "/a b" commit` matched nothing
 # and ran ungated (go-to-k/cdk-local#542 review).
 GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]-][^[:space:]]*))?)*'
-GATE_GH_C='([[:space:]]+-C[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+))?'
+# `gh`'s leading flags, absorbed with the SAME token shape `git`'s are -- this is
+# literally GATE_FLAGS, not a parallel list, and that is the point.
+#
+# Two rounds of under-approximation here, both LIVE GATE BYPASSES rather than
+# cosmetic gaps, because every `gh` verb regex below is built on this constant:
+#
+#   1. It absorbed `-C <path>` ONLY, so `gh -R <owner/repo> pr merge 1 --squash`
+#      matched NOTHING and ran ungated. Driven through the real hooks with
+#      markgate stubbed stale: verify-pr-gate answered 2 to `gh pr merge
+#      1 --squash` and 0 to the `-R` spelling, on `pr create` too, and
+#      integ-gate the same.
+#   2. Replacing it with an explicit `(-C|-R|--repo)` alternation fixed only the
+#      SPACE-separated form, because that alternation demanded `[[:space:]]+`
+#      between the flag and its value. `gh` accepts three separators, verified
+#      against a real repo -- `gh pr list --repo=go-to-k/cdkd`,
+#      `gh pr list -R=go-to-k/cdkd` and the GLUED `gh pr list -Rgo-to-k/cdkd`
+#      all return the same PR number -- so `gh --repo=<owner/repo> pr merge
+#      --squash` still walked past verify-pr-gate, one keystroke from the
+#      bypass just closed. The `-C` support had the same hole all along:
+#      `gh -C=/w/t pr merge` did not match either.
+#
+# GATE_FLAGS' token is `-[^[:space:]]+`, which swallows `--repo=X`, `-R=X` and
+# `-RX` WHOLE -- the value group is needed only for the space-separated form. So
+# all three separators fall out of the token shape instead of being enumerated,
+# which is why this is not an explicit flag list: an alternation has to spell
+# each flag times each separator, and the glued form is the one it is most
+# likely to miss. Being wider than "repo/dir flags" costs nothing, since a flag
+# regex only decides which spellings REACH the verb -- `_command-match.test.sh`
+# pins that no `gh` verb matches a DIFFERENT `gh` verb, which is the failure
+# mode a flag absorber could actually introduce.
+#
+# Like GATE_FLAGS, this contributes THREE capture groups -- the same count the
+# explicit alternation had, so no `BASH_REMATCH` index anywhere shifts.
+#
+# The equality of the plain and flagged spellings is asserted THROUGH the gates
+# in `gate-command-recognition.test.sh`, not only at the regex level: a matcher
+# test can only fail once someone already suspects the flag, which is how both
+# rounds of this survived. Same defect and same fix as go-to-k/cdkd#2027 review
+# round 4, whose GATE_GH_C is this same GATE_FLAGS.
+GATE_GH_C="$GATE_FLAGS"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
 GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
@@ -269,37 +319,22 @@ GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 GATE_RE_GH_ISSUE_COMMENT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
-# `gh` flags for the ISSUE-MINT gate only: `-C <path>` AND `-R <owner/repo>` /
-# `--repo <owner/repo>`, quoted alternatives included, repeatable so
-# `gh -C /w/t -R o/r issue create` is absorbed too.
+# The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
+# PATH ONLY -- it says nothing about the HTTP method, and the collection is also
+# the READ endpoint (`gh api repos/<o>/<r>/issues` lists issues). An earlier
+# comment here claimed a `title=` check the regex never performed, and the gate
+# consequently refused plain reads: `gh api repos/go-to-k/cdk-local/issues` and
+# `gh api -X GET … -f state=open` both exited 2. Deciding mint-vs-read needs the
+# method and the fields, which is logic rather than a regex, so it lives in
+# `issue-dup-check-gate.sh`'s `seg_is_api_mint` and this constant is only the
+# trigger.
 #
-# A SEPARATE constant rather than a widening of GATE_GH_C, because GATE_GH_C is
-# the flag absorber for every other gh verb regex in this file --
-# GATE_RE_GH_PR_CREATE / _EDIT / _MERGE, GATE_RE_GH_ISSUE_CREATE,
-# GATE_RE_GH_ISSUE_COMMENT and GATE_RE_GH_API -- which between them decide the
-# trigger surface of verify-pr-gate, pr-review-gate, integ-gate,
-# closes-paren-form-gate, gh-pr-merge-worktree-gate, non-english-text-gate,
-# docs-inline-json-flag-gate, cdkd-parity-gate, create-integ-gate and
-# pr-body-item-number-gate. Those surfaces must not change here.
-#
-# Why the issue mint needs the wider absorber and the others (for now) do not:
-# `gh -R go-to-k/<target> issue create` is the CROSS-REPO MIRROR flow's own
-# spelling -- `/work-issues` section 10-c runs it from one repo's worktree into
-# a sibling -- and that flow is the documented duplicate GENERATOR that
-# issue-dup-check-gate exists to fence (go-to-k/cdk-local#528 /
-# go-to-k/cdk-local#531). A gate whose stated reason for existing is the mirror
-# path but which does not match the mirror path's command is close to inert.
-GATE_GH_CR='([[:space:]]+(-C|-R|--repo)[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+))*'
-# The REST spelling of MINTING an issue, for issue-dup-check-gate. `gh api
-# repos/<o>/<r>/issues` with a `title=` field creates an issue, so the gate that
-# refuses `gh issue create` has to refuse this too or the trigger is
-# under-approximated. The path must NOT continue past `issues`, which is what
-# separates a mint from `/issues/<n>/comments` (a comment) and `/issues/<n>`
-# (an edit) -- neither of which mints anything, and both of which are the
-# CHEAP path this gate exists to steer toward. The trailing `\"` alternative
-# catches a fully quoted path argument. Built on GATE_GH_CR: this constant is
-# NEW, so it has no existing consumer whose surface could change.
-GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_CR}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
+# The path must NOT continue past `issues`: that is what separates the
+# collection from `/issues/<n>/comments` (a comment) and `/issues/<n>` (an
+# edit), neither of which mints anything, and both of which are the CHEAP path
+# the gate exists to steer toward. The trailing `\"` alternative catches a fully
+# quoted path argument.
+GATE_RE_GH_API_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$).*repos/[^[:space:]/]+/[^[:space:]/]+/issues([[:space:]]|$|\")"
 
 # Strip one layer of surrounding quotes from a path token.
 gate_unquote() {
@@ -307,6 +342,152 @@ gate_unquote() {
   p="${p%\"}"; p="${p#\"}"
   p="${p%\'}"; p="${p#\'}"
   printf '%s' "$p"
+}
+
+# gate_pr_selector <command> <verb-ere>
+#
+# Print the PR number the guarded command targets, or NOTHING when it carries no
+# positional (gh's "the PR for the current branch" semantics). The caller
+# decides what "nothing" means; this function never guesses one.
+#
+# WHY THIS IS SHARED, and why a local prefix strip is not good enough.
+# Four gates each rolled their own extraction, and all four broke the moment
+# GATE_GH_C learned to absorb `-R <owner/repo>`. Widening the absorber makes the
+# flagged command REACH the gate; it does nothing about the gate then parsing it.
+# Measured 2026-08-25 against `gh -R go-to-k/cdk-local pr merge 552 --squash`:
+#
+#   closes-paren-form-gate   `args="${cmd##*gh pr merge}"` does not strip, the
+#                            number regex finds nothing, exit 0 -- gh never
+#                            called. The plain form exits 2. Fully bypassed.
+#   non-english-text-gate    a hard-coded `-C`-only PR-number regex misses, so it
+#   docs-inline-json-flag    falls back to `gh pr view --json number`, the
+#                            CURRENT BRANCH's PR: `pr diff 999` instead of 552.
+#                            The verdict is about someone else's diff.
+#   pr-review-gate           same failed strip, then its arg loop scans the WHOLE
+#                            command for the first bare integer, so
+#                            `sleep 30 && gh -R o/r pr merge 552` resolves to 30.
+#                            The wrong PR's size decides the review tier.
+#
+# So the extraction is derived from the SAME constant that decides the trigger:
+# the verb ERE is anchored at the segment start and already absorbs every flag
+# spelling, so `BASH_REMATCH[0]` is exactly the part to remove, whatever flags it
+# swallowed. A gate can no longer match one way and parse another.
+gate_pr_selector() {
+  local cmd="$1" re="$2" segment args tok
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    # Everything after the matched verb -- flags included, because the verb ERE
+    # consumed them. Scanning starts here rather than at the segment start, which
+    # is what stops a leading `sleep 30 &&` from being read as the PR number.
+    args="${segment#"${BASH_REMATCH[0]}"}"
+    # Walk with GATE_EMBEDDING_TOKEN, not `set -- $args`. Word-splitting breaks a
+    # QUOTED flag value at its first space, so `gh pr merge --subject "chore: x"
+    # 2195` split into `"chore:` and `x"`, the flag consumed only the first half,
+    # and the second half -- a non-numeric positional -- ended the walk empty.
+    # Embedding tokens keep the value whole. It also removes the globbing hazard
+    # entirely (an unquoted `$args` let a literal `*` expand against the CWD:
+    # measured with files `77` and `aaa` present, `gh pr merge --some-flag * 552`
+    # resolved to 77) -- nothing is ever expanded now, so no `set -f` is needed.
+    while [[ "$args" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
+      tok="${BASH_REMATCH[1]}"
+      args="${BASH_REMATCH[3]}"
+      [ -n "$tok" ] || break
+      case "$tok" in
+        --*=*) continue ;;
+        # Enumerate the VALUELESS flags; treat every other `-...` as consuming
+        # the next token.
+        #
+        # THE DIRECTION OF STALENESS IS THE WHOLE ARGUMENT, and it is asymmetric.
+        # This file briefly had the opposite polarity -- value-takers enumerated
+        # -- and that is strictly worse:
+        #
+        #   enumerate value-takers -> an unlisted VALUE-TAKING flag leaves its
+        #     value in the walk -> a plausible integer becomes the selector ->
+        #     the gate judges a DIFFERENT PR. Measured: `gh pr merge -t 42 552`
+        #     resolved to 42.
+        #   enumerate valueless    -> an unlisted VALUELESS flag eats the number
+        #     -> the selector is EMPTY -> the caller falls back to gh's
+        #     current-branch semantics, or declines.
+        #
+        # Wrong-PR is severe; no-PR is not. Note this also covers the flags the
+        # verb ERE does NOT absorb: it only swallows what precedes the verb, so
+        # `gh pr merge -R <slug> 552` puts `-R` into THIS walk.
+        #
+        # The short spellings are gh pr merge's own valueless flags (`-d`
+        # delete-branch, `-s` squash, `-m` merge, `-r` rebase); they are listed
+        # because omitting them costs the number for the commonest hand-typed
+        # form. `--match-head-commit`, `--body`, `-b`, `--body-file`, `-F`, `-t`,
+        # `--subject`, `-R`, `--repo` are all deliberately ABSENT: they take
+        # values, and being unlisted is now the SAFE side.
+        --squash|--merge|--rebase|--auto|--disable-auto|--admin|--delete-branch|-d|-s|-m|-r)
+          continue ;;
+        -*)
+          # consume this flag's value
+          if [[ "$args" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
+            args="${BASH_REMATCH[3]}"
+          fi
+          continue ;;
+        *)
+          # THE FINAL NUMERIC GUARD. Every caller wants a PR NUMBER, so a
+          # non-numeric positional -- a branch name, a URL, or a repo slug that
+          # an unlisted flag left behind -- must yield EMPTY rather than be
+          # handed on. Stop rather than walk on: continuing would find a digit
+          # further along that belongs to something else entirely.
+          if [[ "$tok" =~ ^[0-9]+$ ]]; then printf '%s' "$tok"; fi
+          return 0 ;;
+      esac
+    done
+    return 0
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
+# gate_cmd_repo <command> <verb-ere>
+#
+# Print the `-R <owner/repo>` / `--repo <owner/repo>` the guarded command names,
+# or nothing when it names none. All three of gh's separators are handled, and
+# tokens embed quoted spans (see GATE_EMBEDDING_TOKEN), so a repo slug inside a
+# quoted flag value is not mistaken for the flag.
+#
+# WHY: a gate resolves the PR NUMBER and then asks `gh pr view <N>` from the
+# resolved directory, WITHOUT the repo flag -- so `gh -R go-to-k/OTHER pr merge
+# 552` made every gate judge the LOCAL repo's PR 552. Right number, wrong repo,
+# and no assertion anywhere could see it because the exit code and the number
+# are both indistinguishable from the correct case. The gates pass this through
+# to their own gh calls so the question they ask matches the command they guard.
+gate_cmd_repo() {
+  local cmd="$1" re="$2" segment remaining tok found=""
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    # The WHOLE segment, not just the verb run: gh accepts the repo flag on
+    # either side of the verb, and `gh pr merge -R <slug> 552` writes it after.
+    # A segment is one command, so any repo flag in it belongs to this
+    # invocation.
+    remaining="$segment"
+    while [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
+      tok="${BASH_REMATCH[1]}"
+      remaining="${BASH_REMATCH[3]}"
+      [ -n "$tok" ] || break
+      case "$tok" in
+        --repo=*) found="${tok#--repo=}" ;;
+        -R=*)     found="${tok#-R=}" ;;
+        -R|--repo)
+          if [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
+            found="${BASH_REMATCH[1]}"; remaining="${BASH_REMATCH[3]}"
+          fi ;;
+        -R*) found="${tok#-R}" ;;
+        *) ;;
+      esac
+    done
+    break
+  done < <(gate_segments "$cmd")
+  found=$(gate_unquote "$found")
+  # An unexpanded value is not a repo; better to ask about the local one than
+  # about a literal `$VAR`.
+  case "$found" in *'$'*|*'`'*) found="" ;; esac
+  # Must look like owner/repo, or it is some other flag's value.
+  [[ "$found" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || found=""
+  printf '%s' "$found"
 }
 
 # gate_target_dir <cmd> <fallback> <extended-regex>
@@ -317,7 +498,7 @@ gate_unquote() {
 # Quoted paths survive: segments carry their original text (see the header).
 gate_target_dir() {
   local cmd="$1" fallback="$2" re="$3"
-  local target="$fallback" segment cd_target c_target remaining
+  local target="$fallback" segment cd_target c_target remaining verb_run tok
   while IFS= read -r segment; do
     if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
       cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
@@ -333,14 +514,56 @@ gate_target_dir() {
       continue
     fi
     [[ "$segment" =~ $re ]] || continue
-    # Last `-C <path>` in this segment wins over any earlier cd.
-    if [[ "$segment" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; then
-      c_target=""
-      remaining="$segment"
-      while [[ "$remaining" =~ (git|gh)[[:space:]]+-C[[:space:]]+$GATE_PATH_TOKEN ]]; do
-        c_target="${BASH_REMATCH[2]}"
-        remaining="${remaining#*"${BASH_REMATCH[0]}"}"
-      done
+    # A `-C <path>` in the MATCHED VERB'S OWN FLAG RUN wins over any earlier cd.
+    #
+    # Scanned out of `BASH_REMATCH[0]` -- the text the verb ERE just consumed,
+    # i.e. `gh <every leading flag> pr merge` -- rather than by anchoring on
+    # `(git|gh)[[:space:]]+-C`. That anchor required `-C` to sit IMMEDIATELY
+    # after the command word, so FLAG ORDER silently decided the verdict:
+    #
+    #   gh -C /w/t -R o/r pr merge 1   -> /w/t        (resolved)
+    #   gh -R o/r -C /w/t pr merge 1   -> payload cwd (NOT resolved)
+    #
+    # and the second is a live bypass, not a cosmetic asymmetry. Driven through
+    # verify-pr-gate with the `-C` target's marker STALE and the payload cwd's
+    # marker FRESH, the `-R`-first spellings returned rc=0 -- the merge was
+    # judged against a DIFFERENT worktree's marker and allowed. This is the same
+    # class as the two bypasses already closed on this branch: GATE_GH_C admits
+    # the flagged command to the verb, and a downstream reader still assumes the
+    # old adjacent-flag layout. Sourcing the scan from the ERE's own match is
+    # what makes the two agree by construction instead of by maintenance.
+    #
+    # `(^|[[:space:]])` rather than a command word, so `-C` is found wherever it
+    # sits in the run; the separator is optional and may be `=`, matching
+    # GATE_GH_C's token (`-C /w/t`, `-C=/w/t`, `-C/w/t`, quoted paths). NOTE the
+    # path is BASH_REMATCH[3]: both the leading boundary and the optional
+    # separator are groups. Lowercase `git -c k=v` does not match -- `[[ =~ ]]`
+    # is case-sensitive unless nocasematch is set, which nothing here sets.
+    verb_run="${BASH_REMATCH[0]}"
+    # Walk the flag run TOKEN BY TOKEN, with tokens that embed quoted spans, so
+    # a `-C` inside a quoted flag VALUE is part of that value and never a flag
+    # of its own (see GATE_EMBEDDING_TOKEN). A regex scan over the whole run
+    # cannot make that distinction: it has no notion of where a word begins.
+    c_target=""
+    remaining="$verb_run"
+    while [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
+      tok="${BASH_REMATCH[1]}"
+      remaining="${BASH_REMATCH[3]}"
+      [ -n "$tok" ] || break
+      case "$tok" in
+        -C=*) c_target="${tok#-C=}" ;;
+        -C)
+          # value is the NEXT token
+          if [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
+            c_target="${BASH_REMATCH[1]}"
+            remaining="${BASH_REMATCH[3]}"
+          fi
+          ;;
+        -C*) c_target="${tok#-C}" ;;
+        *) ;;
+      esac
+    done
+    if [ -n "$c_target" ]; then
       c_target=$(gate_unquote "$c_target")
       case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
       if [ -n "$c_target" ]; then

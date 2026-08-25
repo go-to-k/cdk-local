@@ -384,18 +384,23 @@ GENERATOR that §10-c already names in its own text, with two measured pairs out
 of 145 issues filed (41 of them skill-flow / cross-repo-mirror shaped):
 
 - go-to-k/cdk-local#528 (2026-08-19T06:37:46Z) and go-to-k/cdk-local#531
-  (06:46:00Z) — **nine minutes apart**, and go-to-k/cdk-local#531's three lessons
+  (06:46:00Z) — **eight minutes apart** (8 m 14 s), and go-to-k/cdk-local#531's three lessons
   (marker-sourcing, `grep -cF`, life-only-probe) are a strict SUBSET of
   go-to-k/cdk-local#528's four. Both were then closed by one PR, go-to-k/cdk-local#532.
-  go-to-k/cdk-local#528's own body shows the near miss precisely: it checked the merged FILE and the open PRs
-  (go-to-k/cdk-local#523, go-to-k/cdk-local#526) and reported them as carrying
-  different lesson sets — and never checked the open ISSUE list, where its own
-  duplicate landed nine minutes later.
+  go-to-k/cdk-local#528's own body shows the near miss precisely: it records a
+  FILE check against the merged SKILL.md and a scan of the open PRs
+  (go-to-k/cdk-local#523, go-to-k/cdk-local#526), reporting them as carrying
+  different lesson sets — and no check of the open ISSUE list, where its own
+  duplicate landed eight minutes later.
 - go-to-k/cdk-local#504 (03:14:05Z) and go-to-k/cdk-local#511 (04:29:26Z) —
   **75 minutes apart**, same target section (`/work-issues` §8's no-src
   verification tier), same upstream lesson.
 
-Two of the three windows were searched both times. The third was not.
+What the four bodies record is thinner than §10-c's three-window check:
+go-to-k/cdk-local#528 records the file and open-PR windows,
+go-to-k/cdk-local#531 the file window only, and go-to-k/cdk-local#504 /
+go-to-k/cdk-local#511 none at all. **Not one of them records an open-ISSUE
+search** — the single window that would have caught either pair.
 
 ```bash
 # Search the CONCEPT, not this instance's spelling — the same reason the code

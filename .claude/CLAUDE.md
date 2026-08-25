@@ -1375,7 +1375,13 @@ vp run runtime:smoke
   `gh pr create` for cat 1 / cat 2 until the sentinel carries a
   `github.com/go-to-k/cdkd/issues/` reference; cat 3 / cat 4 rely on the
   marker. `.claude/settings.json` `permissions.allow` pre-authorizes the
-  scoped `gh issue create`.
+  scoped `gh issue create`. That auto-file runs the `/work-issues` §5
+  open-issue search against cdkd first and carries the resulting
+  `Dup-check:` line in its body — `issue-dup-check-gate.sh` refuses a
+  `gh issue create` without one, and since this is the cross-repo mirror
+  filer whose duplicate history is that gate's rationale, an unreconciled
+  template would have deadlocked the flow outright: the gate blocks the
+  filing, and the missing filing blocks `gh pr create`.
 
   Out-of-scope diffs (internal refactors, docs, tests) pass through
   silently. `gh pr merge` is intentionally NOT gated — the parity

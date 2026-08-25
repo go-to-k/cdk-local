@@ -40,6 +40,12 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
+# `gate_pr_selector` too: without it the selector silently comes back EMPTY and
+# the gate judges the wrong PR (or none) instead of refusing.
+if ! declare -F gate_pr_selector >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_pr_selector is undefined (predates the shared PR-selector extractor?)." >&2
+  exit 2
+fi
 
 
 # Read the PreToolUse payload (command + cwd) once — separate jq
@@ -83,44 +89,31 @@ cd "$target_dir" 2>/dev/null || exit 0
 #   gh pr merge --squash --auto 123
 #   gh pr merge --auto    (no number; merges PR for current branch)
 #
-# Take the first bare numeric token after `merge`, ignoring flag
-# values. If no numeric token is found, we fall back to gh's "PR for
-# current branch" semantics by passing no positional arg.
-pr_number=""
-# Strip everything up to and including the LAST `gh pr merge` so we only
-# scan its args. Greedy `##*PATTERN` (not the shortest `#*PATTERN`) so a
-# Bash comment containing the bare word "merge" earlier in the command
-# (e.g. `# Wait + merge\ngh pr merge 21`) doesn't cause us to read the
-# wrong token as the PR number.
-args="${cmd##*gh pr merge}"
-# shellcheck disable=SC2086
-set -- $args
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --*=*) shift; continue ;;
-    --auto|--admin|--delete-branch|--squash|--merge|--rebase)
-      shift; continue ;;
-    -*)
-      # Flag that may take a value; skip the next token defensively.
-      shift
-      [ $# -gt 0 ] && shift
-      continue
-      ;;
-    *)
-      if printf '%s' "$1" | grep -qE '^[0-9]+$'; then
-        pr_number="$1"
-        break
-      fi
-      shift
-      ;;
-  esac
-done
+# No numeric token means gh's "PR for the current branch" semantics, which the
+# call below reproduces by passing no positional arg.
+# Through the SHARED extractor. Two defects were folded into the old local one,
+# and the second only became reachable once GATE_GH_C learned `-R`:
+#   - `args="${cmd##*gh pr merge}"` does not strip under a repo flag, so...
+#   - ...the arg loop scanned the WHOLE command for the first bare integer.
+#     `sleep 30 && gh -R go-to-k/cdk-local pr merge 552 --squash` resolved to
+#     `gh pr view 30` (measured 2026-08-25). The WRONG PR's additions, deletions
+#     and file count then chose the review tier -- and if that PR is `inline`,
+#     the real merge passes with no reviewer at all.
+# The shared extractor scans only what follows the matched verb, so a leading
+# numeric token cannot be read as the selector.
+pr_number=$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")
+# The repo the command NAMES, passed through to this gate's own gh calls. Without
+# it `gh -R go-to-k/OTHER pr merge 552` made the gate ask the LOCAL repo about
+# its PR 552 -- right number, wrong repo, and indistinguishable from the correct
+# case by both exit code and PR number.
+cmd_repo=$(gate_cmd_repo "$cmd" "$GATE_RE_GH_PR_MERGE")
 
 # --- Fetch PR stats via gh. --------------------------------------------
 # Pass-through on any gh error so an unrelated infra outage doesn't
 # block merges (fail-open posture, mirroring check-gate.sh).
 if [ -n "$pr_number" ]; then
-  pr_json=$(gh pr view "$pr_number" \
+  # shellcheck disable=SC2086
+  pr_json=$(gh pr view "$pr_number" ${cmd_repo:+--repo "$cmd_repo"} \
     --json additions,deletions,changedFiles,files,headRefOid,headRefName 2>/dev/null) || {
     printf 'pr-review-gate: gh pr view %s failed; allowing merge (infra fail-open)\n' "$pr_number" >&2
     exit 0
@@ -284,8 +277,14 @@ fi
 # commits on the PR branch whose message starts with `fix:` / `fix(`.
 branch=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""' 2>/dev/null || echo "")
 if [ -n "$branch" ] && git rev-parse --verify --quiet "origin/$branch" >/dev/null 2>&1; then
+  # `$(… || echo 0)` is WRONG here: `grep -c` already prints `0` before exiting
+  # 1 on no match, so the fallback APPENDS and the substitution is `0\n0` --
+  # which makes the test below print `[: 0\n0: integer expression expected` on
+  # every gated merge. The outcome happened to be correct (non-numeric is not
+  # `-gt 1`), which is exactly why it survived: a real parse failure would look
+  # identical. Assign, then default on the assignment's own exit status.
   fix_count=$(git log "origin/main..origin/$branch" --oneline 2>/dev/null \
-    | grep -cE '^[a-f0-9]+ fix(\(|:)' || echo 0)
+    | grep -cE '^[a-f0-9]+ fix(\(|:)') || fix_count=0
   if [ "${fix_count:-0}" -gt 1 ]; then
     up_bias=1
   fi
