@@ -82,6 +82,12 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
+# `gate_pr_selector` too: without it the selector silently comes back EMPTY and
+# the gate judges the wrong PR (or none) instead of refusing.
+if ! declare -F gate_pr_selector >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_pr_selector is undefined (predates the shared PR-selector extractor?)." >&2
+  exit 2
+fi
 
 
 input=$(cat 2>/dev/null || true)
@@ -131,13 +137,23 @@ fi
 #
 #   `gh pr merge <N>` / `gh pr edit <N>` — N is the explicit arg.
 #   `gh pr create` / `gh pr merge` (no arg) — current branch's PR.
-pr_number=""
-if [[ "$cmd" =~ gh([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+pr[[:space:]]+(merge|edit)[[:space:]]+([0-9]+) ]]; then
-  pr_number="${BASH_REMATCH[3]}"
-fi
+# Through the SHARED extractor, which strips whatever flags the verb regex
+# absorbed. The hard-coded `-C`-only pattern this replaces did not match under a
+# repo flag, so resolution fell through to `gh pr view --json number` -- the
+# CURRENT BRANCH's PR. Measured 2026-08-25: `gh -R go-to-k/cdk-local pr merge
+# 552 --squash` produced `gh pr diff 999 --name-only`, i.e. the gate's verdict
+# was about a different PR's diff entirely.
+pr_number=$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_MERGE")
+[[ -n "$pr_number" ]] || pr_number=$(gate_pr_selector "$cmd" "$GATE_RE_GH_PR_EDIT")
+# The repo the command NAMES, passed through to this gate's own gh calls. Without
+# it `gh -R go-to-k/OTHER pr merge 552` made the gate ask the LOCAL repo about
+# its PR 552 -- right number, wrong repo, and indistinguishable from the correct
+# case by both exit code and PR number.
+cmd_repo=$(gate_cmd_repo "$cmd" "$GATE_RE_GH_PR_MERGE")
+[[ -n "$cmd_repo" ]] || cmd_repo=$(gate_cmd_repo "$cmd" "$GATE_RE_GH_PR_EDIT")
 
 if [[ -z "$pr_number" ]]; then
-  pr_number=$( (cd "$target_dir" && "$GH" pr view --json number -q .number) 2>/dev/null || true)
+  pr_number=$( (cd "$target_dir" && "$GH" pr view ${cmd_repo:+--repo "$cmd_repo"} --json number -q .number) 2>/dev/null || true)
 fi
 
 # No PR yet (typical `gh pr create` on a fresh branch) — fall back to
@@ -158,7 +174,7 @@ if [[ "$use_local_diff" -eq 1 ]]; then
   fi
   changed_files=$(git -C "$target_dir" diff "$merge_base..HEAD" --name-only --diff-filter=AM 2>/dev/null || true)
 else
-  changed_files=$( (cd "$target_dir" && "$GH" pr diff "$pr_number" --name-only) 2>/dev/null || true)
+  changed_files=$( (cd "$target_dir" && "$GH" pr diff "$pr_number" ${cmd_repo:+--repo "$cmd_repo"} --name-only) 2>/dev/null || true)
 fi
 
 if [[ -z "$changed_files" ]]; then
@@ -192,7 +208,7 @@ MAX_REPORT=20
 # sha once.
 pr_head_sha=""
 if [[ "$use_local_diff" -eq 0 ]]; then
-  pr_head_sha=$( (cd "$target_dir" && "$GH" pr view "$pr_number" --json headRefOid -q .headRefOid) 2>/dev/null || true)
+  pr_head_sha=$( (cd "$target_dir" && "$GH" pr view "$pr_number" ${cmd_repo:+--repo "$cmd_repo"} --json headRefOid -q .headRefOid) 2>/dev/null || true)
 fi
 
 read_file_content() {

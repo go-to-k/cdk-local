@@ -31,6 +31,12 @@ if ! declare -F gate_matches >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
+# `gate_pr_selector` too: without it the selector silently comes back EMPTY and
+# the gate judges the wrong PR (or none) instead of refusing.
+if ! declare -F gate_pr_selector >/dev/null 2>&1; then
+  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_pr_selector is undefined (predates the shared PR-selector extractor?)." >&2
+  exit 2
+fi
 
 
 input_json=$(cat)
@@ -48,13 +54,19 @@ command=$(jq -r '.tool_input.command // empty' <<<"$input_json" 2>/dev/null || t
 # this used to run could not tell those apart).
 gate_matches "$command" "$GATE_RE_GH_PR_MERGE" || exit 0
 
-# Extract the LAST `gh pr merge ... N` occurrence so an earlier mention in the
-# same command line does not confuse the positional parser.
-trimmed="${command}"
-
-# Extract PR number (positional integer after `gh pr merge`)
-args="${trimmed##*gh pr merge}"
-pr_num=$(echo "$args" | grep -oE '^[[:space:]]*[0-9]+' | head -1 | tr -d '[:space:]' || true)
+# Extract the PR number through the SHARED extractor, which strips the matched
+# verb -- flags and all -- rather than a literal `gh pr merge` prefix.
+# `args="${command##*gh pr merge}"` was the old shape and it did not strip under
+# a repo flag, so the number regex found nothing and this gate exited 0:
+# `gh -R <owner/repo> pr merge 552 --squash` was FULLY bypassed while the plain
+# form was refused (measured 2026-08-25 with a gh shim returning a body carrying
+# `Closes (#12)`: plain rc=2, every flagged spelling rc=0 with gh never called).
+pr_num=$(gate_pr_selector "$command" "$GATE_RE_GH_PR_MERGE")
+# The repo the command NAMES, passed through to this gate's own gh calls. Without
+# it `gh -R go-to-k/OTHER pr merge 552` made the gate ask the LOCAL repo about
+# its PR 552 -- right number, wrong repo, and indistinguishable from the correct
+# case by both exit code and PR number.
+cmd_repo=$(gate_cmd_repo "$command" "$GATE_RE_GH_PR_MERGE")
 [[ -n "$pr_num" ]] || exit 0
 [[ "$pr_num" =~ ^[0-9]+$ ]] || exit 0
 
@@ -69,7 +81,7 @@ pr_num=$(echo "$args" | grep -oE '^[[:space:]]*[0-9]+' | head -1 | tr -d '[:spac
 #       grep below handles empty input cleanly; no warning needed.
 gh_stderr=$(mktemp)
 trap 'rm -f "$gh_stderr"' EXIT
-if ! body=$(gh pr view "$pr_num" --json body -q .body 2>"$gh_stderr"); then
+if ! body=$(gh pr view "$pr_num" ${cmd_repo:+--repo "$cmd_repo"} --json body -q .body 2>"$gh_stderr"); then
   {
     echo "WARN: closes-paren-form-gate could not fetch PR #$pr_num body"
     echo "    (\`gh pr view\` exited non-zero — likely network / auth /"

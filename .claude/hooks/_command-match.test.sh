@@ -97,6 +97,73 @@ want_match 0 "gh api after a cd"              'cd /w/t && gh api -X PATCH repos/
 want_match 1 "api inside a string"            'echo "next: gh api repos/o/r"' "$API"
 want_match 1 "gh pr create is not gh api"     'gh pr create --fill' "$API"
 
+# --- GATE_GH_C absorbs `-C` / `-R` / `--repo` for EVERY gh verb --------------
+# It absorbed `-C <path>` only until 2026-08-25, which was a live gate bypass:
+# `gh -R o/r pr merge 1 --squash` matched nothing and walked past verify-pr-gate
+# and integ-gate. These pin the widened surface on every gh verb regex, since
+# they all share the absorber.
+want_match 0 "IC: -R <repo>"                  'gh -R go-to-k/cdk-local issue create -t x' "$IC"
+want_match 0 "IC: --repo <repo>"              'gh --repo go-to-k/cdkd issue create -t x' "$IC"
+want_match 0 "IC: -C and -R together"         'gh -C /w/t -R go-to-k/cdkd issue create -t x' "$IC"
+want_match 0 "IC: quoted -C path"             'gh -C "/a b" issue create -t x' "$IC"
+want_match 0 "IC: -R after a cd, chained"     'cd /w/t && gh -R go-to-k/cdkd issue create -t x' "$IC"
+# THE bypass cases. Before the widening these matched NOTHING.
+want_match 0 "pr merge: -R <repo>"            'gh -R go-to-k/cdk-local pr merge 1 --squash' "$M"
+want_match 0 "pr merge: --repo <repo>"        'gh --repo go-to-k/cdk-local pr merge 1 --squash' "$M"
+want_match 0 "pr create: -R <repo>"           'gh -R go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
+want_match 0 "pr edit: -R <repo>"             'gh -R go-to-k/cdk-local pr edit 1 --body x' "$GATE_RE_GH_PR_EDIT"
+want_match 0 "issue comment: -R <repo>"       'gh -R go-to-k/cdk-local issue comment 7 --body x' "$ICM"
+want_match 0 "gh api: -R <repo>"              'gh -R go-to-k/cdk-local api repos/o/r/pulls/1' "$API"
+# ALL THREE separators `gh` accepts, not just the space form. Verified against a
+# real repo: `gh pr list --repo=go-to-k/cdkd`, `-R=go-to-k/cdkd` and the GLUED
+# `-Rgo-to-k/cdkd` all return the same PR number. An explicit flag alternation
+# fixed only the space form, so `gh --repo=o/r pr merge --squash` was still a
+# bypass; GATE_FLAGS' `-[^[:space:]]+` token swallows all three whole.
+want_match 0 "pr merge: --repo=<repo>"       'gh --repo=go-to-k/cdk-local pr merge 1 --squash' "$M"
+want_match 0 "pr merge: -R=<repo>"           'gh -R=go-to-k/cdk-local pr merge 1 --squash' "$M"
+want_match 0 "pr merge: -R<repo> glued"      'gh -Rgo-to-k/cdk-local pr merge 1 --squash' "$M"
+want_match 0 "pr merge: -C=<path>"           'gh -C=/w/t pr merge 1 --squash' "$M"
+want_match 0 "pr create: --repo=<repo>"      'gh --repo=go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
+want_match 0 "IC: --repo=<repo>"             'gh --repo=go-to-k/cdk-local issue create -t x' "$IC"
+want_match 0 "IC: -R=<repo>"                 'gh -R=go-to-k/cdk-local issue create -t x' "$IC"
+want_match 0 "IC: -R<repo> glued"            'gh -Rgo-to-k/cdk-local issue create -t x' "$IC"
+want_match 0 "IC: two flags, mixed seps"     'gh -C /w/t --repo=go-to-k/cdkd issue create -t x' "$IC"
+want_match 0 "api mint: --repo=<repo>"       'gh --repo=go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t' "$GATE_RE_GH_API_ISSUE_CREATE"
+# The wider token must still not let one gh verb match a DIFFERENT one, and the
+# `=`/glued forms are where a too-greedy absorber would show it first.
+want_match 1 "glued -R: pr view is not create" 'gh -Rgo-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
+want_match 1 "glued -R: pr create is not merge" 'gh -Rgo-to-k/cdk-local pr create --fill' "$M"
+want_match 1 "--repo=: issue comment is not create" 'gh --repo=go-to-k/cdk-local issue comment 7 --body x' "$IC"
+# A flag VALUE must not swallow the verb: GATE_FLAGS' optional value group could
+# consume `pr`, and only backtracking saves it. Pin both directions.
+want_match 0 "flag with no value, then verb"  'gh --draft pr create --fill' "$GATE_RE_GH_PR_CREATE"
+want_match 0 "boolean flag before merge"      'gh --yes pr merge 1 --squash' "$M"
+# The plain and `-C` spellings must keep the verdicts they already had --
+# widening an absorber must not change what a verb regex means.
+want_match 0 "IC: plain unchanged"            'gh issue create -t x' "$IC"
+want_match 0 "IC: -C unchanged"               'gh -C /w/t issue create -t x' "$IC"
+want_match 0 "pr merge: plain unchanged"      'gh pr merge 1 --squash' "$M"
+want_match 0 "pr merge: -C unchanged"         'gh -C /w/t pr merge 1 --squash' "$M"
+# ...and the absorber must not let one gh verb match a DIFFERENT gh verb, which
+# is the failure mode a greedy flag run would introduce.
+want_match 1 "pr merge: -R pr create is not merge" 'gh -R go-to-k/cdk-local pr create --fill' "$M"
+want_match 1 "IC: -R issue comment is not create"  'gh -R go-to-k/cdk-local issue comment 7 --body x' "$IC"
+want_match 1 "IC: -R pr create is not issue create" 'gh -R go-to-k/cdk-local pr create --fill' "$IC"
+want_match 1 "pr create: -R pr view is not create"  'gh -R go-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
+want_match 1 "IC: -R inside a string"              'echo "gh -R o/r issue create"' "$IC"
+
+# --- the REST mint (issue-dup-check-gate) -------------------------------------
+# `gh api repos/<o>/<r>/issues` creates an issue; the path must NOT continue
+# past `issues`, which is what separates a mint from a comment or an edit.
+APIIC="$GATE_RE_GH_API_ISSUE_CREATE"
+want_match 0 "gh api issues POST"             'gh api repos/go-to-k/cdk-local/issues -f title=t' "$APIIC"
+want_match 0 "gh api issues POST after a cd"  'cd /w/t && gh api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
+want_match 0 "gh api issues POST with -R"     'gh -R go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
+want_match 1 "gh api issue comments"          'gh api repos/go-to-k/cdk-local/issues/5/comments -f body=x' "$APIIC"
+want_match 1 "gh api issue PATCH"             'gh api -X PATCH repos/go-to-k/cdk-local/issues/5 -f body=x' "$APIIC"
+want_match 1 "gh api pulls is not issues"     'gh api repos/go-to-k/cdk-local/pulls -f title=t' "$APIIC"
+want_match 1 "gh issue create is not gh api"  'gh issue create --fill' "$APIIC"
+
 want_dir "/w/t" "gh -C on an issue comment"   'gh -C /w/t issue comment 7 --body x' /fallback "$ICM"
 want_dir "/w/t" "cd before a git switch"      'cd /w/t && git switch main' /fallback "$SW"
 
@@ -109,6 +176,109 @@ want_dir "/fallback/rel" "relative cd"         'cd rel && git commit -m x' /fall
 want_dir "/w/t"       "git -C beats cd"        'cd /other && git -C /w/t commit -m x' /fallback "$C"
 want_dir "/w/t"       "gh -C on a merge"       'gh -C /w/t pr merge 1 --squash' /fallback "$M"
 want_dir "/fallback"  "cd AFTER the verb does not count" 'git commit -m x && cd /w/t' /fallback "$C"
+
+# --- gate_target_dir: `-C` is ORDER-INDEPENDENT within the flag run ----------
+# The scan used to anchor on `(git|gh)[[:space:]]+-C`, so `-C` had to sit
+# IMMEDIATELY after the command word and FLAG ORDER decided the verdict:
+# `gh -C /w/t -R o/r pr merge` resolved, `gh -R o/r -C /w/t pr merge` fell back
+# to the payload cwd. That is a live bypass -- driven through verify-pr-gate
+# with the `-C` target's marker STALE and the payload cwd's FRESH, the
+# `-R`-first spellings returned rc=0 and the merge was judged against a
+# different worktree's marker. Until this block there was NO want_dir case for
+# the `=` / multi-flag resolution at all.
+want_dir "/w/t" "-C first, then -R"        'gh -C /w/t -R o/r pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "-R first, then -C"        'gh -R o/r -C /w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "--repo= first, then -C"   'gh --repo=o/r -C /w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "-R first, then -C="       'gh -R o/r -C=/w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "glued -R, glued -C"       'gh -Ro/r -C/w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "-C= alone"                'gh -C=/w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "-C glued alone"           'gh -C/w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w t" "-R first, quoted -C path" 'gh -R o/r -C "/w t" pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "last -C wins, after -R"   'gh -R o/r -C /a -C /w/t pr merge 1 --squash' /fallback "$M"
+want_dir "/w/t" "-C after -R on issue create" 'gh -R o/r -C /w/t issue create -t x' /fallback "$IC"
+# A `-C` AFTER the verb is an argument, not a flag of the verb run, so it must
+# NOT steer the lookup -- the scan reads only the text the verb ERE consumed.
+want_dir "/fallback" "-C after the verb is ignored" 'gh pr merge 1 --squash -C /w/t' /fallback "$M"
+# Lowercase `git -c k=v` is not `-C` (the match is case-sensitive).
+want_dir "/w/t" "git -c config before -C" 'git -c user.name=t -C /w/t commit -m x' /fallback "$C"
+want_dir "/fallback" "git -c alone is not -C" 'git -c user.name=t commit -m x' /fallback "$C"
+want_dir "/base" "-C= with an unexpanded variable falls back" 'gh -R o/r -C="$WT" pr merge 1' /base "$M"
+
+# --- gate_pr_selector: DIRECT cases -----------------------------------------
+# It was fenced only indirectly, through the gates in
+# gate-command-recognition.test.sh. A helper four gates depend on for the PR
+# they judge deserves cases at its own level.
+want_sel() {
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  got=$(gate_pr_selector "$cmd" "$re")
+  [ -z "$got" ] && got="(none)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$label" "$want" "$got"
+  fi
+}
+want_sel "552"    "plain positional"            'gh pr merge 552 --squash' "$M"
+want_sel "552"    "-R before the verb"          'gh -R go-to-k/x pr merge 552 --squash' "$M"
+want_sel "552"    "--repo= before the verb"     'gh --repo=go-to-k/x pr merge 552 --squash' "$M"
+want_sel "552"    "glued -R before the verb"    'gh -Rgo-to-k/x pr merge 552 --squash' "$M"
+want_sel "552"    "flags before the number"     'gh pr merge --squash --auto 552' "$M"
+want_sel "552"    "short boolean before number" 'gh pr merge -d 552' "$M"
+want_sel "552"    "--flag=value before number"  'gh pr merge --body=x 552' "$M"
+want_sel "552"    "numeric token BEFORE the verb is not the selector" \
+  'sleep 30 && gh -R go-to-k/x pr merge 552 --squash' "$M"
+want_sel "552"    "an earlier merge mention does not win" \
+  'echo "gh pr merge 11" && gh pr merge 552 --squash' "$M"
+want_sel "(none)" "no positional means current branch" 'gh pr merge --squash' "$M"
+want_sel "(none)" "a branch name is not a number"      'gh pr merge my-branch --squash' "$M"
+want_sel "(none)" "a URL positional is not a number"   'gh pr merge https://github.com/o/r/pull/552' "$M"
+want_sel "(none)" "verb not present"                   'gh pr view 552' "$M"
+want_sel "552"    "pr edit selector"                   'gh -R go-to-k/x pr edit 552 --body x' "$GATE_RE_GH_PR_EDIT"
+# THE POLARITY of the flag enumeration, pinned in both directions. VALUELESS
+# flags are enumerated; every other `-...` consumes its next token. The opposite
+# polarity -- enumerating value-takers -- was tried and is strictly worse,
+# because the two failure modes are not symmetric:
+#
+#   unlisted VALUE-TAKER   -> its value stays in the walk -> a plausible integer
+#                             becomes the selector -> a DIFFERENT PR is judged.
+#                             Measured: `gh pr merge -t 42 552` resolved to 42.
+#   unlisted VALUELESS     -> it eats the number -> selector EMPTY -> the caller
+#                             falls back to current-branch semantics.
+#
+# Wrong-PR is severe, no-PR is not, so the empty results below are the DESIRED
+# outcome, not a gap.
+want_sel "552"    "--disable-auto is valueless"    'gh pr merge --disable-auto 552' "$M"
+want_sel "552"    "--admin is valueless"           'gh pr merge --admin 552' "$M"
+want_sel "552"    "-d short boolean"               'gh pr merge -d 552' "$M"
+want_sel "2195"   "--delete-branch --squash"       'gh pr merge --delete-branch --squash 2195' "$M"
+want_sel "(none)" "an unknown future flag yields EMPTY, not a wrong PR" \
+  'gh pr merge --some-new-flag 552' "$M"
+# The verb ERE absorbs only what PRECEDES the verb, so a repo flag written AFTER
+# it lands in this walk. Unlisted => value-taking => the slug is consumed and the
+# real number is found. Under the value-taker polarity `-R` was treated as
+# valueless and the SLUG became the selector.
+want_sel "552"    "-R <slug> after the verb"       'gh pr merge -R go-to-k/cdk-local 552 --squash' "$M"
+want_sel "552"    "--repo <slug> after the verb"   'gh pr merge --repo go-to-k/cdk-local 552' "$M"
+want_sel "552"    "-t <title> after the verb"      'gh pr merge -t 42 552' "$M"
+want_sel "552"    "--body-file value is skipped"   'gh pr merge --body-file /tmp/b.md 552' "$M"
+want_sel "552"    "--match-head-commit is skipped" 'gh pr merge --match-head-commit abc123 552' "$M"
+want_sel "552"    "-b value is skipped"            'gh pr merge -b text 552' "$M"
+# The FINAL NUMERIC GUARD: every caller wants a PR number, so a non-numeric
+# positional must yield empty rather than be handed on.
+want_sel "(none)" "a repo slug alone is not a PR number" 'gh pr merge go-to-k/cdk-local' "$M"
+
+# --- gate_target_dir must not read inside a quoted flag VALUE ---------------
+# `GATE_PATH_TOKEN` is "a quoted span OR a bare run of non-space", so it split
+# `core.pager="less` at the first space and read the tail `-C /evil"` as a fresh
+# `-C` flag: a quoted flag value STEERED the target directory, and through
+# branch-gate on `main` that turns rc=2 into rc=0. Tokens now EMBED quoted spans.
+want_dir "/fallback" "-C inside a quoted flag value is not a flag" \
+  'git -c core.pager="less -C /evil" commit -m y' /fallback "$C"
+want_dir "/fallback" "-C inside a single-quoted value is not a flag" \
+  "git -c core.pager='less -C /evil' commit -m y" /fallback "$C"
+want_dir "/w/t" "a real -C still wins after a quoted value" \
+  'git -c a.b="x -C /evil" -C /w/t commit -m y' /fallback "$C"
+want_dir "/w/t" "-c k=v then -C still resolves" 'git -c k=v -C /w/t commit -m y' /fallback "$C"
 
 # --- every gate is actually converted -----------------------------------------
 # The matcher only helps a gate that uses it. This pins the conversion so a new

@@ -25,21 +25,63 @@ git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 : > "$repo/.markgate.yml"   # opt in to the markgate convention
 
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
+# Both stubs LOG THEIR $PWD when asked to. A gate `cd`s into the directory it
+# resolved before asking markgate, so that log is a direct read of
+# gate_target_dir's answer through the real hook -- which is the only way to
+# fence target-dir resolution for gates whose exit code is the same either way.
+# Both stubs log their $PWD AND THEIR ARGV. Logging only $PWD was a blind spot
+# of its own: nothing asserted WHICH GATE NAME a hook verifies, so swapping
+# `markgate verify verify-pr` for `markgate verify check` in verify-pr-gate --
+# a LIVE BYPASS, since the PR then merges whenever `/check` alone is fresh and
+# the `/verify-pr` checklist never ran -- left the whole suite green. The `gh`
+# shim had had argv logging since the selector round; markgate had not.
 cat > "$SHIM/mise" <<'MISE'
 #!/usr/bin/env bash
+[ -n "${PWD_LOG:-}" ] && printf '%s\n' "$PWD" >> "$PWD_LOG"
+[ -n "${MG_LOG:-}" ] && printf '%s\n' "$*" >> "$MG_LOG"
 exit "${MARKGATE_RC:-1}"
 MISE
 cat > "$SHIM/markgate" <<'MG'
 #!/usr/bin/env bash
+[ -n "${PWD_LOG:-}" ] && printf '%s\n' "$PWD" >> "$PWD_LOG"
+[ -n "${MG_LOG:-}" ] && printf '%s\n' "$*" >> "$MG_LOG"
 exit "${MARKGATE_RC:-1}"
 MG
-chmod +x "$SHIM/mise" "$SHIM/markgate"
+# A `git` shim that logs argv. cdkd-parity-gate / create-integ-gate expose the
+# directory they resolved on their FIRST `git -C "$target_dir" rev-parse
+# --git-dir`, long before markgate -- so their resolution IS observable, and an
+# earlier revision of this file wrongly recorded "(never asked)" and called them
+# uncoverable. Delegates to the real git so the gates still function.
+cat > "$SHIM/git" <<'GIT'
+#!/usr/bin/env bash
+[ -n "${GIT_LOG:-}" ] && printf '%s\n' "$*" >> "$GIT_LOG"
+exec /usr/bin/git "$@"
+GIT
+# A `gh` shim that LOGS its argv. Without it the gh-calling gates fail open and
+# every pair below is satisfied vacuously at 0 -- which is exactly how three live
+# bypasses were certified green (see run_sel).
+cat > "$SHIM/gh" <<'GH'
+#!/usr/bin/env bash
+[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  "auth status"*) exit 0 ;;
+  *"pr view --json number"*) echo 999 ;;   # the CURRENT BRANCH's PR, never the target
+  *"pr view"*"body"*) echo 'Closes (#12)' ;;
+  *"pr view"*) echo '{"additions":50,"deletions":10,"changedFiles":2,"files":[],"headRefOid":"abc","headRefName":"f"}' ;;
+  *"pr diff"*) echo 'README.md' ;;
+esac
+exit 0
+GH
+chmod +x "$SHIM/mise" "$SHIM/markgate" "$SHIM/gh" "$SHIM/git"
 
 pass=0; fail=0
 # run_case <name> <expect_exit> <hook> <command>
 run_case() {
   local name="$1" want="$2" hook="$3" cmd="$4" got out payload
-  payload=$(printf '{"cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd")
+  # `tool_name` is REQUIRED, not decoration: closes-paren-form-gate reads it and
+  # exits before ever looking at the command when it is absent, so a payload
+  # without it reported "both exit 0" over a fully bypassed gate.
+  payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd")
   out=$(printf '%s' "$payload" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 \
     "$HOOKS/$hook" 2>&1); got=$?
   if [ "$got" = "$want" ]; then
@@ -63,6 +105,18 @@ run_case "verify-pr-gate: push && pr create"  2 verify-pr-gate.sh 'git push && g
 run_case "verify-pr-gate: pr merge"           2 verify-pr-gate.sh 'gh pr merge 42 --squash'
 run_case "verify-pr-gate: pr view passes"     0 verify-pr-gate.sh 'gh pr view 42'
 
+# issue-dup-check-gate guards the two verbs that MINT an issue, and only those.
+# Driven through the real hook so a gate that sources the helper and then asks
+# the WRONG question is still caught (the reason this file exists).
+run_case "issue-dup: issue create"            2 issue-dup-check-gate.sh 'gh issue create --title t --body-file /nope.md'
+run_case "issue-dup: gh -R issue create"      2 issue-dup-check-gate.sh 'gh -R go-to-k/cdkd issue create --title t --body-file /nope.md'
+run_case "issue-dup: chained issue create"    2 issue-dup-check-gate.sh 'git push && gh issue create --title t --body-file /nope.md'
+run_case "issue-dup: gh api issues POST"      2 issue-dup-check-gate.sh 'gh api repos/go-to-k/cdk-local/issues -f title=t -f body=x'
+run_case "issue-dup: issue comment passes"    0 issue-dup-check-gate.sh 'gh issue comment 7 --body-file /nope.md'
+run_case "issue-dup: issue edit passes"       0 issue-dup-check-gate.sh 'gh issue edit 7 --body-file /nope.md'
+run_case "issue-dup: pr create passes"        0 issue-dup-check-gate.sh 'gh pr create --fill'
+run_case "issue-dup: quoted mention passes"   0 issue-dup-check-gate.sh 'echo \"then gh issue create -t x\"'
+
 # branch-gate guards commit AND push, and only on a protected branch.
 git -C "$repo" checkout -q -b main
 run_case "branch-gate: commit on main"        2 branch-gate.sh 'git commit -m x'
@@ -71,6 +125,296 @@ run_case "branch-gate: chained commit"        2 branch-gate.sh 'vp run check && 
 run_case "branch-gate: status on main"        0 branch-gate.sh 'git status'
 git -C "$repo" checkout -q feature
 run_case "branch-gate: commit on a feature branch" 0 branch-gate.sh 'git commit -m x'
+
+# --- a repo/dir FLAG must not change any gate's verdict ----------------------
+# `gh -R <owner/repo> pr merge 1 --squash` matched NOTHING until 2026-08-25,
+# because GATE_GH_C absorbed `-C <path>` only, so it MERGED PAST verify-pr-gate
+# and integ-gate while the identical command without the flag was refused
+# (verify-pr-gate 2 -> 0 on both `pr merge` and `pr create`; integ-gate 2 -> 0).
+#
+# The regex-level cases in `_command-match.test.sh` pin the absorber, but they
+# can only fail once someone already suspects the flag. THIS is the assertion
+# that would have caught it cold: drive the gate with the plain and the flagged
+# spelling of the same command and demand the SAME exit code. It needs no
+# knowledge of which flags exist — only that adding one must not change a
+# verdict.
+#
+# run_pair <name> <hook> <plain-cmd> <flagged-cmd> [<expected-plain-rc>]
+#
+# The 5th argument is a GUARD ON THE GUARD. Several gates shell out to `gh` and
+# fail OPEN when it errors, so under this harness they answer 0 to both
+# spellings and the equality holds VACUOUSLY. Passing the expected plain rc
+# forces the pair to be discriminating: if the gate stops refusing the plain
+# command, the case fails instead of quietly proving nothing.
+run_pair() {
+  local name="$1" hook="$2" plain="$3" flagged="$4" want_plain="${5:-}"
+  local a b pa pb
+  pa=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$plain")
+  pb=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$flagged")
+  printf '%s' "$pa" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 "$HOOKS/$hook" >/dev/null 2>&1; a=$?
+  printf '%s' "$pb" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 "$HOOKS/$hook" >/dev/null 2>&1; b=$?
+  if [ -n "$want_plain" ] && [ "$a" != "$want_plain" ]; then
+    fail=$((fail + 1))
+    printf 'FAIL %s (plain rc %s, expected %s -- the pair no longer discriminates)\n' "$name" "$a" "$want_plain"
+    return
+  fi
+  if [ "$a" = "$b" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(both exit $a)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (plain %s, flagged %s -- the flag bypasses the gate)\n' "$name" "$a" "$b"
+  fi
+}
+
+R=go-to-k/cdk-local
+# The three pairs that actually discriminate under this harness, each pinned to
+# the refusing rc so they cannot go vacuous.
+run_pair "verify-pr-gate: -R pr merge"  verify-pr-gate.sh "gh pr merge 1 --squash" "gh -R $R pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -R pr create" verify-pr-gate.sh "gh pr create --fill"    "gh -R $R pr create --fill"    2
+run_pair "integ-gate: -R pr merge"      integ-gate.sh     "gh pr merge 1 --squash" "gh -R $R pr merge 1 --squash" 2
+run_pair "issue-dup-gate: -R issue create" issue-dup-check-gate.sh \
+  "gh issue create -t x --body-file /nope.md" "gh -R $R issue create -t x --body-file /nope.md" 2
+run_pair "verify-pr-gate: --repo pr merge" verify-pr-gate.sh "gh pr merge 1 --squash" "gh --repo $R pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -C then -R"      verify-pr-gate.sh "gh pr merge 1 --squash" "gh -C $repo -R $R pr merge 1 --squash" 2
+# ...and the REVERSED order, which is the one that broke: the `-C` scan required
+# `-C` immediately after `gh`, so `gh -R o/r -C <dir> …` resolved to the payload
+# cwd instead of <dir>. With a STALE marker in the -C target that returned rc=0
+# -- the merge judged against a different worktree's marker. Only the working
+# order was tested here before.
+run_pair "verify-pr-gate: -R then -C"      verify-pr-gate.sh "gh pr merge 1 --squash" "gh -R $R -C $repo pr merge 1 --squash" 2
+run_pair "verify-pr-gate: --repo= then -C" verify-pr-gate.sh "gh pr merge 1 --squash" "gh --repo=$R -C $repo pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -R then -C="     verify-pr-gate.sh "gh pr merge 1 --squash" "gh -R $R -C=$repo pr merge 1 --squash" 2
+run_pair "integ-gate: -R then -C"          integ-gate.sh     "gh pr merge 1 --squash" "gh -R $R -C $repo pr merge 1 --squash" 2
+# ALL THREE separators `gh` accepts. The `=` and GLUED forms are not exotic:
+# `gh pr list --repo=<o/r>`, `-R=<o/r>` and `-R<o/r>` all work against a real
+# repo. An explicit flag alternation absorbed only the space form, so these were
+# still merging past verify-pr-gate one keystroke after the space form was
+# fixed -- and the glued form is the one a hand-written alternation misses,
+# since it has no separator at all.
+run_pair "verify-pr-gate: --repo=<repo>"   verify-pr-gate.sh "gh pr merge 1 --squash" "gh --repo=$R pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -R=<repo>"       verify-pr-gate.sh "gh pr merge 1 --squash" "gh -R=$R pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -R<repo> glued"  verify-pr-gate.sh "gh pr merge 1 --squash" "gh -R$R pr merge 1 --squash" 2
+run_pair "verify-pr-gate: -C=<path>"       verify-pr-gate.sh "gh pr merge 1 --squash" "gh -C=$repo pr merge 1 --squash" 2
+run_pair "integ-gate: -R<repo> glued"      integ-gate.sh     "gh pr merge 1 --squash" "gh -R$R pr merge 1 --squash" 2
+run_pair "integ-gate: --repo=<repo>"       integ-gate.sh     "gh pr merge 1 --squash" "gh --repo=$R pr merge 1 --squash" 2
+run_pair "issue-dup-gate: -R<repo> glued"  issue-dup-check-gate.sh \
+  "gh issue create -t x --body-file /nope.md" "gh -R$R issue create -t x --body-file /nope.md" 2
+run_pair "issue-dup-gate: --repo=<repo>"   issue-dup-check-gate.sh \
+  "gh issue create -t x --body-file /nope.md" "gh --repo=$R issue create -t x --body-file /nope.md" 2
+# The remaining gh gates fail open under the stubbed `gh`, so these pairs are
+# equal at 0 and are kept as REGRESSION cases only -- deliberately WITHOUT a
+# discriminating rc, because there is none to assert here. They still catch a
+# widening that makes one spelling throw where the other does not.
+run_pair "pr-review-gate: -R pr merge"     pr-review-gate.sh     "gh pr merge 1 --squash" "gh -R $R pr merge 1 --squash"
+run_pair "closes-paren-gate: -R pr merge"  closes-paren-form-gate.sh "gh pr merge 1 --squash" "gh -R $R pr merge 1 --squash"
+# CONTROLS, not fences -- say so rather than let the count imply coverage. Both
+# gates answer 0 to either spelling under the stubbed `gh`, so the equality is
+# satisfied trivially and proves only that the flag introduces no new error.
+# Unlike verify-pr-gate / integ-gate they have no rc that discriminates here, so
+# they get no expected-plain-rc argument; what DOES fence their target-dir
+# resolution is run_dir below, which asserts the directory they consult.
+run_pair "cdkd-parity-gate: -R pr create (control)"  cdkd-parity-gate.sh   "gh pr create --fill" "gh -R $R pr create --fill"
+run_pair "create-integ-gate: -R pr create (control)" create-integ-gate.sh  "gh pr create --fill" "gh -R $R pr create --fill"
+
+# --- the DIRECTORY a gate consults, for the gates whose rc cannot show it ----
+# `markgate` is asked from inside the resolved target dir, so logging its $PWD
+# is a direct read of gate_target_dir's answer through the real hook. This is
+# what covers cdkd-parity-gate / create-integ-gate, whose exit codes are equal
+# either way, and it is the assertion that would have caught the `-C` order bug
+# for them.
+run_dir() {
+  local name="$1" hook="$2" cmd="$3" want="$4" got
+  : > "$TMPDIR/pwd.log"
+  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 PWD_LOG="$TMPDIR/pwd.log" \
+      "$HOOKS/$hook" >/dev/null 2>&1
+  got=$(head -1 "$TMPDIR/pwd.log")
+  [ -z "$got" ] && got="(never asked)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(consulted $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (consulted %s, expected %s)\n' "$name" "$got" "$want"
+  fi
+}
+
+other="$TMPDIR/other"; mkdir -p "$other"; git -C "$other" init -q 2>/dev/null; : > "$other/.markgate.yml"
+verb="pr merge 1 --squash"
+run_dir "verify-pr-gate: no -C uses the payload cwd" verify-pr-gate.sh "gh $verb"                     "$repo"
+run_dir "verify-pr-gate: -C only"                    verify-pr-gate.sh "gh -C $other $verb"           "$other"
+run_dir "verify-pr-gate: -C then -R"                 verify-pr-gate.sh "gh -C $other -R $R $verb"     "$other"
+run_dir "verify-pr-gate: -R then -C"                 verify-pr-gate.sh "gh -R $R -C $other $verb"     "$other"
+run_dir "verify-pr-gate: --repo= then -C"            verify-pr-gate.sh "gh --repo=$R -C $other $verb" "$other"
+run_dir "verify-pr-gate: -R then -C="                verify-pr-gate.sh "gh -R $R -C=$other $verb"     "$other"
+run_dir "verify-pr-gate: -C after the verb is ignored" verify-pr-gate.sh "gh $verb -C $other"         "$repo"
+
+# cdkd-parity-gate / create-integ-gate DO expose the directory they resolved --
+# on their first `git -C "$target_dir" rev-parse --git-dir`, long before
+# markgate. An earlier revision of this file recorded "(never asked)" for them
+# and called the coverage impossible; that was wrong, and the comment saying so
+# is exactly what would have stopped the next person from adding this. Read the
+# `git -C` argument instead.
+#
+# run_git_dir <name> <hook> <cmd> <expected -C argument>
+run_git_dir() {
+  local name="$1" hook="$2" cmd="$3" want="$4" got
+  : > "$TMPDIR/git.log"
+  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 GIT_LOG="$TMPDIR/git.log" \
+      "$HOOKS/$hook" >/dev/null 2>&1
+  got=$(grep -oE '^-C [^ ]+' "$TMPDIR/git.log" | head -1 | awk '{print $2}')
+  [ -z "$got" ] && got="(never asked)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(git -C $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (git -C %s, expected %s)\n' "$name" "$got" "$want"
+  fi
+}
+
+for g in cdkd-parity-gate.sh create-integ-gate.sh; do
+  run_git_dir "$g: no -C uses the payload cwd" "$g" "gh pr create --fill"                     "$repo"
+  run_git_dir "$g: -C only"                    "$g" "gh -C $other pr create --fill"           "$other"
+  run_git_dir "$g: -C then -R"                 "$g" "gh -C $other -R $R pr create --fill"     "$other"
+  run_git_dir "$g: -R then -C"                 "$g" "gh -R $R -C $other pr create --fill"     "$other"
+  run_git_dir "$g: --repo= then -C"            "$g" "gh --repo=$R -C $other pr create --fill" "$other"
+  run_git_dir "$g: -R then -C="                "$g" "gh -R $R -C=$other pr create --fill"     "$other"
+done
+
+# --- WHICH MARKER a gate verifies -------------------------------------------
+# The same lens as run_sel, turned on markgate instead of gh. Swapping
+# verify-pr-gate's `verify verify-pr` for `verify check` is a LIVE BYPASS -- the
+# PR merges whenever `/check` alone is fresh -- and it left the suite green.
+#
+# run_marker <name> <hook> <cmd> <expected gate name>
+run_marker() {
+  local name="$1" hook="$2" cmd="$3" want="$4" got
+  : > "$TMPDIR/mg.log"
+  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 MG_LOG="$TMPDIR/mg.log" \
+      "$HOOKS/$hook" >/dev/null 2>&1
+  got=$(grep -oE '(^|[[:space:]])verify [A-Za-z0-9-]+' "$TMPDIR/mg.log" | head -1 | awk '{print $NF}')
+  [ -z "$got" ] && got="(never asked)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(asked: verify $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (asked: verify %s, expected verify %s)\n' "$name" "$got" "$want"
+  fi
+}
+
+run_marker "verify-pr-gate verifies verify-pr" verify-pr-gate.sh "gh pr merge 1 --squash"   verify-pr
+run_marker "verify-pr-gate on pr create"       verify-pr-gate.sh "gh pr create --fill"      verify-pr
+run_marker "integ-gate verifies integ"         integ-gate.sh     "gh pr merge 1 --squash"   integ
+run_marker "check-gate verifies check"         check-gate.sh     "git commit -m x"          check
+
+# --- the RESOLVED SELECTOR, not just the exit code --------------------------
+# Equal exit codes cannot tell "resolved the same PR" from "both failed
+# differently", and that gap is where three live bypasses lived: widening
+# GATE_GH_C made the flagged commands REACH these gates, but each then extracted
+# its PR number with the same `-C`-only shape the absorber had outgrown.
+# Measured before the fix, against `gh -R go-to-k/cdk-local pr merge 552`:
+#
+#   closes-paren-form-gate   gh never called at all (plain form: `pr view 552`)
+#   non-english-text-gate    `pr diff 999` -- the CURRENT BRANCH's PR
+#   docs-inline-json-flag    `pr diff 999` -- likewise
+#   pr-review-gate           `pr view 30` from `sleep 30 && gh -R … merge 552`
+#
+# So assert what the gate ASKED GITHUB ABOUT. The shim answers 999 to
+# `pr view --json number`, so a fall-through to current-branch resolution shows
+# up as a wrong number rather than as silence.
+#
+# run_sel <name> <hook> <cmd> <expected-pr-number>
+run_sel() {
+  local name="$1" hook="$2" cmd="$3" want="$4" log got
+  log="$TMPDIR/gh.log"; : > "$log"
+  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 GH_LOG="$log" "$HOOKS/$hook" >/dev/null 2>&1
+  got=$(grep -oE 'pr (view|diff) [0-9]+' "$log" | head -1 | grep -oE '[0-9]+$')
+  [ -z "$got" ] && got="none"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(resolved PR $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (resolved PR %s, expected %s)\n' "$name" "$got" "$want"
+  fi
+}
+
+# Every spelling must resolve the SAME PR the plain form does. The plain arm of
+# each group is the control: if it stops resolving 552 the group is broken
+# rather than passing vacuously.
+for gate in closes-paren-form-gate.sh non-english-text-gate.sh \
+            docs-inline-json-flag-gate.sh pr-review-gate.sh; do
+  run_sel "$gate: plain"        "$gate" "gh pr merge 552 --squash"          552
+  run_sel "$gate: -R <repo>"    "$gate" "gh -R $R pr merge 552 --squash"    552
+  run_sel "$gate: --repo=<repo>" "$gate" "gh --repo=$R pr merge 552 --squash" 552
+  run_sel "$gate: -R<repo> glued" "$gate" "gh -R$R pr merge 552 --squash"   552
+  # A leading numeric token must not be read as the selector.
+  run_sel "$gate: numeric token before the verb" "$gate" \
+    "sleep 30 && gh -R $R pr merge 552 --squash" 552
+  # Flag VALUES must not be read as the selector either.
+  run_sel "$gate: -d before the number" "$gate" "gh -R $R pr merge -d 552" 552
+done
+
+# --- WHICH REPO the gate asks about -----------------------------------------
+# The fourth blind spot, and the one no existing helper could see: `run_sel`
+# greps the NUMBER out of the gh log and ignores `-R`, so
+# `gh -R go-to-k/OTHER pr merge 552` looked identical to the correct case in
+# both exit code and selector while every gate asked the LOCAL repo about ITS
+# PR 552. Right number, wrong repo. Assert the repo the gate names.
+#
+# run_repo <name> <hook> <cmd> <expected --repo value, or "(local)">
+run_repo() {
+  local name="$1" hook="$2" cmd="$3" want="$4" log got
+  log="$TMPDIR/gh.log"; : > "$log"
+  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 GH_LOG="$log" "$HOOKS/$hook" >/dev/null 2>&1
+  got=$(grep -oE '\-\-repo [^ ]+' "$log" | head -1 | awk '{print $2}')
+  [ -z "$got" ] && got="(local)"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(asked $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (asked %s, expected %s)\n' "$name" "$got" "$want"
+  fi
+}
+
+for gate in closes-paren-form-gate.sh non-english-text-gate.sh \
+            docs-inline-json-flag-gate.sh pr-review-gate.sh; do
+  run_repo "$gate: no -R asks the local repo" "$gate" "gh pr merge 552 --squash"            "(local)"
+  run_repo "$gate: -R is passed through"      "$gate" "gh -R go-to-k/OTHER pr merge 552"    "go-to-k/OTHER"
+  run_repo "$gate: --repo= is passed through" "$gate" "gh --repo=go-to-k/OTHER pr merge 552" "go-to-k/OTHER"
+  run_repo "$gate: -R after the verb"         "$gate" "gh pr merge -R go-to-k/OTHER 552"    "go-to-k/OTHER"
+done
+
+# --- the `gate_pr_selector` fail-closed arms --------------------------------
+# Four gates refuse when the shared library predates the shared PR-selector
+# extractor, because an undefined function returns an EMPTY selector and the
+# gate would silently judge the wrong PR (or none) instead of declining. That
+# guard had zero cases: flipping all four to `exit 0` was green, so the commit
+# asserted it rather than measuring it.
+#
+# The library here defines `gate_matches` and the GATE_RE_* constants but NOT
+# `gate_pr_selector`, which is exactly the "older library" shape.
+selector_guard() {
+  local hook="$1" tmp out rc
+  tmp=$(mktemp -d)
+  cp "$HOOKS"/*.sh "$tmp/" 2>/dev/null
+  # strip the helper, keeping everything else loadable
+  python3 - "$tmp/_command-match.sh" <<'STRIP'
+import io,sys,re
+p=sys.argv[1]; s=io.open(p,encoding='utf-8').read()
+a=s.index('gate_pr_selector() {')
+b=s.index('\n}\n', a)+3
+io.open(p,'w',encoding='utf-8').write(s[:a]+s[b:])
+STRIP
+  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"gh pr merge 1 --squash"}}' "$repo" \
+    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 "$tmp/$hook" 2>&1); rc=$?
+  rm -rf "$tmp"
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "gate_pr_selector"; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$hook: fails closed without gate_pr_selector" "(exit $rc)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s must exit 2 naming gate_pr_selector (got %s)\n' "$hook" "$rc"
+  fi
+}
+for g in closes-paren-form-gate.sh non-english-text-gate.sh \
+         docs-inline-json-flag-gate.sh pr-review-gate.sh; do
+  selector_guard "$g"
+done
 
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

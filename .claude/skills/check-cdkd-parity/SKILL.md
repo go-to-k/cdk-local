@@ -222,7 +222,39 @@ else
   #   cat 2 -> "inherit the new option (add<Cmd>SpecificOptions) — REQUIRED"
   #   cat 3 -> "new internal primitive available — OPTIONAL: adopt if useful, cdkd decides"
   #   cat 4 -> "behavior change — adapt — REQUIRED" (name old vs new + migration)
-  cat > /tmp/cdkd-parity-body.md <<'BODY'
+  # SEARCH FIRST. `issue-dup-check-gate.sh` refuses a `gh issue create` whose
+  # body carries no `Dup-check:` line, and this auto-file is THE cross-repo
+  # mirror filer whose duplicate history is that gate's stated rationale
+  # (`/work-issues` §5) -- so it is the last place to skip the search. Search
+  # cdkd's OPEN issues for the SURFACE this change touches (the subcommand, the
+  # option, the helper name), not for this PR's wording:
+  #
+  #   gh issue list --repo go-to-k/cdkd --state open --limit 200 \
+  #     --search 'Follow cdk-local <surface>' --json number,title
+  #   gh issue list --repo go-to-k/cdkd --state open --limit 200 \
+  #     --json number,title,body \
+  #     --jq '.[] | select((.body // "") | test("<subcommand / option / helper>";"i"))
+  #           | "\(.number)\t\(.title)"'
+  #
+  # On a HIT, do NOT file: add this change as a checklist row on that issue and
+  # write its URL to the sentinel, which satisfies the gate the same way --
+  #
+  #   U=$(mktemp)
+  #   gh issue view <hit> --repo go-to-k/cdkd --json body -q .body > "$U" \
+  #     && [ -s "$U" ] \
+  #     && printf -- '- [ ] <surface>: <one line> (%s)\n' "<cdk-local PR URL>" >> "$U" \
+  #     && gh issue edit <hit> --repo go-to-k/cdkd --body-file "$U"
+  #   printf '%s\n' "<hit URL>" > "$SENTINEL"   # only after the edit SUCCEEDS
+  #
+  # On a MISS, file, and RECORD THE TERMS YOU ACTUALLY SEARCHED on the
+  # `Dup-check:` line below -- replace the placeholder, do not ship it verbatim.
+  # NOT a fixed /tmp path. `issue-dup-check-gate` falls back to scanning the
+  # command when the body file cannot be read, but a fixed path that ALREADY
+  # EXISTS on this machine is readable -- so a marker-free heredoc writing it
+  # passes the gate against a STALE on-disk file. The gate's own message
+  # mandates `mktemp` for the fold recipe; the same applies here.
+  BODY_FILE=$(mktemp)
+  cat > "$BODY_FILE" <<'BODY'
 ## Follow cdk-local: <one-line summary>
 
 cdk-local changed its host-facing surface. All changes are additive unless a
@@ -230,12 +262,21 @@ category-4 item below says otherwise. cdk-local PR:
 https://github.com/go-to-k/cdk-local/pull/<N>  (or the branch URL pre-merge)
 
 <one bullet per applicable category, each with the host-action label above>
+
+Dup-check: searched go-to-k/cdkd open issues for <the surface terms you used>
+-- none covers this root cause
 BODY
   url=$(gh issue create --repo go-to-k/cdkd \
     --title "Follow cdk-local: <one-line summary>" \
-    --body-file /tmp/cdkd-parity-body.md)
-  printf '%s\n' "$url" > "$SENTINEL"
-  echo "Filed cdkd tracking issue: $url"
+    --body-file "$BODY_FILE") \
+    && [ -n "$url" ] \
+    && printf '%s\n' "$url" > "$SENTINEL" \
+    && echo "Filed cdkd tracking issue: $url"
+  # CHAINED, and the `-n` test is load-bearing: an unchained `> "$SENTINEL"`
+  # runs even when `gh issue create` failed, writing an empty file that
+  # `cdkd-parity-gate` then reads -- satisfying the gate with no issue behind
+  # it. The MISS path below fails closed by contrast; this one must too.
+  rm -f "$BODY_FILE"
 fi
 ```
 

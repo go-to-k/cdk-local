@@ -52,6 +52,7 @@ const REQUIRED: Record<string, string[]> = {
   ],
   'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
   'closes-paren-form-gate.sh': ['Bash(*gh*pr*merge*)'],
+  'issue-dup-check-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
   'pr-body-item-number-gate.sh': [
     'Bash(*gh*pr*create*)',
     'Bash(*gh*pr*edit*)',
@@ -102,7 +103,7 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
     const names = new Set(hooks.map((h) => h.name));
     expect(names.has('check-gate.sh')).toBe(true);
     expect(names.has('verify-pr-gate.sh')).toBe(true);
-    expect(hooks.length).toBeGreaterThanOrEqual(17);
+    expect(hooks.length).toBeGreaterThanOrEqual(19);
   });
 
   // THE regression case: this exact join disabled every gate in the repo.

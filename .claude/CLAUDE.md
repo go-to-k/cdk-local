@@ -1375,7 +1375,13 @@ vp run runtime:smoke
   `gh pr create` for cat 1 / cat 2 until the sentinel carries a
   `github.com/go-to-k/cdkd/issues/` reference; cat 3 / cat 4 rely on the
   marker. `.claude/settings.json` `permissions.allow` pre-authorizes the
-  scoped `gh issue create`.
+  scoped `gh issue create`. That auto-file runs the `/work-issues` §5
+  open-issue search against cdkd first and carries the resulting
+  `Dup-check:` line in its body — `issue-dup-check-gate.sh` refuses a
+  `gh issue create` without one, and since this is the cross-repo mirror
+  filer whose duplicate history is that gate's rationale, an unreconciled
+  template would have deadlocked the flow outright: the gate blocks the
+  filing, and the missing filing blocks `gh pr create`.
 
   Out-of-scope diffs (internal refactors, docs, tests) pass through
   silently. `gh pr merge` is intentionally NOT gated — the parity
@@ -1477,8 +1483,15 @@ vp run runtime:smoke
   ```
 
   A report adds a fifth line, **`Notes`**, for session-specific context
-  (`none` when there is nothing); the issue body stays at four, because
-  what belongs there is only the part that outlives the session.
+  (`none` when there is nothing); the issue body carries no `Notes`,
+  because what belongs there is only the part that outlives the session.
+  Four CLASSIFICATION lines, and they stay four — a filed issue body also
+  carries a **`Dup-check:`** line recording that the OPEN issue list was
+  searched for an issue already covering this root cause
+  (`/work-issues` §5), but that is a filing-time record rather than a
+  classification field: it is written once when the issue is created and
+  never re-decided on a claim. `.claude/hooks/issue-dup-check-gate.sh`
+  refuses `gh issue create` without it.
 
   **The four answer four DIFFERENT questions and none derives from
   another**: `Session-fit` is the decision, `Severity` the cost of
