@@ -247,6 +247,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-unmerged-lane-warn.sh"
+          }
+        ]
+      }
     ]
   }
 }
