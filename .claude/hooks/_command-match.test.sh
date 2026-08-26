@@ -560,5 +560,153 @@ want_match 1 "an ordinary task run"              'vp run test' "$C"
 # separator INSIDE the quotes, which is the only shape that can distinguish it.
 want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
 
+# --- go-to-k/cdk-local#571: a command substitution inside a DOUBLE-quoted span
+# RUNS, so its body is commands. Leaving it quoted made every gate here blind to
+# it: measured on origin/main, all three of these matched NOTHING.
+want_match 0 "quoted substitution runs"           'echo "$(git commit -m x)"' "$C"
+want_match 0 "quoted backtick substitution runs"  'echo "`git commit -m x`"' "$C"
+want_match 0 "nested quoted substitution"         'X="$(echo "$(git commit -m x)")"' "$C"
+want_match 0 "quoted substitution, gh verb"       'echo "$(gh pr merge 1 --squash)"' "$M"
+# ...and the asymmetry that makes the fix safe rather than a blanket unquoting:
+# inside a SINGLE-quoted span a substitution is literal text, so it must stay
+# invisible. Without this pair the fix could have been "stop honouring quotes".
+want_match 1 "single-quoted substitution is literal" "echo '\$(git commit -m x)'" "$C"
+want_match 1 "single-quoted backticks are literal"   "echo '\`git commit -m x\`'" "$C"
+# The go-to-k/cdkd#2130 regression this could have reintroduced: a `--body`
+# whose PROSE follows a closed substitution is still prose, because `q` returns
+# to the double quote when the substitution ends.
+want_match 1 "prose after a closed substitution" 'gh pr create --body "see $(date) then git commit -m x"' "$C"
+
+# NESTED substitutions. The `$(` / `<(` / `>(` branches consume their `(`
+# without counting it, so the outer substitution used to close a paren early.
+# That broke BOTH ways, and only the second half is the bypass -- the first is a
+# new FALSE BLOCK, which is why both directions are pinned here.
+want_match 1 "nested substitution in a body stays prose" \
+  'gh pr create --body "ver $(echo $(date)) then git commit -m z"' "$C"
+want_match 0 "nested substitution really runs"       'echo "$(echo $(date); gh pr merge 1 --squash)"' "$M"
+want_match 0 "process substitution inside a quoted one" 'echo "$(cat <(git commit -m x))"' "$C"
+# `<(` needs the same paren count as `$(`, and only the FALSE-BLOCK direction
+# discriminates: with the count removed the line above still matches (the verb
+# is inside the substitution either way), while this one flips from no-match to
+# MATCH and every git/gh gate starts refusing an ordinary `gh pr create`.
+want_match 1 "process substitution in a body stays prose" \
+  'gh pr create --body "ver $(cat <(date)) then git commit -m z"' "$C"
+
+# --- go-to-k/cdk-local#571: `gate_piped_segments` / `gate_matches_piped` ------
+# The distinction the ordinary segmenter cannot make, because it collapses `&&`,
+# `;` and `|` to the same newline: whose exit status does the shell REPORT?
+MG="$GATE_RE_MARKGATE_VERDICT"
+
+# want_piped <expect 0|1> <label> <command> <regex>
+want_piped() {
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  if gate_matches_piped "$cmd" "$re"; then got=0; else got=1; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s got %s) :: %s\n' "$label" "$want" "$got" "$cmd"
+  fi
+}
+
+want_piped 0 "verdict feeds a pipe"            'mise exec -- markgate verify integ 2>&1 | tail -5' "$MG"
+want_piped 0 "bare markgate feeds a pipe"      'markgate verify check | grep state' "$MG"
+want_piped 0 "set feeds a pipe"                'mise exec -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 0 "|& feeds a pipe"                 'markgate set integ |& tee /tmp/l' "$MG"
+want_piped 1 "|| is a status TEST, not a pipe" 'mise exec -- markgate set integ || echo NOPE' "$MG"
+want_piped 1 "&& is a status TEST, not a pipe" 'markgate verify check && gh pr merge 1' "$MG"
+want_piped 1 "un-piped verdict"                'mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?' "$MG"
+want_piped 1 "last stage of a pipeline"        'echo x | markgate verify check' "$MG"
+want_piped 1 "status is not a verdict verb"    'mise exec -- markgate status integ | awk "/state/"' "$MG"
+# `2>&1` is a REDIRECTION, not a separator. Splitting on its `&` put the pipe
+# mark on the trailing `1`, so the issue's own repro walked past the gate.
+want_piped 0 "2>&1 before the pipe"            'markgate verify integ 2>&1 | tail -5' "$MG"
+want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
+# ...while a REAL bare `&` still separates.
+want_match 0 "bare & still separates"          'sleep 0 & markgate verify check' "$MG"
+
+want_piped 0 "run is a verdict verb too"        'mise exec -- markgate run check -- vp run check | tail -5' "$MG"
+# The launcher prefix must absorb LAUNCHER ARGUMENTS only. An unrestricted run
+# of words made this a false block -- and it is the command someone auditing
+# this very gate would type.
+want_piped 1 "mise exec -- rg <pattern> is not markgate" 'mise exec -- rg markgate verify .claude | head' "$MG"
+# A launcher flag that TAKES A VALUE must still reach the verb. Tightening the
+# interposed run to close the `rg` false block above dropped these, turning
+# BLOCK into pass -- so the two cases are pinned as a PAIR, since either fix
+# alone re-breaks the other.
+want_piped 0 "mise exec -C <dir> -- markgate"  'mise exec -C /w -- markgate verify x | tail' "$MG"
+want_piped 0 "mise exec --cd <dir> -- markgate" 'mise exec --cd /w -- markgate verify x | tail' "$MG"
+want_piped 0 "mise exec -j <n> -- markgate"    'mise exec -j 4 -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 1 "mise exec -C <dir> -- rg is not markgate" 'mise exec -C /w -- rg markgate verify . | head' "$MG"
+# ...and a BOOLEAN launcher flag must NOT swallow the command word. Giving every
+# flag an optional value (the fix for the two cases above) re-opened the `rg`
+# false block one keystroke away. mise has many boolean flags: `--raw`, `-q`,
+# `-v`, `-y`, `--silent`, `--deny-all`, `--no-deps`, `--locked`.
+want_piped 1 "boolean flag then rg"            'mise exec --raw rg markgate verify . | head' "$MG"
+want_piped 1 "short boolean flag then rg"      'mise exec -q rg markgate verify . | head' "$MG"
+want_piped 1 "boolean flag then grep"          'mise exec --silent grep -rn markgate verify . | head' "$MG"
+want_piped 0 "boolean flag then -- markgate"   'mise exec --raw -- markgate verify x | tail' "$MG"
+want_piped 0 "two boolean flags then markgate" 'mise exec -q --raw -- markgate verify x | tail' "$MG"
+# A QUOTED flag value -- the same shape `GATE_FLAGS` needed for
+# `git -C "/a b" commit`. A `[^-][^[:space:]]*` value cannot span it.
+want_piped 0 "quoted launcher flag value"      'mise exec --cd "/w t" -- markgate verify x | tail' "$MG"
+# The `--allow-*` sandbox flags take a value too, and were missed when the
+# enumeration was first written -- the failure mode an enumeration always has.
+want_piped 0 "--allow-net <host> before --"    'mise exec --allow-net github.com -- markgate verify integ | tail' "$MG"
+want_piped 0 "--allow-read <path> before --"   'mise exec --allow-read /w -- markgate verify integ | tail' "$MG"
+# A value-taking flag whose "value" is the command word itself must still fall
+# back to the boolean parse rather than eating it.
+want_piped 0 "-C directly before markgate"     'mise exec -C markgate verify x | tail' "$MG"
+# A GLOBAL flag sits BEFORE the subcommand. Without its own absorber this was
+# under-matched -- the gate simply did not fire, which is the original defect
+# one flag position away.
+want_piped 0 "global -C <dir> before exec"     'mise -C /w exec -- markgate verify x | tail' "$MG"
+want_piped 0 "global --cd <dir> before exec"   'mise --cd /w exec -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 0 "global boolean flag before exec" 'mise -q exec -- markgate verify x | tail' "$MG"
+want_piped 1 "global flag, then rg not markgate" 'mise -C /w exec -- rg markgate verify . | head' "$MG"
+# ...and a NON-FLAG word is not a global flag. This replaces a
+# `mise --version | head` case that was VACUOUS: that segment holds no
+# `markgate` substring at all, so no spelling of these constants could ever
+# match it -- it was a proof, not a probe. This one is the too-wide direction
+# the whole chain fights: with the global run unrestricted, `ls` is absorbed,
+# the later `exec` satisfies the subcommand, and an ordinary `mise ls` becomes
+# a FALSE BLOCK.
+want_piped 1 "a non-flag word is not a global flag" 'mise ls exec -- markgate verify x | tail' "$MG"
+want_piped 1 "two non-flag words before exec"  'mise settings set x exec -- markgate verify a | tail' "$MG"
+# The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
+# the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
+want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"
+want_piped 0 "bash -c double-quoted body"      'bash -c "mise exec -- markgate verify a" | tail' "$MG"
+want_piped 1 "bash -c body, NOT piped"         "bash -c 'markgate verify a'" "$MG"
+want_piped 0 "mise exec with a tool pin"       'mise exec markgate@0.4 -- markgate verify integ | cat' "$MG"
+# Multi-line: the pipe is on a later line than the verb, and on the SAME line as
+# a different one. A segmenter that only ever saw line 1 passed both.
+want_piped 0 "multi-line, pipe on line two"    'cd /w/t
+markgate verify integ | tail -5' "$MG"
+want_piped 0 "backslash continuation"          'markgate verify integ \
+  | tail -5' "$MG"
+want_piped 1 "multi-line, un-piped"            'cd /w/t
+markgate verify integ >/dev/null 2>&1; rc=$?' "$MG"
+
+# `gate_piped_segments` must print the piped segments and ONLY those, with the
+# marker stripped -- a caller reading them as ordinary text is the contract.
+got=$(gate_piped_segments 'markgate verify a | tail; markgate verify b' | tr '\n' '/')
+if [ "$got" = "markgate verify a/" ]; then
+  pass=$((pass + 1)); printf 'OK   gate_piped_segments prints only the piped segment\n'
+else
+  fail=$((fail + 1)); printf 'FAIL gate_piped_segments printed: %s\n' "$got"
+fi
+got=$(gate_piped_segments '(markgate verify a) | tail')
+if [ "$got" = "markgate verify a" ]; then
+  pass=$((pass + 1)); printf 'OK   gate_piped_segments emits ordinary segment text\n'
+else
+  fail=$((fail + 1)); printf 'FAIL gate_piped_segments emitted: [%s]\n' "$got"
+fi
+# The mark must never leak into ORDINARY segments, or every gate would see it.
+if gate_segments 'markgate verify a | tail' | grep -q "$GATE_PIPE_MARK"; then
+  fail=$((fail + 1)); printf 'FAIL the pipe mark leaked into gate_segments output\n'
+else
+  pass=$((pass + 1)); printf 'OK   gate_segments is unchanged by the pipe mark\n'
+fi
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

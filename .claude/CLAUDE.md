@@ -1276,6 +1276,25 @@ vp run runtime:smoke
   a newer `.markgate.yml` for every gate at once, and the hook hides the
   parse error behind a misleading "run /check first".
 
+- **Never pipe `markgate verify` / `set` / `run`** — read its verdict
+  with a command substitution, where `$?` is markgate's own status:
+
+  ```bash
+  out=$(mise exec -- markgate verify <gate> 2>&1 >/dev/null); rc=$?
+  ```
+
+  `$?` after a pipeline is the LAST STAGE's, and markgate prints
+  NOTHING when a marker is fresh — so `markgate verify integ | tail -5`
+  reports "no output, rc=0" for a STALE marker, which is exactly what a
+  fresh one looks like. The verification the gate was demanding then
+  gets skipped on a false pass; observed live on the `integ` gate
+  (go-to-k/cdk-local#571). `markgate-pipe-gate.sh` refuses the piped
+  spelling.
+  `markgate status | awk …`, `markgate verify … || echo …` and
+  `… && …` all pass through: stdout is `status`'s answer, and `||` /
+  `&&` READ the exit status instead of discarding it.
+  Details: [.claude/rules/hooks.md](.claude/rules/hooks.md).
+
 - **Before opening or merging any PR**: `verify-pr-gate.sh` blocks
   `gh pr create` / `gh pr merge` unless the `verify-pr` marker
   (declared `requires: [check, docs]`) is fresh. The marker is set

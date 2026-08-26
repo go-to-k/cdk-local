@@ -184,6 +184,13 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/markgate-pipe-gate.sh",
+            "if": "Bash(*markgate*)",
+            "timeout": 10,
+            "statusMessage": "Checking markgate is not piped..."
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/check-gate.sh",
             "if": "Bash(*git*commit*)",
             "timeout": 15,

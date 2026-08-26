@@ -65,7 +65,7 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    record the gate so subsequent `gh pr merge` calls are unblocked:
 
    ```bash
-   mise exec -- markgate set integ || echo "MARKER NOT RECORDED — read the error above"
+   mise exec -- markgate set integ || echo "MARKER NOT RECORDED (rc=$?) — read the error above"
    ```
 
    **Check the exit code; do not assume the set succeeded.** Under `hash: files` this command could not fail, so it was safe to fire and forget. Under `hash: diff` it CAN fail, and it reports the reason on stderr — an unchecked call looks silent and successful while nothing was recorded. The failure modes and their fixes:

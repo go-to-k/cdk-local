@@ -22,6 +22,7 @@ Run each check and report pass/fail:
    - `vp run check` passes (unified typecheck + lint + format)
    - `vp run build` succeeds (produces `dist/cli.js` + `dist/index.js`)
    - When piping any of the above to `tail` / `head` / `grep`, **check the actual output content** for `Error` / `Command failed` markers — `$?` after a pipeline reflects the LAST stage (usually 0), NOT the build tool's exit. When in doubt, capture without piping: `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
+   - **The same trap applies to `markgate verify` / `markgate set`, and there it is worse**: markgate answers with an EXIT CODE and prints nothing on the fresh path, so a piped STALE marker is byte-identical to a fresh one (no output, rc=0) and there is no output content left to check. `.claude/hooks/markgate-pipe-gate.sh` now refuses a piped `markgate verify` / `markgate set` outright (go-to-k/cdk-local#571) — this bullet is why. `markgate status` is unaffected: its answer is on stdout, so piping it to `awk` is correct.
 
 2. **Tests**
    - `vp run test` — all unit tests pass
@@ -51,11 +52,17 @@ Run each check and report pass/fail:
    # Only check when the PR diff actually touches the gate scope.
    if git diff origin/main...HEAD --name-only \
        | grep -qE '^src/cli/commands/|^src/internal\.ts$|^src/index\.ts$'; then
-     mise exec -- markgate verify cdkd-parity
+     out=$(mise exec -- markgate verify cdkd-parity 2>&1 >/dev/null); rc=$?
+     echo "[markgate verify cdkd-parity rc=$rc] $out"
    fi
    ```
 
-   If this exits non-zero (digest differs OR marker never set), run `/check-cdkd-parity` to walk the four host-impacting categories — new subcommand factory / new CLI option / new public helper / behavior change — and set the marker. See `.claude/skills/check-cdkd-parity/SKILL.md` and `.claude/rules/hooks.md` "cdkd-parity-gate (pre-create)".
+   The command substitution is not a style choice: `$?` there IS markgate's own
+   status, whereas `markgate verify … | tail` reports the PIPE's and a stale
+   marker reads as a pass. `markgate-pipe-gate.sh` blocks the piped spelling.
+
+   If `rc` is non-zero (1 = digest differs OR marker never set; >= 2 = markgate
+   could not evaluate at all), run `/check-cdkd-parity` to walk the four host-impacting categories — new subcommand factory / new CLI option / new public helper / behavior change — and set the marker. See `.claude/skills/check-cdkd-parity/SKILL.md` and `.claude/rules/hooks.md` "cdkd-parity-gate (pre-create)".
 
 7. **Docker + integ verification** (for src/** or tests/integration/** touches)
 
@@ -64,11 +71,14 @@ Run each check and report pass/fail:
    ```bash
    # Only check when the PR diff actually touches the gate scope.
    if git diff origin/main...HEAD --name-only | grep -qE '^src/|^tests/integration/'; then
-     mise exec -- markgate verify integ
+     out=$(mise exec -- markgate verify integ 2>&1 >/dev/null); rc=$?
+     echo "[markgate verify integ rc=$rc] $out"
    fi
    ```
 
-   If this exits non-zero (digest differs OR expired by 14d TTL), run `/run-integ <test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS task changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes, `local-invoke-from-cfn-stack` for `--from-cfn-stack` AWS-binding changes. The `/run-integ` skill calls `markgate set integ` itself when the Docker-side check passes (0 orphan containers / networks; for `*-from-cfn-stack` tests, also 0 orphan CloudFormation stacks). CI is necessary but not sufficient — it does not exercise Docker-based local execution.
+   If `rc` is non-zero (1 = digest differs OR expired by 14d TTL; >= 2 = markgate
+   could not evaluate — for this gate most often an unresolvable `base` ref,
+   fixed with a bare `git fetch origin`), run `/run-integ <test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS task changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes, `local-invoke-from-cfn-stack` for `--from-cfn-stack` AWS-binding changes. The `/run-integ` skill calls `markgate set integ` itself when the Docker-side check passes (0 orphan containers / networks; for `*-from-cfn-stack` tests, also 0 orphan CloudFormation stacks). CI is necessary but not sufficient — it does not exercise Docker-based local execution.
 
    For `*-from-cfn-stack` integ tests only: verify no orphan CloudFormation stack remains (`aws cloudformation describe-stacks --stack-name <FixtureStackName>` should return `Stack does not exist`).
 

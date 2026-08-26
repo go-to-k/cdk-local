@@ -225,6 +225,82 @@ The hooks split into three classes:
   / etc. pass through). Fails open when `gh` is missing or
   unauthenticated.
 
+- **`markgate-pipe-gate.sh`** blocks a Bash call in which
+  `markgate verify <gate>`, `markgate set <gate>` or `markgate run
+  <gate> -- <cmd>` feeds a `|` pipeline, because there `$?` is the LAST
+  STAGE's status and markgate's verdict is discarded. (`run` is
+  `verify || (cmd && set)` sugar, so it has the identical property; it
+  is unused in this repo today but it is in `markgate --help`.) It is the one gate here selected on
+  a command word that is neither `git` nor `gh` (`Bash(*markgate*)`),
+  and the only one that never runs the tool it is named after — the
+  check is a static read of the command text.
+
+  **Why a gate and not another sentence in a skill**
+  (go-to-k/cdk-local#571). markgate prints NOTHING when a marker is
+  fresh, so "no output, rc=0" is what a healthy run looks like — and
+  exactly what a STALE marker reports once piped:
+
+  ```bash
+  mise exec -- markgate verify integ 2>&1 | tail -5; echo "rc=$?"
+  # prints nothing, rc=0    -> read as "marker fresh"
+  mise exec -- markgate verify integ > /tmp/out 2>&1; rc=$?
+  # rc=1                    -> the marker was STALE
+  ```
+
+  A stale marker becomes indistinguishable from a fresh one, and the
+  natural next step is to skip the verification the gate was demanding.
+  Observed live on the `integ` gate, where it would have meant opening
+  a PR whose Docker path was never exercised against the final code.
+  A gate that cannot fail is worse than no gate, because it is trusted.
+  `/verify-pr` step 1 already warned that `$?` after a pipeline is the
+  last stage's; it was read, and the trap was hit anyway — on a sibling
+  command the wording did not name. `vp run <task>` has the same
+  property but PRINTS its failure, so the output still carries the
+  verdict; silence on failure is what makes markgate un-catchable and
+  is the line this gate draws.
+
+  **Rewrite it names**, the same one cdkd's `check-gate.sh` uses:
+
+  ```bash
+  out=$(mise exec -- markgate verify <gate> 2>&1 >/dev/null); rc=$?
+  ```
+
+  **Deliberately NOT blocked**, because over-tightening this would
+  break the repo's own idioms: `markgate status <gate> | awk …` (its
+  answer is on stdout — every gate hook here pipes it that way);
+  `markgate verify <gate> || echo …` and `&& …` (`||` / `&&` READ the
+  status rather than dropping it); and `… | markgate verify <gate>`
+  (the last stage of a pipeline, where `$?` really is markgate's).
+  `set -o pipefail; markgate verify <gate> | tail` IS refused even
+  though pipefail propagates the status — the gate reads one command's
+  TEXT and cannot know pipefail is still in effect when the pipeline
+  runs, and the non-piped rewrite is free. That call is conservative by
+  choice and pinned by its own case.
+
+  Implemented on `gate_matches_piped` / `gate_piped_segments` in
+  `_command-match.sh`, which needed the separator pass to stop
+  collapsing `&&`, `;` and `|` into the same newline. Two consequences
+  of that work are shared by EVERY gate, not just this one:
+
+  - **`2>&1` is a redirection, not a separator.** The `&` inside it
+    used to split a segment. That cost the anchored verb regexes
+    nothing (the split lands after the verb) but it put the pipe mark
+    on the trailing `1`, so the issue's own repro walked past its own
+    gate.
+  - **A command substitution inside a DOUBLE-quoted span RUNS**, so its
+    body is commands. It used to stay quoted, which meant
+    `echo "$(gh pr merge 1 --squash)"` and ``echo "`git commit -m x`"``
+    matched NOTHING and ran ungated through every gate in this file —
+    a pre-existing live bypass, found by
+    go-to-k/cdk-local#571's test suite and fixed
+    with it. Inside a SINGLE-quoted span a substitution is literal, so
+    that stays invisible; the asymmetry is the point. Closing the
+    substitution re-emits the enclosing quote character, so PROSE
+    following it (`--body "see $(date) then gh pr merge 1"`) stays
+    inert — without that, ending the body would have started a fresh
+    segment mid-prose and reintroduced the go-to-k/cdkd#2130
+    body-text regression from the other end.
+
 ## 2. Branch / push safety
 
 - **`branch-gate.sh`** blocks `git commit` and `git push` when the
@@ -256,7 +332,9 @@ The hooks split into three classes:
 The seven markgate gate hooks (`check-gate.sh`, `verify-pr-gate.sh`,
 `pr-review-gate.sh`, `integ-gate.sh`, `cdkd-parity-gate.sh`,
 `create-integ-gate.sh`, and `gh-pr-merge-worktree-gate.sh`) are
-all **cwd-aware**. Each reads the PreToolUse payload's `cwd` field, then hands
+all **cwd-aware**. (`markgate-pipe-gate.sh` is named after markgate but
+is NOT one of them: it never runs markgate, never reads a marker, and
+so has no target directory to resolve — it lives in class 1 above.) Each reads the PreToolUse payload's `cwd` field, then hands
 the command to `gate_target_dir` in `.claude/hooks/_command-match.sh`, which
 resolves the tree in this order: a `git -C <path>` / `gh -C <path>` inside the
 MATCHED segment, else the LAST `cd <path>` segment before it, else the payload
