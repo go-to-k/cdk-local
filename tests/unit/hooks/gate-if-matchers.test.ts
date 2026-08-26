@@ -53,6 +53,7 @@ const REQUIRED: Record<string, string[]> = {
   'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
   'closes-paren-form-gate.sh': ['Bash(*gh*pr*merge*)'],
   'issue-dup-check-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
+  'issue-classification-label-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*issue*edit*)'],
   'pr-body-item-number-gate.sh': [
     'Bash(*gh*pr*create*)',
     'Bash(*gh*pr*edit*)',

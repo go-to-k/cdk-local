@@ -446,6 +446,26 @@ record the search in the body so the next hop can see the window was checked:
 Dup-check: searched open issues for <terms> -- none covers this root cause
 ```
 
+**File it with its `Severity` / `Effort` values ALSO as labels** -- the body
+lines stay exactly as written, and the same two values ride the command as
+`--label severity:<high|medium|low> --label effort:<small|medium|large>`:
+
+```bash
+gh issue create -t 'fix(local): ...' --body-file "$B" \
+  --label severity:high --label effort:large
+```
+
+Prose is invisible to `gh issue list`, so ranking by `Severity` costs one
+`gh issue view` per candidate without the labels. Only these two get labels:
+`Session-fit` is re-decided when the issue is claimed and a stale label would be
+worse than none, and `Estimate` is a free-form duration with no closed value set.
+The same applies at the CLAIM, which is where an old packed body is rewritten
+into the four-line shape and therefore where `Severity` first exists for most of
+the backlog -- carry `--add-label` on that `gh issue edit`. Enforced by
+`.claude/hooks/issue-classification-label-gate.sh`. The lane's PR inherits the
+labels from the issue it closes via
+`.github/workflows/pr-inherit-issue-labels.yml`, so never hand-add them to a PR.
+
 **This is not a filing threshold, and it must never be used as one.** §10-0
 below is explicit that `filed <= closed` is not a target and that an unfiled
 finding is strictly worse than a filed one. Nothing here changes WHETHER a

@@ -150,6 +150,48 @@ The hooks split into three classes:
   `.claude/hooks/issue-dup-check-gate.test.sh` (83 cases) plus
   recognition cases in `gate-command-recognition.test.sh`.
 
+- **`issue-classification-label-gate.sh`** blocks `gh issue create` /
+  `gh issue edit` when the body being published states a `Severity:` or
+  `Effort:` value that the issue's LABELS do not carry. The four
+  classification fields live in the body as prose lines, which is where
+  their one-line reasons belong — and nothing about how they are written
+  changes. But prose is invisible to every query the backlog is triaged
+  with: ranking by `Severity` costs one `gh issue view` per candidate,
+  while `gh issue list --label severity:high` is one call. The label
+  changes the PRICE of asking, not the coverage — an issue carrying the
+  line but not the label predates the labels, so a label-only query
+  under-counts and the body stays the authority. So the two
+  fields with a CLOSED token set are mirrored onto labels:
+  `severity:high|medium|low` and `effort:small|medium|large`. Only those
+  two — `Session-fit` is re-decided at claim time and a label silently
+  disagreeing with the body is worse than none, and `Estimate` is a
+  free-form duration whose informative half a label cannot hold.
+  `gh issue edit` IS gated here and `gh issue comment` is not, which is
+  the opposite split from `issue-dup-check-gate.sh` and is deliberate:
+  that gate steers toward folding into an existing issue, while `edit`
+  is the CLAIM site where an old packed body is rewritten into the
+  four-line shape, so it is where `Severity` first exists for the bulk
+  of the backlog. On `edit` the gate asks gh what labels the issue
+  already carries, so a re-edit of an already-labelled issue is untaxed;
+  an unresolvable issue number or a gh failure FAILS OPEN. The `gh api
+  repos/<o>/<r>/issues` REST mint is gated on the same footing as
+  `gh issue create`. Body text is read in descending order of
+  specificity — a readable `--body-file` / `-F <path>`, else the WHOLE
+  command when such a path is named but does not exist yet (the
+  `heredoc -> file -> --body-file` shape), else an inline `--body`, else
+  the whole segment — and on that last path the scan requires at least
+  one SPACE after the key, so `severity:high` in a `--label` cannot
+  satisfy its own requirement. Covered by
+  `.claude/hooks/issue-classification-label-gate.test.sh` (40 cases; 39
+  run here, since the leading-`cd` opt-in case needs a
+  `cmd_last_cd_target` this repo's matcher does not carry, and the gate
+  degrades to the payload cwd there). Green under bash 5.x and macOS
+  system bash 3.2; mutation-probed in cdkd 2026-08-26 against the
+  byte-identical script — an always-`exit 0` stub fails 14, an
+  always-`exit 2` stub 39 of 40, relaxing the space rule exactly 1,
+  reverting the body-file precedence exactly 2, dropping the bare
+  `-F <path>` arm exactly 1.
+
 - **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
   `gh pr edit` / `gh pr merge` (and their `gh -C <path>` / `cd <path>
   && ...` forms) when a Markdown file in the resolved PR diff (or

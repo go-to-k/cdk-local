@@ -317,6 +317,12 @@ GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
 GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
+# issue-classification-label-gate: the CLAIM site. `/work-issues` says most open
+# bodies are still in the old packed shape and are upgraded to the four-line
+# shape when the issue is claimed, so `edit` -- not `create` -- is where
+# `Severity` first exists for the bulk of the backlog. `comment` stays absent:
+# a comment is not the issue's classification.
+GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
 GATE_RE_GH_ISSUE_COMMENT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
