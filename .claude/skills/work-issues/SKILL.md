@@ -221,6 +221,31 @@ choosing.
   rather than from a list here, which would be a fifth copy to keep in sync. A
   security fix landing outside those paths gets no automatic bump, so raise the
   tier by hand and say why.
+- **Then higher `Severity` first**, when BOTH candidates carry it — `high` >
+  `medium` > `low`. It is the same axis the security rule above approximates: how
+  much the defect costs while it sits. The difference is that `Severity` was
+  MEASURED by the session that held the evidence, where a title prefix or a hunch
+  about the area is only a proxy for it, and **a proxy does not outrank the
+  measurement it stands in for**. The "BOTH carry it" precondition is what makes
+  that safe — most of the backlog carries no `Severity` at all, and for those this
+  preference simply does not fire, so an unclassified `fix:` never loses its place
+  to a `chore:` that happens to claim `high`.
+
+  `Severity` is a LABEL as well as a body line, so this is answerable from the
+  LISTING rather than one `gh issue view` per candidate:
+
+  ```bash
+  gh issue list --state open --limit 200 --json number,title,labels \
+    --jq '.[] | [.number,
+                 ([.labels[].name | select(startswith("severity:"))] | first // "severity:?"),
+                 ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
+                 .title] | @tsv'
+  ```
+
+  `severity:?` means UNLABELLED, which is **not** `low`. A label-only query
+  UNDER-counts, because most of the backlog predates the labels, so the label is a
+  mirror of the body line and never a second source — confirm a surprising one
+  against the body before acting on it.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
