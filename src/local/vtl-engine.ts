@@ -198,8 +198,36 @@ export function buildDefaultUtil(): VtlUtil {
       try {
         return JSON.parse(s);
       } catch (err) {
+        // NEVER interpolate the parser's own message here. V8 embeds a
+        // ~10-character prefix of the PARSED INPUT in `SyntaxError.message`
+        // (`Unexpected token 'h', "hunter2-my"... is not valid JSON`), and it
+        // appends `...` only past that window -- so a SHORT input is quoted
+        // in FULL rather than truncated. Under `start-api` the argument of
+        // `$util.parseJson(...)` is routinely `$input.body`, the incoming
+        // HTTP REQUEST BODY, which on a login endpoint carries the caller's
+        // password. The echo does not stop at the terminal either:
+        // `vtlFailure` in `rest-v1-integrations.ts` copies this message into
+        // the 502 RESPONSE BODY, sending the prefix back over the wire to
+        // whoever sent the request. Reported against the cdkd host as
+        // go-to-k/cdkd#2203.
+        //
+        // `err.name` is input-independent and safe as a discriminator, and
+        // the argument's LENGTH is reported because it is the one property of
+        // the input a developer can act on without being shown it. Note the
+        // length is that of the COERCED string: `coerce` answers `''` for a
+        // value `JSON.stringify` refuses (a circular object), so a reported
+        // length of 0 means "nothing was there to parse" and NOT necessarily
+        // "the caller sent an empty body".
+        //
+        // `'unknown'` rather than `'SyntaxError'` on the non-Error arm: that
+        // arm is unreachable today (this `JSON.parse` takes no reviver, so V8
+        // throws only a SyntaxError), and naming a class the throw was not
+        // would become a lie the moment it turns reachable.
+        const kind = err instanceof Error ? err.name : 'unknown';
         throw new VtlEvaluationError(
-          `$util.parseJson: invalid JSON input: ${err instanceof Error ? err.message : String(err)}`
+          `$util.parseJson: the argument is not valid JSON (${kind}; argument length ${s.length}). ` +
+            'The parser detail is withheld because it would echo a prefix of the parsed input, ' +
+            'which for a start-api request template can be the incoming HTTP request body.'
         );
       }
     },
