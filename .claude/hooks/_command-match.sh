@@ -492,7 +492,13 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # `git -C "/a b" commit` -- so `mise exec --cd "/w t" -- markgate ...` parses.
 GATE_MARKGATE_VALUE_FLAG="(-C|--cd|-E|--env|-j|--jobs|-c|--command)"
 GATE_MARKGATE_FLAG_VALUE="(\"[^\"]*\"|'[^']*'|[^-][^[:space:]]*)"
-GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|${GATE_MARKGATE_VALUE_FLAG}[[:space:]]+${GATE_MARKGATE_FLAG_VALUE}|--?[A-Za-z][^[:space:]]*|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
+#
+# The GLOBAL flag run before the subcommand (`mise -C /w exec -- markgate ...`)
+# reuses the same alternation minus `--` and the pin, neither of which can
+# precede a subcommand. Without it that spelling was under-matched, i.e. the
+# gate simply did not fire -- the original defect, one flag position away.
+GATE_MARKGATE_GLOBAL="([[:space:]]+(${GATE_MARKGATE_VALUE_FLAG}[[:space:]]+${GATE_MARKGATE_FLAG_VALUE}|--?[A-Za-z][^[:space:]]*))*"
+GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)${GATE_MARKGATE_GLOBAL}[[:space:]]+(exec|x)([[:space:]]+(--|${GATE_MARKGATE_VALUE_FLAG}[[:space:]]+${GATE_MARKGATE_FLAG_VALUE}|--?[A-Za-z][^[:space:]]*|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
 GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set|run)([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
 # PATH ONLY -- it says nothing about the HTTP method, and the collection is also

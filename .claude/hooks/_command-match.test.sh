@@ -512,6 +512,14 @@ want_piped 0 "quoted launcher flag value"      'mise exec --cd "/w t" -- markgat
 # A value-taking flag whose "value" is the command word itself must still fall
 # back to the boolean parse rather than eating it.
 want_piped 0 "-C directly before markgate"     'mise exec -C markgate verify x | tail' "$MG"
+# A GLOBAL flag sits BEFORE the subcommand. Without its own absorber this was
+# under-matched -- the gate simply did not fire, which is the original defect
+# one flag position away.
+want_piped 0 "global -C <dir> before exec"     'mise -C /w exec -- markgate verify x | tail' "$MG"
+want_piped 0 "global --cd <dir> before exec"   'mise --cd /w exec -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 0 "global boolean flag before exec" 'mise -q exec -- markgate verify x | tail' "$MG"
+want_piped 1 "global flag, then rg not markgate" 'mise -C /w exec -- rg markgate verify . | head' "$MG"
+want_piped 1 "mise --version is not a launcher" 'mise --version | head' "$MG"
 # The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
 # the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
 want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"
