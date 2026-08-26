@@ -68,6 +68,10 @@ const REQUIRED: Record<string, string[]> = {
   'cdkd-parity-gate.sh': ['Bash(*gh*pr*create*)'],
   'create-integ-gate.sh': ['Bash(*gh*pr*create*)'],
   'gh-pr-merge-worktree-gate.sh': ['Bash(*gh*pr*merge*)'],
+  // The only gate selected on a non-`git`/`gh` command word
+  // (go-to-k/cdk-local#571): a piped `markgate verify` reports the PIPE's
+  // exit code, so a STALE gate reads as a pass.
+  'markgate-pipe-gate.sh': ['Bash(*markgate*)'],
 };
 
 interface GateHook {
@@ -171,6 +175,19 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
       expect(selects('verify-pr-gate.sh', spelling), `verify-pr-gate misses: ${spelling}`).toBe(
         true
       );
+    }
+    // markgate-pipe-gate is selected on the LAUNCHER-prefixed spelling every
+    // skill in this repo writes, not on a bare `markgate …` — an anchored
+    // `Bash(markgate*)` would miss all of these and the gate would be inert.
+    for (const spelling of [
+      'markgate verify check | tail -5',
+      'mise exec -- markgate verify integ 2>&1 | tail -5',
+      'cd /w/t && mise exec -- markgate set integ | tee /tmp/l',
+    ]) {
+      expect(
+        selects('markgate-pipe-gate.sh', spelling),
+        `markgate-pipe-gate misses: ${spelling}`
+      ).toBe(true);
     }
   });
 

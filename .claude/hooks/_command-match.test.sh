@@ -420,5 +420,69 @@ want_match 1 "an ordinary task run"              'vp run test' "$C"
 # separator INSIDE the quotes, which is the only shape that can distinguish it.
 want_match 1 "separator inside a quoted body" 'gh issue create --body "run vp check && git commit -m x"' "$C"
 
+# --- go-to-k/cdk-local#571: a command substitution inside a DOUBLE-quoted span
+# RUNS, so its body is commands. Leaving it quoted made every gate here blind to
+# it: measured on origin/main, all three of these matched NOTHING.
+want_match 0 "quoted substitution runs"           'echo "$(git commit -m x)"' "$C"
+want_match 0 "quoted backtick substitution runs"  'echo "`git commit -m x`"' "$C"
+want_match 0 "nested quoted substitution"         'X="$(echo "$(git commit -m x)")"' "$C"
+want_match 0 "quoted substitution, gh verb"       'echo "$(gh pr merge 1 --squash)"' "$M"
+# ...and the asymmetry that makes the fix safe rather than a blanket unquoting:
+# inside a SINGLE-quoted span a substitution is literal text, so it must stay
+# invisible. Without this pair the fix could have been "stop honouring quotes".
+want_match 1 "single-quoted substitution is literal" "echo '\$(git commit -m x)'" "$C"
+want_match 1 "single-quoted backticks are literal"   "echo '\`git commit -m x\`'" "$C"
+# The go-to-k/cdkd#2130 regression this could have reintroduced: a `--body`
+# whose PROSE follows a closed substitution is still prose, because `q` returns
+# to the double quote when the substitution ends.
+want_match 1 "prose after a closed substitution" 'gh pr create --body "see $(date) then git commit -m x"' "$C"
+
+# --- go-to-k/cdk-local#571: `gate_piped_segments` / `gate_matches_piped` ------
+# The distinction the ordinary segmenter cannot make, because it collapses `&&`,
+# `;` and `|` to the same newline: whose exit status does the shell REPORT?
+MG="$GATE_RE_MARKGATE_VERDICT"
+
+# want_piped <expect 0|1> <label> <command> <regex>
+want_piped() {
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  if gate_matches_piped "$cmd" "$re"; then got=0; else got=1; fi
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s got %s) :: %s\n' "$label" "$want" "$got" "$cmd"
+  fi
+}
+
+want_piped 0 "verdict feeds a pipe"            'mise exec -- markgate verify integ 2>&1 | tail -5' "$MG"
+want_piped 0 "bare markgate feeds a pipe"      'markgate verify check | grep state' "$MG"
+want_piped 0 "set feeds a pipe"                'mise exec -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 0 "|& feeds a pipe"                 'markgate set integ |& tee /tmp/l' "$MG"
+want_piped 1 "|| is a status TEST, not a pipe" 'mise exec -- markgate set integ || echo NOPE' "$MG"
+want_piped 1 "&& is a status TEST, not a pipe" 'markgate verify check && gh pr merge 1' "$MG"
+want_piped 1 "un-piped verdict"                'mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?' "$MG"
+want_piped 1 "last stage of a pipeline"        'echo x | markgate verify check' "$MG"
+want_piped 1 "status is not a verdict verb"    'mise exec -- markgate status integ | awk "/state/"' "$MG"
+# `2>&1` is a REDIRECTION, not a separator. Splitting on its `&` put the pipe
+# mark on the trailing `1`, so the issue's own repro walked past the gate.
+want_piped 0 "2>&1 before the pipe"            'markgate verify integ 2>&1 | tail -5' "$MG"
+want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
+# ...while a REAL bare `&` still separates.
+want_match 0 "bare & still separates"          'sleep 0 & markgate verify check' "$MG"
+
+# `gate_piped_segments` must print the piped segments and ONLY those, with the
+# marker stripped -- a caller reading them as ordinary text is the contract.
+got=$(gate_piped_segments 'markgate verify a | tail; markgate verify b' | tr '\n' '/')
+if [ "$got" = "markgate verify a /" ]; then
+  pass=$((pass + 1)); printf 'OK   gate_piped_segments prints only the piped segment\n'
+else
+  fail=$((fail + 1)); printf 'FAIL gate_piped_segments printed: %s\n' "$got"
+fi
+# The mark must never leak into ORDINARY segments, or every gate would see it.
+if gate_segments 'markgate verify a | tail' | grep -q "$GATE_PIPE_MARK"; then
+  fail=$((fail + 1)); printf 'FAIL the pipe mark leaked into gate_segments output\n'
+else
+  pass=$((pass + 1)); printf 'OK   gate_segments is unchanged by the pipe mark\n'
+fi
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

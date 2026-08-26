@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# Behavioral test for markgate-pipe-gate.sh, driven through the REAL hook with
+# real PreToolUse payloads. Run from the repo root:
+#   bash .claude/hooks/markgate-pipe-gate.test.sh
+#
+# The gate is a false-ACCEPT fix (go-to-k/cdk-local#571), so the REFUSE cases
+# are what prove it works. They are not enough on their own: a refuse-only
+# fence cannot see an over-tightening, and over-tightening this gate would
+# block every legitimate `markgate status | awk` and `markgate set … || echo`
+# in the repo. Both directions are therefore driven, and the ACCEPT block below
+# is as long as the REFUSE block on purpose.
+#
+# HERMETICITY. Each axis is either pinned or measured-and-recorded:
+#   git history  not read -- the gate never shells out to git. Measured: the
+#                payload cwd below is a bare mktemp dir with no repo at all,
+#                and every case still produces its expected verdict.
+#   cwd          pinned to that same throwaway dir via the payload's `cwd`.
+#   env          pinned with `env -i`; only PATH and the payload reach the hook.
+#   PATH         pinned to /usr/bin:/bin (the hook needs `jq` and `bash` only).
+#                No stub is needed because the gate NEVER RUNS markgate -- it
+#                is a static read of the command text. That is also why there
+#                is no MARKGATE_RC here, unlike gate-command-recognition.test.sh.
+#   $HOME        pinned to the throwaway dir, so no user dotfile is sourced.
+#   clock        not read -- no TTL, no timestamp, no marker store.
+#
+# `jq` must exist on PATH for the hook to parse the payload. If it does not,
+# the hook reads an EMPTY command and every case would pass VACUOUSLY, so the
+# harness refuses to run rather than reporting a green suite over nothing.
+
+set -u
+
+HOOKS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATE="$HOOKS/markgate-pipe-gate.sh"
+SANDBOX="$(mktemp -d)"
+trap 'rm -rf "$SANDBOX"' EXIT
+
+if ! PATH=/usr/bin:/bin command -v jq >/dev/null 2>&1; then
+  echo "FATAL: jq is not on the pinned PATH, so every case would pass vacuously." >&2
+  exit 1
+fi
+
+pass=0; fail=0
+
+# run_case <name> <expect_exit> <command>
+# 2 = refused, 0 = allowed through.
+run_case() {
+  local name="$1" want="$2" cmd="$3" got out payload
+  payload=$(jq -nc --arg c "$cmd" --arg d "$SANDBOX" \
+    '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}')
+  out=$(printf '%s' "$payload" | env -i PATH=/usr/bin:/bin HOME="$SANDBOX" \
+    bash "$GATE" 2>&1); got=$?
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-58s %s\n' "$name" "(exit $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n  cmd: %s\n  out: %s\n' \
+      "$name" "$want" "$got" "$cmd" "$out"
+  fi
+}
+
+echo "== REFUSE: markgate's verdict feeds a pipe =================================="
+# The literal command from the issue, `2>&1` included. That redirection is not
+# decoration: the segmenter used to split on the `&` inside `2>&1`, which put
+# the pipe mark on the trailing `1` and let THIS EXACT COMMAND through.
+run_case "issue repro: verify integ 2>&1 | tail -5"   2 'mise exec -- markgate verify integ 2>&1 | tail -5'
+run_case "verify piped to tee"                        2 'mise exec -- markgate verify integ 2>&1 | tee /tmp/o'
+run_case "verify piped to grep"                       2 'mise exec -- markgate verify check | grep state'
+run_case "bare markgate (no mise) piped"              2 'markgate verify check | head -3'
+run_case "set piped"                                  2 'mise exec -- markgate set integ | tee /tmp/l'
+run_case "|& (stderr pipe)"                           2 'mise exec -- markgate set integ |& tee /tmp/l'
+run_case "after a cd &&"                              2 'cd /w/t && mise exec -- markgate verify integ | tail -1'
+run_case "after a semicolon"                          2 'cd /w/t; mise exec -- markgate verify integ | tail -1'
+run_case "inside a subshell"                          2 '(cd /w/t && mise exec -- markgate verify integ | tail -1)'
+run_case "inside bash -c"                             2 'bash -c "mise exec -- markgate verify integ | tail"'
+run_case "inside a command substitution"              2 'echo "$(mise exec -- markgate verify integ | tail -1)"'
+run_case "mise x spelling"                            2 'mise x -- markgate verify integ | cat'
+run_case "mise exec with a tool pin"                  2 'mise exec markgate@0.4 -- markgate verify integ | cat'
+run_case "absolute markgate path"                     2 '/opt/homebrew/bin/markgate verify integ | cat'
+run_case "second stage of a longer pipeline"          2 'mise exec -- markgate verify integ | grep -v x | wc -l'
+run_case "leading env assignment"                     2 'FOO=1 mise exec -- markgate verify integ | cat'
+run_case "not the first segment of the list"          2 'vp run check && markgate verify check | tail -1'
+
+echo
+echo "== ACCEPT: the exit status is still markgate's =============================="
+run_case "redirect to a file, then \$?"               0 'mise exec -- markgate verify integ > /tmp/o 2>&1; rc=$?'
+run_case "command substitution, then \$?"             0 'out=$(mise exec -- markgate verify integ 2>&1 >/dev/null); rc=$?'
+run_case "discarded output, then \$?"                 0 'mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?'
+run_case "|| reads the status"                        0 'mise exec -- markgate set integ || echo "MARKER NOT RECORDED"'
+run_case "&& reads the status"                        0 'mise exec -- markgate verify check && gh pr merge 1 --squash'
+run_case "|| and && together"                         0 'markgate verify check && echo fresh || echo stale'
+run_case "bare verify, nothing after it"              0 'mise exec -- markgate verify integ'
+run_case "bare set, nothing after it"                 0 'mise exec -- markgate set check'
+run_case "status piped to awk (the hooks' own idiom)" 0 'mise exec -- markgate status integ | awk "/^state:/"'
+run_case "status piped to grep"                       0 'markgate status check | grep state'
+run_case "last stage of a pipeline"                   0 'echo x | markgate verify check'
+run_case "quoted mention of the piped form"           0 'echo "mise exec -- markgate verify integ | tail"'
+run_case "single-quoted mention"                      0 "echo 'markgate verify integ | tail'"
+run_case "heredoc body mentioning the piped form"     0 'cat <<EOF
+mise exec -- markgate verify integ | tail -5
+EOF'
+run_case "a comment mentioning the piped form"        0 'echo hi   # markgate verify integ | tail'
+run_case "an unrelated pipe"                          0 'git status --short | head'
+run_case "an unrelated pipe naming markgate as data"  0 'grep -rn markgate .claude/hooks | head'
+run_case "markgate install is not a verdict verb"     0 'mise exec -- markgate install | tail'
+run_case "empty command"                              0 ''
+
+echo
+echo "== the harness itself ======================================================="
+# The gate must FAIL CLOSED when the shared library is unusable, rather than
+# waving every command through. Two shapes: absent, and present-but-older (a
+# copy that predates `gate_matches_piped`, where the call would be an unbound
+# command and `|| exit 0` would exit 0 on EVERYTHING).
+# fail_closed <name> <expected message fragment> <mutation>
+#
+# The fragment is load-bearing, not decoration. Deleting the library trips BOTH
+# guards -- the readability test AND the `declare -F` test after the failed
+# source -- so asserting only "exit 2 mentioning _command-match.sh" is satisfied
+# twice over, and a mutation probe confirmed it: removing the readability guard
+# entirely left this case GREEN. Naming which guard must speak makes each case
+# fence its own guard.
+fail_closed() {
+  local name="$1" want="$2" mutate="$3" tmp out rc
+  tmp="$SANDBOX/lib-$RANDOM"; mkdir -p "$tmp"
+  cp "$HOOKS/markgate-pipe-gate.sh" "$tmp/"
+  cp "$HOOKS/_command-match.sh" "$tmp/"
+  eval "$mutate"
+  out=$(jq -nc --arg d "$SANDBOX" '{tool_name:"Bash",cwd:$d,tool_input:{command:"markgate verify check | tail"}}' \
+    | env -i PATH=/usr/bin:/bin HOME="$SANDBOX" bash "$tmp/markgate-pipe-gate.sh" 2>&1); rc=$?
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "$want"; then
+    pass=$((pass + 1)); printf 'OK   %-58s %s\n' "$name" "(exit $rc)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s must exit 2 saying "%s" (got %s)\n  out: %s\n' "$name" "$want" "$rc" "$out"
+  fi
+}
+fail_closed "library absent" "is missing or unreadable" 'rm -f "$tmp/_command-match.sh"'
+fail_closed "library predates gate_matches_piped" "gate_matches_piped is undefined" \
+  'python3 - "$tmp/_command-match.sh" <<STRIP
+import io,sys
+p=sys.argv[1]; s=io.open(p,encoding="utf-8").read()
+a=s.index("gate_matches_piped() {")
+b=s.index("\nreturn 1\n}", a) if False else s.index("\n}\n", a)+3
+io.open(p,"w",encoding="utf-8").write(s[:a]+s[b:])
+STRIP'
+
+printf '\npass: %s  fail: %s\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

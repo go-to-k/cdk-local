@@ -27,10 +27,23 @@ GATE_SEP_SEMI=$'\002'
 GATE_SEP_PIPE=$'\003'
 GATE_SEP_SUBST=$'\004'
 
+# Appended to a segment that is the LEFT side of a real `|` pipeline, and ONLY
+# when a caller asks for it (`gate_segments_raw <cmd> "$GATE_PIPE_MARK"`). The
+# ordinary separator pass collapses `&&`, `;` and `|` to the same newline, so no
+# gate could tell "its exit status is the caller's" from "the shell threw its
+# exit status away in favour of the last stage" (go-to-k/cdk-local#571). Default
+# empty, so every existing caller gets byte-identical segments.
+GATE_PIPE_MARK=$'\005'
+
+# gate_segments_raw <cmd> [<pipe-mark>]
+#
 # One awk pass: join `\`-continuations, blank heredoc BODIES, neutralise
 # separators inside quotes, and turn every real separator into a newline. Command
 # substitutions (`$(...)` and backticks) become separators too — the text inside
 # one RUNS, so `echo "$(git commit -m x)"` is a commit.
+#
+# <pipe-mark>, when non-empty, is appended to each segment that feeds a `|`
+# pipeline, so a caller can ask which segments had their exit status discarded.
 gate_segments_raw() {
   awk '
     # `q` (the open quote character) is GLOBAL: a quoted span survives a newline,
@@ -48,6 +61,28 @@ gate_segments_raw() {
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
         if (q == "") {
+          # Closing a `$(…)` / backtick substitution that was opened from INSIDE
+          # a double-quoted span (see the sub_open branch below). Until then the
+          # body was left quoted, so `echo "$(gh pr merge 1 --squash)"` matched
+          # NOTHING and ran ungated through every gate here -- the same class of
+          # false accept as go-to-k/cdk-local#571, found by its test suite.
+          #
+          # The close RE-EMITS the enclosing quote character before the rest of
+          # the span. Ending the body needs a newline, and that newline turns
+          # the PROSE that follows the substitution into a fresh segment -- so
+          # `--body "see $(date) then gh pr merge 1"` started a segment at
+          # `then gh pr merge 1`, which `gate_strip_prefix` reduced to a live
+          # verb. That is the go-to-k/cdkd#2130 prose-in-a-body regression,
+          # re-entering through the other end. A leading quote character cannot
+          # be stripped and no verb regex can match past it, so the trailing
+          # prose is inert again while the body stays visible.
+          if (sdepth > 0 && stype[sdepth] == "(" && c == "(") { sparen[sdepth]++; out = out c; continue }
+          if (sdepth > 0 && stype[sdepth] == "(" && c == ")") {
+            sparen[sdepth]--
+            if (sparen[sdepth] <= 0) { out = out "\n" squote[sdepth]; q = squote[sdepth]; sdepth--; continue }
+            out = out c; continue
+          }
+          if (sdepth > 0 && stype[sdepth] == "`" && c == "`") { out = out "\n" squote[sdepth]; q = squote[sdepth]; sdepth--; continue }
           # An escaped character outside quotes is LITERAL: `echo a\; git commit`
           # is ONE echo, and splitting on that `;` blocked it (go-to-k/cdkd#2130
           # test review).
@@ -57,12 +92,41 @@ gate_segments_raw() {
           # Process substitution runs its body too: `diff <(git commit) …`.
           if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
           if (c == "`") { out = out "\n"; continue }
-          if (c == "&" || c == ";" || c == "|") { out = out "\n"; continue }
+          # `||` is a logical OR, not a pipe: there the left exit status is
+          # what DECIDES whether the right side runs, so it is never lost. Only
+          # a single `|` (and `|&`) discards it. Consuming both characters also
+          # drops the empty segment `||` used to produce, which `gate_segments`
+          # was filtering out anyway. NOTE no apostrophes in this awk body --
+          # it is a single-quoted shell string.
+          if (c == "|" && substr(line, i + 1, 1) == "|") { out = out "\n"; i++; continue }
+          if (c == "|") { out = out PIPE_MARK "\n"; continue }
+          # `&` is a separator only when it is not part of a REDIRECTION.
+          # `2>&1` used to split here, which cost the anchored verb regexes
+          # nothing (the split lands after the verb) but put the pipe mark on
+          # the wrong segment: `markgate verify integ 2>&1 | tail` marked the
+          # `1` and reported the markgate segment as unpiped -- i.e. the exact
+          # command from go-to-k/cdk-local#571 walked past its own gate.
+          if (c == "&" && substr(line, i + 1, 1) == "&") { out = out "\n"; i++; continue }
+          if (c == "&" && (substr(out, length(out), 1) == ">" || substr(out, length(out), 1) == "<")) { out = out c; continue }
+          if (c == "&" && substr(line, i + 1, 1) == ">") { out = out c; continue }
+          if (c == "&" || c == ";") { out = out "\n"; continue }
           out = out c
           continue
         }
         if (c == "\\" && q == "\"") { out = out c substr(line, i + 1, 1); i++; continue }
         if (c == q) { q = ""; out = out c; continue }
+        # A command substitution inside a DOUBLE-quoted span RUNS. Leaving it
+        # quoted is what let the bypass above through. Inside a SINGLE-quoted
+        # span it is literal, so nothing changes there -- that asymmetry is the
+        # whole point, and it is why this branch tests q rather than assuming.
+        if (q == "\"" && c == "$" && substr(line, i + 1, 1) == "(") {
+          sdepth++; squote[sdepth] = q; stype[sdepth] = "("; sparen[sdepth] = 1
+          q = ""; out = out "\n"; i++; continue
+        }
+        if (q == "\"" && c == "`") {
+          sdepth++; squote[sdepth] = q; stype[sdepth] = "`"; sparen[sdepth] = 0
+          q = ""; out = out "\n"; continue
+        }
         if (c == "&") { out = out SEP_AMP; continue }
         if (c == ";") { out = out SEP_SEMI; continue }
         if (c == "|") { out = out SEP_PIPE; continue }
@@ -141,7 +205,7 @@ gate_segments_raw() {
       open_span = q
     }
     function run_pass(   i) {
-      q = ""; tag = ""; pending = ""; outn = 0; open_span = ""
+      q = ""; tag = ""; pending = ""; outn = 0; open_span = ""; sdepth = 0
       for (i = 1; i <= total; i++) emit(i)
       if (pending != "") outbuf[++outn] = flush_line(pending)
     }
@@ -153,7 +217,7 @@ gate_segments_raw() {
       for (i = 1; i <= outn; i++) print outbuf[i]
     }
   ' SEP_AMP="$GATE_SEP_AMP" SEP_SEMI="$GATE_SEP_SEMI" SEP_PIPE="$GATE_SEP_PIPE" \
-    SEP_SUBST="$GATE_SEP_SUBST" <<< "$1"
+    SEP_SUBST="$GATE_SEP_SUBST" PIPE_MARK="${2:-}" <<< "$1"
 }
 
 # Leading words that introduce a command without being one: env assignments,
@@ -200,9 +264,15 @@ gate_unquote_span() {
   printf '%s' "$v"
 }
 
-# Print one command segment per line, in the ORIGINAL text (placeholders restored).
+# gate_segments <cmd> [<pipe-mark>]
+#
+# Print one command segment per line, in the ORIGINAL text (placeholders
+# restored). <pipe-mark> is threaded straight through to `gate_segments_raw`,
+# INCLUDING into the `bash -c` recursion below — a pipe inside `bash -c "…"` is
+# a pipe, and dropping the argument there would have made the recursion the one
+# blind spot of the piped-segment scan.
 gate_segments() {
-  local segment
+  local segment mark="${2:-}"
   while IFS= read -r segment; do
     # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
     # replacement means the MATCHED TEXT, so the placeholder survived and a
@@ -221,14 +291,40 @@ gate_segments() {
     # (go-to-k/cdkd#2130 test review). Recurse ONLY here — re-segmenting every
     # segment would split a quoted `--body` whose prose contains `&&`.
     if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
-      gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")"
+      gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$mark"
       continue
     fi
     # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
     # false test aborts the whole function, and the segments after it are never
     # emitted — a silent fail-open that depends on which gate sources this.
     if [ -n "$segment" ]; then printf '%s\n' "$segment"; fi
-  done < <(gate_segments_raw "$1")
+  done < <(gate_segments_raw "$1" "$mark")
+}
+
+# gate_piped_segments <cmd>
+#
+# Print only the segments whose exit status the shell THROWS AWAY because they
+# feed a `|` pipeline — the mark is stripped, so what comes out is ordinary
+# segment text. A segment that is the LAST stage of a pipeline is NOT printed:
+# there `$?` really is that command's own status.
+gate_piped_segments() {
+  local segment
+  while IFS= read -r segment; do
+    case "$segment" in
+      *"$GATE_PIPE_MARK"*) printf '%s\n' "${segment//"$GATE_PIPE_MARK"/}" ;;
+    esac
+  done < <(gate_segments "$1" "$GATE_PIPE_MARK")
+}
+
+# gate_matches_piped <cmd> <extended-regex>
+# 0 when any segment that FEEDS a pipe matches. The piped twin of
+# `gate_matches`, same anchoring and same segment model.
+gate_matches_piped() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] && return 0
+  done < <(gate_piped_segments "$cmd")
+  return 1
 }
 
 # gate_matches <cmd> <extended-regex>
@@ -325,6 +421,23 @@ GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:s
 GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space:]]|$)"
 GATE_RE_GH_ISSUE_COMMENT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
+
+# markgate-pipe-gate: the two markgate verbs whose whole answer is an EXIT CODE.
+# `verify` prints NOTHING on the fresh path, so "no output, rc=0" is exactly
+# what a healthy run looks like -- and exactly what `markgate verify integ
+# 2>&1 | tail -5` reports for a STALE marker, because `$?` after a pipeline is
+# the LAST stage. `markgate status` is deliberately ABSENT: its answer is on
+# stdout, so piping it into `awk` is the correct use and every gate here does
+# it (go-to-k/cdk-local#571).
+#
+# The launcher prefix absorbs the `mise exec -- markgate …` spelling every
+# skill in this repo uses, plus `mise x`, an interposed tool pin
+# (`mise exec markgate@0.4 -- markgate verify check`), and a path-qualified
+# binary. It is anchored at the segment START like every other verb here, so a
+# mention inside `echo`/`printf` is not a match -- the launcher is the ONLY
+# thing allowed to precede `markgate`.
+GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+[^[:space:]]+)*[[:space:]]+)?"
+GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set)([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
 # PATH ONLY -- it says nothing about the HTTP method, and the collection is also
 # the READ endpoint (`gh api repos/<o>/<r>/issues` lists issues). An earlier

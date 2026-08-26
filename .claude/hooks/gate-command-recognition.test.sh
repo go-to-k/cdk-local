@@ -126,6 +126,25 @@ run_case "branch-gate: status on main"        0 branch-gate.sh 'git status'
 git -C "$repo" checkout -q feature
 run_case "branch-gate: commit on a feature branch" 0 branch-gate.sh 'git commit -m x'
 
+# markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
+# exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook
+# here, in addition to markgate-pipe-gate.test.sh, for the cross-gate property
+# this file exists for: a gate that sources the matcher and then asks the WRONG
+# question. Note this gate NEVER runs markgate -- MARKGATE_RC is irrelevant to
+# it, which is itself the reason a piped verdict is un-catchable at runtime and
+# has to be caught statically.
+run_case "markgate-pipe: verify piped to tail"  2 markgate-pipe-gate.sh 'mise exec -- markgate verify integ 2>&1 | tail -5'
+run_case "markgate-pipe: set piped to tee"      2 markgate-pipe-gate.sh 'mise exec -- markgate set integ | tee /tmp/l'
+run_case "markgate-pipe: un-piped verify"       0 markgate-pipe-gate.sh 'mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?'
+run_case "markgate-pipe: || is not a pipe"      0 markgate-pipe-gate.sh 'mise exec -- markgate set integ || echo NOPE'
+run_case "markgate-pipe: status may be piped"   0 markgate-pipe-gate.sh 'mise exec -- markgate status integ | awk /state/'
+run_case "markgate-pipe: unrelated pipe"        0 markgate-pipe-gate.sh 'git status --short | head'
+run_case "markgate-pipe: quoted mention"        0 markgate-pipe-gate.sh 'echo \"markgate verify integ | tail\"'
+# ...and the other direction: a piped markgate is not any OTHER gate's business.
+# Without this, moving the check into (say) check-gate would look identical.
+run_case "check-gate: piped markgate is not its verb"  0 check-gate.sh 'mise exec -- markgate verify integ | tail -5'
+run_case "verify-pr-gate: piped markgate is not its verb" 0 verify-pr-gate.sh 'mise exec -- markgate verify integ | tail -5'
+
 # --- a repo/dir FLAG must not change any gate's verdict ----------------------
 # `gh -R <owner/repo> pr merge 1 --squash` matched NOTHING until 2026-08-25,
 # because GATE_GH_C absorbed `-C <path>` only, so it MERGED PAST verify-pr-gate
