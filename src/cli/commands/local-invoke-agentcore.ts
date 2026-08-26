@@ -12,6 +12,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
@@ -864,8 +865,13 @@ export async function buildSigV4HeadersIfRequested(
  *
  * Throws a {@link CdkLocalError} when none are available — `--sigv4` cannot
  * proceed without credentials, unlike the unsigned path.
+ *
+ * Exported so the issue #570 site-level test can drive the STS failure
+ * branch with a mocked STS client -- the same reason
+ * `applyAgentCoreCredentialEnv` below is exported. A helper being correct
+ * says nothing about whether a given site actually routes through it.
  */
-async function resolveHostCredentialsForSigV4(
+export async function resolveHostCredentialsForSigV4(
   options: LocalInvokeAgentCoreOptions,
   resolved: ResolvedAgentCoreRuntime,
   loaded: LocalStateRecord | undefined,
@@ -878,9 +884,13 @@ async function resolveHostCredentialsForSigV4(
     try {
       return await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
     } catch (err) {
+      // Issue #570: not on the issue's list of six, but the same class --
+      // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
+      // `assumeRoleArn` keeps printing for the reason recorded at the
+      // `applyAgentCoreCredentialEnv` site below.
       logger.warn(
         `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for --sigv4 signing: ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
+          `${describeAwsFailureForWarn(err, 'STS AssumeRole (--sigv4 signing)')}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
       );
     }
@@ -1067,8 +1077,13 @@ async function resolveAgentCoreCodeImage(
  * or resolved from `--from-cfn-stack` state for the bare form) yields STS temp
  * creds for the download; otherwise `--profile` / the default chain is used.
  * The region is `--region` / `--stack-region` / env / the stack's region.
+ *
+ * Exported so the issue #570 site-level test can drive the STS failure
+ * branch with a mocked STS client -- the same reason
+ * `applyAgentCoreCredentialEnv` below is exported. A helper being correct
+ * says nothing about whether a given site actually routes through it.
  */
-async function resolveAgentCoreCodeImageFromS3(
+export async function resolveAgentCoreCodeImageFromS3(
   resolved: ResolvedAgentCoreRuntime,
   code: AgentCoreCodeArtifact,
   s3Source: NonNullable<AgentCoreCodeArtifact['s3Source']>,
@@ -1108,9 +1123,13 @@ async function resolveAgentCoreCodeImageFromS3(
     try {
       credentials = await assumeAgentCoreExecutionRole(assumeRoleArn, region, options.profile);
     } catch (err) {
+      // Issue #570: not on the issue's list of six, but the same class --
+      // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
+      // `assumeRoleArn` keeps printing for the reason recorded at the
+      // `applyAgentCoreCredentialEnv` site below.
       logger.warn(
         `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for the fromS3 bundle download: ` +
-          `${err instanceof Error ? err.message : String(err)}. ` +
+          `${describeAwsFailureForWarn(err, 'STS AssumeRole (fromS3 bundle download)')}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
       );
     }
@@ -1334,8 +1353,12 @@ export async function buildAgentCoreImageContext(
   try {
     accountId = await resolveCallerAccountId(region, options.profile);
   } catch (err) {
+    // Issue #570: never interpolate the SDK error's `message` into this
+    // default-level line -- see `describeAwsFailureForWarn` in
+    // `src/local/credential-error.ts` for which half of it prints here and
+    // which is withheld to `debug`.
     logger.warn(
-      `--from-cfn-stack: STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `--from-cfn-stack: STS GetCallerIdentity failed: ${describeAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'A same-stack ECR image URI referencing ${AWS::AccountId} may not resolve.'
     );
   }
@@ -1413,8 +1436,20 @@ export async function applyAgentCoreCredentialEnv(
       if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
+      // Issue #570: never interpolate the SDK error's `message` into this
+      // default-level line -- see `describeAwsFailureForWarn` in
+      // `src/local/credential-error.ts` for which half of it prints here and
+      // which is withheld to `debug`.
+      //
+      // `args.assumeRoleArn` KEEPS printing. It is the developer's own
+      // `--assume-role` value or an ARN read from their own deployed stack
+      // state, and an ARN is a public identifier -- the same call issue #555
+      // made for the access-key-id it left quoted. It is also load-bearing
+      // for `tests/integration/local-studio/verify.sh`, which proves
+      // `--assume-role` threaded from the CLI to the spawned child by
+      // finding the ARN in the studio log ring.
       logger.warn(
-        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${describeAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
           "Falling back to the developer's shell credentials."
       );
     }

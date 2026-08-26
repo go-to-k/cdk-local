@@ -289,6 +289,36 @@ export {
 export { defaultCredentialsLoader, type CredentialsLoader } from './local/sigv4-verify.js';
 
 /**
+ * Rendering an AWS SDK failure into a DEFAULT-level log line (issues #564,
+ * #570).
+ *
+ * Host-side use case: a host CLI that wraps these command factories prints
+ * into the same stream cdk-local does, and a host that mirrors that stream
+ * anywhere a third party can read it (a served log panel, a captured build
+ * log) inherits the same question cdk-local answered here — an AWS SDK
+ * error's `message` is not the CLI's to vouch for. Reuse these rather than
+ * arriving at a second spelling of the policy:
+ *
+ * - `describeAwsFailureForWarn(err, operation)` for a `catch` around an SDK
+ *   CALL, where a modeled service exception's message is the diagnosis and
+ *   must survive: it keeps that message (flattened to one line and length-
+ *   capped) and withholds everything else to a clamped class name plus a
+ *   character count, emitting the full text at `debug` itself.
+ * - `describeCredentialLoadFailure(err)` for a `catch` around credential
+ *   RESOLUTION only, where nothing actionable is lost by withholding all of
+ *   it; the caller emits its own `debug` line.
+ *
+ * The primitives underneath (the name clamp, the service-exception test, the
+ * message sanitizer) are deliberately NOT exported: a host reusing the policy
+ * wants the decision, and a host reassembling it from parts would be free to
+ * reassemble it wrongly.
+ */
+export {
+  describeAwsFailureForWarn,
+  describeCredentialLoadFailure,
+} from './local/credential-error.js';
+
+/**
  * `start-service` Cloud Map service-discovery index — parses the
  * `AWS::ServiceDiscovery::PrivateDnsNamespace` / `::Service` resources in a
  * synthesized stack into the namespace / service lookup maps the local ECS

@@ -104,6 +104,14 @@ The flag reads CloudFormation Outputs and resolves resource ARNs into env vars o
 - Confirm your IAM credentials have `cloudformation:ListStackResources`, `cloudformation:DescribeStacks`, and `cloudformation:ListExports`.
 - Confirm the stack has the Outputs / resources your CDK code expects (the local synth's expectations must match the deployed state).
 
+### An STS warn says the message was withheld
+
+A warn line ending in `N-character message withheld, logged at debug level under --verbose` means the STS call (`GetCallerIdentity` for `${AWS::AccountId}`, `AssumeRole` for `--assume-role`) failed **before the request reached AWS** — the local credential chain could not produce credentials. Re-run with `--verbose` (or `CDKL_LOG_LEVEL=debug`) to see the chain's full message; the usual causes are an expired SSO session (`aws sso login`), a `--profile` that does not exist, or no credentials configured at all.
+
+The message is withheld from the default-level line rather than printed there because it is the AWS SDK's text, not cdk-local's: the SDK's `credential_process` provider copies the failed command's own command line into the error it raises, and a `credential_process` command line is an ordinary place to keep a passphrase. Since `cdkl studio` mirrors these lines into a log ring it serves over HTTP, a default-level line is the wrong place to relay a string cdk-local does not control. The character count is kept because it is what tells you whether your `credential_process` ran at all.
+
+When STS itself answers — `ExpiredToken`, `AccessDenied`, `InvalidClientTokenId` — the message **is** printed in full at warn level, because that message is the diagnosis and it never went near your credential command. Such a message is flattened onto one line and capped at 512 characters.
+
 ### `--env-vars <file>` not applying overrides
 
 - **Wrong key format** — the file is a JSON object keyed by Lambda **logical ID** (the synthesized CloudFormation ID like `MyFn1234ABCD`). CDK display path keys are tracked as a future enhancement in [issue #27](https://github.com/go-to-k/cdk-local/issues/27).

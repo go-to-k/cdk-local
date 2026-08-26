@@ -572,7 +572,17 @@ compute-locally category for Lambda + API Gateway).
   websocket-server, ecs-task-runner, ecs-service-runner, ecs-network,
   cloud-map-registry, lambda-resolver, ecs-task-resolver,
   route-discovery, authorizer-resolver, lambda-authorizer, cognito-jwt,
-  sigv4-verify, rie-client, intrinsic-image, runtime-image, target-lister
+  sigv4-verify, credential-error (issues #564 / #570 — how an AWS SDK
+  failure is rendered into a DEFAULT-level log line: `describeAwsFailureForWarn`
+  keeps a modeled service exception's message, since that message is the
+  diagnosis, flattened to one line and length-capped, and withholds every
+  other error — credential-chain failures above all, which can carry a
+  `credential_process` command line — to a clamped class name plus a
+  character count, emitting the full text at `debug`;
+  `describeCredentialLoadFailure` is the unconditional-withhold form for a
+  `catch` around credential resolution alone, which is what `sigv4-verify`
+  uses. Both are re-exported from `src/internal.ts`),
+  rie-client, intrinsic-image, runtime-image, target-lister
   (`cdkl list` target enumeration), target-picker (interactive arrow-key
   target selection via `@clack/prompts` when a target is omitted in a TTY),
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +

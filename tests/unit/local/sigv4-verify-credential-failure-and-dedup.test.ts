@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import {
   verifySigV4,
-  describeCredentialLoadFailure,
   type SigV4VerifyRequest,
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
+// Issue #570 lifted the two #564 helpers into their own module when it found
+// nine more sites of the same shape; the definitions moved verbatim.
+import { describeCredentialLoadFailure } from '../../../src/local/credential-error.js';
 import { createHash } from 'node:crypto';
 import { getLogger } from '../../../src/utils/logger.js';
 import { setEmbedConfig, resetEmbedConfig } from '../../../src/local/embed-config.js';

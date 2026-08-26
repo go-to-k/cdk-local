@@ -8,6 +8,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -2442,8 +2443,12 @@ export async function buildEcsImageResolutionContext(
     try {
       accountId = await resolveCallerAccountId(region, options.profile);
     } catch (err) {
+      // Issue #570: never interpolate the SDK error's `message` into this
+      // default-level line -- see `describeAwsFailureForWarn` in
+      // `src/local/credential-error.ts` for which half of it prints here and
+      // which is withheld to `debug`.
       logger.warn(
-        `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
           'Substitution will be skipped; affected env / secret entries will be dropped with per-key warnings.'
       );
     }

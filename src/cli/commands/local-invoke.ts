@@ -13,6 +13,7 @@ import {
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -693,7 +694,16 @@ export function envHasCrossStackIntrinsic(
   return false;
 }
 
-async function resolvePseudoParametersForInvoke(
+/**
+ * Build the AWS pseudo-parameter bag (`${AWS::AccountId}` / `${AWS::Region}` /
+ * partition / URL suffix) that `cdkl invoke`'s env-var substitution consumes.
+ *
+ * Exported so the issue #570 site-level test can drive the STS failure branch
+ * with a mocked STS client -- the same reason `resolveLambdaContainerEnv`
+ * below is exported. A helper being correct says nothing about whether a
+ * given site actually routes through it.
+ */
+export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
   options: { region?: string; profile?: string }
 ): Promise<
@@ -721,8 +731,12 @@ async function resolvePseudoParametersForInvoke(
       sts.destroy();
     }
   } catch (err) {
+    // Issue #570: never interpolate the SDK error's `message` into this
+    // default-level line -- see `describeAwsFailureForWarn` in
+    // `src/local/credential-error.ts` for which half of it prints here and
+    // which is withheld to `debug`.
     logger.warn(
-      `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'Substitution will be skipped; affected env entries will be dropped with per-key warnings.'
     );
   }
@@ -1037,7 +1051,19 @@ export async function resolveLambdaContainerEnv(
       if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      // Issue #570: not on the issue's list of six, but the same class --
+      // `assumeRoleCredentials` resolves the credential chain and then calls
+      // STS, so both populations land here. See `describeAwsFailureForWarn`
+      // in `src/local/credential-error.ts`.
+      //
+      // `resolvedAssumeRoleArn` KEEPS printing. It is the developer's own
+      // `--assume-role` value or an ARN read from their own deployed stack
+      // state, and an ARN is a public identifier -- the same call issue #555
+      // made for the access-key-id it left quoted. It is also load-bearing
+      // for `tests/integration/local-studio/verify.sh`, which proves
+      // `--assume-role` threaded from the CLI to the spawned child by
+      // finding the ARN in the studio log ring.
+      const reason = describeAwsFailureForWarn(err, 'STS AssumeRole');
       logger.warn(
         `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
           "Falling back to the developer's shell credentials."
