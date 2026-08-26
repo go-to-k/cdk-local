@@ -460,8 +460,11 @@ is a mirrored skill LESSON, and it is exactly the path where this repo's
 duplicates come from.
 
 Be honest about which problem this solves here, because the sibling repo's
-argument does not transfer. Measured 2026-08-25: cdk-local has **5 open
-issues**, **none** carrying `Session-fit: next`, and nothing umbrella-shaped.
+argument does not transfer. Measured 2026-08-26: cdk-local has **8 open
+issues**, **three** carrying `Session-fit: next` (go-to-k/cdk-local#560,
+go-to-k/cdk-local#561, go-to-k/cdk-local#564), and one umbrella
+(go-to-k/cdk-local#281, parked until after launch, with its phases filed as
+go-to-k/cdk-local#286 / go-to-k/cdk-local#287 / go-to-k/cdk-local#288).
 There is no unbounded backlog to converge. What there is, is a duplicate
 GENERATOR that §10-c already names in its own text, with two measured pairs out
 of 145 issues filed (41 of them skill-flow / cross-repo-mirror shaped):
@@ -576,6 +579,71 @@ number in the row yourself. The gate exists because this
 section's own rule — "N sites of one root cause is ONE issue and ONE PR, never
 N issues", already written and already correct — did not stop either pair above.
 Registration is not execution.
+
+**Before writing `Session-fit: next`, NAME the command the next session will run
+to verify the fix -- and say that a fresh session will be able to run it.** Of
+the four classification lines this is one of the two that carry no label, and it
+is the one that decays quietly. A deferral is a PREDICTION that a later session
+can finish the work; the prediction is almost never stated, so it is never
+checked, and the classification
+decays into naming the KIND of work ("a fixture / base-image change", "a
+different subsystem"). That describes the MEANS instead of the purpose, and it is
+the failure `.claude/CLAUDE.md` names when it says the four fields exist to make
+a deferral HONEST rather than to make one available -- arriving through the
+reason line rather than through the values. No enumerated trigger list catches
+it either, because the next miss arrives in a shape the list does not contain. So
+name it concretely: not "run the integ" but the fixture, as in
+`/run-integ local-start-api-websocket`; not "add a test" but the assertion that
+goes from red to green, as in `vp test run tests/unit/local/<file>.test.ts`.
+
+The check is GENERATIVE rather than a lookup, which is the point -- it fires on
+conditions nobody enumerated. When naming the command is hard, that difficulty IS
+the finding, and in this repo it is usually one of these:
+
+- **The verifier is bound to THIS host.** 53 of this repo's 58 integ fixtures
+  drive a real Docker daemon, measured 2026-08-26 with
+  `grep -l docker tests/integration/*/verify.sh | wc -l`. So the host's CPU
+  architecture, the platform of the image the fixture resolves, the daemon's
+  version (`probeHostGatewaySupport` in `src/local/docker-version.ts` gates
+  `host-gateway` on Docker >= 20.10) and its BuildKit behaviour are all part of
+  the verifier, and none of them travels with the issue.
+- **The verifier is bound to THIS account.** A `*-from-cfn-stack` fixture's
+  `verify.sh` calls the upstream `cdk deploy`, so it needs the `cdk` CLI on
+  `$PATH` and credentials for an account it may deploy into -- which is why
+  `/run-integ` pre-flights `which cdk` and `aws sts get-caller-identity` for
+  those fixtures.
+- **The verifier does not exist yet**, and writing it is most of the work. This
+  is the one case where `next` is genuinely right, and it is right BECAUSE you
+  could name what is missing.
+- **You cannot name it at all**, which means nobody can confirm the fix later
+  either. That is not a deferral, it is an unbounded one.
+
+Measured here on 2026-08-26. go-to-k/cdk-local#560 was filed
+`Session-fit: next (not this session)` on the reasoning "the fix is a fixture /
+base-image change, on a different axis from the log-redaction lane that surfaced
+it" -- a statement about the work's CATEGORY, which reads as a sound handoff. The
+defect is a Go RIE fault under `linux/amd64` emulation (a SIGSEGV in one
+fixture, a `sync: inconsistent mutex state` panic in the other), and the issue's
+own evidence records `uname -m` = `arm64` on the machine that filed it. So the next
+session's verification is `/run-integ local-start-api` plus
+`/run-integ local-start-api-websocket` ON AN arm64 HOST, and nothing guarantees
+a fresh session has one. What follows is worse than an inconclusive run: a
+fixture declaring no `Architectures` resolves to `x86_64` (the default in
+`src/cli/commands/local-start-api.ts`) and its warm container is launched at
+`--platform linux/amd64` (`architectureToPlatform`, called for a ZIP Lambda from
+`startOne` in `src/local/container-pool.ts`), so on an amd64 host it runs
+natively and never reaches the emulated path that
+`src/local/docker-image-builder.ts` warns about -- a run there can only be
+silent about the fault the issue describes. The misclassification was caught in
+review; nothing in this flow caught it. One sentence of naming would have
+surfaced the host.
+
+**The converse is the honest use of `next`, and it costs one line.** When you CAN
+name the verification and a fresh session will plainly have it -- an existing
+`local-*` fixture needing only Docker, a `vp test run <path>` assertion, an
+ordinary `gh` query -- the deferral is sound. Put that line in the issue body
+beside `Session-fit`, so the next session starts from the check instead of
+re-deriving it.
 
 Never edit in the main checkout (`main-tree-branch-gate.sh` blocks branch creation
 there). Per lane:
