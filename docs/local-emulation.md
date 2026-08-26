@@ -919,8 +919,9 @@ Outcomes:
   requests instead (fail-closed).
 
   The warn is deduplicated per foreign access-key-id, best-effort: the server
-  remembers the 256 most recently warned ids, so a client cycling through
-  more than that draws a repeat warning for one it has already seen. The
+  remembers the 256 most recently FIRST-warned ids (a repeat hit does not
+  refresh an id's place in the queue), so a client cycling through more than
+  that draws a repeat warning for one it has already seen. The
   bound is deliberately placed so it can only ever make cdk-local NOISIER --
   it never goes quiet on an access-key-id it has not warned about yet, since
   that one may be the federated signer you need told about.
@@ -928,7 +929,7 @@ Outcomes:
   When the failure is that **no local credentials resolved at all**, the warn
   names the failure's class and the length of the credential chain's message
   but not the message itself. The full text is printed at debug level -- run
-  with `--verbose` to see it. The reason for holding it back is that the
+  with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it. The reason for holding it back is that the
   chain's error text is not cdk-local's to vouch for: the AWS SDK's
   `credential_process` provider copies Node's `Command failed: <command
   line>` into the error it raises, and a `credential_process` command line is

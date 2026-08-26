@@ -342,8 +342,15 @@ export async function verifySigV4(
     //   TRUE, so `internalCreateChain` continues past it, and the node
     //   chain's last link unconditionally throws the generic `Could not load
     //   credentials from any providers` with `tryNextLink: false`. Repro on
-    //   the versions this repo resolves (@aws-sdk/credential-provider-node
-    //   3.972.44, credential-provider-process 3.972.43): a profile whose
+    //   the versions this repo RESOLVES -- and note there are TWO
+    //   resolutions of the process provider, so a single version number here
+    //   is wrong whichever one you pick: from `@aws-sdk/client-sts`,
+    //   credential-provider-node 3.972.44 reaches
+    //   credential-provider-process 3.972.39 directly, while
+    //   credential-provider-ini 3.972.43 reaches 3.972.43 -- and INI is what
+    //   actually handles a `credential_process` profile, so 3.972.43 is what
+    //   the repro exercised. The two dist bundles are byte-identical, so
+    //   nothing behavioural turns on the pairing. Repro: a profile whose
     //   `credential_process` exits non-zero, proven to have RUN by a marker
     //   file it touches, yields exactly that 45-character generic message
     //   and no command line.
@@ -358,11 +365,14 @@ export async function verifySigV4(
     //   of them secret; the cost of withholding them is zero, since
     //   `--verbose` still prints every one in full.
     //
-    // Two axes of three say withhold, so the `warn` carries an
-    // input-INDEPENDENT discriminator only — `err.name` plus a length, the
-    // shape `ecs-secrets-resolver.ts` already uses for the parse failure it
-    // must not echo. `err.name` is set by the throwing class, never from the
-    // loader's input, which is the property that makes it safe.
+    // Two axes of three say withhold, so the `warn` carries a clamped class
+    // name plus a length -- the shape `ecs-secrets-resolver.ts` already uses
+    // for the parse failure it must not echo. The class name is made
+    // input-independent by the clamp in
+    // {@link describeCredentialLoadFailure} (it is NOT independent on its
+    // own -- see the note there). The LENGTH is the one input-derived field
+    // that is kept, deliberately, and its cost is weighed in that same
+    // JSDoc.
     //
     // Deliberately NOT done: stripping the `Command failed:` first line and
     // keeping the rest. That enumerates one known-bad shape and loses the
@@ -372,7 +382,7 @@ export async function verifySigV4(
     // instead, which is what "input-independent" is.
     logger.debug(
       `AWS_IAM authorizer: the AWS credential chain's own failure message was: ` +
-        `${err instanceof Error ? err.message : String(err)}`
+        `${stringifyCredentialLoadFailure(err)}`
     );
     const reason = describeCredentialLoadFailure(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
@@ -671,7 +681,9 @@ export function redactSignature(signature: string): string {
  * the property that makes quoting it safe, and is the same discriminator
  * `ecs-secrets-resolver.ts` reports for the JSON parse failure it must not
  * echo. `'unknown'` rather than a guessed class name for a non-`Error`
- * throw, so the field never names a class the throw was not.
+ * throw, so the field never names a class the throw was not -- and the same
+ * `'unknown'` for a `name` that is not a bare identifier, so the guarantee
+ * does not rest on every provider following the convention.
  *
  * The LENGTH is reported, unlike in `ecs-secrets-resolver.ts`, and the
  * difference is deliberate: there the user already knows which secret it is
@@ -682,10 +694,52 @@ export function redactSignature(signature: string): string {
  * character `Command failed:` dump — which is what tells them whether their
  * `credential_process` even ran. It is the same choice
  * {@link redactAuthorizationSegment} makes when it withholds.
+ *
+ * The count is a side channel, and a narrow one: against a KNOWN
+ * `credential_process` template the number is `constant + len(passphrase)`,
+ * so it yields the passphrase's LENGTH. That is accepted rather than
+ * overlooked. It buys the one thing the user cannot otherwise see, the
+ * `Command failed:` dump is not reachable today anyway (see the call site),
+ * and bucketing the number would blur exactly the boilerplate-vs-dump
+ * distinction the field exists for.
  */
+export function stringifyCredentialLoadFailure(err: unknown): string {
+  // `String(err)` is not total: a `Symbol` throw, or an object with a null
+  // prototype, raises `TypeError` on conversion. That throw would escape the
+  // `catch` in {@link verifySigV4} and reject the whole authorizer pass -- a
+  // 500 in place of the warn-and-pass the branch exists to produce. One
+  // helper rather than two expressions, so the length reported in the `warn`
+  // and the text printed at `debug` can never describe different strings.
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return '[unstringifiable throw]';
+  }
+}
+
 export function describeCredentialLoadFailure(err: unknown): string {
-  const kind = err instanceof Error ? err.name : 'unknown';
-  const length = err instanceof Error ? err.message.length : String(err).length;
+  const rawKind = err instanceof Error ? err.name : 'unknown';
+  // `err.name` comes off the same third-party object whose `message` this
+  // function exists to withhold, and it is NOT always set by the throwing
+  // class: for an AWS service exception it is WIRE-DERIVED. `@aws-sdk/core`
+  // builds it from the `x-amzn-errortype` header / the body's `code` /
+  // `__type`, through `sanitizeErrorCode`, which splits on ',' ':' and '#'
+  // and does nothing else -- no length cap, no newline stripping (read at
+  // `@aws-sdk/core@3.974.13` protocols/index.js:324). Such an exception can
+  // reach this catch, because `credential-provider-ini` calls the STS
+  // `roleAssumer` unwrapped. So a hostile or hijacked credential endpoint
+  // (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, a redirected IMDS) answering with
+  // `x-amzn-errortype: Foo\nWARN: signature verified` could FORGE log lines
+  // into the very `warn` stream -- and into the studio ring served over HTTP
+  // -- that this change exists to keep clean.
+  //
+  // The clamp is therefore not hypothetical hardening: a bare identifier of
+  // at most 64 characters is what every real class name is and what no
+  // injected value can be. Anything else degrades to `unknown`. Note the
+  // wrong fix: `err.name.slice(0, 64)` keeps the newline, so the forgery
+  // survives truncation.
+  const kind = /^[A-Za-z0-9_.-]{1,64}$/.test(rawKind) ? rawKind : 'unknown';
+  const length = stringifyCredentialLoadFailure(err).length;
   return `${kind}; ${length}-character message withheld, logged at debug level under --verbose`;
 }
 
@@ -733,6 +787,17 @@ const FOREIGN_ID_DEDUP_MAX = 256;
  */
 function rememberWarnedForeignId(warned: Set<string> | undefined, dedupKey: string): void {
   if (!warned) return;
+  // Eviction happens before the add, so calling this for a key already
+  // present would drop one UNRELATED entry per repeat. Both of today's call
+  // sites sit inside `if (!warned || !warned.has(dedupKey))`, which is why
+  // that cannot happen now -- this line states the precondition positively
+  // so a third call site cannot quietly break it.
+  //
+  // Note what this is NOT: a `delete` + re-`add` to refresh recency. That
+  // would turn the FIFO into an LRU, and an LRU lets a high-rate prober keep
+  // its own ids resident and push the real federated signer out -- the exact
+  // outcome the policy above says must never happen.
+  if (warned.has(dedupKey)) return;
   while (warned.size >= FOREIGN_ID_DEDUP_MAX) {
     const oldest = warned.values().next();
     if (oldest.done === true) break;

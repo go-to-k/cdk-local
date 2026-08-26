@@ -5,6 +5,7 @@ import {
   type SigV4VerifyRequest,
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
+import { createHash } from 'node:crypto';
 import { getLogger } from '../../../src/utils/logger.js';
 import { setEmbedConfig, resetEmbedConfig } from '../../../src/local/embed-config.js';
 
@@ -69,6 +70,12 @@ const CHAIN_MESSAGE_LENGTH = 125;
 
 class CredentialsProviderError extends Error {
   override name = 'CredentialsProviderError';
+}
+
+function namedError(name: string, message: string): Error {
+  const e = new Error(message);
+  Object.defineProperty(e, 'name', { value: name });
+  return e;
 }
 
 const loadThrowsChainError = async (): Promise<ResolvedCredentials> => {
@@ -200,6 +207,77 @@ describe('#564 — the credential chain error text never reaches a warn', () => 
     );
   });
 
+  it('does not print at default level -- the debug route is really gated', async () => {
+    // The whole fix rests on `debug` reaching a smaller population than
+    // `warn`. Assert it end-to-end through the REAL logger at its default
+    // level rather than trusting the level table: spy on the console sinks
+    // `ConsoleLogger.emit` writes to, and require that nothing the process
+    // actually printed carries the chain message.
+    const logger = getLogger();
+    const before = logger.getLevel();
+    logger.setLevel('info');
+    const sinks = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => {})
+    );
+    try {
+      await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrowsChainError, { now: () => NOW });
+      const printed = sinks
+        .flatMap((sp) => sp.mock.calls.map((c) => String(c[0])))
+        .join('\n');
+      // It DID print something -- otherwise this passes for the wrong reason.
+      expect(printed).toContain('could not resolve local AWS credentials');
+      expect(printed).not.toContain(CHAIN_MESSAGE);
+      expect(printed).not.toContain(PASSPHRASE);
+    } finally {
+      for (const sp of sinks) sp.mockRestore();
+      logger.setLevel(before);
+    }
+  });
+
+  it('clamps a name that is not a bare identifier, rather than quoting it', () => {
+    // `err.name` is third-party data from the same object whose `message` is
+    // withheld; a provider that derived it from input would otherwise
+    // reopen #564 through the field left quoted.
+    const hostile = new Error('short');
+    Object.defineProperty(hostile, 'name', {
+      value: `Command failed: /opt/bin/get-creds --vault-passphrase ${PASSPHRASE}`,
+    });
+    const out = describeCredentialLoadFailure(hostile);
+    expect(out).not.toContain(PASSPHRASE);
+    expect(out).toBe('unknown; 5-character message withheld, logged at debug level under --verbose');
+
+    // A 64-character bare identifier is still quoted; 65 is not.
+    expect(describeCredentialLoadFailure(namedError('A'.repeat(64), 'x'))).toContain(
+      `${'A'.repeat(64)}; 1-character`
+    );
+    expect(describeCredentialLoadFailure(namedError('A'.repeat(65), 'x'))).toContain(
+      'unknown; 1-character'
+    );
+    // An ordinary class name is unaffected.
+    expect(describeCredentialLoadFailure(namedError('CredentialsProviderError', 'x'))).toContain(
+      'CredentialsProviderError; 1-character'
+    );
+  });
+
+  it('survives a throw that cannot be stringified, instead of turning it into a 500', async () => {
+    // `String(Object.create(null))` raises TypeError. Before the shared
+    // helper, that throw escaped this catch and rejected the whole
+    // authorizer pass -- a 500 in place of the warn-and-pass the branch
+    // exists to produce.
+    const warn = spy('warn');
+    const result = await verifySigV4(
+      makeRequest('AKIAFOREIGN'),
+      async () => {
+        throw Object.create(null);
+      },
+      { now: () => NOW }
+    );
+    expect(result.allow).toBe(true);
+    expect(result.principalId).toBe('unverified-no-creds');
+    expect(warn.calls()).toContain('(unknown; 23-character message withheld,');
+    warn.restore();
+  });
+
   it("reports 'unknown' for a non-Error throw rather than guessing a class", () => {
     expect(describeCredentialLoadFailure('plain string throw')).toBe(
       'unknown; 18-character message withheld, logged at debug level under --verbose'
@@ -255,12 +333,22 @@ describe('#561 — the foreign-access-key-id warn-dedup set is bounded', () => {
     ['warn-and-pass site', {}],
     ['strict deny site', { strict: true }],
   ] as Array<[string, { strict?: boolean }]>) {
-    it(`caps the set at ${CAP} entries from the ${label}`, async () => {
+    it(`caps the set at ${CAP} entries from the ${label}, without going quiet`, async () => {
       const warned = new Set<string>();
-      for (let i = 0; i < CAP + 44; i++) {
-        await warnFor(`AKIAFOREIGN${i}`, warned, opts);
+      const total = CAP + 44;
+      let warnCount = 0;
+      for (let i = 0; i < total; i++) {
+        if ((await warnFor(`AKIAFOREIGN${i}`, warned, opts)) !== '') warnCount++;
       }
       expect(warned.size).toBe(CAP);
+      // Asserting the SIZE alone does not fence the policy this bound was
+      // chosen for. Writing `&& warned.size < CAP` into this site's
+      // `!warned.has(dedupKey)` guard -- i.e. going quiet once full instead
+      // of evicting -- also lands the size on exactly CAP, so a size-only
+      // test passes on it. A mutation probe of that variant on the
+      // strict-deny site was GREEN against the size-only version of this
+      // test. Every id here is distinct, so every one must warn.
+      expect(warnCount).toBe(total);
     });
   }
 
@@ -284,7 +372,13 @@ describe('#561 — the foreign-access-key-id warn-dedup set is bounded', () => {
     for (const entry of warned) {
       expect(entry).toMatch(/^[0-9a-f]{64}$/);
     }
-    expect([...warned].join('')).not.toContain('AAAA');
+    // Lowercased, because the id is lowercased before hashing -- an
+    // uppercase needle here could never appear even if the raw id WERE
+    // stored, which would make this assertion vacuous.
+    expect([...warned].join('')).not.toContain('aaaaaaaa');
+    // Pin the digest identity, so "it is 64 hex characters" cannot be
+    // satisfied by some other 64-hex derivation.
+    expect(warned.has(createHash('sha256').update('akiaforeign').digest('hex'))).toBe(true);
   });
 
   it('evicts oldest-first, so eviction repeats a warning and never suppresses one', async () => {
