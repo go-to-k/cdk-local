@@ -246,6 +246,38 @@ choosing.
   UNDER-counts, because most of the backlog predates the labels, so the label is a
   mirror of the body line and never a second source — confirm a surprising one
   against the body before acting on it.
+- **An issue's premise may not be TRUE YET — resolve the body against the tree
+  before you write anything that depends on it.** A body written from an unmerged
+  branch describes the state of THAT branch: a lane routinely files a follow-up
+  for a file its own allow-list excluded, minutes before the PR that creates the
+  thing the follow-up talks about. The issue is then accurate about a tree that
+  does not exist on `main` yet, and stays that way until its sibling merges.
+
+  What that costs is specific, because the fix you write NAMES the premise. On
+  2026-08-26 go-to-k/cdkd#2246 asked for a doc note pointing at
+  `nestedStackChildRegionFromLocalArn` as the reader that parses a region segment
+  back; `grep -rn nestedStackChildRegionFromLocalArn src/` at claim time returned
+  **nothing** — it landed sixteen minutes later in go-to-k/cdkd#2266. Writing the
+  note on the issue's word would have shipped a comment naming a function that was
+  not there.
+
+  Two moves, and the second is the one that is easy to skip. **(1)** grep for every
+  symbol, file and behaviour the body asserts already exists, before the first
+  edit. **(2)** When a grep comes back empty, find out WHICH way:
+  `gh pr list --state all --search <symbol>` separates "the premise is wrong" from
+  "the premise is on an unmerged branch", and those need opposite responses — the
+  first is a correction to post on the issue, the second is
+  `git fetch && git rebase origin/main` and carry on. Do not read an empty grep as
+  "the issue is wrong".
+
+  **Verify the parts you are NOT changing, too.** That same issue also stated the
+  sibling producer's DOC already recorded the rationale; only its parameter NAME
+  had changed, and the doc still covered something else. That half was never going
+  to fail a build — it would have shipped as a pointer at a paragraph that does not
+  say what it was cited for. A body's claims about SURROUNDING code get no compiler
+  and no test, so they are the ones to check by hand. Say what you found in the PR
+  body: the next reader needs to know the issue and the tree disagreed, and which
+  one won.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.
