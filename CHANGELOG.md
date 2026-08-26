@@ -1,3 +1,10 @@
+## [0.147.8](https://github.com/go-to-k/cdk-local/compare/v0.147.7...v0.147.8) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** per-site judgement on the start-api log echoes, and resolveSsm coverage ([#563](https://github.com/go-to-k/cdk-local/issues/563)) ([9ba86f6](https://github.com/go-to-k/cdk-local/commit/9ba86f62da140a7a2d2ad49b9526c5e435716d5a))
+
 ## [0.147.7](https://github.com/go-to-k/cdk-local/compare/v0.147.6...v0.147.7) (2026-08-26)
 
 
