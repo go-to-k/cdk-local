@@ -1164,7 +1164,9 @@ export async function resolveAssumeRoleArnForLambda(
   }
   const fromState = resolveExecutionRoleArnFromState(stateForRoleHint, lambdaLogicalId);
   if (fromState) {
-    logger.info(`--assume-role: auto-resolved execution role from state: ${fromState}`);
+    logger.info(
+      `--assume-role: auto-resolved execution role from state: ${flattenToOneLine(fromState)}`
+    );
     return fromState;
   }
   const fnPhysicalId = stateForRoleHint.resources[lambdaLogicalId]?.physicalId;
@@ -1175,8 +1177,18 @@ export async function resolveAssumeRoleArnForLambda(
     // carries the full ARN.
     const liveArn = await stateProvider.resolveLambdaExecutionRoleArn(fnPhysicalId);
     if (liveArn) {
+      // Issue #570: FLATTENED, and this site is the reason the failure warns
+      // below are not enough on their own. `liveArn` is the deployed
+      // `Configuration.Role` straight off a `GetFunctionConfiguration` response,
+      // validated only by `startsWith('arn:')`, and `info` is a DEFAULT level
+      // that `cdkl studio` mirrors into an HTTP-served log ring. This fires on
+      // SUCCESS, so it is strictly more reachable than the failure path.
+      //
+      // Deliberately not LENGTH-capped here: unlike a service message, an ARN
+      // has a shape, so the bound belongs at the `startsWith('arn:')`
+      // resolution point rather than at the log line. Recorded in issue #579.
       logger.info(
-        `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${liveArn}`
+        `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${flattenToOneLine(liveArn)}`
       );
       return liveArn;
     }

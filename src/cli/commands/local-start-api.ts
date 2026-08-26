@@ -15,7 +15,7 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -1994,8 +1994,13 @@ export function resolveStartApiAssumeRoleArn(args: {
   if (stateBundle) {
     const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
     if (fromState) {
+      // Issue #570: FLATTENED. Under `--from-cfn-stack` the state record is
+      // built from CloudFormation responses, so this ARN is wire-derived and
+      // `info` is a default level studio mirrors into an HTTP-served ring.
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${fromState}`
+        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${flattenToOneLine(
+          fromState
+        )}`
       );
       return fromState;
     }

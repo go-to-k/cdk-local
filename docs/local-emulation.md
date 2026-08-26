@@ -930,7 +930,9 @@ Outcomes:
   names the failure's class (plus a system-error code such as `ENOTFOUND` when
   the failure carries one) and the length of the credential chain's message,
   but not the message itself. The full text is printed at debug level -- run
-  with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it. The reason for holding it back is that the
+  with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it, folded onto a
+  single line (a line break in a message cdk-local does not control would
+  otherwise forge a log line in the panel `cdkl studio` serves). The reason for holding it back is that the
   chain's error text is not cdk-local's to vouch for: the AWS SDK's
   `credential_process` provider copies Node's `Command failed: <command
   line>` into the error it raises, and a `credential_process` command line is

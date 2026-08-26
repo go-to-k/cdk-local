@@ -11,8 +11,11 @@
  * one question and must not grow nine answers to it.
  *
  * SCOPE, stated so a later sweep finds a decision rather than an oversight:
- * this module governs those nine plus sigv4-verify's one. It does NOT yet
- * govern the AWS SDK error relays elsewhere under `src/local/**` — notably
+ * this module governs those nine plus sigv4-verify's one, and its
+ * {@link flattenToOneLine} additionally covers every other wire-derived value
+ * printed on those lines (the role ARN, on the failure AND success paths). It
+ * does NOT yet govern the AWS SDK error relays elsewhere under
+ * `src/local/**` — notably
  * `formatAwsErrorForWarn` (`cfn-local-state-provider.ts`, six warn sites and
  * one non-warn caller)
  * and `formatSsmError` (`ssm-parameter-resolver.ts`), which still print an
@@ -283,10 +286,15 @@ export function isAwsServiceException(err: unknown): boolean {
  *     encoding of the log event. With the `u` flag a well-formed pair is one
  *     code point and does NOT match, so emoji survive.
  *
- * Used by both branches of {@link describeAwsFailureForWarn}: the kept
- * message, and the `debug` line carrying the withheld one — because the
- * `debug` stream is the SAME studio ring under `--verbose`, so a text that is
- * unsafe to put on a line at `warn` is unsafe to put on a line at `debug`.
+ * Used by both branches of {@link describeAwsFailureForWarn} — the kept
+ * message, and the `debug` line carrying the withheld one, because the `debug`
+ * stream is the SAME studio ring under `--verbose`, so a text unsafe to put on
+ * a line at `warn` is unsafe at `debug` — and, since issue #570's review
+ * rounds, by every OTHER wire-derived value that lands on one of these lines:
+ * `sigv4-verify`'s own `debug` line, and the role ARN at the four warn sites
+ * plus the five `info` / `debug` sites that print an ARN resolved from a live
+ * `GetFunctionConfiguration` / `GetAgentRuntime` response. The last group is
+ * the more reachable one — it fires on SUCCESS.
  */
 export function flattenToOneLine(message: string): string {
   return message.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu, ' ');

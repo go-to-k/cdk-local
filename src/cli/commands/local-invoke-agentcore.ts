@@ -1494,7 +1494,9 @@ export async function resolveAssumeRoleArn(
   if (loaded) {
     const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
     if (fromState) {
-      getLogger().debug(`--assume-role: resolved RoleArn from state: ${fromState}`);
+      getLogger().debug(
+        `--assume-role: resolved RoleArn from state: ${flattenToOneLine(fromState)}`
+      );
       return fromState;
     }
     // Issue #187 fallback: state-only lookup misses for sibling-stack
@@ -1505,8 +1507,12 @@ export async function resolveAssumeRoleArn(
     if (stateProvider?.resolveAgentCoreRuntimeRoleArn && runtimePhysicalId) {
       const liveArn = await stateProvider.resolveAgentCoreRuntimeRoleArn(runtimePhysicalId);
       if (liveArn) {
+        // Issue #570: FLATTENED. `liveArn` is the deployed `roleArn` off a
+        // `GetAgentRuntime` response with only a `startsWith('arn:')` check, and
+        // `info` is a default level studio mirrors into an HTTP-served ring.
+        // This is the SUCCESS path, so it is more reachable than the warn.
         getLogger().info(
-          `--assume-role: auto-resolved execution role from GetAgentRuntime: ${liveArn}`
+          `--assume-role: auto-resolved execution role from GetAgentRuntime: ${flattenToOneLine(liveArn)}`
         );
         return liveArn;
       }

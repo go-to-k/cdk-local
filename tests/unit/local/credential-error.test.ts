@@ -139,13 +139,34 @@ describe('stringifyThrown — total, so a throw cannot escape a catch', () => {
     });
     expect(clampErrorCode(codeThrows)).toBeUndefined();
 
-    const faultThrows = Object.defineProperty(new Error('boom'), '$fault', {
-      get(): string {
+    // `$metadata` is load-bearing on this fixture and was missing at first:
+    // `isAwsServiceException` reads `Boolean($metadata) && ...`, so without it
+    // the `&&` short-circuits and the `$fault` getter is NEVER read -- the case
+    // passed with the guard deleted. Measured by counting getter invocations.
+    let faultReads = 0;
+    const faultThrows = Object.defineProperty(
+      Object.assign(new Error('boom'), { $metadata: { httpStatusCode: 403 } }),
+      '$fault',
+      {
+        get(): string {
+          faultReads += 1;
+          throw new Error('nope');
+        },
+      }
+    );
+    expect(isAwsServiceException(faultThrows)).toBe(false);
+    expect(faultReads, 'the $fault getter was never reached, so this case fences nothing').toBe(1);
+    expect(() => describeAwsFailureForWarn(faultThrows, 'STS AssumeRole')).not.toThrow();
+  });
+
+  it('survives a throwing `$metadata` accessor, the property read FIRST', () => {
+    const metadataThrows = Object.defineProperty(new Error('boom'), '$metadata', {
+      get(): unknown {
         throw new Error('nope');
       },
     });
-    expect(isAwsServiceException(faultThrows)).toBe(false);
-    expect(() => describeAwsFailureForWarn(faultThrows, 'STS AssumeRole')).not.toThrow();
+    expect(isAwsServiceException(metadataThrows)).toBe(false);
+    expect(() => describeAwsFailureForWarn(metadataThrows, 'STS AssumeRole')).not.toThrow();
   });
 });
 
@@ -410,7 +431,7 @@ describe('describeAwsFailureForWarn — the split by population', () => {
     expect(out).not.toContain('\n');
   });
 
-  it('withholds when a hostile endpoint forges the chain class name, i.e. fails safe', () => {
+  it('KEEPS a forged chain class name on the service branch, and cannot disclose more', () => {
     // `x-amzn-errortype: CredentialsProviderError` would make `err.name` say
     // "chain error" while `$fault` still says "service exception". The
     // discriminator is `$fault` / `$metadata`, so this stays on the KEPT
