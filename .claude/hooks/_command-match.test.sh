@@ -283,10 +283,75 @@ want_dir "/w/t" "-c k=v then -C still resolves" 'git -c k=v -C /w/t commit -m y'
 # --- every gate is actually converted -----------------------------------------
 # The matcher only helps a gate that uses it. This pins the conversion so a new
 # gate (or a revert) cannot quietly go back to a line-start-anchored `grep`.
+#
+# The population is the hooks REGISTERED FOR BASH in `.claude/settings.json`, not
+# every `*.sh` in the directory. Until the first Stop hook landed the two sets
+# were the same, so iterating the directory was iterating the Bash gates by
+# coincidence; `stop-unmerged-lane-warn.sh` receives no command at all and was
+# failed by a fence asking it to parse one. Deriving the set from REGISTRATION
+# rather than from a hand-written exemption list is what keeps a new Bash gate
+# from dodging: it is in the population the moment it is wired up, and a list
+# would have to be remembered.
+#
+# The direction that would go silent is a hook registered NOWHERE -- it would
+# leave the population without being exempt -- so that is a FAIL of its own
+# below, and it is a real defect anyway (a hook that never runs).
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SETTINGS="$HOOK_DIR/../settings.json"
+
+# Two lists, one pass over the settings: hooks wired to a Bash matcher, and
+# every hook wired to anything at all.
+bash_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
+import json, sys, os
+s = json.load(open(sys.argv[1]))
+out = set()
+for event, groups in s.get('hooks', {}).items():
+    for g in groups:
+        if 'Bash' not in (g.get('matcher') or ''):
+            continue
+        for h in g.get('hooks', []):
+            out.add(os.path.basename(h.get('command', '').split()[0]))
+print('\n'.join(sorted(out)))
+PYEOF
+)
+any_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
+import json, sys, os
+s = json.load(open(sys.argv[1]))
+out = set()
+for event, groups in s.get('hooks', {}).items():
+    for g in groups:
+        for h in g.get('hooks', []):
+            out.add(os.path.basename(h.get('command', '').split()[0]))
+print('\n'.join(sorted(out)))
+PYEOF
+)
+
+# A parser floor: "found nothing" must not read as "everything is fine".
+bash_count=$(printf '%s\n' "$bash_hooks" | grep -c '\.sh$' || true)
+if [ "${bash_count:-0}" -lt 10 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL settings parse found only %s Bash hooks -- the fence is blind\n' "$bash_count"
+else
+  pass=$((pass + 1))
+  printf 'OK   settings parse found %s Bash hooks\n' "$bash_count"
+fi
+
 for gate in "$HOOK_DIR"/*.sh; do
   base=$(basename "$gate")
   case "$base" in _*.sh | *.test.sh) continue ;; esac
+
+  if ! printf '%s\n' "$any_hooks" | grep -qx "$base"; then
+    fail=$((fail + 1))
+    printf 'FAIL %s is registered in no hook event -- it never runs\n' "$base"
+    continue
+  fi
+
+  if ! printf '%s\n' "$bash_hooks" | grep -qx "$base"; then
+    pass=$((pass + 1))
+    printf 'OK   %s receives no Bash command, so it needs no matcher\n' "$base"
+    continue
+  fi
+
   if grep -q '_command-match.sh' "$gate"; then
     pass=$((pass + 1)); printf 'OK   %s sources the matcher\n' "$base"
   else
