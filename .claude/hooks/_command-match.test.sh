@@ -283,10 +283,150 @@ want_dir "/w/t" "-c k=v then -C still resolves" 'git -c k=v -C /w/t commit -m y'
 # --- every gate is actually converted -----------------------------------------
 # The matcher only helps a gate that uses it. This pins the conversion so a new
 # gate (or a revert) cannot quietly go back to a line-start-anchored `grep`.
+#
+# The population is the hooks REGISTERED FOR BASH in `.claude/settings.json`, not
+# every `*.sh` in the directory. Until the first Stop hook landed the two sets
+# were the same, so iterating the directory was iterating the Bash gates by
+# coincidence; `stop-unmerged-lane-warn.sh` receives no command at all and was
+# failed by a fence asking it to parse one. Deriving the set from REGISTRATION
+# rather than from a hand-written exemption list is what keeps a new Bash gate
+# from dodging: it is in the population the moment it is wired up, and a list
+# would have to be remembered.
+#
+# The direction that would go silent is a hook registered NOWHERE -- it would
+# leave the population without being exempt -- so that is a FAIL of its own
+# below, and it is a real defect anyway (a hook that never runs).
 HOOK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SETTINGS="$HOOK_DIR/../settings.json"
+
+# Two lists, one pass over the settings: hooks wired to a Bash matcher, and
+# every hook wired to anything at all.
+bash_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
+import json, sys, os
+
+# A group receives Bash commands when it is a TOOL event AND its matcher either
+# names Bash or matches everything. The first revision asked only whether the
+# string 'Bash' appears in the matcher, which handed a free pass to exactly the
+# shape that receives the MOST -- a `PreToolUse` group with the matcher omitted,
+# empty, `*` or `.*`, which fires on every tool. Measured: registering a
+# non-sourcing hook under `matcher: '*'` left this suite at 229/0. It is also
+# the shape this repo just added (the `Stop` group carries no matcher), so the
+# next gate copied from it would have dodged the fence silently.
+TOOL_EVENTS = ('PreToolUse', 'PostToolUse')
+
+def bashy(m):
+    return m is None or m.strip() in ('', '*', '.*') or 'Bash' in m
+
+def name(h):
+    parts = (h.get('command') or '').split()
+    for tok in reversed(parts):
+        if tok.endswith('.sh'):
+            return os.path.basename(tok)
+    return os.path.basename(parts[0]) if parts else ''
+
+s = json.load(open(sys.argv[1]))
+out = set()
+for event, groups in s.get('hooks', {}).items():
+    if event not in TOOL_EVENTS:
+        continue
+    for g in groups:
+        if not bashy(g.get('matcher')):
+            continue
+        for h in g.get('hooks', []):
+            n = name(h)
+            if n:
+                out.add(n)
+print('\n'.join(sorted(out)))
+PYEOF
+)
+any_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
+import json, sys, os
+
+def name(h):
+    parts = (h.get('command') or '').split()
+    for tok in reversed(parts):
+        if tok.endswith('.sh'):
+            return os.path.basename(tok)
+    return os.path.basename(parts[0]) if parts else ''
+
+s = json.load(open(sys.argv[1]))
+out = set()
+for event, groups in s.get('hooks', {}).items():
+    for g in groups:
+        for h in g.get('hooks', []):
+            n = name(h)
+            if n:
+                out.add(n)
+print('\n'.join(sorted(out)))
+PYEOF
+)
+
+# A parser floor: "found nothing" must not read as "everything is fine".
+#
+# The floor has to be INDEPENDENT of the parse it is checking. A first attempt
+# derived it as `dir_count - non_bash`, where `non_bash` was itself "not in
+# $bash_hooks" -- so the bound equalled `bash_count` by construction and the
+# check could not fail for any input. The bound now comes from a SECOND method
+# over the same file: a raw grep for distinct hook script names. If the python
+# silently loses entries, the two disagree; if the grep is what breaks, the
+# `-lt 1` arm still catches an empty parse.
+bash_count=$(printf '%s\n' "$bash_hooks" | grep -c '\.sh$' || true)
+any_count=$(printf '%s\n' "$any_hooks" | grep -c '\.sh$' || true)
+# Scoped to the `hooks` block, not the whole file: `settings.json` also carries
+# a `permissions.allow` array whose entries are `Bash(...)` patterns, and one of
+# those naming a `.sh` reds this check with nothing wrong with the parse.
+raw_count=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("hooks", {})))' "$SETTINGS" |
+  grep -o '[A-Za-z0-9_-]*\.sh' | sort -u | grep -c . || true)
+
+if [ "${bash_count:-0}" -lt 1 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL settings parse found no Bash hooks at all -- the fence is blind\n'
+elif [ "${any_count:-0}" -ne "${raw_count:-0}" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL settings parse found %s hook scripts, a raw scan of the hooks block found %s -- the two disagree, so one of them is losing entries\n' \
+    "$any_count" "$raw_count"
+else
+  pass=$((pass + 1))
+  printf 'OK   settings parse found %s hook scripts (%s of them Bash), agreeing with a raw scan\n' \
+    "$any_count" "$bash_count"
+fi
+
 for gate in "$HOOK_DIR"/*.sh; do
   base=$(basename "$gate")
   case "$base" in _*.sh | *.test.sh) continue ;; esac
+
+  if ! printf '%s\n' "$any_hooks" | grep -qxF -- "$base"; then
+    fail=$((fail + 1))
+    printf 'FAIL %s is registered in no hook event -- it never runs\n' "$base"
+    continue
+  fi
+
+  # The exemption is not unconditional, and this is the SECOND direction of the
+  # same invariant. Above: a hook wired to Bash must source the matcher. Here: a
+  # hook that SOURCES the matcher must be wired to Bash -- sourcing it is
+  # evidence the hook parses commands, so being on a non-Bash matcher means it
+  # never receives one and is INERT, the exact class this file exists for.
+  #
+  # Without this arm the Bash population had no bound at all once the old
+  # literal `-lt 10` floor was replaced (the cross-check above compares the
+  # ANY-event parse, not this one). Measured by a review round: moving 22 of the
+  # 33 entries into a second `PreToolUse` group with `matcher: "Edit|Write"` --
+  # the routine "new group, wrong matcher" slip -- silently exempted eleven live
+  # gates including `branch-gate.sh` and left the suite at 218/0. A count-based
+  # bound would also have been brittle, since a legitimate Edit-only hook is a
+  # normal thing to add; that hook simply does not source the matcher, so this
+  # arm passes it.
+  if ! printf '%s\n' "$bash_hooks" | grep -qxF -- "$base"; then
+    if grep -q '_command-match.sh' "$gate"; then
+      fail=$((fail + 1))
+      printf 'FAIL %s sources the command matcher but is not registered under a Bash matcher -- it parses commands it never receives\n' "$base"
+    else
+      pass=$((pass + 1))
+      printf 'OK   %s receives no Bash command and does not parse one\n' "$base"
+    fi
+    continue
+  fi
+
   if grep -q '_command-match.sh' "$gate"; then
     pass=$((pass + 1)); printf 'OK   %s sources the matcher\n' "$base"
   else
