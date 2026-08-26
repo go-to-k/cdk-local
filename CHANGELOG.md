@@ -1,3 +1,10 @@
+## [0.147.6](https://github.com/go-to-k/cdk-local/compare/v0.147.5...v0.147.6) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** stop echoing a prefix of the parsed input in two JSON-parse failure messages ([#556](https://github.com/go-to-k/cdk-local/issues/556)) ([f52439a](https://github.com/go-to-k/cdk-local/commit/f52439aa205d6de5a7e44cdc6c49198bd14dd077))
+
 ## [0.147.5](https://github.com/go-to-k/cdk-local/compare/v0.147.4...v0.147.5) (2026-08-21)
 
 
