@@ -89,6 +89,33 @@ extend it instead.
      like the cloudfront fixtures deploy a bucket-only stack and synth the
      distribution locally only under `-c withDistribution=true`).
 
+     **If the stack declares ANY Lambda, it MUST declare the HOST CPU
+     architecture** (issues go-to-k/cdk-local#560 / go-to-k/cdk-local#569). A Lambda with no `architecture`
+     defaults to `X86_64`, so on an arm64 host cdk-local pins
+     `--platform linux/amd64` and the container runs under CPU emulation,
+     where the Go RIE faults intermittently — a failure that lands on a
+     different assertion every run and reads as a flaky test. CI runs on
+     amd64, where the buggy default IS the host arch, so CI can never catch
+     it. Copy this verbatim above the stack class:
+
+     ```typescript
+     const HOST_ARCHITECTURE =
+       process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+     ```
+
+     then pass `architecture: HOST_ARCHITECTURE` on every `lambda.Function` /
+     `lambda.DockerImageFunction`, and `architectures: [HOST_ARCHITECTURE.name]`
+     on every L1 `lambda.CfnFunction` (the L1 takes architecture NAMES, not the
+     `Architecture` object). Do NOT hardcode either value: `ARM_64` makes an
+     amd64 CI runner emulate, and `X86_64` is the default that caused go-to-k/cdk-local#560.
+     The only exception is a handler shipping a PREBUILT binary compiled for a
+     specific arch, which must pin to match the BINARY.
+
+     Then add the new file to `HOST_ARCHITECTURE_STACKS` in
+     `tests/unit/integ-fixture-host-architecture.test.ts` — that fence asserts
+     every fixture source constructing a `*Function(` is accounted for, so a new
+     fixture fails the suite until it is classified there.
+
    - `verify.sh` (executable; `chmod +x`) — start from the harness below and
      fill in the deploy (for `*-from-cfn-stack`) + the boot + assertions.
 
