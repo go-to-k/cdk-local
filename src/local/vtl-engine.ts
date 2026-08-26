@@ -1095,6 +1095,32 @@ export function buildVtlInput(
  * Minimal JSONPath evaluator. Supports `$`, `$.field`, `$.field.sub`,
  * `$.array[index]`. Unsupported syntax throws so the user sees a clear
  * pointer to the gap.
+ *
+ * The five throws below quote the offending expression, and `vtlFailure` in
+ * `rest-v1-integrations.ts` copies that message into the 502 response body.
+ * Issue #555 reviewed that and DELIBERATELY LEFT it — do not re-raise it as
+ * an echo of caller request data. Two reasons, and the second is the one
+ * that settles it:
+ *
+ *   1. `expr` is normally the developer's own template text — the literal
+ *      inside `$input.json('$.foo')`. It becomes caller-controllable only
+ *      when a template deliberately routes a request value into the
+ *      expression, e.g. `$input.json($input.params('p'))`.
+ *   2. Even then, the 502 goes back to the CALLER WHO SUPPLIED that value,
+ *      so it discloses nothing that caller did not already send. (Note the
+ *      `template` field `vtlFailure` puts beside `reason` is the template
+ *      SOURCE, not its render — so in that case this message is the one
+ *      place the value appears, and the argument has to rest on the
+ *      recipient rather than on the value being present anyway.)
+ *      Withholding it would cost the developer the only pointer they have
+ *      to the unsupported syntax.
+ *
+ * The difference from `$util.parseJson`'s catch above is the SIZE of what
+ * would be echoed, not its provenance: there the withheld material is the
+ * whole request body, which on a login endpoint is the caller's password,
+ * while here it is one path expression out of the developer's template.
+ * Both are the caller's own data returned to the caller; only one of them
+ * is worth withholding.
  */
 export function applyJsonPath(root: unknown, expr: string): unknown {
   const trimmed = expr.trim();

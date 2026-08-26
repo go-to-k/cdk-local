@@ -246,15 +246,15 @@ export async function verifySigV4(
   if (parsed.algorithm !== 'AWS4-HMAC-SHA256') {
     logger.info(
       `AWS_IAM authorizer: rejecting request — unsupported Authorization algorithm ` +
-        `'${parsed.algorithm}'. Expected 'AWS4-HMAC-SHA256'.`
+        `'${redactAuthorizationSegment(parsed.algorithm)}'. Expected 'AWS4-HMAC-SHA256'.`
     );
     return { allow: false, identityHash: undefined };
   }
   if (parsed.credentialTerminator !== 'aws4_request') {
     logger.info(
       `AWS_IAM authorizer: rejecting request — invalid credential-scope terminator ` +
-        `'${parsed.credentialTerminator}'. Expected 'aws4_request' (the last '/' segment ` +
-        `of the Credential= value).`
+        `'${redactAuthorizationSegment(parsed.credentialTerminator)}'. Expected 'aws4_request' ` +
+        `(the last '/' segment of the Credential= value).`
     );
     return { allow: false, identityHash: undefined };
   }
@@ -273,7 +273,8 @@ export async function verifySigV4(
   }
   if (!validateAmzDateMatchesCredentialDate(amzDate, parsed.credentialDate)) {
     logger.info(
-      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' does not match ` +
+      `AWS_IAM authorizer: rejecting request — x-amz-date / date ` +
+        `'${boundTimestampHeader(amzDate)}' does not match ` +
         `credential-scope date '${parsed.credentialDate}'. The 'YYYYMMDD' prefix of ` +
         `x-amz-date must equal the date segment of Credential=<AKID>/<YYYYMMDD>/...`
     );
@@ -286,7 +287,8 @@ export async function verifySigV4(
   const now = (opts.now ?? ((): Date => new Date()))();
   if (amzDateOutsideSkew(amzDate, now)) {
     logger.info(
-      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' is outside the ` +
+      `AWS_IAM authorizer: rejecting request — x-amz-date / date ` +
+        `'${boundTimestampHeader(amzDate)}' is outside the ` +
         `15-minute clock-skew window (local now=${now.toISOString()}). Re-sign the ` +
         `request with the current time or sync the local clock.`
     );
@@ -305,6 +307,17 @@ export async function verifySigV4(
     // cdk-local cannot fully emulate. `--strict-sigv4` flips this to
     // fail-closed. OAC-fronted routes always pass (no client signature
     // exists to verify in production).
+    // NOTE (issue #564): `reason` is the credential CHAIN's own error text,
+    // relayed unbounded into the `warn` lines below. With a
+    // `credential_process` profile the SDK runs the configured command
+    // through `child_process.exec` and rethrows Node's
+    // `Command failed: <command line>\n<stderr>`, so a passphrase on that
+    // command line reaches a default-level log. Issue #555's sweep covered
+    // caller-supplied `Authorization` material and did not reach this,
+    // which points the other way — the developer's own machine config.
+    // Left here so a later sweep finds the pointer rather than re-deriving
+    // it; the fix belongs in #564 with its own judgement about how much of
+    // a credential-loader failure may print.
     const reason = err instanceof Error ? err.message : String(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
@@ -360,13 +373,13 @@ export async function verifySigV4(
       if (!warned || !warned.has(dedupKey)) {
         logger.warn(
           sigV4StrictByDefault
-            ? `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+            ? `AWS_IAM authorizer: request signed with access-key-id '${redactAuthorizationSegment(parsed.credentialAccessKeyId)}', ` +
                 `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
                 `shared-secret) can only be verified with the signer's own credentials, never a ` +
                 `federated / Cognito Identity Pool / cross-account signer's. cdk-local denies it by ` +
                 `default; pass ${optFlag} to warn-and-pass, or sign the request with the same ` +
                 `credentials cdk-local resolves locally.`
-            : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+            : `AWS_IAM authorizer: request signed with access-key-id '${redactAuthorizationSegment(parsed.credentialAccessKeyId)}', ` +
                 `which differs from the AWS credentials cdk-local resolved locally — SigV4 (HMAC / ` +
                 `shared-secret) can only be verified with the signer's own credentials, never a ` +
                 `federated / Cognito Identity Pool / cross-account signer's. ${optFlag} is set, so ` +
@@ -380,17 +393,17 @@ export async function verifySigV4(
     if (!warned || !warned.has(dedupKey)) {
       logger.warn(
         opts.oacFronted
-          ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC — in production CloudFront re-signs the origin request, so the local client's signature (access-key-id '${parsed.credentialAccessKeyId}') cannot be verified. ` +
+          ? `AWS_IAM authorizer: Function URL is fronted by CloudFront OAC — in production CloudFront re-signs the origin request, so the local client's signature (access-key-id '${redactAuthorizationSegment(parsed.credentialAccessKeyId)}') cannot be verified. ` +
               `Passing through with unverified principalId 'unverified-foreign-identity'. ` +
               `Do NOT trust event.requestContext.authorizer.principalId in handler code.`
           : sigV4StrictByDefault
-            ? `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+            ? `AWS_IAM authorizer: request signed with access-key-id '${redactAuthorizationSegment(parsed.credentialAccessKeyId)}', ` +
               `a federated / Cognito Identity Pool / cross-account signer cdk-local cannot verify ` +
               `locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies ` +
               `it because AWS holds the secret). ${optFlag} is set; passing through with unverified ` +
               `principalId 'unverified-foreign-identity'. Do NOT trust ` +
               `event.requestContext.authorizer.principalId in handler code.`
-            : `AWS_IAM authorizer: request signed with access-key-id '${parsed.credentialAccessKeyId}', ` +
+            : `AWS_IAM authorizer: request signed with access-key-id '${redactAuthorizationSegment(parsed.credentialAccessKeyId)}', ` +
               `a federated / Cognito Identity Pool / cross-account signer cdk-local cannot verify ` +
               `locally (SigV4 is an HMAC shared-secret signature; the deployed API Gateway verifies ` +
               `it because AWS holds the secret). Passing through with unverified principalId ` +
@@ -413,11 +426,32 @@ export async function verifySigV4(
   // key, recompute the signature, compare.
   const recomputed = computeSignature(req, parsed, local.secretAccessKey, amzDate);
   if (!constantTimeEqual(recomputed, parsed.signature)) {
+    // The RECOMPUTED signature is deliberately NOT printed (issue #555).
+    // It is `HMAC(signing key derived from the developer's real secret
+    // access key, string-to-sign)`, and every input to that string-to-sign
+    // is chosen by the caller: the credential scope's region and service,
+    // the date, the signed-header list and their values, the URI, the query
+    // string, and the payload hash. Reaching this branch needs only an
+    // access-key id equal to the local one, and an access-key id is an
+    // identifier rather than a secret. So echoing the result would make
+    // `cdkl start-api` a signing oracle: send a request canonically
+    // identical to some AWS API call, then read a VALID signature for that
+    // call, under the developer's own credentials, straight off the log.
+    // This site is `info`, so no `--verbose` is needed, and `cdkl studio`
+    // mirrors these lines into a log ring it serves over HTTP.
+    //
+    // The OFFERED signature IS printed. The caller supplied it, so echoing
+    // it back to a local terminal tells them nothing they did not send, and
+    // it is what makes the mismatch actionable (issue #246). The recomputed
+    // hex only restated the inequality the message already names — the
+    // fault itself always lies in the canonical request.
     logger.info(
-      `AWS_IAM authorizer: rejecting request — Signature= mismatch (recomputed ` +
-        `'${recomputed}', got '${parsed.signature}'). The request was signed with the ` +
-        `expected access-key-id but the HMAC does not verify — check the SignedHeaders ` +
-        `list, request body, and canonical-request normalization on the signer side.`
+      `AWS_IAM authorizer: rejecting request — Signature= mismatch (got ` +
+        `'${redactSignature(parsed.signature)}'; the recomputed signature is withheld, ` +
+        `because it is a valid signature for this request under your local credentials). ` +
+        `The request was signed with the expected access-key-id but the HMAC does not ` +
+        `verify — check the SignedHeaders list, request body, and canonical-request ` +
+        `normalization on the signer side.`
     );
     return { allow: false, identityHash: undefined };
   }
@@ -427,6 +461,121 @@ export async function verifySigV4(
     principalId: parsed.credentialAccessKeyId,
     identityHash: buildIdentityHash([parsed.signature]),
   };
+}
+
+/**
+ * Upper bound on how much of an `Authorization`-header segment a rejection
+ * message may quote.
+ *
+ * 32 clears every value these messages legitimately name, with room to
+ * spare: `AWS4-HMAC-SHA256` is 16 characters, the longest real algorithm
+ * spelling this parser rejects (`AWS4-ECDSA-P256-SHA256-PAYLOAD`) is 30,
+ * `aws4_request` is 12, a `YYYYMMDD` date is 8, and an access-key id is 20.
+ * The ceiling is what fixes it at 32 rather than higher: an AWS SECRET
+ * access key is 40 characters, and pasting one into `AWS_ACCESS_KEY_ID` is
+ * the one way a developer's own secret reaches this header — so the bound
+ * has to sit below 40 for that paste to be withheld rather than quoted.
+ */
+const AUTH_SEGMENT_QUOTE_MAX = 32;
+
+/**
+ * Quote one caller-supplied `Authorization`-header segment for a rejection
+ * message, or withhold it when it cannot be a segment.
+ *
+ * Issue #555. These messages are `info` and `warn`, not `debug`, so they
+ * print on a plain `cdkl start-api` run rather than only under `--verbose`
+ * — a different population from a verbose-gated diagnostic, and the reason
+ * the auth-header sites were the ones worth changing. What each names is a
+ * POSITION in the header, and a position holds only its own short token
+ * while the header's delimiters sit where the parser expects them. Drop a
+ * single comma —
+ * `Credential=AKID/20260101/us-east-1/execute-api/aws4_request Signature=<hex>, SignedHeaders=host, Signature=abcd`
+ * — and `Credential=`'s value absorbs the parameter that should have
+ * followed it, so the credential-scope split hands its LAST segment the
+ * `Signature=` component and the terminator message prints it at default
+ * level. (A header delimited by spaces throughout never reaches that
+ * message: it yields a single parameter, so the parse throws `missing
+ * SignedHeaders` first.)
+ *
+ * So a quote is allowed only for input that could still BE one segment: no
+ * whitespace, no `=`, no longer than {@link AUTH_SEGMENT_QUOTE_MAX}. Any of
+ * those failing means the parse boundary was elsewhere and the value is
+ * unrelated header material of unknown extent, reported by shape instead.
+ * Every genuine typo (`aws3_request`, `AWS4-HMAC-SHA512`) stays quoted in
+ * full — the actionability issue #246 added these messages for — while the
+ * sweep-in case degrades to a character count.
+ *
+ * The offered `Signature=` value has its own predicate,
+ * {@link redactSignature}: a real signature is 64 characters, so this bound
+ * would withhold every legitimate one.
+ */
+export function redactAuthorizationSegment(segment: string): string {
+  if (segment.length > AUTH_SEGMENT_QUOTE_MAX || /[\s=]/.test(segment)) {
+    return `<withheld: ${segment.length} characters of unparsed header material>`;
+  }
+  return segment;
+}
+
+/**
+ * Bound on the `x-amz-date` / `date` echo. Every legal spelling is far
+ * below it. Measured on Node 24: RFC 1123 `Mon, 02 Jan 2006 15:04:05 GMT`
+ * is 29 characters; `new Date().toString()` runs 45 to 76 depending on the
+ * zone name (55 on the machine this was written on, 76 for
+ * `Australia/Eucla`) across all 418 zones `Intl.supportedValuesOf` lists;
+ * and the longest spelling `Date` was observed to PARSE,
+ * `Wednesday, December 31, 2025 00:00:00 GMT+0000 (Coordinated Universal
+ * Time)`, is 75. So nothing actionable is ever withheld.
+ */
+const TIMESTAMP_HEADER_QUOTE_MAX = 200;
+
+/**
+ * Bound the `x-amz-date` / `date` echo by LENGTH ONLY.
+ *
+ * Issue #555 reviewed this site and deliberately did NOT route it through
+ * {@link redactAuthorizationSegment}. It is not an `Authorization` segment:
+ * `pickHeader` reads the whole header, so no delimiter mistake can sweep a
+ * `Signature=` component into it, and what lands here is whatever the
+ * CALLER put in their own timestamp header. More to the point, a SHAPE
+ * bound would withhold exactly the case the message exists for — the value
+ * reaching the mismatch branch is usually a perfectly valid timestamp that
+ * simply disagrees with the credential scope, and the legal spellings carry
+ * spaces and run long (see {@link TIMESTAMP_HEADER_QUOTE_MAX}). A
+ * whitespace clause or a 32-character cap withholds all of them.
+ *
+ * "No shape bound" is not "no bound", though. The value is unbounded caller
+ * input printed at `info`, and `cdkl studio` mirrors these lines into a log
+ * ring it serves over HTTP, so a length cap costs nothing and ends the
+ * flood. Do not tighten it into a shape check.
+ */
+export function boundTimestampHeader(value: string): string {
+  if (value.length > TIMESTAMP_HEADER_QUOTE_MAX) {
+    return `<withheld: ${value.length} characters, too long to be a timestamp>`;
+  }
+  return value;
+}
+
+/**
+ * Quote the caller's OFFERED `Signature=` value, or withhold it when that
+ * field swept in material which is not a signature.
+ *
+ * `Signature=` is the LAST parameter of the header, which makes it a sweep
+ * position exactly like the credential-scope terminator: a header ending
+ * `..., Signature=<hex> X-Anything=foo` parses to a `signature` of
+ * `<hex> x-anything=foo`. A real SigV4 signature is lowercase hex and
+ * EXACTLY 64 characters; the predicate accepts 1 to 64 rather than exactly
+ * 64 only so that a short but otherwise plausible value still shows (a
+ * truncated paste is worth seeing). Either way it quotes every legitimate
+ * value — the one issue #246 needs the user to compare — and withholds
+ * anything a mis-delimited split swept in.
+ *
+ * This covers the OFFERED signature only. The RECOMPUTED one is never
+ * printed; the mismatch message in {@link verifySigV4} says why.
+ */
+export function redactSignature(signature: string): string {
+  if (!/^[0-9a-f]{1,64}$/.test(signature)) {
+    return `<withheld: ${signature.length} characters that are not a signature>`;
+  }
+  return signature;
 }
 
 /**
@@ -446,9 +595,20 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   // is permitted by the AWS spec.
   const parts = rest.split(',').map((s) => s.trim());
   const fields: Record<string, string> = {};
-  for (const part of parts) {
+  for (const [i, part] of parts.entries()) {
     const eq = part.indexOf('=');
-    if (eq < 0) throw new Error(`malformed parameter '${part}'`);
+    // Report the POSITION, never the content. A part reaching here holds no
+    // `=`, so quoting it says nothing about the fault the message already
+    // names -- while an `Authorization: Basic <base64>` sent to an AWS_IAM
+    // route arrives as exactly one such part, and quoting it would print
+    // that credential at `info` (issue #555). The developer reading the
+    // message is holding the header they sent; an index locates the part
+    // for them without cdk-local repeating any of it.
+    if (eq < 0) {
+      const detail =
+        part.length === 0 ? 'empty, stray comma?' : `${part.length} characters, no '='`;
+      throw new Error(`malformed parameter ${i + 1} of ${parts.length} (${detail})`);
+    }
     const key = part.slice(0, eq).trim();
     const val = part.slice(eq + 1).trim();
     fields[key] = val;
@@ -464,7 +624,16 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   // Credential format: AKID/YYYYMMDD/region/service/aws4_request
   const credParts = credential.split('/');
   if (credParts.length !== 5) {
-    throw new Error(`malformed Credential '${credential}' (expected 5 slash-separated segments)`);
+    // Count, not content: the whole Credential= value is the one segment
+    // that can never be safely quoted. It is unbounded, it is the position
+    // a hand-written (space- rather than comma-delimited) header sweeps the
+    // REST of the Authorization value into -- `Signature=<hex>` included --
+    // and the count is what makes the fault actionable anyway (issue #555).
+    // The caller's own catch already prints the full expected shape, so
+    // naming it again here would state it twice in one line.
+    throw new Error(
+      `malformed Credential: expected 5 slash-separated segments, got ${credParts.length}`
+    );
   }
   const [accessKeyId, date, region, service, terminator] = credParts as [
     string,
@@ -475,7 +644,9 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   ];
 
   if (!/^[0-9]{8}$/.test(date)) {
-    throw new Error(`malformed credential date '${date}' (expected YYYYMMDD)`);
+    throw new Error(
+      `malformed credential date '${redactAuthorizationSegment(date)}' (expected YYYYMMDD)`
+    );
   }
 
   return {

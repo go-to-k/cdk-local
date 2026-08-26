@@ -212,9 +212,13 @@ describe('verifySigV4 — 7 rejection paths surface at info (issue #246)', () =>
     expect(result.allow).toBe(false);
     const infos = info.calls().join('\n');
     expect(infos).toMatch(/Signature= mismatch/);
-    // Both the recomputed and the offered signatures should appear so the
-    // user can spot the divergence at a glance.
-    expect(infos).toMatch(/recomputed/);
+    // The OFFERED signature appears, so the user can compare it with what
+    // their signer produced. The RECOMPUTED one is named but withheld
+    // (issue #555): it is an HMAC under the developer's real secret access
+    // key over a string-to-sign the caller chose, so echoing it would hand
+    // out valid signatures. That withholding is fenced in
+    // `sigv4-verify-auth-segment-redaction.test.ts`.
+    expect(infos).toContain('the recomputed signature is withheld');
     expect(infos).toMatch(/0{64}/);
     info.restore();
   });

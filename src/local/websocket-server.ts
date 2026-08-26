@@ -353,6 +353,19 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     // AWS-deployed semantics.
     ws.on('message', (raw, isBinary) => {
       const { body, isBase64Encoded } = websocketBody.bufferToBody(raw, isBinary);
+      // Issue #555, reviewed and DELIBERATELY LEFT — do not re-raise this
+      // as an echo of caller request data. The slice is 200 UTF-16 CODE
+      // UNITS, not bytes. For a text frame that is at most 600 UTF-8 bytes
+      // (measured: 600 for 3-byte BMP characters, 400 for astral pairs);
+      // for a binary frame the body is already base64, which is ASCII, so
+      // 200 characters is 150 bytes of the original payload. Either way it
+      // is what the developer's own client just sent to the local server,
+      // and this is `debug`, so it prints only under `--verbose`.
+      // No part of it was resolved by cdk-local out of a secret or
+      // parameter store, which is the line the redactions in
+      // `ecs-secrets-resolver.ts` (#554) and `sigv4-verify.ts` (#555) draw.
+      // Seeing the frame that produced a routing decision is the reason
+      // `--verbose` exists on `start-api`.
       logger.debug(
         `WebSocket message received for connection ${connectionId}: ${body.slice(0, 200)}`
       );
@@ -475,6 +488,13 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
   ): Promise<void> => {
     const entry = registry.unregister(connectionId);
     if (!entry) return;
+    // Issue #555, reviewed and DELIBERATELY LEFT — same call as the frame
+    // body above. The close reason is client-supplied, but it is the
+    // developer's own client and this is `debug`-gated. When the API
+    // declares a `$disconnect` route the value is handed to that handler as
+    // `disconnectReason` a few lines below, so for those APIs the log adds
+    // no reach at all; when it does not, this line is the only place a
+    // developer can see why the client hung up.
     logger.debug(
       `WebSocket disconnected: ${connectionId} (code=${code}, reason=${reason || '<none>'})`
     );
