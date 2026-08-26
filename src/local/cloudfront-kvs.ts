@@ -146,18 +146,23 @@ function makeHandle(source: KvsDataSource): CloudFrontKvsHandle {
           // handle over: `createLocalFileKvsDataSource` reads the developer's
           // OWN `--kvs-file` JSON, and the `--from-cfn-stack` binding reads a
           // deployed CloudFront KeyValueStore, a plaintext edge-config store
-          // rather than a secret store. That is a statement about THIS CLI,
-          // not about every caller: `createCloudFrontModule` and
-          // `KvsDataSource` ship through the `cdk-local/internal` subpath, so
-          // an embedding host can supply a source backed by anything it
-          // likes, and such a source inherits this echo. Nor does the echo
-          // reach the wire the
+          // rather than a secret store. Nor does the echo reach the wire the
           // way the `$util.parseJson` one did (PR #556): a rejected
           // `cf.kvs()` read propagates out of the function sandbox to
           // `cloudfront-server.ts`'s top-level handler, which logs it and
           // answers a FIXED 500 body. Echoing the parser detail is what makes
           // a malformed stored value diagnosable, so it stays. Re-raising
-          // this site needs one of those three facts to have changed.
+          // this site needs one of those facts to have changed.
+          //
+          // BOTH of those facts are about THIS CLI, and the caveat is
+          // accepted rather than merely noted. `createCloudFrontModule` and
+          // `KvsDataSource` ship through the `cdk-local/internal` subpath, so
+          // an embedding host can back a source with anything it likes AND
+          // need not route the rejection through that fixed-500 handler --
+          // in-repo the only caller is `cloudfront-kvs-binding.ts`. Such a
+          // host owns both halves of that decision, and the unstable subpath
+          // carries no semver guarantee, so the echo is not narrowed for a
+          // caller cdk-local cannot see.
           throw new Error(
             `cf.kvs().get('${key}', { format: 'json' }): value is not valid JSON: ${
               err instanceof Error ? err.message : String(err)
@@ -217,10 +222,11 @@ export function createLocalFileKvsDataSource(args: {
     // named on their own command line, not material this library resolved
     // from a secret / parameter store, and the message names that file --
     // so the quoted fragment is how they find the syntax error in it. The
-    // `--env-vars` file parsers (`local-invoke.ts`, `local-run-task.ts`,
-    // `local-start-api.ts`, `local-invoke-agentcore.ts`,
-    // `ecs-service-emulator.ts`) are the same class and were reviewed the
-    // same way, even though such a file routinely holds secret env values:
+    // five `--env-vars` file parsers under `src/cli/commands/`
+    // (`local-invoke.ts`, `local-run-task.ts`, `local-start-api.ts`,
+    // `local-invoke-agentcore.ts`, `ecs-service-emulator.ts`) are the same
+    // class and were reviewed the same way, even though such a file
+    // routinely holds secret env values:
     // the developer supplied the file, and naming its syntax error is the
     // whole point of the message.
     throw new Error(

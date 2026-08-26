@@ -105,9 +105,10 @@ describe('resolveEcsSecrets json-key parse failure (issue #554)', () => {
   });
 
   it('withholds a SHORT secret, which V8 quotes in FULL rather than truncating', async () => {
-    // The worst case and a distinct leak shape: V8 appends `...` only PAST its
-    // prefix window, so `JSON.parse('pw42')` quotes the whole string. A guard
-    // written only against the truncated shape misses this one entirely.
+    // The worst case and a distinct leak shape: an input of 20 characters or
+    // fewer is quoted in FULL (`...` first appears at 21), so
+    // `JSON.parse('pw42')` quotes the whole string. A guard written only
+    // against the truncated shape misses this one entirely.
     // Chosen so the needle appears nowhere else in the message -- the
     // container, env var and json-key literals do not contain it.
     const secret = 'pw42';
@@ -151,18 +152,35 @@ describe('resolveEcsSecrets json-key parse failure (issue #554)', () => {
   });
 });
 
-describe('the SIBLING json-key failure branches must stay value-free (issue #554)', () => {
-  // None of these three echoes the secret today, and the point is to keep it
-  // that way: they are the branches a later "let us be more helpful" edit
-  // would reach for, and nothing asserted their silence. Each fixture makes
-  // its OWN branch the one that fires -- a value that parses cleanly, so the
+describe('the three VALUE-consuming sibling branches must stay value-free (issue #554)', () => {
+  // The three branches of `resolveSecretsManager` that are HANDED the resolved
+  // secret and could therefore disclose it. None echoes today, and the point
+  // is to keep it that way: they are where a later "let us be more helpful"
+  // edit reaches, and nothing asserted their silence. Each fixture makes its
+  // OWN branch the one that fires -- a value that parses cleanly, so the
   // `JSON.parse` catch fixed above is NOT what threw.
+  //
+  // The FOURTH throw in this function -- the `client.send` catch at
+  // `ecs-secrets-resolver.ts:188` -- is deliberately NOT here, and the reason
+  // is recorded at that site: it fires BEFORE any value exists, and what it
+  // relays is an AWS transport error about the ARN. Naming the exclusion
+  // matters because a block titled "the sibling branches" otherwise reads as
+  // covering all four.
+  //
+  // A leak is asserted absent in every ENCODING a plausible edit would emit
+  // it in, not just as the literal string. Interpolating a `Uint8Array`
+  // yields a decimal byte list and `JSON.stringify` yields an index-keyed
+  // object -- both trivially reversible, and both FAR likelier than the
+  // hand-decode an earlier cut of this test probed. Fencing only the decoded
+  // form is the "probed the mutation nobody would write" trap.
   beforeEach(() => {
     smSend.mockReset();
     ssmSend.mockReset();
   });
 
   const PLAINTEXT = 'pw42';
+  /** A key name the fixture's secret carries and the requested json-key does not. */
+  const OTHER_KEY = 'dbUsernameField';
 
   it.each([
     [
@@ -172,7 +190,7 @@ describe('the SIBLING json-key failure branches must stay value-free (issue #554
     ],
     [
       'no such key exists in the secret JSON',
-      { SecretString: JSON.stringify({ other: PLAINTEXT }) },
+      { SecretString: JSON.stringify({ [OTHER_KEY]: PLAINTEXT }) },
       'no such key exists in the secret JSON',
     ],
   ])('%s', async (_label, response, surviving) => {
@@ -193,15 +211,23 @@ describe('the SIBLING json-key failure branches must stay value-free (issue #554
     // Positive first: this is the branch under test, not some earlier throw.
     expect(message).toContain(surviving);
     expect(message).toContain("Container 'ApiContainer'");
+    expect(message).toContain("secret 'DB_PASSWORD'");
     expect(message).toContain("json-key 'password'");
 
     expect(message).not.toContain(PLAINTEXT);
+    // The secret's STRUCTURE is disclosure too, and listing the keys it does
+    // have (`Available keys: ...`) is the canonical helpful-edit for a
+    // missing-key error. Asserted on both rows because the array fixture
+    // simply has no keys to list, so the guard costs nothing there.
+    expect(message).not.toContain(OTHER_KEY);
   });
 
-  it('binary secret: reports no SecretString without describing what came back', async () => {
-    // The `SecretString === undefined` arm. `SecretBinary` is what AWS
-    // actually returns here, and it must not be relayed either.
-    smSend.mockResolvedValue({ SecretBinary: new TextEncoder().encode(PLAINTEXT) });
+  it('binary secret: reports no string value without relaying the bytes in ANY encoding', async () => {
+    // The `SecretString === undefined` arm. AWS returns the value under
+    // `SecretBinary` here, and relaying it -- decoded, interpolated, or
+    // JSON-stringified -- discloses the same plaintext.
+    const bytes = new TextEncoder().encode(PLAINTEXT);
+    smSend.mockResolvedValue({ SecretBinary: bytes });
 
     let caught: unknown;
     try {
@@ -217,6 +243,22 @@ describe('the SIBLING json-key failure branches must stay value-free (issue #554
 
     expect(message).toContain('returned no SecretString');
     expect(message).toContain('Binary secrets are not supported');
+
+    // Decoded -- the hand-written `TextDecoder` form.
     expect(message).not.toContain(PLAINTEXT);
+    // Interpolated / `String(...)`-ed -- a typed array stringifies to its
+    // decimal bytes (`112,119,52,50`). This is what `+ String(resp.SecretBinary)`
+    // emits, and it is the likelier edit of the two.
+    expect(message).not.toContain(Array.from(bytes).join(','));
+    // `JSON.stringify(resp)` renders the array as an INDEX-KEYED object, so
+    // the byte list above does not appear in it. Built from the bytes rather
+    // than by re-stringifying a guessed response shape, so it still matches
+    // when the edit stringifies a response carrying other fields too.
+    const indexKeyed = JSON.stringify(
+      Object.fromEntries(Array.from(bytes).map((b, i) => [String(i), b]))
+    );
+    expect(message).not.toContain(indexKeyed);
+    // Base64 -- the shape a `Buffer.from(...).toString('base64')` edit emits.
+    expect(message).not.toContain(Buffer.from(bytes).toString('base64'));
   });
 });

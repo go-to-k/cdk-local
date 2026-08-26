@@ -186,6 +186,14 @@ async function resolveSecretsManager(
     const resp = await client.send(new GetSecretValueCommand({ SecretId: shape.baseArn }));
     secretString = resp.SecretString;
   } catch (err) {
+    // Parser/transport detail KEPT, unlike the `JSON.parse` catch below.
+    // Reviewed under issue #554's criterion and excluded on the same ground
+    // as the `cloudfront-kvs.ts` echoes: this throw fires BEFORE any value
+    // exists -- `secretString` is still undefined -- so what it relays is an
+    // AWS SDK error about the ARN (AccessDenied, ResourceNotFound,
+    // throttling), which is exactly what makes a credential or IAM problem
+    // diagnosable. It is the one throw in this function the sibling-branch
+    // test block deliberately does not cover, and this is why.
     throw new EcsSecretsResolutionError(
       `Failed to resolve Secrets Manager secret for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}): ${
         err instanceof Error ? err.message : String(err)
