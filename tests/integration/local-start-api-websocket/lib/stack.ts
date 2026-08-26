@@ -11,6 +11,33 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'node:path';
 
 /**
+ * Run this fixture's Lambdas at the HOST's CPU architecture.
+ *
+ * cdk-local pins `docker --platform` to each function's declared
+ * `Architectures` (see `pullImage` / `architectureToPlatform`), which is
+ * the correct behavior: a `provided.*` bootstrap compiled for one arch
+ * must get the matching base image. But a function that declares no
+ * `architecture` defaults to `X86_64`, so on an arm64 host every
+ * container in this fixture ran `linux/amd64` under CPU emulation --
+ * and the Go RIE inside `public.ecr.aws/lambda/nodejs:20` faults
+ * intermittently there, at a different assertion on every run
+ * (issue #560).
+ *
+ * The base image is multi-arch -- `docker manifest inspect
+ * public.ecr.aws/lambda/nodejs:20` lists both `arm64`/v8 and `amd64` --
+ * so declaring the host arch makes the container native on an Apple
+ * Silicon dev host AND on an x86_64 CI runner, rather than trading one
+ * host's emulation for the other's. Nothing in verify.sh asserts the
+ * architecture, so this costs no coverage.
+ *
+ * Keep this on every function in this fixture: a new handler that omits
+ * it silently reintroduces #560 on arm64 hosts. `tests/unit/integ-fixture-host-architecture.test.ts`
+ * fences that.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * WebSocket API fixture for the `cdkl start-api` WebSocket integ
  * test (#462). The stack synthesizes 5 Lambdas + 1 WebSocket API + 5
  * routes — `$connect`, `$disconnect`, `$default`, `sendMessage` (echo),
@@ -30,26 +57,31 @@ export class LocalStartApiWebSocketStack extends cdk.Stack {
     // container).
     const connectFn = new lambda.Function(this, 'ConnectFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-connect')),
     });
     const disconnectFn = new lambda.Function(this, 'DisconnectFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-disconnect')),
     });
     const defaultFn = new lambda.Function(this, 'DefaultFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-default')),
     });
     const sendFn = new lambda.Function(this, 'SendFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-send')),
     });
     const broadcastFn = new lambda.Function(this, 'BroadcastFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(import.meta.dirname, '..', 'lambda-broadcast')),
     });
