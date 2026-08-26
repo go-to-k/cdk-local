@@ -1516,6 +1516,32 @@ vp run runtime:smoke
   duration and keeping the letter is exactly the failure this split
   exists to end.
 
+  **`Severity` and `Effort` are ALSO LABELS on a filed issue.** The two
+  lines stay exactly as written — nothing about the report or the body
+  changes — and the same two values are mirrored onto the issue as
+  `severity:high` / `severity:medium` / `severity:low` and
+  `effort:small` / `effort:medium` / `effort:large`. Prose is invisible
+  to every query the backlog is actually triaged with, so ranking by
+  `Severity` costs one `gh issue view` per candidate while
+  `gh issue list --label severity:high` is one call. Set them at filing
+  time (`gh issue create ... --label severity:high --label effort:large`)
+  and again when a claim rewrites an old packed body into the four-line
+  shape (`gh issue edit <n> --add-label ...`), which is where `Severity`
+  first exists for most of the backlog. **Only these two get labels**:
+  `Session-fit` is re-decided at claim time and a label silently
+  disagreeing with the body is worse than none, and `Estimate` is a
+  free-form duration whose informative half — what actually eats the
+  time — is exactly what a label cannot hold. The prefixed full words
+  are the "no bare tokens" rule applied to a label: the two scales share
+  the token `medium`, and their initials collide in the dangerous
+  direction. Enforced by
+  `.claude/hooks/issue-classification-label-gate.sh`, which refuses a
+  `gh issue create` / `gh issue edit` whose body states a value the
+  issue's labels do not carry. **The PR inherits them automatically** —
+  `.github/workflows/pr-inherit-issue-labels.yml` copies every label of
+  the issues a PR closes onto the PR itself (add-only, minus the
+  release-management family), so never hand-add them to a PR.
+
   **Scales.** `Severity`: `high` = a wrong result, data loss, a security
   surface, or something a user hits in normal operation; `medium` = a
   capability is missing but there is a workaround, or it only shows up
