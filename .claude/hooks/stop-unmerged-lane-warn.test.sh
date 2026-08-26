@@ -97,9 +97,8 @@ check "names both lanes, not the detached worktree" "2" "$(lanes_in "$out")"
 # `BASH_SOURCE` and went silent for exactly this run. The main tree is excluded
 # by BRANCH, so removing that skip costs nothing here -- which this case pins
 # from the other side, by asserting the count is 2 rather than 3.
-cp "$HOOK" "$REPO/wt-two/.claude/hooks/" 2>/dev/null || {
-  mkdir -p "$REPO/wt-two/.claude/hooks"; cp "$HOOK" "$REPO/wt-two/.claude/hooks/"
-}
+mkdir -p "$REPO/wt-two/.claude/hooks"
+cp "$HOOK" "$REPO/wt-two/.claude/hooks/"
 out=$(cd "$REPO/wt-two" && bash "$REPO/wt-two/.claude/hooks/$(basename "$HOOK")")
 check "names its OWN lane when run from inside it" "2" "$(lanes_in "$out")"
 if printf '%s' "$out" | grep -q 'feat/two'; then

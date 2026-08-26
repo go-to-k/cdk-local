@@ -36,9 +36,12 @@ set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO" 2>/dev/null || exit 0
 
-# Cheap: no fetch. A stale `origin/main` can only UNDER-report (a branch whose
-# work already merged still looks ahead until the next fetch), and the failure
-# direction that matters is missing a real lane, not naming a merged one.
+# Cheap: no fetch. A stale `origin/main` can only OVER-report: `rev-list --count
+# origin/main..$br` only grows as `origin/main` ages, so a branch whose work has
+# already merged keeps reading as ahead. That is the safe direction -- the
+# failure that matters is MISSING a real lane, and staleness cannot cause it.
+# (An earlier revision of this comment said UNDER-report while its own
+# parenthetical described over-reporting; the parenthetical was the true half.)
 git rev-parse --verify origin/main >/dev/null 2>&1 || exit 0
 
 lanes=""

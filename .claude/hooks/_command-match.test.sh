@@ -372,14 +372,18 @@ PYEOF
 # `-lt 1` arm still catches an empty parse.
 bash_count=$(printf '%s\n' "$bash_hooks" | grep -c '\.sh$' || true)
 any_count=$(printf '%s\n' "$any_hooks" | grep -c '\.sh$' || true)
-raw_count=$(grep -o '[A-Za-z0-9_-]*\.sh' "$SETTINGS" | sort -u | grep -c . || true)
+# Scoped to the `hooks` block, not the whole file: `settings.json` also carries
+# a `permissions.allow` array whose entries are `Bash(...)` patterns, and one of
+# those naming a `.sh` reds this check with nothing wrong with the parse.
+raw_count=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("hooks", {})))' "$SETTINGS" |
+  grep -o '[A-Za-z0-9_-]*\.sh' | sort -u | grep -c . || true)
 
 if [ "${bash_count:-0}" -lt 1 ]; then
   fail=$((fail + 1))
   printf 'FAIL settings parse found no Bash hooks at all -- the fence is blind\n'
 elif [ "${any_count:-0}" -ne "${raw_count:-0}" ]; then
   fail=$((fail + 1))
-  printf 'FAIL settings parse found %s hook scripts but a raw scan of the file found %s -- the parse is losing entries\n' \
+  printf 'FAIL settings parse found %s hook scripts, a raw scan of the hooks block found %s -- the two disagree, so one of them is losing entries\n' \
     "$any_count" "$raw_count"
 else
   pass=$((pass + 1))
@@ -397,9 +401,29 @@ for gate in "$HOOK_DIR"/*.sh; do
     continue
   fi
 
+  # The exemption is not unconditional, and this is the SECOND direction of the
+  # same invariant. Above: a hook wired to Bash must source the matcher. Here: a
+  # hook that SOURCES the matcher must be wired to Bash -- sourcing it is
+  # evidence the hook parses commands, so being on a non-Bash matcher means it
+  # never receives one and is INERT, the exact class this file exists for.
+  #
+  # Without this arm the Bash population had no bound at all once the old
+  # literal `-lt 10` floor was replaced (the cross-check above compares the
+  # ANY-event parse, not this one). Measured by a review round: moving 22 of the
+  # 33 entries into a second `PreToolUse` group with `matcher: "Edit|Write"` --
+  # the routine "new group, wrong matcher" slip -- silently exempted eleven live
+  # gates including `branch-gate.sh` and left the suite at 218/0. A count-based
+  # bound would also have been brittle, since a legitimate Edit-only hook is a
+  # normal thing to add; that hook simply does not source the matcher, so this
+  # arm passes it.
   if ! printf '%s\n' "$bash_hooks" | grep -qxF -- "$base"; then
-    pass=$((pass + 1))
-    printf 'OK   %s receives no Bash command, so it needs no matcher\n' "$base"
+    if grep -q '_command-match.sh' "$gate"; then
+      fail=$((fail + 1))
+      printf 'FAIL %s sources the command matcher but is not registered under a Bash matcher -- it parses commands it never receives\n' "$base"
+    else
+      pass=$((pass + 1))
+      printf 'OK   %s receives no Bash command and does not parse one\n' "$base"
+    fi
     continue
   fi
 
