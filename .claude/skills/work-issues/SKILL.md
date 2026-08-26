@@ -1316,8 +1316,8 @@ for n in <the numbers this run filed that are still open>; do
     | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.[a-z]+' | sort -u \
     | while read -r f; do
         # Suffix match, not equality: an issue body names a file by BASENAME far
-        # more often than by full path (`destroy-runner.ts`, not
-        # `src/cli/commands/destroy-runner.ts`), and an exact-line compare misses
+        # more often than by full path (the bare file name, not the full
+        # repo-relative one), and an exact whole-line compare misses
         # every one of those. Measured: the exact form fired on 1 of this run's 2
         # deferrals and missed the one whose body used the basename.
         grep -E "(^|/)$(printf '%s' "$f" | sed 's/[.[\*^$]/\\&/g')\$" \
