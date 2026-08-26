@@ -13,6 +13,12 @@
 #                       isolation — accepts 200 OR 502).
 #   - POST /aws-lambda -> AWS Lambda non-proxy integration with
 #                         request-side AND response-side VTL.
+#   - POST /parse-json-header -> MOCK whose request template runs
+#                         `$util.parseJson` over a request HEADER.
+#   - POST /parse-json-body   -> AWS Lambda non-proxy whose request template
+#                         runs `$util.parseJson` over the request BODY.
+#     Both assert the failure message does NOT echo the parsed input
+#     (go-to-k/cdkd#2203).
 #
 # Run via `/run-integ local-start-api-rest-v1-non-proxy` (recommended)
 # or directly:
@@ -175,5 +181,128 @@ if ! echo "${BODY}" | grep -q '"data"'; then
   echo "FAIL: /aws-lambda body does not show the response-template wrapping; body was: ${BODY}"
   exit 1
 fi
+
+# --- go-to-k/cdkd#2203: the VTL parse failure must not echo the input ----
+#
+# `$util.parseJson(<something the caller sent>)` is the shape that put a
+# prefix of the payload into the error message, and `vtlFailure` copies that
+# message into the 502 RESPONSE BODY -- so the leak crossed the HTTP
+# boundary, not just the terminal. Both request-carried vectors are covered:
+# a HEADER (MOCK; its VTL context is built with a hardcoded empty body) and
+# the BODY (AWS Lambda non-proxy, which gets the real body).
+#
+# Each vector proves its PREMISE in its own step first. Without that, a route
+# that stopped reaching `$util.parseJson` would make the redaction assertion
+# pass while fencing nothing -- which is exactly what the first cut of this
+# fixture did, answering 502 with `argument length 0` because MOCK zeroes
+# the body.
+#
+# The needle is 9 characters: V8 appends `...` only past its ~10-char
+# window, so a SHORT input is quoted in FULL. That is the shape a whole
+# password was recovered with.
+NEEDLE='hunter2pw'
+
+assert_redacted() {
+  local label="$1" body_file="$2" arg_len="$3"
+  local body
+  body="$(cat "${body_file}")"
+  echo "    body=${body}"
+
+  # POSITIVES first: "the needle is absent" alone is a confluence point that
+  # any unrelated failure -- including one that never ran the template --
+  # also satisfies.
+  if ! echo "${body}" | grep -q 'VTL request-template evaluation failed'; then
+    echo "FAIL: ${label}: 502 body is not the VTL failure envelope; body was: ${body}"
+    exit 1
+  fi
+  if ! echo "${body}" | grep -q 'util.parseJson: the argument is not valid JSON'; then
+    echo "FAIL: ${label}: 502 reason does not name the redacted parse failure; body was: ${body}"
+    exit 1
+  fi
+  if ! echo "${body}" | grep -q 'SyntaxError'; then
+    echo "FAIL: ${label}: 502 reason lost the input-independent discriminator; body was: ${body}"
+    exit 1
+  fi
+  # Anchored with the trailing `)`: a bare `argument length 9` is a substring
+  # of `argument length 90`, so an inflated count would slip through.
+  if ! echo "${body}" | grep -q "argument length ${arg_len})"; then
+    echo "FAIL: ${label}: 502 reason lost the argument-length detail; body was: ${body}"
+    exit 1
+  fi
+
+  # THE NEGATIVE: no byte of the caller's payload may appear anywhere in the
+  # response. This is THE assertion -- `vtlFailure` returns the reason in the
+  # 502 body, which is the channel the defect travelled on.
+  if echo "${body}" | grep -q "${NEEDLE}"; then
+    echo "FAIL: ${label}: the 502 body ECHOES the caller payload (${NEEDLE}) -- go-to-k/cdkd#2203 regressed."
+    echo "      body was: ${body}"
+    exit 1
+  fi
+  # The server-log grep is a FORWARD fence, not a second proof: on today's
+  # code `vtlFailure` RETURNS the outcome and nothing on that path logs the
+  # reason, so this passes with the fix reverted. It is kept so that routing
+  # the reason to a log later cannot reintroduce the leak unnoticed -- stated
+  # rather than implied, because an assertion that cannot currently fail
+  # otherwise reads as evidence it is not.
+  if grep -q "${NEEDLE}" "${LOG_FILE}"; then
+    echo "FAIL: ${label}: the server log ECHOES the caller payload (${NEEDLE}) -- go-to-k/cdkd#2203 regressed."
+    exit 1
+  fi
+  echo "    ${label}: needle absent from the 502 body (and from the server log, which does not carry it today)"
+}
+
+echo "==> HEADER vector premise: POST ${BASE_URL}/parse-json-header with a VALID JSON header"
+STATUS="$(curl -sS -o /tmp/resp.body -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H 'xpayload: {"any":"json"}' \
+  -d '{}' "${BASE_URL}/parse-json-header")"
+echo "    status=${STATUS}"
+if [[ "${STATUS}" != "200" ]]; then
+  echo "FAIL: /parse-json-header must answer 200 for a valid JSON header, got ${STATUS}."
+  echo "      The redaction assertion below would be INERT: the route is not reaching util.parseJson."
+  cat /tmp/resp.body
+  exit 1
+fi
+if ! grep -q '"parsed":true' /tmp/resp.body; then
+  echo "FAIL: /parse-json-header valid case did not render the response template; body was: $(cat /tmp/resp.body)"
+  exit 1
+fi
+
+echo "==> HEADER vector: POST ${BASE_URL}/parse-json-header with a NON-JSON header"
+STATUS="$(curl -sS -o /tmp/resp.body -w '%{http_code}' -X POST \
+  -H 'Content-Type: application/json' -H "xpayload: ${NEEDLE}" \
+  -d '{}' "${BASE_URL}/parse-json-header")"
+echo "    status=${STATUS}"
+if [[ "${STATUS}" != "502" ]]; then
+  echo "FAIL: expected 502 from /parse-json-header for a non-JSON header, got ${STATUS}"
+  cat /tmp/resp.body
+  exit 1
+fi
+assert_redacted "header vector" /tmp/resp.body "${#NEEDLE}"
+
+echo "==> BODY vector premise: POST ${BASE_URL}/parse-json-body with a VALID JSON body"
+OUT="$(assert_status "${BASE_URL}/parse-json-body" POST '{"name":"Alice"}')"
+STATUS="$(echo "${OUT}" | sed -n '1p')"
+echo "    status=${STATUS}"
+if [[ "${STATUS}" != "200" ]]; then
+  echo "FAIL: /parse-json-body must answer 200 for a valid JSON body, got ${STATUS}."
+  echo "      The redaction assertion below would be INERT: the route is not reaching util.parseJson."
+  cat /tmp/resp.body
+  exit 1
+fi
+if ! grep -q 'Hello, Alice' /tmp/resp.body; then
+  echo "FAIL: /parse-json-body valid case did not round-trip through the Lambda; body was: $(cat /tmp/resp.body)"
+  exit 1
+fi
+
+echo "==> BODY vector: POST ${BASE_URL}/parse-json-body with a NON-JSON body"
+OUT="$(assert_status "${BASE_URL}/parse-json-body" POST "${NEEDLE}")"
+STATUS="$(echo "${OUT}" | sed -n '1p')"
+echo "    status=${STATUS}"
+if [[ "${STATUS}" != "502" ]]; then
+  echo "FAIL: expected 502 from /parse-json-body for a non-JSON body, got ${STATUS}"
+  cat /tmp/resp.body
+  exit 1
+fi
+assert_redacted "body vector" /tmp/resp.body "${#NEEDLE}"
 
 echo "==> All REST v1 non-AWS_PROXY integration assertions passed (#457)"

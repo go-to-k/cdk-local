@@ -36,6 +36,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     request body, invoke the Lambda, and shape the response via VTL
  *     into `{"data": "Hello, <name>"}`. The integ asserts that the
  *     request-side AND response-side VTL both fired.
+ *
+ *   - `POST /parse-json-header` — MOCK whose request template runs
+ *     `$util.parseJson` over a request HEADER, and
+ *     `POST /parse-json-body` — AWS (Lambda non-proxy) whose request
+ *     template runs it over the request BODY. Both cover
+ *     go-to-k/cdkd#2203: the failure message must not echo a prefix of
+ *     what it parsed, and `vtlFailure` copies that message into the 502
+ *     response body, so the assertion has to be made over HTTP. The two
+ *     vectors are separate because a MOCK template is handed a hardcoded
+ *     EMPTY body and can only see a header.
  */
 export class LocalStartApiRestV1NonProxyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -66,6 +76,41 @@ export class LocalStartApiRestV1NonProxyStack extends cdk.Stack {
             statusCode: '200',
             responseTemplates: {
               'application/json': '{"source":"mock","statusCode":200}',
+            },
+          },
+        ],
+      }),
+      {
+        methodResponses: [{ statusCode: '200' }],
+      }
+    );
+
+    // MOCK parse-json-header — the request template runs `$util.parseJson`
+    // over a REQUEST HEADER, the vector the cdkd host reproduced the leak
+    // with (go-to-k/cdkd#2203). A header is the only request-carried value a
+    // MOCK template can see: `dispatchMockIntegration` builds its VTL context
+    // with a hardcoded EMPTY body, so `$input.body` is always `''` here --
+    // measured, after a first cut of this fixture used the body and the
+    // premise check below caught it answering 502 with `argument length 0`.
+    //
+    // A VALID JSON header renders `{"statusCode": 200}` and answers 200; a
+    // NON-JSON one throws `VtlEvaluationError`, which the REST v1 dispatcher
+    // turns into a 502 whose body carries the reason. verify.sh asserts BOTH
+    // directions, so an edit that stops the route reaching `$util.parseJson`
+    // fails loudly instead of silently disarming the redaction assertion.
+    const parseJsonHeader = api.root.addResource('parse-json-header');
+    parseJsonHeader.addMethod(
+      'POST',
+      new apigw.MockIntegration({
+        requestTemplates: {
+          'application/json':
+            "#set($parsed = $util.parseJson($input.params('xpayload')))\n{\"statusCode\": 200}",
+        },
+        integrationResponses: [
+          {
+            statusCode: '200',
+            responseTemplates: {
+              'application/json': '{"source":"mock","parsed":true}',
             },
           },
         ],
@@ -126,6 +171,38 @@ export class LocalStartApiRestV1NonProxyStack extends cdk.Stack {
         requestTemplates: {
           'application/json':
             '{"action": "$input.path(\'$.action\')", "name": "$input.path(\'$.name\')"}',
+        },
+        integrationResponses: [
+          {
+            statusCode: '200',
+            responseTemplates: {
+              'application/json': '{"data": $input.json("$.greeting")}',
+            },
+          },
+        ],
+      }),
+      {
+        methodResponses: [{ statusCode: '200' }],
+      }
+    );
+
+    // AWS Lambda non-proxy parse-json-body — the BODY vector of
+    // go-to-k/cdkd#2203. Unlike MOCK, `dispatchAwsLambdaIntegration` hands
+    // the real request body to the VTL context, so `$util.parseJson(
+    // $input.body)` here parses what the caller actually POSTed -- the
+    // login-endpoint shape the issue describes.
+    //
+    // The request template is evaluated BEFORE the Lambda is invoked, so the
+    // failing case costs no container round trip; the valid case does invoke
+    // it, which is what proves the route is wired rather than merely present.
+    const parseJsonBody = api.root.addResource('parse-json-body');
+    parseJsonBody.addMethod(
+      'POST',
+      new apigw.LambdaIntegration(handler, {
+        proxy: false,
+        requestTemplates: {
+          'application/json':
+            '#set($parsed = $util.parseJson($input.body))\n{"action": "greet", "name": "$parsed.name"}',
         },
         integrationResponses: [
           {

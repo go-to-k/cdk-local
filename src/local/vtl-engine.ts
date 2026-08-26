@@ -158,7 +158,18 @@ export function buildDefaultUtil(): VtlUtil {
     }
     // Object / array — JSON-stringify to avoid the `[object Object]` trap.
     try {
-      return JSON.stringify(v);
+      // `?? ''` is load-bearing, not defensive: `JSON.stringify` RETURNS
+      // `undefined` (it does not throw) for a function, a symbol, or an
+      // object whose `toJSON` yields undefined, and TypeScript hides that
+      // because `JSON.stringify(unknown)` selects the `any` overload. All
+      // three are reachable from a template -- `$input.json` / `$input.path`
+      // / `$input.params` are own-property FUNCTIONS on the object
+      // `buildVtlInput` returns, so `$util.parseJson($input.params)` (the
+      // call parens forgotten) hands one straight in. Without the coalesce
+      // this returns `undefined` and every `.length` / `.replace` on the
+      // result throws a TypeError, escaping as something other than the
+      // `VtlEvaluationError` a host is documented to be able to `instanceof`.
+      return JSON.stringify(v) ?? '';
     } catch {
       return '';
     }
@@ -198,8 +209,39 @@ export function buildDefaultUtil(): VtlUtil {
       try {
         return JSON.parse(s);
       } catch (err) {
+        // NEVER interpolate the parser's own message here. V8 embeds a
+        // ~10-character prefix of the PARSED INPUT in `SyntaxError.message`
+        // (`Unexpected token 'h', "hunter2-my"... is not valid JSON`), and it
+        // appends `...` only past that window -- so a SHORT input is quoted
+        // in FULL rather than truncated. Under `start-api` the argument of
+        // `$util.parseJson(...)` is routinely `$input.body`, the incoming
+        // HTTP REQUEST BODY, which on a login endpoint carries the caller's
+        // password. The echo does not stop at the terminal either:
+        // `vtlFailure` in `rest-v1-integrations.ts` copies this message into
+        // the 502 RESPONSE BODY, sending the prefix back over the wire to
+        // whoever sent the request. Reported against the cdkd host as
+        // go-to-k/cdkd#2203.
+        //
+        // `err.name` is input-independent and safe as a discriminator, and
+        // the argument's LENGTH is reported because it is the one property of
+        // the input a developer can act on without being shown it. Note the
+        // length is that of the COERCED string, and `coerce` answers `''` for
+        // two different kinds of value: one `JSON.stringify` THROWS on (a
+        // circular object) and one it RETURNS `undefined` for (a function, a
+        // symbol, a `toJSON` yielding undefined). So a reported length of 0
+        // means "nothing was there to parse" and NOT necessarily "the caller
+        // sent an empty body". The count is in UTF-16 code units, unlike the
+        // sibling message in `rie-client.ts`, which counts BYTES.
+        //
+        // `'unknown'` rather than `'SyntaxError'` on the non-Error arm: that
+        // arm is unreachable today (this `JSON.parse` takes no reviver, so V8
+        // throws only a SyntaxError), and naming a class the throw was not
+        // would become a lie the moment it turns reachable.
+        const kind = err instanceof Error ? err.name : 'unknown';
         throw new VtlEvaluationError(
-          `$util.parseJson: invalid JSON input: ${err instanceof Error ? err.message : String(err)}`
+          `$util.parseJson: the argument is not valid JSON (${kind}; argument length ${s.length}). ` +
+            'The parser detail is withheld because it would echo a prefix of the parsed input, ' +
+            'which for a start-api request template can be the incoming HTTP request body.'
         );
       }
     },
@@ -908,7 +950,9 @@ function safeStringify(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
   try {
-    return JSON.stringify(v);
+    // See `coerce` above: `JSON.stringify` RETURNS `undefined` for a
+    // function / symbol / `toJSON`-returning-undefined rather than throwing.
+    return JSON.stringify(v) ?? '';
   } catch {
     return '';
   }
