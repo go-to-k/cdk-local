@@ -135,12 +135,24 @@ const PINNED_STACKS = [
 ];
 
 /**
- * Fixture sources that still default to `x86_64` and therefore still
- * emulate on an arm64 host. Empty means #569 is complete.
+ * The #569 BACKLOG: fixture sources that do not yet declare the host
+ * architecture. Empty means #569 is complete.
+ *
+ * "Does not declare the host architecture" covers two shapes, not one.
+ * Most of these simply omit `architecture` and so default to `x86_64`.
+ * `local-studio` is the other shape -- it hardcodes
+ * `lambda.Architecture.ARM_64`, which is native on an Apple Silicon dev
+ * host but makes an amd64 CI runner emulate instead, so it is wrong in
+ * the mirror-image way and still needs converting.
+ *
+ * This is a backlog, NOT the home for a NEW fixture. Anything created
+ * from `/create-integ` declares the host architecture from the start and
+ * belongs in `HOST_ARCHITECTURE_STACKS`; adding a new fixture here would
+ * defer the completion signal above forever.
  *
  * Listed rather than globbed so that converting one is a visible move
- * between two literal arrays, and so a NEW fixture cannot join this
- * bucket silently.
+ * between two literal arrays, and so a fixture cannot join this bucket
+ * silently.
  */
 const NOT_YET_CONVERTED = [
   'tests/integration/local-invoke-buildkit/lib/local-invoke-buildkit-stack.ts',
@@ -341,9 +353,10 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
         discovered,
         'fixture sources constructing a *Function( must be listed in exactly one of ' +
           'HOST_ARCHITECTURE_STACKS / PINNED_STACKS / NOT_YET_CONVERTED / NON_LAMBDA_ONLY. ' +
-          'A NEW fixture goes in NOT_YET_CONVERTED (or, once you have run it on an arm64 ' +
-          'host, HOST_ARCHITECTURE_STACKS). A path here that no longer exists should be ' +
-          'deleted from its bucket'
+          'A NEW fixture declares the host architecture from the start (see ' +
+          '.claude/skills/create-integ/SKILL.md) and goes in HOST_ARCHITECTURE_STACKS -- ' +
+          'NOT_YET_CONVERTED is the #569 backlog, not a landing spot for new work. ' +
+          'A path here that no longer exists should be deleted from its bucket'
       ).toEqual(accounted);
     });
 
@@ -356,6 +369,48 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       ];
       const dupes = all.filter((p, i) => all.indexOf(p) !== i);
       expect(dupes, 'these paths appear in more than one bucket').toEqual([]);
+    });
+
+    it('recognizes every constructor spelling in EVERY fixture, not just the converted ones', () => {
+      // The per-fixture spelling check below runs only inside the
+      // converted loop, so an unrecognized spelling anywhere else was a
+      // silent pass -- and those files are precisely the ones the
+      // remaining #569 batches are about to convert. Checking the whole
+      // discovered set means a spelling this fence cannot read is caught
+      // when it is WRITTEN rather than when its fixture is converted.
+      const offenders: string[] = [];
+      for (const relPath of discoverFixtureSources()) {
+        for (const m of read(relPath).matchAll(ANY_FUNCTION_CTOR)) {
+          const spelling = normalizeCtor(m[0]);
+          if (!LAMBDA_CTORS.has(spelling) && !NON_LAMBDA_CTORS.has(spelling)) {
+            offenders.push(`${relPath}: ${spelling}`);
+          }
+        }
+      }
+      expect(
+        offenders,
+        'constructor spelling(s) this fence does not understand. Write the call as one of ' +
+          `[${[...LAMBDA_CTORS.keys()].join(', ')}], or add it to NON_LAMBDA_CTORS if the ` +
+          'construct genuinely is not a Lambda. Left unlisted, the architecture check ' +
+          'would silently skip it once this fixture is converted'
+      ).toEqual([]);
+    });
+
+    it('keeps the pinned list exactly the reviewed set', () => {
+      // The hardcode failure tells contributors to "move it to
+      // PINNED_STACKS instead", which makes this array an escape hatch
+      // from every per-construct assertion: a regressed fixture moved
+      // here passes with any `pin` and any `why`. NON_LAMBDA_CTORS got a
+      // change-detector for exactly this reason; this array needs the
+      // same one, or the advice in that message is a way out.
+      expect(
+        PINNED_STACKS.map((p) => p.relPath),
+        'PINNED_STACKS exempts a fixture from declaring the host architecture. Adding one ' +
+          'is a claim that its handler is a PREBUILT binary compiled for a specific ' +
+          'architecture -- update this assertion in the same commit so it is reviewed'
+      ).toEqual([
+        'tests/integration/local-invoke-provided/lib/local-invoke-provided-stack.ts',
+      ]);
     });
 
     it('keeps the non-Lambda allowlist exactly the reviewed set', () => {
