@@ -39,6 +39,14 @@ if ! PATH=/usr/bin:/bin command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# `python3` is used by the second `fail_closed` case. Its absence fails LOUDLY
+# rather than vacuously, but it is a dependency of this file either way, so it
+# is declared here next to `jq` instead of being an undocumented assumption.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "FATAL: python3 is required by the fail_closed cases below." >&2
+  exit 1
+fi
+
 pass=0; fail=0
 
 # run_case <name> <expect_exit> <command>
@@ -78,6 +86,30 @@ run_case "absolute markgate path"                     2 '/opt/homebrew/bin/markg
 run_case "second stage of a longer pipeline"          2 'mise exec -- markgate verify integ | grep -v x | wc -l'
 run_case "leading env assignment"                     2 'FOO=1 mise exec -- markgate verify integ | cat'
 run_case "not the first segment of the list"          2 'vp run check && markgate verify check | tail -1'
+# MULTI-LINE. Every other case here is single-line, and that was a real hole:
+# mutating the segmenter to see only the FIRST line left this suite 38/38 and
+# gate-command-recognition 121/121 green while both spellings below ACCEPTed.
+# Multi-line bash is what agents write most.
+run_case "multi-line: pipe on the second line"        2 'cd /w/t
+mise exec -- markgate verify integ | tail -5
+echo done'
+run_case "backslash continuation before the pipe"     2 'mise exec -- markgate verify integ \
+  | tail -5'
+run_case "multi-line: pipe on the third line"         2 'set -u
+echo starting
+mise exec -- markgate set integ 2>&1 | tee /tmp/l'
+# `markgate run` is `verify || (cmd && set)` sugar, so it has the identical
+# property: the answer is an exit code and the fresh path is silent.
+run_case "run piped (verify||set sugar, same defect)" 2 'mise exec -- markgate run check -- vp run check | tail -5'
+# `&>` is the sibling of the `2>&1` repro at the top of this block. Deleting its
+# guard in the segmenter used to leave this whole suite green.
+run_case "&> before the pipe"                         2 'mise exec -- markgate verify integ &> /dev/null | tail -5'
+# `set -o pipefail` DOES propagate the rc, so this refusal is a deliberate
+# conservative call rather than an oversight -- pinned so the decision is
+# visible if anyone revisits it. The gate reads one command text and cannot
+# know whether pipefail is still in effect when the pipeline runs, and the
+# non-piped rewrite is free.
+run_case "pipefail still refused (by design)"         2 'set -o pipefail; mise exec -- markgate verify check | tail -5'
 
 echo
 echo "== ACCEPT: the exit status is still markgate's =============================="
@@ -102,6 +134,15 @@ run_case "an unrelated pipe"                          0 'git status --short | he
 run_case "an unrelated pipe naming markgate as data"  0 'grep -rn markgate .claude/hooks | head'
 run_case "markgate install is not a verdict verb"     0 'mise exec -- markgate install | tail'
 run_case "empty command"                              0 ''
+# The false block the launcher prefix used to cause: auditing THIS gate is the
+# most likely reason anyone types `markgate verify` as grep input.
+run_case "grepping for the piped form"                0 'mise exec -- rg markgate verify .claude | head'
+run_case "grepping with the form quoted"              0 'mise exec -- grep -rn "markgate verify" .claude | head'
+# Multi-line ACCEPT, so the multi-line REFUSE cases above cannot be satisfied by
+# a mutation that simply refuses everything spanning a newline.
+run_case "multi-line, un-piped verdict"               0 'cd /w/t
+mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?
+echo "[rc=$rc]"'
 
 echo
 echo "== the harness itself ======================================================="

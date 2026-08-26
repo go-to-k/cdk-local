@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # markgate-pipe-gate.sh
 #
-# PreToolUse hook. Blocks a Bash call in which `markgate verify <gate>` or
-# `markgate set <gate>` feeds a `|` pipeline, because there `$?` is the LAST
-# STAGE's exit status and markgate's verdict is thrown away.
+# PreToolUse hook. Blocks a Bash call in which `markgate verify <gate>`,
+# `markgate set <gate>` or `markgate run <gate> -- <cmd>` feeds a `|` pipeline,
+# because there `$?` is the LAST STAGE's exit status and markgate's verdict is
+# thrown away. (`run` is `verify || (cmd && set)` sugar, so it carries the same
+# property.)
 #
 # WHY THIS IS A GATE AND NOT A NOTE (go-to-k/cdk-local#571). markgate answers
 # with an exit code and prints NOTHING on the fresh path, so a healthy run looks
@@ -35,6 +37,12 @@
 #   markgate verify <gate> && …      same -- `&&` is a status test.
 #   echo x | markgate verify <gate>  the LAST stage of a pipeline; `$?` there
 #                                    really is markgate's own.
+#
+# `set -o pipefail; markgate verify <gate> | tail` IS refused, and that is a
+# deliberate conservative call rather than an oversight: pipefail does
+# propagate the status, but this gate reads one command's TEXT and cannot know
+# whether pipefail is still in effect when the pipeline actually runs, and the
+# non-piped rewrite costs nothing. Pinned by a case in the test file.
 #   vp run <task> | tail             same pipeline trap, but `vp` PRINTS its
 #                                    failure, so the output still carries the
 #                                    verdict. Silence on failure is what makes
@@ -75,7 +83,7 @@ cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 gate_matches_piped "$cmd" "$GATE_RE_MARKGATE_VERDICT" || exit 0
 
 cat >&2 <<'EOF'
-Blocked by markgate-pipe-gate: `markgate verify` / `markgate set` is feeding a
+Blocked by markgate-pipe-gate: `markgate verify` / `set` / `run` is feeding a
 pipe, so the exit status you would read is the LAST STAGE's, not markgate's.
 
 markgate prints NOTHING when a marker is fresh, so a piped STALE marker is

@@ -1261,7 +1261,7 @@ vp run runtime:smoke
   a newer `.markgate.yml` for every gate at once, and the hook hides the
   parse error behind a misleading "run /check first".
 
-- **Never pipe `markgate verify` / `markgate set`** — read its verdict
+- **Never pipe `markgate verify` / `set` / `run`** — read its verdict
   with a command substitution, where `$?` is markgate's own status:
 
   ```bash

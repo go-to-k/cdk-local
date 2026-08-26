@@ -88,9 +88,17 @@ gate_segments_raw() {
           # test review).
           if (c == "\\") { out = out c substr(line, i + 1, 1); i++; continue }
           if ((c == "\"" || c == "'"'"'") && c != ignore_q) { q = c; out = out c; continue }
-          if (c == "$" && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
+          # These three consume their `(` with `i++`, so it never reaches the
+          # generic paren counter above. A NESTED substitution therefore closed
+          # the OUTER one a paren early, which broke both ways:
+          # `--body "ver $(echo $(date)) then git commit -m z"` re-emitted the
+          # quote too soon and every git/gh gate then REFUSED it, while
+          # `echo "$(echo $(date); gh pr merge 1 --squash)"` still matched
+          # nothing. Count it here instead. The `stype` test matters: a backtick
+          # substitution carries `sparen = 0` and must not be paren-tracked.
+          if (c == "$" && substr(line, i + 1, 1) == "(") { if (sdepth > 0 && stype[sdepth] == "(") sparen[sdepth]++; out = out "\n"; i++; continue }
           # Process substitution runs its body too: `diff <(git commit) …`.
-          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { out = out "\n"; i++; continue }
+          if ((c == "<" || c == ">") && substr(line, i + 1, 1) == "(") { if (sdepth > 0 && stype[sdepth] == "(") sparen[sdepth]++; out = out "\n"; i++; continue }
           if (c == "`") { out = out "\n"; continue }
           # `||` is a logical OR, not a pipe: there the left exit status is
           # what DECIDES whether the right side runs, so it is never lost. Only
@@ -272,7 +280,7 @@ gate_unquote_span() {
 # a pipe, and dropping the argument there would have made the recursion the one
 # blind spot of the piped-segment scan.
 gate_segments() {
-  local segment mark="${2:-}"
+  local segment mark="${2:-}" piped
   while IFS= read -r segment; do
     # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
     # replacement means the MATCHED TEXT, so the placeholder survived and a
@@ -285,6 +293,17 @@ gate_segments() {
     segment="${segment//"$GATE_SEP_SEMI"/;}"
     segment="${segment//"$GATE_SEP_PIPE"/|}"
     segment="${segment//"$GATE_SEP_SUBST"/$}"
+    # Detach the pipe mark BEFORE `gate_strip_prefix` and re-attach after.
+    # Left in place it is the segment's last character, so the trailing-space
+    # and trailing-`)` trims both no-op: `markgate verify a | tail` came out as
+    # `"markgate verify a "` and `(markgate verify a) | tail` as
+    # `"markgate verify a)"`. Harmless for the start-anchored regexes in use
+    # today, silently fatal for the first `$`-anchored one anybody writes.
+    piped=""
+    if [ -n "$mark" ] && [[ "$segment" == *"$mark"* ]]; then
+      piped="$mark"
+      segment="${segment//"$mark"/}"
+    fi
     segment=$(gate_strip_prefix "$segment")
     # `bash -c "<cmd>"` RUNS its argument, and that argument is a command LIST:
     # matching it as ONE segment missed `bash -c "cd /w && git commit"`
@@ -297,7 +316,7 @@ gate_segments() {
     # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
     # false test aborts the whole function, and the segments after it are never
     # emitted — a silent fail-open that depends on which gate sources this.
-    if [ -n "$segment" ]; then printf '%s\n' "$segment"; fi
+    if [ -n "$segment" ]; then printf '%s\n' "$segment$piped"; fi
   done < <(gate_segments_raw "$1" "$mark")
 }
 
@@ -422,7 +441,8 @@ GATE_RE_GH_ISSUE_EDIT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+edit([[:space
 GATE_RE_GH_ISSUE_COMMENT="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+comment([[:space:]]|$)"
 GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 
-# markgate-pipe-gate: the two markgate verbs whose whole answer is an EXIT CODE.
+# markgate-pipe-gate: the markgate verbs whose whole answer is an EXIT CODE.
+# `run` is `verify || (cmd && set)` sugar, so it has the identical property.
 # `verify` prints NOTHING on the fresh path, so "no output, rc=0" is exactly
 # what a healthy run looks like -- and exactly what `markgate verify integ
 # 2>&1 | tail -5` reports for a STALE marker, because `$?` after a pipeline is
@@ -436,8 +456,13 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # binary. It is anchored at the segment START like every other verb here, so a
 # mention inside `echo`/`printf` is not a match -- the launcher is the ONLY
 # thing allowed to precede `markgate`.
-GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+[^[:space:]]+)*[[:space:]]+)?"
-GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set)([[:space:]]|$)"
+# The interposed run is restricted to things that can only be launcher
+# arguments -- `--`, a flag, or a `tool@version` pin. An unrestricted
+# `[^[:space:]]+` run instead made `mise exec -- rg markgate verify .claude |
+# head` a FALSE BLOCK, which is a command someone auditing this very gate would
+# type.
+GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|-[^[:space:]]*|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
+GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set|run)([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
 # PATH ONLY -- it says nothing about the HTTP method, and the collection is also
 # the READ endpoint (`gh api repos/<o>/<r>/issues` lists issues). An earlier

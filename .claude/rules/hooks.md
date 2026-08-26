@@ -226,9 +226,11 @@ The hooks split into three classes:
   unauthenticated.
 
 - **`markgate-pipe-gate.sh`** blocks a Bash call in which
-  `markgate verify <gate>` or `markgate set <gate>` feeds a `|`
-  pipeline, because there `$?` is the LAST STAGE's status and
-  markgate's verdict is discarded. It is the one gate here selected on
+  `markgate verify <gate>`, `markgate set <gate>` or `markgate run
+  <gate> -- <cmd>` feeds a `|` pipeline, because there `$?` is the LAST
+  STAGE's status and markgate's verdict is discarded. (`run` is
+  `verify || (cmd && set)` sugar, so it has the identical property; it
+  is unused in this repo today but it is in `markgate --help`.) It is the one gate here selected on
   a command word that is neither `git` nor `gh` (`Bash(*markgate*)`),
   and the only one that never runs the tool it is named after — the
   check is a static read of the command text.
@@ -269,6 +271,11 @@ The hooks split into three classes:
   `markgate verify <gate> || echo …` and `&& …` (`||` / `&&` READ the
   status rather than dropping it); and `… | markgate verify <gate>`
   (the last stage of a pipeline, where `$?` really is markgate's).
+  `set -o pipefail; markgate verify <gate> | tail` IS refused even
+  though pipefail propagates the status — the gate reads one command's
+  TEXT and cannot know pipefail is still in effect when the pipeline
+  runs, and the non-piped rewrite is free. That call is conservative by
+  choice and pinned by its own case.
 
   Implemented on `gate_matches_piped` / `gate_piped_segments` in
   `_command-match.sh`, which needed the separator pass to stop

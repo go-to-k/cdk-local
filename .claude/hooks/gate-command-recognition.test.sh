@@ -140,6 +140,8 @@ run_case "markgate-pipe: || is not a pipe"      0 markgate-pipe-gate.sh 'mise ex
 run_case "markgate-pipe: status may be piped"   0 markgate-pipe-gate.sh 'mise exec -- markgate status integ | awk /state/'
 run_case "markgate-pipe: unrelated pipe"        0 markgate-pipe-gate.sh 'git status --short | head'
 run_case "markgate-pipe: quoted mention"        0 markgate-pipe-gate.sh 'echo \"markgate verify integ | tail\"'
+run_case "markgate-pipe: run is a verdict verb"  2 markgate-pipe-gate.sh 'mise exec -- markgate run check -- vp run check | tail -5'
+run_case "markgate-pipe: grepping for the form" 0 markgate-pipe-gate.sh 'mise exec -- rg markgate verify .claude | head'
 # ...and the other direction: a piped markgate is not any OTHER gate's business.
 # Without this, moving the check into (say) check-gate would look identical.
 run_case "check-gate: piped markgate is not its verb"  0 check-gate.sh 'mise exec -- markgate verify integ | tail -5'
