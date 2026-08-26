@@ -72,6 +72,11 @@
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
+import {
+  describeCredentialLoadFailure,
+  flattenToOneLine,
+  stringifyThrown,
+} from './credential-error.js';
 import { buildIdentityHash } from './authorizer-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
@@ -368,11 +373,19 @@ export async function verifySigV4(
     // Two axes of three say withhold, so the `warn` carries a clamped class
     // name plus a length -- the shape `ecs-secrets-resolver.ts` already uses
     // for the parse failure it must not echo. The class name is made
-    // input-independent by the clamp in
-    // {@link describeCredentialLoadFailure} (it is NOT independent on its
-    // own -- see the note there). The LENGTH is the one input-derived field
-    // that is kept, deliberately, and its cost is weighed in that same
-    // JSDoc.
+    // input-independent by `clampErrorName` in
+    // {@link file://./credential-error.ts} (it is NOT independent on its
+    // own -- see the note there). The LENGTH is the one
+    // input-derived field that is kept, deliberately, and its cost is
+    // weighed in {@link describeCredentialLoadFailure}'s JSDoc.
+    //
+    // This site withholds UNCONDITIONALLY, and the nine #570 sites in
+    // `src/cli/commands/` do not. The difference is what each `catch`
+    // wraps: this one wraps `loadCredentials()` and nothing else, so every
+    // error reaching it is a credential-chain error with no diagnosis
+    // cdk-local asked for. Those wrap an STS call cdk-local made, where a
+    // modeled service exception -- `ExpiredTokenException`, `AccessDenied` -- is the
+    // answer the user needs. See {@link file://./credential-error.ts}.
     //
     // Deliberately NOT done: stripping the `Command failed:` first line and
     // keeping the rest. That enumerates one known-bad shape and loses the
@@ -380,9 +393,15 @@ export async function verifySigV4(
     // passphrase prompt or a token, and the next loader to grow its own
     // format would not be covered at all. Define the safe state positively
     // instead, which is what "input-independent" is.
+    // FLATTENED, for the reason `describeAwsFailureForWarn` gives at its own
+    // debug line: this stream is not a private channel. It is the same stdout
+    // `cdkl studio` mirrors into the log ring it serves over HTTP, so a `\n` in
+    // the chain's message forges a line there under `--verbose` exactly as it
+    // would at `warn`. Not capped -- reading the withheld message whole is why
+    // the line exists.
     logger.debug(
       `AWS_IAM authorizer: the AWS credential chain's own failure message was: ` +
-        `${stringifyCredentialLoadFailure(err)}`
+        `${flattenToOneLine(stringifyThrown(err))}`
     );
     const reason = describeCredentialLoadFailure(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
@@ -658,89 +677,6 @@ export function redactSignature(signature: string): string {
     return `<withheld: ${signature.length} characters that are not a signature>`;
   }
   return signature;
-}
-
-/**
- * Describe a credential-chain failure for a default-level log line WITHOUT
- * relaying the chain's own message (issue #564).
- *
- * The message is withheld because of what a credential-chain error CAN
- * carry: `@aws-sdk/credential-provider-process` copies the rejection of
- * `promisify(child_process.exec)` — Node's
- * `Command failed: <command line>\n<stderr>` — into the error it throws, so
- * a passphrase on a `credential_process` command line is already inside a
- * chain error object. On the SDK versions this repo resolves today that
- * object does not actually reach the caller (the chain swallows it and ends
- * on a generic message), which makes this defense in depth rather than a
- * live disclosure. The measurement, and the full reasoning for withholding
- * at `warn` while keeping the text at `debug`, are at the call site in
- * {@link verifySigV4}.
- *
- * What is reported instead is input-INDEPENDENT: `err.name` is set by the
- * throwing class rather than derived from anything the loader read, which is
- * the property that makes quoting it safe, and is the same discriminator
- * `ecs-secrets-resolver.ts` reports for the JSON parse failure it must not
- * echo. `'unknown'` rather than a guessed class name for a non-`Error`
- * throw, so the field never names a class the throw was not -- and the same
- * `'unknown'` for a `name` that is not a bare identifier, so the guarantee
- * does not rest on every provider following the convention.
- *
- * The LENGTH is reported, unlike in `ecs-secrets-resolver.ts`, and the
- * difference is deliberate: there the user already knows which secret it is
- * and can read the value at its source, so a character count would be
- * disclosure buying nothing. Here the user cannot see the withheld message
- * at all, and the count is what separates a one-line
- * `Could not load credentials from any providers` from a multi-hundred-
- * character `Command failed:` dump — which is what tells them whether their
- * `credential_process` even ran. It is the same choice
- * {@link redactAuthorizationSegment} makes when it withholds.
- *
- * The count is a side channel, and a narrow one: against a KNOWN
- * `credential_process` template the number is `constant + len(passphrase)`,
- * so it yields the passphrase's LENGTH. That is accepted rather than
- * overlooked. It buys the one thing the user cannot otherwise see, the
- * `Command failed:` dump is not reachable today anyway (see the call site),
- * and bucketing the number would blur exactly the boilerplate-vs-dump
- * distinction the field exists for.
- */
-export function stringifyCredentialLoadFailure(err: unknown): string {
-  // `String(err)` is not total: a `Symbol` throw, or an object with a null
-  // prototype, raises `TypeError` on conversion. That throw would escape the
-  // `catch` in {@link verifySigV4} and reject the whole authorizer pass -- a
-  // 500 in place of the warn-and-pass the branch exists to produce. One
-  // helper rather than two expressions, so the length reported in the `warn`
-  // and the text printed at `debug` can never describe different strings.
-  try {
-    return err instanceof Error ? String(err.message) : String(err);
-  } catch {
-    return '[unstringifiable throw]';
-  }
-}
-
-export function describeCredentialLoadFailure(err: unknown): string {
-  const rawKind = err instanceof Error ? err.name : 'unknown';
-  // `err.name` comes off the same third-party object whose `message` this
-  // function exists to withhold, and it is NOT always set by the throwing
-  // class: for an AWS service exception it is WIRE-DERIVED. `@aws-sdk/core`
-  // builds it from the `x-amzn-errortype` header / the body's `code` /
-  // `__type`, through `sanitizeErrorCode`, which splits on ',' ':' and '#'
-  // and does nothing else -- no length cap, no newline stripping (read at
-  // `@aws-sdk/core@3.974.13` protocols/index.js:324). Such an exception can
-  // reach this catch, because `credential-provider-ini` calls the STS
-  // `roleAssumer` unwrapped. So a hostile or hijacked credential endpoint
-  // (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, a redirected IMDS) answering with
-  // `x-amzn-errortype: Foo\nWARN: signature verified` could FORGE log lines
-  // into the very `warn` stream -- and into the studio ring served over HTTP
-  // -- that this change exists to keep clean.
-  //
-  // The clamp is therefore not hypothetical hardening: a bare identifier of
-  // at most 64 characters is what every real class name is and what no
-  // injected value can be. Anything else degrades to `unknown`. Note the
-  // wrong fix: `err.name.slice(0, 64)` keeps the newline, so the forgery
-  // survives truncation.
-  const kind = /^[A-Za-z0-9_.-]{1,64}$/.test(rawKind) ? rawKind : 'unknown';
-  const length = stringifyCredentialLoadFailure(err).length;
-  return `${kind}; ${length}-character message withheld, logged at debug level under --verbose`;
 }
 
 /**

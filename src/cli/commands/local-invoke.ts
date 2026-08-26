@@ -13,6 +13,7 @@ import {
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -693,7 +694,16 @@ export function envHasCrossStackIntrinsic(
   return false;
 }
 
-async function resolvePseudoParametersForInvoke(
+/**
+ * Build the AWS pseudo-parameter bag (`${AWS::AccountId}` / `${AWS::Region}` /
+ * partition / URL suffix) that `cdkl invoke`'s env-var substitution consumes.
+ *
+ * Exported so the issue #570 site-level test can drive the STS failure branch
+ * with a mocked STS client -- the same reason `resolveLambdaContainerEnv`
+ * below is exported. A helper being correct says nothing about whether a
+ * given site actually routes through it.
+ */
+export async function resolvePseudoParametersForInvoke(
   stackRegion: string | undefined,
   options: { region?: string; profile?: string }
 ): Promise<
@@ -721,8 +731,12 @@ async function resolvePseudoParametersForInvoke(
       sts.destroy();
     }
   } catch (err) {
+    // Issue #570: never interpolate the SDK error's `message` into this
+    // default-level line -- see `describeAwsFailureForWarn` in
+    // `src/local/credential-error.ts` for which half of it prints here and
+    // which is withheld to `debug`.
     logger.warn(
-      `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'Substitution will be skipped; affected env entries will be dropped with per-key warnings.'
     );
   }
@@ -1037,9 +1051,27 @@ export async function resolveLambdaContainerEnv(
       if (stsRegion) dockerEnv['AWS_REGION'] = stsRegion;
       assumeSucceeded = true;
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      // Issue #570: not on the issue's list of six, but the same class --
+      // `assumeRoleCredentials` resolves the credential chain and then calls
+      // STS, so both populations land here. See `describeAwsFailureForWarn`
+      // in `src/local/credential-error.ts`.
+      //
+      // `resolvedAssumeRoleArn` KEEPS printing. It is the developer's own
+      // `--assume-role` value or an ARN read from their own deployed stack
+      // state, and an ARN is a public identifier -- the same call issue #555
+      // made for the access-key-id it left quoted. It is also load-bearing
+      // for `tests/integration/local-studio/verify.sh`, which proves
+      // `--assume-role` threaded from the CLI to the spawned child by
+      // finding the ARN in the studio log ring.
+      //
+      // It is FLATTENED all the same. The bare `--assume-role` form resolves
+      // the ARN from a live `GetFunctionConfiguration` response, so under this
+      // file's own hijacked-endpoint model it is wire-derived text sitting on
+      // the very line the helper beside it just made forge-proof. On a real
+      // ARN the call is a no-op, so the integ grep is unaffected.
+      const reason = describeAwsFailureForWarn(err, 'STS AssumeRole');
       logger.warn(
-        `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(resolvedAssumeRoleArn)}) failed: ${reason}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -1078,12 +1110,25 @@ function materializeInlineCode(handler: string, source: string, fileExtension: s
   return dir;
 }
 
-function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
+/**
+ * Suggest `--assume-role` when the deployed function's execution role is
+ * known and the user did not ask for it.
+ *
+ * Exported for the issue #570 ARN-flatten test. This is the MOST reachable of
+ * the sites that print a wire-derived ARN: its caller is guarded on
+ * `options.assumeRole === undefined`, so it fires on a plain
+ * `cdkl invoke --from-cfn-stack <fn>` with no role flag at all. The ARN comes
+ * from the same `resolveExecutionRoleArnFromState` whose other readers are
+ * flattened, `info` is a default level, and `cdkl studio` splits an invoke
+ * child's stdout on `\n` and emits every line as its own ring entry -- so an
+ * unflattened newline here is two entries, the second entirely attacker-chosen.
+ */
+export function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
   const logger = getLogger();
   const roleArn = resolveExecutionRoleArnFromState(state, logicalId);
   if (roleArn) {
     logger.info(
-      `Hint: the deployed function uses execution role ${roleArn}. ` +
+      `Hint: the deployed function uses execution role ${flattenToOneLine(roleArn)}. ` +
         `Re-run with --assume-role to invoke under the deployed function's narrow permissions.`
     );
   }
@@ -1132,7 +1177,9 @@ export async function resolveAssumeRoleArnForLambda(
   }
   const fromState = resolveExecutionRoleArnFromState(stateForRoleHint, lambdaLogicalId);
   if (fromState) {
-    logger.info(`--assume-role: auto-resolved execution role from state: ${fromState}`);
+    logger.info(
+      `--assume-role: auto-resolved execution role from state: ${flattenToOneLine(fromState)}`
+    );
     return fromState;
   }
   const fnPhysicalId = stateForRoleHint.resources[lambdaLogicalId]?.physicalId;
@@ -1143,8 +1190,19 @@ export async function resolveAssumeRoleArnForLambda(
     // carries the full ARN.
     const liveArn = await stateProvider.resolveLambdaExecutionRoleArn(fnPhysicalId);
     if (liveArn) {
+      // Issue #570: FLATTENED, and this site is the reason the failure warns
+      // below are not enough on their own. `liveArn` is the deployed
+      // `Configuration.Role` straight off a `GetFunctionConfiguration` response,
+      // validated only by `startsWith('arn:')`, and `info` is a DEFAULT level
+      // that `cdkl studio` mirrors into an HTTP-served log ring. This fires on
+      // SUCCESS, so it is strictly more reachable than the failure path.
+      //
+      // Deliberately not LENGTH-capped here: unlike a service message, an ARN
+      // has a shape, so the bound belongs at the `startsWith('arn:')`
+      // resolution point rather than at the log line. Recorded in issue #579
+      // (which carries the ARN-bound paragraph as well as the relay list).
       logger.info(
-        `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${liveArn}`
+        `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${flattenToOneLine(liveArn)}`
       );
       return liveArn;
     }

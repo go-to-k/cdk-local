@@ -927,9 +927,12 @@ Outcomes:
   that one may be the federated signer you need told about.
 
   When the failure is that **no local credentials resolved at all**, the warn
-  names the failure's class and the length of the credential chain's message
+  names the failure's class (plus a system-error code such as `ENOTFOUND` when
+  the failure carries one) and the length of the credential chain's message,
   but not the message itself. The full text is printed at debug level -- run
-  with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it. The reason for holding it back is that the
+  with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it, folded onto a
+  single line (a line break in a message cdk-local does not control would
+  otherwise forge a log line in the panel `cdkl studio` serves). The reason for holding it back is that the
   chain's error text is not cdk-local's to vouch for: the AWS SDK's
   `credential_process` provider copies Node's `Command failed: <command
   line>` into the error it raises, and a `credential_process` command line is
@@ -939,6 +942,14 @@ Outcomes:
   a default-level line that `cdkl studio` also mirrors into the log ring it
   serves over HTTP is the wrong place to relay an error string cdk-local does
   not control, and `--verbose` costs you nothing.
+
+  The STS calls behind `${AWS::AccountId}` resolution and `--assume-role` are
+  governed by the same policy, with one difference: those wrap a call
+  cdk-local made, so when STS itself answers (`ExpiredTokenException`,
+  `AccessDenied`) the message is the diagnosis and keeps printing. See
+  [Troubleshooting](./troubleshooting.md#an-sts-warn-says-the-message-was-withheld).
+  Here there is no such call — the failure is always the local chain's — so
+  the message is withheld unconditionally.
 
 #### OAC-fronted Function URLs (auto-relaxed)
 

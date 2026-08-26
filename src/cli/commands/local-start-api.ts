@@ -15,6 +15,7 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -1993,8 +1994,13 @@ export function resolveStartApiAssumeRoleArn(args: {
   if (stateBundle) {
     const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
     if (fromState) {
+      // Issue #570: FLATTENED. Under `--from-cfn-stack` the state record is
+      // built from CloudFormation responses, so this ARN is wire-derived and
+      // `info` is a default level studio mirrors into an HTTP-served ring.
       getLogger().info(
-        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${fromState}`
+        `--assume-role: auto-resolved execution role for '${logicalId}' from state: ${flattenToOneLine(
+          fromState
+        )}`
       );
       return fromState;
     }
@@ -3662,8 +3668,13 @@ export async function loadStateForRoutedStacks(
  *
  * Region precedence: `--region` > `AWS_REGION` > `AWS_DEFAULT_REGION` >
  * the state record's region (returned by the active `LocalStateProvider`).
+ *
+ * Exported so the issue #570 site-level test can drive the STS failure
+ * branch with a mocked STS client. A helper being correct says nothing about
+ * whether a given site actually routes through it, so each of the nine
+ * converted sites is driven separately.
  */
-async function resolvePseudoParametersForStartApi(
+export async function resolvePseudoParametersForStartApi(
   stateRegion: string,
   options: LocalStartApiOptions
 ): Promise<PseudoParameters | undefined> {
@@ -3683,8 +3694,12 @@ async function resolvePseudoParametersForStartApi(
       sts.destroy();
     }
   } catch (err) {
+    // Issue #570: never interpolate the SDK error's `message` into this
+    // default-level line -- see `describeAwsFailureForWarn` in
+    // `src/local/credential-error.ts` for which half of it prints here and
+    // which is withheld to `debug`.
     logger.warn(
-      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${err instanceof Error ? err.message : String(err)}. ` +
+      `--from-state: resolver needs \${AWS::AccountId} but STS GetCallerIdentity failed: ${describeAwsFailureForWarn(err, 'STS GetCallerIdentity')}. ` +
         'Substitution will be skipped for AWS::AccountId; affected env entries will be dropped with per-key warnings.'
     );
   }
