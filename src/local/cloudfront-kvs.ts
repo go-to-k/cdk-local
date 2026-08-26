@@ -137,6 +137,22 @@ function makeHandle(source: KvsDataSource): CloudFrontKvsHandle {
         try {
           return JSON.parse(value) as unknown;
         } catch (err) {
+          // The parser message carries a prefix of the parsed input (V8 embeds
+          // one in `SyntaxError.message`, quoting a short input in FULL), and
+          // that is deliberately KEPT here. Reviewed against issue #554's
+          // criterion -- "does the throwing operation consume material the
+          // library RESOLVED from a secret / parameter store?" -- and the
+          // answer is no on both bindings this handle can be built over:
+          // `createLocalFileKvsDataSource` reads the developer's OWN
+          // `--kvs-file` JSON, and the `--from-cfn-stack` binding reads a
+          // deployed CloudFront KeyValueStore, a plaintext edge-config store
+          // rather than a secret store. Nor does the echo reach the wire the
+          // way the `$util.parseJson` one did (PR #556): a rejected
+          // `cf.kvs()` read propagates out of the function sandbox to
+          // `cloudfront-server.ts`'s top-level handler, which logs it and
+          // answers a FIXED 500 body. Echoing the parser detail is what makes
+          // a malformed stored value diagnosable, so it stays. Re-raising
+          // this site needs one of those three facts to have changed.
           throw new Error(
             `cf.kvs().get('${key}', { format: 'json' }): value is not valid JSON: ${
               err instanceof Error ? err.message : String(err)
@@ -191,6 +207,11 @@ export function createLocalFileKvsDataSource(args: {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // Parser detail KEPT, same review as the `format: 'json'` site above
+    // (issue #554). What is parsed here is a file the developer wrote and
+    // named on their own command line, not material this library resolved
+    // from a secret / parameter store, and the message names that file --
+    // so the quoted fragment is how they find the syntax error in it.
     throw new Error(
       `--kvs-file '${args.id}=${args.filePath}': not valid JSON: ${
         err instanceof Error ? err.message : String(err)
