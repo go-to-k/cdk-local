@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # stop-unmerged-lane-warn.sh
 #
-# Stop hook. `stop-warn.sh` next to it catches UNCOMMITTED work in the main
-# tree. This catches the other, quieter half: a feature worktree whose branch
-# is COMMITTED but still ahead of `origin/main` -- a lane that is finished as
-# far as the editor is concerned and unfinished as far as the repo is.
+# Stop hook. It catches the quiet half of unfinished work: a feature worktree
+# whose branch is COMMITTED but still ahead of `origin/main` -- a lane that is
+# finished as far as the editor is concerned and unfinished as far as the repo
+# is. (The sibling cdkd repo pairs this with a `stop-warn.sh` covering the
+# UNCOMMITTED half in the main tree. This repo has no such hook, so do not read
+# the pair as coverage here; an earlier revision of this comment named it as if
+# it sat next to this file.)
 #
 # Why this is a hook rather than another sentence. CLAUDE.md already says a
 # NOT-CLOSEABLE verdict is a to-do list and not a stopping point, and already
@@ -22,6 +25,14 @@
 # alone separates "there is unmerged work here" from "there is not".
 set -u
 
+# BASH_SOURCE resolves to whichever checkout this copy of the hook lives in --
+# in a linked worktree that is the LANE, not the main tree. That is fine as a
+# place to run `git` from (every worktree shares one object store and one
+# `origin/main`), but it must NOT be used to decide which worktree to skip: the
+# session ending inside its own lane is the case this hook exists for, and an
+# earlier revision skipped exactly that one. Measured from a lane 5 commits
+# ahead: the hook printed nothing. The main tree is excluded by BRANCH below
+# (`main`/`master`), which is the property that actually identifies it.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO" 2>/dev/null || exit 0
 
@@ -33,7 +44,6 @@ git rev-parse --verify origin/main >/dev/null 2>&1 || exit 0
 lanes=""
 while IFS= read -r wt; do
   [ -n "$wt" ] || continue
-  [ "$wt" = "$REPO" ] && continue
   br=$(git -C "$wt" branch --show-current 2>/dev/null) || continue
   [ -n "$br" ] || continue
   case "$br" in main | master) continue ;; esac
@@ -49,7 +59,10 @@ msg="WARNING: unmerged lane(s) still open -- a NOT-CLOSEABLE verdict is a TO-DO 
 Each branch below is committed but not on origin/main. If any is YOURS, you are not done: rebase, run the
 gates, open the PR, merge. If one belongs to another session, say which and why, rather than leaving it
 unexplained. And if you are ending the turn with nothing that will re-invoke you, the honest label is
-STOPPED, not WAITING."
+STOPPED, not WAITING.
+One false positive is expected and is cheap to clear: this repo SQUASH-merges, so a merged branch never
+becomes an ancestor of origin/main and keeps reading as ahead. If a lane below is already merged, the
+remaining work is to remove its worktree and delete the branch -- not to open another PR."
 
 payload=$(printf '%s\n%s' "$msg" "$lanes" |
   python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')

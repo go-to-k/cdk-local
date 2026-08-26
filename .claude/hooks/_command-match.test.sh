@@ -303,50 +303,101 @@ SETTINGS="$HOOK_DIR/../settings.json"
 # every hook wired to anything at all.
 bash_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
 import json, sys, os
+
+# A group receives Bash commands when it is a TOOL event AND its matcher either
+# names Bash or matches everything. The first revision asked only whether the
+# string 'Bash' appears in the matcher, which handed a free pass to exactly the
+# shape that receives the MOST -- a `PreToolUse` group with the matcher omitted,
+# empty, `*` or `.*`, which fires on every tool. Measured: registering a
+# non-sourcing hook under `matcher: '*'` left this suite at 229/0. It is also
+# the shape this repo just added (the `Stop` group carries no matcher), so the
+# next gate copied from it would have dodged the fence silently.
+TOOL_EVENTS = ('PreToolUse', 'PostToolUse')
+
+def bashy(m):
+    return m is None or m.strip() in ('', '*', '.*') or 'Bash' in m
+
+def name(h):
+    parts = (h.get('command') or '').split()
+    for tok in reversed(parts):
+        if tok.endswith('.sh'):
+            return os.path.basename(tok)
+    return os.path.basename(parts[0]) if parts else ''
+
 s = json.load(open(sys.argv[1]))
 out = set()
 for event, groups in s.get('hooks', {}).items():
+    if event not in TOOL_EVENTS:
+        continue
     for g in groups:
-        if 'Bash' not in (g.get('matcher') or ''):
+        if not bashy(g.get('matcher')):
             continue
         for h in g.get('hooks', []):
-            out.add(os.path.basename(h.get('command', '').split()[0]))
+            n = name(h)
+            if n:
+                out.add(n)
 print('\n'.join(sorted(out)))
 PYEOF
 )
 any_hooks=$(python3 - "$SETTINGS" <<'PYEOF'
 import json, sys, os
+
+def name(h):
+    parts = (h.get('command') or '').split()
+    for tok in reversed(parts):
+        if tok.endswith('.sh'):
+            return os.path.basename(tok)
+    return os.path.basename(parts[0]) if parts else ''
+
 s = json.load(open(sys.argv[1]))
 out = set()
 for event, groups in s.get('hooks', {}).items():
     for g in groups:
         for h in g.get('hooks', []):
-            out.add(os.path.basename(h.get('command', '').split()[0]))
+            n = name(h)
+            if n:
+                out.add(n)
 print('\n'.join(sorted(out)))
 PYEOF
 )
 
 # A parser floor: "found nothing" must not read as "everything is fine".
+#
+# The floor has to be INDEPENDENT of the parse it is checking. A first attempt
+# derived it as `dir_count - non_bash`, where `non_bash` was itself "not in
+# $bash_hooks" -- so the bound equalled `bash_count` by construction and the
+# check could not fail for any input. The bound now comes from a SECOND method
+# over the same file: a raw grep for distinct hook script names. If the python
+# silently loses entries, the two disagree; if the grep is what breaks, the
+# `-lt 1` arm still catches an empty parse.
 bash_count=$(printf '%s\n' "$bash_hooks" | grep -c '\.sh$' || true)
-if [ "${bash_count:-0}" -lt 10 ]; then
+any_count=$(printf '%s\n' "$any_hooks" | grep -c '\.sh$' || true)
+raw_count=$(grep -o '[A-Za-z0-9_-]*\.sh' "$SETTINGS" | sort -u | grep -c . || true)
+
+if [ "${bash_count:-0}" -lt 1 ]; then
   fail=$((fail + 1))
-  printf 'FAIL settings parse found only %s Bash hooks -- the fence is blind\n' "$bash_count"
+  printf 'FAIL settings parse found no Bash hooks at all -- the fence is blind\n'
+elif [ "${any_count:-0}" -ne "${raw_count:-0}" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL settings parse found %s hook scripts but a raw scan of the file found %s -- the parse is losing entries\n' \
+    "$any_count" "$raw_count"
 else
   pass=$((pass + 1))
-  printf 'OK   settings parse found %s Bash hooks\n' "$bash_count"
+  printf 'OK   settings parse found %s hook scripts (%s of them Bash), agreeing with a raw scan\n' \
+    "$any_count" "$bash_count"
 fi
 
 for gate in "$HOOK_DIR"/*.sh; do
   base=$(basename "$gate")
   case "$base" in _*.sh | *.test.sh) continue ;; esac
 
-  if ! printf '%s\n' "$any_hooks" | grep -qx "$base"; then
+  if ! printf '%s\n' "$any_hooks" | grep -qxF -- "$base"; then
     fail=$((fail + 1))
     printf 'FAIL %s is registered in no hook event -- it never runs\n' "$base"
     continue
   fi
 
-  if ! printf '%s\n' "$bash_hooks" | grep -qx "$base"; then
+  if ! printf '%s\n' "$bash_hooks" | grep -qxF -- "$base"; then
     pass=$((pass + 1))
     printf 'OK   %s receives no Bash command, so it needs no matcher\n' "$base"
     continue
