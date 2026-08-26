@@ -1577,6 +1577,24 @@ vp run runtime:smoke
   defer criterion fires, and if you must defer it anyway, put the EVIDENCE in the
   issue body, not just the diagnosis.
 
+  **Before writing `next`, NAME the command the next session will run to
+  verify the fix.** Every deferral is a PREDICTION that a later session can
+  finish the work, and an unstated prediction is never checked: the reason
+  line decays into naming the KIND of work ("a fixture change", "a
+  different subsystem"), which is the MEANS rather than the purpose. You
+  may not write `Session-fit: next` until you can name the concrete
+  command (the fixture, not "the integ"; the assertion that goes red to
+  green, not "a test") and say a FRESH session will be able to run it. The
+  check is generative rather than a lookup, so it catches what no
+  enumerated trigger list contains: a verifier bound to this host (CPU
+  architecture, the platform of a Docker image, the daemon), to this
+  account (a `*-from-cfn-stack` integ fixture's `cdk deploy`), or one that
+  does not exist yet. On 2026-08-26 go-to-k/cdk-local#560 was deferred as "a
+  fixture / base-image change" when the real verification was two
+  `start-api` fixtures ON AN arm64 HOST, which a fresh session may not
+  have; on amd64 they never emulate, so a run there cannot see the fault.
+  `/work-issues` §5 carries the worked version, beside the filing recipe.
+
   **`Session-fit: next` is not on the menu inside a cross-repo scope.** When the
   user framed the work as "do this across the repos in one session", anything
   discovered inside that scope is `now`, and three tells force it: (a) you are
