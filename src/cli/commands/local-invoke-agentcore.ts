@@ -12,7 +12,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
@@ -889,7 +889,7 @@ export async function resolveHostCredentialsForSigV4(
       // `assumeRoleArn` keeps printing for the reason recorded at the
       // `applyAgentCoreCredentialEnv` site below.
       logger.warn(
-        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for --sigv4 signing: ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for --sigv4 signing: ` +
           `${describeAwsFailureForWarn(err, 'STS AssumeRole (--sigv4 signing)')}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
       );
@@ -1128,7 +1128,7 @@ export async function resolveAgentCoreCodeImageFromS3(
       // `assumeRoleArn` keeps printing for the reason recorded at the
       // `applyAgentCoreCredentialEnv` site below.
       logger.warn(
-        `--assume-role: STS AssumeRole(${assumeRoleArn}) failed for the fromS3 bundle download: ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for the fromS3 bundle download: ` +
           `${describeAwsFailureForWarn(err, 'STS AssumeRole (fromS3 bundle download)')}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
       );
@@ -1448,8 +1448,13 @@ export async function applyAgentCoreCredentialEnv(
       // for `tests/integration/local-studio/verify.sh`, which proves
       // `--assume-role` threaded from the CLI to the spawned child by
       // finding the ARN in the studio log ring.
+      //
+      // It is FLATTENED all the same: the bare `--assume-role` form resolves
+      // the ARN from a live `GetAgentRuntime` response, so it is wire-derived
+      // text on the line the helper beside it just made forge-proof. On a real
+      // ARN the call is a no-op, so the integ grep is unaffected.
       logger.warn(
-        `--assume-role: STS AssumeRole(${args.assumeRoleArn}) failed: ${describeAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(args.assumeRoleArn)}) failed: ${describeAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
           "Falling back to the developer's shell credentials."
       );
     }

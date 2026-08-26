@@ -30,6 +30,11 @@ describe('package export surface', () => {
     // Spot-check a few internal-only helpers a shim host consumes.
     expect(internal).toHaveProperty('pickRefLogicalId');
     expect(internal).toHaveProperty('resolveLambdaArnIntrinsic');
+    // Issue #570: the two credential-error policy entry points. Their JSDoc in
+    // `src/internal.ts` advertises them as a host-reuse contract, which is not
+    // a contract at all unless something fails when they disappear.
+    expect(internal).toHaveProperty('describeAwsFailureForWarn');
+    expect(internal).toHaveProperty('describeCredentialLoadFailure');
   });
 
   it('does NOT leak internal building blocks into the main entry', () => {

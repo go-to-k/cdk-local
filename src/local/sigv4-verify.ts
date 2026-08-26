@@ -72,7 +72,11 @@
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
-import { describeCredentialLoadFailure, stringifyThrown } from './credential-error.js';
+import {
+  describeCredentialLoadFailure,
+  flattenToOneLine,
+  stringifyThrown,
+} from './credential-error.js';
 import { buildIdentityHash } from './authorizer-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
@@ -380,7 +384,7 @@ export async function verifySigV4(
     // wraps: this one wraps `loadCredentials()` and nothing else, so every
     // error reaching it is a credential-chain error with no diagnosis
     // cdk-local asked for. Those wrap an STS call cdk-local made, where a
-    // modeled service exception -- `ExpiredToken`, `AccessDenied` -- is the
+    // modeled service exception -- `ExpiredTokenException`, `AccessDenied` -- is the
     // answer the user needs. See {@link file://./credential-error.ts}.
     //
     // Deliberately NOT done: stripping the `Command failed:` first line and
@@ -389,9 +393,15 @@ export async function verifySigV4(
     // passphrase prompt or a token, and the next loader to grow its own
     // format would not be covered at all. Define the safe state positively
     // instead, which is what "input-independent" is.
+    // FLATTENED, for the reason `describeAwsFailureForWarn` gives at its own
+    // debug line: this stream is not a private channel. It is the same stdout
+    // `cdkl studio` mirrors into the log ring it serves over HTTP, so a `\n` in
+    // the chain's message forges a line there under `--verbose` exactly as it
+    // would at `warn`. Not capped -- reading the withheld message whole is why
+    // the line exists.
     logger.debug(
       `AWS_IAM authorizer: the AWS credential chain's own failure message was: ` +
-        `${stringifyThrown(err)}`
+        `${flattenToOneLine(stringifyThrown(err))}`
     );
     const reason = describeCredentialLoadFailure(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();

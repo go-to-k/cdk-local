@@ -228,26 +228,37 @@ interface Site {
   /** `<file>:<enclosing function>` — the identity of the occurrence. */
   name: string;
   /**
+   * The `operation` literal the site passes to `describeAwsFailureForWarn`,
+   * which is what its `debug` line is prefixed with. Asserted because a
+   * copy-pasted wrong label is otherwise undetectable: the `warn` reads
+   * correctly and only the `debug` line names the wrong call.
+   */
+  operation: string;
+  /**
    * A literal unique to THIS site's warn text, proving the fixture reached
    * the intended `catch` and not some other warn the same call emits.
    *
-   * TWO pairs share a byte-identical spelling, not one: `local-run-task` /
-   * `ecs-service-emulator` (the `${AWS::AccountId}` line) and
-   * `local-invoke` / `local-invoke-agentcore` (the bare `--assume-role: STS
-   * AssumeRole(<arn>) failed: ` line). For those four rows the discriminator
-   * is the MODULE the row drives, not the string — which is why every row
-   * calls exactly one command module and no row is ever consolidated with
-   * another on the strength of its literal.
+   * Spellings are NOT unique, and the count has been undercounted twice while
+   * writing this file, so it is asserted below rather than described here. As
+   * of now: one TRIPLE (`local-invoke`, `local-run-task`,
+   * `ecs-service-emulator` all say `Resolver needs ${AWS::AccountId} but STS
+   * GetCallerIdentity failed: `) and one PAIR (`local-invoke` and
+   * `local-invoke-agentcore` both say the bare `--assume-role: STS
+   * AssumeRole(<arn>) failed: `). For those five rows the discriminator is the
+   * MODULE the row drives, not the string — which is why every row calls
+   * exactly one command module and no row is ever consolidated with another on
+   * the strength of its literal.
    */
   reached: string;
   /** Whether the site interpolates the role ARN, which must keep printing. */
   quotesRoleArn: boolean;
-  drive: () => Promise<void>;
+  drive: (arn?: string) => Promise<void>;
 }
 
 const sites: Site[] = [
   {
     name: 'local-invoke.ts / resolvePseudoParametersForInvoke',
+    operation: 'STS GetCallerIdentity',
     reached:
       'Resolver needs ${AWS::AccountId} but STS GetCallerIdentity failed: ',
     quotesRoleArn: false,
@@ -257,16 +268,18 @@ const sites: Site[] = [
   },
   {
     name: 'local-invoke.ts / resolveLambdaContainerEnv (--assume-role)',
+    operation: 'STS AssumeRole',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed: `,
     quotesRoleArn: true,
-    drive: async () => {
+    drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
-        resolveLambdaContainerEnv(assumeRoleLambda(), { assumeRole: ROLE_ARN }, undefined)
+        resolveLambdaContainerEnv(assumeRoleLambda(), { assumeRole: arn }, undefined)
       );
     },
   },
   {
     name: 'local-run-task.ts / buildEcsImageResolutionContext',
+    operation: 'STS GetCallerIdentity',
     reached:
       'Resolver needs ${AWS::AccountId} but STS GetCallerIdentity failed: ',
     quotesRoleArn: false,
@@ -276,6 +289,7 @@ const sites: Site[] = [
   },
   {
     name: 'ecs-service-emulator.ts / buildEcsImageResolutionContext',
+    operation: 'STS GetCallerIdentity',
     reached:
       'Resolver needs ${AWS::AccountId} but STS GetCallerIdentity failed: ',
     quotesRoleArn: false,
@@ -292,6 +306,7 @@ const sites: Site[] = [
   },
   {
     name: 'local-start-api.ts / resolvePseudoParametersForStartApi',
+    operation: 'STS GetCallerIdentity',
     reached:
       '--from-state: resolver needs ${AWS::AccountId} but STS GetCallerIdentity failed: ',
     quotesRoleArn: false,
@@ -301,12 +316,13 @@ const sites: Site[] = [
   },
   {
     name: 'local-invoke-agentcore.ts / resolveHostCredentialsForSigV4',
+    operation: 'STS AssumeRole (--sigv4 signing)',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed for --sigv4 signing: `,
     quotesRoleArn: true,
-    drive: async () => {
+    drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
         resolveHostCredentialsForSigV4(
-          { assumeRole: ROLE_ARN } as never,
+          { assumeRole: arn } as never,
           agentRuntime(),
           undefined,
           'us-east-1',
@@ -317,15 +333,16 @@ const sites: Site[] = [
   },
   {
     name: 'local-invoke-agentcore.ts / resolveAgentCoreCodeImageFromS3',
+    operation: 'STS AssumeRole (fromS3 bundle download)',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed for the fromS3 bundle download: `,
     quotesRoleArn: true,
-    drive: async () => {
+    drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
         resolveAgentCoreCodeImageFromS3(
           agentRuntime(),
           { runtime: 'python3.12', entryPoint: ['app.py'] } as never,
           { bucket: 'bkt', key: 'bundle.zip' } as never,
-          { assumeRole: ROLE_ARN } as never,
+          { assumeRole: arn } as never,
           'x86_64',
           undefined,
           undefined
@@ -335,6 +352,7 @@ const sites: Site[] = [
   },
   {
     name: 'local-invoke-agentcore.ts / buildAgentCoreImageContext',
+    operation: 'STS GetCallerIdentity',
     reached: '--from-cfn-stack: STS GetCallerIdentity failed: ',
     quotesRoleArn: false,
     drive: async () => {
@@ -345,10 +363,11 @@ const sites: Site[] = [
   },
   {
     name: 'local-invoke-agentcore.ts / applyAgentCoreCredentialEnv',
+    operation: 'STS AssumeRole',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed: `,
     quotesRoleArn: true,
-    drive: async () => {
-      await tolerate(() => applyAgentCoreCredentialEnv({}, { assumeRoleArn: ROLE_ARN }));
+    drive: async (arn = ROLE_ARN) => {
+      await tolerate(() => applyAgentCoreCredentialEnv({}, { assumeRoleArn: arn }));
     },
   },
 ];
@@ -410,6 +429,14 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
         s.quotesRoleArn
       );
     }
+
+    // Pin the literal-sharing, because prose about it has been wrong twice.
+    // Every row drives its own module, so sharing is harmless -- but a future
+    // editor must not consolidate rows on the strength of a shared string, and
+    // this is what tells them the strings are shared.
+    const byLiteral = new Map<string, string[]>();
+    for (const s of sites) byLiteral.set(s.reached, [...(byLiteral.get(s.reached) ?? []), s.name]);
+    expect([...byLiteral.values()].map((names) => names.length).sort()).toEqual([1, 1, 1, 1, 2, 3]);
   });
 
   describe.each(sites)('$name', (site) => {
@@ -426,8 +453,15 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
       expect(line).not.toContain('Command failed');
       expect(line).not.toContain('\n');
 
-      // Withheld at `warn` is only acceptable while in full at `debug`.
-      expect(debugLines.join('\n')).toContain(PASSPHRASE);
+      // Withheld at `warn` is only acceptable while in full at `debug`, and
+      // the debug line must name THIS call -- a copy-pasted `operation` label
+      // is invisible in the `warn`.
+      const debug = debugLines.filter((l) => l.includes(PASSPHRASE));
+      expect(debug).toHaveLength(1);
+      expect(debug[0]!).toContain(`${site.operation}: the AWS SDK's own failure message was:`);
+      // Flattened: the debug stream is the same stdout studio mirrors into an
+      // HTTP-served ring, so the two-line chain message must arrive as one.
+      expect(debug[0]!).not.toContain('\n');
     });
 
     it('keeps a modeled STS service exception message, which is the diagnosis', async () => {
@@ -458,6 +492,61 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
       expect(siteWarn(site)).toContain(
         `${site.reached}unknown; 23-character message withheld`
       );
+    });
+  });
+});
+
+/**
+ * The four sites that interpolate a role ARN keep printing it -- it is the
+ * developer's own flag value, or an ARN read from their own deployed stack, and
+ * `tests/integration/local-studio/verify.sh` greps the studio log ring for it.
+ *
+ * But the BARE `--assume-role` form resolves that ARN from a live SDK response
+ * (`GetFunctionConfiguration.Configuration.Role`, `GetAgentRuntime`), and only
+ * a `startsWith('arn:')` check stands between that response and this template.
+ * Under the same hijacked-endpoint model the rest of this file is built on, it
+ * is wire-derived text sitting on the very line the helper beside it just made
+ * forge-proof -- so it is flattened too.
+ *
+ * This block exists because the flatten shipped UNFENCED at first: a mutation
+ * probe that reverted it left all 37 cases green.
+ */
+describe('#570 — a forged newline in the role ARN cannot forge a line either', () => {
+  const FORGED_ARN = 'arn:aws:iam::123456789012:role/x\nWARN: signature verified';
+
+  let warnLines: string[];
+
+  beforeEach(() => {
+    warnLines = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      warnLines.push(String(m));
+    });
+    vi.spyOn(getLogger(), 'debug').mockImplementation(() => {});
+    vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    sendMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const quoting = sites.filter((s) => s.quotesRoleArn);
+
+  it('covers all four ARN-quoting sites', () => {
+    expect(quoting).toHaveLength(4);
+  });
+
+  describe.each(quoting)('$name', (site) => {
+    it('flattens the ARN, keeping every character on one line', async () => {
+      sendMock.mockRejectedValue(chainError());
+      await site.drive(FORGED_ARN);
+
+      const matches = warnLines.filter((l) => l.includes('WARN: signature verified'));
+      expect(matches, 'the forged ARN never reached a warn line at all').toHaveLength(1);
+      const line = matches[0]!;
+      // Every character survives -- only the break became a space.
+      expect(line).toContain('arn:aws:iam::123456789012:role/x WARN: signature verified');
+      expect(line).not.toContain('\n');
     });
   });
 });

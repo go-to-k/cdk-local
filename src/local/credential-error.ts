@@ -13,7 +13,8 @@
  * SCOPE, stated so a later sweep finds a decision rather than an oversight:
  * this module governs those nine plus sigv4-verify's one. It does NOT yet
  * govern the AWS SDK error relays elsewhere under `src/local/**` — notably
- * `formatAwsErrorForWarn` (`cfn-local-state-provider.ts`, seven warn sites)
+ * `formatAwsErrorForWarn` (`cfn-local-state-provider.ts`, six warn sites and
+ * one non-warn caller)
  * and `formatSsmError` (`ssm-parameter-resolver.ts`), which still print an
  * UNCLAMPED wire-derived `err.name`. Those are enumerated and tracked in
  * issue #579; they were left out here so a cross-cutting refactor of eight
@@ -172,8 +173,20 @@ export function stringifyThrown(err: unknown): string {
  * forgery survives truncation.
  */
 export function clampErrorName(err: unknown): string {
-  const rawKind = err instanceof Error ? err.name : 'unknown';
-  return /^[A-Za-z0-9_.-]{1,64}$/.test(rawKind) ? rawKind : 'unknown';
+  // The READ is guarded, not just the value. `err` is a third-party object and
+  // `name` can be an accessor that throws (or a Proxy trap that does), and such
+  // a throw would escape the `catch` this is called from -- the same hazard
+  // {@link stringifyThrown} exists to close, arriving through a different
+  // property.
+  let rawKind: unknown;
+  try {
+    rawKind = err instanceof Error ? err.name : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+  return typeof rawKind === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(rawKind)
+    ? rawKind
+    : 'unknown';
 }
 
 /**
@@ -187,10 +200,16 @@ export function clampErrorName(err: unknown): string {
  * cannot tell a misconfiguration from an unreachable endpoint.
  *
  * Node sets `code` on its system errors (`ENOTFOUND`, `ETIMEDOUT`,
- * `ECONNREFUSED`) and it is a fixed enum of bare identifiers chosen by the
- * runtime, not read off a response — the same property that makes a clamped
- * `name` safe to quote. It is clamped anyway, by the same rule, so nothing
- * rests on that argument holding for a value some library sets by hand.
+ * `ECONNREFUSED`) and there it is a fixed enum chosen by the runtime. It is
+ * NOT input-independent in general, though, and the earlier draft of this note
+ * claimed it was: `@smithy/core`'s `decorateServiceException`
+ * (`dist-cjs/submodules/client/index.js:795-802`) copies every key of the
+ * PARSED RESPONSE BODY onto the exception, so an unmodeled error from a
+ * hostile endpoint can carry a `code` of its choosing. The clamp is therefore
+ * load-bearing rather than belt-and-braces, exactly as it is for
+ * {@link clampErrorName}: what survives is at most 64 characters matching
+ * `[A-Za-z0-9_.-]`, which cannot forge a line, and which is the same residue
+ * the class name already accepts.
  *
  * `undefined` rather than `'unknown'` when there is none, so the caller can
  * omit the field entirely instead of printing a placeholder that says less
@@ -198,7 +217,12 @@ export function clampErrorName(err: unknown): string {
  */
 export function clampErrorCode(err: unknown): string | undefined {
   if (!err || typeof err !== 'object') return undefined;
-  const raw = (err as { code?: unknown }).code;
+  let raw: unknown;
+  try {
+    raw = (err as { code?: unknown }).code;
+  } catch {
+    return undefined;
+  }
   if (typeof raw !== 'string') return undefined;
   return /^[A-Za-z0-9_.-]{1,64}$/.test(raw) ? raw : undefined;
 }
@@ -224,9 +248,17 @@ export function clampErrorCode(err: unknown): string | undefined {
 export function isAwsServiceException(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const candidate = err as { $fault?: unknown; $metadata?: unknown };
-  return (
-    Boolean(candidate.$metadata) && (candidate.$fault === 'client' || candidate.$fault === 'server')
-  );
+  try {
+    return (
+      Boolean(candidate.$metadata) &&
+      (candidate.$fault === 'client' || candidate.$fault === 'server')
+    );
+  } catch {
+    // A throwing accessor means the shape cannot be established, and an
+    // unestablished shape is the withheld bucket -- the same direction every
+    // other unknown takes.
+    return false;
+  }
 }
 
 /**
@@ -364,10 +396,12 @@ export function describeCredentialLoadFailure(err: unknown): string {
  * see. Note that this puts the full text into that ring for a
  * `--verbose` studio run; see `docs/troubleshooting.md`.
  *
- * ORDERING: the `debug` line is emitted while the `warn`'s template is being
- * evaluated, so under `--verbose` it prints immediately ABOVE the `warn` that
- * refers to it. Left as is — restructuring every call site to log afterwards
- * would buy an ordering nobody reads top-down anyway.
+ * ORDERING: the `debug` line is emitted when THIS function runs, which is
+ * before the `warn` at every site — inline in the `warn`'s template at eight of
+ * them, and a couple of statements earlier at the one that hoists the result
+ * into a `const reason`. Either way it prints immediately ABOVE the `warn` that
+ * refers to it under `--verbose`. Left as is: restructuring every call site to
+ * log afterwards would buy an ordering nobody reads top-down anyway.
  */
 export function describeAwsFailureForWarn(err: unknown, operation: string): string {
   if (isAwsServiceException(err)) {

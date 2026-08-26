@@ -5,7 +5,10 @@ import {
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
 // Issue #570 lifted the two #564 helpers into their own module when it found
-// nine more sites of the same shape; the definitions moved verbatim.
+// nine more sites of the same shape. The definitions moved unchanged EXCEPT
+// for one addition, fenced at the bottom of this file: the withheld line now
+// names a clamped `err.code` when the throw carries one, which changes this
+// site's output too.
 import { describeCredentialLoadFailure } from '../../../src/local/credential-error.js';
 import { createHash } from 'node:crypto';
 import { getLogger } from '../../../src/utils/logger.js';
@@ -188,8 +191,16 @@ describe('#564 — the credential chain error text never reaches a warn', () => 
     // The actionable detail is not destroyed, only moved to the population
     // that asked for it (`local-start-api.ts` maps `--verbose` to
     // `logger.setLevel('debug')`).
-    expect(debug.calls()).toContain(CHAIN_MESSAGE);
+    //
+    // Issue #570 changed this assertion, and the change is the point: the
+    // message arrives FLATTENED, because the debug stream is the same stdout
+    // `cdkl studio` mirrors into an HTTP-served log ring, so a `\n` here would
+    // forge a line there exactly as it would at `warn`. Every character is
+    // still present -- only the line break became a space.
+    expect(debug.calls()).toContain(CHAIN_MESSAGE.replace('\n', ' '));
+    expect(debug.calls()).not.toContain(CHAIN_MESSAGE);
     expect(debug.calls()).toContain(PASSPHRASE);
+    expect(debug.calls()).toContain('vault: unlocked with passphrase');
     expect(warn.calls()).not.toContain(PASSPHRASE);
     debug.restore();
     warn.restore();
@@ -410,5 +421,42 @@ describe('#561 — the foreign-access-key-id warn-dedup set is bounded', () => {
     const warned = new Set<string>(Array.from({ length: CAP + 10 }, (_, i) => `preexisting-${i}`));
     await warnFor('AKIAFOREIGN', warned);
     expect(warned.size).toBe(CAP);
+  });
+});
+
+describe('#570 — the two changes the lift made to THIS site', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetEmbedConfig();
+  });
+
+  it('names a clamped err.code in the withheld line when the throw carries one', async () => {
+    // The lift added this field, so #564's line is NOT byte-identical for a
+    // chain error wrapping a Node system error -- and `ProviderError.from`
+    // copies `code` onto the wrapper, so that combination is reachable here.
+    const dns = Object.assign(
+      new CredentialsProviderError('getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com'),
+      { code: 'ENOTFOUND' }
+    );
+    const warn = spy('warn');
+    await verifySigV4(makeRequest('AKIAFOREIGN'), async () => {
+      throw dns;
+    }, { now: () => NOW });
+    expect(warn.calls()).toContain(
+      'CredentialsProviderError ENOTFOUND; 49-character message withheld, ' +
+        'logged at debug level under --verbose'
+    );
+    warn.restore();
+  });
+
+  it('flattens the debug line, because that stream is the studio ring too', async () => {
+    const debug = spy('debug');
+    await verifySigV4(makeRequest('AKIAFOREIGN'), loadThrowsChainError, { now: () => NOW });
+    const lines = debug.calls().split('\n');
+    // The chain fixture is two lines. One emitted call must stay one line.
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(PASSPHRASE);
+    expect(lines[0]).toContain('vault: unlocked with passphrase');
+    debug.restore();
   });
 });

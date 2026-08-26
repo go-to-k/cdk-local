@@ -927,7 +927,8 @@ Outcomes:
   that one may be the federated signer you need told about.
 
   When the failure is that **no local credentials resolved at all**, the warn
-  names the failure's class and the length of the credential chain's message
+  names the failure's class (plus a system-error code such as `ENOTFOUND` when
+  the failure carries one) and the length of the credential chain's message,
   but not the message itself. The full text is printed at debug level -- run
   with `--verbose` (or set `CDKL_LOG_LEVEL=debug`) to see it. The reason for holding it back is that the
   chain's error text is not cdk-local's to vouch for: the AWS SDK's

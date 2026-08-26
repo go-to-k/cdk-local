@@ -13,7 +13,7 @@ import {
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -1063,9 +1063,15 @@ export async function resolveLambdaContainerEnv(
       // for `tests/integration/local-studio/verify.sh`, which proves
       // `--assume-role` threaded from the CLI to the spawned child by
       // finding the ARN in the studio log ring.
+      //
+      // It is FLATTENED all the same. The bare `--assume-role` form resolves
+      // the ARN from a live `GetFunctionConfiguration` response, so under this
+      // file's own hijacked-endpoint model it is wire-derived text sitting on
+      // the very line the helper beside it just made forge-proof. On a real
+      // ARN the call is a no-op, so the integ grep is unaffected.
       const reason = describeAwsFailureForWarn(err, 'STS AssumeRole');
       logger.warn(
-        `--assume-role: STS AssumeRole(${resolvedAssumeRoleArn}) failed: ${reason}. ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(resolvedAssumeRoleArn)}) failed: ${reason}. ` +
           "Falling back to the developer's shell credentials."
       );
     }

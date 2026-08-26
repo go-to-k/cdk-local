@@ -118,6 +118,35 @@ describe('stringifyThrown — total, so a throw cannot escape a catch', () => {
   it('stringifies a non-Error throw', () => {
     expect(stringifyThrown('plain string throw')).toBe('plain string throw');
   });
+
+  it('survives a throwing `name` accessor, which clampErrorName has to read', () => {
+    const hostile = new Error('boom');
+    Object.defineProperty(hostile, 'name', {
+      get(): string {
+        throw new Error('nope');
+      },
+    });
+    expect(() => hostile.name).toThrow('nope');
+    expect(clampErrorName(hostile)).toBe('unknown');
+    expect(() => describeCredentialLoadFailure(hostile)).not.toThrow();
+  });
+
+  it('survives a throwing `code` accessor and a throwing `$fault` accessor', () => {
+    const codeThrows = Object.defineProperty(new Error('boom'), 'code', {
+      get(): string {
+        throw new Error('nope');
+      },
+    });
+    expect(clampErrorCode(codeThrows)).toBeUndefined();
+
+    const faultThrows = Object.defineProperty(new Error('boom'), '$fault', {
+      get(): string {
+        throw new Error('nope');
+      },
+    });
+    expect(isAwsServiceException(faultThrows)).toBe(false);
+    expect(() => describeAwsFailureForWarn(faultThrows, 'STS AssumeRole')).not.toThrow();
+  });
 });
 
 describe('clampErrorName — the wire-derived name cannot forge a log line', () => {
@@ -214,18 +243,28 @@ describe('sanitizeServiceExceptionMessage — the line stays one line', () => {
     expect(sanitizeServiceExceptionMessage('a\u{1F600}b')).toBe('a\u{1F600}b');
   });
 
-  it('flattens an ANSI escape', () => {
+  it('flattens an ANSI escape (a Cc case, listed here for the reader)', () => {
+    // Note for anyone reading this among the widening cases above: U+001B is
+    // `Cc`, so this reds on a `Cc` mutation and NOT on dropping any of the
+    // classes the fix round added. It is kept because a terminal-escape
+    // example is what a reader looks for, not because it fences Zl/Zp/Cs.
     expect(sanitizeServiceExceptionMessage('a\u001B[31mred')).toBe('a [31mred');
   });
 
   it('cuts on code points, so truncation cannot split a surrogate pair', () => {
-    const msg = '\u{1F600}'.repeat(600);
+    // The leading 'A' is load-bearing and was missing at first: with only
+    // two-UTF-16-unit emoji, `.slice(0, 512)` lands on an EXACT code-point
+    // boundary and emits no lone surrogate, so the lone-surrogate assertion
+    // passed under the very mutation it claims to catch. One BMP character in
+    // front makes the UTF-16 cut land mid-pair. Measured both ways.
+    const msg = `A${'\u{1F600}'.repeat(600)}`;
     const out = sanitizeServiceExceptionMessage(msg);
-    expect(out).toBe(`${'\u{1F600}'.repeat(512)}[... truncated; 600-character message]`);
-    // The UTF-16 length is 1200; a `.slice(0, 512)` would have cut mid-pair and
-    // emitted a lone surrogate, which this asserts did not happen.
-    expect(msg.length).toBe(1200);
+    expect(out).toBe(`A${'\u{1F600}'.repeat(511)}[... truncated; 601-character message]`);
+    expect(msg.length).toBe(1201);
     expect([...out].some((c) => /\p{Cs}/u.test(c))).toBe(false);
+    // The mutation this fences, spelled out: a UTF-16 slice of this fixture
+    // ends on the high half of the 256th emoji.
+    expect(/\p{Cs}/u.test(msg.slice(0, 512).at(-1)!)).toBe(true);
   });
 
   it('keeps a 512-character message whole', () => {
