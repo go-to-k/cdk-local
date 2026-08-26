@@ -33,6 +33,17 @@ import { dirname, join } from 'node:path';
  *     view` failing on it rather than by a second API call
  *   - a full issue URL in THIS repo (matched) vs one in another repo (not),
  *     because the other repo's label may not exist here
+ *   - the WRITE target, not just the label set: re-pointing the POST at another
+ *     repo left every earlier case green
+ *   - dedup across two issues sharing a label neither is already on the PR --
+ *     the earlier overlap case confounded `sort -u` with the `have` filter
+ *   - each deny-list entry individually, including the per-channel
+ *     `released on @<channel>` form semantic-release actually emits
+ *
+ * Mutation-probed 2026-08-26: removing the deny list fails 7 of 17; dropping
+ * `sort -u`, re-pointing the POST, accepting the `Closes (#N)` paren form, and
+ * narrowing the deny list back to a fixed `released on @experimental` each fail
+ * exactly 1.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const WORKFLOW = join(repoRoot, '.github', 'workflows', 'pr-inherit-issue-labels.yml');
@@ -41,8 +52,12 @@ const WORKFLOW = join(repoRoot, '.github', 'workflows', 'pr-inherit-issue-labels
 function extractRunBlock(): string {
   const yml = readFileSync(WORKFLOW, 'utf8');
   const marker = '        run: |\n';
+  // UNIQUENESS is asserted, not assumed. The slice runs to EOF, so a second
+  // step appended after this one would be spliced into the script and executed
+  // as bash by every case below -- or, if it came first, would be the thing
+  // tested while the real block went unexercised.
+  expect(yml.split(marker).length, 'the workflow must carry exactly one `run: |` block').toBe(2);
   const at = yml.indexOf(marker);
-  expect(at, 'the workflow must carry exactly one `run: |` block at this indent').toBeGreaterThan(-1);
   return yml
     .slice(at + marker.length)
     .split('\n')
@@ -73,7 +88,10 @@ beforeAll(() => {
     '    [ "$v" = "__MISSING__" ] && exit 1',
     '    printf %s "$v" | tr "|" "\\n" ;;',
     '  "api "*|"api")',
-    '    echo "API-PAYLOAD:"; cat ;;',
+    // The one WRITE had an unasserted target: re-pointing the POST at another
+    // repo's `pulls/1/labels` left every case green. The argv is echoed so a
+    // case can pin WHERE the labels land, not just which ones.
+    '    echo "API-ARGV: $*"; echo "API-PAYLOAD:"; cat ;;',
     '  *) echo "unexpected gh $*" >&2; exit 1 ;;',
     'esac',
     '',
@@ -87,7 +105,7 @@ afterAll(() => {
 });
 
 /** Runs the extracted block and returns the labels it would POST, sorted. */
-function run(env: Record<string, string>): { out: string; posted: string[] } {
+function run(env: Record<string, string>): { out: string; posted: string[]; target: string } {
   const out = execFileSync('bash', [join(dir, 'script.sh')], {
     encoding: 'utf8',
     env: {
@@ -100,9 +118,10 @@ function run(env: Record<string, string>): { out: string; posted: string[] } {
     },
   });
   const at = out.indexOf('API-PAYLOAD:');
-  if (at === -1) return { out, posted: [] };
+  if (at === -1) return { out, posted: [], target: '' };
+  const header = out.slice(0, at).split('\n').filter((l) => l.startsWith('API-ARGV:')).pop() ?? '';
   const payload = JSON.parse(out.slice(at + 'API-PAYLOAD:'.length));
-  return { out, posted: [...payload.labels].sort() };
+  return { out, posted: [...payload.labels].sort(), target: header.replace('API-ARGV:', '').trim() };
 }
 
 describe('pr-inherit-issue-labels workflow', () => {
@@ -162,6 +181,55 @@ describe('pr-inherit-issue-labels workflow', () => {
       ISSUE_12: 'bug',
     });
     expect(theirs.posted).toEqual([]);
+  });
+
+  it('posts to THIS PR\'s labels endpoint, not somewhere else', () => {
+    const { target } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes #12',
+      ISSUE_12: 'severity:high',
+    });
+    expect(target).toContain('repos/go-to-k/cdk-local/issues/99/labels');
+    expect(target).toContain('--method POST');
+  });
+
+  it('deduplicates a label two closed issues share', () => {
+    // Without `sort -u` this posts the same label twice. The earlier cases
+    // could not see it: their overlap was also already on the PR, so the
+    // `have` filter removed the duplicate for an unrelated reason.
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes #7 and closes #8',
+      ISSUE_7: 'severity:high|bug',
+      ISSUE_8: 'severity:high|effort:small',
+    });
+    expect(posted).toEqual(['bug', 'effort:small', 'severity:high']);
+  });
+
+  it.each([
+    ['released', 'released'],
+    ['duplicate', 'duplicate'],
+    ['wontfix', 'wontfix'],
+    ['invalid', 'invalid'],
+    // Not a fixed string: semantic-release emits one per release channel, so a
+    // hardcoded `released on @experimental` breaks the moment a channel is added.
+    ['a per-channel released label', 'released on @next'],
+  ])('drops %s', (_name, label) => {
+    const { posted } = run({
+      PR_TITLE: 'fix: x',
+      PR_BODY: 'Closes #12',
+      ISSUE_12: `${label}|severity:high`,
+    });
+    expect(posted).toEqual(['severity:high']);
+  });
+
+  it('finds a closing keyword that appears only in the title', () => {
+    const { posted } = run({
+      PR_TITLE: 'fix(local): drop the phantom flag, fixes #12',
+      PR_BODY: 'No reference in the body at all.',
+      ISSUE_12: 'severity:medium',
+    });
+    expect(posted).toEqual(['severity:medium']);
   });
 
   it('posts nothing when every label is already on the PR', () => {

@@ -1540,7 +1540,10 @@ vp run runtime:smoke
   issue's labels do not carry. **The PR inherits them automatically** —
   `.github/workflows/pr-inherit-issue-labels.yml` copies every label of
   the issues a PR closes onto the PR itself (add-only, minus the
-  release-management family), so never hand-add them to a PR.
+  release-management family), so never hand-add them to a PR. The copy
+  runs when the PR is opened, reopened, or its body edited, reading the
+  labels the issue carries AT THAT MOMENT — which is why the label
+  belongs on the issue at CLAIM time, before the lane's PR exists.
 
   **Scales.** `Severity`: `high` = a wrong result, data loss, a security
   surface, or something a user hits in normal operation; `medium` = a

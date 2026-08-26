@@ -52,7 +52,10 @@ jobs:
           # truth, so they are the one family excluded. `duplicate` / `wontfix`
           # / `invalid` are triage verdicts on the ISSUE and say nothing about
           # the PR that fixes it.
-          DENY='^(released|released on @experimental|duplicate|wontfix|invalid)$'
+          # `released on @experimental` is not a fixed string: semantic-release
+          # emits `released on @<channel>` per release channel, so enumerating
+          # today's channels defeats the exclusion the moment one is added.
+          DENY='^(released( on @.+)?|duplicate|wontfix|invalid)[[:space:]]*$'
 
           body=$(gh pr view "$PR_NUMBER" -R "$REPO" --json title,body \
             -q '"\(.title)\n\(.body // "")"')
@@ -76,16 +79,39 @@ jobs:
             exit 0
           fi
 
+          # A CAP, stated out loud rather than applied silently. A PR body is
+          # capped at 65536 bytes, which fits ~5000 `Closes #N` references, and
+          # each one costs a `gh issue view` against a GITHUB_TOKEN budget of
+          # ~1000 requests/hour SHARED with every other workflow in the repo. A
+          # fork PR can therefore starve CI. 20 is far above any real PR.
+          found=$(printf '%s\n' "$numbers" | grep -c .)
+          if [ "$found" -gt 20 ]; then
+            echo "::warning::$found closing references found; following only the first 20."
+            numbers=$(printf '%s\n' "$numbers" | head -20)
+          fi
+
           want=""
           for n in $numbers; do
             # `gh issue view` on a PULL REQUEST number fails, which is exactly
             # the filter wanted: a PR saying "Closes #<another PR>" must not
             # inherit that PR's labels.
+            err=$(mktemp)
             labels=$(gh issue view "$n" -R "$REPO" --json labels \
-              -q '.labels[].name' 2>/dev/null) || {
+              -q '.labels[].name' 2>"$err") || {
+              # "not an issue" and "gh could not reach GitHub" are different
+              # states, and mapping both to `continue` made a rate-limit 403
+              # look like a clean skip: the loop would burn the rest of the
+              # budget and report success while copying nothing.
+              if grep -qiE 'rate limit|API rate|HTTP 40[13]|HTTP 5[0-9][0-9]|timeout' "$err"; then
+                echo "::error::gh failed on #$n (transport or rate limit), not a missing issue:"
+                cat "$err"
+                exit 1
+              fi
               echo "#$n is not an issue in $REPO -- skipped."
+              rm -f "$err"
               continue
             }
+            rm -f "$err"
             [ -n "$labels" ] || continue
             echo "#$n carries: $(printf '%s' "$labels" | tr '\n' ' ')"
             # `printf` rather than an embedded newline in the assignment: a

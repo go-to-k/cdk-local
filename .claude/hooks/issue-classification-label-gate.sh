@@ -37,6 +37,8 @@
 #
 #   gated:      gh issue create   -- the filing site, where the four lines are
 #                                    first written
+#               gh api repos/<o>/<r>/issues -- the same mint through the REST
+#                                    verb, when the matcher exposes the constant
 #               gh issue edit     -- the CLAIM site: section 3 says most open
 #                                    bodies are still in the old packed shape
 #                                    and are upgraded to the four-line shape
@@ -96,10 +98,32 @@ hook_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 
 # Command-position matching, so a body or comment that merely QUOTES
 # `gh issue create` does not arm the gate (.claude/rules/hooks.md).
+# The REST mint is the same act as `gh issue create` through another verb:
+# `gh api repos/<o>/<r>/issues` with a `title=` field creates an issue. Sibling
+# issue-dup-check-gate.sh already covers it, and omitting it here would leave
+# the trigger under-approximated against the "over-approximate the TRIGGER, be
+# strict on RESOLUTION" rule in .claude/rules/hooks.md.
+GATE_RE_API_MINT="${GATE_RE_GH_API_ISSUE_CREATE:-}"
 gate_matches "$cmd" "$GATE_RE_GH_ISSUE_CREATE" \
-  || gate_matches "$cmd" "$GATE_RE_GH_ISSUE_EDIT" || exit 0
+  || gate_matches "$cmd" "$GATE_RE_GH_ISSUE_EDIT" \
+  || { [ -n "$GATE_RE_API_MINT" ] && gate_matches "$cmd" "$GATE_RE_API_MINT"; } || exit 0
 
 target_dir="${hook_cwd:-$PWD}"
+# A leading `cd <repo>` steers BOTH the opt-in check and the relative
+# `--body-file` resolution, and the two must agree. The search-then-`cd`-then-
+# file chain is a documented shape here, and without this the opt-in resolved
+# against the payload cwd -- the same fail-open issue-dup-check-gate.sh closed.
+# Guarded by `declare -F`: the sibling repos this hook is mirrored into carry an
+# older matcher with no `cmd_last_cd_target`, where the gate degrades to the
+# payload cwd rather than failing to load.
+if declare -F cmd_last_cd_target >/dev/null 2>&1; then
+  # The verb ERE is DERIVED from the shared constants rather than hand-rolled:
+  # a local copy drops GATE_FLAGS' quoted alternative, so `gh -C "/a b" issue
+  # create` matches no verb and a TRAILING `cd` steers the lookup instead.
+  _cd_target=$(cmd_last_cd_target "$cmd" "$target_dir" \
+    "(${GATE_RE_GH_ISSUE_CREATE#^})|(${GATE_RE_GH_ISSUE_EDIT#^})" 2>/dev/null || true)
+  [ -n "$_cd_target" ] && target_dir="$_cd_target"
+fi
 
 # --- repo opt-in (issue #1259's scoping) ------------------------------------
 # A session in one of these repos regularly files issues in unrelated personal
@@ -134,26 +158,41 @@ classification_value() {
 # extraction is the same one gh-label-validity-gate.sh uses: the unquoted value
 # is terminated by whitespace or a shell metacharacter, so a chained
 # `--label X; other-cmd` captures `X`, not `X;`.
+# `-l` IS matched here, unlike gh-label-validity-gate.sh which excludes it.
+# There the scan spans `gh issue|pr create|edit` where `-l` is also short for
+# `--limit`; here every segment is a `gh issue create` or `gh issue edit`, where
+# `-l` can only be `--label`. The cost directions differ too: missing a label
+# there costs a skipped check, while missing one HERE costs a false BLOCK on a
+# command that already carries what the gate asks for, and there is no bypass.
 segment_labels() {
   printf '%s' "$1" \
-    | grep -oE -- '--(add-)?label[= ]("[^"]+"|'\''[^'\'']+'\''|[^ ;&|()<>"'\'']+)' \
-    | sed -E -e 's/^--(add-)?label[= ]//' -e 's/^["'\'']//' -e 's/["'\'']$//' \
+    | grep -oE -- '(--(add-)?label|(^|[[:space:]])-l)[= ]("[^"]+"|'\''[^'\'']+'\''|[^ ;&|()<>"'\'']+)' \
+    | sed -E -e 's/^[[:space:]]*//' -e 's/^(--(add-)?label|-l)[= ]//' -e 's/^["'\'']//' -e 's/["'\'']$//' \
     | tr ',' '\n' \
     | sed 's/^ *//;s/ *$//' \
     | grep -v '^$' || true
 }
 
-# The text a segment's body amounts to: the segment itself (covering an inline
-# `--body '...'`), plus the contents of any readable `--body-file`, plus -- when
-# a named body file cannot be read -- the WHOLE command. That last fallback is
-# this repo's mandated `heredoc -> file -> --body-file` publishing shape, whose
-# file does not exist yet at PreToolUse time; issue-dup-check-gate.sh documents
-# the same window.
+# The BODY text of a segment, in descending order of specificity. Precedence is
+# load-bearing rather than tidy: `classification_value` takes the FIRST match,
+# so concatenating the whole segment in front of the body let an unrelated
+# mention outrank the real line. Measured: `--title \'Severity: high pages
+# fail\'` with a body stating `Severity: low` and a correct `--label
+# severity:low` was REFUSED, quoting a value the body never states.
+#
+#   1. the contents of a readable `--body-file` / `-F <path>` / `-F body=@path`
+#   2. the WHOLE command, when such a path was named but cannot be read -- the
+#      `heredoc -> file -> --body-file` publishing shape this repo mandates,
+#      whose file does not exist yet at PreToolUse time (issue-dup-check-gate.sh
+#      documents the same window)
+#   3. the inline `--body` value, quote-aware so a multi-word body is one token
+#   4. the whole segment, as a last resort
 segment_body_text() {
-  local seg="$1" f out
-  out="$seg"
+  local seg="$1" f out=""
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    # An unexpanded `$VAR` or a substitution cannot be resolved from command
+    # TEXT; treat it like an unreadable path and fall back to the whole command.
     case "$f" in
       *'$'*|*'`'*) out="$out
 $cmd"; continue ;;
@@ -171,11 +210,34 @@ $(cat "$f" 2>/dev/null || true)"
       out="$out
 $cmd"
     fi
+  # The bare `-F <path>` arm is NOT optional: `-F` is gh's short `--body-file`,
+  # so without it `gh issue create -F body.md` was never scanned and the gate
+  # exited 0 on a body stating `Severity: high` with no label. Sibling
+  # issue-dup-check-gate.sh already carries the same three arms. `body=@` is
+  # matched FIRST so an `-F body=@path` is not also read as a bare `-F path`.
   done < <(printf '%s' "$seg" | perl -0777 -ne '
-      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
       while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)body=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
+      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
+      while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
     ' 2>/dev/null)
-  printf '%s' "$out"
+
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+
+  out=$(printf '%s' "$seg" | perl -0777 -ne '
+    while (/(?:^|\s)--body[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
+      my $v = $1;
+      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
+      print "$v\n";
+    }' 2>/dev/null)
+  if [ -n "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+
+  printf '%s' "$seg"
 }
 
 # The labels an EXISTING issue already carries, for the `gh issue edit` arm.
@@ -184,14 +246,27 @@ $cmd"
 # a transient gh failure must not stop a body edit.
 existing_labels() {
   local seg="$1" num repo_args
-  num=$(printf '%s' "$seg" | sed -nE 's#.*/issues/([0-9]+).*#\1#p' | head -1)
-  if [ -z "$num" ]; then
-    num=$(printf '%s' "$seg" \
-      | sed -nE 's/.*issue[[:space:]]+edit[[:space:]]+["'\'']?#?([0-9]+).*/\1/p' | head -1)
-  fi
+  # The number must come from the `issue edit` ARGUMENT, not from any
+  # `/issues/N` URL in the command. An unanchored URL scan reads a link the
+  # body happens to contain -- routine here -- and a greedy `.*` takes the
+  # LAST one, so `gh issue edit 42 --body "see .../other/repo/issues/999 ...
+  # Severity: high"` looked up 999's labels and let an unlabelled 42 through.
+  # perl rather than sed: this needs a LEFTMOST match anchored to the verb, and
+  # ERE has no non-greedy quantifier.
+  num=$(printf '%s' "$seg" | perl -0777 -ne '
+    if (/\bissue\s+edit\s+(?:["\x27])?\#?(?:https:\/\/github\.com\/[^\/\s]+\/[^\/\s]+\/issues\/)?(\d+)/) {
+      print $1;
+    }' 2>/dev/null)
   [ -n "$num" ] || return 1
-  repo_args=$(printf '%s' "$seg" \
-    | sed -nE 's/.*[[:space:]](-R|--repo)[= ]["'\'']?([^ "'\'']+).*/\2/p' | head -1)
+  # Anchored to the verb for the same reason as `num` above: a greedy `.*` over
+  # the segment takes the LAST `-R` in it, including one quoted inside a body,
+  # which sends the lookup to another repo. Leftmost match after `issue edit`,
+  # and a value starting with `-` is rejected rather than passed to gh as a
+  # stray flag.
+  repo_args=$(printf '%s' "$seg" | perl -0777 -ne '
+    if (/\bissue\s+edit\b.{0,400}?\s(?:-R|--repo)[=\s]+(["\x27]?)([^\s"\x27]+)\1/s) {
+      print $2 unless $2 =~ /^-/;
+    }' 2>/dev/null)
   if [ -n "$repo_args" ]; then
     gh issue view "$num" -R "$repo_args" --json labels -q '.labels[].name' 2>/dev/null
   else
@@ -210,7 +285,9 @@ while IFS= read -r seg; do
   if gate_matches "$seg" "$GATE_RE_GH_ISSUE_EDIT"; then
     is_edit=1
   elif ! gate_matches "$seg" "$GATE_RE_GH_ISSUE_CREATE"; then
-    continue
+    if [ -z "$GATE_RE_API_MINT" ] || ! gate_matches "$seg" "$GATE_RE_API_MINT"; then
+      continue
+    fi
   fi
 
   body_text=$(segment_body_text "$seg")
@@ -224,15 +301,20 @@ while IFS= read -r seg; do
 
   known=$(segment_labels "$seg")
   if [ "$is_edit" = "1" ]; then
-    prior=$(existing_labels "$seg" || true)
-    if [ -n "$prior" ]; then
-      known="$known
-$prior"
-    elif [ -z "$known" ]; then
-      # Unknown issue number, or gh could not answer: fail OPEN rather than
-      # refuse a body edit over a label we cannot see.
+    # FAIL OPEN on the LOOKUP FAILING, not on it returning nothing. Those are
+    # different states and conflating them broke the contract in both
+    # directions: an issue that genuinely carries no labels (rc 0, empty
+    # output) must still be refused, while a gh error or an unresolvable issue
+    # number must pass through EVEN IF the command supplies some labels --
+    # otherwise a half-labelled command was refused over a label the gate could
+    # not see.
+    prior_rc=0
+    prior=$(existing_labels "$seg") || prior_rc=$?
+    if [ "$prior_rc" != "0" ]; then
       continue
     fi
+    known="$known
+$prior"
   fi
 
   seg_missing=""
