@@ -1,3 +1,10 @@
+## [0.147.7](https://github.com/go-to-k/cdk-local/compare/v0.147.6...v0.147.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** stop echoing the secret plaintext in the ECS json-key JSON-parse failure message ([#558](https://github.com/go-to-k/cdk-local/issues/558)) ([f32f54b](https://github.com/go-to-k/cdk-local/commit/f32f54b331f82b4cb96076e1cdb181edca821201))
+
 ## [0.147.6](https://github.com/go-to-k/cdk-local/compare/v0.147.5...v0.147.6) (2026-08-26)
 
 
