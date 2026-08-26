@@ -1,3 +1,10 @@
+## [0.147.9](https://github.com/go-to-k/cdk-local/compare/v0.147.8...v0.147.9) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** withhold the credential chain's error text from the SigV4 warn, and bound the foreign-id dedup set ([#572](https://github.com/go-to-k/cdk-local/issues/572)) ([27293b6](https://github.com/go-to-k/cdk-local/commit/27293b60a29ce0d18672aecde6990760b5e708b8))
+
 ## [0.147.8](https://github.com/go-to-k/cdk-local/compare/v0.147.7...v0.147.8) (2026-08-26)
 
 
