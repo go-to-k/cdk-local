@@ -37,6 +37,23 @@ const FIXTURE_STACKS = [
   'tests/integration/local-start-api-websocket/lib/stack.ts',
 ];
 
+/** The one Lambda constructor spelling both fixtures are required to use. */
+const CANONICAL_CTOR = 'new lambda.Function(';
+
+/**
+ * Every `new <Something>Function(` constructor call, in any spelling.
+ *
+ * `lambdaFunctionCalls` below keys off the single canonical spelling, so on
+ * its own it would report a clean pass for a handler added as
+ * `NodejsFunction` / `lambda.DockerImageFunction` / a named-import
+ * `new Function(` / even `new lambda.Function (` with a space -- i.e. it
+ * would be blind to exactly the "someone adds a handler" case this file
+ * exists to catch. Matching the broad shape and then requiring every hit to
+ * be the canonical spelling turns an unrecognized spelling into a loud
+ * failure instead of a silent pass.
+ */
+const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?[\w$]*Function\s*\(/g;
+
 /**
  * Return the source text of every `new lambda.Function(...)` call in
  * `source`, delimited by brace/paren matching rather than a line regex so
@@ -46,7 +63,7 @@ const FIXTURE_STACKS = [
  */
 function lambdaFunctionCalls(source: string): string[] {
   const calls: string[] = [];
-  const needle = 'new lambda.Function(';
+  const needle = CANONICAL_CTOR;
   let from = 0;
   for (;;) {
     const start = source.indexOf(needle, from);
@@ -73,9 +90,13 @@ function lambdaFunctionCalls(source: string): string[] {
 describe('integ fixture Lambdas run at the host architecture (issue #560)', () => {
   for (const relPath of FIXTURE_STACKS) {
     describe(relPath, () => {
-      const source = readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
+      // Read inside each test rather than at collection time, so a renamed or
+      // deleted fixture fails as a named test rather than as a suite-level
+      // ENOENT that names no expectation.
+      const read = (): string => readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
 
       it('derives HOST_ARCHITECTURE from process.arch, mapping arm64 -> ARM_64 and everything else -> X86_64', () => {
+        const source = read();
         // Hardcoding either arch would just move the emulation to the other
         // host: `ARM_64` would make CI (amd64) emulate, `X86_64` is the
         // default that caused #560 on arm64. Only the host-derived form is
@@ -89,8 +110,32 @@ describe('integ fixture Lambdas run at the host architecture (issue #560)', () =
         );
       });
 
+      it('defines its Lambdas only via the canonical `new lambda.Function(` spelling', () => {
+        // Guards the assumption the next test depends on. Without this, a
+        // handler added as `NodejsFunction` / `lambda.DockerImageFunction` /
+        // `new Function(` would not be found at all, and "every construct
+        // declares the architecture" would be vacuously true of it.
+        const source = read();
+        const found = [...source.matchAll(ANY_FUNCTION_CTOR)].map((m) => m[0]);
+        const nonCanonical = found.filter((spelling) => spelling !== CANONICAL_CTOR);
+
+        expect(
+          nonCanonical,
+          `${relPath}: found Lambda constructor spelling(s) this fence does not ` +
+            `understand. Either use \`${CANONICAL_CTOR}\` or teach ` +
+            `lambdaFunctionCalls() the new spelling -- otherwise the ` +
+            `architecture check silently skips those constructs`
+        ).toEqual([]);
+        expect(found.length, `${relPath} should declare at least one Lambda`).toBeGreaterThan(0);
+      });
+
       it('declares architecture: HOST_ARCHITECTURE on every lambda.Function', () => {
+        const source = read();
         const calls = lambdaFunctionCalls(source);
+        // The two counts must agree, or the brace matcher mis-delimited a call.
+        expect(calls.length, `${relPath}: brace matcher and regex disagree on the Lambda count`).toBe(
+          [...source.matchAll(ANY_FUNCTION_CTOR)].length
+        );
         expect(calls.length, `${relPath} should declare at least one lambda.Function`).toBeGreaterThan(0);
 
         const missing = calls

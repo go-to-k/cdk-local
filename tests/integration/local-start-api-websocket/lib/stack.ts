@@ -30,9 +30,15 @@ import * as path from 'node:path';
  * host's emulation for the other's. Nothing in verify.sh asserts the
  * architecture, so this costs no coverage.
  *
+ * Caveat: `process.arch` is the architecture of the Node process running
+ * this CDK app, NOT the Docker daemon's. A Rosetta-emulated Node, or a
+ * `DOCKER_HOST` / `docker context` aimed at a foreign-arch daemon, can
+ * still declare the non-native arch. Neither is the ordinary local case,
+ * and cdk-local's emulation warning still fires when it happens.
+ *
  * Keep this on every function in this fixture: a new handler that omits
- * it silently reintroduces #560 on arm64 hosts. `tests/unit/integ-fixture-host-architecture.test.ts`
- * fences that.
+ * it silently reintroduces the arm64-only flake. The fence lives in
+ * `tests/unit/integ-fixture-host-architecture.test.ts`.
  */
 const HOST_ARCHITECTURE =
   process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
