@@ -52,9 +52,13 @@ fi
 
 
 # Test 1 — asset-backed .NET Lambda echoes event + env var.
-# .NET cold-start in the local container is slow (~5-10s on Apple
-# Silicon emulating x86_64) — the function's Timeout: 30 + cdk-local's
+# .NET cold-start in the local container is slow (~5-10s) — the
+# function's Timeout: 30 + cdk-local's
 # `invokeTimeoutMs = max(30s, 2 * fn.timeout)` = 60s provides headroom.
+# Until issue #569 this fixture declared no architecture, so on an Apple
+# Silicon host it ran under x86_64 emulation and paid an extra emulator
+# tax on top of that cold start. It now declares the host architecture
+# and runs natively; the headroom is kept for the cold start itself.
 echo "==> [1/3] Invoking EchoHandler with default empty event"
 RESULT_1=$(${CDKL} invoke CdkLocalInvokeDotnetFixture/EchoHandler --no-pull 2>/dev/null | tail -1)
 echo "    response: ${RESULT_1}"
