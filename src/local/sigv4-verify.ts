@@ -246,15 +246,15 @@ export async function verifySigV4(
   if (parsed.algorithm !== 'AWS4-HMAC-SHA256') {
     logger.info(
       `AWS_IAM authorizer: rejecting request — unsupported Authorization algorithm ` +
-        `'${parsed.algorithm}'. Expected 'AWS4-HMAC-SHA256'.`
+        `'${redactAuthorizationSegment(parsed.algorithm)}'. Expected 'AWS4-HMAC-SHA256'.`
     );
     return { allow: false, identityHash: undefined };
   }
   if (parsed.credentialTerminator !== 'aws4_request') {
     logger.info(
       `AWS_IAM authorizer: rejecting request — invalid credential-scope terminator ` +
-        `'${parsed.credentialTerminator}'. Expected 'aws4_request' (the last '/' segment ` +
-        `of the Credential= value).`
+        `'${redactAuthorizationSegment(parsed.credentialTerminator)}'. Expected 'aws4_request' ` +
+        `(the last '/' segment of the Credential= value).`
     );
     return { allow: false, identityHash: undefined };
   }
@@ -413,6 +413,16 @@ export async function verifySigV4(
   // key, recompute the signature, compare.
   const recomputed = computeSignature(req, parsed, local.secretAccessKey, amzDate);
   if (!constantTimeEqual(recomputed, parsed.signature)) {
+    // Deliberately NOT routed through `redactAuthorizationSegment` (issue
+    // #555). This echo is a different population from the sweep-in ones it
+    // guards: the value is a PARSED `Signature=` field rather than whatever
+    // a mis-delimited split swept into a segment, it is a per-request HMAC
+    // rather than a durable credential, and this branch is reachable only
+    // after the request's access-key id matched the credentials cdk-local
+    // resolved locally — so it is provably the developer's own signature,
+    // not a third party's. Printing it beside the recomputed one IS the
+    // diagnostic (issue #246): a mismatch is only actionable when both
+    // sides are visible. Leave it.
     logger.info(
       `AWS_IAM authorizer: rejecting request — Signature= mismatch (recomputed ` +
         `'${recomputed}', got '${parsed.signature}'). The request was signed with the ` +
@@ -427,6 +437,48 @@ export async function verifySigV4(
     principalId: parsed.credentialAccessKeyId,
     identityHash: buildIdentityHash([parsed.signature]),
   };
+}
+
+/**
+ * Upper bound on how much of an `Authorization`-header segment a rejection
+ * message may quote. Every segment those messages legitimately name is a
+ * short token — `AWS4-HMAC-SHA256` (16 characters), `aws4_request` (12), a
+ * `YYYYMMDD` date (8) — so this leaves each actionable case quoted whole.
+ */
+const AUTH_SEGMENT_QUOTE_MAX = 32;
+
+/**
+ * Quote one caller-supplied `Authorization`-header segment for a rejection
+ * message, or withhold it when it cannot be a segment.
+ *
+ * Issue #555. These messages are `info`, not `debug`, so they print on a
+ * plain `cdkl start-api` run rather than only under `--verbose` — a
+ * different population from a verbose-gated diagnostic, and the reason the
+ * auth-header sites were the ones worth changing. What each names is a
+ * POSITION in the header, and a position holds only its own short token
+ * while the header's delimiters sit where the parser expects them. When
+ * they do not — `Credential=AKID/20260101/us-east-1/execute-api/aws4_request
+ * SignedHeaders=host Signature=<hex>`, a hand-written header using spaces
+ * where AWS wants commas — the split sweeps the REST of the header into the
+ * final segment, and the terminator message prints the `Signature=`
+ * component at default level.
+ *
+ * So a quote is allowed only for input that could still BE one segment: no
+ * whitespace, no `=`, no longer than {@link AUTH_SEGMENT_QUOTE_MAX}. Any of
+ * those failing means the parse boundary was elsewhere and the value is
+ * unrelated header material of unknown extent, reported by shape instead.
+ * Every genuine typo (`aws3_request`, `AWS4-HMAC-SHA512`) stays quoted in
+ * full — the actionability issue #246 added these messages for — while the
+ * sweep-in case degrades to a character count.
+ *
+ * Not every echo in this file goes through here, deliberately: see the
+ * `Signature=` mismatch message in {@link verifySigV4}.
+ */
+export function redactAuthorizationSegment(segment: string): string {
+  if (segment.length > AUTH_SEGMENT_QUOTE_MAX || /[\s=]/.test(segment)) {
+    return `<withheld: ${segment.length} characters of unparsed header material>`;
+  }
+  return segment;
 }
 
 /**
@@ -446,9 +498,18 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   // is permitted by the AWS spec.
   const parts = rest.split(',').map((s) => s.trim());
   const fields: Record<string, string> = {};
-  for (const part of parts) {
+  for (const [i, part] of parts.entries()) {
     const eq = part.indexOf('=');
-    if (eq < 0) throw new Error(`malformed parameter '${part}'`);
+    // Report the POSITION, never the content. A part reaching here holds no
+    // `=`, so quoting it says nothing about the fault the message already
+    // names -- while an `Authorization: Basic <base64>` sent to an AWS_IAM
+    // route arrives as exactly one such part, and quoting it would print
+    // that credential at `info` (issue #555). The developer reading the
+    // message is holding the header they sent; an index locates the part
+    // for them without cdk-local repeating any of it.
+    if (eq < 0) {
+      throw new Error(`malformed parameter ${i + 1} of ${parts.length} (no '=' in it)`);
+    }
     const key = part.slice(0, eq).trim();
     const val = part.slice(eq + 1).trim();
     fields[key] = val;
@@ -464,7 +525,15 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   // Credential format: AKID/YYYYMMDD/region/service/aws4_request
   const credParts = credential.split('/');
   if (credParts.length !== 5) {
-    throw new Error(`malformed Credential '${credential}' (expected 5 slash-separated segments)`);
+    // Count, not content: the whole Credential= value is the one segment
+    // that can never be safely quoted. It is unbounded, it is the position
+    // a hand-written (space- rather than comma-delimited) header sweeps the
+    // REST of the Authorization value into -- `Signature=<hex>` included --
+    // and the count is what makes the fault actionable anyway (issue #555).
+    throw new Error(
+      `malformed Credential: expected 5 slash-separated segments ` +
+        `'<AKID>/<YYYYMMDD>/<region>/<service>/aws4_request', got ${credParts.length}`
+    );
   }
   const [accessKeyId, date, region, service, terminator] = credParts as [
     string,
@@ -475,7 +544,9 @@ export function parseAuthorizationHeader(value: string): ParsedAuthorization {
   ];
 
   if (!/^[0-9]{8}$/.test(date)) {
-    throw new Error(`malformed credential date '${date}' (expected YYYYMMDD)`);
+    throw new Error(
+      `malformed credential date '${redactAuthorizationSegment(date)}' (expected YYYYMMDD)`
+    );
   }
 
   return {

@@ -1095,6 +1095,26 @@ export function buildVtlInput(
  * Minimal JSONPath evaluator. Supports `$`, `$.field`, `$.field.sub`,
  * `$.array[index]`. Unsupported syntax throws so the user sees a clear
  * pointer to the gap.
+ *
+ * The five throws below quote the offending expression, and `vtlFailure` in
+ * `rest-v1-integrations.ts` copies that message into the 502 response body.
+ * Issue #555 reviewed that and DELIBERATELY LEFT it — do not re-raise it as
+ * an echo of caller request data. Two reasons, and the second is the one
+ * that settles it:
+ *
+ *   1. `expr` is normally the developer's own template text — the literal
+ *      inside `$input.json('$.foo')`. It becomes caller-controllable only
+ *      when a template deliberately routes a request value into the
+ *      expression, e.g. `$input.json($input.params('p'))`.
+ *   2. Even then the 502 goes back to the caller who supplied that value,
+ *      and the SAME body already carries 200 characters of the rendered
+ *      template verbatim (see `vtlFailure`). Withholding the expression
+ *      would remove nothing from the response while destroying the only
+ *      pointer the developer has to the unsupported syntax.
+ *
+ * Unlike `$util.parseJson`'s catch above, nothing here was resolved by
+ * cdk-local out of a secret or parameter store, and no third party reads
+ * the message.
  */
 export function applyJsonPath(root: unknown, expr: string): unknown {
   const trimmed = expr.trim();

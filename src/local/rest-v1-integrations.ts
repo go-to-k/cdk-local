@@ -724,6 +724,18 @@ function pickRequestTemplate(
  */
 function extractStatusCodeFromRendered(rendered: string): number | undefined {
   const logFallback = (reason: string): undefined => {
+    // Issue #555, reviewed and DELIBERATELY LEFT — do not re-raise this as
+    // an echo of caller request data. `rendered` is the MOCK request
+    // template's output, so it can carry `$input.params(...)` /
+    // `$input.body` material from the incoming request, and `reason` can
+    // carry a `statusCode` value out of the same render. But this is
+    // `debug`: it prints only under `--verbose`, on a server the developer
+    // started, for a request they sent to their own machine — nothing here
+    // was resolved by cdk-local out of a secret or parameter store, which
+    // is the line the sibling redactions in `ecs-secrets-resolver.ts`
+    // (#554) and `sigv4-verify.ts` (#555) draw. Showing what the selection
+    // driver actually saw IS the diagnostic; withholding it would leave
+    // `--verbose` reporting only that a fallback happened.
     const truncated = rendered.length > 200 ? rendered.slice(0, 200) + '...' : rendered;
     getLogger()
       .child('start-api')
