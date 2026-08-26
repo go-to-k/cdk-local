@@ -1110,12 +1110,25 @@ function materializeInlineCode(handler: string, source: string, fileExtension: s
   return dir;
 }
 
-function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
+/**
+ * Suggest `--assume-role` when the deployed function's execution role is
+ * known and the user did not ask for it.
+ *
+ * Exported for the issue #570 ARN-flatten test. This is the MOST reachable of
+ * the sites that print a wire-derived ARN: its caller is guarded on
+ * `options.assumeRole === undefined`, so it fires on a plain
+ * `cdkl invoke --from-cfn-stack <fn>` with no role flag at all. The ARN comes
+ * from the same `resolveExecutionRoleArnFromState` whose other readers are
+ * flattened, `info` is a default level, and `cdkl studio` splits an invoke
+ * child's stdout on `\n` and emits every line as its own ring entry -- so an
+ * unflattened newline here is two entries, the second entirely attacker-chosen.
+ */
+export function suggestAssumeRoleFromState(state: StackState, logicalId: string): void {
   const logger = getLogger();
   const roleArn = resolveExecutionRoleArnFromState(state, logicalId);
   if (roleArn) {
     logger.info(
-      `Hint: the deployed function uses execution role ${roleArn}. ` +
+      `Hint: the deployed function uses execution role ${flattenToOneLine(roleArn)}. ` +
         `Re-run with --assume-role to invoke under the deployed function's narrow permissions.`
     );
   }
@@ -1186,7 +1199,8 @@ export async function resolveAssumeRoleArnForLambda(
       //
       // Deliberately not LENGTH-capped here: unlike a service message, an ARN
       // has a shape, so the bound belongs at the `startsWith('arn:')`
-      // resolution point rather than at the log line. Recorded in issue #579.
+      // resolution point rather than at the log line. Recorded in issue #579
+      // (which carries the ARN-bound paragraph as well as the relay list).
       logger.info(
         `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${flattenToOneLine(liveArn)}`
       );

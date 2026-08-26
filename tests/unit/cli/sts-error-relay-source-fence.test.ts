@@ -36,8 +36,24 @@ import { dirname, join } from 'node:path';
  *   - It is wording-bound. A tenth site spelled `STS ${op} failure` or with no
  *     `STS` token at all produces no finding — though a copy-paste-shaped one
  *     trips the exact-9 count loudly.
- *   - `readdirSync` is not recursive, so a future `src/cli/commands/<subdir>/`
- *     is unscanned.
+ *   - Its directory scope is `src/cli/commands/*.ts`, non-recursively. A
+ *     relay of the same shape lives outside it today —
+ *     `src/local/layer-arn-materializer.ts:122` renders
+ *     `STS AssumeRole(${roleArn}) failed: ${errMsg(err)}` with an unflattening
+ *     `errMsg`. It THROWS rather than logging, so it is a different surface,
+ *     and it is pre-existing; it is enumerated in issue #579 with the rest.
+ *   - `stripComments` handles a leading and a trailing `//`, not a trailing
+ *     BLOCK comment: one opening with a slash-star, naming the helper, and
+ *     closing again on the same line, placed beside a destructured
+ *     `const { message } = awsErr;`, vouches for the code and evades the
+ *     raw check at once. Deliberate self-evasion, not accident.
+ *   - The announcing check needs `STS <Op>` on ONE physical line, so a template
+ *     that wraps between `STS ` and the operation is undetected. The `+`-wrap
+ *     fix covered the `failed` half of the split, not this one.
+ *   - `RAW_RELAY` is identifier-bound to `err` / `error` / `e`, so
+ *     `caught.message`, a destructured `{ message }`, `err.toString()` and
+ *     `JSON.stringify(err)` all miss. That only bites inside the adjacency
+ *     case above, where something else already vouches.
  *
  * Its scope stays narrow on purpose: only lines that name an STS operation as
  * having failed. A broader rule ("no `err.message` in any warn") would be
@@ -94,8 +110,10 @@ const LINES_AFTER = 1;
 interface Finding {
   file: string;
   line: number;
-  /** The window with `//` comments stripped, so a comment cannot vouch for code. */
+  /** The window with comments stripped — what `HELPER_CALL` is matched against. */
   code: string;
+  /** The window verbatim — what `RAW_RELAY` is matched against. See below. */
+  raw: string;
 }
 
 /**
@@ -106,9 +124,20 @@ interface Finding {
  * line of real code, which satisfied the helper check while the code beside it
  * relayed the message raw. Measured.
  *
- * The `//` strip is naive about a `//` inside a string literal. That direction
- * is fail-CLOSED here (it can only remove text, never add a helper call), so
- * the trade is accepted.
+ * The `//` strip is naive about a `//` inside a string literal — a URL in a
+ * message truncates the line. An earlier draft called that "fail-CLOSED", which
+ * was wrong and is worth spelling out, because the reasoning covered only half
+ * the file: it IS fail-closed for `HELPER_CALL` (stripping can only remove a
+ * call, never invent one), and fail-OPEN for `RAW_RELAY` (stripping can remove
+ * a raw read that sat after the URL). A reviewer demonstrated the combination —
+ * a helper call before the URL, a raw relay after it — passing both assertions.
+ *
+ * So the two checks read DIFFERENT text, which makes the claim true by
+ * construction rather than by argument: `HELPER_CALL` gets the stripped window,
+ * `RAW_RELAY` gets the verbatim one. The cost is that a COMMENT containing
+ * something like `err.message` would trip the raw check; that is the
+ * fail-closed direction, and the assertion names the line so it is a
+ * ten-second fix.
  */
 function stripComments(text: string): string {
   return text
@@ -141,7 +170,7 @@ function stsFailureRelays(file: string): Finding[] {
     const ahead = lines.slice(i, i + LINES_AFTER + 1).join('\n');
     if (!/\bSTS\s+[A-Za-z$]/.test(line) || !STS_FAILURE_LINE.test(ahead)) continue;
     const window = lines.slice(Math.max(0, i - LINES_BEFORE), i + LINES_AFTER + 1).join('\n');
-    found.push({ file, line: i + 1, code: stripComments(window) });
+    found.push({ file, line: i + 1, code: stripComments(window), raw: window });
   }
   return found;
 }
@@ -174,7 +203,7 @@ describe('#570 — a tenth STS relay site cannot be added unguarded', () => {
   });
 
   it('leaves none of them reading the raw error message', () => {
-    const raw = all.filter((f) => RAW_RELAY.test(f.code));
+    const raw = all.filter((f) => RAW_RELAY.test(f.raw));
     expect(
       raw.map((f) => `${f.file}:${f.line}`),
       'an STS failure warn still reading err.message directly'
@@ -221,7 +250,16 @@ describe('#570 — a tenth STS relay site cannot be added unguarded', () => {
     const trailing =
       "        `STS AssumeRole failed: ${String(err)}`, // describeAwsFailureForWarn(err, 'x')";
     expect(HELPER_CALL.test(stripComments(trailing))).toBe(false);
-    expect(RAW_RELAY.test(stripComments(trailing))).toBe(true);
+    expect(RAW_RELAY.test(trailing)).toBe(true);
+
+    // (d2) and the reverse: a `//` inside a STRING must not let the strip hide
+    // a raw read that follows it. This is why `RAW_RELAY` reads the verbatim
+    // window while `HELPER_CALL` reads the stripped one.
+    const urlInString =
+      '        `STS AssumeRole failed: ${describeAwsFailureForWarn(err, op)} (https://aws.amazon.com) raw=${err.message}`';
+    expect(HELPER_CALL.test(stripComments(urlInString))).toBe(true);
+    expect(RAW_RELAY.test(stripComments(urlInString))).toBe(false);
+    expect(RAW_RELAY.test(urlInString), 'the verbatim window must still see it').toBe(true);
 
     // (e) a template wrapping across a `+` is still DETECTED.
     const wrapped = ['      `... STS AssumeRole(${arn}) ` +', '        `failed: ${err.message}`'].join(

@@ -6,6 +6,7 @@ import type { ResolvedAgentCoreRuntime } from '../../../src/local/agentcore-reso
 import {
   resolveAssumeRoleArnForLambda,
   resolveExecutionRoleArnFromState,
+  suggestAssumeRoleFromState,
 } from '../../../src/cli/commands/local-invoke.js';
 import { resolveAssumeRoleArn } from '../../../src/cli/commands/local-invoke-agentcore.js';
 import { resolveStartApiAssumeRoleArn } from '../../../src/cli/commands/local-start-api.js';
@@ -22,6 +23,13 @@ import { resolveStartApiAssumeRoleArn } from '../../../src/cli/commands/local-st
  *   - `local-invoke-agentcore.ts` — from state, and from `GetAgentRuntime`
  *   - `local-start-api.ts` — from state
  *
+ * A fourth round then found a SIXTH, more reachable than any of them:
+ * `suggestAssumeRoleFromState`'s `Hint:` line, whose caller is guarded on
+ * `options.assumeRole === undefined`, so it fires on a plain
+ * `cdkl invoke --from-cfn-stack <fn>` with no role flag at all. The first
+ * enumeration had walked the assume-role RESOLVERS rather than the readers of
+ * `resolveExecutionRoleArnFromState`.
+ *
  * Where the ARN comes from is the point. Under `--from-cfn-stack` the bare
  * `--assume-role` form reads it out of a live AWS response
  * (`Configuration.Role`, `roleArn`) or out of a state record built from one,
@@ -33,8 +41,9 @@ import { resolveStartApiAssumeRoleArn } from '../../../src/cli/commands/local-st
  *
  * This file exists because the flatten shipped UNFENCED at both of the
  * `local-invoke.ts` sites — mutation probes reverted each and all 119 tests
- * stayed green. That is the third time in this lane a `flattenToOneLine` call
- * arrived without a test, so every one of the five is driven here.
+ * stayed green. That was the third time in this lane a `flattenToOneLine` call
+ * arrived without a test, so all SIX are driven here, each by the exported
+ * function that owns it.
  */
 
 /** A forged ARN: `startsWith('arn:')` passes, and the tail forges a line. */
@@ -143,6 +152,14 @@ describe('#570 — a forged newline in a role ARN cannot forge a line on the SUC
     );
     const line = forgedLine();
     expect(line).toContain(`from GetAgentRuntime: ${FLAT}`);
+    expect(line).not.toContain('\n');
+  });
+
+  it('local-invoke: the no-flag `Hint:` line, the most reachable of the six', () => {
+    // Fires with NO `--assume-role`, on a plain `cdkl invoke --from-cfn-stack`.
+    suggestAssumeRoleFromState(stateWithRole('Handler', FORGED), 'Handler');
+    const line = forgedLine();
+    expect(line).toContain(`uses execution role ${FLAT}`);
     expect(line).not.toContain('\n');
   });
 
