@@ -1291,6 +1291,72 @@ gh issue list --state open --limit 200 --json number,updatedAt \
   done
 ```
 
+**Then run the PROMOTION check on every `next` this run filed, because a
+deferral is judged against the run that has now HAPPENED, not the run that was
+predicted when it was written.** At wrap time nobody re-opens a decision they
+remember making deliberately, so this is left as a QUERY rather than as a thing
+to remember:
+
+```bash
+# For each issue this run filed, does the run's OWN merged diff touch a file
+# that issue names? A hit means the deferral was written against a run that
+# then went somewhere else.
+RANGE="<the sha main was at when this run started>..origin/main"
+git diff --name-only "$RANGE" | sort -u > /tmp/run-touched.$$
+# The population is the issues this run FILED and left OPEN -- not the folded
+# list above, and not the ones it filed and then fixed in the same lane, which
+# section 3-a makes routine.
+for n in <the numbers this run filed that are still open>; do
+  b=$(gh issue view "$n" --json body -q .body)
+  # The prose says every `next`; without this the loop also reports items
+  # already classified `now`, which are not deferrals at all. `Session-fit`
+  # carries no GitHub label, so it has to be grepped out of the body.
+  printf '%s' "$b" | grep -q 'Session-fit: *next' || continue
+  printf '%s' "$b" \
+    | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.[a-z]+' | sort -u \
+    | while read -r f; do
+        # Suffix match, not equality: an issue body names a file by BASENAME far
+        # more often than by full path (`destroy-runner.ts`, not
+        # `src/cli/commands/destroy-runner.ts`), and an exact-line compare misses
+        # every one of those. Measured: the exact form fired on 1 of this run's 2
+        # deferrals and missed the one whose body used the basename.
+        grep -E "(^|/)$(printf '%s' "$f" | sed 's/[.[\*^$]/\\&/g')\$" \
+          /tmp/run-touched.$$ | while read -r hit; do
+            echo "PROMOTE #$n -- this run touched $hit"
+          done
+      done
+done
+rm -f /tmp/run-touched.$$
+```
+
+Pipe the whole loop through `sort -u`: a body naming the same file twice prints
+twice, and the duplicate reads as two findings.
+
+**A hit is a prompt for judgement, not a verdict** -- measured on this run's own
+two deferrals, one hit on the single file its fix touches and the other hit on
+FOUR, three of which its body cited as precedent rather than as files to change.
+The check cannot tell a citation from a target, and should not try: its job is to
+put the issue back in front of you at the moment the answer has changed.
+
+A hit is still not something to skim past. Either do the item in this run -- the context that
+made it cheap is still loaded -- or re-classify it in the issue body with the
+reason it still does not belong here.
+
+**And re-read the REASON, not just the files, because a deferral reason can name
+a state that has since resolved.** Classifying once, when the item is created,
+is right: it is what stops the post-merge moment being re-litigated. But it
+freezes the DECISION, and a reason phrased in terms of the run's own transient
+state -- "the PR carrying it is still open", "the lane holding that file is
+mid-flight", "taking this now would be a fifth review round" -- is true when
+written and FALSE the moment that state resolves. Measured in the sibling repo
+go-to-k/cdkd on 2026-08-26 (issue go-to-k/cdkd#2259, deferred while
+go-to-k/cdkd#2247 was still in review): the fix would have been a fifth review
+round on that open PR, and the reason survived unchanged
+into the wrap report after that PR merged, where it read as a considered
+judgement rather than an expired one. Re-reading a premise that has expired is
+not re-litigation; keeping a `next` alive on a reason that has stopped being
+true is.
+
 Report it as one line — `closed N / filed M (new K / folded J)` — and **when
 M > N, give the reason in one more line**. `J` is the number §5's window exists to
 move, and it is the only one of the three below that can be improved without
