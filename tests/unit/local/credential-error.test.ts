@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
+  clampErrorCode,
   clampErrorName,
   describeAwsFailureForWarn,
   describeCredentialLoadFailure,
+  flattenToOneLine,
   isAwsServiceException,
   sanitizeServiceExceptionMessage,
   stringifyThrown,
@@ -197,6 +199,35 @@ describe('sanitizeServiceExceptionMessage — the line stays one line', () => {
     expect(sanitizeServiceExceptionMessage('a\u202Eb')).toBe('a b');
   });
 
+  it('flattens U+2028 / U+2029, which are NOT control or format characters', () => {
+    // Measured, because the obvious class misses them: both are Zl / Zp, so a
+    // `[\\p{Cc}\\p{Cf}]` filter leaves them in -- and both are forced line
+    // breaks in the studio UI's `<pre>`, i.e. the forged-line case still open
+    // in HTML while closed in a terminal.
+    expect(/[\p{Cc}\p{Cf}]/u.test('\u2028')).toBe(false);
+    expect(/[\p{Cc}\p{Cf}]/u.test('\u2029')).toBe(false);
+    expect(sanitizeServiceExceptionMessage('a\u2028b\u2029c')).toBe('a b c');
+  });
+
+  it('flattens a LONE surrogate but leaves a well-formed pair alone', () => {
+    expect(sanitizeServiceExceptionMessage('a\uD800b')).toBe('a b');
+    expect(sanitizeServiceExceptionMessage('a\u{1F600}b')).toBe('a\u{1F600}b');
+  });
+
+  it('flattens an ANSI escape', () => {
+    expect(sanitizeServiceExceptionMessage('a\u001B[31mred')).toBe('a [31mred');
+  });
+
+  it('cuts on code points, so truncation cannot split a surrogate pair', () => {
+    const msg = '\u{1F600}'.repeat(600);
+    const out = sanitizeServiceExceptionMessage(msg);
+    expect(out).toBe(`${'\u{1F600}'.repeat(512)}[... truncated; 600-character message]`);
+    // The UTF-16 length is 1200; a `.slice(0, 512)` would have cut mid-pair and
+    // emitted a lone surrogate, which this asserts did not happen.
+    expect(msg.length).toBe(1200);
+    expect([...out].some((c) => /\p{Cs}/u.test(c))).toBe(false);
+  });
+
   it('keeps a 512-character message whole', () => {
     const msg = 'A'.repeat(512);
     expect(sanitizeServiceExceptionMessage(msg)).toBe(msg);
@@ -217,6 +248,45 @@ describe('sanitizeServiceExceptionMessage — the line stays one line', () => {
   });
 });
 
+describe('flattenToOneLine — one emitted line stays one line', () => {
+  it('is what the debug line uses, so a withheld message cannot forge one either', () => {
+    expect(flattenToOneLine('a\nb\r\nc')).toBe('a b  c');
+  });
+
+  it('does not truncate: the debug line exists to carry the whole message', () => {
+    const long = 'A'.repeat(5000);
+    expect(flattenToOneLine(long)).toBe(long);
+  });
+});
+
+describe('clampErrorCode — the field that separates ENOTFOUND from a misconfig', () => {
+  it('returns a Node system-error code', () => {
+    expect(clampErrorCode(Object.assign(new Error('getaddrinfo ENOTFOUND x'), { code: 'ENOTFOUND' }))).toBe(
+      'ENOTFOUND'
+    );
+  });
+
+  it('returns undefined when there is no code, rather than a placeholder', () => {
+    expect(clampErrorCode(new Error('Region is missing'))).toBeUndefined();
+    expect(clampErrorCode('string throw')).toBeUndefined();
+    expect(clampErrorCode(null)).toBeUndefined();
+  });
+
+  it('returns undefined for a non-string code', () => {
+    expect(clampErrorCode(Object.assign(new Error('x'), { code: 42 }))).toBeUndefined();
+  });
+
+  it('clamps by the same rule as the name, so it cannot forge a line either', () => {
+    expect(
+      clampErrorCode(Object.assign(new Error('x'), { code: 'Foo\nWARN: signature verified' }))
+    ).toBeUndefined();
+    expect(clampErrorCode(Object.assign(new Error('x'), { code: 'A'.repeat(65) }))).toBeUndefined();
+    expect(clampErrorCode(Object.assign(new Error('x'), { code: 'A'.repeat(64) }))).toBe(
+      'A'.repeat(64)
+    );
+  });
+});
+
 describe('describeCredentialLoadFailure — #564 shape, unchanged by the move', () => {
   it('reports the clamped class name and the length, never the message', () => {
     const out = describeCredentialLoadFailure(new CredentialsProviderError(CHAIN_MESSAGE));
@@ -226,6 +296,21 @@ describe('describeCredentialLoadFailure — #564 shape, unchanged by the move', 
     );
     expect(out).not.toContain(PASSPHRASE);
     expect(out).not.toContain('Command failed');
+  });
+
+  it('adds the clamped code when the throw carries one', () => {
+    const dns = Object.assign(new Error('getaddrinfo ENOTFOUND sts.us-east-1.amazonaws.com'), {
+      code: 'ENOTFOUND',
+    });
+    expect(describeCredentialLoadFailure(dns)).toBe(
+      'Error ENOTFOUND; 49-character message withheld, logged at debug level under --verbose'
+    );
+  });
+
+  it('omits the code entirely when there is none, keeping #564 output byte-identical', () => {
+    expect(describeCredentialLoadFailure(new CredentialsProviderError('abcdefghij'))).toBe(
+      'CredentialsProviderError; 10-character message withheld, logged at debug level under --verbose'
+    );
   });
 });
 
@@ -247,11 +332,18 @@ describe('describeAwsFailureForWarn — the split by population', () => {
   });
 
   it('keeps a modeled service exception message, which is the diagnosis', () => {
+    // `ExpiredTokenException` is the name `@aws-sdk/client-sts` actually sets
+    // (`dist-cjs/models/errors.js:6`), not the bare wire code.
     const out = describeAwsFailureForWarn(
-      serviceException('ExpiredToken', 'The security token included in the request is expired'),
+      serviceException(
+        'ExpiredTokenException',
+        'The security token included in the request is expired'
+      ),
       'STS GetCallerIdentity'
     );
-    expect(out).toBe('ExpiredToken: The security token included in the request is expired');
+    expect(out).toBe(
+      'ExpiredTokenException: The security token included in the request is expired'
+    );
   });
 
   it('does NOT re-log a kept service message at debug', () => {
@@ -300,6 +392,25 @@ describe('describeAwsFailureForWarn — the split by population', () => {
     );
     expect(out).not.toContain('raw throw text');
     expect(debug.calls()).toContain('raw throw text');
+    debug.restore();
+  });
+
+  it('flattens the withheld text on the DEBUG line too', () => {
+    const debug = spy('debug');
+    describeAwsFailureForWarn(new CredentialsProviderError(CHAIN_MESSAGE), 'STS AssumeRole');
+    const line = debug.calls();
+    // The chain message is two lines; the debug stream is the same stdout
+    // `cdkl studio` mirrors into an HTTP-served ring, so it must arrive as one.
+    expect(line).toContain(PASSPHRASE);
+    expect(line.split('\n')).toHaveLength(1);
+    debug.restore();
+  });
+
+  it('does NOT truncate the debug line: reading it whole is why it exists', () => {
+    const debug = spy('debug');
+    const long = 'B'.repeat(5000);
+    describeAwsFailureForWarn(new CredentialsProviderError(long), 'STS AssumeRole');
+    expect(debug.calls()).toContain(long);
     debug.restore();
   });
 

@@ -6,9 +6,18 @@
  *
  * Issue #564 settled the policy for one site — the credential-chain failure
  * in {@link file://./sigv4-verify.ts} — and #570 found the same shape at nine
- * more, spread across four `src/cli/commands/*.ts` files. Every one of them
+ * more, spread across five `src/cli/commands/*.ts` files. Every one of them
  * relays a third-party error's `message` into a `logger.warn`, so they share
  * one question and must not grow nine answers to it.
+ *
+ * SCOPE, stated so a later sweep finds a decision rather than an oversight:
+ * this module governs those nine plus sigv4-verify's one. It does NOT yet
+ * govern the AWS SDK error relays elsewhere under `src/local/**` — notably
+ * `formatAwsErrorForWarn` (`cfn-local-state-provider.ts`, seven warn sites)
+ * and `formatSsmError` (`ssm-parameter-resolver.ts`), which still print an
+ * UNCLAMPED wire-derived `err.name`. Those are enumerated and tracked in
+ * issue #579; they were left out here so a cross-cutting refactor of eight
+ * more files would not share a review with the policy that justifies it.
  *
  * # The two axes that decide it
  *
@@ -43,15 +52,18 @@
  *
  *   1. the credential chain failed before the request went out, which is
  *      #564's population exactly, and
- *   2. STS answered with a modeled service exception — `ExpiredToken`,
- *      `AccessDenied`, `InvalidClientTokenId` — whose message IS the
- *      diagnosis the user needs, and which never went near
- *      `credential_process`.
+ *   2. STS answered with a modeled service exception — `ExpiredTokenException`,
+ *      `AccessDenied` — whose message IS the diagnosis the user needs, and
+ *      which never went near `credential_process`. (Spelled as the SDK
+ *      spells them: `@aws-sdk/client-sts` models `ExpiredTokenException`
+ *      (`dist-cjs/models/errors.js:6`), while `AccessDenied` is unmodeled and
+ *      arrives as the wire code verbatim — which is exactly why the name is
+ *      clamped rather than trusted.)
  *
  * Blanket-withholding would turn the single commonest failure of these
- * commands (`ExpiredToken: The security token included in the request is
- * expired`) into a class name and a character count. So the split is by
- * population, via {@link describeAwsFailureForWarn}.
+ * commands (`ExpiredTokenException: The security token included in the
+ * request is expired`) into a class name and a character count. So the split
+ * is by population, via {@link describeAwsFailureForWarn}.
  *
  * # The safe state is defined POSITIVELY
  *
@@ -60,10 +72,27 @@
  * race here. It is the SDK's own structural test for "this came off the wire
  * as a modeled service error" ({@link isAwsServiceException}). Anything that
  * does not match — a chain failure, a socket error, a bare `throw 'x'` — is
- * withheld. An unrecognised shape therefore fails toward withholding, and so
- * does a hostile endpoint that forges `x-amzn-errortype:
- * CredentialsProviderError` to dodge the branch: it lands in the withheld
- * bucket, which discloses strictly less.
+ * withheld. An unrecognised shape therefore fails toward withholding.
+ *
+ * A hostile endpoint cannot steer the discriminator into disclosing MORE.
+ * `$fault` / `$metadata` are set by the SDK from the HTTP response, not from
+ * anything the body names, so forging `x-amzn-errortype:
+ * CredentialsProviderError` only changes `err.name` — the response is still a
+ * service response, so the error stays on the KEPT branch and its message is
+ * still the sanitized, capped one the endpoint could have sent under any
+ * other name. What the endpoint cannot do is move a `credential_process`
+ * command line onto that branch: that text originates locally, inside a
+ * `CredentialsProviderError` that never acquires `$fault`.
+ *
+ * # What this does NOT close
+ *
+ * A single-LINE forged string still reaches readers other than a human.
+ * `cdkl studio` matches every serve-child stdout line against an unanchored
+ * ready-line regex and proxies to the URL it captures, so a message
+ * containing `Server listening on http://...` can redirect the studio proxy.
+ * That is not fixed here — the sanitizer bounds the line, it does not stop a
+ * machine from reading it — and it predates this change (an ordinary handler
+ * log line trips the same matcher). Tracked in issue #578.
  */
 import { getLogger } from '../utils/logger.js';
 
@@ -148,6 +177,33 @@ export function clampErrorName(err: unknown): string {
 }
 
 /**
+ * The thrown value's `code`, when it is a bare identifier, else `undefined`.
+ *
+ * This exists because withholding by class name alone is not discriminating
+ * enough for the population that actually reaches the withheld branch most
+ * often. `Region is missing`, `getaddrinfo ENOTFOUND sts.<region>.amazonaws.com`
+ * and `connect ETIMEDOUT 169.254.169.254:80` all arrive as a plain `Error`, so
+ * all three render as `Error; N-character message withheld` and the reader
+ * cannot tell a misconfiguration from an unreachable endpoint.
+ *
+ * Node sets `code` on its system errors (`ENOTFOUND`, `ETIMEDOUT`,
+ * `ECONNREFUSED`) and it is a fixed enum of bare identifiers chosen by the
+ * runtime, not read off a response — the same property that makes a clamped
+ * `name` safe to quote. It is clamped anyway, by the same rule, so nothing
+ * rests on that argument holding for a value some library sets by hand.
+ *
+ * `undefined` rather than `'unknown'` when there is none, so the caller can
+ * omit the field entirely instead of printing a placeholder that says less
+ * than nothing.
+ */
+export function clampErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const raw = (err as { code?: unknown }).code;
+  if (typeof raw !== 'string') return undefined;
+  return /^[A-Za-z0-9_.-]{1,64}$/.test(raw) ? raw : undefined;
+}
+
+/**
  * Is `err` a modeled AWS service exception — i.e. did the SDK parse it out of
  * a service RESPONSE, rather than raise it while assembling the request?
  *
@@ -174,25 +230,67 @@ export function isAwsServiceException(err: unknown): boolean {
 }
 
 /**
+ * Replace every character that could make one emitted line render as more than
+ * one line, or render in an order it was not written in, with a space.
+ *
+ * Four Unicode categories, each measured rather than assumed (see the fixture
+ * in `tests/unit/local/credential-error.test.ts`):
+ *
+ *   - `Cc` — the C0/C1 controls, which is `\n` / `\r` (a forged extra line in
+ *     the studio ring) and `\x1b` (an ANSI escape in a terminal). U+0085 NEL
+ *     lives here too.
+ *   - `Cf` — the format characters, which is U+202E RIGHT-TO-LEFT OVERRIDE and
+ *     friends: they forge how the REST of the line reads. The cost is that a
+ *     ZWJ inside an emoji or an Indic cluster is replaced too; an AWS error
+ *     message is ASCII, so that is a trade with no observed downside.
+ *   - `Zl` / `Zp` — U+2028 and U+2029. Neither is in `Cc` or `Cf`, and both are
+ *     forced line breaks in the studio UI's `<pre>`, so leaving them out would
+ *     have left the forged-line case open in HTML while closing it in a
+ *     terminal.
+ *   - `Cs` — a LONE surrogate, which is not a character at all and breaks JSON
+ *     encoding of the log event. With the `u` flag a well-formed pair is one
+ *     code point and does NOT match, so emoji survive.
+ *
+ * Used by both branches of {@link describeAwsFailureForWarn}: the kept
+ * message, and the `debug` line carrying the withheld one — because the
+ * `debug` stream is the SAME studio ring under `--verbose`, so a text that is
+ * unsafe to put on a line at `warn` is unsafe to put on a line at `debug`.
+ */
+export function flattenToOneLine(message: string): string {
+  return message.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu, ' ');
+}
+
+/**
  * Render a wire-derived service message safe to put on one log line.
  *
  * Two properties, and both are about the LINE rather than about secrecy — the
  * message itself is already judged safe to print by the time this is called:
  *
- *   - No control or format characters. A newline forges a whole log line into
- *     the studio ring; a bidi override (U+202E) forges how the rest of the
- *     line READS in the studio UI. Both become a space, so the text stays
- *     legible and the count of lines cdk-local emitted stays honest.
+ *   - No line breaks and no rendering-direction control, via
+ *     {@link flattenToOneLine}.
  *   - Bounded length, with the true length named when it is exceeded. The
  *     suffix names the character count of the SANITIZED message rather than
  *     of the raw one, because the sanitized string is what the truncated
  *     prefix is a prefix OF; quoting the raw length would describe a string
  *     the reader can never see.
+ *
+ * The cut is made on CODE POINTS rather than UTF-16 units, so a truncation
+ * landing inside an astral character cannot emit half of a surrogate pair. The
+ * count in the suffix is the code-point count for the same reason: the prefix
+ * and the number must describe the same string.
  */
 export function sanitizeServiceExceptionMessage(message: string): string {
-  const flattened = message.replace(/[\p{Cc}\p{Cf}]/gu, ' ');
-  if (flattened.length <= SERVICE_MESSAGE_MAX) return flattened;
-  return `${flattened.slice(0, SERVICE_MESSAGE_MAX)}[... truncated; ${flattened.length}-character message]`;
+  // Code points are exactly the unit wanted here. `no-misused-spread`'s concern
+  // is that spreading a string splits grapheme CLUSTERS (a ZWJ emoji sequence, a
+  // combining mark), and that is accepted: the input is an AWS error message,
+  // and the property being bought is that the cut cannot land inside a surrogate
+  // PAIR and emit half of one. `Intl.Segmenter` would preserve clusters and is
+  // what the rule suggests, but it makes the cap locale-dependent, which a
+  // log-line bound must not be.
+  // oxlint-disable-next-line typescript/no-misused-spread
+  const points = [...flattenToOneLine(message)];
+  if (points.length <= SERVICE_MESSAGE_MAX) return points.join('');
+  return `${points.slice(0, SERVICE_MESSAGE_MAX).join('')}[... truncated; ${points.length}-character message]`;
 }
 
 /**
@@ -202,7 +300,16 @@ export function sanitizeServiceExceptionMessage(message: string): string {
  * What is reported instead is input-INDEPENDENT: the clamped class name (see
  * {@link clampErrorName}), which is the same discriminator
  * `ecs-secrets-resolver.ts` reports for the JSON parse failure it must not
- * echo.
+ * echo, plus the clamped {@link clampErrorCode} when the throw carries one.
+ *
+ * Withholding is NOT free, and the cost lands on cdk-local's own text as well
+ * as on the SDK's: `role-arn.ts`'s
+ * `AssumeRole(<arn>) returned no usable credentials.` is a plain `Error` with
+ * no `$fault`, so it is withheld like any other. That is a real diagnostic
+ * loss, accepted because the alternative — an allow-list of messages that may
+ * print — is the deny-list this design rejects, wearing the other sign. The
+ * fix is to make cdk-local's own throws identifiable rather than to guess at
+ * their text; it is not done here, and is noted in issue #579.
  *
  * The LENGTH is reported, unlike in `ecs-secrets-resolver.ts`, and the
  * difference is deliberate: there the user already knows which secret it is
@@ -223,7 +330,9 @@ export function sanitizeServiceExceptionMessage(message: string): string {
  * exists for.
  */
 export function describeCredentialLoadFailure(err: unknown): string {
-  return `${clampErrorName(err)}; ${stringifyThrown(err).length}-character message withheld, logged at debug level under --verbose`;
+  const code = clampErrorCode(err);
+  const kind = code === undefined ? clampErrorName(err) : `${clampErrorName(err)} ${code}`;
+  return `${kind}; ${stringifyThrown(err).length}-character message withheld, logged at debug level under --verbose`;
 }
 
 /**
@@ -245,11 +354,27 @@ export function describeCredentialLoadFailure(err: unknown): string {
  * The `debug` line fires ONLY on the withheld branch. On the service-exception
  * branch the `warn` already carries the message, and repeating it verbatim one
  * level down would say nothing the reader did not just read.
+ *
+ * It is FLATTENED (not capped). Flattened because the `debug` stream is not a
+ * private channel: it is the same stdout `cdkl studio` mirrors into the log
+ * ring it serves over HTTP, so a `\n` in the withheld text would forge a line
+ * there exactly as it would at `warn`. Not capped, because being able to read
+ * the whole withheld message is the entire reason the line exists — the
+ * `warn`'s character count is what tells the reader how much they are about to
+ * see. Note that this puts the full text into that ring for a
+ * `--verbose` studio run; see `docs/troubleshooting.md`.
+ *
+ * ORDERING: the `debug` line is emitted while the `warn`'s template is being
+ * evaluated, so under `--verbose` it prints immediately ABOVE the `warn` that
+ * refers to it. Left as is — restructuring every call site to log afterwards
+ * would buy an ordering nobody reads top-down anyway.
  */
 export function describeAwsFailureForWarn(err: unknown, operation: string): string {
   if (isAwsServiceException(err)) {
     return `${clampErrorName(err)}: ${sanitizeServiceExceptionMessage(stringifyThrown(err))}`;
   }
-  getLogger().debug(`${operation}: the AWS SDK's own failure message was: ${stringifyThrown(err)}`);
+  getLogger().debug(
+    `${operation}: the AWS SDK's own failure message was: ${flattenToOneLine(stringifyThrown(err))}`
+  );
   return describeCredentialLoadFailure(err);
 }

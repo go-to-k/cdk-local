@@ -581,7 +581,12 @@ compute-locally category for Lambda + API Gateway).
   character count, emitting the full text at `debug`;
   `describeCredentialLoadFailure` is the unconditional-withhold form for a
   `catch` around credential resolution alone, which is what `sigv4-verify`
-  uses. Both are re-exported from `src/internal.ts`),
+  uses. Both are re-exported from `src/internal.ts`. SCOPE: it governs
+  `sigv4-verify` plus the nine STS relays in `src/cli/commands/**`; the
+  remaining AWS SDK error relays elsewhere under `src/local/**` — notably
+  `formatAwsErrorForWarn` in `cfn-local-state-provider` and `formatSsmError`
+  in `ssm-parameter-resolver`, which still print an UNCLAMPED wire-derived
+  `err.name` — are enumerated in issue #579),
   rie-client, intrinsic-image, runtime-image, target-lister
   (`cdkl list` target enumeration), target-picker (interactive arrow-key
   target selection via `@clack/prompts` when a target is omitted in a TTY),

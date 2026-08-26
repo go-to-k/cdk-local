@@ -3665,9 +3665,9 @@ export async function loadStateForRoutedStacks(
  * the state record's region (returned by the active `LocalStateProvider`).
  *
  * Exported so the issue #570 site-level test can drive the STS failure
- * branch with a mocked STS client -- the same reason
- * `applyAgentCoreCredentialEnv` below is exported. A helper being correct
- * says nothing about whether a given site actually routes through it.
+ * branch with a mocked STS client. A helper being correct says nothing about
+ * whether a given site actually routes through it, so each of the nine
+ * converted sites is driven separately.
  */
 export async function resolvePseudoParametersForStartApi(
   stateRegion: string,

@@ -103,7 +103,10 @@ const SERVICE_MESSAGE = 'The security token included in the request is expired';
 
 function expiredTokenError(): Error {
   const e = new Error(SERVICE_MESSAGE);
-  Object.defineProperty(e, 'name', { value: 'ExpiredToken' });
+  // The name the SDK actually sets: `@aws-sdk/client-sts` models this one, at
+  // `dist-cjs/models/errors.js:6`. (`AccessDenied`, used below, is NOT modeled
+  // and arrives as the wire code verbatim -- both shapes are exercised.)
+  Object.defineProperty(e, 'name', { value: 'ExpiredTokenException' });
   Object.assign(e, {
     $fault: 'client',
     $metadata: { httpStatusCode: 403, requestId: 'req-1' },
@@ -228,10 +231,13 @@ interface Site {
    * A literal unique to THIS site's warn text, proving the fixture reached
    * the intended `catch` and not some other warn the same call emits.
    *
-   * `local-run-task` and `local-start-service` share a byte-identical
-   * spelling, so for those two the discriminator is the MODULE each row
-   * drives, not the string — which is why every row calls exactly one
-   * command module.
+   * TWO pairs share a byte-identical spelling, not one: `local-run-task` /
+   * `ecs-service-emulator` (the `${AWS::AccountId}` line) and
+   * `local-invoke` / `local-invoke-agentcore` (the bare `--assume-role: STS
+   * AssumeRole(<arn>) failed: ` line). For those four rows the discriminator
+   * is the MODULE the row drives, not the string — which is why every row
+   * calls exactly one command module and no row is ever consolidated with
+   * another on the strength of its literal.
    */
   reached: string;
   /** Whether the site interpolates the role ARN, which must keep printing. */
@@ -388,6 +394,22 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
     expect(sites).toHaveLength(9);
     expect(new Set(sites.map((s) => s.name)).size).toBe(9);
     expect(sites.filter((s) => s.quotesRoleArn)).toHaveLength(4);
+
+    // The role ARN is fenced by `reached` itself, not by a separate case: for
+    // the four quoting sites the ARN is INSIDE the literal that `siteWarn`
+    // requires to appear in a real warn line, so every one of this row's other
+    // cases already fails if the ARN stops printing. A dedicated
+    // `expect(line).toContain(ROLE_ARN)` could not fail after `siteWarn`
+    // returned, which is why there is no such case.
+    //
+    // What this asserts is the remaining half: that `quotesRoleArn` agrees
+    // with the literal, so the flag cannot drift into describing a site it no
+    // longer describes.
+    for (const s of sites) {
+      expect(s.reached.includes(ROLE_ARN), `${s.name}: quotesRoleArn disagrees with reached`).toBe(
+        s.quotesRoleArn
+      );
+    }
   });
 
   describe.each(sites)('$name', (site) => {
@@ -412,7 +434,9 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
       sendMock.mockRejectedValue(expiredTokenError());
       await site.drive();
 
-      expect(siteWarn(site)).toContain(`${site.reached}ExpiredToken: ${SERVICE_MESSAGE}`);
+      expect(siteWarn(site)).toContain(
+        `${site.reached}ExpiredTokenException: ${SERVICE_MESSAGE}`
+      );
     });
 
     it('flattens a forged newline inside a kept service message', async () => {
@@ -424,11 +448,16 @@ describe('#570 — no AWS SDK error message reaches a warn unfiltered', () => {
       expect(line).not.toContain('\n');
     });
 
-    it('keeps the role ARN when the site quotes one', async () => {
-      if (!site.quotesRoleArn) return;
-      sendMock.mockRejectedValue(chainError());
+    it('withholds an unstringifiable throw rather than crashing the site', async () => {
+      // Reaches `stringifyThrown`'s `[unstringifiable throw]` fallback through
+      // a real call site, not just through the helper: `String()` on a
+      // null-prototype object raises TypeError, and that throw escaping the
+      // `catch` would turn warn-and-continue into a hard failure.
+      sendMock.mockRejectedValue(Object.create(null));
       await site.drive();
-      expect(siteWarn(site)).toContain(ROLE_ARN);
+      expect(siteWarn(site)).toContain(
+        `${site.reached}unknown; 23-character message withheld`
+      );
     });
   });
 });

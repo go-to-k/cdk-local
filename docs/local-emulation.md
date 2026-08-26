@@ -942,8 +942,8 @@ Outcomes:
 
   The STS calls behind `${AWS::AccountId}` resolution and `--assume-role` are
   governed by the same policy, with one difference: those wrap a call
-  cdk-local made, so when STS itself answers (`ExpiredToken`, `AccessDenied`)
-  the message is the diagnosis and keeps printing. See
+  cdk-local made, so when STS itself answers (`ExpiredTokenException`,
+  `AccessDenied`) the message is the diagnosis and keeps printing. See
   [Troubleshooting](./troubleshooting.md#an-sts-warn-says-the-message-was-withheld).
   Here there is no such call — the failure is always the local chain's — so
   the message is withheld unconditionally.
