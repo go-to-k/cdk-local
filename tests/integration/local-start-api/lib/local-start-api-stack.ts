@@ -13,6 +13,39 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Run this fixture's Lambdas at the HOST's CPU architecture.
+ *
+ * cdk-local pins `docker --platform` to each function's declared
+ * `Architectures` (see `pullImage` / `architectureToPlatform`), which is
+ * the correct behavior: a `provided.*` bootstrap compiled for one arch
+ * must get the matching base image. But a function that declares no
+ * `architecture` defaults to `X86_64`, so on an arm64 host every
+ * container in this fixture ran `linux/amd64` under CPU emulation --
+ * and the Go RIE inside `public.ecr.aws/lambda/nodejs:20` faults
+ * intermittently there, at a different assertion on every run
+ * (issue #560).
+ *
+ * The base image is multi-arch -- `docker manifest inspect
+ * public.ecr.aws/lambda/nodejs:20` lists both `arm64`/v8 and `amd64` --
+ * so declaring the host arch makes the container native on an Apple
+ * Silicon dev host AND on an x86_64 CI runner, rather than trading one
+ * host's emulation for the other's. Nothing in verify.sh asserts the
+ * architecture, so this costs no coverage.
+ *
+ * Caveat: `process.arch` is the architecture of the Node process running
+ * this CDK app, NOT the Docker daemon's. A Rosetta-emulated Node, or a
+ * `DOCKER_HOST` / `docker context` aimed at a foreign-arch daemon, can
+ * still declare the non-native arch. Neither is the ordinary local case,
+ * and cdk-local's emulation warning still fires when it happens.
+ *
+ * Keep this on every function in this fixture: a new handler that omits
+ * it silently reintroduces the arm64-only flake. The fence lives in
+ * `tests/unit/integ-fixture-host-architecture.test.ts`.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * Fixture stack for `cdkl start-api` integ test.
  *
  * No AWS deploy required — the integ exercises the synthesized cdk.out
@@ -64,6 +97,7 @@ export class LocalStartApiStack extends cdk.Stack {
 
     const itemsHandler = new lambda.Function(this, 'ItemsHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-items')),
       timeout: cdk.Duration.seconds(10),
@@ -102,12 +136,14 @@ export class LocalStartApiStack extends cdk.Stack {
     // Authorizer-protected route (PR 8b) — Lambda REQUEST authorizer.
     const authorizerHandler = new lambda.Function(this, 'AuthorizerHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-authorizer')),
       timeout: cdk.Duration.seconds(10),
     });
     const protectedHandler = new lambda.Function(this, 'ProtectedHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-protected')),
       timeout: cdk.Duration.seconds(10),
@@ -137,6 +173,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // `event.stageVariables.STAGE === 'prod'`.
     const restHandler = new lambda.Function(this, 'RestHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-rest')),
       timeout: cdk.Duration.seconds(10),
@@ -197,6 +234,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // us fixture this without spinning up a separate stack.
     const crossStackAuthHandler = new lambda.Function(this, 'CrossStackAuthFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       // Reuse the existing lambda-authorizer asset — never actually
       // invoked locally because the route 501s before the authorizer
@@ -337,6 +375,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // Function URL on a separate Lambda.
     const urlHandler = new lambda.Function(this, 'UrlHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-url')),
       timeout: cdk.Duration.seconds(10),
@@ -352,6 +391,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // — the documented Node 20 streaming Lambda entrypoint.
     const streamUrlHandler = new lambda.Function(this, 'StreamUrlHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-stream-url')),
       timeout: cdk.Duration.seconds(30),
@@ -375,6 +415,7 @@ export class LocalStartApiStack extends cdk.Stack {
       'StreamUrlSetContentTypeHandler',
       {
         runtime: lambda.Runtime.NODEJS_20_X,
+        architecture: HOST_ARCHITECTURE,
         handler: 'index.handler',
         code: lambda.Code.fromAsset(
           path.join(__dirname, '../lambda-stream-url-set-content-type')
@@ -396,6 +437,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // asserts the request reaches the handler instead of being denied.
     const oacUrlHandler = new lambda.Function(this, 'OacUrlHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-url')),
       timeout: cdk.Duration.seconds(10),
@@ -418,6 +460,7 @@ export class LocalStartApiStack extends cdk.Stack {
     // foreign-credential SigV4 header.
     const iamUrlHandler = new lambda.Function(this, 'IamUrlHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda-url')),
       timeout: cdk.Duration.seconds(10),
