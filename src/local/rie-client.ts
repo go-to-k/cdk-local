@@ -466,7 +466,9 @@ export async function invokeRieStreaming(
       // is the only one suppressed here. V8 embeds a ~10-character prefix of
       // the PARSED INPUT in `SyntaxError.message` (quoting a short input in
       // FULL), and those bytes are NOT guaranteed to be protocol framing: the
-      // split above scans the WHOLE response for an 8-NUL run, and the
+      // split above scans the response for an 8-NUL run (up to
+      // `STREAM_PRELUDE_MAX_BYTES`, 1 MiB, past which it gives up with its
+      // own error rather than reaching here), and the
       // unframed-response block ABOVE records that the commonest handler
       // shape in the wild -- `streamifyResponse` plus `setContentType` /
       // `write`, never calling `HttpResponseStream.from` -- emits no framing

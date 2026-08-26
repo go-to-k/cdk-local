@@ -58,6 +58,10 @@ describe('$util.parseJson failure message (go-to-k/cdkd#2203)', () => {
     const message = parseJsonFailure(body);
 
     expect(message).not.toContain('hunter2-my');
+    // Also fence the parser's PHRASING, not just the quoted segment: a
+    // message that kept `Unexpected token 'h', is not valid JSON` with only
+    // the quote stripped still leaks the first character and the offset.
+    expect(message).not.toContain('Unexpected token');
 
     expect(message).toContain('$util.parseJson');
     expect(message).toContain('SyntaxError');
@@ -75,29 +79,54 @@ describe('$util.parseJson failure message (go-to-k/cdkd#2203)', () => {
     const message = parseJsonFailure(body);
 
     expect(message).not.toContain(body);
+    expect(message).not.toContain('Unexpected token');
 
     expect(message).toContain('$util.parseJson');
     expect(message).toContain('SyntaxError');
     expect(message).toContain('argument length 4)');
   });
 
-  it('reports the COERCED length, so a circular argument is not called an empty body', () => {
-    // `coerce` answers `''` for a value `JSON.stringify` refuses, so the
-    // reported length is 0 for a non-empty argument. The message therefore
-    // says "argument length 0" and deliberately does NOT claim the caller
-    // sent an empty body.
+  it('reports the COERCED length for every value that coerces to the empty string', () => {
+    // `coerce` answers `''` two different ways, and only one of them was
+    // covered before: `JSON.stringify` THROWS on a circular object, and
+    // RETURNS `undefined` for a function / symbol / `toJSON`-yielding-
+    // undefined. The second kind used to make `s.length` throw a TypeError,
+    // so the caller got something OTHER than a `VtlEvaluationError` -- the
+    // class hosts are documented to be able to `instanceof`.
     const circular: Record<string, unknown> = {};
     circular['self'] = circular;
-    const util = buildDefaultUtil();
+    const toJsonUndefined = { toJSON: () => undefined };
 
-    let message = '';
-    try {
-      util.parseJson(circular);
-    } catch (err) {
-      message = (err as Error).message;
+    for (const [label, value] of [
+      ['circular (stringify throws)', circular],
+      ['function (stringify returns undefined)', () => 'x'],
+      ['symbol (stringify returns undefined)', Symbol('s')],
+      ['toJSON -> undefined', toJsonUndefined],
+    ] as const) {
+      let caught: unknown;
+      try {
+        buildDefaultUtil().parseJson(value);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught, label).toBeInstanceOf(VtlEvaluationError);
+      expect((caught as Error).message, label).toContain('argument length 0)');
     }
+  });
 
-    expect(message).toContain('argument length 0)');
-    expect(message).not.toContain('empty body');
+  it('reaches the empty-coercion path from a TEMPLATE, not just a direct call', () => {
+    // `$input.json` / `$input.path` / `$input.params` are own-property
+    // FUNCTIONS on the object `buildVtlInput` returns, so forgetting the call
+    // parens hands one straight to `$util.parseJson`. This is the reachable
+    // spelling of the case above.
+    const ctx = contextWithBody('{"a":1}');
+    let caught: unknown;
+    try {
+      evaluateVtl('$util.parseJson($input.params)', ctx);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(VtlEvaluationError);
+    expect((caught as Error).message).toContain('argument length 0)');
   });
 });

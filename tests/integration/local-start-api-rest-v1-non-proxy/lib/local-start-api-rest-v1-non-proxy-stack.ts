@@ -36,6 +36,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *     request body, invoke the Lambda, and shape the response via VTL
  *     into `{"data": "Hello, <name>"}`. The integ asserts that the
  *     request-side AND response-side VTL both fired.
+ *
+ *   - `POST /parse-json-header` — MOCK whose request template runs
+ *     `$util.parseJson` over a request HEADER, and
+ *     `POST /parse-json-body` — AWS (Lambda non-proxy) whose request
+ *     template runs it over the request BODY. Both cover
+ *     go-to-k/cdkd#2203: the failure message must not echo a prefix of
+ *     what it parsed, and `vtlFailure` copies that message into the 502
+ *     response body, so the assertion has to be made over HTTP. The two
+ *     vectors are separate because a MOCK template is handed a hardcoded
+ *     EMPTY body and can only see a header.
  */
 export class LocalStartApiRestV1NonProxyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

@@ -158,7 +158,18 @@ export function buildDefaultUtil(): VtlUtil {
     }
     // Object / array — JSON-stringify to avoid the `[object Object]` trap.
     try {
-      return JSON.stringify(v);
+      // `?? ''` is load-bearing, not defensive: `JSON.stringify` RETURNS
+      // `undefined` (it does not throw) for a function, a symbol, or an
+      // object whose `toJSON` yields undefined, and TypeScript hides that
+      // because `JSON.stringify(unknown)` selects the `any` overload. All
+      // three are reachable from a template -- `$input.json` / `$input.path`
+      // / `$input.params` are own-property FUNCTIONS on the object
+      // `buildVtlInput` returns, so `$util.parseJson($input.params)` (the
+      // call parens forgotten) hands one straight in. Without the coalesce
+      // this returns `undefined` and every `.length` / `.replace` on the
+      // result throws a TypeError, escaping as something other than the
+      // `VtlEvaluationError` a host is documented to be able to `instanceof`.
+      return JSON.stringify(v) ?? '';
     } catch {
       return '';
     }
@@ -214,10 +225,13 @@ export function buildDefaultUtil(): VtlUtil {
         // `err.name` is input-independent and safe as a discriminator, and
         // the argument's LENGTH is reported because it is the one property of
         // the input a developer can act on without being shown it. Note the
-        // length is that of the COERCED string: `coerce` answers `''` for a
-        // value `JSON.stringify` refuses (a circular object), so a reported
-        // length of 0 means "nothing was there to parse" and NOT necessarily
-        // "the caller sent an empty body".
+        // length is that of the COERCED string, and `coerce` answers `''` for
+        // two different kinds of value: one `JSON.stringify` THROWS on (a
+        // circular object) and one it RETURNS `undefined` for (a function, a
+        // symbol, a `toJSON` yielding undefined). So a reported length of 0
+        // means "nothing was there to parse" and NOT necessarily "the caller
+        // sent an empty body". The count is in UTF-16 code units, unlike the
+        // sibling message in `rie-client.ts`, which counts BYTES.
         //
         // `'unknown'` rather than `'SyntaxError'` on the non-Error arm: that
         // arm is unreachable today (this `JSON.parse` takes no reviver, so V8
@@ -936,7 +950,9 @@ function safeStringify(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
   try {
-    return JSON.stringify(v);
+    // See `coerce` above: `JSON.stringify` RETURNS `undefined` for a
+    // function / symbol / `toJSON`-returning-undefined rather than throwing.
+    return JSON.stringify(v) ?? '';
   } catch {
     return '';
   }

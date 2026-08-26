@@ -13,6 +13,12 @@
 #                       isolation — accepts 200 OR 502).
 #   - POST /aws-lambda -> AWS Lambda non-proxy integration with
 #                         request-side AND response-side VTL.
+#   - POST /parse-json-header -> MOCK whose request template runs
+#                         `$util.parseJson` over a request HEADER.
+#   - POST /parse-json-body   -> AWS Lambda non-proxy whose request template
+#                         runs `$util.parseJson` over the request BODY.
+#     Both assert the failure message does NOT echo the parsed input
+#     (go-to-k/cdkd#2203).
 #
 # Run via `/run-integ local-start-api-rest-v1-non-proxy` (recommended)
 # or directly:
@@ -225,17 +231,24 @@ assert_redacted() {
   fi
 
   # THE NEGATIVE: no byte of the caller's payload may appear anywhere in the
-  # response, nor in the server log -- the other reader of this message.
+  # response. This is THE assertion -- `vtlFailure` returns the reason in the
+  # 502 body, which is the channel the defect travelled on.
   if echo "${body}" | grep -q "${NEEDLE}"; then
     echo "FAIL: ${label}: the 502 body ECHOES the caller payload (${NEEDLE}) -- go-to-k/cdkd#2203 regressed."
     echo "      body was: ${body}"
     exit 1
   fi
+  # The server-log grep is a FORWARD fence, not a second proof: on today's
+  # code `vtlFailure` RETURNS the outcome and nothing on that path logs the
+  # reason, so this passes with the fix reverted. It is kept so that routing
+  # the reason to a log later cannot reintroduce the leak unnoticed -- stated
+  # rather than implied, because an assertion that cannot currently fail
+  # otherwise reads as evidence it is not.
   if grep -q "${NEEDLE}" "${LOG_FILE}"; then
     echo "FAIL: ${label}: the server log ECHOES the caller payload (${NEEDLE}) -- go-to-k/cdkd#2203 regressed."
     exit 1
   fi
-  echo "    ${label}: needle absent from BOTH the 502 body and the server log"
+  echo "    ${label}: needle absent from the 502 body (and from the server log, which does not carry it today)"
 }
 
 echo "==> HEADER vector premise: POST ${BASE_URL}/parse-json-header with a VALID JSON header"
