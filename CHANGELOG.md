@@ -1,3 +1,10 @@
+## [0.147.10](https://github.com/go-to-k/cdk-local/compare/v0.147.9...v0.147.10) (2026-08-26)
+
+
+### Bug Fixes
+
+* **local:** route every STS error relay at warn through one policy, so a wire-derived message cannot forge a log line ([#580](https://github.com/go-to-k/cdk-local/issues/580)) ([a225e2a](https://github.com/go-to-k/cdk-local/commit/a225e2a324e2cbe515240286045dba4daaba8d9d))
+
 ## [0.147.9](https://github.com/go-to-k/cdk-local/compare/v0.147.8...v0.147.9) (2026-08-26)
 
 
