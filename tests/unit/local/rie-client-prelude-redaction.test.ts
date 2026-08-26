@@ -109,6 +109,25 @@ describe('invokeRieStreaming prelude failure message (go-to-k/cdkd#2203)', () =>
     expect(message).toContain(`; ${bogus.length} bytes before the 8-NUL separator`);
   });
 
+  it('counts BYTES, not UTF-16 code units, in the reported prelude size', () => {
+    // Both other fixtures are pure ASCII, where the two counts coincide -- so
+    // a mutation to `preludeBytes.toString('utf8').length` would survive them.
+    // Four 3-byte characters are 12 bytes and 4 code units.
+    const multibyte = '\u3042\u3044\u3046\u3048'; // 4 chars, 12 bytes in UTF-8
+    const preludeBuf = Buffer.from(multibyte, 'utf8');
+    expect(preludeBuf.length).toBe(12);
+    expect(multibyte.length).toBe(4);
+
+    return rejectionMessage(
+      Buffer.concat([preludeBuf, SEPARATOR, Buffer.from('body')])
+    ).then((message) => {
+      expect(message).toContain('; 12 bytes before the 8-NUL separator');
+      expect(message).not.toContain('; 4 bytes before the 8-NUL separator');
+      expect(message).not.toContain(multibyte);
+      expect(message).not.toContain('Unexpected token');
+    });
+  });
+
   // --- the three input-INDEPENDENT throws must stay legible -------------
   //
   // `parseStreamingPrelude` throws four ways and only the `JSON.parse` one

@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, it } from 'vite-plus/test';
+import { dispatchMockIntegration } from '../../../src/local/rest-v1-integrations.js';
 import {
   buildDefaultUtil,
   buildVtlInput,
@@ -128,5 +129,57 @@ describe('$util.parseJson failure message (go-to-k/cdkd#2203)', () => {
     }
     expect(caught).toBeInstanceOf(VtlEvaluationError);
     expect((caught as Error).message).toContain('argument length 0)');
+  });
+});
+
+describe('the 502 RESPONSE BODY must not carry the parsed input (go-to-k/cdkd#2203)', () => {
+  // The reason reaches the WIRE, not just a terminal: `vtlFailure` copies the
+  // VTL failure message into the 502 body. That channel had only Docker-gated
+  // coverage (the `local-start-api-rest-v1-non-proxy` integ arm); this case
+  // fences it with no container, so a regression INSIDE `vtlFailure` -- say
+  // attaching the raw `err`, or dropping the template truncation -- reds in
+  // the ordinary unit run.
+  //
+  // A MOCK integration is the cheapest reachable spelling: its VTL context is
+  // built with a hardcoded EMPTY body, so the caller-supplied value has to be
+  // a header, which is also the vector the leak was reproduced with.
+  function mockRequestWithHeader(value: string) {
+    return {
+      method: 'POST',
+      matchedPath: '/login',
+      pathParameters: {},
+      querystring: {},
+      headers: { xpayload: value },
+      body: Buffer.alloc(0),
+      sourceIp: '1.2.3.4',
+      userAgent: 'test-agent',
+      stage: 'prod',
+      resourcePath: '/login',
+      requestId: 'req-1',
+    };
+  }
+
+  it('returns 502 without the header value the template failed to parse', () => {
+    const needle = 'hunter2pw';
+    const outcome = dispatchMockIntegration(
+      {
+        kind: 'mock',
+        requestTemplate: '#set($p = $util.parseJson($input.params(\'xpayload\')))\n{"statusCode": 200}',
+        responses: [{ StatusCode: '200', ResponseTemplates: { 'application/json': '{"ok":true}' } }],
+      },
+      mockRequestWithHeader(needle)
+    );
+
+    expect(outcome.statusCode).toBe(502);
+    const body = outcome.body.toString();
+
+    // Positives first -- absence alone is satisfied by any unrelated failure.
+    expect(body).toContain('VTL request-template evaluation failed');
+    expect(body).toContain('$util.parseJson');
+    expect(body).toContain('SyntaxError');
+    expect(body).toContain(`argument length ${needle.length})`);
+
+    expect(body).not.toContain(needle);
+    expect(body).not.toContain('Unexpected token');
   });
 });
