@@ -5,8 +5,8 @@
  * parsed input here IS the secret plaintext this resolver just fetched from
  * Secrets Manager -- so the echo puts the secret on stderr and into any
  * surrounding log capture. `cdkl run-task` reaches it on an ordinary user
- * mistake (issue #554; the same defect the cdkd host fixed as
- * go-to-k/cdkd#2189).
+ * mistake (issue #554; reported against the cdkd host as go-to-k/cdkd#2189 and
+ * fixed there by go-to-k/cdkd#2214).
  *
  * Each case pairs the negative with POSITIVES. "The secret is absent" on its
  * own is a confluence point -- an unrelated rejection (a bad ARN, a mock that
@@ -26,7 +26,14 @@ vi.mock('@aws-sdk/client-secrets-manager', () => ({
     send = smSend;
     destroy(): void {}
   },
-  GetSecretValueCommand: class {},
+  // The command RETAINS its input. A `class {}` that discards it cannot tell a
+  // correct call from a wrong-argument one, so `send` resolving for any
+  // argument would hide, for instance, the resolver passing the whole
+  // `valueFrom` (`...:secret:app-db:password::`) where the base ARN belongs --
+  // green here, `ResourceNotFound` against real AWS.
+  GetSecretValueCommand: class {
+    constructor(public input: unknown) {}
+  },
 }));
 
 vi.mock('@aws-sdk/client-ssm', () => ({
@@ -131,5 +138,85 @@ describe('resolveEcsSecrets json-key parse failure (issue #554)', () => {
         value: 'pw42',
       },
     ]);
+
+    // ...and it asked AWS for the BASE ARN, with the `:<json-key>::` suffix
+    // stripped. Secrets Manager rejects the suffixed form, so a resolver that
+    // forwarded `valueFrom` verbatim would pass every assertion above while
+    // failing against real AWS -- which is exactly the hole an input-discarding
+    // command mock leaves open.
+    expect(smSend).toHaveBeenCalledTimes(1);
+    expect((smSend.mock.calls[0]![0] as { input: unknown }).input).toEqual({
+      SecretId: 'arn:aws:secretsmanager:us-east-1:123456789012:secret:app-db',
+    });
+  });
+});
+
+describe('the SIBLING json-key failure branches must stay value-free (issue #554)', () => {
+  // None of these three echoes the secret today, and the point is to keep it
+  // that way: they are the branches a later "let us be more helpful" edit
+  // would reach for, and nothing asserted their silence. Each fixture makes
+  // its OWN branch the one that fires -- a value that parses cleanly, so the
+  // `JSON.parse` catch fixed above is NOT what threw.
+  beforeEach(() => {
+    smSend.mockReset();
+    ssmSend.mockReset();
+  });
+
+  const PLAINTEXT = 'pw42';
+
+  it.each([
+    [
+      'the secret root is not a JSON object',
+      { SecretString: JSON.stringify([PLAINTEXT]) },
+      'the secret root is not a JSON object',
+    ],
+    [
+      'no such key exists in the secret JSON',
+      { SecretString: JSON.stringify({ other: PLAINTEXT }) },
+      'no such key exists in the secret JSON',
+    ],
+  ])('%s', async (_label, response, surviving) => {
+    smSend.mockResolvedValue(response);
+
+    let caught: unknown;
+    try {
+      await resolveEcsSecrets([
+        { containerName: 'ApiContainer', name: 'DB_PASSWORD', valueFrom: ARN_WITH_JSON_KEY },
+      ]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(EcsSecretsResolutionError);
+    const message = (caught as Error).message;
+
+    // Positive first: this is the branch under test, not some earlier throw.
+    expect(message).toContain(surviving);
+    expect(message).toContain("Container 'ApiContainer'");
+    expect(message).toContain("json-key 'password'");
+
+    expect(message).not.toContain(PLAINTEXT);
+  });
+
+  it('binary secret: reports no SecretString without describing what came back', async () => {
+    // The `SecretString === undefined` arm. `SecretBinary` is what AWS
+    // actually returns here, and it must not be relayed either.
+    smSend.mockResolvedValue({ SecretBinary: new TextEncoder().encode(PLAINTEXT) });
+
+    let caught: unknown;
+    try {
+      await resolveEcsSecrets([
+        { containerName: 'ApiContainer', name: 'DB_PASSWORD', valueFrom: ARN_WITH_JSON_KEY },
+      ]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(EcsSecretsResolutionError);
+    const message = (caught as Error).message;
+
+    expect(message).toContain('returned no SecretString');
+    expect(message).toContain('Binary secrets are not supported');
+    expect(message).not.toContain(PLAINTEXT);
   });
 });

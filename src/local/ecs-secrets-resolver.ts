@@ -204,20 +204,27 @@ async function resolveSecretsManager(
   try {
     parsed = JSON.parse(secretString);
   } catch (err) {
-    // NEVER interpolate the parser's own message here. V8 embeds a ~10-char
-    // prefix of the PARSED INPUT in `SyntaxError.message`
-    // (`Unexpected token 's', "supersecre"... is not valid JSON`), and appends
-    // `...` only PAST that window -- so a short secret is quoted in FULL
-    // rather than truncated. The parsed input IS the secret plaintext this
-    // resolver just fetched from Secrets Manager, so echoing it puts the
-    // secret on stderr and into any surrounding log capture (issue #554;
-    // fixed in the cdkd host as go-to-k/cdkd#2189). Reaching it needs no
-    // hostile input -- a plain-string secret plus a `:json-key::` ValueFrom
-    // is an ordinary user mistake.
+    // NEVER interpolate the parser's own message here. V8 embeds a prefix of
+    // the PARSED INPUT in `SyntaxError.message`
+    // (`Unexpected token 's', "supersecre"... is not valid JSON`), and it
+    // TRUNCATES to that ~10-character prefix only for a long input: measured
+    // on Node 24.15, an input of 20 characters or fewer is quoted in FULL,
+    // and `...` first appears at 21. So a short secret leaks whole. The
+    // parsed input IS the secret plaintext this resolver just fetched from
+    // Secrets Manager, so echoing it puts the secret on stderr and into any
+    // surrounding log capture (issue #554; reported against the cdkd host as
+    // go-to-k/cdkd#2189 and fixed there by go-to-k/cdkd#2214, whose message
+    // this one matches). Reaching it needs no hostile input -- a plain-string
+    // secret plus a `:json-key::` ValueFrom is an ordinary user mistake.
     //
     // `err.name` is input-independent and safe as a discriminator; the
     // container, env var and requested json-key already make the message
-    // actionable without showing any of the value.
+    // actionable without showing any of the value. Deliberately NOT reported:
+    // the input's LENGTH, which the sibling `$util.parseJson` message in
+    // `vtl-engine.ts` does give. There the argument is an anonymous HTTP body
+    // whose size is the only actionable property; here the user already knows
+    // WHICH secret this is and can read it at the source, so a character
+    // count would be disclosure buying nothing. Do not "harmonize" them.
     //
     // `'unknown'` rather than `'SyntaxError'` for the non-Error arm: it is
     // unreachable today (this `JSON.parse` takes no reviver, so V8 throws
