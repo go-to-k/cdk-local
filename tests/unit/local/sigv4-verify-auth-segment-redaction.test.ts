@@ -25,6 +25,7 @@ import {
   verifySigV4,
   redactAuthorizationSegment,
   redactSignature,
+  boundTimestampHeader,
   type SigV4VerifyRequest,
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
@@ -145,6 +146,26 @@ describe('redactAuthorizationSegment — the quote/withhold boundary (issue #555
   });
 });
 
+describe('boundTimestampHeader — length only, never shape (issue #555)', () => {
+  it('quotes every legal timestamp spelling verbatim, spaces and all', () => {
+    for (const legal of [
+      '20260101T000000Z',
+      'Mon, 02 Jan 2006 15:04:05 GMT',
+      new Date().toString(),
+      'Wednesday, December 31, 2025 00:00:00 GMT+0000 (Coordinated Universal Time)',
+    ]) {
+      expect(boundTimestampHeader(legal)).toBe(legal);
+    }
+  });
+
+  it('withholds only a value too long to be any of them', () => {
+    expect(boundTimestampHeader('a'.repeat(200))).toBe('a'.repeat(200));
+    expect(boundTimestampHeader('a'.repeat(201))).toBe(
+      '<withheld: 201 characters, too long to be a timestamp>'
+    );
+  });
+});
+
 describe('redactSignature — the offered Signature= value (issue #555)', () => {
   it('quotes a real 64-character lowercase-hex signature verbatim', () => {
     const real = 'f00dfeed'.repeat(8);
@@ -218,8 +239,20 @@ describe('verifySigV4 — no unparsed Authorization material at info (issue #555
         `SignedHeaders=host, ${basic}`
     );
     expect(infos).toContain('malformed Authorization header');
-    expect(infos).toContain('malformed parameter 3 of 3');
+    // The detail is asserted too, not only the position: both arms of it
+    // were unfenced, so deleting it entirely left the suite green.
+    expect(infos).toContain(`malformed parameter 3 of 3 (${basic.length} characters, no '=')`);
     expect(infos).not.toContain(basic);
+  });
+
+  it('names a stray trailing comma as an EMPTY parameter, not a missing \'=\'', async () => {
+    // The other arm of the same detail. "no '=' in it" is true of an empty
+    // part but points at the wrong fault, which is the extra comma.
+    const infos = await infoOnReject(
+      'AWS4-HMAC-SHA256 Credential=AKIALOCALEXAMPLE/20260101/us-east-1/execute-api/aws4_request, ' +
+        'SignedHeaders=host, Signature=abcd,'
+    );
+    expect(infos).toContain('malformed parameter 4 of 4 (empty, stray comma?)');
   });
 
   it('withholds an algorithm token too long to be a scheme name', async () => {
@@ -245,6 +278,33 @@ describe('verifySigV4 — no unparsed Authorization material at info (issue #555
     expect(infos).toMatch(WITHHELD);
     expect(infos).not.toContain(SIGNATURE);
     expect(infos).toContain('expected YYYYMMDD');
+  });
+
+  it('withholds an over-long x-amz-date rather than flooding the log with it', async () => {
+    // `info`, and `cdkl studio` mirrors these lines into a log ring it
+    // serves over HTTP, so the echo has to be bounded even though its shape
+    // must not be constrained.
+    const flood = `2026-01-01T00:00:00Z ${'x'.repeat(400)}`;
+    const spy = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    const req: SigV4VerifyRequest = {
+      method: 'POST',
+      rawUrl: '/',
+      headers: {
+        host: '127.0.0.1:65483',
+        'x-amz-date': flood,
+        authorization:
+          'AWS4-HMAC-SHA256 Credential=AKIALOCALEXAMPLE/20260101/us-east-1/execute-api/aws4_request, ' +
+          'SignedHeaders=host, Signature=abcd',
+      },
+      body: Buffer.alloc(0),
+    };
+    const result = await verifySigV4(req, loadLocal, { now: () => NOW });
+    expect(result.allow).toBe(false);
+    const infos = spy.mock.calls.map((c) => String(c[0])).join('\n');
+    spy.mockRestore();
+    expect(infos).toContain('does not match');
+    expect(infos).toContain('too long to be a timestamp');
+    expect(infos).not.toContain('x'.repeat(400));
   });
 
   it('withholds an access-key-id segment that swallowed the signature (warn level)', async () => {
@@ -315,13 +375,14 @@ describe('verifySigV4 — the diagnostics issue #246 added are NOT over-redacted
     expect(alg).toContain("algorithm 'AWS4-HMAC-SHA512'.");
   });
 
-  it('still quotes an RFC 1123 x-amz-date in full (deliberately not redacted)', async () => {
-    // `x-amz-date` is left raw on purpose (see the note at the site): no
-    // delimiter mistake can sweep an `Authorization` segment into it, and
-    // its legal spellings carry spaces and run long, so any shape-based
-    // bound would withhold the valid-but-mismatched timestamp this message
-    // exists to show. This case is what stops a later sweep from applying
-    // `redactAuthorizationSegment` here by analogy.
+  it('still quotes an RFC 1123 x-amz-date in full (length-bounded, never shape-bounded)', async () => {
+    // The timestamp header is bounded by LENGTH ONLY (see the note on
+    // `boundTimestampHeader`): no delimiter mistake can sweep an
+    // `Authorization` segment into it, and its legal spellings carry spaces
+    // and run long, so any SHAPE bound would withhold the
+    // valid-but-mismatched timestamp this message exists to show. This case
+    // is what stops a later sweep from applying `redactAuthorizationSegment`
+    // here by analogy.
     const rfcDate = 'Mon, 02 Jan 2006 15:04:05 GMT';
     const spy = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
     const req: SigV4VerifyRequest = {
@@ -340,7 +401,7 @@ describe('verifySigV4 — the diagnostics issue #246 added are NOT over-redacted
     expect(result.allow).toBe(false);
     const infos = spy.mock.calls.map((c) => String(c[0])).join('\n');
     spy.mockRestore();
-    expect(infos).toContain(`x-amz-date '${rfcDate}'`);
+    expect(infos).toContain(`x-amz-date / date '${rfcDate}'`);
     expect(infos).not.toMatch(WITHHELD);
   });
 

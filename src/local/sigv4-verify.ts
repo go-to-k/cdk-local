@@ -272,26 +272,9 @@ export async function verifySigV4(
     return { allow: false, identityHash: undefined };
   }
   if (!validateAmzDateMatchesCredentialDate(amzDate, parsed.credentialDate)) {
-    // The `x-amz-date` / `date` value is quoted RAW here and in the
-    // clock-skew message below. Issue #555 reviewed this and DELIBERATELY
-    // LEFT it — do not route it through `redactAuthorizationSegment`.
-    //
-    // It is not an `Authorization` segment: `pickHeader` reads the whole
-    // header, so no delimiter mistake can sweep the developer's own
-    // `Signature=` into it. What lands here is whatever the CALLER put in
-    // their own timestamp header, echoed back to the terminal of the
-    // developer they sent it to — the same population as the debug-gated
-    // sites in `websocket-server.ts`, differing only in level.
-    //
-    // And a shape-based bound would cost the actual diagnostic. The value
-    // reaching THIS branch is often a perfectly valid timestamp that simply
-    // disagrees with the credential scope, and its legal spellings carry
-    // spaces and run long: RFC 1123 `Mon, 02 Jan 2006 15:04:05 GMT` is 29
-    // characters, and `new Date().toString()` — which a naive client may
-    // send — is 75. A whitespace or short-length rule withholds exactly the
-    // case the user needs to read.
     logger.info(
-      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' does not match ` +
+      `AWS_IAM authorizer: rejecting request — x-amz-date / date ` +
+        `'${boundTimestampHeader(amzDate)}' does not match ` +
         `credential-scope date '${parsed.credentialDate}'. The 'YYYYMMDD' prefix of ` +
         `x-amz-date must equal the date segment of Credential=<AKID>/<YYYYMMDD>/...`
     );
@@ -304,7 +287,8 @@ export async function verifySigV4(
   const now = (opts.now ?? ((): Date => new Date()))();
   if (amzDateOutsideSkew(amzDate, now)) {
     logger.info(
-      `AWS_IAM authorizer: rejecting request — x-amz-date '${amzDate}' is outside the ` +
+      `AWS_IAM authorizer: rejecting request — x-amz-date / date ` +
+        `'${boundTimestampHeader(amzDate)}' is outside the ` +
         `15-minute clock-skew window (local now=${now.toISOString()}). Re-sign the ` +
         `request with the current time or sync the local clock.`
     );
@@ -323,6 +307,17 @@ export async function verifySigV4(
     // cdk-local cannot fully emulate. `--strict-sigv4` flips this to
     // fail-closed. OAC-fronted routes always pass (no client signature
     // exists to verify in production).
+    // NOTE (issue #564): `reason` is the credential CHAIN's own error text,
+    // relayed unbounded into the `warn` lines below. With a
+    // `credential_process` profile the SDK runs the configured command
+    // through `child_process.exec` and rethrows Node's
+    // `Command failed: <command line>\n<stderr>`, so a passphrase on that
+    // command line reaches a default-level log. Issue #555's sweep covered
+    // caller-supplied `Authorization` material and did not reach this,
+    // which points the other way — the developer's own machine config.
+    // Left here so a later sweep finds the pointer rather than re-deriving
+    // it; the fix belongs in #564 with its own judgement about how much of
+    // a credential-loader failure may print.
     const reason = err instanceof Error ? err.message : String(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
@@ -472,13 +467,14 @@ export async function verifySigV4(
  * Upper bound on how much of an `Authorization`-header segment a rejection
  * message may quote.
  *
- * 32 is the smallest bound that still quotes every value these messages
- * legitimately name: `AWS4-HMAC-SHA256` (16 characters) plus the longer
- * legacy `AWS4-HMAC-SHA256-...` spellings this parser deliberately rejects,
- * `aws4_request` (12), a `YYYYMMDD` date (8), and a real 20-character
- * access-key id. It also sits below the 40 characters of an AWS SECRET
- * access key, so the one way a developer's own secret enters this header —
- * pasting it into `AWS_ACCESS_KEY_ID` — is withheld rather than quoted.
+ * 32 clears every value these messages legitimately name, with room to
+ * spare: `AWS4-HMAC-SHA256` is 16 characters, the longest real algorithm
+ * spelling this parser rejects (`AWS4-ECDSA-P256-SHA256-PAYLOAD`) is 30,
+ * `aws4_request` is 12, a `YYYYMMDD` date is 8, and an access-key id is 20.
+ * The ceiling is what fixes it at 32 rather than higher: an AWS SECRET
+ * access key is 40 characters, and pasting one into `AWS_ACCESS_KEY_ID` is
+ * the one way a developer's own secret reaches this header — so the bound
+ * has to sit below 40 for that paste to be withheld rather than quoted.
  */
 const AUTH_SEGMENT_QUOTE_MAX = 32;
 
@@ -521,15 +517,56 @@ export function redactAuthorizationSegment(segment: string): string {
 }
 
 /**
+ * Bound on the `x-amz-date` / `date` echo. Every legal spelling is far
+ * below it. Measured on Node 24: RFC 1123 `Mon, 02 Jan 2006 15:04:05 GMT`
+ * is 29 characters; `new Date().toString()` runs 45 to 76 depending on the
+ * zone name (55 on the machine this was written on, 76 for
+ * `Australia/Eucla`) across all 418 zones `Intl.supportedValuesOf` lists;
+ * and the longest spelling `Date` was observed to PARSE,
+ * `Wednesday, December 31, 2025 00:00:00 GMT+0000 (Coordinated Universal
+ * Time)`, is 75. So nothing actionable is ever withheld.
+ */
+const TIMESTAMP_HEADER_QUOTE_MAX = 200;
+
+/**
+ * Bound the `x-amz-date` / `date` echo by LENGTH ONLY.
+ *
+ * Issue #555 reviewed this site and deliberately did NOT route it through
+ * {@link redactAuthorizationSegment}. It is not an `Authorization` segment:
+ * `pickHeader` reads the whole header, so no delimiter mistake can sweep a
+ * `Signature=` component into it, and what lands here is whatever the
+ * CALLER put in their own timestamp header. More to the point, a SHAPE
+ * bound would withhold exactly the case the message exists for — the value
+ * reaching the mismatch branch is usually a perfectly valid timestamp that
+ * simply disagrees with the credential scope, and the legal spellings carry
+ * spaces and run long (see {@link TIMESTAMP_HEADER_QUOTE_MAX}). A
+ * whitespace clause or a 32-character cap withholds all of them.
+ *
+ * "No shape bound" is not "no bound", though. The value is unbounded caller
+ * input printed at `info`, and `cdkl studio` mirrors these lines into a log
+ * ring it serves over HTTP, so a length cap costs nothing and ends the
+ * flood. Do not tighten it into a shape check.
+ */
+export function boundTimestampHeader(value: string): string {
+  if (value.length > TIMESTAMP_HEADER_QUOTE_MAX) {
+    return `<withheld: ${value.length} characters, too long to be a timestamp>`;
+  }
+  return value;
+}
+
+/**
  * Quote the caller's OFFERED `Signature=` value, or withhold it when that
  * field swept in material which is not a signature.
  *
  * `Signature=` is the LAST parameter of the header, which makes it a sweep
  * position exactly like the credential-scope terminator: a header ending
  * `..., Signature=<hex> X-Anything=foo` parses to a `signature` of
- * `<hex> x-anything=foo`. A real SigV4 signature is lowercase hex, at most
- * 64 characters, so requiring precisely that quotes every legitimate value
- * — the one issue #246 needs the user to compare — and withholds the rest.
+ * `<hex> x-anything=foo`. A real SigV4 signature is lowercase hex and
+ * EXACTLY 64 characters; the predicate accepts 1 to 64 rather than exactly
+ * 64 only so that a short but otherwise plausible value still shows (a
+ * truncated paste is worth seeing). Either way it quotes every legitimate
+ * value — the one issue #246 needs the user to compare — and withholds
+ * anything a mis-delimited split swept in.
  *
  * This covers the OFFERED signature only. The RECOMPUTED one is never
  * printed; the mismatch message in {@link verifySigV4} says why.

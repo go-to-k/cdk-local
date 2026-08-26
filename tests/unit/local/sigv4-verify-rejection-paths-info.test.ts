@@ -218,7 +218,7 @@ describe('verifySigV4 — 7 rejection paths surface at info (issue #246)', () =>
     // key over a string-to-sign the caller chose, so echoing it would hand
     // out valid signatures. That withholding is fenced in
     // `sigv4-verify-auth-segment-redaction.test.ts`.
-    expect(infos).toMatch(/recomputed/);
+    expect(infos).toContain('the recomputed signature is withheld');
     expect(infos).toMatch(/0{64}/);
     info.restore();
   });

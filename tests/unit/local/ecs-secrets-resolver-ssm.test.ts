@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import type { SSMClient } from '@aws-sdk/client-ssm';
+import type { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 const { smSend, ssmSend, smCtors, ssmCtors, smDestroy, ssmDestroy } = vi.hoisted(() => ({
   smSend: vi.fn(),
@@ -294,6 +295,20 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
     // The Secrets Manager client was still constructed by the resolver, so
     // that one IS closed -- the two are tracked independently.
     expect(smDestroy).toHaveBeenCalledTimes(1);
+
+    // The mirror case. Fencing only the SSM direction cannot tell "destroys
+    // because it owns" from "destroys unconditionally" on the other half:
+    // `ownsSecretsClient = true` and an unconditional `secretsClient
+    // .destroy()` both survive a test that never borrows a SM client.
+    smDestroy.mockReset();
+    ssmDestroy.mockReset();
+    smSend.mockResolvedValue({ SecretString: 'sm-value' });
+    const borrowedSm = { send: smSend, destroy: smDestroy };
+    await resolveEcsSecrets([entry(SM_ARN, 'API_TOKEN')], {
+      secretsManagerClient: borrowedSm as unknown as SecretsManagerClient,
+    });
+    expect(smDestroy).not.toHaveBeenCalled();
+    expect(ssmDestroy).toHaveBeenCalledTimes(1);
   });
 
   it('constructs no SDK client at all for an empty batch', async () => {

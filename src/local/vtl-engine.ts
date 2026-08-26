@@ -1115,9 +1115,12 @@ export function buildVtlInput(
  *      Withholding it would cost the developer the only pointer they have
  *      to the unsupported syntax.
  *
- * Unlike `$util.parseJson`'s catch above, nothing here was resolved by
- * cdk-local out of a secret or parameter store, and no third party reads
- * the message.
+ * The difference from `$util.parseJson`'s catch above is the SIZE of what
+ * would be echoed, not its provenance: there the withheld material is the
+ * whole request body, which on a login endpoint is the caller's password,
+ * while here it is one path expression out of the developer's template.
+ * Both are the caller's own data returned to the caller; only one of them
+ * is worth withholding.
  */
 export function applyJsonPath(root: unknown, expr: string): unknown {
   const trimmed = expr.trim();

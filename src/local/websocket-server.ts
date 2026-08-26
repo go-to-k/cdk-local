@@ -354,11 +354,13 @@ export function attachWebSocketServer(opts: AttachOptions): AttachedWebSocketSer
     ws.on('message', (raw, isBinary) => {
       const { body, isBase64Encoded } = websocketBody.bufferToBody(raw, isBinary);
       // Issue #555, reviewed and DELIBERATELY LEFT — do not re-raise this
-      // as an echo of caller request data. The first 200 CHARACTERS of the
-      // frame (base64 for a binary frame, so up to 800 bytes of multi-byte
-      // UTF-8) are the payload the developer's own client just sent to the
-      // local server, and this is `debug`, so it prints only under
-      // `--verbose`.
+      // as an echo of caller request data. The slice is 200 UTF-16 CODE
+      // UNITS, not bytes. For a text frame that is at most 600 UTF-8 bytes
+      // (measured: 600 for 3-byte BMP characters, 400 for astral pairs);
+      // for a binary frame the body is already base64, which is ASCII, so
+      // 200 characters is 150 bytes of the original payload. Either way it
+      // is what the developer's own client just sent to the local server,
+      // and this is `debug`, so it prints only under `--verbose`.
       // No part of it was resolved by cdk-local out of a secret or
       // parameter store, which is the line the redactions in
       // `ecs-secrets-resolver.ts` (#554) and `sigv4-verify.ts` (#555) draw.
