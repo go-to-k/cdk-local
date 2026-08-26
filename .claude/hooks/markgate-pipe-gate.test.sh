@@ -85,6 +85,11 @@ run_case "bash -c body with the pipe OUTSIDE"         2 'bash -c "mise exec -- m
 # Launcher flags that take a value must still reach the verb.
 run_case "mise exec -C <dir> -- markgate"             2 'mise exec -C /w/t -- markgate verify integ | tail -5'
 run_case "mise exec --cd <dir> -- markgate"           2 'mise exec --cd /w/t -- markgate set integ | tee /tmp/l'
+run_case "boolean flag then -- markgate"              2 'mise exec --raw -- markgate verify integ | tail -5'
+# The value is REALLY quoted here (this suite builds its payload with `jq
+# --arg`, so a literal `"` needs no escaping). A backslash-escaped `\"` would be
+# a literal quote character to the segmenter and would test the wrong thing.
+run_case "quoted launcher flag value"                2 'mise exec --cd "/w t" -- markgate verify integ | tail -5'
 run_case "inside a command substitution"              2 'echo "$(mise exec -- markgate verify integ | tail -1)"'
 run_case "mise x spelling"                            2 'mise x -- markgate verify integ | cat'
 run_case "mise exec with a tool pin"                  2 'mise exec markgate@0.4 -- markgate verify integ | cat'
@@ -145,6 +150,8 @@ run_case "empty command"                              0 ''
 run_case "grepping for the piped form"                0 'mise exec -- rg markgate verify .claude | head'
 run_case "grepping with the form quoted"              0 'mise exec -- grep -rn "markgate verify" .claude | head'
 run_case "grepping through a -C launcher flag"        0 'mise exec -C /w/t -- rg markgate verify . | head'
+run_case "grepping behind a boolean launcher flag"    0 'mise exec --raw rg markgate verify . | head'
+run_case "grepping behind a short boolean flag"      0 'mise exec -q rg markgate verify . | head'
 run_case "bash -c body, nothing piped"                0 'bash -c "mise exec -- markgate verify integ"'
 # Multi-line ACCEPT, so the multi-line REFUSE cases above cannot be satisfied by
 # a mutation that simply refuses everything spanning a newline.

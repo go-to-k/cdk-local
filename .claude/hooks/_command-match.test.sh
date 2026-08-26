@@ -480,11 +480,11 @@ want_piped 1 "status is not a verdict verb"    'mise exec -- markgate status int
 # `2>&1` is a REDIRECTION, not a separator. Splitting on its `&` put the pipe
 # mark on the trailing `1`, so the issue's own repro walked past the gate.
 want_piped 0 "2>&1 before the pipe"            'markgate verify integ 2>&1 | tail -5' "$MG"
+want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
 # ...while a REAL bare `&` still separates.
 want_match 0 "bare & still separates"          'sleep 0 & markgate verify check' "$MG"
 
 want_piped 0 "run is a verdict verb too"        'mise exec -- markgate run check -- vp run check | tail -5' "$MG"
-want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
 # The launcher prefix must absorb LAUNCHER ARGUMENTS only. An unrestricted run
 # of words made this a false block -- and it is the command someone auditing
 # this very gate would type.
@@ -497,6 +497,21 @@ want_piped 0 "mise exec -C <dir> -- markgate"  'mise exec -C /w -- markgate veri
 want_piped 0 "mise exec --cd <dir> -- markgate" 'mise exec --cd /w -- markgate verify x | tail' "$MG"
 want_piped 0 "mise exec -j <n> -- markgate"    'mise exec -j 4 -- markgate set integ | tee /tmp/l' "$MG"
 want_piped 1 "mise exec -C <dir> -- rg is not markgate" 'mise exec -C /w -- rg markgate verify . | head' "$MG"
+# ...and a BOOLEAN launcher flag must NOT swallow the command word. Giving every
+# flag an optional value (the fix for the two cases above) re-opened the `rg`
+# false block one keystroke away. mise has many boolean flags: `--raw`, `-q`,
+# `-v`, `-y`, `--silent`, `--deny-all`, `--no-deps`, `--locked`.
+want_piped 1 "boolean flag then rg"            'mise exec --raw rg markgate verify . | head' "$MG"
+want_piped 1 "short boolean flag then rg"      'mise exec -q rg markgate verify . | head' "$MG"
+want_piped 1 "boolean flag then grep"          'mise exec --silent grep -rn markgate verify . | head' "$MG"
+want_piped 0 "boolean flag then -- markgate"   'mise exec --raw -- markgate verify x | tail' "$MG"
+want_piped 0 "two boolean flags then markgate" 'mise exec -q --raw -- markgate verify x | tail' "$MG"
+# A QUOTED flag value -- the same shape `GATE_FLAGS` needed for
+# `git -C "/a b" commit`. A `[^-][^[:space:]]*` value cannot span it.
+want_piped 0 "quoted launcher flag value"      'mise exec --cd "/w t" -- markgate verify x | tail' "$MG"
+# A value-taking flag whose "value" is the command word itself must still fall
+# back to the boolean parse rather than eating it.
+want_piped 0 "-C directly before markgate"     'mise exec -C markgate verify x | tail' "$MG"
 # The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
 # the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
 want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"

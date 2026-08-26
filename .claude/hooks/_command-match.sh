@@ -469,13 +469,30 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # `[^[:space:]]+` run instead made `mise exec -- rg markgate verify .claude |
 # head` a FALSE BLOCK, which is a command someone auditing this very gate would
 # type.
-# `--` is its OWN no-value alternative and must come first: letting it take an
-# optional value re-opens the `rg` false block, because `-- rg` would absorb.
-# The flag alternative carries an optional value so the real value-taking
-# launcher flags (`-C <dir>`, `--cd`, `-E/--env`, `-j/--jobs`) still reach the
-# verb -- an earlier revision of this constant tightened them out, which turned
-# `mise exec -C /w -- markgate verify x | tail` from BLOCK into pass.
-GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|--?[A-Za-z][^[:space:]]*([[:space:]]+[^-][^[:space:]]*)?|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
+# Which flags TAKE A VALUE is enumerated rather than guessed, and this constant
+# has now been wrong in all three possible directions, which is why:
+#
+#   too wide   an unrestricted `[^[:space:]]+` run absorbed the command word,
+#              so `mise exec -- rg markgate verify .claude | head` -- the very
+#              command someone auditing this gate types -- was a FALSE BLOCK.
+#   too narrow allowing only `--` / a bare flag / a pin dropped every flag that
+#              takes a value, so `mise exec -C /w -- markgate verify x | tail`
+#              stopped blocking.
+#   generic    giving EVERY flag an optional value made a BOOLEAN flag swallow
+#              the command word instead, re-opening the false block one
+#              keystroke away: `mise exec --raw rg markgate verify . | head`.
+#              mise has many boolean flags (`--raw`, `-q`, `-v`, `-y`,
+#              `--silent`, `--deny-all`, `--no-deps`, `--locked`).
+#
+# So: `--` is its own no-value alternative and comes FIRST (letting it take a
+# value re-opens the false block, since `-- rg` would absorb); the value-taking
+# flags are named; every other flag is boolean, which also covers the `=` and
+# glued spellings because the token swallows them whole. The value alternation
+# accepts a QUOTED value -- the same fix `GATE_FLAGS` needed for
+# `git -C "/a b" commit` -- so `mise exec --cd "/w t" -- markgate ...` parses.
+GATE_MARKGATE_VALUE_FLAG="(-C|--cd|-E|--env|-j|--jobs|-c|--command)"
+GATE_MARKGATE_FLAG_VALUE="(\"[^\"]*\"|'[^']*'|[^-][^[:space:]]*)"
+GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|${GATE_MARKGATE_VALUE_FLAG}[[:space:]]+${GATE_MARKGATE_FLAG_VALUE}|--?[A-Za-z][^[:space:]]*|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
 GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set|run)([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
 # PATH ONLY -- it says nothing about the HTTP method, and the collection is also
