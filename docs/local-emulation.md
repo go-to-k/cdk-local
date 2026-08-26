@@ -916,8 +916,28 @@ Outcomes:
   placeholder principalId keeps identity-based handler authz from trusting a
   forged caller, and the deployed API Gateway still does the real
   verification + IAM evaluation. Pass `--strict-sigv4` to **deny** unverifiable
-  requests instead (fail-closed). The warn fires at most once per foreign
-  access-key-id per server lifecycle.
+  requests instead (fail-closed).
+
+  The warn is deduplicated per foreign access-key-id, best-effort: the server
+  remembers the 256 most recently warned ids, so a client cycling through
+  more than that draws a repeat warning for one it has already seen. The
+  bound is deliberately placed so it can only ever make cdk-local NOISIER --
+  it never goes quiet on an access-key-id it has not warned about yet, since
+  that one may be the federated signer you need told about.
+
+  When the failure is that **no local credentials resolved at all**, the warn
+  names the failure's class and the length of the credential chain's message
+  but not the message itself. The full text is printed at debug level -- run
+  with `--verbose` to see it. The reason for holding it back is that the
+  chain's error text is not cdk-local's to vouch for: the AWS SDK's
+  `credential_process` provider copies Node's `Command failed: <command
+  line>` into the error it raises, and a `credential_process` command line is
+  an ordinary place to keep a passphrase. That text does not reach the log on
+  today's SDK versions, which discard it in favour of a generic message -- so
+  this is a precaution rather than a fix for something you can observe -- but
+  a default-level line that `cdkl studio` also mirrors into the log ring it
+  serves over HTTP is the wrong place to relay an error string cdk-local does
+  not control, and `--verbose` costs you nothing.
 
 #### OAC-fronted Function URLs (auto-relaxed)
 
