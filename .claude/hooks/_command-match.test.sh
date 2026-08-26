@@ -509,6 +509,10 @@ want_piped 0 "two boolean flags then markgate" 'mise exec -q --raw -- markgate v
 # A QUOTED flag value -- the same shape `GATE_FLAGS` needed for
 # `git -C "/a b" commit`. A `[^-][^[:space:]]*` value cannot span it.
 want_piped 0 "quoted launcher flag value"      'mise exec --cd "/w t" -- markgate verify x | tail' "$MG"
+# The `--allow-*` sandbox flags take a value too, and were missed when the
+# enumeration was first written -- the failure mode an enumeration always has.
+want_piped 0 "--allow-net <host> before --"    'mise exec --allow-net github.com -- markgate verify integ | tail' "$MG"
+want_piped 0 "--allow-read <path> before --"   'mise exec --allow-read /w -- markgate verify integ | tail' "$MG"
 # A value-taking flag whose "value" is the command word itself must still fall
 # back to the boolean parse rather than eating it.
 want_piped 0 "-C directly before markgate"     'mise exec -C markgate verify x | tail' "$MG"
@@ -519,7 +523,15 @@ want_piped 0 "global -C <dir> before exec"     'mise -C /w exec -- markgate veri
 want_piped 0 "global --cd <dir> before exec"   'mise --cd /w exec -- markgate set integ | tee /tmp/l' "$MG"
 want_piped 0 "global boolean flag before exec" 'mise -q exec -- markgate verify x | tail' "$MG"
 want_piped 1 "global flag, then rg not markgate" 'mise -C /w exec -- rg markgate verify . | head' "$MG"
-want_piped 1 "mise --version is not a launcher" 'mise --version | head' "$MG"
+# ...and a NON-FLAG word is not a global flag. This replaces a
+# `mise --version | head` case that was VACUOUS: that segment holds no
+# `markgate` substring at all, so no spelling of these constants could ever
+# match it -- it was a proof, not a probe. This one is the too-wide direction
+# the whole chain fights: with the global run unrestricted, `ls` is absorbed,
+# the later `exec` satisfies the subcommand, and an ordinary `mise ls` becomes
+# a FALSE BLOCK.
+want_piped 1 "a non-flag word is not a global flag" 'mise ls exec -- markgate verify x | tail' "$MG"
+want_piped 1 "two non-flag words before exec"  'mise settings set x exec -- markgate verify a | tail' "$MG"
 # The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
 # the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
 want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"

@@ -490,7 +490,11 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # glued spellings because the token swallows them whole. The value alternation
 # accepts a QUOTED value -- the same fix `GATE_FLAGS` needed for
 # `git -C "/a b" commit` -- so `mise exec --cd "/w t" -- markgate ...` parses.
-GATE_MARKGATE_VALUE_FLAG="(-C|--cd|-E|--env|-j|--jobs|-c|--command)"
+# An enumeration inherits the "too narrow" failure above, so it is taken from
+# `mise exec --help` rather than from memory: these are ALL of its value-taking
+# flags. The `--allow-*` sandbox four were missed on the first pass and were
+# false negatives (the gate simply did not fire).
+GATE_MARKGATE_VALUE_FLAG="(-C|--cd|-E|--env|-j|--jobs|-c|--command|--allow-env|--allow-net|--allow-read|--allow-write)"
 GATE_MARKGATE_FLAG_VALUE="(\"[^\"]*\"|'[^']*'|[^-][^[:space:]]*)"
 #
 # The GLOBAL flag run before the subcommand (`mise -C /w exec -- markgate ...`)
