@@ -79,6 +79,12 @@ run_case "after a cd &&"                              2 'cd /w/t && mise exec --
 run_case "after a semicolon"                          2 'cd /w/t; mise exec -- markgate verify integ | tail -1'
 run_case "inside a subshell"                          2 '(cd /w/t && mise exec -- markgate verify integ | tail -1)'
 run_case "inside bash -c"                             2 'bash -c "mise exec -- markgate verify integ | tail"'
+# The pipe OUTSIDE `bash -c`: the recursion used to drop the outer mark, so
+# `gate_piped_segments` emitted nothing and the gate passed.
+run_case "bash -c body with the pipe OUTSIDE"         2 'bash -c "mise exec -- markgate verify integ" | tail -5'
+# Launcher flags that take a value must still reach the verb.
+run_case "mise exec -C <dir> -- markgate"             2 'mise exec -C /w/t -- markgate verify integ | tail -5'
+run_case "mise exec --cd <dir> -- markgate"           2 'mise exec --cd /w/t -- markgate set integ | tee /tmp/l'
 run_case "inside a command substitution"              2 'echo "$(mise exec -- markgate verify integ | tail -1)"'
 run_case "mise x spelling"                            2 'mise x -- markgate verify integ | cat'
 run_case "mise exec with a tool pin"                  2 'mise exec markgate@0.4 -- markgate verify integ | cat'
@@ -138,6 +144,8 @@ run_case "empty command"                              0 ''
 # most likely reason anyone types `markgate verify` as grep input.
 run_case "grepping for the piped form"                0 'mise exec -- rg markgate verify .claude | head'
 run_case "grepping with the form quoted"              0 'mise exec -- grep -rn "markgate verify" .claude | head'
+run_case "grepping through a -C launcher flag"        0 'mise exec -C /w/t -- rg markgate verify . | head'
+run_case "bash -c body, nothing piped"                0 'bash -c "mise exec -- markgate verify integ"'
 # Multi-line ACCEPT, so the multi-line REFUSE cases above cannot be satisfied by
 # a mutation that simply refuses everything spanning a newline.
 run_case "multi-line, un-piped verdict"               0 'cd /w/t

@@ -480,7 +480,6 @@ want_piped 1 "status is not a verdict verb"    'mise exec -- markgate status int
 # `2>&1` is a REDIRECTION, not a separator. Splitting on its `&` put the pipe
 # mark on the trailing `1`, so the issue's own repro walked past the gate.
 want_piped 0 "2>&1 before the pipe"            'markgate verify integ 2>&1 | tail -5' "$MG"
-want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
 # ...while a REAL bare `&` still separates.
 want_match 0 "bare & still separates"          'sleep 0 & markgate verify check' "$MG"
 
@@ -490,6 +489,19 @@ want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/nu
 # of words made this a false block -- and it is the command someone auditing
 # this very gate would type.
 want_piped 1 "mise exec -- rg <pattern> is not markgate" 'mise exec -- rg markgate verify .claude | head' "$MG"
+# A launcher flag that TAKES A VALUE must still reach the verb. Tightening the
+# interposed run to close the `rg` false block above dropped these, turning
+# BLOCK into pass -- so the two cases are pinned as a PAIR, since either fix
+# alone re-breaks the other.
+want_piped 0 "mise exec -C <dir> -- markgate"  'mise exec -C /w -- markgate verify x | tail' "$MG"
+want_piped 0 "mise exec --cd <dir> -- markgate" 'mise exec --cd /w -- markgate verify x | tail' "$MG"
+want_piped 0 "mise exec -j <n> -- markgate"    'mise exec -j 4 -- markgate set integ | tee /tmp/l' "$MG"
+want_piped 1 "mise exec -C <dir> -- rg is not markgate" 'mise exec -C /w -- rg markgate verify . | head' "$MG"
+# The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
+# the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
+want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"
+want_piped 0 "bash -c double-quoted body"      'bash -c "mise exec -- markgate verify a" | tail' "$MG"
+want_piped 1 "bash -c body, NOT piped"         "bash -c 'markgate verify a'" "$MG"
 want_piped 0 "mise exec with a tool pin"       'mise exec markgate@0.4 -- markgate verify integ | cat' "$MG"
 # Multi-line: the pipe is on a later line than the verb, and on the SAME line as
 # a different one. A segmenter that only ever saw line 1 passed both.

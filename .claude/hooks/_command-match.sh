@@ -280,7 +280,7 @@ gate_unquote_span() {
 # a pipe, and dropping the argument there would have made the recursion the one
 # blind spot of the piped-segment scan.
 gate_segments() {
-  local segment mark="${2:-}" piped
+  local segment mark="${2:-}" piped inner
   while IFS= read -r segment; do
     # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
     # replacement means the MATCHED TEXT, so the placeholder survived and a
@@ -310,7 +310,15 @@ gate_segments() {
     # (go-to-k/cdkd#2130 test review). Recurse ONLY here — re-segmenting every
     # segment would split a quoted `--body` whose prose contains `&&`.
     if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
-      gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$mark"
+      # `$piped` is re-attached to every segment the recursion yields, because
+      # the pipe belongs to the OUTER command: in `bash -c 'markgate verify a'
+      # | tail` it is the whole `bash -c` whose exit status the shell discards,
+      # and the recursion had been dropping that fact on the floor, so
+      # `gate_piped_segments` emitted NOTHING and the gate passed. Note it is
+      # `$piped` and not `$GATE_PIPE_MARK`: marking unconditionally would mark
+      # the inner segments of an UN-piped `bash -c` too.
+      while IFS= read -r inner; do printf '%s\n' "$inner$piped"; done \
+        < <(gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$mark")
       continue
     fi
     # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
@@ -461,7 +469,13 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # `[^[:space:]]+` run instead made `mise exec -- rg markgate verify .claude |
 # head` a FALSE BLOCK, which is a command someone auditing this very gate would
 # type.
-GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|-[^[:space:]]*|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
+# `--` is its OWN no-value alternative and must come first: letting it take an
+# optional value re-opens the `rg` false block, because `-- rg` would absorb.
+# The flag alternative carries an optional value so the real value-taking
+# launcher flags (`-C <dir>`, `--cd`, `-E/--env`, `-j/--jobs`) still reach the
+# verb -- an earlier revision of this constant tightened them out, which turned
+# `mise exec -C /w -- markgate verify x | tail` from BLOCK into pass.
+GATE_MARKGATE_LAUNCH="(([^[:space:]]*/)?(mise|rtx)[[:space:]]+(exec|x)([[:space:]]+(--|--?[A-Za-z][^[:space:]]*([[:space:]]+[^-][^[:space:]]*)?|[^[:space:]]+@[^[:space:]]+))*[[:space:]]+)?"
 GATE_RE_MARKGATE_VERDICT="^${GATE_MARKGATE_LAUNCH}([^[:space:]]*/)?markgate[[:space:]]+(verify|set|run)([[:space:]]|$)"
 # The REST issue COLLECTION path, for issue-dup-check-gate. This matches the
 # PATH ONLY -- it says nothing about the HTTP method, and the collection is also
