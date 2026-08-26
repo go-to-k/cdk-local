@@ -307,18 +307,84 @@ export async function verifySigV4(
     // cdk-local cannot fully emulate. `--strict-sigv4` flips this to
     // fail-closed. OAC-fronted routes always pass (no client signature
     // exists to verify in production).
-    // NOTE (issue #564): `reason` is the credential CHAIN's own error text,
-    // relayed unbounded into the `warn` lines below. With a
-    // `credential_process` profile the SDK runs the configured command
-    // through `child_process.exec` and rethrows Node's
-    // `Command failed: <command line>\n<stderr>`, so a passphrase on that
-    // command line reaches a default-level log. Issue #555's sweep covered
-    // caller-supplied `Authorization` material and did not reach this,
-    // which points the other way — the developer's own machine config.
-    // Left here so a later sweep finds the pointer rather than re-deriving
-    // it; the fix belongs in #564 with its own judgement about how much of
-    // a credential-loader failure may print.
-    const reason = err instanceof Error ? err.message : String(err);
+    // Issue #564: `reason` used to be the credential CHAIN's own error text,
+    // relayed verbatim into every `warn` spelling below. It is withheld now,
+    // and the chain's message moved to the `debug` line just below.
+    //
+    // Issue #555's criterion was PROVENANCE — material cdk-local resolved
+    // out of a secret or parameter store is redacted, the developer's own
+    // payload is not — and on provenance alone this value stays: it is the
+    // developer's own machine configuration, not something cdk-local went
+    // and fetched. Provenance did not settle #555's own sigv4-verify cases
+    // either, and it does not settle this one. Two further axes decide it,
+    // and both point the other way:
+    //
+    //   LEVEL — these are `warn`, so they print on a plain `cdkl start-api`
+    //   run rather than only under `--verbose`, and `cdkl studio` mirrors a
+    //   serve child's output into a log ring it serves over HTTP. The
+    //   population that sees a `warn` is everyone; the population that sees
+    //   a `debug` line asked for it.
+    //
+    //   RECONSTRUCTION — what can reach this string is not a hint about a
+    //   secret, it is the secret. `@aws-sdk/credential-provider-process`
+    //   builds its failure as `new CredentialsProviderError(error.message)`
+    //   where `error` is the rejection from `promisify(child_process.exec)`
+    //   — Node's `Command failed: <command line>\n<stderr>`. A passphrase
+    //   written on a `credential_process` command line is therefore already
+    //   inside a credential-chain error object. That is unlike the values
+    //   #555 left quoted: an access-key-id is a public identifier, and a
+    //   SigV4 signature is an HMAC that is worthless without the key.
+    //
+    //   MEASURED — and this CORRECTS issue #564's own premise, which said
+    //   the process provider's error propagates verbatim because it carries
+    //   no `tryNextLink`. It carries none, and that is exactly why it does
+    //   NOT propagate: `CredentialsProviderError` defaults `tryNextLink` to
+    //   TRUE, so `internalCreateChain` continues past it, and the node
+    //   chain's last link unconditionally throws the generic `Could not load
+    //   credentials from any providers` with `tryNextLink: false`. Repro on
+    //   the versions this repo RESOLVES -- and note there are TWO
+    //   resolutions of the process provider, so a single version number here
+    //   is wrong whichever one you pick: from `@aws-sdk/client-sts`,
+    //   credential-provider-node 3.972.44 reaches
+    //   credential-provider-process 3.972.39 directly, while
+    //   credential-provider-ini 3.972.43 reaches 3.972.43 -- and INI is what
+    //   actually handles a `credential_process` profile, so 3.972.43 is what
+    //   the repro exercised. The two dist bundles are byte-identical, so
+    //   nothing behavioural turns on the pairing. Repro: a profile whose
+    //   `credential_process` exits non-zero, proven to have RUN by a marker
+    //   file it touches, yields exactly that 45-character generic message
+    //   and no command line.
+    //
+    //   So this is defense in depth, not a live disclosure — worth having
+    //   anyway, because all that separates the command line from a
+    //   default-level log line is one defaulted `tryNextLink` inside a
+    //   vendored dependency that deliberately copies the exec message into
+    //   the error it throws. cdk-local neither owns that line nor would
+    //   notice it changing. What actually reaches `reason` today is that
+    //   generic message and a handful of profile-naming chain errors, none
+    //   of them secret; the cost of withholding them is zero, since
+    //   `--verbose` still prints every one in full.
+    //
+    // Two axes of three say withhold, so the `warn` carries a clamped class
+    // name plus a length -- the shape `ecs-secrets-resolver.ts` already uses
+    // for the parse failure it must not echo. The class name is made
+    // input-independent by the clamp in
+    // {@link describeCredentialLoadFailure} (it is NOT independent on its
+    // own -- see the note there). The LENGTH is the one input-derived field
+    // that is kept, deliberately, and its cost is weighed in that same
+    // JSDoc.
+    //
+    // Deliberately NOT done: stripping the `Command failed:` first line and
+    // keeping the rest. That enumerates one known-bad shape and loses the
+    // race — the stderr on the second line is exactly as able to carry a
+    // passphrase prompt or a token, and the next loader to grow its own
+    // format would not be covered at all. Define the safe state positively
+    // instead, which is what "input-independent" is.
+    logger.debug(
+      `AWS_IAM authorizer: the AWS credential chain's own failure message was: ` +
+        `${stringifyCredentialLoadFailure(err)}`
+    );
+    const reason = describeCredentialLoadFailure(err);
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
       logger.warn(
@@ -367,7 +433,23 @@ export async function verifySigV4(
     // (AKIDFOREIGN, akidforeign, AkIdFOREIGN) would trigger a fresh
     // warn line per case. Case-insensitive compare → case-insensitive
     // dedup. (PR #484 review MINOR.)
-    const dedupKey = parsed.credentialAccessKeyId.toLowerCase();
+    //
+    // Issue #561: the id is HASHED before it becomes a key, and the set it
+    // goes into is bounded (see {@link rememberWarnedForeignId}). Nothing
+    // validates `credentialAccessKeyId` before it arrives here — it is
+    // whatever occupied the first '/'-separated segment of `Credential=`, so
+    // a caller controls its content AND its length, up to Node's
+    // `http.maxHeaderSize` (16384, read off `require('node:http')` on the
+    // Node 24.15 this repo pins). Storing it raw would make an entry-count
+    // cap a weak bound — cap times sixteen kilobytes — while a fixed 64-hex
+    // digest makes it a real one, and it collides no more often than the raw
+    // value does. Truncating the id instead would be the wrong shape: two
+    // distinct long ids sharing a prefix would collapse onto one key and the
+    // second signer's warning would be SUPPRESSED, which is the one outcome
+    // this dedup must never produce.
+    const dedupKey = createHash('sha256')
+      .update(parsed.credentialAccessKeyId.toLowerCase())
+      .digest('hex');
     const { sigV4StrictByDefault, sigV4OptFlag: optFlag } = getEmbedConfig();
     if (opts.strict && !opts.oacFronted) {
       if (!warned || !warned.has(dedupKey)) {
@@ -386,7 +468,7 @@ export async function verifySigV4(
                 `cdk-local denies it; remove ${optFlag} to warn-and-pass (the default), or sign the ` +
                 `request with the same credentials cdk-local resolves locally.`
         );
-        warned?.add(dedupKey);
+        rememberWarnedForeignId(warned, dedupKey);
       }
       return { allow: false, identityHash: undefined };
     }
@@ -411,7 +493,7 @@ export async function verifySigV4(
               `pass ${optFlag} to deny instead. Do NOT trust ` +
               `event.requestContext.authorizer.principalId in handler code.`
       );
-      warned?.add(dedupKey);
+      rememberWarnedForeignId(warned, dedupKey);
     }
     return {
       allow: true,
@@ -576,6 +658,152 @@ export function redactSignature(signature: string): string {
     return `<withheld: ${signature.length} characters that are not a signature>`;
   }
   return signature;
+}
+
+/**
+ * Describe a credential-chain failure for a default-level log line WITHOUT
+ * relaying the chain's own message (issue #564).
+ *
+ * The message is withheld because of what a credential-chain error CAN
+ * carry: `@aws-sdk/credential-provider-process` copies the rejection of
+ * `promisify(child_process.exec)` — Node's
+ * `Command failed: <command line>\n<stderr>` — into the error it throws, so
+ * a passphrase on a `credential_process` command line is already inside a
+ * chain error object. On the SDK versions this repo resolves today that
+ * object does not actually reach the caller (the chain swallows it and ends
+ * on a generic message), which makes this defense in depth rather than a
+ * live disclosure. The measurement, and the full reasoning for withholding
+ * at `warn` while keeping the text at `debug`, are at the call site in
+ * {@link verifySigV4}.
+ *
+ * What is reported instead is input-INDEPENDENT: `err.name` is set by the
+ * throwing class rather than derived from anything the loader read, which is
+ * the property that makes quoting it safe, and is the same discriminator
+ * `ecs-secrets-resolver.ts` reports for the JSON parse failure it must not
+ * echo. `'unknown'` rather than a guessed class name for a non-`Error`
+ * throw, so the field never names a class the throw was not -- and the same
+ * `'unknown'` for a `name` that is not a bare identifier, so the guarantee
+ * does not rest on every provider following the convention.
+ *
+ * The LENGTH is reported, unlike in `ecs-secrets-resolver.ts`, and the
+ * difference is deliberate: there the user already knows which secret it is
+ * and can read the value at its source, so a character count would be
+ * disclosure buying nothing. Here the user cannot see the withheld message
+ * at all, and the count is what separates a one-line
+ * `Could not load credentials from any providers` from a multi-hundred-
+ * character `Command failed:` dump — which is what tells them whether their
+ * `credential_process` even ran. It is the same choice
+ * {@link redactAuthorizationSegment} makes when it withholds.
+ *
+ * The count is a side channel, and a narrow one: against a KNOWN
+ * `credential_process` template the number is `constant + len(passphrase)`,
+ * so it yields the passphrase's LENGTH. That is accepted rather than
+ * overlooked. It buys the one thing the user cannot otherwise see, the
+ * `Command failed:` dump is not reachable today anyway (see the call site),
+ * and bucketing the number would blur exactly the boilerplate-vs-dump
+ * distinction the field exists for.
+ */
+export function stringifyCredentialLoadFailure(err: unknown): string {
+  // `String(err)` is not total: a `Symbol` throw, or an object with a null
+  // prototype, raises `TypeError` on conversion. That throw would escape the
+  // `catch` in {@link verifySigV4} and reject the whole authorizer pass -- a
+  // 500 in place of the warn-and-pass the branch exists to produce. One
+  // helper rather than two expressions, so the length reported in the `warn`
+  // and the text printed at `debug` can never describe different strings.
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return '[unstringifiable throw]';
+  }
+}
+
+export function describeCredentialLoadFailure(err: unknown): string {
+  const rawKind = err instanceof Error ? err.name : 'unknown';
+  // `err.name` comes off the same third-party object whose `message` this
+  // function exists to withhold, and it is NOT always set by the throwing
+  // class: for an AWS service exception it is WIRE-DERIVED. `@aws-sdk/core`
+  // builds it from the `x-amzn-errortype` header / the body's `code` /
+  // `__type`, through `sanitizeErrorCode`, which splits on ',' ':' and '#'
+  // and does nothing else -- no length cap, no newline stripping (read at
+  // `@aws-sdk/core@3.974.13` protocols/index.js:324). Such an exception can
+  // reach this catch, because `credential-provider-ini` calls the STS
+  // `roleAssumer` unwrapped. So a hostile or hijacked credential endpoint
+  // (`AWS_CONTAINER_CREDENTIALS_FULL_URI`, a redirected IMDS) answering with
+  // `x-amzn-errortype: Foo\nWARN: signature verified` could FORGE log lines
+  // into the very `warn` stream -- and into the studio ring served over HTTP
+  // -- that this change exists to keep clean.
+  //
+  // The clamp is therefore not hypothetical hardening: a bare identifier of
+  // at most 64 characters is what every real class name is and what no
+  // injected value can be. Anything else degrades to `unknown`. Note the
+  // wrong fix: `err.name.slice(0, 64)` keeps the newline, so the forgery
+  // survives truncation.
+  const kind = /^[A-Za-z0-9_.-]{1,64}$/.test(rawKind) ? rawKind : 'unknown';
+  const length = stringifyCredentialLoadFailure(err).length;
+  return `${kind}; ${length}-character message withheld, logged at debug level under --verbose`;
+}
+
+/**
+ * How many distinct foreign access-key-ids {@link verifySigV4}'s warn-dedup
+ * set retains (issue #561).
+ *
+ * The legitimate population is tiny — a session sees one federated / Cognito
+ * Identity Pool / cross-account signer, occasionally a handful — so 256
+ * leaves two orders of magnitude of headroom over any real use while holding
+ * the set at 256 entries of exactly 64 hex characters whatever a caller
+ * sends, because {@link verifySigV4} hashes the id before it becomes a key.
+ *
+ * `docs/local-emulation.md` states this number to users ("the 256 most
+ * recently warned ids"); change both together.
+ */
+const FOREIGN_ID_DEDUP_MAX = 256;
+
+/**
+ * Record that the foreign-access-key-id warning has been emitted for
+ * `dedupKey`, evicting oldest-first so the set cannot grow without bound
+ * (issue #561).
+ *
+ * # Why eviction, and not "stop warning past the cap"
+ *
+ * The set's only power is SUPPRESSION — an entry present means the warning
+ * is skipped — so the two candidate policies differ in the DIRECTION they
+ * fail. Evicting an entry can only ever cause a REPEAT warning, which is
+ * precisely the un-deduped behaviour this code had before the dedup existed:
+ * noisier, never quieter. Capping by refusing to warn once the set is full
+ * would instead silence the (cap+1)-th distinct signer, and that signer is
+ * every bit as likely to be the real federated identity the developer needs
+ * told about as it is to be a prober's next value. A warning that never
+ * arrives is a worse failure than a set that grows, so the bound is put
+ * where it cannot suppress anything.
+ *
+ * `Set` iterates in insertion order, so `values().next()` is the oldest
+ * entry and this is FIFO. It is a loop rather than a single `delete` so a
+ * set handed in already over the cap is brought back under it.
+ *
+ * What this does NOT fix: a client looping over DISTINCT ids still draws one
+ * warn line per probe. Distinct ids defeat the dedup whether or not the set
+ * is bounded, and closing that half would need suppression — the direction
+ * ruled out above. The bound here is on memory only.
+ */
+function rememberWarnedForeignId(warned: Set<string> | undefined, dedupKey: string): void {
+  if (!warned) return;
+  // Eviction happens before the add, so calling this for a key already
+  // present would drop one UNRELATED entry per repeat. Both of today's call
+  // sites sit inside `if (!warned || !warned.has(dedupKey))`, which is why
+  // that cannot happen now -- this line states the precondition positively
+  // so a third call site cannot quietly break it.
+  //
+  // Note what this is NOT: a `delete` + re-`add` to refresh recency. That
+  // would turn the FIFO into an LRU, and an LRU lets a high-rate prober keep
+  // its own ids resident and push the real federated signer out -- the exact
+  // outcome the policy above says must never happen.
+  if (warned.has(dedupKey)) return;
+  while (warned.size >= FOREIGN_ID_DEDUP_MAX) {
+    const oldest = warned.values().next();
+    if (oldest.done === true) break;
+    warned.delete(oldest.value);
+  }
+  warned.add(dedupKey);
 }
 
 /**
