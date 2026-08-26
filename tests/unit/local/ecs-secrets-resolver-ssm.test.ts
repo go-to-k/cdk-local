@@ -19,16 +19,24 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import type { SSMClient } from '@aws-sdk/client-ssm';
 
-const { smSend, ssmSend } = vi.hoisted(() => ({
+const { smSend, ssmSend, smCtors, ssmCtors, smDestroy, ssmDestroy } = vi.hoisted(() => ({
   smSend: vi.fn(),
   ssmSend: vi.fn(),
+  smCtors: { count: 0 },
+  ssmCtors: { count: 0 },
+  smDestroy: vi.fn(),
+  ssmDestroy: vi.fn(),
 }));
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: class {
+    constructor() {
+      smCtors.count += 1;
+    }
     send = smSend;
-    destroy(): void {}
+    destroy = smDestroy;
   },
   GetSecretValueCommand: class {
     constructor(public input: unknown) {}
@@ -37,8 +45,11 @@ vi.mock('@aws-sdk/client-secrets-manager', () => ({
 
 vi.mock('@aws-sdk/client-ssm', () => ({
   SSMClient: class {
+    constructor() {
+      ssmCtors.count += 1;
+    }
     send = ssmSend;
-    destroy(): void {}
+    destroy = ssmDestroy;
   },
   GetParameterCommand: class {
     constructor(public input: unknown) {}
@@ -88,6 +99,10 @@ describe('resolveSsm — the GetParameter call (issue #557)', () => {
   beforeEach(() => {
     smSend.mockReset();
     ssmSend.mockReset();
+    smDestroy.mockReset();
+    ssmDestroy.mockReset();
+    smCtors.count = 0;
+    ssmCtors.count = 0;
   });
 
   it('requests decryption — a dropped WithDecryption yields ciphertext, silently', async () => {
@@ -139,6 +154,10 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
   beforeEach(() => {
     smSend.mockReset();
     ssmSend.mockReset();
+    smDestroy.mockReset();
+    ssmDestroy.mockReset();
+    smCtors.count = 0;
+    ssmCtors.count = 0;
   });
 
   it('throws when the response carries a Parameter with no Value', async () => {
@@ -198,6 +217,10 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
   beforeEach(() => {
     smSend.mockReset();
     ssmSend.mockReset();
+    smDestroy.mockReset();
+    ssmDestroy.mockReset();
+    smCtors.count = 0;
+    ssmCtors.count = 0;
   });
 
   it('routes each ValueFrom shape to its own client and keeps entry order', async () => {
@@ -250,6 +273,33 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
     ).rejects.toThrow(/unsupported ValueFrom shape/);
     expect(ssmSend).not.toHaveBeenCalled();
     expect(smSend).not.toHaveBeenCalled();
+  });
+
+  it('destroys the clients it constructed, and never one the caller supplied', async () => {
+    // The mocked `destroy` used to be a no-op METHOD, so dropping the
+    // `finally` block that calls it survived every case here -- the real
+    // cost being leaked sockets on a long-lived `cdkl start-service`.
+    ssmSend.mockResolvedValue({ Parameter: { Value: 'ssm-value' } });
+    await resolveEcsSecrets([entry(SSM_ARN)]);
+    expect(ssmDestroy).toHaveBeenCalledTimes(1);
+    expect(smDestroy).toHaveBeenCalledTimes(1);
+
+    smDestroy.mockReset();
+    ssmDestroy.mockReset();
+    // A caller-supplied client is the caller's to close: destroying it here
+    // would break a host that reuses one across several resolves.
+    const borrowed = { send: ssmSend, destroy: ssmDestroy };
+    await resolveEcsSecrets([entry(SSM_ARN)], { ssmClient: borrowed as unknown as SSMClient });
+    expect(ssmDestroy).not.toHaveBeenCalled();
+    // The Secrets Manager client was still constructed by the resolver, so
+    // that one IS closed -- the two are tracked independently.
+    expect(smDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('constructs no SDK client at all for an empty batch', async () => {
+    await expect(resolveEcsSecrets([])).resolves.toEqual([]);
+    expect(ssmCtors.count).toBe(0);
+    expect(smCtors.count).toBe(0);
   });
 
   it('fails the whole batch when only the SSM half fails', async () => {
