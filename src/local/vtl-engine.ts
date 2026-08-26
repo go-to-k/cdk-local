@@ -1106,11 +1106,14 @@ export function buildVtlInput(
  *      inside `$input.json('$.foo')`. It becomes caller-controllable only
  *      when a template deliberately routes a request value into the
  *      expression, e.g. `$input.json($input.params('p'))`.
- *   2. Even then the 502 goes back to the caller who supplied that value,
- *      and the SAME body already carries 200 characters of the rendered
- *      template verbatim (see `vtlFailure`). Withholding the expression
- *      would remove nothing from the response while destroying the only
- *      pointer the developer has to the unsupported syntax.
+ *   2. Even then, the 502 goes back to the CALLER WHO SUPPLIED that value,
+ *      so it discloses nothing that caller did not already send. (Note the
+ *      `template` field `vtlFailure` puts beside `reason` is the template
+ *      SOURCE, not its render — so in that case this message is the one
+ *      place the value appears, and the argument has to rest on the
+ *      recipient rather than on the value being present anyway.)
+ *      Withholding it would cost the developer the only pointer they have
+ *      to the unsupported syntax.
  *
  * Unlike `$util.parseJson`'s catch above, nothing here was resolved by
  * cdk-local out of a secret or parameter store, and no third party reads

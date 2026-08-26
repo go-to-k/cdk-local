@@ -221,6 +221,37 @@ describe('resolveEcsSecrets — SSM and Secrets Manager entries in one batch (is
     expect(sentParameterInput()).toEqual({ Name: SSM_NAME, WithDecryption: true });
   });
 
+  it('keeps two SSM entries correlated to their own parameters', async () => {
+    // Every other case sends ONE SSM entry, so a cross-entry mix-up --
+    // `Promise.all` writing entry A's value onto entry B -- would be
+    // invisible. Distinct values per Name make the correlation observable.
+    const OTHER_ARN = 'arn:aws:ssm:us-east-1:123456789012:parameter/app/api/key';
+    ssmSend.mockImplementation((cmd: { input: { Name: string } }) =>
+      Promise.resolve({ Parameter: { Value: `value-for${cmd.input.Name}` } })
+    );
+
+    const out = await resolveEcsSecrets([
+      entry(SSM_ARN, 'DB_PASSWORD'),
+      entry(OTHER_ARN, 'API_KEY'),
+    ]);
+
+    expect(out.map((r) => [r.name, r.value])).toEqual([
+      ['DB_PASSWORD', 'value-for/app/db/password'],
+      ['API_KEY', 'value-for/app/api/key'],
+    ]);
+  });
+
+  it('rejects a ValueFrom that is neither shape, without calling either client', async () => {
+    // `classifySecretArn` answers `unknown` and `resolveOne` throws before
+    // any SDK call -- so a future shape added to the classifier but not to
+    // the switch would surface here rather than as a silent empty env var.
+    await expect(
+      resolveEcsSecrets([entry('arn:aws:s3:::my-bucket/secret.txt', 'DB_PASSWORD')])
+    ).rejects.toThrow(/unsupported ValueFrom shape/);
+    expect(ssmSend).not.toHaveBeenCalled();
+    expect(smSend).not.toHaveBeenCalled();
+  });
+
   it('fails the whole batch when only the SSM half fails', async () => {
     // Resolution is all-or-nothing by design: a partially-resolved batch
     // would boot a container with one secret as a literal empty string.

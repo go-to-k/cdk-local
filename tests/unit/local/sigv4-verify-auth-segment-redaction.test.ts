@@ -24,10 +24,12 @@ import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import {
   verifySigV4,
   redactAuthorizationSegment,
+  redactSignature,
   type SigV4VerifyRequest,
   type ResolvedCredentials,
 } from '../../../src/local/sigv4-verify.js';
 import { getLogger } from '../../../src/utils/logger.js';
+import { setEmbedConfig, resetEmbedConfig } from '../../../src/local/embed-config.js';
 
 const NOW = new Date('2026-01-01T00:00:00Z');
 
@@ -75,6 +77,38 @@ async function infoOnReject(authorization: string): Promise<string> {
   return joined;
 }
 
+/**
+ * Drive one `Authorization` header through `verifySigV4` and return every
+ * `warn` line it produced. Fails the test if the request is DENIED — the
+ * foreign-access-key-id path warn-and-PASSES by default, so a denial means
+ * the case tripped some earlier guard instead.
+ */
+async function warnOnForeignId(
+  authorization: string,
+  opts: { strict?: boolean; oacFronted?: boolean } = {}
+): Promise<string> {
+  const spy = vi.spyOn(getLogger(), 'warn').mockImplementation(() => {});
+  const req: SigV4VerifyRequest = {
+    method: 'POST',
+    rawUrl: '/',
+    headers: {
+      host: '127.0.0.1:65483',
+      'x-amz-date': '20260101T000000Z',
+      authorization,
+    },
+    body: Buffer.alloc(0),
+  };
+  const result = await verifySigV4(req, loadLocal, { now: () => NOW, ...opts });
+  // Only `--strict-sigv4` on a non-OAC route denies; the other two
+  // warn-and-PASS. Asserting the expected outcome keeps a case that tripped
+  // some earlier guard from looking like a clean run of this branch.
+  expect(result.allow).toBe(!(opts.strict === true && opts.oacFronted !== true));
+  const joined = spy.mock.calls.map((c) => String(c[0])).join('\n');
+  spy.mockRestore();
+  expect(joined).toContain('access-key-id');
+  return joined;
+}
+
 describe('redactAuthorizationSegment — the quote/withhold boundary (issue #555)', () => {
   it('quotes a short single-token segment verbatim', () => {
     expect(redactAuthorizationSegment('aws3_request')).toBe('aws3_request');
@@ -99,6 +133,40 @@ describe('redactAuthorizationSegment — the quote/withhold boundary (issue #555
     expect(redactAuthorizationSegment('Signature=abcd')).toBe(
       '<withheld: 14 characters of unparsed header material>'
     );
+  });
+
+  it('withholds on whitespace ALONE — short, and with no \'=\' to fall back on', () => {
+    // Fences the whitespace half of the `/[\s=]/` disjunction on its own.
+    // Every other case here also trips the length bound or the `=` clause,
+    // so rewriting the predicate to `/=/` would leave them all green.
+    expect(redactAuthorizationSegment('aws4_request foo')).toBe(
+      '<withheld: 16 characters of unparsed header material>'
+    );
+  });
+});
+
+describe('redactSignature — the offered Signature= value (issue #555)', () => {
+  it('quotes a real 64-character lowercase-hex signature verbatim', () => {
+    const real = 'f00dfeed'.repeat(8);
+    expect(real).toHaveLength(64);
+    expect(redactSignature(real)).toBe(real);
+  });
+
+  it('withholds anything past 64 characters, or not lowercase hex, or empty', () => {
+    expect(redactSignature('a'.repeat(65))).toBe(
+      '<withheld: 65 characters that are not a signature>'
+    );
+    // The parser lowercases before this runs, so uppercase is unreachable
+    // in production; the predicate states the requirement explicitly.
+    expect(redactSignature('DEADBEEF')).toBe('<withheld: 8 characters that are not a signature>');
+    expect(redactSignature('')).toBe('<withheld: 0 characters that are not a signature>');
+  });
+
+  it('withholds the sweep-in shape a trailing parameter produces', () => {
+    const swept = `${SIGNATURE} x-anything=foo`;
+    const out = redactSignature(swept);
+    expect(out).not.toContain(SIGNATURE);
+    expect(out).toBe(`<withheld: ${swept.length} characters that are not a signature>`);
   });
 });
 
@@ -132,8 +200,11 @@ describe('verifySigV4 — no unparsed Authorization material at info (issue #555
         `SignedHeaders=host, Signature=${SIGNATURE}`
     );
     expect(infos).toContain('malformed Authorization header');
-    expect(infos).toContain('expected 5 slash-separated segments');
-    expect(infos).toContain('got 2');
+    // Anchored through to the count: `expected 5 slash-separated segments`
+    // on its own is a SUBSTRING of the message this replaces
+    // (`malformed Credential '<value>' (expected 5 slash-separated
+    // segments)`), so it would pass on exactly the form it rejects.
+    expect(infos).toContain('expected 5 slash-separated segments, got 2');
     expect(infos).not.toContain(SIGNATURE);
   });
 
@@ -175,6 +246,52 @@ describe('verifySigV4 — no unparsed Authorization material at info (issue #555
     expect(infos).not.toContain(SIGNATURE);
     expect(infos).toContain('expected YYYYMMDD');
   });
+
+  it('withholds an access-key-id segment that swallowed the signature (warn level)', async () => {
+    // `warn` is LESS gated than the `info` sites above, so scoping the fix
+    // to `info` would have inverted its own visibility argument. The
+    // foreign-identity path warn-and-passes by default, so this line prints
+    // on a request that is then SERVED.
+    const header =
+      `AWS4-HMAC-SHA256 Credential=AKIALOCAL Signature=${SIGNATURE}/20260101/us-east-1/execute-api/aws4_request, ` +
+      'SignedHeaders=host, Signature=abcd';
+    // FIVE separate interpolations produce this warn, and a single case
+    // leaves four of them unfenced. Two axes multiply: the route mode
+    // (default warn-and-pass / `--strict-sigv4` deny / CloudFront-OAC pass)
+    // and the host's `sigV4StrictByDefault`, which selects a different
+    // wording of the same line. A per-occurrence mutation probe found the
+    // two `sigV4StrictByDefault: true` spellings still green when only the
+    // three route modes were covered.
+    for (const strictByDefault of [false, true]) {
+      setEmbedConfig(
+        strictByDefault
+          ? { sigV4StrictByDefault: true, sigV4OptFlag: '--allow-unverified-sigv4' }
+          : {}
+      );
+      try {
+        for (const opts of [{}, { strict: true }, { oacFronted: true, strict: true }]) {
+          const warns = await warnOnForeignId(header, opts);
+          expect(warns).toMatch(WITHHELD);
+          expect(warns).not.toContain(SIGNATURE);
+        }
+      } finally {
+        resetEmbedConfig();
+      }
+    }
+  });
+
+  it('withholds an offered Signature= that swallowed a trailing parameter', async () => {
+    // The access-key id matches the local credentials, so this reaches the
+    // mismatch message — where `Signature=` is the LAST parameter and
+    // therefore a sweep position of its own.
+    const infos = await infoOnReject(
+      `AWS4-HMAC-SHA256 Credential=${LOCAL_CREDS.accessKeyId}/20260101/us-east-1/execute-api/aws4_request, ` +
+        `SignedHeaders=host;x-amz-date, Signature=${SIGNATURE} X-Anything=foo`
+    );
+    expect(infos).toContain('Signature= mismatch');
+    expect(infos).toContain('characters that are not a signature');
+    expect(infos).not.toContain(SIGNATURE);
+  });
 });
 
 describe('verifySigV4 — the diagnostics issue #246 added are NOT over-redacted', () => {
@@ -198,11 +315,43 @@ describe('verifySigV4 — the diagnostics issue #246 added are NOT over-redacted
     expect(alg).toContain("algorithm 'AWS4-HMAC-SHA512'.");
   });
 
-  it('still prints BOTH signatures on a Signature= mismatch (deliberate, see the in-code note)', async () => {
-    // Reached only when the request's access-key id matches the credentials
-    // cdk-local resolved locally, so the signature is provably the
-    // developer's own. Printing it beside the recomputed one IS the
-    // diagnostic; this case is what stops a later sweep from "fixing" it.
+  it('still quotes an RFC 1123 x-amz-date in full (deliberately not redacted)', async () => {
+    // `x-amz-date` is left raw on purpose (see the note at the site): no
+    // delimiter mistake can sweep an `Authorization` segment into it, and
+    // its legal spellings carry spaces and run long, so any shape-based
+    // bound would withhold the valid-but-mismatched timestamp this message
+    // exists to show. This case is what stops a later sweep from applying
+    // `redactAuthorizationSegment` here by analogy.
+    const rfcDate = 'Mon, 02 Jan 2006 15:04:05 GMT';
+    const spy = vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    const req: SigV4VerifyRequest = {
+      method: 'POST',
+      rawUrl: '/',
+      headers: {
+        host: '127.0.0.1:65483',
+        'x-amz-date': rfcDate,
+        authorization:
+          'AWS4-HMAC-SHA256 Credential=AKIALOCALEXAMPLE/20260101/us-east-1/execute-api/aws4_request, ' +
+          'SignedHeaders=host, Signature=abcd',
+      },
+      body: Buffer.alloc(0),
+    };
+    const result = await verifySigV4(req, loadLocal, { now: () => NOW });
+    expect(result.allow).toBe(false);
+    const infos = spy.mock.calls.map((c) => String(c[0])).join('\n');
+    spy.mockRestore();
+    expect(infos).toContain(`x-amz-date '${rfcDate}'`);
+    expect(infos).not.toMatch(WITHHELD);
+  });
+
+  it('prints the OFFERED signature and withholds the RECOMPUTED one', async () => {
+    // The offered value is the caller's own, so echoing it back to a local
+    // terminal discloses nothing they did not send, and it is what makes
+    // the mismatch actionable (issue #246). The recomputed value is an HMAC
+    // under the developer's real secret access key over a string-to-sign
+    // the CALLER chose, and this branch needs only a matching access-key id
+    // — an identifier, not a secret — so printing it would hand out valid
+    // signatures for arbitrary AWS calls.
     const offered = '0'.repeat(64);
     const infos = await infoOnReject(
       `AWS4-HMAC-SHA256 Credential=${LOCAL_CREDS.accessKeyId}/20260101/us-east-1/execute-api/aws4_request, ` +
@@ -210,7 +359,13 @@ describe('verifySigV4 — the diagnostics issue #246 added are NOT over-redacted
     );
     expect(infos).toContain('Signature= mismatch');
     expect(infos).toContain(`got '${offered}'`);
-    expect(infos).toMatch(/recomputed '[0-9a-f]{64}'/);
-    expect(infos).not.toMatch(WITHHELD);
+    expect(infos).toContain('the recomputed signature is withheld');
+    // The positive half of the negative: exactly ONE 64-hex run in the
+    // whole output, and it is the one the caller supplied. A bare
+    // `not.toContain(<recomputed>)` would need the recomputed value, which
+    // the test cannot see — and "no hex at all" would also pass if the
+    // message lost the offered signature too.
+    const hexRuns = infos.match(/[0-9a-f]{64}/g) ?? [];
+    expect(hexRuns).toEqual([offered]);
   });
 });
