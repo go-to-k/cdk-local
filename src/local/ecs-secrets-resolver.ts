@@ -186,6 +186,14 @@ async function resolveSecretsManager(
     const resp = await client.send(new GetSecretValueCommand({ SecretId: shape.baseArn }));
     secretString = resp.SecretString;
   } catch (err) {
+    // Parser/transport detail KEPT, unlike the `JSON.parse` catch below.
+    // Reviewed under issue #554's criterion and excluded on the same ground
+    // as the `cloudfront-kvs.ts` echoes: this throw fires BEFORE any value
+    // exists -- `secretString` is still undefined -- so what it relays is an
+    // AWS SDK error about the ARN (AccessDenied, ResourceNotFound,
+    // throttling), which is exactly what makes a credential or IAM problem
+    // diagnosable. It is the one throw in this function the sibling-branch
+    // test block deliberately does not cover, and this is why.
     throw new EcsSecretsResolutionError(
       `Failed to resolve Secrets Manager secret for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}): ${
         err instanceof Error ? err.message : String(err)
@@ -204,10 +212,36 @@ async function resolveSecretsManager(
   try {
     parsed = JSON.parse(secretString);
   } catch (err) {
+    // NEVER interpolate the parser's own message here. V8 embeds a prefix of
+    // the PARSED INPUT in `SyntaxError.message`
+    // (`Unexpected token 's', "supersecre"... is not valid JSON`), and it
+    // TRUNCATES to that ~10-character prefix only for a long input: measured
+    // on Node 24.15, an input of 20 characters or fewer is quoted in FULL,
+    // and `...` first appears at 21. So a short secret leaks whole. The
+    // parsed input IS the secret plaintext this resolver just fetched from
+    // Secrets Manager, so echoing it puts the secret on stderr and into any
+    // surrounding log capture (issue #554; reported against the cdkd host as
+    // go-to-k/cdkd#2189 and fixed there by go-to-k/cdkd#2214, whose message
+    // this one matches). Reaching it needs no hostile input -- a plain-string
+    // secret plus a `:json-key::` ValueFrom is an ordinary user mistake.
+    //
+    // `err.name` is input-independent and safe as a discriminator; the
+    // container, env var and requested json-key already make the message
+    // actionable without showing any of the value. Deliberately NOT reported:
+    // the input's LENGTH, which the sibling `$util.parseJson` message in
+    // `vtl-engine.ts` does give. There the argument is an anonymous HTTP body
+    // whose size is the only actionable property; here the user already knows
+    // WHICH secret this is and can read it at the source, so a character
+    // count would be disclosure buying nothing. Do not "harmonize" them.
+    //
+    // `'unknown'` rather than `'SyntaxError'` for the non-Error arm: it is
+    // unreachable today (this `JSON.parse` takes no reviver, so V8 throws
+    // only a SyntaxError), and reporting a class the throw was not would
+    // become a lie the moment it turns reachable.
+    const kind = err instanceof Error ? err.name : 'unknown';
     throw new EcsSecretsResolutionError(
-      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret value is not valid JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Container '${entry.containerName}' secret '${entry.name}' specified json-key '${shape.jsonKey}' but the secret value is not valid JSON (${kind}). ` +
+        'The parser detail is withheld because it would echo the secret plaintext.'
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
