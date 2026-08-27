@@ -1,3 +1,10 @@
+## [0.147.15](https://github.com/go-to-k/cdk-local/compare/v0.147.14...v0.147.15) (2026-08-27)
+
+
+### Bug Fixes
+
+* **studio:** bound a serve endpoint to loopback instead of trusting any stdout line ([#597](https://github.com/go-to-k/cdk-local/issues/597)) ([3119e2e](https://github.com/go-to-k/cdk-local/commit/3119e2eeda1d8e389b07f0afb90660c85f0b8593))
+
 ## [0.147.14](https://github.com/go-to-k/cdk-local/compare/v0.147.13...v0.147.14) (2026-08-27)
 
 
