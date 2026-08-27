@@ -56,16 +56,32 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      ```bash
      source tests/integration/_lib/stack-name.sh
      : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
-     STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
-     : "${STACK:?stack name did not resolve — the helper is undefined}"
-
-     aws cloudformation describe-stacks --stack-name "${STACK}" \
-       --region "${AWS_REGION:-us-east-1}"
+     # PLURAL. Most fixtures own one stack; `local-invoke-from-cfn-stack-multi-stack`
+     # owns two, and its cleanup destroys the consumer first — so an interrupted
+     # destroy orphans the PRODUCER, which is exactly the one a single-name scan
+     # would skip. Read the fixture's own `integ_stack_name` calls and list all
+     # of them.
+     for BASE in <FixtureStackBaseName> ...; do
+       STACK="$(integ_stack_name "${BASE}")"
+       : "${STACK:?stack name did not resolve — the helper is undefined}"
+       echo "== ${STACK}"
+       # No `2>/dev/null`: it was the original defect's mechanism. It sends the
+       # clean case and the could-not-look case into the same silence, and the
+       # whole point here is that you can tell them apart.
+       aws cloudformation describe-stacks --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+     done
      ```
 
      **Read that output yourself; the recipe deliberately does not classify it.**
-     A `ValidationError ... does not exist` is the clean case. ANY other failure
-     means you did not look — do not proceed, and do not treat it as clean.
+     Both outcomes, because reading only the error is how the inversion happens:
+
+     - `ValidationError ... does not exist` — CLEAN, no such stack.
+     - **exit 0 with a JSON `Stacks` array — ORPHAN.** `describe-stacks`
+       succeeds when the stack is there, so "no error" is the ORPHAN case, not
+       the passing one.
+     - anything else — you did not look. Do not proceed, and do not treat it as
+       clean.
 
      That is not squeamishness. Every attempt in this recipe's history to EMIT a
      verdict produced a false one: a name that could never match, a scope that
@@ -106,15 +122,17 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    ```bash
    source tests/integration/_lib/stack-name.sh
    : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
-   STACK="$(integ_stack_name <FixtureStackBaseName>)"
-   : "${STACK:?stack name did not resolve — the helper is undefined}"
-
-   aws cloudformation describe-stacks --stack-name "${STACK}" \
-     --region "${AWS_REGION:-us-east-1}"
+   for BASE in <FixtureStackBaseName> ...; do          # PLURAL, see step 4
+     STACK="$(integ_stack_name "${BASE}")"
+     : "${STACK:?stack name did not resolve — the helper is undefined}"
+     echo "== ${STACK}"
+     aws cloudformation describe-stacks --stack-name "${STACK}" \
+       --region "${AWS_REGION:-us-east-1}"
+   done
    ```
 
-   Same rule as step 4: read it, do not let the recipe classify it. Only
-   `ValidationError ... does not exist` is clean. This one matters more — it runs
+   Same rule as step 4, including that exit 0 with a `Stacks` array is the ORPHAN
+   case. Only `ValidationError ... does not exist` is clean. This one matters more — it runs
    after a long test where a session token can expire, and step 9 turns its
    verdict into a fresh `integ` marker.
 

@@ -440,14 +440,45 @@ if [ -f "${SKILL}" ]; then
   # of which the recipe itself uses elsewhere.
   code=$(grep -vE '^[[:space:]]*#' "${SKILL}")
 
-  # No `||`-verdict attached to a STACK query. Scoped to lines carrying the
-  # query itself: the SSM / exports / bucket sweeps legitimately end in
-  # `|| echo "... NOT a clean verdict"`, and an earlier draft of this assertion
-  # flagged those -- an over-broad fence is its own kind of wrong answer.
-  case "$(printf '%s\n' "${code}" | grep -E 'aws[[:space:]]+cloudformation' | grep -cE '\|\||&&')" in
+  # JOIN CONTINUATIONS FIRST. The previous two versions of this check grepped
+  # LINES, and both stack scans are backslash continuations -- so a verdict
+  # appended to the continuation line sits on a line with no `aws cloudformation`
+  # and scored zero. Measured: appending `2>/dev/null || echo "(no orphan stack)"`
+  # to the continuation, and restoring an `if/then/else` form with no `||` at
+  # all, were BOTH green against the line-based check.
+  joined=$(printf '%s\n' "${code}" | sed -e :a -e '/\\$/N; s/\\\n//; ta')
+
+  # 1. The scans must EXIST. Round 7 asserted this and the retreat dropped it:
+  #    deleting both blocks outright, leaving the guards and prose, was green --
+  #    a recipe with no scan at all is the purest "clean without looking".
+  scans=$(printf '%s\n' "${joined}" | grep -cE 'aws[[:space:]]+cloudformation[[:space:]]+describe-stacks')
+  if [ "${scans}" -ge 2 ]; then
+    check "run-integ still HAS both stack scans (${scans})" 0
+  else
+    check "run-integ still HAS both stack scans" 1 "found ${scans}, want >= 2 (pre-flight and post-run)"
+  fi
+
+  # 2. No verdict attached to a stack query, on the JOINED command.
+  verdicts=$(printf '%s\n' "${joined}" \
+    | grep -E 'aws[[:space:]]+cloudformation[[:space:]]+describe-stacks' \
+    | grep -cE '\|\||&&')
+  case "${verdicts}" in
     0) check "run-integ's stack scans emit no clean verdict of their own" 0 ;;
     *) check "run-integ's stack scans emit no clean verdict of their own" 1 \
-         "a '|| echo clean' form is back -- that is what produced eight false verdicts" ;;
+         "${verdicts} stack query/queries carry a ||/&& verdict -- that is what produced eight false ones" ;;
+  esac
+
+  # 3. No `2>/dev/null` on a stack query: it sends the clean case and the
+  #    could-not-look case into the same silence, which was instance one's
+  #    mechanism. Unfenced until now, and its rationale comment was deleted
+  #    along with the machinery it described.
+  silenced=$(printf '%s\n' "${joined}" \
+    | grep -E 'aws[[:space:]]+cloudformation[[:space:]]+describe-stacks' \
+    | grep -cE '2>[[:space:]]*/dev/null')
+  case "${silenced}" in
+    0) check "run-integ's stack scans do not silence stderr" 0 ;;
+    *) check "run-integ's stack scans do not silence stderr" 1 \
+         "${silenced} stack query/queries discard stderr, which is how the clean and could-not-look cases became indistinguishable" ;;
   esac
 
   # No stderr phrase-matching, in either quote style.
