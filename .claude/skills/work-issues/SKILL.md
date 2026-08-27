@@ -486,6 +486,27 @@ run was the implementing agent deriving its next count with `awk` and catching
 its own correction mid-flight, and declining to relay a path from the
 orchestrator's message after grepping and finding no such file.
 
+**Re-derive at the FINAL sha, not at the round that produced the number.** The
+rule above says a relayed count must be re-run; the half it leaves out is WHEN,
+and that is where it actually fails. A count is correct when a round reports it
+and stale by the time it reaches the PR body, because the PR body is written once
+and the branch keeps moving. The durable artifact is the diff being merged, so
+that is the tree the number has to describe.
+
+Measured here on 2026-08-27 across one `/work-issues` run, which published FOUR
+counts, every one of them accurate for the round that reported it and wrong
+against the merged branch: "90 cases" (94 by the time it was checked), "52 -> 93
+cases" (the file was NEW, so against `main` it is 0 -> 118), "354 -> 368"
+(354 was a mid-PR peak; the real delta is 337 -> 358, and the feature that added
+the difference was later deleted), and "6 sites closed" (7 — the enumeration
+omitted one the totals included). Three of the four went into PR bodies and had
+to be patched after review caught them.
+
+The cheap discipline: derive every published count in the same pass that writes
+the body, from the branch you are about to merge, and paste the command. A number
+carried forward from a subagent's report three rounds ago is a number about a tree
+that no longer exists.
+
 **And whatever you do file, resolve it against the issues ALREADY OPEN first.**
 The sweep above looks for sibling sites in the CODE. This looks for a sibling
 ISSUE, and it is a different search with a different answer: the issue that
@@ -816,6 +837,31 @@ that, both run against the real tree rather than reasoned about, and on
 A fence is not evidence until you have watched it go red on something you had
 NOT already counted — the calibration hits do not count, and neither does the
 failure direction you drove with the same instances.
+
+**A suite enumerated along ONE dimension goes green over defects that live in the
+other one.** The probes above vary the SPELLING of the input. The second axis is
+the STATE the subject is in when the input arrives, and it is the one that gets
+enumerated by accident: every case reuses whatever fixture setup the first case
+needed, so the suite covers one row of a table it never drew.
+
+Measured here on 2026-08-27, twice in one PR (go-to-k/cdk-local#609). A commit
+gate shipped 52 green cases with two live fail-opens, was fixed, and shipped 93
+green cases with four more — and both times the misses were a file STATE the
+fixture never entered, not a command shape nobody imagined. Every case in the
+block that mattered used a file that was already staged, so the branches for an
+untracked file, a tracked-but-modified file, and a file deleted on disk were
+never executed. One of those branches let a NUL byte reach a commit.
+
+What ended it was drawing the table: six file states crossed with four command
+shapes, 24 cells, each an actual case. Two useful side effects. The cross-product
+makes the UNCOVERED cells nameable, so the PR could list what it deliberately does
+not handle (submodules, sparse-checkout, linked worktrees with a differing index,
+CRLF filters, merge-conflicted paths) instead of leaving that as an assumption.
+And three cells turned out to be false blocks nobody had noticed, which is a
+finding a one-dimensional suite cannot produce at all.
+
+So before trusting a green suite: name the dimensions the subject actually has,
+and check the cases are a grid rather than a line.
 
 **When the change alters a CLASSIFIER, hand-picked cases cannot fence it —
 measure the DELTA against the old implementation.** A classifier is any function
