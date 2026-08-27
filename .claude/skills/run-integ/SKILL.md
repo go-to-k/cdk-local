@@ -25,11 +25,24 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 4. **For `*-from-cfn-stack` tests only — AWS pre-flight**:
    - Verify the upstream `cdk` CLI is on `$PATH`: `which cdk`.
    - Verify AWS credentials: `aws sts get-caller-identity`.
-   - Scan for orphan stacks from a previous interrupted run:
+   - Scan for orphan stacks from a previous interrupted run. **The stack name
+     is LANE-UNIQUE (issue go-to-k/cdk-local#582)**: every AWS-deploying fixture suffixes its
+     base name with 8 hex derived from this worktree's root path, so scanning
+     the bare `<FixtureStackName>` matches nothing and reports clean no matter
+     what is actually deployed. Resolve the name the same way the fixture does:
+
      ```bash
-     aws cloudformation describe-stacks --stack-name <FixtureStackName> 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
+     source tests/integration/_lib/stack-name.sh
+     STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
+     aws cloudformation describe-stacks --stack-name "${STACK}" 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
      ```
-     If an orphan stack is reported, abort with a `cdk destroy <FixtureStackName>` recipe — do NOT proceed.
+
+     If an orphan stack is reported, abort with a `cdk destroy "${STACK}"`
+     recipe — do NOT proceed. Note that a stack under THIS lane's name can also
+     be a second run of the same fixture in the SAME worktree, i.e. a LIVE peer
+     rather than a leftover: check for a running `verify.sh` before destroying
+     it. Cross-worktree lanes can no longer collide, which is the point of the
+     suffix.
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 
@@ -45,13 +58,27 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 7. **Verify AWS cleanup** (only for `*-from-cfn-stack` tests):
 
+   Resolve the lane-unique name the same way step 4 does — the bare base name
+   matches nothing and this sweep would silently report clean:
+
    ```bash
-   aws cloudformation describe-stacks --stack-name <FixtureStackName> 2>/dev/null \
+   source tests/integration/_lib/stack-name.sh
+   STACK="$(integ_stack_name <FixtureStackBaseName>)"
+   aws cloudformation describe-stacks --stack-name "${STACK}" 2>/dev/null \
      && echo "ORPHAN STACK REMAINS" \
      || echo "AWS clean"
    ```
 
-   If the stack remains, run `cdk destroy <FixtureStackName> --force` until clean. Same rule: never end the run with orphan AWS resources.
+   If the stack remains, run `cdk destroy "${STACK}" --force` until clean. Same rule: never end the run with orphan AWS resources.
+
+   Some fixtures also own account-global names that are NOT stacks and outlive a
+   failed run — SSM parameter paths and a CloudFormation export name, all
+   suffixed by the same lane hash. Sweep those too:
+
+   ```bash
+   aws ssm describe-parameters --query "Parameters[?starts_with(Name,'/cdkl')].Name" --output text
+   aws cloudformation list-exports --query "Exports[?starts_with(Name,'cdkl')].[Name,ExportingStackId]" --output text
+   ```
 
 8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks").
 

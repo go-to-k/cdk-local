@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
-# Smoke test for tests/integration/_lib/stack-name.sh (issue #582).
+# Smoke test for tests/integration/_lib/stack-name.sh and stack-name.ts
+# (issue #582).
 #
 # What it pins, in the order the failure would hurt:
 #
-#   1. Every fixture that runs `cdk deploy` SOURCES the library and builds
-#      its stack name through it. A new AWS-deploying fixture that
-#      hard-codes a name reintroduces the exact defect this closes, and
-#      nothing else in the repo would notice.
-#   2. The base name in a fixture's `verify.sh` matches the base name in
-#      its `bin/app.ts`. They are two copies of one string: if they drift,
-#      `cdk deploy "${STACK}"` asks for a stack the app never synthesized.
-#   3. The suffix is stable within one worktree, differs between
-#      worktrees, and every name it produces is still a legal
-#      CloudFormation stack name (`[A-Za-z][A-Za-z0-9-]*`, max 128).
+#   1. Every fixture that DEPLOYS to AWS sources the library and builds its
+#      stack name through it. A new AWS-deploying fixture that hard-codes a
+#      name reintroduces the exact defect this closes, and nothing else in
+#      the repo would notice.
+#   2. The base name in a fixture's `verify.sh` matches the base name in its
+#      `bin/app.ts`, and the SCOPED names (SSM parameter paths,
+#      CloudFormation export names) match between `verify.sh` and
+#      `bin/*.ts` + `lib/*.ts`. Each pair is two copies of one string: if
+#      they drift, `cdk deploy "${STACK}"` asks for a stack the app never
+#      synthesized, or the fixture reads a parameter nothing created.
+#   3. No deploying fixture leaves an account-global `cdkl` name as a BARE
+#      literal -- that is the cross-lane collision itself, not a drift
+#      between two spellings of it.
+#   4. The suffix is stable within one worktree, differs between worktrees,
+#      and every name it produces is still a legal CloudFormation stack name
+#      (`[A-Za-z][A-Za-z0-9-]*`, max 128).
+#   5. The TypeScript half is EXECUTED, not merely grepped, and the shell
+#      half refuses to hand back an empty suffix when no hasher exists.
+#
+# Two properties of this file are load-bearing and easy to lose:
+#
+#   * The fixture-derived cases must not be able to go VACUOUS. The list is
+#     derived by grepping for a deploy command, so a predicate that stops
+#     matching silently deletes most of the suite while it still prints
+#     `fail: 0`. Hence the population floor and the non-empty guards below.
+#   * A grep-only agreement check cannot see a wrong IMPLEMENTATION. Both
+#     function bodies of `stack-name.ts` were once replaceable with
+#     `return base;` -- restoring the one-shared-stack defect for every
+#     fixture -- with the suite still fully green. Hence section 5.
+#
+# Must stay green under macOS system bash 3.2 as well as modern bash: no
+# `${var,,}`, no associative arrays.
 #
 # Run: bash tests/integration/_lib/stack-name.test.sh
 set -u
@@ -20,6 +43,7 @@ set -u
 LIB_DIR=$(cd "$(dirname "$0")" && pwd)
 INTEG_DIR=$(cd "${LIB_DIR}/.." && pwd)
 LIB="${LIB_DIR}/stack-name.sh"
+TS="${LIB_DIR}/stack-name.ts"
 pass=0
 fail=0
 
@@ -43,20 +67,52 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 # ---------------------------------------------------------------- 1 + 2
 # Structural: the fixtures and the library agree.
 
-deploying=$(grep -l 'cdk deploy' "${INTEG_DIR}"/*/verify.sh)
-for f in ${deploying}; do
-  name=$(basename "$(dirname "$f")")
+# Which fixtures deploy to AWS. The predicate must survive an intervening
+# flag: a fixture running `cdk --app "npx tsx bin/app.ts" deploy ...` is
+# every bit as much a deployer as one running the bare `cdk deploy`, and a
+# literal `'cdk deploy'` grep generates NO cases for it -- so the exact
+# regression this file exists to catch would walk straight past it while
+# the suite still reported `fail: 0`.
+#
+# `cdk` is matched as a WORD: without the leading boundary, `[^;&|]*`
+# lets `cdkl` in a header comment such as
+# `# verify.sh -- cdkl start-alb ... (no AWS deploy)` run all the way to
+# the word `deploy` and pull five non-deploying fixtures in.
+DEPLOY_RE='(^|[^[:alnum:]_])(cdk[^;&|]*[[:space:]]deploy|aws[[:space:]]+cloudformation[[:space:]]+(deploy|create-stack))([[:space:]]|$)'
+# The floor is the count as of issue #582. It may only ever be RAISED: a
+# drop means the predicate stopped matching, not that fixtures vanished.
+DEPLOYING_FLOOR=12
+
+deploying=$(grep -lE "${DEPLOY_RE}" "${INTEG_DIR}"/*/verify.sh)
+deploying_count=$(printf '%s\n' "${deploying}" | grep -c '.')
+
+if [ "${deploying_count}" -ge "${DEPLOYING_FLOOR}" ]; then
+  check "the deploying-fixture population is intact (${deploying_count} >= ${DEPLOYING_FLOOR})" 0
+else
+  check "the deploying-fixture population is intact" 1 \
+    "matched ${deploying_count} verify.sh, expected >= ${DEPLOYING_FLOOR}; the detection predicate has gone stale and most of this suite is no longer generated"
+fi
+
+# `while read` rather than `for f in ${deploying}`: an unquoted expansion
+# word-splits a worktree path containing a space.
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  dir=$(dirname "$f")
+  name=$(basename "${dir}")
+
   if grep -q '_lib/stack-name.sh' "$f"; then
     check "${name}: verify.sh sources the shared library" 0
   else
     check "${name}: verify.sh sources the shared library" 1 "no source line"
   fi
 
-  # Base names, in file order, from both copies.
-  sh_bases=$(grep -oE 'integ_stack_name [A-Za-z][A-Za-z0-9-]*' "$f" \
-    | awk '{print $2}' | sort)
-  ts_bases=$(grep -ohE "integStackName\('[A-Za-z][A-Za-z0-9-]*'\)" "$(dirname "$f")"/bin/*.ts \
-    | sed -E "s/integStackName\('([^']*)'\)/\1/" | sort)
+  # Base stack names, from both copies. The base may be written quoted or
+  # bare -- `integ_stack_name "Base"` is correct shell, and demanding the
+  # bare spelling made it fail with a misleading "none found".
+  sh_bases=$(grep -oE "integ_stack_name [\"']?[A-Za-z][A-Za-z0-9-]*" "$f" \
+    | sed -E "s/^integ_stack_name [\"']?//" | sort -u)
+  ts_bases=$(grep -ohE "integStackName\('[A-Za-z][A-Za-z0-9-]*'\)" "${dir}"/bin/*.ts \
+    | sed -E "s/integStackName\('([^']*)'\)/\1/" | sort -u)
   if [ -z "${sh_bases}" ]; then
     check "${name}: verify.sh builds its stack name via integ_stack_name" 1 "none found"
   elif [ "${sh_bases}" = "${ts_bases}" ]; then
@@ -65,7 +121,49 @@ for f in ${deploying}; do
     check "${name}: verify.sh and bin/app.ts agree on the base name(s)" 1 \
       "sh=[$(echo "${sh_bases}" | tr '\n' ' ')] ts=[$(echo "${ts_bases}" | tr '\n' ' ')]"
   fi
-done
+
+  # SCOPED names -- SSM parameter paths and CloudFormation export names.
+  # Same two-copies-of-one-string problem as the stack name, and previously
+  # unguarded in both directions. Read from bin/ AND lib/: unlike the stack
+  # name (always constructed in bin/app.ts), a scoped name is usually
+  # declared beside the construct that owns it, in lib/.
+  sh_scoped=$(grep -oE "integ_scoped_name [\"']?[/A-Za-z][A-Za-z0-9/_.-]*" "$f" \
+    | sed -E "s/^integ_scoped_name [\"']?//" | sort -u)
+  ts_scoped=$(cat "${dir}"/bin/*.ts "${dir}"/lib/*.ts 2>/dev/null \
+    | grep -oE "integScopedName\('[^']*'\)" \
+    | sed -E "s/integScopedName\('([^']*)'\)/\1/" | sort -u)
+  if [ -z "${sh_scoped}" ]; then
+    # Legitimate: a fixture whose scoped names live only in the CDK app
+    # (nothing in verify.sh names them). The bare-literal check below is
+    # what covers that case.
+    check "${name}: verify.sh names no scoped name (app-side only)" 0
+  else
+    scoped_missing=""
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      printf '%s\n' "${ts_scoped}" | grep -Fxq -- "$b" || scoped_missing="${scoped_missing} ${b}"
+    done <<<"${sh_scoped}"
+    if [ -z "${scoped_missing}" ]; then
+      check "${name}: verify.sh and bin|lib/*.ts agree on the scoped name(s)" 0
+    else
+      check "${name}: verify.sh and bin|lib/*.ts agree on the scoped name(s)" 1 \
+        "in verify.sh but not in the app:${scoped_missing}; app has [$(echo "${ts_scoped}" | tr '\n' ' ')]"
+    fi
+  fi
+
+  # No account-global name may be a BARE literal. Drift between two
+  # spellings is what the check above catches; this catches the collision
+  # itself -- an SSM path or export name reverted to a plain string, which
+  # every lane in the account would then create under one name.
+  bare=$(grep -rnE "'/?cdkl-[A-Za-z0-9/_.-]*'" "${dir}"/bin "${dir}"/lib 2>/dev/null \
+    | grep -v 'integScopedName(' || true)
+  if [ -z "${bare}" ]; then
+    check "${name}: no bare account-global 'cdkl-*' literal in the app" 0
+  else
+    check "${name}: no bare account-global 'cdkl-*' literal in the app" 1 \
+      "$(echo "${bare}" | tr '\n' ' ')"
+  fi
+done <<<"${deploying}"
 
 # ------------------------------------------------------------------- 3
 # The derivation itself.
@@ -110,6 +208,8 @@ eq "four distinct trees produce four distinct suffixes" "4" "${uniq_count}"
 # Pre-set value wins (CI pin / this test's own forcing).
 forced=$(INTEG_STACK_SUFFIX=deadbeef bash -c "source '${LIB}'; integ_stack_name Base")
 eq "a pre-set INTEG_STACK_SUFFIX is honored" "Base-deadbeef" "${forced}"
+forced_scoped=$(INTEG_STACK_SUFFIX=deadbeef bash -c "source '${LIB}'; integ_scoped_name /cdkl-integ/p")
+eq "a pre-set INTEG_STACK_SUFFIX is honored by integ_scoped_name" "/cdkl-integ/p-deadbeef" "${forced_scoped}"
 
 # The exported variable name must NOT start with `CDK`. The aws-cdk CLI is
 # yargs-based with `.env('CDK')`, so it maps every CDK-prefixed environment
@@ -130,9 +230,122 @@ else
   check "a CDK-free environment still derives an 8-hex suffix" 1 "expected 'Base-<8hex>', got '${clean}'"
 fi
 
+# ------------------------------------------------------------------- 4
+# The hasher fallback chain, including the branch that must REFUSE.
+#
+# `INTEG_STACK_SUFFIX="$(_integ_lane_hash ...)"` discards the function's
+# exit status, so the no-hasher `return 1` used to leave the suffix EMPTY
+# and hand every lane the same un-suffixed name -- the defect itself,
+# restored by the error path. Both branches are driven with a stubbed PATH.
+
+stub_path() { # stub_path <dir> <tool>...
+  local dir="$1" t p
+  shift
+  mkdir -p "${dir}"
+  for t in "$@"; do
+    p=$(command -v "$t" 2>/dev/null) && ln -s "$p" "${dir}/$t" 2>/dev/null
+  done
+}
+# `env` and `bash` are re-execed through the stubbed PATH, so they must be
+# in it too. `shasum` / `sha256sum` are deliberately absent from both.
+STUB_BASE_TOOLS="bash env cut awk dirname basename git sed grep"
+# shellcheck disable=SC2086  # the tool list must word-split
+stub_path "${TMP}/bin-cksum" ${STUB_BASE_TOOLS} cksum
+# shellcheck disable=SC2086
+stub_path "${TMP}/bin-nohash" ${STUB_BASE_TOOLS}
+
+cksum_out=$(env -u INTEG_STACK_SUFFIX PATH="${TMP}/bin-cksum" \
+  bash -c "source '${LIB}'; integ_stack_name Base" 2>/dev/null)
+if [[ "${cksum_out}" =~ ^Base-[0-9a-f]{8}$ ]]; then
+  check "the cksum fallback still yields a non-empty 8-hex suffix" 0
+else
+  check "the cksum fallback still yields a non-empty 8-hex suffix" 1 \
+    "expected 'Base-<8hex>', got '${cksum_out}'"
+fi
+
+env -u INTEG_STACK_SUFFIX PATH="${TMP}/bin-nohash" \
+  bash -c "source '${LIB}'" >/dev/null 2>&1
+nohash_rc=$?
+if [ "${nohash_rc}" -ne 0 ]; then
+  check "with no hasher on PATH, sourcing the library FAILS" 0
+else
+  check "with no hasher on PATH, sourcing the library FAILS" 1 "source returned 0"
+fi
+
+nohash_out=$(env -u INTEG_STACK_SUFFIX PATH="${TMP}/bin-nohash" \
+  bash -c "source '${LIB}'; integ_stack_name Base" 2>/dev/null)
+if [ -z "${nohash_out}" ]; then
+  check "with no hasher on PATH, no un-suffixed name is produced" 0
+else
+  check "with no hasher on PATH, no un-suffixed name is produced" 1 \
+    "expected nothing, got '${nohash_out}' (an empty suffix is the shared-name defect)"
+fi
+
+# ------------------------------------------------------------------- 5
+# The TypeScript half, EXECUTED rather than grepped.
+
+NODE_TS_OPTS=""
+ts_supported=0
+if node --input-type=module -e "await import('file://${TS}');" >/dev/null 2>&1; then
+  ts_supported=1
+elif node --experimental-strip-types --input-type=module -e "await import('file://${TS}');" >/dev/null 2>&1; then
+  ts_supported=1
+  NODE_TS_OPTS="--experimental-strip-types"
+fi
+
+ts_eval() { # ts_eval <suffix|-> <js-expression over the module `m`>
+  # shellcheck disable=SC2086  # NODE_TS_OPTS is "" or exactly one flag
+  if [ "$1" = "-" ]; then
+    env -u INTEG_STACK_SUFFIX node ${NODE_TS_OPTS} --input-type=module -e \
+      "const m = await import('file://${TS}'); process.stdout.write(String($2));"
+  else
+    env "INTEG_STACK_SUFFIX=$1" node ${NODE_TS_OPTS} --input-type=module -e \
+      "const m = await import('file://${TS}'); process.stdout.write(String($2));"
+  fi
+}
+
+if [ "${ts_supported}" -eq 0 ]; then
+  # NOT skipped: skipping is how this half went uncovered in the first
+  # place. `.node-version` pins 24, where type stripping is native.
+  for c in \
+    "integStackName appends a pre-set suffix" \
+    "integScopedName appends a pre-set suffix" \
+    "integStackName falls back to the bare base" \
+    "integScopedName falls back to the bare base" \
+    "the TS and shell halves build the same name"; do
+    check "${c}" 1 "node cannot run ${TS}: needs Node >= 22.6 (type stripping); .node-version pins 24"
+  done
+else
+  eq "integStackName appends a pre-set suffix" \
+     "B-deadbeef" "$(ts_eval deadbeef "m.integStackName('B')")"
+  eq "integScopedName appends a pre-set suffix" \
+     "/cdkl-integ/p-deadbeef" "$(ts_eval deadbeef "m.integScopedName('/cdkl-integ/p')")"
+  # The documented un-suffixed fallback: a bare `cdk synth` by hand keeps
+  # the historical name.
+  eq "integStackName falls back to the bare base" \
+     "B" "$(ts_eval - "m.integStackName('B')")"
+  eq "integScopedName falls back to the bare base" \
+     "/cdkl-integ/p" "$(ts_eval - "m.integScopedName('/cdkl-integ/p')")"
+  # The two halves are two implementations of one rule; a fixture is
+  # correct only while they agree.
+  eq "the TS and shell halves build the same name" \
+     "$(INTEG_STACK_SUFFIX=deadbeef bash -c "source '${LIB}'; integ_stack_name Base")" \
+     "$(ts_eval deadbeef "m.integStackName('Base')")"
+fi
+
+# ------------------------------------------------------------------- 6
 # Every real fixture name stays a legal CloudFormation stack name.
-all_bases=$(grep -ohE 'integ_stack_name [A-Za-z][A-Za-z0-9-]*' "${INTEG_DIR}"/*/verify.sh \
-  | awk '{print $2}' | sort -u)
+
+all_bases=$(grep -ohE "integ_stack_name [\"']?[A-Za-z][A-Za-z0-9-]*" "${INTEG_DIR}"/*/verify.sh \
+  | sed -E "s/^integ_stack_name [\"']?//" | sort -u)
+if [ -n "${all_bases}" ]; then
+  check "the CFN-legality check has base names to check" 0
+else
+  # Without this the loop below iterates zero times and reports
+  # `longest=0` as a pass -- a vacuous green.
+  check "the CFN-legality check has base names to check" 1 \
+    "no integ_stack_name call sites found under ${INTEG_DIR}/*/verify.sh"
+fi
 bad=""
 longest=0
 while IFS= read -r base; do
@@ -142,8 +355,10 @@ while IFS= read -r base; do
   [[ "${full}" =~ ^[A-Za-z][A-Za-z0-9-]*$ ]] || bad="${bad} ${full}(charset)"
   [ "${#full}" -le 128 ] || bad="${bad} ${full}(len=${#full})"
 done <<<"${all_bases}"
-if [ -z "${bad}" ]; then
+if [ -n "${all_bases}" ] && [ -z "${bad}" ]; then
   check "every suffixed stack name is CFN-legal and <= 128 chars (longest=${longest})" 0
+elif [ -z "${all_bases}" ]; then
+  check "every suffixed stack name is CFN-legal and <= 128 chars" 1 "nothing to check"
 else
   check "every suffixed stack name is CFN-legal and <= 128 chars" 1 "${bad}"
 fi

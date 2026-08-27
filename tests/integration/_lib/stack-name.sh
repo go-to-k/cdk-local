@@ -74,8 +74,11 @@ _integ_lane_hash() {
   elif command -v sha256sum >/dev/null 2>&1; then
     digest="$(printf '%s' "${input}" | sha256sum | cut -d' ' -f1)"
   elif command -v cksum >/dev/null 2>&1; then
-    # Last resort: not a cryptographic hash, but it only has to separate a
-    # handful of worktree paths on one machine.
+    # Last resort, and NOT a hash: `cksum` prints a CRC32 checksum, so this
+    # branch yields CRC32 rather than SHA-256. That is acceptable only
+    # because the value is a SEPARATOR for a handful of worktree paths on
+    # one machine, never a digest anything trusts -- CRC32 is trivially
+    # collidable on demand and must not be read as one.
     digest="$(printf '%s' "${input}" | cksum | awk '{printf "%08x", $1}')"
   else
     echo "[integ-lib] FATAL: no shasum / sha256sum / cksum on PATH to derive a lane suffix" >&2
@@ -85,7 +88,23 @@ _integ_lane_hash() {
 }
 
 if [ -z "${INTEG_STACK_SUFFIX:-}" ]; then
-  INTEG_STACK_SUFFIX="$(_integ_lane_hash "$(_integ_lane_root)")"
+  # A command substitution DISCARDS the exit status of what ran inside it,
+  # so `INTEG_STACK_SUFFIX="$(_integ_lane_hash ...)"` would swallow the
+  # no-hasher `return 1` and leave the suffix EMPTY -- which is exactly the
+  # one-shared-un-suffixed-name defect issue #582 closes, silently restored.
+  # (It survived only because every caller happens to run under `set -e`.)
+  # So: capture, CHECK, and refuse to continue rather than export an empty
+  # suffix.
+  _integ_suffix="$(_integ_lane_hash "$(_integ_lane_root)")" || _integ_suffix=""
+  if [ -z "${_integ_suffix}" ]; then
+    unset _integ_suffix
+    echo "[integ-lib] FATAL: could not derive a lane suffix; refusing to fall back to a shared, un-suffixed name (issue #582)" >&2
+    # Sourced (the only supported use): return non-zero from the `source`.
+    # Executed directly: `return` is an error, so fall through to `exit`.
+    return 1 2>/dev/null || exit 1
+  fi
+  INTEG_STACK_SUFFIX="${_integ_suffix}"
+  unset _integ_suffix
 fi
 export INTEG_STACK_SUFFIX
 
