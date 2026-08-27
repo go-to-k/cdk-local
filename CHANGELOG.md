@@ -1,3 +1,10 @@
+## [0.147.20](https://github.com/go-to-k/cdk-local/compare/v0.147.19...v0.147.20) (2026-08-27)
+
+
+### Bug Fixes
+
+* **test:** stop unit tests running a real command action, which exited the worker ([#616](https://github.com/go-to-k/cdk-local/issues/616)) ([c9e00cf](https://github.com/go-to-k/cdk-local/commit/c9e00cf1cbf724d7b344956d9d68de919f915002))
+
 ## [0.147.19](https://github.com/go-to-k/cdk-local/compare/v0.147.18...v0.147.19) (2026-08-27)
 
 
