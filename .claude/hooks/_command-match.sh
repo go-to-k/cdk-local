@@ -228,6 +228,66 @@ gate_segments_raw() {
     SEP_SUBST="$GATE_SEP_SUBST" PIPE_MARK="${2:-}" <<< "$1"
 }
 
+# ---------------------------------------------------------------------------
+# Command STRINGS: which leading words RUN their quoted argument.
+#
+# `bash -c "<cmd>"` was the only shape recognised, so `mise exec -c "<cmd>"` --
+# which runs its argument exactly the same way -- stayed ONE opaque token and
+# EVERY gate here was blind to it (go-to-k/cdk-local#585):
+#
+#   mise exec -c "markgate verify integ | tail -5"   # not refused
+#   mise exec -c "gh pr merge 1 --squash"            # reached gh ungated
+#
+# `mise x -c` and `rtx exec -c` are the same shape. `mise exec -- <cmd>` is NOT
+# this shape -- there the command is ordinary argv rather than a string -- and
+# it needs no recursion for the one regex that cares, since
+# `GATE_RE_MARKGATE_VERDICT` absorbs the launcher itself via
+# `GATE_MARKGATE_LAUNCH`.
+#
+# The obvious `^(bash|zsh|ksh|sh|mise|rtx)` is WRONG: `mise -c` is not a thing,
+# only `mise exec -c` / `mise x -c` is, so the SUBCOMMAND is REQUIRED -- without
+# it the recursion would descend into text that never runs.
+#
+# Every token class below EXCLUDES quote characters, and `-c` / `--command` is
+# excluded from the flag run that may precede it. Both are about keeping the
+# parse UNIQUE rather than about what mise accepts: `=~` is POSIX
+# leftmost-longest, so an alternative able to start INSIDE a quoted span lets
+# the flag run reach a LATER `-c` and hand back the wrong body --
+# `mise exec -c "sh -c 'gh pr merge 1'"` would then recurse into
+# `gh pr merge 1'"`, which no verb regex matches, i.e. the very under-match this
+# fix exists to close.
+GATE_MISE_CMD_FLAG="(-c|--command)"
+GATE_MISE_VALUE_FLAG_NOCMD="(-C|--cd|-E|--env|-j|--jobs|--allow-env|--allow-net|--allow-read|--allow-write)"
+GATE_CMDSTRING_VALUE="(\"[^\"]*\"|'[^']*'|[^-[:space:]\"'][^[:space:]\"']*)"
+# One run of flags may sit before the subcommand and another between it and
+# `-c`: a value-taking flag with its value, a boolean flag, or a `tool@version`
+# pin (`mise exec node@20 -c "…"`).
+GATE_CMDSTRING_FLAGS="([[:space:]]+(${GATE_MISE_VALUE_FLAG_NOCMD}[[:space:]]+${GATE_CMDSTRING_VALUE}|--?[A-Za-z][^[:space:]\"']*|[^[:space:]\"']+@[^[:space:]\"']+))*"
+# Matches the PREFIX only -- the body is `${segment#"${BASH_REMATCH[0]}"}`, the
+# same technique `gate_pr_selector` uses, so nothing depends on a capture index
+# that the added alternative would renumber.
+GATE_RE_CMDSTRING="^((bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+|([^[:space:]]*/)?(mise|rtx)${GATE_CMDSTRING_FLAGS}[[:space:]]+(exec|x)${GATE_CMDSTRING_FLAGS}[[:space:]]+${GATE_MISE_CMD_FLAG}([[:space:]]+|=))"
+#
+# The PASSTHROUGH spelling of the same launcher, `mise exec -- <cmd>`, is NOT a
+# command string: the rest of the argv IS the command, so it belongs with the
+# LEADERS `gate_strip_prefix` already strips (`env`, `nohup`, `sudo`, `xargs`
+# …). `exec` is in that list, but the `mise` word, its flags, its subcommand and
+# the bare `--` are not -- and the list's `-[A-Za-z][^[:space:]]*` cannot absorb
+# `--`, which has no LETTER after the dash. So every gate here except the
+# markgate one was blind to it, in the same measurement as the `-c` hole above:
+#
+#   mise exec -- gh pr merge 1 --squash   # reached gh ungated
+#   mise exec -- git commit -m x          # reached git ungated
+#
+# `GATE_RE_MARKGATE_VERDICT` was the lone exception -- it absorbs the launcher
+# inside the verb regex itself, via `GATE_MARKGATE_LAUNCH` -- which is why the
+# defect was found through a markgate pipe and this half of it was not.
+#
+# The SUBCOMMAND is required for the same reason it is above: `mise install` and
+# `mise <verb>` are not passthroughs, and stripping one would hand every gate
+# text that never ran as a command.
+GATE_RE_LAUNCH_PASSTHRU="([^[:space:]]*/)?(mise|rtx)${GATE_CMDSTRING_FLAGS}[[:space:]]+(exec|x)${GATE_CMDSTRING_FLAGS}[[:space:]]+--"
+
 # Leading words that introduce a command without being one: env assignments,
 # wrappers, and the keywords that open a compound statement.
 gate_strip_prefix() {
@@ -247,8 +307,15 @@ gate_strip_prefix() {
     if [[ "$s" =~ ^[[:space:]]*[^\(\)\|\;\&[:space:]]+\)[[:space:]]*(.*)$ ]]; then
       s="${BASH_REMATCH[1]}"
     fi
-    if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+(.*)$ ]]; then
-      s="${BASH_REMATCH[2]}"
+    # `${s#"${BASH_REMATCH[0]}"}` rather than a trailing `(.*)$` capture: the
+    # launcher-passthrough alternative brings its own groups, and any capture
+    # added inside the alternation RENUMBERS a tail group. Reading the tail as
+    # "whatever the match did not consume" is immune to that -- the same reason
+    # `gate_pr_selector` scans from `BASH_REMATCH[0]`. Behaviour is unchanged:
+    # `[[:space:]]+` is greedy either way, so the removed prefix is exactly the
+    # leader plus its trailing run.
+    if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|${GATE_RE_LAUNCH_PASSTHRU}|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+ ]]; then
+      s="${s#"${BASH_REMATCH[0]}"}"
     fi
     s="${s#"${s%%[![:space:]]*}"}"
   done
@@ -280,7 +347,7 @@ gate_unquote_span() {
 # a pipe, and dropping the argument there would have made the recursion the one
 # blind spot of the piped-segment scan.
 gate_segments() {
-  local segment mark="${2:-}" piped inner
+  local segment mark="${2:-}" piped inner body
   while IFS= read -r segment; do
     # NOT `${segment//"$GATE_SEP_AMP"/&}`: since bash 5.2 an `&` in the
     # replacement means the MATCHED TEXT, so the placeholder survived and a
@@ -309,7 +376,9 @@ gate_segments() {
     # matching it as ONE segment missed `bash -c "cd /w && git commit"`
     # (go-to-k/cdkd#2130 test review). Recurse ONLY here — re-segmenting every
     # segment would split a quoted `--body` whose prose contains `&&`.
-    if [[ "$segment" =~ ^(bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+(.*)$ ]]; then
+    # `GATE_RE_CMDSTRING` carries the launcher-hosted spelling of the same shape
+    # (`mise exec -c "<cmd>"`, go-to-k/cdk-local#585); see its definition above.
+    if [[ "$segment" =~ $GATE_RE_CMDSTRING ]]; then
       # `$piped` is re-attached to every segment the recursion yields, because
       # the pipe belongs to the OUTER command: in `bash -c 'markgate verify a'
       # | tail` it is the whole `bash -c` whose exit status the shell discards,
@@ -317,8 +386,9 @@ gate_segments() {
       # `gate_piped_segments` emitted NOTHING and the gate passed. Note it is
       # `$piped` and not `$GATE_PIPE_MARK`: marking unconditionally would mark
       # the inner segments of an UN-piped `bash -c` too.
+      body="${segment#"${BASH_REMATCH[0]}"}"
       while IFS= read -r inner; do printf '%s\n' "$inner$piped"; done \
-        < <(gate_segments "$(gate_unquote_span "${BASH_REMATCH[2]}")" "$mark")
+        < <(gate_segments "$(gate_unquote_span "$body")" "$mark")
       continue
     fi
     # An `if`, not `[ … ] && printf`: under a caller's `set -e` the trailing
@@ -494,7 +564,12 @@ GATE_RE_GH_API="^gh${GATE_GH_C}[[:space:]]+api([[:space:]]|$)"
 # `mise exec --help` rather than from memory: these are ALL of its value-taking
 # flags. The `--allow-*` sandbox four were missed on the first pass and were
 # false negatives (the gate simply did not fire).
-GATE_MARKGATE_VALUE_FLAG="(-C|--cd|-E|--env|-j|--jobs|-c|--command|--allow-env|--allow-net|--allow-read|--allow-write)"
+# Spelled as the union of the two halves defined above rather than as a second
+# enumeration: `GATE_RE_CMDSTRING` needs this list MINUS `-c` / `--command`
+# (which it matches itself), and a list written out twice is a list that drifts
+# -- exactly the failure `UP_PATHS` keeps re-learning. Same language as before,
+# only re-grouped; nothing indexes BASH_REMATCH on this regex.
+GATE_MARKGATE_VALUE_FLAG="(${GATE_MISE_VALUE_FLAG_NOCMD}|${GATE_MISE_CMD_FLAG})"
 GATE_MARKGATE_FLAG_VALUE="(\"[^\"]*\"|'[^']*'|[^-][^[:space:]]*)"
 #
 # The GLOBAL flag run before the subcommand (`mise -C /w exec -- markgate ...`)

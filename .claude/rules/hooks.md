@@ -300,6 +300,38 @@ The hooks split into three classes:
     inert — without that, ending the body would have started a fresh
     segment mid-prose and reintroduced the go-to-k/cdkd#2130
     body-text regression from the other end.
+  - **A LAUNCHER can host a command string too.** `gate_segments`
+    recursed into `bash -c "<cmd>"` and nothing else, so
+    `mise exec -c "<cmd>"` — which runs its argument exactly the same
+    way — stayed ONE opaque token and every gate in this file was blind
+    to it: `mise exec -c "markgate verify integ | tail -5"` was not
+    refused and `mise exec -c "gh pr merge 1 --squash"` reached `gh`
+    ungated (go-to-k/cdk-local#585). `GATE_RE_CMDSTRING` now carries both
+    shapes, `mise x -c` / `rtx exec -c` included. The SUBCOMMAND is
+    required: `mise -c` is not a thing, so the obvious
+    `^(bash|zsh|ksh|sh|mise|rtx)` would recurse into text that never
+    runs.
+  - **The launcher's PASSTHROUGH spelling was the other half of the same
+    hole.** `mise exec -- <cmd>` is not a command string — the rest of
+    the argv IS the command — so it belongs with the LEADERS
+    `gate_strip_prefix` strips (`env`, `nohup`, `sudo`, `xargs` …).
+    `exec` was already in that list, but the `mise` word, its flags, its
+    subcommand and the bare `--` were not, and the list's
+    `-[A-Za-z][^[:space:]]*` cannot absorb `--` (no LETTER after the
+    dash). So `mise exec -- gh pr merge 1 --squash` and
+    `mise exec -- git commit -m x` reached `gh` / `git` ungated while
+    their unprefixed twins were refused — and this is the spelling every
+    skill and hook in this repo actually writes.
+    `GATE_RE_MARKGATE_VERDICT` was the lone exception, absorbing the
+    launcher inside the verb regex itself via `GATE_MARKGATE_LAUNCH`,
+    which is why the defect surfaced through a markgate pipe and this
+    half of it did not. `GATE_RE_LAUNCH_PASSTHRU` now covers it, with
+    the same subcommand requirement (`mise install` / `mise ls` are not
+    passthroughs). The leader loop reads its tail as
+    `${s#"${BASH_REMATCH[0]}"}` rather than a trailing `(.*)$` capture,
+    since an alternative carrying its own groups renumbers a tail group.
+    Both halves are pinned in BOTH directions, over-strip included, in
+    `.claude/hooks/_command-match.test.sh`.
 
 ## 2. Branch / push safety
 

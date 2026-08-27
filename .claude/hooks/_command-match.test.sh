@@ -546,6 +546,78 @@ want_match 0 "xargs behind a pipe" 'echo f | xargs git commit -m x' "$C"
 
 # --- go-to-k/cdkd#2130 test review: two real defects, and the unpinned rest ----
 want_match 0 "bash -c with an inner chain" 'bash -c "cd /w && git commit -m x"' "$C"
+
+# --- go-to-k/cdk-local#585: the LAUNCHER-hosted command string ----------------
+# `mise exec -c "<cmd>"` RUNS its argument exactly as `bash -c` does, but the
+# segment starts with `mise`, so the recursion never fired and every gate here
+# was blind to the spelling.
+want_match 0 "mise exec -c body"             'mise exec -c "git commit -m x"' "$C"
+want_match 0 "mise x -c body"                'mise x -c "gh pr merge 1 --squash"' "$M"
+want_match 0 "rtx exec -c body"              'rtx exec -c "gh pr merge 1 --squash"' "$M"
+want_match 0 "absolute launcher path"        '/opt/homebrew/bin/mise exec -c "git commit -m x"' "$C"
+want_match 0 "--command long spelling"       'mise exec --command "git commit -m x"' "$C"
+want_match 0 "--command= glued spelling"     'mise exec --command="git commit -m x"' "$C"
+want_match 0 "single-quoted body"            "mise exec -c 'git commit -m x'" "$C"
+want_match 0 "flag between exec and -c"      'mise exec --cd /w -c "git commit -m x"' "$C"
+want_match 0 "quoted flag value before -c"   'mise exec --cd "/w t" -c "git commit -m x"' "$C"
+want_match 0 "boolean flag before -c"        'mise exec --raw -c "git commit -m x"' "$C"
+want_match 0 "global flag before exec"       'mise -C /w exec -c "git commit -m x"' "$C"
+want_match 0 "tool pin before -c"            'mise exec node@20 -c "git commit -m x"' "$C"
+want_match 0 "inner chain inside the body"   'mise exec -c "cd /w && git commit -m x"' "$C"
+# A `-c` INSIDE the body must not be mistaken for the launcher's own. `=~` is
+# POSIX leftmost-longest, so a token class able to start inside a quoted span
+# lets the flag run reach the inner `-c` and hand back `git commit -m x'"'"'"`,
+# which no verb regex matches -- the under-match this fix exists to close.
+want_match 0 "nested sh -c inside the body"  "mise exec -c \"sh -c 'git commit -m x'\"" "$C"
+# The SUBCOMMAND is required: `mise -c` is not a thing, so recursing there would
+# descend into text that never runs.
+want_match 1 "bare mise -c does not recurse" 'mise -c "git commit -m x"' "$C"
+want_match 1 "bare rtx -c does not recurse"  'rtx -c "git commit -m x"' "$C"
+want_match 1 "mise run -c is not exec"       'mise run -c "git commit -m x"' "$C"
+# ...and a MENTION inside the body is still only a mention.
+want_match 1 "echo of the verb in the body"  'mise exec -c "echo git commit -m x"' "$C"
+want_match 1 "grep pattern in the body"      "mise exec -c \"rg 'git commit' .\"" "$C"
+want_match 1 "the launcher form as prose"    'echo "mise exec -c \"git commit\""' "$C"
+
+# ...and the PASSTHROUGH half of the same launcher. `mise exec -- <cmd>` hands
+# the rest of the argv to the command, so it is a LEADER rather than a command
+# string, and `gate_strip_prefix` knew nothing about it: every gate except the
+# markgate one (whose verb regex absorbs the launcher itself) saw `mise` and
+# stopped. Measured on the pre-fix tree: BOTH lines below were a MISS while
+# their unprefixed twins matched.
+want_match 0 "mise exec -- gh pr merge"       'mise exec -- gh pr merge 1 --squash' "$M"
+want_match 0 "mise exec -- git commit"        'mise exec -- git commit -m x' "$C"
+want_match 0 "mise exec -- git push"          'mise exec -- git push origin HEAD' "$P"
+want_match 0 "mise x -- passthrough"          'mise x -- gh pr merge 1' "$M"
+want_match 0 "rtx exec -- passthrough"        'rtx exec -- gh pr merge 1' "$M"
+want_match 0 "absolute launcher path, --"     '/opt/homebrew/bin/mise exec -- git commit -m x' "$C"
+want_match 0 "global flag before exec --"     'mise -C /w exec -- git commit -m x' "$C"
+want_match 0 "exec flag before --"            'mise exec --cd /w -- git commit -m x' "$C"
+want_match 0 "quoted exec flag value before --" 'mise exec --cd "/w t" -- git commit -m x' "$C"
+want_match 0 "boolean exec flag before --"    'mise exec --raw -- git commit -m x' "$C"
+want_match 0 "tool pin before --"             'mise exec node@20 -- git commit -m x' "$C"
+want_match 0 "cd && launcher passthrough"     'cd /w/t && mise exec -- git commit -m x' "$C"
+# The OVER-STRIP direction, which nothing else here looks for: a leader that
+# strips too eagerly turns a MENTION into a match, and that failure is a false
+# BLOCK on every gate at once. The subcommand requirement is what fences it --
+# `mise install` / `mise ls` / `mise settings set x` are not passthroughs.
+want_match 1 "passthrough of a grep is prose" 'mise exec -- rg "gh pr merge" .' "$M"
+want_match 1 "passthrough of an unrelated cmd" 'mise exec -- vp run test' "$C"
+want_match 1 "mise install is not exec"       'mise install -- git commit -m x' "$C"
+want_match 1 "bare mise -- is not exec"       'mise -- git commit -m x' "$C"
+want_match 1 "mise ls -- is not exec"         'mise ls -- git commit -m x' "$C"
+want_match 1 "two words before exec --"       'mise settings set x exec -- git commit -m x' "$C"
+want_match 1 "the passthrough as prose"       'echo "mise exec -- git commit -m x"' "$C"
+# The stripped leader must leave the SEGMENT parseable by the helpers that read
+# the verb's own flag run out of it. A surviving leader would hand the payload
+# cwd the verdict (`gate_target_dir`) or the wrong PR (`gate_pr_selector`).
+want_dir "/w/t"  "-C through the passthrough"  'mise exec -- git -C /w/t commit -m x' /base "$C"
+want_dir "/w/t"  "cd then the passthrough"     'cd /w/t && mise exec -- git commit -m x' /base "$C"
+want_dir "/w/t"  "gh -C through the passthrough" 'mise exec -- gh -C /w/t pr merge 1' /base "$M"
+want_dir "/base" "passthrough with no -C"      'mise exec -- git commit -m x' /base "$C"
+want_sel "552"   "selector through the passthrough" 'mise exec -- gh pr merge 552 --squash' "$M"
+want_sel "552"   "selector through passthrough + -R" \
+  'mise exec -- gh -R go-to-k/cdk-local pr merge 552 --squash' "$M"
 want_match 0 "process substitution"        'diff <(git commit -m x) b' "$C"
 # An escaped separator outside quotes is LITERAL — one `echo`, not two commands.
 want_match 1 "escaped semicolon is literal" 'echo a\; git commit -m x' "$C"
@@ -677,6 +749,14 @@ want_piped 1 "two non-flag words before exec"  'mise settings set x exec -- mark
 want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"
 want_piped 0 "bash -c double-quoted body"      'bash -c "mise exec -- markgate verify a" | tail' "$MG"
 want_piped 1 "bash -c body, NOT piped"         "bash -c 'markgate verify a'" "$MG"
+# go-to-k/cdk-local#585: the launcher-hosted spelling of the same recursion.
+want_piped 0 "mise exec -c body, inner pipe"   'mise exec -c "markgate verify integ | tail"' "$MG"
+want_piped 0 "mise x -c body, inner pipe"      'mise x -c "markgate set integ | cat"' "$MG"
+want_piped 0 "rtx exec -c body, inner pipe"    'rtx exec -c "markgate verify integ | tail"' "$MG"
+want_piped 0 "mise exec -c body, OUTER pipe"   "mise exec -c 'markgate verify a' | tail" "$MG"
+want_piped 1 "mise exec -c body, NOT piped"    'mise exec -c "markgate verify integ"' "$MG"
+want_piped 1 "mise exec -c rg is not markgate" 'mise exec -c "rg markgate verify ."' "$MG"
+want_piped 1 "bare mise -c is not a launcher"  'mise -c "markgate verify integ | tail"' "$MG"
 want_piped 0 "mise exec with a tool pin"       'mise exec markgate@0.4 -- markgate verify integ | cat' "$MG"
 # Multi-line: the pipe is on a later line than the verb, and on the SAME line as
 # a different one. A segmenter that only ever saw line 1 passed both.
