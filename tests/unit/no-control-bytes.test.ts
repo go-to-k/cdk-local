@@ -108,10 +108,17 @@ function scan(file: string): Offender[] {
 describe('committed text carries no C0 control bytes', () => {
   const files = trackedTextFiles();
 
-  it('excludes only a handful of genuinely binary files', () => {
-    // The guard the docblock promises. Without it, widening BINARY_EXT by one
-    // common text extension (`sh` costs ~92 files) silently shrinks the
-    // population while every other assertion here stays green.
+  it('excludes only the extensions that are genuinely binary', () => {
+    // The guard the docblock promises, and the fence's own soft spot: widening
+    // BINARY_EXT by one common text extension silently shrinks the population
+    // while every other assertion here stays green (`sh` alone costs ~92 files,
+    // every `.claude/hooks/*.sh` -- the tree this fence's rationale is about).
+    //
+    // Asserted as a SET rather than a count. A count has to be tuned between
+    // "loud enough to catch `yaml`" and "quiet enough to survive one more demo
+    // GIF", and at the tuned value `html` cleared by exactly one file -- drop an
+    // .html from the repo and that escape reopens silently. The set fires on the
+    // FIRST file of a newly-excluded extension and never fires on an 8th GIF.
     const allTracked = execFileSync('git', ['ls-files', '-z'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
@@ -119,15 +126,12 @@ describe('committed text carries no C0 control bytes', () => {
     })
       .split('\0')
       .filter((f) => f.length > 0);
-    const excluded = allTracked.filter((f) => BINARY_EXT.test(f));
-    // The actual excluded count is 3 (three `assets/*.gif`). The threshold is
-    // deliberately close to it rather than generous: at 20 the guard still
-    // admitted `yaml` (13 lockfiles), `mjs` (11) or `html` (7) one at a time,
-    // which is exactly the category-sized exclusion it exists to stop.
-    expect(
-      excluded.length,
-      `BINARY_EXT excluded ${excluded.length} files: ${excluded.slice(0, 20).join(', ')}`
-    ).toBeLessThan(10);
+    const excludedExts = [
+      ...new Set(
+        allTracked.filter((f) => BINARY_EXT.test(f)).map((f) => path.extname(f).toLowerCase())
+      ),
+    ].sort();
+    expect(excludedExts).toEqual(['.gif']);
   });
 
   it('keeps every text extension the repo actually carries', () => {
