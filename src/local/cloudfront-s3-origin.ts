@@ -1,5 +1,6 @@
 import { getEmbedConfig } from './embed-config.js';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import {
   contentTypeForKey,
   resolveErrorResponseCandidates,
@@ -133,7 +134,15 @@ export function createS3OriginReader(
       if (direct.kind === 'denied' && !deniedWarned) {
         deniedWarned = true;
         getLogger().warn(
-          `S3 denied reading '${key}' from bucket '${bucketName}'. If this is an OAC-locked / private ` +
+          // Issue #579 review round 2 -- `key` is REQUEST-derived and is the
+          // most reachable forged-line vector in the whole sweep: `uriToKey`
+          // runs `decodeURIComponentSafe` over the request URI, so
+          // `GET /%0AWARN:%20anything` yields a key holding a REAL newline. No
+          // credentials, no hostile AWS endpoint, no `--verbose` -- any HTTP
+          // client that can reach the served port. Strictly more reachable than
+          // the `functionPhysicalId` flatten, which needs a hijacked
+          // CloudFormation endpoint.
+          `S3 denied reading '${flattenToOneLine(key)}' from bucket '${flattenToOneLine(bucketName)}'. If this is an OAC-locked / private ` +
             `bucket your credentials cannot read, point the origin at a local directory with ` +
             `--origin <originId>=<dir> (or use credentials with s3:GetObject on the bucket). ` +
             `${getEmbedConfig().cliName} start-cloudfront reads the origin from real S3.`
@@ -141,7 +150,8 @@ export function createS3OriginReader(
       }
       if (direct.kind === 'error') {
         getLogger().warn(
-          `S3 read of '${key}' from bucket '${bucketName}' failed: ${direct.message}`
+          // Request-derived `key`, flattened for the reason given above.
+          `S3 read of '${flattenToOneLine(key)}' from bucket '${flattenToOneLine(bucketName)}' failed: ${direct.message}`
         );
       }
     }
@@ -162,7 +172,11 @@ export function createS3OriginReader(
       // not silently swallowed on the way to the terminal 404.
       if (page.kind === 'denied' || page.kind === 'error') {
         getLogger().warn(
-          `S3 could not read custom-error page '${candidate.errorKey}' from bucket '${bucketName}' ` +
+          // `candidate.errorKey` comes from the distribution's
+          // `CustomErrorResponses[].ResponsePagePath`, i.e. the template --
+          // less reachable than `key`, but it lands on the same DEFAULT-level
+          // line and the flatten costs one call.
+          `S3 could not read custom-error page '${flattenToOneLine(candidate.errorKey)}' from bucket '${flattenToOneLine(bucketName)}' ` +
             `(${page.kind}); falling through.`
         );
       }
@@ -253,6 +267,18 @@ function defaultFetchObject(
  * Classify an S3 SDK error: a missing key (`NoSuchKey` / 404) is `not-found`
  * (try the SPA fallback), an `AccessDenied` / 403 is `denied` (a credential /
  * OAC config problem), anything else is `error`.
+ *
+ * Issue #579 — the `error` branch's `message` is the only one that reaches a
+ * log line (the reader prints it in a DEFAULT-level `S3 read of ... failed:`
+ * warn), so it is rendered by {@link describeAwsFailureForWarn}. LEVEL: a
+ * default-level warn, mirrored into the studio log ring. RECONSTRUCTION: the
+ * `catch` this classifies for wraps `client.send(GetObjectCommand)`, which
+ * resolves the credential chain before the request goes out — a
+ * `CredentialsProviderError` here is COMMON, since the whole point of this
+ * origin is reading a deployed bucket with the developer's own credentials —
+ * alongside a modeled S3 exception whose message is the diagnosis. The
+ * `not-found` / `denied` branches carry no message at all and are untouched:
+ * their names are structural discriminators, not text that gets printed.
  */
 export function classifyS3Error(err: unknown): S3FetchResult {
   const e = err as { name?: string; $metadata?: { httpStatusCode?: number } } | undefined;
@@ -260,5 +286,5 @@ export function classifyS3Error(err: unknown): S3FetchResult {
   const name = e?.name;
   if (status === 404 || name === 'NoSuchKey' || name === 'NotFound') return { kind: 'not-found' };
   if (status === 403 || name === 'AccessDenied' || name === 'Forbidden') return { kind: 'denied' };
-  return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+  return { kind: 'error', message: describeAwsFailureForWarn(err, 'S3 GetObject') };
 }

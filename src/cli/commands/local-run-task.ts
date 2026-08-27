@@ -8,7 +8,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -503,6 +503,19 @@ async function localRunTaskCommand(
 }
 
 /**
+ * cdk-local's own rejection from {@link resolvePlaceholderAccount}, so the
+ * relay below can tell it apart from a wire-derived SDK failure and re-raise it
+ * intact (issue #579).
+ */
+class PlaceholderAccountError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PlaceholderAccountError';
+    Object.setPrototypeOf(this, PlaceholderAccountError.prototype);
+  }
+}
+
+/**
  * If `arn` contains the `${AWS::AccountId}` placeholder emitted by the
  * resolver for inline same-stack IAM Roles, substitute the live caller
  * account via STS `GetCallerIdentity`. Otherwise pass through unchanged.
@@ -522,16 +535,50 @@ async function resolvePlaceholderAccount(
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     const account = identity.Account;
     if (!account) {
-      throw new Error(
+      throw new PlaceholderAccountError(
         `--assume-task-role: GetCallerIdentity returned no Account; cannot resolve placeholder ARN '${arn}'. ` +
           `Pass the ARN explicitly: --assume-task-role <arn>`
       );
     }
     return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+  } catch (err) {
+    // Issue #579 review round 3 — the third instance of the `try { send }
+    // finally { destroy }` with no `catch`. Its caller does not catch either,
+    // so a `CredentialsProviderError` reached `formatError`'s
+    // `${error.name}: ${error.message}` at DEFAULT level, unflattened and
+    // unclamped. `--assume-task-role` is not required to reach it: the
+    // placeholder is emitted by the resolver for an inline same-stack IAM
+    // role, so a plain `--from-cfn-stack` run on the default credential chain
+    // gets here.
+    //
+    // cdk-local's own no-Account throw is identifiable so it is re-raised
+    // intact — it carries the remedy, and the policy would otherwise withhold
+    // text this file wrote itself.
+    if (err instanceof PlaceholderAccountError) throw err;
+    // Hoisted into a `const` rather than rendered inline, the same shape
+    // `local-invoke.ts`'s `--assume-role` site uses. That is not cosmetic:
+    // `sts-error-relay-source-fence.test.ts` reads a window of two lines before
+    // and one after the line announcing an STS failure, and an inline render
+    // wrapped across three lines put the helper call outside it — the fence
+    // reported this site as unguarded, correctly by its own rule.
+    const shownArn = flattenToOneLine(arn);
+    const detail = describeAwsFailureForWarn(err, 'STS GetCallerIdentity (task-role placeholder)');
+    throw new PlaceholderAccountError(
+      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN '${shownArn}': ${detail}. ` +
+        `Pass the ARN explicitly: --assume-task-role <arn>`
+    );
   } finally {
     sts.destroy();
   }
 }
+
+/**
+ * Test-only seam (issue #579). `resolvePlaceholderAccount` is module-private
+ * and reached only through `runTask`'s full flow, which needs Docker; the unit
+ * suite drives it directly to fence the STS relay this round added. NOT part of
+ * the library surface — it is not re-exported from `index.ts` / `internal.ts`.
+ */
+export { resolvePlaceholderAccount as resolvePlaceholderAccountForTest };
 
 /**
  * Assume `roleArn` and return temp credentials.

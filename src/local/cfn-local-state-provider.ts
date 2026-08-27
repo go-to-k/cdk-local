@@ -75,7 +75,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
-import { flattenToOneLine } from './credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -283,7 +283,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       return resp.Environment?.Variables ?? {};
     } catch (err) {
       logger.warn(
-        `${this.label}: GetFunctionConfiguration(${functionPhysicalId}) failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: GetFunctionConfiguration(${flattenToOneLine(functionPhysicalId)}) failed: ${formatAwsErrorForWarn(err, 'Lambda GetFunctionConfiguration')}. ` +
           `Intrinsic-valued env vars that need the deployed value will warn-and-drop (grant lambda:GetFunctionConfiguration or override via --env-vars).`
       );
       return undefined;
@@ -318,7 +318,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       return undefined;
     } catch (err) {
       logger.warn(
-        `${this.label}: GetFunctionConfiguration(${functionPhysicalId}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: GetFunctionConfiguration(${flattenToOneLine(functionPhysicalId)}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err, 'Lambda GetFunctionConfiguration (--assume-role auto-resolve)')}. ` +
           `Pass the ARN explicitly: --assume-role <arn>.`
       );
       return undefined;
@@ -353,7 +353,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       return undefined;
     } catch (err) {
       logger.warn(
-        `${this.label}: GetAgentRuntime(${runtimePhysicalId}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: GetAgentRuntime(${flattenToOneLine(runtimePhysicalId)}) for --assume-role auto-resolve failed: ${formatAwsErrorForWarn(err, 'bedrock-agentcore-control GetAgentRuntime (--assume-role auto-resolve)')}. ` +
           `Pass the ARN explicitly: --assume-role <arn>.`
       );
       return undefined;
@@ -394,11 +394,13 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // downstream can surface it verbatim in their error. The recorded
       // text excludes the `--from-cfn-stack:` label prefix; the
       // resolver wraps it in its own framing.
-      this.lastLoadError =
-        `ListStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)} ` +
-        `(region='${this.region}')`;
+      // Rendered ONCE and reused. Issue #579 -- `formatAwsErrorForWarn` now
+      // EMITS the `debug` line carrying the withheld text, so calling it twice
+      // for one failure prints that line twice.
+      const detail = formatAwsErrorForWarn(err, 'CloudFormation ListStackResources');
+      this.lastLoadError = `ListStackResources(${this.cfnStackName}) failed: ${detail} (region='${this.region}')`;
       logger.warn(
-        `${this.label}: ListStackResources(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: ListStackResources(${this.cfnStackName}) failed: ${detail}. ` +
           `Was the stack deployed in region '${this.region}'? Falling back.`
       );
       return undefined;
@@ -418,7 +420,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       }
     } catch (err) {
       logger.warn(
-        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err)}. ` +
+        `${this.label}: DescribeStacks(${this.cfnStackName}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation DescribeStacks')}. ` +
           `Outputs will be empty (Fn::GetStackOutput cannot resolve).`
       );
       outputs = {};
@@ -493,7 +495,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       if (exportsPromise) return exportsPromise;
       exportsPromise = fetchAllExports(client).catch((err: unknown) => {
         logger.warn(
-          `${label}: ListExports (${region}) failed: ${formatAwsErrorForWarn(err)}. ` +
+          `${label}: ListExports (${region}) failed: ${formatAwsErrorForWarn(err, 'CloudFormation ListExports')}. ` +
             `Fn::ImportValue intrinsics will warn-and-drop.`
         );
         return undefined;
@@ -577,6 +579,16 @@ export function buildResourceStateMap(
     if (!r.LogicalResourceId || !r.PhysicalResourceId || !r.ResourceType) {
       continue;
     }
+    // Issue #579 — `PhysicalResourceId` is copied through with no validation,
+    // and it is WIRE-DERIVED: `ListStackResources` returns whatever the
+    // endpoint says. A physical id that reaches a `logger.warn` template is
+    // therefore the same forging surface as an error message, and one that
+    // fires on a path where the endpoint ALSO controls whether the follow-up
+    // call fails. The flatten is applied at each of those templates
+    // (`GetFunctionConfiguration` / `GetAgentRuntime`) rather than here,
+    // because the id's OTHER consumers (the substitution engine, an
+    // `AssumeRoleCommand.RoleArn`) want the value the endpoint actually sent,
+    // not a space-substituted one.
     out[r.LogicalResourceId] = {
       physicalId: r.PhysicalResourceId,
       resourceType: r.ResourceType,
@@ -717,22 +729,37 @@ export async function fetchAllExports(client: CloudFormationClient): Promise<Map
  * with bucket / region context), so the CFn provider extracts the
  * pieces directly here.
  *
- * Issue #578 — the result is FLATTENED TO ONE LINE via
- * {@link flattenToOneLine}, the same helper `credential-error` applies to
- * every other wire-derived value that lands on a log line, rather than a
- * second spelling of it. Both `err.name` and `err.message` come off the wire,
- * and this warn is relayed onto a `cdkl studio` serve child's stdout, where
- * `studio-serve-manager` splits on `\n`: an embedded newline puts line 2 on
- * the stream with no `WARN: ` prefix, so it clears the diagnostic bound and
- * matches a ready pattern at `^`. One line in, one line out.
+ * Issue #578 flattened the result to ONE LINE, because this warn is relayed
+ * onto a `cdkl studio` serve child's stdout where `studio-serve-manager`
+ * splits on `\n`: an embedded newline puts line 2 on the stream with no
+ * `WARN: ` prefix, so it clears the diagnostic bound and matches a ready
+ * pattern at `^`.
+ *
+ * Issue #579 finished the job. Flattening closed the forged-LINE half while
+ * leaving the OTHER two open: the wire-derived `err.name` was interpolated
+ * UNCLAMPED (`@aws-sdk/core` builds it from `x-amzn-errortype` with no length
+ * cap and no character class), and `err.message` printed verbatim whatever
+ * population it came from. LEVEL: every caller below is a DEFAULT-level warn.
+ * RECONSTRUCTION: each `catch` wraps a `client.send(...)` — CloudFormation,
+ * Lambda, or bedrock-agentcore-control — which resolves the credential chain
+ * before the request goes out, so the `catch` sees both a
+ * `CredentialsProviderError` (whose message can be a `credential_process`
+ * command line) and a modeled service exception whose message IS the
+ * diagnosis. That is exactly {@link describeAwsFailureForWarn}'s split, so
+ * this is now a thin decoration over it rather than a second spelling of the
+ * policy: `operation` names the call for the `debug` line the helper emits on
+ * the withheld branch.
+ *
+ * The HTTP status is KEPT and moved to a suffix. Unlike the name it is not
+ * body-derived — the SDK reads it off the HTTP response line — but it is
+ * still range-guarded to an integer status, since `$metadata` is a plain
+ * object a hostile shape could carry anything on.
  */
-export function formatAwsErrorForWarn(err: unknown): string {
-  if (!(err instanceof Error)) return flattenToOneLine(String(err));
-  const name = err.name && err.name !== 'Error' ? err.name : undefined;
-  const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
-  const prefixParts: string[] = [];
-  if (name !== undefined) prefixParts.push(name);
-  if (status !== undefined) prefixParts.push(`HTTP ${status}`);
-  if (prefixParts.length === 0) return flattenToOneLine(err.message);
-  return flattenToOneLine(`${prefixParts.join(' ')}: ${err.message}`);
+export function formatAwsErrorForWarn(err: unknown, operation: string): string {
+  const described = describeAwsFailureForWarn(err, operation);
+  const status = (err as { $metadata?: { httpStatusCode?: unknown } } | undefined)?.$metadata
+    ?.httpStatusCode;
+  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status < 600
+    ? `${described} (HTTP ${status})`
+    : described;
 }

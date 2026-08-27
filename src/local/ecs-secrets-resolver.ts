@@ -1,6 +1,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailureForWarn } from './credential-error.js';
 
 /**
  * Resolve `ContainerDefinitions[].Secrets[].ValueFrom` references to real
@@ -194,10 +195,21 @@ async function resolveSecretsManager(
     // throttling), which is exactly what makes a credential or IAM problem
     // diagnosable. It is the one throw in this function the sibling-branch
     // test block deliberately does not cover, and this is why.
+    //
+    // Issue #579 narrowed WHICH SDK errors that covers, without reversing the
+    // decision. LEVEL: this text reaches `ecs-service-emulator.ts`'s
+    // `logger.error` -- default level, and mirrored into the studio log ring.
+    // RECONSTRUCTION: `client.send(...)` resolves the credential chain before
+    // the request, so a `CredentialsProviderError` carrying a
+    // `credential_process` command line lands in the SAME `catch` as the
+    // modeled Secrets Manager exception this comment is about. The service
+    // exception's message still prints in full -- that is the half #554 kept;
+    // the chain failure is the half it never considered.
     throw new EcsSecretsResolutionError(
-      `Failed to resolve Secrets Manager secret for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}): ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to resolve Secrets Manager secret for container '${entry.containerName}' / env '${entry.name}' (${shape.baseArn}): ${describeAwsFailureForWarn(
+        err,
+        'SecretsManager GetSecretValue'
+      )}`
     );
   }
   if (secretString === undefined) {
@@ -272,10 +284,14 @@ async function resolveSsm(entry: SecretEntry, shape: SsmShape, client: SSMClient
     return value;
   } catch (err) {
     if (err instanceof EcsSecretsResolutionError) throw err;
+    // Issue #579 -- the SSM twin of the Secrets Manager site above, decided on
+    // the same two axes. cdk-local's own "returned no Value" throw is re-raised
+    // on the line above, so withholding never eats it.
     throw new EcsSecretsResolutionError(
-      `Failed to resolve SSM parameter for container '${entry.containerName}' / env '${entry.name}' (${shape.name}): ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to resolve SSM parameter for container '${entry.containerName}' / env '${entry.name}' (${shape.name}): ${describeAwsFailureForWarn(
+        err,
+        'SSM GetParameter (ECS secret)'
+      )}`
     );
   }
 }

@@ -13,15 +13,84 @@
  * SCOPE, stated so a later sweep finds a decision rather than an oversight:
  * this module governs those nine plus sigv4-verify's one, and its
  * {@link flattenToOneLine} additionally covers every other wire-derived value
- * printed on those lines (the role ARN, on the failure AND success paths). It
- * does NOT yet govern the AWS SDK error relays elsewhere under
- * `src/local/**` — notably
- * `formatAwsErrorForWarn` (`cfn-local-state-provider.ts`, six warn sites and
- * one non-warn caller)
- * and `formatSsmError` (`ssm-parameter-resolver.ts`), which still print an
- * UNCLAMPED wire-derived `err.name`. Those are enumerated and tracked in
- * issue #579; they were left out here so a cross-cutting refactor of eight
- * more files would not share a review with the policy that justifies it.
+ * printed on those lines (the role ARN, on the failure AND success paths).
+ *
+ * Issue #579 extended it to the AWS SDK error relays elsewhere under
+ * `src/local/**` (plus `local-studio.ts`'s image-context warn), so the policy
+ * is no longer scoped to `src/cli/commands/**`:
+ * `cfn-local-state-provider.ts` (`formatAwsErrorForWarn`, six callers),
+ * `ssm-parameter-resolver.ts` (whose `formatSsmError` was DELETED rather than
+ * fixed — it was a second spelling of the same forging vector),
+ * `state-resolver.ts`, `cloudfront-kvs-client.ts`, `cloudfront-s3-origin.ts`,
+ * `layer-arn-materializer.ts`, `ecr-puller.ts`, `ecs-secrets-resolver.ts` and
+ * `httpv2-service-integration.ts`. Each was decided on the SAME two axes below
+ * rather than rewritten mechanically, and a `catch` around a purely LOCAL
+ * operation was left alone: `agentcore-s3-bundle.ts`'s unzip and
+ * `layer-arn-materializer.ts`'s presigned-URL download / unzip see no
+ * credential chain and no service response, so there is nothing here for them.
+ *
+ * The test is what a `catch` CAN SEE, and applying it by LOCATION instead is
+ * how the sweep first got `agentcore-s3-bundle.ts` wrong. Its `try` does wrap
+ * `unzipSync` and nothing else — but that made the S3 `GetObject` above it
+ * UNCOVERED, not out of scope: it had no `catch` at all, so the raw SDK error
+ * propagated to `withErrorHandling` -> `formatError`, which prints
+ * `${error.name}: ${error.message}` unflattened and unclamped at DEFAULT
+ * level, and the default credential chain is what a run without
+ * `--assume-role` uses. "Outside that `catch`" is not "outside the sweep";
+ * ask which populations reach the site, and if the answer is "nothing catches
+ * it here", follow it to the frame that does.
+ *
+ * #579 also widened what LEVEL means, and the widening is the useful part:
+ * `httpv2-service-integration.ts`'s relay is not a log line at all, it is a
+ * served HTTP RESPONSE BODY — the widest reader in the sweep, since it needs
+ * neither `--verbose` nor access to the terminal, and the studio capture proxy
+ * records it onto the timeline besides. The axis is about READERS, not about
+ * logs.
+ *
+ * TWO CALLING CONVENTIONS this imposes, both found by #579 rather than
+ * anticipated here:
+ *
+ *   1. Render each failure ONCE. {@link describeAwsFailureForWarn} EMITS the
+ *      `debug` line, so calling it twice for one error prints that line twice
+ *      (`cfn-local-state-provider.ts`'s `load` did, having rendered the same
+ *      failure for its warn and for `lastLoadError`).
+ *   2. Re-raise cdk-local's OWN throws ABOVE the relay, with an identifiable
+ *      class. The discriminator is positive, so a `catch` that also catches
+ *      the caller's own `throw new Error('...')` withholds text cdk-local
+ *      wrote itself — which is the diagnostic loss this file's
+ *      {@link describeCredentialLoadFailure} note calls "a real diagnostic
+ *      loss, accepted". #579 stopped accepting it where it was cheap not to:
+ *      `layer-arn-materializer.ts`'s ARN-shape and missing-`Content.Location`
+ *      guards became `LayerMaterializationError`s and are re-raised, and
+ *      `httpv2-service-integration.ts`'s missing-RequestParameter 400 became a
+ *      `ServiceIntegrationRequestError` so an actionable 400 body did not
+ *      degrade into a class name and a character count.
+ *
+ * TWO CATCH-ALL relays remain outside it, and both are UNCOVERED. An earlier
+ * revision of this note gave them opposite verdicts in adjacent paragraphs —
+ * clearing one and rejecting the other on the same evidence — which was simply
+ * wrong about the first, so both now read the same way:
+ *
+ *   - `cloudfront-server.ts:129`'s `Request handling failed: ${err.message}`.
+ *     It is what makes `cloudfront-kvs-client.ts`'s throw a DEFAULT-level
+ *     line, and for THAT sub-path the text arrives pre-sanitized — but it is a
+ *     catch-all over the whole request pipeline, so an origin fetch, an
+ *     edge-function invoke or an SDK error raised anywhere below it still
+ *     reaches the line RAW.
+ *   - `ecs-service-emulator.ts`'s `logger.error` at three sites (`:909`,
+ *     `:1508`, `:1599`). One of them does carry
+ *     `ecs-secrets-resolver.ts`'s `EcsSecretsResolutionError`, which this
+ *     module sanitized on the way in — and reasoning from that to "the relay
+ *     is safe" is the SAME generalisation the bullet above rejects. All three
+ *     are catch-alls over a whole reload or replica roll, relaying
+ *     `err instanceof Error ? err.message : String(err)`, and what they
+ *     usually carry is docker CLI stderr, which is multi-line.
+ *
+ * So: one sub-path arriving pre-sanitized never clears a catch-all. Both need
+ * the same per-occurrence call as everything else in this list. Neither is
+ * done here — `cloudfront-server.ts` is out of this change's scope, and the
+ * emulator's three are a different population (docker output, not SDK errors)
+ * that wants the flattening half rather than the withholding half.
  *
  * # The two axes that decide it
  *
@@ -345,13 +414,27 @@ export function sanitizeServiceExceptionMessage(message: string): string {
  * echo, plus the clamped {@link clampErrorCode} when the throw carries one.
  *
  * Withholding is NOT free, and the cost lands on cdk-local's own text as well
- * as on the SDK's: `role-arn.ts`'s
- * `AssumeRole(<arn>) returned no usable credentials.` is a plain `Error` with
- * no `$fault`, so it is withheld like any other. That is a real diagnostic
- * loss, accepted because the alternative — an allow-list of messages that may
- * print — is the deny-list this design rejects, wearing the other sign. The
- * fix is to make cdk-local's own throws identifiable rather than to guess at
- * their text; it is not done here, and is noted in issue #579.
+ * as on the SDK's. The worked example used to be `role-arn.ts`'s
+ * `AssumeRole(<arn>) returned no usable credentials.`: a plain `Error` with no
+ * `$fault`, so it was withheld like any other, and the note recorded that as a
+ * real diagnostic loss accepted because the alternative — an allow-list of
+ * messages that may print — is the deny-list this design rejects, wearing the
+ * other sign. It also named the right fix: make cdk-local's own throws
+ * IDENTIFIABLE rather than guess at their text.
+ *
+ * Issue #579 did that, for exactly this example. `role-arn.ts` now throws
+ * `AssumeRoleFailure`, carrying a `detail` its relaying callers print verbatim
+ * — and the same pattern closed the identical loss in
+ * `layer-arn-materializer.ts`, `httpv2-service-integration.ts`,
+ * `ecr-puller.ts`, `local-run-task.ts` and `ecs-service-emulator.ts`. The
+ * general point stands and is what a new site should apply: the policy cannot
+ * tell cdk-local's own sentence from a hostile endpoint's, so a `catch` that
+ * can see both must make its own throws recognisable BEFORE the relay.
+ *
+ * The remaining ARN-length question — an ARN is structured, so the bound
+ * belongs at the three resolution points rather than at the log line — is
+ * tracked separately at
+ * https://github.com/go-to-k/cdk-local/issues/607.
  *
  * The LENGTH is reported, unlike in `ecs-secrets-resolver.ts`, and the
  * difference is deliberate: there the user already knows which secret it is

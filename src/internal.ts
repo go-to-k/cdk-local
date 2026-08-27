@@ -289,8 +289,8 @@ export {
 export { defaultCredentialsLoader, type CredentialsLoader } from './local/sigv4-verify.js';
 
 /**
- * Rendering an AWS SDK failure into a DEFAULT-level log line (issues #564,
- * #570).
+ * Rendering an AWS SDK failure into a DEFAULT-level line a third party can
+ * read (issues #564, #570, #579).
  *
  * Host-side use case: a host CLI that wraps these command factories prints
  * into the same stream cdk-local does, and a host that mirrors that stream
@@ -307,6 +307,26 @@ export { defaultCredentialsLoader, type CredentialsLoader } from './local/sigv4-
  * - `describeCredentialLoadFailure(err)` for a `catch` around credential
  *   RESOLUTION only, where nothing actionable is lost by withholding all of
  *   it; the caller emits its own `debug` line.
+ *
+ * Which one a site wants is decided on the two axes issue #570 named, and
+ * issue #579 applied to the rest of the codebase — LEVEL (is the line
+ * default-level, and does it reach somewhere a third party reads?) and
+ * RECONSTRUCTION (does the `catch` see only the credential chain, or also a
+ * service RESPONSE whose message is the diagnosis?). #579 also showed the
+ * axes are not log-specific: the widest reader in the sweep was an HTTP
+ * RESPONSE BODY (`httpv2-service-integration.ts`), not a log line at all. A
+ * `catch` around a purely LOCAL operation — an unzip, a file read, a docker
+ * invocation — has neither population and wants neither helper.
+ *
+ * TWO OBLIGATIONS on the caller, both learned from #579 rather than assumed:
+ *
+ * - Call it ONCE per failure. It EMITS the `debug` line carrying the withheld
+ *   text, so rendering the same error twice prints that line twice.
+ * - Re-raise the host's OWN throws before this sees them. The policy is
+ *   defined positively — anything that is not a parsed service response is
+ *   withheld — so a `catch` that also catches the caller's own
+ *   `throw new Error('...')` will withhold text the caller wrote itself. Give
+ *   those an identifiable class and re-raise it above the relay.
  *
  * The primitives underneath (the name clamp, the service-exception test, the
  * message sanitizer) are deliberately NOT exported: a host reusing the policy

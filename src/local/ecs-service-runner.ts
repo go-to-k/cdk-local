@@ -14,6 +14,7 @@ import type { FrontDoorEndpointPool } from './front-door-pool.js';
 import { getContainerNetworkIp, getPublishedHostPort } from './docker-inspect.js';
 import { SHARED_SVC_SUBNET_OCTET, type TaskNetwork } from './ecs-network.js';
 import { getEmbedConfig } from './embed-config.js';
+import { flattenToOneLine } from './credential-error.js';
 import { attachContainerLogStreamer } from './container-log-streamer.js';
 
 /**
@@ -2332,6 +2333,22 @@ const defaultReadContainerLogsImpl = async (containerId: string): Promise<string
  * `read` is injectable so the unit test can assert the formatting without
  * a real container; production callers use the default `docker logs`
  * reader.
+ *
+ * Issue #579 — ONE `logger.warn` PER TAIL LINE, not one warn carrying an
+ * embedded `\n`. LEVEL: a default-level warn, and under `cdkl studio` the
+ * serve child's stdout is mirrored into a log ring served over HTTP. The
+ * studio serve manager reads that stdout with `streamLines`, which splits on
+ * `\n`, and it declines to pattern-match a line carrying cdk-local's own
+ * `WARN: ` prefix (issue #578). A multi-line warn defeats that bound from the
+ * inside: the logger prefixes the MESSAGE, so line 2 onward arrives
+ * prefix-less and is matched at `^` — and the content is the CONTAINER's own
+ * stdout, i.e. whatever the application printed. An app that logs
+ * `Server listening on http://10.0.0.9:3000` (which is exactly what a web
+ * framework prints, and this tail fires when such an app has just crashed)
+ * would re-point the capture proxy. RECONSTRUCTION does not arise: this is
+ * container output, not an AWS SDK failure, so nothing is withheld — the whole
+ * tail still prints, one prefixed line at a time. Each line is additionally
+ * flattened, so a `\r` or U+2028 inside one cannot re-split it downstream.
  */
 export async function printExitedContainerLogs(
   replicaIndex: number,
@@ -2350,9 +2367,24 @@ export async function printExitedContainerLogs(
   }
   const tail = raw.trimEnd();
   if (tail.length === 0) return;
+  // "last N lines", which is what it always said. Review round 2 changed this
+  // to "up to N each from stdout and stderr" on the theory that `--tail` binds
+  // per stream; round 3 checked `defaultReadContainerLogsImpl` and it does not.
+  // There is ONE `docker logs --tail <N>` invocation, `--tail` bounds the
+  // combined log, and the stdout/stderr split is just how the child process's
+  // two pipes are captured afterwards. The original wording was correct and is
+  // restored.
   logger.warn(
-    `Replica ${replicaIndex} essential container logs (last ${EXIT_LOG_TAIL_LINES} lines):\n${tail}`
+    `Replica ${replicaIndex} essential container logs (last ${EXIT_LOG_TAIL_LINES} lines):`
   );
+  for (const line of tail.split(/\r?\n/)) {
+    const flat = flattenToOneLine(line).trimEnd();
+    // A blank line inside the tail carries no diagnostic content, and emitting
+    // one would print a bare `Replica N | ` — the prefix is framing, not
+    // information, so there is nothing left to read on that line.
+    if (flat.trim().length === 0) continue;
+    logger.warn(`Replica ${replicaIndex} | ${flat}`);
+  }
 }
 
 const defaultSleepImpl = (ms: number): Promise<void> =>

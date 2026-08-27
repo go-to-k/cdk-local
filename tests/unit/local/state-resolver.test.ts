@@ -655,7 +655,13 @@ describe('substituteAgainstStateAsync (Fn::ImportValue / Fn::GetStackOutput)', (
       resources: {},
       crossStackResolver: buildResolver({
         resolveImport: vi.fn(async () => {
-          throw new Error('S3 AccessDenied');
+          // A MODELED service exception (`$fault` is what the SDK sets off the
+          // wire) -- its message is the diagnosis and keeps printing. A plain
+          // `Error` here would be withheld, because that is the shape a
+          // credential-chain failure arrives as (issue #579).
+          const e = new Error('S3 AccessDenied');
+          Object.defineProperty(e, 'name', { value: 'AccessDenied' });
+          throw Object.assign(e, { $fault: 'client', $metadata: { httpStatusCode: 403 } });
         }),
       }),
     };
@@ -663,7 +669,7 @@ describe('substituteAgainstStateAsync (Fn::ImportValue / Fn::GetStackOutput)', (
     expect(r.kind).toBe('unresolved');
     if (r.kind === 'unresolved') {
       expect(r.reason).toContain('lookup failed');
-      expect(r.reason).toContain('S3 AccessDenied');
+      expect(r.reason).toContain('AccessDenied: S3 AccessDenied');
     }
   });
 

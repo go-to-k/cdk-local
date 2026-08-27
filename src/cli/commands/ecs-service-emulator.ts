@@ -8,7 +8,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn } from '../../local/credential-error.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
 import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
 import { CdkLocalError, LocalStartServiceError } from '../../utils/error-handler.js';
 import { resolveMultiTarget } from '../../local/target-picker.js';
@@ -2380,10 +2380,36 @@ async function resolvePlaceholderAccount(
       );
     }
     return arn.split(TASK_ROLE_ACCOUNT_PLACEHOLDER).join(account);
+  } catch (err) {
+    // Issue #579 review round 4 — the sixth and last site of the derived
+    // population, and the exact twin of `local-run-task.ts`'s
+    // `resolvePlaceholderAccount` (both are `try { send } finally { destroy }`
+    // with no `catch`, and neither caller catches). It was deferred one round
+    // because PR #610 held this file; #610 merged, so it lands here rather than
+    // becoming a follow-up issue.
+    //
+    // `--assume-task-role` is not needed to reach it: the placeholder is what
+    // the resolver emits for an inline same-stack IAM role, so a plain
+    // `--from-cfn-stack` run on the default credential chain gets here.
+    if (err instanceof LocalStartServiceError) throw err;
+    const shownArn = flattenToOneLine(arn);
+    const detail = describeAwsFailureForWarn(err, 'STS GetCallerIdentity (task-role placeholder)');
+    throw new LocalStartServiceError(
+      `--assume-task-role: STS GetCallerIdentity failed while resolving placeholder ARN '${shownArn}': ${detail}. ` +
+        `Pass the ARN explicitly: --assume-task-role <arn>`
+    );
   } finally {
     sts.destroy();
   }
 }
+
+/**
+ * Test-only seam (issue #579), mirroring `local-run-task.ts`'s. The function is
+ * module-private and otherwise reachable only through the full emulator boot,
+ * which needs Docker. NOT part of the library surface — not re-exported from
+ * `index.ts` / `internal.ts`.
+ */
+export { resolvePlaceholderAccount as resolvePlaceholderAccountForTest };
 
 async function assumeTaskRole(
   roleArn: string,

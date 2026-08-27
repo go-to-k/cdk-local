@@ -5,6 +5,7 @@ import { unzipSync } from 'fflate';
 import { CdkLocalError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 
 /**
  * Download + extract a `fromS3` AgentCore CodeConfiguration bundle.
@@ -101,9 +102,18 @@ export async function downloadAndExtractS3Bundle(
   };
 }
 
+/**
+ * `s3://<bucket>/<key>[?versionId=...]` for a log or error line.
+ *
+ * FLATTENED (issue #579 review round 3). Under `--from-cfn-stack` the bucket
+ * and key are resolved from template intrinsics against DEPLOYED state — a
+ * `Ref` / `Fn::ImportValue` answered by `ListStackResources` / `ListExports` —
+ * so they are wire-derived on that path, and this string now lands on a
+ * default-level error line as well as the `info` progress line it always fed.
+ */
 function formatRef(location: S3BundleLocation): string {
-  const version = location.versionId ? `?versionId=${location.versionId}` : '';
-  return `s3://${location.bucket}/${location.key}${version}`;
+  const version = location.versionId ? `?versionId=${flattenToOneLine(location.versionId)}` : '';
+  return `s3://${flattenToOneLine(location.bucket)}/${flattenToOneLine(location.key)}${version}`;
 }
 
 /**
@@ -155,6 +165,35 @@ function defaultFetchObject(
         );
       }
       return await res.Body.transformToByteArray();
+    } catch (err) {
+      // Issue #579 review round 2 -- this `catch` did not exist, and its
+      // absence is why the site was first mis-triaged as out of scope. The
+      // module's OTHER `catch` wraps `unzipSync` only, which is a purely LOCAL
+      // operation and genuinely outside the credential-error policy. But
+      // "outside that catch" was read as "outside the sweep", when it meant the
+      // S3 read had NO catch at all: the raw SDK error propagated through
+      // `resolveAgentCoreCodeImageFromS3` to `withErrorHandling` ->
+      // `formatError`, which renders `${error.name}: ${error.message}`
+      // UNFLATTENED and UNCLAMPED at DEFAULT level.
+      //
+      // LEVEL: a top-level CLI error line -- printed on a plain
+      // `cdkl invoke-agentcore` run, no `--verbose` needed.
+      // RECONSTRUCTION: `client.send(...)` resolves the credential chain before
+      // the request goes out, and without `--assume-role` that is the DEFAULT
+      // chain, so a `CredentialsProviderError` carrying a `credential_process`
+      // command line reaches it -- alongside a modeled S3 exception
+      // (`NoSuchKey`, `AccessDenied`) whose message is the diagnosis.
+      //
+      // cdk-local's own empty-body throw above is re-raised INTACT: its text is
+      // this module's literal, not anything off the wire.
+      if (err instanceof CdkLocalError) throw err;
+      throw new CdkLocalError(
+        `S3 GetObject for ${formatRef(location)} failed: ${describeAwsFailureForWarn(
+          err,
+          'S3 GetObject (fromS3 bundle)'
+        )}`,
+        'LOCAL_INVOKE_AGENTCORE_S3_BUNDLE_FETCH_FAILED'
+      );
     } finally {
       client.destroy();
     }

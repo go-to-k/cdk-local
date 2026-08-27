@@ -102,6 +102,7 @@
  * one env var must not abort the whole `cdkl invoke` call.
  */
 
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import type { ResourceState } from '../types/state.js';
 
 /**
@@ -887,9 +888,48 @@ async function resolveImportValueAsync(
   try {
     resolved = await context.crossStackResolver.resolveImport(exportName);
   } catch (err) {
+    // Issue #579, corrected in review round 2. An earlier revision of this
+    // comment claimed `resolveImport` IS a CloudFormation `ListExports` call.
+    // It is not, and the distinction changes what this `catch` can see:
+    // `CrossStackResolver` is a HOST-IMPLEMENTED interface exported from
+    // `src/index.ts` (the STABLE surface), and cdk-local's own implementation
+    // in `cfn-local-state-provider.ts` catches its SDK failures INTERNALLY
+    // (`fetchAllExports(...).catch(...)` warns and resolves `undefined`). So
+    // nothing cdk-local throws reaches here at all: what does is a host
+    // resolver's throw, or a cdk-local bug.
+    //
+    // LEVEL: this `reason` is not logged here, but three DEFAULT-level warns
+    // print it verbatim (`local-invoke.ts`, `local-start-api.ts`,
+    // `local-invoke-agentcore.ts`), and studio mirrors those into its log ring.
+    //
+    // RECONSTRUCTION is therefore NOT established by inspection, and the
+    // withholding default is kept deliberately rather than by default: this
+    // interface's whole purpose is resolving DEPLOYED cross-stack state, so an
+    // AWS-backed host implementation is the expected case rather than the
+    // exotic one, and such a resolver resolves the same credential chain
+    // before its request goes out. The discriminator still does the right
+    // thing on both populations: a host that lets a modeled service exception
+    // escape keeps its message, because `$fault` / `$metadata` are set by the
+    // SDK from the response and not by anything the host chose.
+    //
+    // ACCEPTED COST, stated so it is not rediscovered as a bug: a host
+    // resolver's OWN `throw new Error('export index missing for X')` is
+    // withheld to a class name plus a length. It is recoverable at `debug`,
+    // and the remedy for a host that wants its text on the default line is the
+    // one this policy names everywhere else, and which cdk-local applies to
+    // its own throws in `layer-arn-materializer.ts` and
+    // `httpv2-service-integration.ts`: raise something identifiable and frame
+    // the message above the boundary.
     return {
       kind: 'unresolved',
-      reason: `Fn::ImportValue '${exportName}': lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      // `exportName` is flattened for the same one-call reason every other
+      // wire-derived value on a default-level line is: it is resolved from the
+      // template (and may itself come through `Fn::Sub` against deployed
+      // state), and this `reason` is printed verbatim by three warns.
+      reason: `Fn::ImportValue '${flattenToOneLine(exportName)}': lookup failed: ${describeAwsFailureForWarn(
+        err,
+        'CrossStackResolver.resolveImport (Fn::ImportValue)'
+      )}`,
     };
   }
   if (resolved === undefined) {
@@ -999,9 +1039,20 @@ async function resolveGetStackOutputAsync(
       outputName
     );
   } catch (err) {
+    // Issue #579 — the same HOST-BOUNDARY catch as the `Fn::ImportValue` site
+    // above, decided the same way and for the same reasons; see the comment
+    // there. cdk-local's own `resolveGetStackOutput` warns and returns
+    // `undefined` rather than throwing, so this too only ever sees a host
+    // resolver's throw.
     return {
       kind: 'unresolved',
-      reason: `Fn::GetStackOutput '${stackName}.${outputName}' (${region}): lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      // Same treatment for the three template-derived values here.
+      reason: `Fn::GetStackOutput '${flattenToOneLine(stackName)}.${flattenToOneLine(
+        outputName
+      )}' (${flattenToOneLine(region)}): lookup failed: ${describeAwsFailureForWarn(
+        err,
+        'CrossStackResolver.resolveGetStackOutput (Fn::GetStackOutput)'
+      )}`,
     };
   }
   if (resolved === undefined) {

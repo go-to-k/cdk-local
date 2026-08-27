@@ -13,7 +13,7 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
-import { applyRoleArnIfSet } from '../../utils/role-arn.js';
+import { applyRoleArnIfSet, AssumeRoleFailure } from '../../utils/role-arn.js';
 import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -888,9 +888,20 @@ export async function resolveHostCredentialsForSigV4(
       // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
       // `assumeRoleArn` keeps printing for the reason recorded at the
       // `applyAgentCoreCredentialEnv` site below.
+      // Issue #579: `assumeAgentCoreExecutionRole` renders its own
+      // no-usable-credentials sentence, so re-rendering it here would WITHHOLD
+      // cdk-local's own text (a non-service error is the withheld branch by
+      // design). Inlined rather than factored into a helper: the source fence
+      // in `tests/unit/cli/sts-error-relay-source-fence.test.ts` requires a
+      // visible `describeAwsFailureForWarn` CALL in the window around the
+      // announcing line, and one level of indirection defeats that check.
+      const sigv4Detail =
+        err instanceof AssumeRoleFailure
+          ? err.detail
+          : describeAwsFailureForWarn(err, 'STS AssumeRole (--sigv4 signing)');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for --sigv4 signing: ` +
-          `${describeAwsFailureForWarn(err, 'STS AssumeRole (--sigv4 signing)')}. ` +
+          `${sigv4Detail}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'shell credentials'}.`
       );
     }
@@ -1127,9 +1138,14 @@ export async function resolveAgentCoreCodeImageFromS3(
       // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
       // `assumeRoleArn` keeps printing for the reason recorded at the
       // `applyAgentCoreCredentialEnv` site below.
+      // Same inline shape and the same reason as the `--sigv4` site above.
+      const bundleDetail =
+        err instanceof AssumeRoleFailure
+          ? err.detail
+          : describeAwsFailureForWarn(err, 'STS AssumeRole (fromS3 bundle download)');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for the fromS3 bundle download: ` +
-          `${describeAwsFailureForWarn(err, 'STS AssumeRole (fromS3 bundle download)')}. ` +
+          `${bundleDetail}. ` +
           `Falling back to ${options.profile ? `--profile ${options.profile}` : 'the default credentials'}.`
       );
     }
@@ -1453,8 +1469,13 @@ export async function applyAgentCoreCredentialEnv(
       // the ARN from a live `GetAgentRuntime` response, so it is wire-derived
       // text on the line the helper beside it just made forge-proof. On a real
       // ARN the call is a no-op, so the integ grep is unaffected.
+      // Same inline shape and the same reason as the two sites above.
+      const assumeDetail =
+        err instanceof AssumeRoleFailure
+          ? err.detail
+          : describeAwsFailureForWarn(err, 'STS AssumeRole');
       logger.warn(
-        `--assume-role: STS AssumeRole(${flattenToOneLine(args.assumeRoleArn)}) failed: ${describeAwsFailureForWarn(err, 'STS AssumeRole')}. ` +
+        `--assume-role: STS AssumeRole(${flattenToOneLine(args.assumeRoleArn)}) failed: ${assumeDetail}. ` +
           "Falling back to the developer's shell credentials."
       );
     }
@@ -1674,7 +1695,17 @@ async function assumeAgentCoreExecutionRole(
     );
     const creds = response.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey || !creds.SessionToken) {
-      throw new Error(`AssumeRole(${roleArn}) returned no usable credentials.`);
+      // Issue #579 review round 5 — identifiable, for the same reason the
+      // twin in `utils/role-arn.ts` is: all THREE call sites of this helper
+      // re-render what it throws through `describeAwsFailureForWarn`, and a
+      // bare `Error` has no `$fault`, so cdk-local's own sentence was withheld
+      // to `Error; N-character message withheld` at every one of them.
+      // `message` is byte-identical to what it threw before; only the class
+      // and the added `detail` are new.
+      throw new AssumeRoleFailure(
+        `AssumeRole(${flattenToOneLine(roleArn)}) returned no usable credentials.`,
+        'the response carried no usable credentials'
+      );
     }
     return {
       accessKeyId: creds.AccessKeyId,

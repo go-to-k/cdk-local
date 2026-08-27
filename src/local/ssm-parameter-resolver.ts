@@ -35,6 +35,7 @@
 
 import { SSMClient, GetParametersCommand } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
 
 /** SSM-backed CFn parameter types CDK synthesizes for SSM lookups. */
@@ -175,8 +176,23 @@ export async function resolveSsmParameters(
         );
       }
     } catch (err) {
+      // Issue #579. LEVEL: a DEFAULT-level warn, mirrored into the studio log
+      // ring. RECONSTRUCTION: this `catch` wraps `client.send(...)`, which
+      // resolves the credential chain before the request goes out, so it sees
+      // BOTH a `CredentialsProviderError` (whose message can be a
+      // `credential_process` command line) and a modeled SSM exception
+      // (`AccessDeniedException`, `ParameterNotFound`) whose message IS the
+      // diagnosis -- the two-population split `describeAwsFailureForWarn`
+      // exists for. It replaces the local `formatSsmError`, which interpolated
+      // an UNCLAMPED wire-derived `err.name` and did not flatten.
       logger.warn(
-        `${label}: SSM GetParameters(${names.join(', ')}) failed: ${formatSsmError(err)}. ` +
+        // The parameter NAMES come from the template's `Default` values, so
+        // they land on this default-level warn the same way every other
+        // wire-adjacent value does; the flatten costs one call.
+        `${label}: SSM GetParameters(${flattenToOneLine(names.join(', '))}) failed: ${describeAwsFailureForWarn(
+          err,
+          'SSM GetParameters'
+        )}. ` +
           `Ref to the matching CloudFormation parameter(s) will warn-and-drop (grant ssm:GetParameters or override via --env-vars).`
       );
       continue;
@@ -203,16 +219,4 @@ export async function resolveSsmParameters(
   }
 
   return out;
-}
-
-/**
- * Format an SSM SDK error as `<name>: <message>` so the warn names the
- * error class (e.g. `AccessDeniedException`, `ThrottlingException`).
- * Mirrors `formatAwsErrorForWarn` in `cfn-local-state-provider.ts`.
- * Exported for unit testing.
- */
-export function formatSsmError(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const name = err.name && err.name !== 'Error' ? err.name : undefined;
-  return name !== undefined ? `${name}: ${err.message}` : err.message;
 }

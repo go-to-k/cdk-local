@@ -20,7 +20,7 @@ vi.mock('@aws-sdk/client-ssm', () => ({
   },
 }));
 
-const { collectSsmParameterRefs, resolveSsmParameters, formatSsmError } = await import(
+const { collectSsmParameterRefs, resolveSsmParameters } = await import(
   '../../../src/local/ssm-parameter-resolver.js'
 );
 const { SSMClient } = await import('@aws-sdk/client-ssm');
@@ -241,16 +241,9 @@ describe('resolveSsmParameters', () => {
   });
 });
 
-describe('formatSsmError', () => {
-  it('prefixes the error name when present', () => {
-    expect(formatSsmError(Object.assign(new Error('nope'), { name: 'ThrottlingException' }))).toBe(
-      'ThrottlingException: nope'
-    );
-  });
-  it('falls back to the bare message for a plain Error', () => {
-    expect(formatSsmError(new Error('boom'))).toBe('boom');
-  });
-  it('stringifies non-Error throwables', () => {
-    expect(formatSsmError('weird')).toBe('weird');
-  });
-});
+// `formatSsmError` was DELETED by issue #579 rather than fixed: it was a second
+// spelling of `cfn-local-state-provider`'s `formatAwsErrorForWarn`, and both
+// interpolated an UNCLAMPED wire-derived `err.name`. The one call site now
+// routes through `credential-error`'s `describeAwsFailureForWarn`, and the
+// per-occurrence coverage for it lives in
+// `tests/unit/local/aws-error-relay-sites.test.ts`.

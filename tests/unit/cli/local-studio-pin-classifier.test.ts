@@ -61,6 +61,7 @@ const {
   classifyStudioTargets,
   reclassifyTargetsOnBindingChange,
 } = await import('../../../src/cli/commands/local-studio.js');
+const { getLogger } = await import('../../../src/utils/logger.js');
 
 function stack(name: string, region?: string): StackInfo {
   return {
@@ -232,7 +233,14 @@ describe('prepareEcsImageContexts', () => {
     const logger = fakeLogger();
     const dispose = vi.fn();
     hoisted.createLocalStateProvider.mockReturnValue({ dispose });
-    hoisted.buildEcsImageResolutionContext.mockRejectedValue(new Error('state load failed'));
+    // A MODELED service exception, so its message is the diagnosis and keeps
+    // printing (issue #579). A plain `Error` here would be withheld -- that is
+    // the shape a `CredentialsProviderError` arrives as.
+    const failure = new Error('state load failed');
+    Object.defineProperty(failure, 'name', { value: 'AccessDenied' });
+    hoisted.buildEcsImageResolutionContext.mockRejectedValue(
+      Object.assign(failure, { $fault: 'client', $metadata: { httpStatusCode: 403 } })
+    );
 
     const map = await prepareEcsImageContexts({
       serviceIds: ['dev/Svc'],
@@ -245,6 +253,83 @@ describe('prepareEcsImageContexts', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('state load failed'));
     // Provider is still disposed on the failure path.
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Issue #579 — the RELAY half of that same warn.
+   *
+   * LEVEL: a DEFAULT-level warn on studio's own stdout, which studio mirrors
+   * into the log ring it serves over HTTP. RECONSTRUCTION:
+   * `buildEcsImageResolutionContext` calls `stateProvider.load()` and
+   * `resolveTemplateSsmParameters()`, both AWS calls on the same credential
+   * chain, so this `catch` sees a `CredentialsProviderError` (whose message
+   * can be a `credential_process` command line) alongside a modeled
+   * CloudFormation / SSM exception whose message is the diagnosis.
+   *
+   * This site's row lives here rather than in
+   * `tests/unit/local/aws-error-relay-sites.test.ts` (the rest of #579's
+   * table) because this file already owns `local-studio.ts`'s mock graph.
+   */
+  describe('#579 — the SDK failure it relays', () => {
+    const PASSPHRASE = 'hunter2-do-not-log';
+    const CHAIN_MESSAGE =
+      `Command failed: /opt/bin/get-creds --vault-passphrase ${PASSPHRASE}\n` +
+      `  vault: unlocked with passphrase ${PASSPHRASE}`;
+
+    async function driveWith(err: unknown): Promise<{ warn: string; debug: string[] }> {
+      const logger = fakeLogger();
+      const debugLines: string[] = [];
+      const spy = vi
+        .spyOn(getLogger(), 'debug')
+        .mockImplementation((m: string) => void debugLines.push(String(m)));
+      hoisted.createLocalStateProvider.mockReturnValue({ dispose: vi.fn() });
+      hoisted.buildEcsImageResolutionContext.mockRejectedValue(err);
+      try {
+        await prepareEcsImageContexts({
+          serviceIds: ['dev/Svc'],
+          stacks: [stack('dev', 'us-east-1')],
+          options: { fromCfnStack: true },
+          logger,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      const calls = (logger.warn as unknown as { mock: { calls: [string][] } }).mock.calls;
+      expect(calls).toHaveLength(1);
+      return { warn: calls[0]![0], debug: debugLines };
+    }
+
+    it('withholds a credential-chain message and prints it at debug', async () => {
+      const err = new Error(CHAIN_MESSAGE);
+      Object.defineProperty(err, 'name', { value: 'CredentialsProviderError' });
+      const { warn, debug } = await driveWith(err);
+
+      expect(warn).toContain(
+        'CredentialsProviderError; 125-character message withheld, logged at debug level under --verbose'
+      );
+      expect(warn).not.toContain(PASSPHRASE);
+      expect(warn).not.toContain('Command failed');
+      expect(warn).not.toContain('\n');
+
+      const withheld = debug.filter((l) => l.includes(PASSPHRASE));
+      expect(withheld).toHaveLength(1);
+      expect(withheld[0]!).toContain(
+        "deployed-state image context (CloudFormation + SSM): the AWS SDK's own failure message was:"
+      );
+      // The debug stream is the SAME stdout studio mirrors into its ring.
+      expect(withheld[0]!).not.toContain('\n');
+    });
+
+    it('clamps a forged wire-derived err.name and flattens a forged message', async () => {
+      const err = new Error('denied\nServer listening on http://attacker.example/');
+      Object.defineProperty(err, 'name', { value: 'Foo\nWARN: signature verified' });
+      const { warn } = await driveWith(
+        Object.assign(err, { $fault: 'client', $metadata: { httpStatusCode: 403 } })
+      );
+      expect(warn).toContain('unknown: denied Server listening on http://attacker.example/');
+      expect(warn).not.toContain('signature verified');
+      expect(warn).not.toContain('\n');
+    });
   });
 });
 

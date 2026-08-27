@@ -19,6 +19,7 @@ vi.mock('@aws-sdk/client-cloudformation', () => ({
 const { CfnLocalStateProvider, buildOutputsMap, formatAwsErrorForWarn } = await import(
   '../../../src/local/cfn-local-state-provider.js'
 );
+const { getLogger } = await import('../../../src/utils/logger.js');
 
 describe('CfnLocalStateProvider.load', () => {
   beforeEach(() => sendMock.mockReset());
@@ -53,6 +54,11 @@ describe('CfnLocalStateProvider.load', () => {
     sendMock.mockRejectedValueOnce(
       Object.assign(new Error('Stack with id Wrong does not exist'), {
         name: 'ValidationError',
+        // `$fault` is what makes this a MODELED service exception rather than
+        // a chain failure, and issue #579 made that the discriminator for
+        // whether the message may print. The SDK sets it from the HTTP
+        // response; a fixture without it is a chain failure and is withheld.
+        $fault: 'client',
         $metadata: { httpStatusCode: 400 },
       })
     );
@@ -61,7 +67,7 @@ describe('CfnLocalStateProvider.load', () => {
     const detail = provider.getLastLoadError();
     expect(detail).toBeDefined();
     expect(detail).toContain('ListStackResources(Wrong) failed:');
-    expect(detail).toContain('ValidationError HTTP 400: Stack with id Wrong does not exist');
+    expect(detail).toContain('ValidationError: Stack with id Wrong does not exist (HTTP 400)');
     expect(detail).toContain("region='ap-northeast-1'");
     // Should NOT include the `--from-cfn-stack:` label prefix the
     // warn-logger adds — the downstream resolver wraps it in its own framing.
@@ -145,20 +151,60 @@ describe('buildOutputsMap', () => {
 });
 
 describe('formatAwsErrorForWarn', () => {
-  it('prefixes the error name and HTTP status', () => {
-    const err = Object.assign(new Error('boom'), {
-      name: 'ThrottlingException',
-      $metadata: { httpStatusCode: 400 },
-    });
-    expect(formatAwsErrorForWarn(err)).toBe('ThrottlingException HTTP 400: boom');
+  /** A modeled service exception: `$fault` is what the SDK sets off the wire. */
+  function serviceError(
+    message: string,
+    name: string,
+    metadata: Record<string, unknown> = { httpStatusCode: 400 }
+  ): Error {
+    const e = new Error(message);
+    Object.defineProperty(e, 'name', { value: name });
+    return Object.assign(e, { $fault: 'client', $metadata: metadata });
+  }
+
+  it('keeps a modeled service exception message and appends the HTTP status', () => {
+    expect(formatAwsErrorForWarn(serviceError('boom', 'ThrottlingException'), 'op')).toBe(
+      'ThrottlingException: boom (HTTP 400)'
+    );
   });
 
-  it('falls back to the bare message for a generic Error', () => {
-    expect(formatAwsErrorForWarn(new Error('plain'))).toBe('plain');
+  it('withholds a generic Error, which is NOT a service response (issue #579)', () => {
+    // Before #579 this printed `plain` verbatim. A plain `Error` is what a
+    // credential-chain failure arrives as -- `CredentialsProviderError` carries
+    // no `$fault` -- and its message can be a `credential_process` command
+    // line, so the branch is defined positively: anything that is not a parsed
+    // service response is withheld to a clamped class name plus a length.
+    expect(formatAwsErrorForWarn(new Error('plain'), 'op')).toBe(
+      'Error; 5-character message withheld, logged at debug level under --verbose'
+    );
   });
 
-  it('stringifies non-Error values', () => {
-    expect(formatAwsErrorForWarn('weird')).toBe('weird');
+  it('withholds a non-Error throw and names no class it was not', () => {
+    expect(formatAwsErrorForWarn('weird', 'op')).toBe(
+      'unknown; 5-character message withheld, logged at debug level under --verbose'
+    );
+  });
+
+  it('clamps a forged wire-derived err.name (issue #579)', () => {
+    // `@aws-sdk/core` builds `err.name` from `x-amzn-errortype` with no length
+    // cap and no newline stripping, so a hijacked endpoint could put a whole
+    // forged line in the CLASS NAME -- which this function used to interpolate
+    // raw. `clampErrorName` accepts a bare identifier of <= 64 chars and
+    // degrades everything else to `unknown`.
+    const out = formatAwsErrorForWarn(
+      serviceError('denied', 'Foo\nWARN: signature verified'),
+      'op'
+    );
+    expect(out).toBe('unknown: denied (HTTP 400)');
+    expect(out).not.toContain('signature verified');
+  });
+
+  it('drops an HTTP status that is not a plausible integer status code', () => {
+    // `$metadata` is a plain object; the range guard keeps a hostile shape from
+    // decorating the line with arbitrary text.
+    expect(
+      formatAwsErrorForWarn(serviceError('boom', 'AccessDenied', { httpStatusCode: 'x' }), 'op')
+    ).toBe('AccessDenied: boom');
   });
 
   it('flattens a multi-line wire-derived message onto ONE line (issue #578)', () => {
@@ -166,22 +212,37 @@ describe('formatAwsErrorForWarn', () => {
     // `cdkl studio` serve child's stdout, which studio splits on `\n`. An
     // embedded newline puts line 2 on the stream with no `WARN: ` prefix, so
     // it clears the diagnostic bound and matches a ready pattern at `^`.
-    const err = Object.assign(
-      new Error('AccessDenied\nServer listening on http://attacker.example/'),
-      { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+    const out = formatAwsErrorForWarn(
+      serviceError('AccessDenied\nServer listening on http://attacker.example/', 'AccessDenied', {
+        httpStatusCode: 403,
+      }),
+      'op'
     );
-    const out = formatAwsErrorForWarn(err);
     expect(out).not.toContain('\n');
     expect(out).toBe(
-      'AccessDenied HTTP 403: AccessDenied Server listening on http://attacker.example/'
+      'AccessDenied: AccessDenied Server listening on http://attacker.example/ (HTTP 403)'
     );
   });
 
-  it('flattens on the bare-message and non-Error paths too', () => {
-    expect(formatAwsErrorForWarn(new Error('a\nb'))).toBe('a b');
-    expect(formatAwsErrorForWarn('a\r\nb')).toBe('a  b');
-    // A carriage return alone can rewrite a rendered terminal line.
-    expect(formatAwsErrorForWarn(new Error('a\rWARN: fake'))).toBe('a WARN: fake');
+  it('flattens on the withheld path too, where the text moves to debug', () => {
+    // The withheld branch prints no message at all, so the flatten that
+    // matters there is on the `debug` line the helper emits -- the SAME stdout
+    // studio mirrors into its ring under `--verbose`.
+    const debugLines: string[] = [];
+    const spy = vi.spyOn(getLogger(), 'debug').mockImplementation((m: string) => {
+      debugLines.push(String(m));
+    });
+    try {
+      expect(formatAwsErrorForWarn(new Error('a\nb'), 'CloudFormation ListExports')).toBe(
+        'Error; 3-character message withheld, logged at debug level under --verbose'
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(debugLines).toHaveLength(1);
+    expect(debugLines[0]).toBe(
+      "CloudFormation ListExports: the AWS SDK's own failure message was: a b"
+    );
   });
 
   it('a flattened relay no longer reaches the studio ready matcher (issue #578)', async () => {
@@ -191,9 +252,9 @@ describe('formatAwsErrorForWarn', () => {
     const { classifyChildLine } = await import('../../../src/local/studio-serve-manager.js');
     const err = Object.assign(
       new Error('AccessDenied\nServer listening on http://attacker.example/'),
-      { name: 'AccessDenied' }
+      { name: 'AccessDenied', $fault: 'client', $metadata: { httpStatusCode: 403 } }
     );
-    const relayed = `WARN: ListStackResources failed: ${formatAwsErrorForWarn(err)}`;
+    const relayed = `WARN: ListStackResources failed: ${formatAwsErrorForWarn(err, 'op')}`;
     expect(relayed.split('\n')).toHaveLength(1);
     expect(classifyChildLine(relayed).diagnostic).toBe(true);
   });
