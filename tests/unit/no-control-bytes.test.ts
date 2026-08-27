@@ -37,8 +37,15 @@ import { fileURLToPath } from 'node:url';
  * particular subtree -- a hand-kept root list is the same defect wearing a
  * comment, and would have missed `src/local/**` just as readily as it
  * would miss whatever directory is added next. Only extensions whose
- * content is legitimately binary are excluded, and that exclusion is
- * asserted to be small so it cannot quietly grow into the whole repo.
+ * content is legitimately binary are excluded.
+ *
+ * That exclusion is the fence's own soft spot, so it is asserted directly
+ * rather than described: adding `sh` to `BINARY_EXT` silently drops ~92
+ * files -- every `.claude/hooks/*.sh`, which is the tree this fence's
+ * rationale is about -- while leaving the file count and the three prefix
+ * checks comfortably satisfied. So the tests below pin BOTH how many files
+ * the exclusion removes and that each text extension the repo actually
+ * carries survives it.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +108,35 @@ function scan(file: string): Offender[] {
 describe('committed text carries no C0 control bytes', () => {
   const files = trackedTextFiles();
 
+  it('excludes only a handful of genuinely binary files', () => {
+    // The guard the docblock promises. Without it, widening BINARY_EXT by one
+    // common text extension (`sh` costs ~92 files) silently shrinks the
+    // population while every other assertion here stays green.
+    const allTracked = execFileSync('git', ['ls-files', '-z'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter((f) => f.length > 0);
+    const excluded = allTracked.filter((f) => BINARY_EXT.test(f));
+    expect(
+      excluded.length,
+      `BINARY_EXT excluded ${excluded.length} files: ${excluded.slice(0, 20).join(', ')}`
+    ).toBeLessThan(20);
+  });
+
+  it('keeps every text extension the repo actually carries', () => {
+    // The other direction: name the extensions whose exclusion would gut the
+    // fence, so a widened BINARY_EXT fails here rather than going quiet.
+    for (const ext of ['.ts', '.sh', '.md', '.json', '.yml', '.js']) {
+      expect(
+        files.some((f) => f.endsWith(ext)),
+        `no ${ext} file survived the binary-extension filter`
+      ).toBe(true);
+    }
+  });
+
   it('has a non-trivial population to scan', () => {
     // A floor, so a broken `git ls-files` or an over-eager exclusion can
     // never pass by scanning nothing. The repo tracked 985 such files when
@@ -141,7 +177,8 @@ describe('sanitizeRawHeaderValue spells NUL as an escape, not a raw byte', () =>
     const match = /\/\[\\r\\n\\u0000\]\/g/.exec(source);
     expect(match, 'the escape spelling is gone from sanitizeRawHeaderValue').not.toBeNull();
 
-    const withEscape = /[\r\n\0]/g;
+    // eslint-disable-next-line no-control-regex
+    const withEscape = /[\r\n\u0000]/g;
     const withRawByte = new RegExp(`[\\r\\n${String.fromCharCode(0)}]`, 'g');
     const probe = `a\rb\nc${String.fromCharCode(0)}d`;
     expect(probe.replace(withEscape, ' ')).toBe(probe.replace(withRawByte, ' '));

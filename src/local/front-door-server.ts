@@ -1248,7 +1248,15 @@ function writeRawHttpRedirect(
   scheme: 'http' | 'https'
 ): void {
   if (socket.destroyed) return;
-  const location = buildRedirectLocation(action, req, listenerPort, scheme);
+  // Sanitize for the same reason the fixed-response writer sanitizes its
+  // `content-type` (see `writeRawHttpFixedResponse`): this value is
+  // raw-written into the response, so CR / LF / NUL inside it inject
+  // headers instead of being rejected. It is built from CFn-literal
+  // `RedirectConfig.Host` / `.Path` / `.Query` fields, and the REGULAR-HTTP
+  // counterpart gets this for free -- Node's `res.writeHead` throws
+  // `ERR_INVALID_CHAR` on such a value -- so without this the raw upgrade
+  // path was the one place a redirect could inject silently.
+  const location = sanitizeRawHeaderValue(buildRedirectLocation(action, req, listenerPort, scheme));
   const statusText = action.statusCode === 301 ? 'Moved Permanently' : 'Found';
   const lines = [
     `HTTP/1.1 ${action.statusCode} ${statusText}`,
