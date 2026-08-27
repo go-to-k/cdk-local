@@ -1603,6 +1603,18 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   detects the mismatch until the gate fires at `gh pr create`, which is after
   the body is written.
 
+  Two measurements from writing THIS paragraph, both worth having. The gate
+  refuses the SAME-repo qualified form too — `go-to-k/cdk-local#587` in a
+  cdk-local PR body is blocked exactly like the cross-repo one, so
+  "qualify it" is never the fix in a body; a full URL or a bare number in
+  prose is. And the refusal hit a `python3 <<PY ... PY` heredoc chained to
+  the `gh api` that would publish the body, so the WHOLE command was
+  aborted before the heredoc ran: the retry then re-read an unedited file
+  and reported the identical violation, which reads as "my fix did not
+  work" rather than "my fix never ran". That is the gotcha below about a
+  gated command needing its own Bash call, arriving through the one shape
+  that disguises itself as a failed edit.
+
 ### 10-d. Ship it like any other change
 
 `/merge-pr` removed every worktree THIS run added by §9 and you are back on
