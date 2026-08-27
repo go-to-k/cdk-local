@@ -2496,3 +2496,104 @@ describe('a refusal during teardown is not an error banner (issue #578 review)',
     expect(second.list().map((s) => s.targetId)).toEqual(['MyApi']);
   });
 });
+
+/**
+ * Issue go-to-k/cdk-local#599 — the emitters now BRACKET an IPv6 authority so
+ * their banners are URLs. A reader that only understands the IPv4 spelling
+ * would be the same defect moved one file over, so every banner studio parses
+ * is exercised in its bracketed form here.
+ */
+describe('IPv6 banners studio has to read back (issue #599)', () => {
+  function mgrWith(): {
+    child: ReturnType<typeof makeFakeChild>;
+    mgr: ReturnType<typeof createStudioServeManager>;
+    fp: ReturnType<typeof fakeProxies>;
+  } {
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/path/to/cli.js',
+      bus: new StudioEventBus(),
+      nodeBin: '/usr/bin/node',
+      spawnFn: vi.fn(() => child as never) as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    return { child, mgr, fp };
+  }
+
+  it("reads a start-api `Server listening on http://[::1]:<port>` banner", async () => {
+    const { child, mgr, fp } = mgrWith();
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    child.stdout.emit('data', 'Server listening on http://[::1]:51234  (MyApi)\n');
+    const state = await p;
+    expect(state.status).toBe('running');
+    expect(fp.upstreams).toEqual(['http://[::1]:51234']);
+  });
+
+  it('reads a start-alb `ALB front-door: http://[::1]:<port>` banner', async () => {
+    const { child, mgr, fp } = mgrWith();
+    const p = mgr.start({ targetId: 'MyAlb', kind: 'alb' });
+    child.stdout.emit('data', 'ALB front-door: http://[::1]:51234 (listener port 80)\n');
+    const state = await p;
+    expect(state.status).toBe('running');
+    expect(fp.upstreams).toEqual(['http://[::1]:51234']);
+  });
+
+  it('reads a start-cloudfront `serving on http://[::1]:<port>` banner', async () => {
+    const { child, mgr, fp } = mgrWith();
+    const p = mgr.start({ targetId: 'MyDist', kind: 'cloudfront' });
+    child.stdout.emit('data', 'CloudFront distribution serving on http://[::1]:51234  (Dist)\n');
+    const state = await p;
+    expect(state.status).toBe('running');
+    expect(fp.upstreams).toEqual(['http://[::1]:51234']);
+  });
+
+  it("reads start-agentcore's bracketed ws:// listen line and http:// contract line", async () => {
+    const { child, mgr, fp } = mgrWith();
+    const p = mgr.start({ targetId: 'MyAgent', kind: 'agentcore-ws' });
+    child.stdout.emit(
+      'data',
+      'Server listening on ws://[::1]:49160/ws  (MyAgent (AgentCore WebSocket))\n' +
+        'HTTP contract served on http://[::1]:49160 — POST http://[::1]:49160/invocations\n'
+    );
+    const state = await p;
+    expect(state.status).toBe('running');
+    // The ws:// endpoint is handed through un-proxied; the http:// contract
+    // endpoint is fronted by the capture proxy.
+    expect(state.endpoints?.[0]).toBe('ws://[::1]:49160/ws');
+    expect(fp.upstreams).toEqual(['http://[::1]:49160']);
+  });
+
+  it('parses a bracketed IPv6 replica publish banner', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        "Container 'web' container port 80 published on [::1]:54321. Reach it at [::1]:54321."
+      )
+    ).toBe('http://[::1]:54321');
+  });
+
+  it('still parses the IPv4 replica publish banner byte-identically', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321."
+      )
+    ).toBe('http://127.0.0.1:54321');
+  });
+
+  it('refuses an UNBRACKETED IPv6 publish authority — not what the emitter writes', () => {
+    // `::1:54321` has no unambiguous split into host and port, so reading it
+    // would be guessing at what the emitter meant.
+    expect(
+      parsePublishedHostEndpoint("Container 'web' container port 80 published on ::1:54321.")
+    ).toBeUndefined();
+  });
+
+  it('keeps the publish banner anchored — a mid-message occurrence names nothing', () => {
+    expect(
+      parsePublishedHostEndpoint(
+        "relayed: Container 'web' container port 80 published on [::1]:54321."
+      )
+    ).toBeUndefined();
+  });
+});

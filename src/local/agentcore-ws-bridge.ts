@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
 import { bridgeAgentCoreWs } from './agentcore-ws-client.js';
 import { getLogger } from '../utils/logger.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Host-side WebSocket bridge in front of an AgentCore runtime's container
@@ -194,7 +195,7 @@ export function startAgentCoreWsBridge(
       );
       const port = (httpServer.address() as AddressInfo).port;
       resolve({
-        url: `ws://${host}:${port}${attached.path}`,
+        url: `ws://${formatAuthority(host, port)}${attached.path}`,
         port,
         close: () =>
           new Promise<void>((res) => {

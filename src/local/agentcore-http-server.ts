@@ -12,6 +12,7 @@ import { attachAgentCoreWsBridge } from './agentcore-ws-bridge.js';
 import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
 import type { AgentCoreServeAuthCheck } from './agentcore-serve-auth.js';
 import { getLogger } from '../utils/logger.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Host HTTP serve in front of a warm AgentCore runtime container, the serving
@@ -351,8 +352,8 @@ export function startAgentCoreHttpServer(
       );
       const port = (httpServer.address() as AddressInfo).port;
       resolve({
-        httpUrl: `http://${host}:${port}`,
-        ...(bridge && { wsUrl: `ws://${host}:${port}${bridge.path}` }),
+        httpUrl: `http://${formatAuthority(host, port)}`,
+        ...(bridge && { wsUrl: `ws://${formatAuthority(host, port)}${bridge.path}` }),
         port,
         // The proxy reads `config.containerPort` live per request, so mutating
         // it re-points subsequent requests (+ the bridge's getter) at the new

@@ -10,6 +10,7 @@ import {
 import { renderStudioHtml } from './studio-ui.js';
 import type { StudioStore } from './studio-store.js';
 import type { TargetListing } from './target-lister.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /** One target as the studio UI consumes it (`GET /api/targets`). */
 export interface StudioTarget {
@@ -420,7 +421,7 @@ export async function startStudioServer(
   const boundPort = await listenWithBump(server, host, options.port, maxBump);
 
   return {
-    url: `http://${host}:${boundPort}`,
+    url: `http://${formatAuthority(host, boundPort)}`,
     port: boundPort,
     close: () =>
       new Promise<void>((resolveClose, reject) => {

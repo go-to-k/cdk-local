@@ -34,6 +34,7 @@ import { serveFromStaticOrigin } from './cloudfront-static-origin.js';
 import type { S3OriginReader } from './cloudfront-s3-origin.js';
 import type { FrontDoorTlsMaterials } from './front-door-tls.js';
 import { applyCorsResponseHeadersFromConfig, matchPreflight } from './cors-handler.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Invoke a warm Lambda RIE container with a Function URL event, keyed by the
@@ -141,7 +142,7 @@ export async function startCloudFrontServer(
     : createHttpServer(handler);
 
   const port = await listen(server, options.host, options.port);
-  const url = `${scheme}://${options.host}:${port}`;
+  const url = `${scheme}://${formatAuthority(options.host, port)}`;
   return {
     url,
     port,

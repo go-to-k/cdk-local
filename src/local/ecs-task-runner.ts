@@ -36,6 +36,7 @@ import {
 } from './ecs-task-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { applyEnvOverrideMap } from './env-resolver.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1299,7 +1300,8 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
         .child('ecs')
         .info(
           `Container '${container.name}' container port ${pm.containerPort} published on ` +
-            `${containerHost}:${hostPort}${overrideNote}. Reach it at ${containerHost}:${hostPort}.`
+            `${formatAuthority(containerHost, hostPort)}${overrideNote}. ` +
+            `Reach it at ${formatAuthority(containerHost, hostPort)}.`
         );
       args.push('-p', `${containerHost}:${hostPort}:${pm.containerPort}/${pm.protocol}`);
       publishedEndpoints.push({

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { WebSocket } from 'ws';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Local emulation of the AWS `apigatewaymanagementapi` data plane —
@@ -135,7 +136,7 @@ export function parseConnectionsPath(url: string): {
  * Issue #537 item 7.
  */
 export function buildMgmtEndpointEnvUrl(host: string, port: number, stage: string): string {
-  return `http://${host}:${port}/${stage}`;
+  return `http://${formatAuthority(host, port)}/${stage}`;
 }
 
 /**

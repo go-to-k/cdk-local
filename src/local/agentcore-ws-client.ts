@@ -1,5 +1,6 @@
 import { WebSocket, type RawData } from 'ws';
 import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * WebSocket client for the Bedrock AgentCore Runtime HTTP-protocol `/ws`
@@ -133,7 +134,7 @@ export function bridgeAgentCoreWs(
   options: BridgeAgentCoreWsOptions
 ): AgentCoreWsBridgeHandle {
   const Impl = options.webSocketImpl ?? WebSocket;
-  const url = `ws://${host}:${port}${WS_PATH}`;
+  const url = `ws://${formatAuthority(host, port)}${WS_PATH}`;
   const ws = new Impl(url, {
     headers: {
       [AGENTCORE_SESSION_ID_HEADER]: options.sessionId,
@@ -225,7 +226,7 @@ export async function invokeAgentCoreWs(
   options: InvokeAgentCoreWsOptions
 ): Promise<AgentCoreWsResult> {
   const Impl = options.webSocketImpl ?? WebSocket;
-  const url = `ws://${host}:${port}${WS_PATH}`;
+  const url = `ws://${formatAuthority(host, port)}${WS_PATH}`;
   const body = JSON.stringify(event ?? {});
 
   return new Promise<AgentCoreWsResult>((resolve, reject) => {

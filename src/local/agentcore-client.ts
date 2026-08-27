@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * HTTP client for the Bedrock AgentCore Runtime container contract.
@@ -83,7 +84,7 @@ export async function waitForAgentCorePing(
 
   const tail = lastDetail ? `: ${lastDetail}` : '';
   throw new Error(
-    `AgentCore agent did not become ready on ${host}:${port} within ${timeoutMs}ms${tail}. ` +
+    `AgentCore agent did not become ready on ${formatAuthority(host, port)} within ${timeoutMs}ms${tail}. ` +
       `The container may have exited early or may not serve GET ${PING_PATH} — check 'docker logs' output.`
   );
 }
@@ -101,7 +102,7 @@ async function pingProbe(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`http://${host}:${port}${PING_PATH}`, {
+    const response = await fetch(`http://${formatAuthority(host, port)}${PING_PATH}`, {
       method: 'GET',
       signal: controller.signal,
     });
@@ -144,7 +145,7 @@ export async function waitForAgentCoreHttpReady(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1000);
     try {
-      const response = await fetch(`http://${host}:${port}${path}`, {
+      const response = await fetch(`http://${formatAuthority(host, port)}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: '{}',
@@ -164,7 +165,7 @@ export async function waitForAgentCoreHttpReady(
 
   const tail = lastDetail ? `: ${lastDetail}` : '';
   throw new Error(
-    `AgentCore agent did not become ready on ${host}:${port} within ${timeoutMs}ms${tail}. ` +
+    `AgentCore agent did not become ready on ${formatAuthority(host, port)} within ${timeoutMs}ms${tail}. ` +
       `The container may have exited early or may not serve POST ${path} — check 'docker logs' output.`
   );
 }
@@ -231,7 +232,7 @@ export async function invokeAgentCore(
   event: unknown,
   options: InvokeAgentCoreOptions
 ): Promise<AgentCoreInvokeResult> {
-  const url = `http://${host}:${port}${INVOCATIONS_PATH}`;
+  const url = `http://${formatAuthority(host, port)}${INVOCATIONS_PATH}`;
   const body = JSON.stringify(event ?? {});
 
   const controller = new AbortController();
