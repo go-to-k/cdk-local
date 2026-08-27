@@ -120,10 +120,14 @@ describe('committed text carries no C0 control bytes', () => {
       .split('\0')
       .filter((f) => f.length > 0);
     const excluded = allTracked.filter((f) => BINARY_EXT.test(f));
+    // The actual excluded count is 3 (three `assets/*.gif`). The threshold is
+    // deliberately close to it rather than generous: at 20 the guard still
+    // admitted `yaml` (13 lockfiles), `mjs` (11) or `html` (7) one at a time,
+    // which is exactly the category-sized exclusion it exists to stop.
     expect(
       excluded.length,
       `BINARY_EXT excluded ${excluded.length} files: ${excluded.slice(0, 20).join(', ')}`
-    ).toBeLessThan(20);
+    ).toBeLessThan(10);
   });
 
   it('keeps every text extension the repo actually carries', () => {
@@ -139,7 +143,7 @@ describe('committed text carries no C0 control bytes', () => {
 
   it('has a non-trivial population to scan', () => {
     // A floor, so a broken `git ls-files` or an over-eager exclusion can
-    // never pass by scanning nothing. The repo tracked 985 such files when
+    // never pass by scanning nothing. The repo tracked 986 such files when
     // this was written.
     expect(files.length).toBeGreaterThan(500);
     expect(files).toContain('src/local/front-door-server.ts');

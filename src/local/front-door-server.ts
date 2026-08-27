@@ -1226,7 +1226,12 @@ function writeRawHttpUnauthorized(socket: Duplex, realm: string, reason?: string
     'HTTP/1.1 401 Unauthorized',
     'content-type: text/plain; charset=utf-8',
     `content-length: ${Buffer.byteLength(body)}`,
-    `www-authenticate: Bearer realm="${escapeRealmQuotes(realm)}"`,
+    // Sanitize for the same reason the redirect and fixed-response raw
+    // writers do: `realm` is `guard.label`, a CFn literal validated only as a
+    // string, and it is raw-written here. `escapeRealmQuotes` handles the
+    // quote that would end the realm token; CR / LF / NUL would end the
+    // HEADER, which is a different problem and needs the sanitizer.
+    `www-authenticate: Bearer realm="${sanitizeRawHeaderValue(escapeRealmQuotes(realm))}"`,
     'connection: close',
     '',
     '',
