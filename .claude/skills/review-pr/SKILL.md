@@ -72,6 +72,7 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
        - `src/local/front-door-server.ts`
        - `src/local/agentcore-http-server.ts`
        - `src/local/websocket-server.ts`
+       - `src/utils/url-authority.ts`
      - _Untrusted code / argv / archive + path traversal_
        - `src/utils/docker-cmd.ts`
        - `src/local/docker-runner.ts`
