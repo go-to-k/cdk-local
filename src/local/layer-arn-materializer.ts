@@ -187,7 +187,37 @@ async function fetchLayerContentUrl(
     // account references without a separate account-id flag. AWS docs:
     // "When provided the layer-version's ARN as LayerName, the
     // VersionNumber must still be set."
-    const versionLessArn = `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}`;
+    //
+    // Derived from the ORIGINAL ARN by dropping its `:<version>` tail
+    // rather than re-interpolated from the parsed fields, because
+    // re-interpolation has to name a partition and hardcoding `aws`
+    // sends a partition-mismatched ARN to a non-commercial endpoint
+    // (issue #575). `parseLayerVersionArn` only accepts an ARN whose
+    // partition agrees with its region, so the prefix here is already
+    // the right one for `layer.region`.
+    //
+    // Guarded because `materializeLayerFromArn` is re-exported from
+    // `src/internal.ts`, so a host CLI can hand in a
+    // `ResolvedArnLambdaLayer` it built itself, whose `arn` never went
+    // through `parseLayerVersionArn`. The old re-interpolation was
+    // structurally immune to that; stripping a tail is not.
+    //
+    // The guard asserts what is actually being stripped -- a NUMERIC
+    // version segment -- rather than merely that some colon exists. A
+    // bare `lastIndexOf` admits both failure shapes: a colon-free string
+    // returns -1 and `slice(0, -1)` drops the last character, AND a
+    // version-less `...:layer:MyLayer` strips the NAME instead, leaving
+    // `...:layer` paired with a `Number(undefined)` version. Both turn a
+    // caller's mistake into a confusing API error instead of a clear
+    // local one, which is the whole point of the check.
+    const versionSuffix = /^(.*):(\d+)$/.exec(layer.arn);
+    if (!versionSuffix) {
+      throw new LayerMaterializationError(
+        `Layer ${layer.arn}: not a layer-version ARN (no ':<version>' suffix to strip). ` +
+          `Expected arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>.`
+      );
+    }
+    const versionLessArn = versionSuffix[1]!;
     const command = await buildGetLayerVersionCommand(versionLessArn, Number(layer.version));
     const response = await client.send(command);
     const url = response?.Content?.Location;

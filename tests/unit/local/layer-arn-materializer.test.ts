@@ -142,6 +142,82 @@ describe('materializeLayerFromArn', () => {
     expect(readFileSync(join(dir, 'nodejs', 'index.js'), 'utf-8')).toBe('module.exports = 42;');
   });
 
+  it.each([
+    ['aws', 'us-east-1'],
+    ['aws-cn', 'cn-north-1'],
+    ['aws-us-gov', 'us-gov-west-1'],
+    ['aws-iso', 'us-iso-east-1'],
+    ['aws-iso-b', 'us-isob-east-1'],
+    ['aws-iso-e', 'eu-isoe-west-1'],
+    ['aws-iso-f', 'us-isof-south-1'],
+    ['aws-eusc', 'eusc-de-east-1'],
+  ])(
+    'sends GetLayerVersion a LayerName in the layer OWN partition (%s), not a hardcoded commercial one',
+    async (partition, region) => {
+      // Issue #575. The version-less ARN used as LayerName used to be
+      // re-interpolated as `arn:aws:lambda:...`, so a layer in any
+      // non-commercial partition parsed and then hit the endpoint with a
+      // partition-mismatched ARN. Deriving it from the original ARN is
+      // what makes the parse fix reach the wire.
+      const layerNames: unknown[] = [];
+      const versionNumbers: unknown[] = [];
+      const arn = `arn:${partition}:lambda:${region}:111122223333:layer:MyLayer:3`;
+      const zip = await buildZip([{ name: 'nodejs/index.js', data: 'module.exports = 1;' }]);
+
+      const dir = await materializeLayerFromArn(makeLayer({ arn, logicalId: arn, region }), {
+        lambdaClientFactory: (): LambdaSendClient => ({
+          send: async (command: { input?: { LayerName?: unknown } }) => {
+            layerNames.push(command.input?.LayerName);
+            versionNumbers.push(command.input?.VersionNumber);
+            return { Content: { Location: 'https://presigned.example/zip' } };
+          },
+        }),
+        fetchZip: async () => zip,
+      });
+      cleanupDirs.push(dir);
+
+      expect(layerNames).toEqual([
+        `arn:${partition}:lambda:${region}:111122223333:layer:MyLayer`,
+      ]);
+      // The version is stripped from the ARN and passed separately, so
+      // assert BOTH halves of the split -- a strip that took the wrong
+      // segment would show up here even if the prefix looked right.
+      expect(versionNumbers).toEqual([3]);
+    }
+  );
+
+  it.each([
+    ['colon-free', 'not-an-arn'],
+    ['version-less layer ARN', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer'],
+    ['non-numeric version', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:latest'],
+    ['version-less in another partition', 'arn:aws-cn:lambda:cn-north-1:111122223333:layer:MyLayer'],
+    ['empty version', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:'],
+  ])(
+    'rejects a hand-built layer whose arn has no numeric version suffix (%s)',
+    async (_label, arn) => {
+    // `materializeLayerFromArn` is re-exported from `src/internal.ts`, so
+    // a host CLI can pass a `ResolvedArnLambdaLayer` it built itself,
+    // whose `arn` never went through `parseLayerVersionArn`. Both failure
+    // shapes matter: a colon-free string used to strip the last
+    // CHARACTER, and a version-less `...:layer:MyLayer` used to strip the
+    // NAME -- leaving `...:layer` paired with `Number(undefined)`. The
+    // second is the one a plain colon check admits, so it is pinned here.
+    let sent = 0;
+    await expect(
+      materializeLayerFromArn(makeLayer({ arn }), {
+        lambdaClientFactory: (): LambdaSendClient => ({
+          send: async () => {
+            sent += 1;
+            return { Content: { Location: 'https://presigned.example/zip' } };
+          },
+        }),
+        fetchZip: async () => Buffer.alloc(0),
+      })
+    ).rejects.toThrow(/not a layer-version ARN/);
+    expect(sent, 'must fail before any AWS call').toBe(0);
+    }
+  );
+
   it('routes through sts:AssumeRole when roleArn is set and forwards the temp creds to the Lambda client', async () => {
     const stsCalls: { region: string }[] = [];
     const lambdaCalls: { credentials?: AwsCredentials }[] = [];

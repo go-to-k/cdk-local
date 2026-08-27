@@ -120,7 +120,8 @@ export type StateSubstitutionResult =
  * and `${AWS::*}` placeholders inside `Fn::Sub` / `Fn::Join` bodies are
  * substituted from this bag. The CLI layer typically derives every
  * field from the resolved region + an `sts:GetCallerIdentity` call
- * (see `derivePartitionAndUrlSuffix` in `ecs-task-resolver.ts`).
+ * (see `derivePartitionAndUrlSuffix` in `intrinsic-image.ts`, which
+ * `ecs-task-resolver.ts` re-exports).
  *
  * Every key is optional; a missing key reports unresolved per the
  * standard warn-and-drop policy.

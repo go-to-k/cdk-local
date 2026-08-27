@@ -15,7 +15,11 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
-import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
+import {
+  derivePartitionAndUrlSuffix,
+  derivePseudoParametersFromRegion,
+  tryResolveImageFnJoin,
+} from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -142,7 +146,7 @@ export interface ResolvedArnLambdaLayer {
   logicalId: string;
   /**
    * Full literal ARN as it appeared in the template
-   * (`arn:aws:lambda:<region>:<account>:layer:<name>:<version>`). Kept
+   * (`arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>`). Kept
    * verbatim alongside `logicalId` because callers (the materializer)
    * need the canonical ARN string for SDK calls and the per-kind
    * branch is the only place where the difference matters.
@@ -967,7 +971,7 @@ function resolveSafeZipEntryPath(root: string, entry: string): string {
  *     from outside cdk.out and there's no local directory to bind-mount.
  *
  * **Literal-ARN handling** (issue #448): entries shaped like the string
- * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` are parsed
+ * `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` are parsed
  * into a `{kind: 'arn', ...}` resolved layer. The actual
  * `lambda:GetLayerVersion` + presigned-URL download + unzip happens
  * later in the CLI (`materializeLayerFromArn(...)`), which can optionally
@@ -1006,7 +1010,8 @@ export function resolveLambdaLayers(
           `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: literal string '${entry}'. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
-            'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+            'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
+            'whose partition agrees with its region.'
         );
       }
       out.push({ kind: 'arn', logicalId: parsed.arn, ...parsed });
@@ -1019,7 +1024,8 @@ export function resolveLambdaLayers(
         `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: ${describeLayerEntry(entry)}. ` +
           'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
           'OR a literal layer-version ARN of the form ' +
-          'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+          'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
+          'whose partition agrees with its region.'
       );
     }
 
@@ -1047,28 +1053,42 @@ export function resolveLambdaLayers(
  * Parse a Lambda layer-version ARN string into its segments.
  *
  * Returns `undefined` for anything that does not match the strict
- * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` shape so
+ * `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` shape so
  * the caller can produce a clearer error than a silent
- * misinterpretation of hand-edited templates. The partition segment
- * accepts `aws` / `aws-cn` / `aws-us-gov` so GovCloud / China-region
- * ARNs work without code changes.
+ * misinterpretation of hand-edited templates.
+ *
+ * The partition segment is **derived from the region** rather than
+ * enumerated (issue #575). An alternation has to be re-edited every time
+ * AWS adds a partition — it listed three of the eight, so a layer ARN in
+ * `aws-iso` / `aws-iso-b` / `aws-iso-e` / `aws-iso-f` / `aws-eusc` did
+ * not parse and `resolveLambdaLayers` hard-threw — and it can never
+ * reject a self-inconsistent pair such as
+ * `arn:aws-cn:lambda:us-east-1:...`, which the derived compare does.
  *
  * Exported for unit testing.
  */
 export function parseLayerVersionArn(
   input: string
 ): { arn: string; region: string; accountId: string; name: string; version: string } | undefined {
-  // Region segment accepts up to two interior `<word>-` chunks before
-  // the numeric suffix so GovCloud (`us-gov-west-1`) / China
-  // (`cn-north-1`) / standard (`us-east-1`) regions all match.
+  // The region segment stays SHAPE-based (`<word>(-<word>)+-<digits>`,
+  // wide enough for the European Sovereign Cloud's four-letter
+  // `eusc-de-east-1` and for regions with more interior chunks than
+  // today's) rather than a loose charset, because
+  // `derivePartitionAndUrlSuffix` answers `aws` for any region it does
+  // not recognize — the commercial fallback that lets a brand-new region
+  // resolve before its table hears about it. With a charset,
+  // `arn:aws:lambda:garbage:...` would parse.
   const m =
-    /^arn:(aws|aws-cn|aws-us-gov):lambda:([a-z]{2}-(?:[a-z]+-){1,2}\d+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$/.exec(
+    /^arn:(aws(?:-[a-z]+)*):lambda:([a-z]{2,}(?:-[a-z]+)+-\d+):(\d{12}):layer:([A-Za-z0-9_-]+):(\d+)$/.exec(
       input
     );
   if (!m) return undefined;
+  const partition = m[1]!;
+  const region = m[2]!;
+  if (derivePartitionAndUrlSuffix(region).partition !== partition) return undefined;
   return {
     arn: input,
-    region: m[2]!,
+    region,
     accountId: m[3]!,
     name: m[4]!,
     version: m[5]!,

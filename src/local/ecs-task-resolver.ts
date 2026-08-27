@@ -168,21 +168,24 @@ export class EcsTaskResolutionError extends Error {
 }
 
 /**
- * Derive the AWS partition / URL suffix for an AWS region. Same mapping
- * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
- * Exported so the CLI can keep the STS hop minimal — caller passes the
- * region in once, this returns the matching partition + suffix.
+ * The partition table + its lookup now live in `./intrinsic-image.js`,
+ * which is the ONE home for them in this package (issue #575,
+ * go-to-k/cdkd#1821: a second copy behind
+ * `derivePseudoParametersFromRegion` there had drifted three rows behind
+ * this one, so a `us-isof-` / `eu-isoe-` / `eusc-` region resolved
+ * commercial on that path). `intrinsic-image.ts` is a leaf module and
+ * this file already imports from it, so the reverse direction would be
+ * an import cycle.
+ *
+ * `derivePartitionAndUrlSuffix` is re-exported so the existing importers
+ * (`local-invoke.ts`, `ecs-service-emulator.ts`, `local-run-task.ts`,
+ * `local-start-api.ts`) keep working unchanged. `PARTITION_TABLE` is NOT
+ * inherited traffic -- it did not exist before this change -- and is
+ * carried along only so the pair stays reachable from one module; its
+ * sole consumer today is the test asserting the two names resolve to the
+ * SAME objects rather than to a second copy.
  */
-export function derivePartitionAndUrlSuffix(region: string): {
-  partition: string;
-  urlSuffix: string;
-} {
-  if (region.startsWith('cn-')) return { partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' };
-  if (region.startsWith('us-gov-')) return { partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' };
-  if (region.startsWith('us-iso-')) return { partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' };
-  if (region.startsWith('us-isob-')) return { partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' };
-  return { partition: 'aws', urlSuffix: 'amazonaws.com' };
-}
+export { PARTITION_TABLE, derivePartitionAndUrlSuffix } from './intrinsic-image.js';
 
 /**
  * Optional substitution data fed into `parseContainerImage`. Closes issue
