@@ -1,3 +1,10 @@
+## [0.147.19](https://github.com/go-to-k/cdk-local/compare/v0.147.18...v0.147.19) (2026-08-27)
+
+
+### Bug Fixes
+
+* **local:** extend the credential-error policy to the remaining SDK relays ([#611](https://github.com/go-to-k/cdk-local/issues/611)) ([0ece42a](https://github.com/go-to-k/cdk-local/commit/0ece42a03c880dbb6cef3dd53204b1feb95f5826))
+
 ## [0.147.18](https://github.com/go-to-k/cdk-local/compare/v0.147.17...v0.147.18) (2026-08-27)
 
 
