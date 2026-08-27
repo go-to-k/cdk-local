@@ -81,17 +81,49 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    ```bash
    source tests/integration/_lib/stack-name.sh   # exports INTEG_STACK_SUFFIX
+   # Fail LOUDLY if the suffix did not resolve. The `source` path above is
+   # relative, so running this from anywhere but the repo root leaves the
+   # variable unset -- and an unset variable turns the filters below into
+   # `contains(Name,'-')`, which selects every hyphenated parameter in the
+   # ACCOUNT (`/prod/db-password` included) and hands it to you as an orphan to
+   # delete. Degrading to account-wide is far worse than the peer-listing this
+   # filter exists to fix, so it must abort instead.
+   : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
+
+   # BOTH conditions: the `cdkl` anchor keeps the blast radius bounded to this
+   # repo's resources even if the suffix logic is ever changed, and the suffix
+   # bounds it to this lane.
    aws ssm describe-parameters \
-     --query "Parameters[?contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" --output text
+     --query "Parameters[?starts_with(Name,'/cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" \
+     --output text
    aws cloudformation list-exports \
-     --query "Exports[?contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" --output text
+     --query "Exports[?starts_with(Name,'cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" \
+     --output text
+
+   # Not lane-suffixed and not a stack resource, so neither sweep above can see
+   # it: `local-invoke-agentcore-froms3` creates a bucket out of band, and its
+   # trap covers EXIT/INT/TERM but not SIGKILL.
+   aws s3 ls | grep cdkl-integ-froms3 || echo "(no orphan froms3 bucket)"
    ```
 
    `contains`, not `ends_with`: `local-invoke-from-cfn-stack-large-stack` creates
    ~105 parameters shaped `/cdkl-ls-<hash>/p000`, where the suffix is a PREFIX
-   segment rather than the tail.
+   segment rather than the tail. A peer's suffix cannot satisfy this lane's
+   filter — both are exactly 8 hex characters, so `-<ours>` inside `-<theirs>`
+   requires equality.
 
-8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks").
+   The same live-peer caveat as the stack scan applies, and matters MORE here: a
+   name carrying this lane's suffix can also belong to a second run of the same
+   fixture in the SAME worktree, i.e. a live peer rather than a leftover — so
+   check for a running `verify.sh` before deleting anything. An export cannot be
+   deleted except by destroying its stack, so `ExportingStackId` in that output
+   is pointing you at a stack that may still be in use.
+
+   Pass `--region` to match the fixture's (`AWS_REGION`, default `us-east-1`) if
+   your shell's default region differs — otherwise these queries report a false
+   clean from the wrong region.
+
+8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks / parameters / exports / buckets" — name each sweep you actually ran, so a clean report is not writable without running them).
 
 9. **Set the `integ` markgate marker (only on full clean success)**:
 

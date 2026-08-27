@@ -363,5 +363,36 @@ else
   check "every suffixed stack name is CFN-legal and <= 128 chars" 1 "${bad}"
 fi
 
+# ---------------------------------------------------------------------------
+# 6. `/run-integ`'s orphan sweep stays lane-scoped.
+#
+# The skill tells an agent to DELETE what these queries return, under the
+# heading "never end the run with orphan AWS resources". That makes an
+# unfiltered query actively harmful rather than merely noisy, and it went wrong
+# twice while this change was being written: first a bare `/cdkl` prefix that
+# listed every LANE's parameters, then a suffix filter with no guard, which
+# degrades to `contains(Name,'-')` -- every hyphenated parameter in the ACCOUNT
+# -- the moment the relative `source` fails. Nothing else in the repo reads that
+# file, so a future edit could drop either half silently.
+SKILL="${INTEG_DIR}/../../.claude/skills/run-integ/SKILL.md"
+if [ -f "${SKILL}" ]; then
+  sweep=$(sed -n '/describe-parameters/,/list-exports/p' "${SKILL}")
+  case "${sweep}" in
+    *'INTEG_STACK_SUFFIX'*) check "run-integ's SSM sweep filters by the lane suffix" 0 ;;
+    *) check "run-integ's SSM sweep filters by the lane suffix" 1 "no INTEG_STACK_SUFFIX in the query block" ;;
+  esac
+  case "${sweep}" in
+    *"starts_with(Name,'/cdkl')"*) check "run-integ's SSM sweep keeps the cdkl anchor" 0 ;;
+    *) check "run-integ's SSM sweep keeps the cdkl anchor" 1 "no starts_with(Name,'/cdkl') anchor" ;;
+  esac
+  # The guard is what stops an unresolved suffix becoming an account-wide list.
+  case "$(grep -c 'INTEG_STACK_SUFFIX:?' "${SKILL}")" in
+    0) check "run-integ aborts when the lane suffix is unresolved" 1 "no \${INTEG_STACK_SUFFIX:?...} guard" ;;
+    *) check "run-integ aborts when the lane suffix is unresolved" 0 ;;
+  esac
+else
+  check "run-integ SKILL.md is present to check" 1 "not found at ${SKILL}"
+fi
+
 printf '\npass: %d  fail: %d\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
