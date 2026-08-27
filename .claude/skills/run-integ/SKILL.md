@@ -55,33 +55,29 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
      ```bash
      source tests/integration/_lib/stack-name.sh
-     # Abort if the suffix did not resolve. The `source` path is RELATIVE, so
-     # running this from anywhere but the repo root leaves the helper undefined
-     # -- and then `STACK` is empty, `describe-stacks` errors, `2>/dev/null`
-     # swallows the error, and the `||` branch prints "(no orphan stack)". A
-     # false CLEAN on the primary resource, which step 9 then converts into a
-     # fresh `integ` marker over a live orphan stack.
      : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
      STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
-     # Ask with `list-stacks --query`, NOT `describe-stacks --stack-name`.
-     # `describe-stacks` ERRORS when the stack is absent, so the clean case and
-     # the could-not-look case both arrive as a non-zero exit and have to be
-     # told apart by matching stderr -- and that phrase match has already been
-     # wrong: `grep -q 'does not exist'` also matches botocore's
-     # `The source_profile "x" ... does not exist`, an InvalidConfigError raised
-     # BEFORE any network call, so a broken SSO or role-chaining profile printed
-     # a CLEAN verdict. `list-stacks` exits 0 whether or not the stack is there,
-     # so rc alone separates "looked, found nothing" from "could not look".
-     if names=$(aws cloudformation list-stacks \
-                  --region "${AWS_REGION:-us-east-1}" \
-                  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE CREATE_IN_PROGRESS CREATE_FAILED DELETE_FAILED \
-                  --query "StackSummaries[?StackName=='${STACK}'].StackName" \
-                  --output text); then
-       [ -n "${names}" ] && echo "ORPHAN" || echo "(no orphan stack)"
-     else
-       echo "FAILED to query -- this is NOT a clean verdict" >&2
-     fi
+     : "${STACK:?stack name did not resolve — the helper is undefined}"
+
+     aws cloudformation describe-stacks --stack-name "${STACK}" \
+       --region "${AWS_REGION:-us-east-1}"
      ```
+
+     **Read that output yourself; the recipe deliberately does not classify it.**
+     A `ValidationError ... does not exist` is the clean case. ANY other failure
+     means you did not look — do not proceed, and do not treat it as clean.
+
+     That is not squeamishness. Every attempt in this recipe's history to EMIT a
+     verdict produced a false one: a name that could never match, a scope that
+     listed every lane, a filter that degraded to the whole account, a stderr
+     phrase match that also matched a broken `source_profile`, and a status
+     filter that hid `DELETE_IN_PROGRESS` — an interrupted `cdk destroy`, which
+     is this sweep's own scenario. `describe-stacks --stack-name` surfaces a
+     stack in every status but `DELETE_COMPLETE`, and a command that claims
+     nothing cannot claim something false.
+     go-to-k/cdk-local#601 replaces this with a script whose failure paths can be
+     EXECUTED rather than read.
+
 
      If an orphan stack is reported, abort with a `cdk destroy "${STACK}"`
      recipe — do NOT proceed. Note that a stack under THIS lane's name can also
@@ -109,25 +105,19 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    ```bash
    source tests/integration/_lib/stack-name.sh
-   # Same guard as step 4, and for the same reason: without it an unresolved
-   # helper makes `STACK` empty, `describe-stacks` error, `2>/dev/null` swallow
-   # the error, and the `||` branch print `AWS clean` -- a false clean on the
-   # PRIMARY resource, which step 9 turns into a fresh `integ` marker.
    : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
    STACK="$(integ_stack_name <FixtureStackBaseName>)"
-   # Same shape as step 4, and for the same reason -- this one matters more, as
-   # it runs after a long test where a session token can expire, and step 9
-   # converts its verdict into a fresh `integ` marker.
-   if names=$(aws cloudformation list-stacks \
-                --region "${AWS_REGION:-us-east-1}" \
-                --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE CREATE_IN_PROGRESS CREATE_FAILED DELETE_FAILED \
-                --query "StackSummaries[?StackName=='${STACK}'].StackName" \
-                --output text); then
-     [ -n "${names}" ] && echo "ORPHAN STACK REMAINS" || echo "AWS clean"
-   else
-     echo "FAILED to query -- this is NOT a clean verdict" >&2
-   fi
+   : "${STACK:?stack name did not resolve — the helper is undefined}"
+
+   aws cloudformation describe-stacks --stack-name "${STACK}" \
+     --region "${AWS_REGION:-us-east-1}"
    ```
+
+   Same rule as step 4: read it, do not let the recipe classify it. Only
+   `ValidationError ... does not exist` is clean. This one matters more — it runs
+   after a long test where a session token can expire, and step 9 turns its
+   verdict into a fresh `integ` marker.
+
 
    If the stack remains, run `cdk destroy "${STACK}" --force` until clean --
    after the SAME live-peer check step 4 describes. A second run of this fixture

@@ -428,34 +428,73 @@ if [ -f "${SKILL}" ]; then
       "it no longer sources the lane library, so the derived set would skip it"
   fi
 
-  # BIJECTION, not literal spellings. The previous version grepped for one
-  # exact bad form, and three equivalent spellings of the defect scored zero
-  # while restoring it (`>/dev/null 2>&1 && echo ... || echo clean` -- which is
-  # what this repo's own fixtures use -- `2> /dev/null && ...`, and a line-split
-  # `&&`). Adding a FOURTH unguarded query was green too.
+  # The recipe no longer EMITS a verdict for the stack scans -- it prints the
+  # raw `describe-stacks` result and tells the reader to judge. That is the
+  # retreat after eight instances of a recipe claiming "clean" while not having
+  # looked, so what the fence pins is the ABSENCE of a claim, which is a
+  # property rather than a spelling.
   #
-  # So assert the property instead: every CloudFormation query in the skill
-  # must sit inside an `if <var>=$(...)` capture, whose else-branch is the loud
-  # non-verdict. Counting both sides makes an unguarded addition fail.
-  cfn_queries=$(grep -cE 'aws cloudformation (list-stacks|describe-stacks)' "${SKILL}")
-  guarded=$(grep -cE '^[[:space:]]*if [a-z_]+=\$\(aws cloudformation (list-stacks|describe-stacks)' "${SKILL}")
-  if [ "${cfn_queries}" -gt 0 ] && [ "${cfn_queries}" -eq "${guarded}" ]; then
-    check "every CloudFormation query in run-integ is rc-guarded (${guarded}/${cfn_queries})" 0
-  else
-    check "every CloudFormation query in run-integ is rc-guarded" 1 \
-      "${guarded} guarded of ${cfn_queries} present -- an unguarded query can report a false clean"
-  fi
+  # Counted with `grep -c` on occurrences, over non-comment lines, with
+  # `[[:space:]]+` between words -- the previous line-grep version was defeated
+  # by a two-space `aws  cloudformation` and by a backslash continuation, both
+  # of which the recipe itself uses elsewhere.
+  code=$(grep -vE '^[[:space:]]*#' "${SKILL}")
 
-  # And the phrase-match must not come back: `grep -q 'does not exist'` also
-  # matches botocore's `The source_profile "x" ... does not exist`, an
-  # InvalidConfigError raised BEFORE any network call -- so a broken SSO or
-  # role-chaining profile printed a CLEAN verdict. Measured against awscli
-  # 2.36.19. rc alone is strictly stronger than classifying stderr.
-  case "$(grep -vE '^[[:space:]]*#' "${SKILL}" | grep -cE "grep -[a-zA-Z]* *[\"']does not exist")" in
+  # No `||`-verdict attached to a STACK query. Scoped to lines carrying the
+  # query itself: the SSM / exports / bucket sweeps legitimately end in
+  # `|| echo "... NOT a clean verdict"`, and an earlier draft of this assertion
+  # flagged those -- an over-broad fence is its own kind of wrong answer.
+  case "$(printf '%s\n' "${code}" | grep -E 'aws[[:space:]]+cloudformation' | grep -cE '\|\||&&')" in
+    0) check "run-integ's stack scans emit no clean verdict of their own" 0 ;;
+    *) check "run-integ's stack scans emit no clean verdict of their own" 1 \
+         "a '|| echo clean' form is back -- that is what produced eight false verdicts" ;;
+  esac
+
+  # No stderr phrase-matching, in either quote style.
+  case "$(printf '%s\n' "${code}" | grep -cE "grep -[a-zA-Z]* *[\"']does not exist")" in
     0) check "run-integ does not classify a stack scan by matching stderr" 0 ;;
     *) check "run-integ does not classify a stack scan by matching stderr" 1 \
          "a 'does not exist' phrase match is back; it fires on credential-config errors too" ;;
   esac
+
+  # No `--stack-status-filter`: it hid 16 of 23 statuses, `DELETE_IN_PROGRESS`
+  # -- an interrupted `cdk destroy`, this sweep's own scenario -- among them.
+  case "$(printf '%s\n' "${code}" | grep -c 'stack-status-filter')" in
+    0) check "run-integ's stack scans do not filter by status" 0 ;;
+    *) check "run-integ's stack scans do not filter by status" 1 \
+         "a --stack-status-filter is back; it hides an orphan in any unlisted status" ;;
+  esac
+
+  # Both the suffix AND the resolved name are guarded. The suffix guard alone is
+  # a PROXY: `stack-name.sh` documents pre-setting it in the environment, so it
+  # can be satisfied while `integ_stack_name` is undefined and `STACK` empty.
+  suffix_guards=$(printf '%s\n' "${code}" | grep -cE '^[[:space:]]*: "\$\{INTEG_STACK_SUFFIX:\?')
+  stack_guards=$(printf '%s\n' "${code}" | grep -cE '^[[:space:]]*: "\$\{STACK:\?')
+  if [ "${suffix_guards}" -ge 3 ] && [ "${stack_guards}" -ge 2 ]; then
+    check "run-integ guards the suffix (${suffix_guards}) and the resolved name (${stack_guards})" 0
+  else
+    check "run-integ guards the suffix and the resolved name" 1 \
+      "suffix=${suffix_guards} (want >= 3), stack=${stack_guards} (want >= 2)"
+  fi
+
+  # EXECUTE the derivation predicate rather than asserting its text. The old
+  # check asserted the fixture sources `stack-name.sh`, which is the criterion
+  # the predicate REPLACED -- so gutting the predicate stayed green.
+  pred=$(printf '%s\n' "${code}" | grep -oE "grep -lE '[^']+'" | head -1 | sed "s/^grep -lE '//;s/'\$//")
+  if [ -z "${pred}" ]; then
+    check "run-integ's derivation predicate is extractable and covers every AWS-owning fixture" 1 \
+      "no 'grep -lE' predicate found in the skill"
+  else
+    derived=$(cd "${INTEG_DIR}/.." && grep -lE "${pred}" integration/*/verify.sh 2>/dev/null | sed 's#integration/##;s#/verify.sh##' | sort)
+    want=$( { grep -l 'stack-name.sh' "${INTEG_DIR}"/*/verify.sh; grep -lE 'aws[[:space:]]+s3api[[:space:]]+create-bucket' "${INTEG_DIR}"/*/verify.sh; } \
+            | sed "s#${INTEG_DIR}/##;s#/verify.sh##" | sort -u)
+    missing=$(comm -23 <(printf '%s\n' "${want}") <(printf '%s\n' "${derived}") | tr '\n' ' ')
+    if [ -z "${missing}" ]; then
+      check "run-integ's derivation predicate covers every AWS-owning fixture ($(printf '%s\n' "${derived}" | grep -c .))" 0
+    else
+      check "run-integ's derivation predicate covers every AWS-owning fixture" 1 "misses:${missing}"
+    fi
+  fi
 
 else
   check "run-integ SKILL.md is present to check" 1 "not found at ${SKILL}"
