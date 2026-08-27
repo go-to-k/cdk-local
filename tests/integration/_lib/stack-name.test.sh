@@ -411,6 +411,33 @@ if [ -f "${SKILL}" ]; then
     check "run-integ aborts when the lane suffix is unresolved" 1 \
       "expected >= 3 guard statements (pre-flight stack, post-run stack, sweeps), found ${guards}"
   fi
+
+  # The gate on steps 4 and 7 has silently excluded a resource-owning fixture
+  # TWICE: `*-from-cfn-stack` missed three, and the widened `*-from-cfn*` still
+  # missed `local-invoke-assume-role`, which deploys a stack holding an IAM
+  # role. Pin that the skill DERIVES the set rather than globbing it, and that
+  # the fixture both globs missed is reachable by the derivation.
+  case "$(grep -c "grep -ln 'stack-name.sh' tests/integration/\*/verify.sh" "${SKILL}")" in
+    0) check "run-integ derives the AWS fixture set instead of globbing it" 1 "no derivation command in the skill" ;;
+    *) check "run-integ derives the AWS fixture set instead of globbing it" 0 ;;
+  esac
+  if grep -lq 'stack-name.sh' "${INTEG_DIR}/local-invoke-assume-role/verify.sh" 2>/dev/null; then
+    check "the derivation reaches local-invoke-assume-role (both globs missed it)" 0
+  else
+    check "the derivation reaches local-invoke-assume-role (both globs missed it)" 1 \
+      "it no longer sources the lane library, so the derived set would skip it"
+  fi
+
+  # Every failure mode of `describe-stacks` -- expired token, AccessDenied,
+  # throttling, an empty STACK -- lands in the `||` branch of
+  # `2>/dev/null && ... || echo clean`, printing a CLEAN verdict. Measured: bad
+  # credentials exit 254 and the naive form reports no orphan. Step 9 turns that
+  # into a fresh `integ` marker.
+  case "$(grep -c '2>/dev/null && echo' "${SKILL}")" in
+    0) check "run-integ's stack scans do not map every failure to clean" 0 ;;
+    *) check "run-integ's stack scans do not map every failure to clean" 1 \
+         "a bare 2>/dev/null && ... || echo-clean form is back" ;;
+  esac
 else
   check "run-integ SKILL.md is present to check" 1 "not found at ${SKILL}"
 fi

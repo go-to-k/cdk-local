@@ -1,6 +1,6 @@
 ---
 name: run-integ
-description: Run an integration test (Docker-based, optionally AWS-deploy-backed for `*-from-cfn-stack` tests) and refresh the `integ` markgate marker on a clean run.
+description: Run an integration test (Docker-based, optionally AWS-deploy-backed for the fixtures that own real AWS resources) and refresh the `integ` markgate marker on a clean run.
 argument-hint: "<test-name>"
 ---
 
@@ -8,7 +8,7 @@ argument-hint: "<test-name>"
 
 Run an integration test against real Docker (and, for `*-from-cfn-stack` tests, a real CloudFormation stack deployed via the upstream `cdk` CLI).
 
-cdk-local is a local-execution CLI — it does NOT deploy resources itself. The only AWS-side activity in any integ test is when a fixture's `verify.sh` invokes the upstream `cdk deploy` to create a target stack for `--from-cfn-stack` to point at. Cleanup is always done by the fixture's own `verify.sh`.
+cdk-local is a local-execution CLI — it does NOT deploy resources itself. The only AWS-side activity in any integ test is when a fixture's `verify.sh` invokes the upstream `cdk deploy` (or, for `local-invoke-agentcore-froms3`, `aws s3api create-bucket`) to create a target stack for `--from-cfn-stack` to point at. Cleanup is always done by the fixture's own `verify.sh`.
 
 ## Arguments
 
@@ -22,11 +22,19 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 3. **Pre-flight Docker sweep**: `docker ps --filter name=cdkl- -q | wc -l` and `docker network ls --filter name=cdkl-task- -q | wc -l` should both return `0`. If either is non-zero, abort and ask the user to run `/cleanup` first — running on top of orphans causes name collisions and confusing failures.
 
-4. **For AWS-deploying tests — AWS pre-flight**. That is every fixture matching
-   `*-from-cfn*`, PLUS `local-invoke-agentcore-froms3`, which creates a real S3
-   bucket without deploying a stack. Scoping this to `*-from-cfn-stack` (the
-   original wording) silently skipped three fixtures that own real AWS
-   resources:
+4. **For AWS-resource-owning tests — AWS pre-flight**. That is the fixtures that own real AWS resources. **Derive that set, do not glob it** —
+   a glob has now silently excluded a resource-owning fixture twice
+   (`*-from-cfn-stack` missed three, and the widened `*-from-cfn*` still missed
+   `local-invoke-assume-role`, which deploys a stack containing an IAM role):
+
+   ```bash
+   # The 12 that own a lane-suffixed stack, by construction -- they are exactly
+   # the fixtures that source the lane library.
+   grep -ln 'stack-name.sh' tests/integration/*/verify.sh
+   # Plus one that owns a real S3 bucket without deploying a stack:
+   #   local-invoke-agentcore-froms3
+   ```
+
    - Verify the upstream `cdk` CLI is on `$PATH`: `which cdk`.
    - Verify AWS credentials: `aws sts get-caller-identity`.
    - Scan for orphan stacks from a previous interrupted run. **The stack name
@@ -45,8 +53,19 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      # fresh `integ` marker over a live orphan stack.
      : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
      STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
-     aws cloudformation describe-stacks --stack-name "${STACK}" \
-       --region "${AWS_REGION:-us-east-1}" 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
+     # Do NOT write `2>/dev/null && ... || echo clean`. Every failure mode --
+     # expired token, AccessDenied, throttling, an undefined helper leaving
+     # `STACK` empty -- then lands in the `||` branch and prints a CLEAN verdict.
+     # Measured: invalid credentials exit 254 with `InvalidClientTokenId`, and
+     # the naive form reports "no orphan stack". Only "does not exist" is clean.
+     if err=$(aws cloudformation describe-stacks --stack-name "${STACK}" \
+                --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null); then
+       echo "ORPHAN"
+     elif printf '%s' "${err}" | grep -q 'does not exist'; then
+       echo "(no orphan stack)"
+     else
+       echo "FAILED to query -- this is NOT a clean verdict: ${err}" >&2
+     fi
      ```
 
      If an orphan stack is reported, abort with a `cdk destroy "${STACK}"`
@@ -68,8 +87,7 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    If any are non-zero, dispatch `/cleanup` (no `--detect-only`) and re-run the checks. Never end the run with orphan Docker resources still present.
 
-7. **Verify AWS cleanup** (same fixture set as step 4 — `*-from-cfn*` plus
-   `local-invoke-agentcore-froms3`):
+7. **Verify AWS cleanup** (the same DERIVED fixture set as step 4):
 
    Resolve the lane-unique name the same way step 4 does — the bare base name
    matches nothing and this sweep would silently report clean:
@@ -82,10 +100,17 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    # PRIMARY resource, which step 9 turns into a fresh `integ` marker.
    : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
    STACK="$(integ_stack_name <FixtureStackBaseName>)"
-   aws cloudformation describe-stacks --stack-name "${STACK}" \
-     --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
-     && echo "ORPHAN STACK REMAINS" \
-     || echo "AWS clean"
+   # Same shape as step 4, and for the same reason -- this one matters more, as
+   # it runs after a long test where a session token can expire, and step 9
+   # converts its verdict into a fresh `integ` marker.
+   if err=$(aws cloudformation describe-stacks --stack-name "${STACK}" \
+              --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null); then
+     echo "ORPHAN STACK REMAINS"
+   elif printf '%s' "${err}" | grep -q 'does not exist'; then
+     echo "AWS clean"
+   else
+     echo "FAILED to query -- this is NOT a clean verdict: ${err}" >&2
+   fi
    ```
 
    If the stack remains, run `cdk destroy "${STACK}" --force` until clean. Same rule: never end the run with orphan AWS resources.
@@ -112,12 +137,15 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    # BOTH conditions: the `cdkl` anchor keeps the blast radius bounded to this
    # repo's resources even if the suffix logic is ever changed, and the suffix
    # bounds it to this lane.
+   # rc-checked for the same reason: on a credential failure these exit non-zero
+   # with EMPTY stdout, which reads as "0 parameters" rather than "I could not
+   # look".
    aws ssm describe-parameters --region "${AWS_REGION:-us-east-1}" \
      --query "Parameters[?starts_with(Name,'/cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" \
-     --output text
+     --output text || echo "FAILED to query SSM -- NOT a clean verdict" >&2
    aws cloudformation list-exports --region "${AWS_REGION:-us-east-1}" \
      --query "Exports[?starts_with(Name,'cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" \
-     --output text
+     --output text || echo "FAILED to query exports -- NOT a clean verdict" >&2
 
    # Not lane-suffixed and not a stack resource, so neither sweep above can see
    # it: `local-invoke-agentcore-froms3` creates a bucket out of band, and its
@@ -152,7 +180,7 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    deleted except by destroying its stack, so `ExportingStackId` in that output
    is pointing you at a stack that may still be in use.
 
-8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks / parameters / exports / buckets" — name each sweep you actually ran, so a clean report is not writable without running them).
+8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for an AWS-resource-owning fixture: "+ AWS: 0 orphan stacks / parameters / exports / buckets" — name each sweep you actually ran, so a clean report is not writable without running them).
 
 9. **Set the `integ` markgate marker (only on full clean success)**:
 
