@@ -198,6 +198,7 @@ UP_PATHS=(
   'src/local/front-door-server.ts'
   'src/local/agentcore-http-server.ts'
   'src/local/websocket-server.ts'
+  'src/utils/url-authority.ts'
   # Untrusted code / argv / archive + path traversal
   'src/utils/docker-cmd.ts'
   'src/local/docker-runner.ts'
