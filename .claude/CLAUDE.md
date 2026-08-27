@@ -1129,7 +1129,26 @@ compute-locally category for Lambda + API Gateway).
   bounded body) onto the bus, so every request to the served port lands
   on the timeline regardless of source — browser / curl / pad alike
   (decision D4a); `Upgrade` (WebSocket) requests are raw-bridged without
-  capture), studio-store (issue #282, slice C3 — the in-memory event
+  capture. The upstream it will front is bounded to LOOPBACK (issue #578):
+  studio learns a serve child's endpoint by regex-matching its stdout, so
+  the URL is only ever as trustworthy as the line that carried it — an
+  ordinary application log (`Server listening on http://0.0.0.0:3000` is
+  what a web framework prints) or a warn relaying a wire-derived AWS SDK
+  message could otherwise name any host, and every composer request,
+  headers and body included, would be forwarded there. Three bounds, in
+  `studio-serve-manager` and in `startStudioProxy` itself: a line carrying
+  cdk-local's own `WARN: ` / `ERROR: ` prefix is never pattern-matched at
+  all (`classifyChildLine` strips ANSI, the verbose `<ts> <LEVEL>` preamble
+  and a `[module]` tag first, so anchoring survives `--verbose`); every
+  ready pattern is anchored to the start of the line; and the resolved
+  upstream must be loopback (`normalizeLocalUpstream`) or the serve is
+  refused with a warn rather than flipped to running against a foreign
+  host. A WILDCARD bind address (`0.0.0.0` / `::`) is REWRITTEN to
+  `127.0.0.1` rather than refused — it is a bind address, not a
+  destination, and `--container-host 0.0.0.0` is an ordinary value studio
+  auto-renders. The same bound covers the `ecs` `hostUrl` that
+  `parsePublishedHostEndpoint` derives from the replica publish banner,
+  which the request composer targets DIRECTLY (un-proxied)), studio-store (issue #282, slice C3 — the in-memory event
   store: subscribes to the bus and retains a bounded, newest-wins window
   of invocations + log lines so the server can answer history on
   (re)connect, full-text log search across the session, and

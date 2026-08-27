@@ -2,7 +2,14 @@ import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, expect, afterEach } from 'vite-plus/test';
 import { StudioEventBus, type StudioInvocationEvent } from '../../../src/local/studio-events.js';
-import { startStudioProxy, type RunningStudioProxy } from '../../../src/local/studio-proxy.js';
+import {
+  describeEndpointForMessage,
+  isLoopbackHostname,
+  isWildcardHostname,
+  normalizeLocalUpstream,
+  startStudioProxy,
+  type RunningStudioProxy,
+} from '../../../src/local/studio-proxy.js';
 
 const upstreams: Server[] = [];
 const proxies: RunningStudioProxy[] = [];
@@ -305,4 +312,187 @@ describe('startStudioProxy', () => {
   // is verified out-of-band (a standalone handshake + echo round-trip
   // passes) and mirrors the already-tested `front-door-server` WS bridge;
   // the gap is tracked as an accepted known cost in the PR body.
+});
+
+
+// ---------------------------------------------------------------------------
+// Issue #578 - the proxy forwards the developer's request (headers + body) to
+// whatever host its upstream names, so it enforces the loopback bound itself
+// rather than trusting the caller to have checked.
+// ---------------------------------------------------------------------------
+
+describe('isLoopbackHostname (issue #578)', () => {
+  it('accepts every spelling of this machine', () => {
+    for (const h of [
+      '127.0.0.1',
+      '127.0.0.53',
+      '127.5.5.5',
+      'localhost',
+      'LOCALHOST',
+      '::1',
+      '[::1]',
+      '0:0:0:0:0:0:0:1',
+      '::ffff:127.0.0.1',
+      '[::ffff:7f00:1]',
+    ]) {
+      expect(isLoopbackHostname(h), h).toBe(true);
+    }
+  });
+
+  it('refuses every other host, including the near-misses', () => {
+    for (const h of [
+      '0.0.0.0',
+      '192.168.0.5',
+      '169.254.169.254',
+      '10.0.0.1',
+      'attacker.example',
+      'localhost.attacker.example',
+      'my-localhost',
+      '127.0.0.1.attacker.example',
+      '2130706433.attacker.example',
+      '999.0.0.1',
+      '[2001:db8::1]',
+      '::ffff:169.254.169.254',
+      '',
+    ]) {
+      expect(isLoopbackHostname(h), h).toBe(false);
+    }
+  });
+});
+
+describe('normalizeLocalUpstream over a whole URL (issue #578)', () => {
+  it('accepts every loopback spelling a URL can normalise, including the compressed and integer forms', () => {
+    expect(normalizeLocalUpstream('http://127.0.0.1:51234')).toBe('http://127.0.0.1:51234');
+    expect(normalizeLocalUpstream('ws://localhost:49160/ws')).toBe('ws://localhost:49160/ws');
+    expect(normalizeLocalUpstream('http://[::1]:51234/x')).toBe('http://[::1]:51234/x');
+    // `URL` normalises both of these to the hostname `127.0.0.1`, so they are
+    // loopback despite not looking like it.
+    expect(normalizeLocalUpstream('http://127.1:8080')).toBe('http://127.1:8080');
+    expect(normalizeLocalUpstream('http://2130706433:8080')).toBe('http://2130706433:8080');
+  });
+
+  it('refuses a foreign host, and refuses what it cannot parse rather than guessing', () => {
+    expect(normalizeLocalUpstream('http://attacker.example/')).toBeUndefined();
+    expect(normalizeLocalUpstream('not-a-url')).toBeUndefined();
+    expect(normalizeLocalUpstream('')).toBeUndefined();
+  });
+});
+
+describe('describeEndpointForMessage (issue #578)', () => {
+  it('flattens control characters so a quoted endpoint cannot forge output', () => {
+    expect(describeEndpointForMessage('http://a.example/\u001b[31m\r\nWARN: fake')).toBe(
+      'http://a.example/?[31m??WARN: fake'
+    );
+  });
+
+  it('caps the length', () => {
+    const long = `http://${'a'.repeat(400)}.example/`;
+    const out = describeEndpointForMessage(long);
+    expect(out.length).toBe(123);
+    expect(out.endsWith('...')).toBe(true);
+  });
+});
+
+describe('startStudioProxy upstream bound (issue #578)', () => {
+  it('refuses a non-loopback upstream', () => {
+    for (const upstream of [
+      'http://attacker.example/',
+      'http://169.254.169.254:80',
+      'http://localhost.attacker.example:8080',
+    ]) {
+      // Thrown synchronously, like the `new URL(upstream)` parse failure right
+      // above it - both are refusals to even attempt a proxy, and every caller
+      // reaches this inside a try / catch.
+      expect(
+        () =>
+          startStudioProxy({
+            bus: new StudioEventBus(),
+            target: 'MyApi',
+            kind: 'api',
+            upstream,
+          }),
+        upstream
+      ).toThrow(/non-loopback upstream/);
+    }
+  });
+
+  it('still fronts a loopback upstream', async () => {
+    const bus = new StudioEventBus();
+    const upstream = await bootUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('ok');
+    });
+    const proxy = await boot(bus, upstream);
+    const res = await httpReq(`${proxy.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('ok');
+  });
+});
+
+
+describe('isWildcardHostname (issue #578)', () => {
+  it('recognises every spelling of the unspecified address', () => {
+    for (const h of ['0.0.0.0', '::', '[::]', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0', '[::ffff:0:0]']) {
+      expect(isWildcardHostname(h), h).toBe(true);
+    }
+  });
+
+  it('is not fooled by a host that merely starts with a zero', () => {
+    for (const h of ['0.0.0.1', '10.0.0.0', '0.0.0.0.attacker.example', '127.0.0.1', '']) {
+      expect(isWildcardHostname(h), h).toBe(false);
+    }
+  });
+});
+
+describe('normalizeLocalUpstream (issue #578)', () => {
+  it('rewrites a wildcard bind address to loopback, host token only', () => {
+    expect(normalizeLocalUpstream('http://0.0.0.0:51234')).toBe('http://127.0.0.1:51234');
+    expect(normalizeLocalUpstream('http://[::]:51234')).toBe('http://127.0.0.1:51234');
+    expect(normalizeLocalUpstream('http://[0:0:0:0:0:0:0:0]:51234')).toBe('http://127.0.0.1:51234');
+    expect(normalizeLocalUpstream('http://[::ffff:0.0.0.0]:51234')).toBe('http://127.0.0.1:51234');
+    // Scheme / port / path / query ride through unchanged.
+    expect(normalizeLocalUpstream('ws://[::]:49160/ws')).toBe('ws://127.0.0.1:49160/ws');
+    expect(normalizeLocalUpstream('https://0.0.0.0:8443/a/b?q=1#f')).toBe(
+      'https://127.0.0.1:8443/a/b?q=1#f'
+    );
+    expect(normalizeLocalUpstream('http://0.0.0.0')).toBe('http://127.0.0.1');
+  });
+
+  it('returns a loopback upstream byte-for-byte (no re-serialisation)', () => {
+    for (const u of ['http://127.0.0.1:51234', 'ws://localhost:49160/ws', 'http://[::1]:8080/x']) {
+      expect(normalizeLocalUpstream(u), u).toBe(u);
+    }
+  });
+
+  it('still refuses a foreign or unparseable upstream', () => {
+    for (const u of [
+      'http://attacker.example/',
+      'http://169.254.169.254:80',
+      'http://192.168.0.5:3000',
+      'http://localhost.attacker.example:8080',
+      'http://127.0.0.1.attacker.example:8080',
+      'not-a-url',
+      '',
+    ]) {
+      expect(normalizeLocalUpstream(u), u).toBeUndefined();
+    }
+  });
+});
+
+describe('startStudioProxy wildcard upstream (issue #578)', () => {
+  it('accepts a wildcard upstream and forwards it to loopback', async () => {
+    const bus = new StudioEventBus();
+    // The real upstream listens on 127.0.0.1 only; naming it `0.0.0.0` must
+    // still reach it, which it can only do if the proxy rewrote the
+    // DESTINATION rather than merely tolerating the string.
+    const upstream = await bootUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('via-loopback');
+    });
+    const port = new URL(upstream).port;
+    const proxy = await boot(bus, `http://0.0.0.0:${port}`);
+    const res = await httpReq(`${proxy.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('via-loopback');
+  });
 });

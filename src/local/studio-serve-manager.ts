@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StudioEventBus, type StudioServeEvent, type StudioTargetKind } from './studio-events.js';
 import {
+  describeEndpointForMessage,
+  normalizeLocalUpstream,
   startStudioProxy,
   type RunningStudioProxy,
   type StudioProxyConfig,
@@ -11,6 +13,7 @@ import {
 import { buildSharedChildArgs, type SharedChildConfig } from './studio-child-args.js';
 import { buildPerRunArgs, resolveEnvVars, type OptionValues } from './studio-option-specs.js';
 import { buildCatalogArgs, tokenizeRawArgs, type CatalogValues } from './studio-option-catalog.js';
+import { getLogger } from '../utils/logger.js';
 
 /** A request to start serving a target, as the studio UI posts it. */
 export interface StudioServeRequest {
@@ -162,6 +165,15 @@ interface ServeKindSpec {
    * The stdout line that signals readiness. Capture group 1, when present,
    * is the served endpoint URL (api / alb); a kind with no host endpoint
    * (ecs service — pure compute) matches with NO capture group.
+   *
+   * ANCHORED to the start of the line (issue #578). Every serve command emits
+   * its ready banner as a WHOLE line, so an unanchored pattern only ever
+   * ADDED matches — a phrase embedded mid-message, in cdk-local's own relayed
+   * diagnostics or in the served application's own output (`Server listening
+   * on http://0.0.0.0:3000` is an ordinary thing for a web framework in an
+   * ECS replica to print). Matched against the DECORATION-STRIPPED line
+   * ({@link classifyChildLine}), so `--verbose`'s timestamp + level preamble
+   * and a child logger's `[module]` tag do not break the anchor.
    */
   readyRe: RegExp;
   /** Front each HTTP endpoint with a capture proxy (api / alb yes, ecs no). */
@@ -174,6 +186,7 @@ interface ServeKindSpec {
    * contract): the ws:// endpoint passes straight through for the console while
    * the http:// endpoint is fronted by the capture proxy so `/invocations`
    * requests land on the timeline. Optional — only `agentcore-ws` sets it.
+   * Anchored + decoration-stripped exactly like {@link readyRe}.
    */
   extraEndpointRe?: RegExp;
 }
@@ -188,7 +201,7 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
   api: {
     command: 'start-api',
     portArgs: ['--port', '0', '--host', '127.0.0.1'],
-    readyRe: /Server listening on (\S+)/,
+    readyRe: /^Server listening on (\S+)/,
     capturesHttp: true,
   },
   alb: {
@@ -199,7 +212,7 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     // (capturing `generated`) and flip the serve to running prematurely.
     command: 'start-alb',
     portArgs: [],
-    readyRe: /ALB front-door: (https?:\/\/\S+)/,
+    readyRe: /^ALB front-door: (https?:\/\/\S+)/,
     capturesHttp: true,
   },
   ecs: {
@@ -207,7 +220,7 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     // capture. `Service(s) running:` is its stable ready marker.
     command: 'start-service',
     portArgs: [],
-    readyRe: /Service\(s\) running:/,
+    readyRe: /^Service\(s\) running:/,
     capturesHttp: false,
   },
   'ecs-task': {
@@ -218,7 +231,7 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     // banner) is its stable ready marker.
     command: 'run-task',
     portArgs: [],
-    readyRe: /Task running \(family=/,
+    readyRe: /^Task running \(family=/,
     capturesHttp: false,
   },
   cloudfront: {
@@ -229,7 +242,7 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     // requests land on the timeline.
     command: 'start-cloudfront',
     portArgs: ['--port', '0', '--host', '127.0.0.1'],
-    readyRe: /CloudFront distribution serving on (https?:\/\/\S+)/,
+    readyRe: /^CloudFront distribution serving on (https?:\/\/\S+)/,
     capturesHttp: true,
   },
   'agentcore-ws': {
@@ -246,9 +259,9 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     // (`HTTP contract served on http://...`) — extraEndpointRe captures it.
     command: 'start-agentcore',
     portArgs: ['--port', '0', '--host', '127.0.0.1'],
-    readyRe: /Server listening on (\S+)/,
+    readyRe: /^Server listening on (\S+)/,
     capturesHttp: true,
-    extraEndpointRe: /HTTP contract served on (https?:\/\/\S+)/,
+    extraEndpointRe: /^HTTP contract served on (https?:\/\/\S+)/,
   },
 };
 
@@ -256,16 +269,100 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
  * Parse an auto-published replica host endpoint from an `ecs` serve child's
  * stdout (issue #392). `start-service` publishes each replica's declared
  * container port on the host — auto-remapping a privileged port (< 1024) to a
- * free high port (issue #357) — and logs a line like
- * `... container port 80 published on 127.0.0.1:54321. Reach it at ...`. studio
- * surfaces the FIRST such endpoint as the serve's `hostUrl` so the in-workspace
- * request composer can target it even when the user passed no explicit
- * `--host-port`. Returns `http://<ip>:<port>` or `undefined` when the line does
- * not carry a published endpoint. Exported for unit testing.
+ * free high port (issue #357) — and logs the WHOLE line
+ * `Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at
+ * 127.0.0.1:54321.` (`ecs-task-runner`). studio surfaces the FIRST such
+ * endpoint as the serve's `hostUrl` so the in-workspace request composer can
+ * target it even when the user passed no explicit `--host-port`. Returns
+ * `http://<ip>:<port>` or `undefined` when the line is not that banner.
+ * Exported for unit testing.
+ *
+ * ANCHORED to the whole banner (issue #578), not just the `published on`
+ * phrase: `hostUrl` is a destination the request composer posts to DIRECTLY,
+ * with no proxy in between, so a mid-message occurrence of the phrase — in a
+ * relayed error, or in a replica's own application output — must not be able
+ * to name it. Pass the decoration-stripped line ({@link classifyChildLine}).
+ * The loopback bound is applied by the CALLER (a parsed endpoint is still only
+ * adopted when {@link normalizeLocalUpstream} accepts it), so this stays a pure
+ * reader of the banner.
  */
 export function parsePublishedHostEndpoint(line: string): string | undefined {
-  const m = /published on (\d{1,3}(?:\.\d{1,3}){3}:\d+)/.exec(line);
+  const m = /^Container '[^']*' container port \d+ published on (\d{1,3}(?:\.\d{1,3}){3}:\d+)/.exec(
+    line
+  );
   return m ? `http://${m[1]}` : undefined;
+}
+
+/** ANSI SGR colour escapes, as the logger wraps a warn / error line with. */
+// eslint-disable-next-line no-control-regex -- ESC is exactly what is being stripped.
+const ANSI_SGR_RE = /\u001b\[[0-9;]*m/g;
+/** The verbose-mode preamble `<iso-timestamp> <LEVEL>  ` (`utils/logger`). */
+const VERBOSE_PREAMBLE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(DEBUG|INFO|WARN|ERROR)\s+/;
+/** A child logger's `[module] ` tag (`utils/logger`'s `ChildLogger`). */
+const MODULE_TAG_RE = /^\[[^\]]*\]\s+/;
+/** The compact-mode level prefix `WARN: ` / `ERROR: ` (`utils/logger`). */
+const COMPACT_LEVEL_RE = /^(WARN|ERROR):\s/;
+
+/** One child stdout line, with cdk-local's own log decoration read off it. */
+export interface ClassifiedChildLine {
+  /**
+   * True when the line is one of cdk-local's OWN warn / error diagnostics.
+   * Such a line is never a ready banner, and it is the one place a
+   * wire-derived string (an AWS SDK error `message`) is relayed onto the
+   * child's stdout — so no endpoint is ever read out of it (issue #578).
+   */
+  diagnostic: boolean;
+  /**
+   * The line with ANSI colour, the verbose `<timestamp> <LEVEL>` preamble, a
+   * `[module]` child-logger tag and the compact `WARN: ` / `ERROR: ` prefix
+   * removed — so a ready pattern can be anchored to `^` regardless of which
+   * of the logger's two rendering modes the child ran in. Leading whitespace
+   * is NOT trimmed: the banners start at column 0, and trimming would let an
+   * indented line impersonate one.
+   */
+  text: string;
+}
+
+/**
+ * Read the log decoration off one child stdout line (issue #578).
+ *
+ * `cdkl studio` runs its serve children with `CDKL_LOG_STREAM=stdout` (issue
+ * #403), so cdk-local's own warn / error lines share the stream the ready
+ * banners arrive on. Those lines relay wire-derived text (an AWS SDK error's
+ * `message`), which is exactly the text that must never be able to name the
+ * endpoint studio proxies to. The compact renderer prefixes them `WARN: ` /
+ * `ERROR: ` (the same signal `studio-ui`'s `logLineClass` colours off) and the
+ * verbose renderer (`--verbose` / `CDKL_LOG_LEVEL=debug`, both reachable in a
+ * studio-spawned child) writes `<timestamp> <LEVEL>  [module] `. Both shapes
+ * are recognised here, so the caller can skip a diagnostic line AND anchor its
+ * patterns against `text` without the mode deciding whether the anchor holds.
+ */
+export function classifyChildLine(line: string): ClassifiedChildLine {
+  let text = line.replace(ANSI_SGR_RE, '');
+  let diagnostic = false;
+  const verbose = VERBOSE_PREAMBLE_RE.exec(text);
+  if (verbose) {
+    if (verbose[1] === 'WARN' || verbose[1] === 'ERROR') diagnostic = true;
+    text = text.slice(verbose[0].length);
+  }
+  // A `[module]` tag and a compact `WARN: ` prefix can both remain, in either
+  // order (the compact renderer emits `WARN: `; `studio-ui` also tolerates a
+  // leading tag before it), so strip up to two decorations.
+  for (let i = 0; i < 2; i += 1) {
+    const tag = MODULE_TAG_RE.exec(text);
+    if (tag) {
+      text = text.slice(tag[0].length);
+      continue;
+    }
+    const level = COMPACT_LEVEL_RE.exec(text);
+    if (level) {
+      diagnostic = true;
+      text = text.slice(level[0].length);
+      continue;
+    }
+    break;
+  }
+  return { diagnostic, text };
 }
 
 interface ServeEntry extends StudioServeState {
@@ -540,6 +637,24 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         resolve(publicState(entry));
       };
 
+      /**
+       * Refuse a destination a child's stdout named that is not on this
+       * machine (issue #578), and say so loudly: on the bus, so the studio
+       * LOGS panel shows it (rendered with the same `WARN: ` prefix the
+       * compact logger emits, which `studio-ui` colours), and on the studio
+       * process's own logger, for a user watching the terminal. The endpoint
+       * is untrusted text, so it is flattened + length-capped before being
+       * quoted back.
+       */
+      const refuseForeignEndpoint = (endpoint: string, what: string): void => {
+        const msg =
+          `refused a non-loopback ${what} '${describeEndpointForMessage(endpoint)}' from ` +
+          `'${req.targetId}': a serve child always listens on this machine, so studio will ` +
+          'not send requests there. No endpoint was adopted and no capture proxy was started.';
+        emitLog(config.bus, clock, req.targetId, `WARN: ${msg}`, 'stderr');
+        getLogger().warn(msg);
+      };
+
       // Handle a child ready line. `childUrl` (capture group 1) is the
       // served endpoint for api / alb — fronted with a capture proxy (slice
       // C2 / decision D4a) when `capturesHttp` so every request to it lands
@@ -547,7 +662,28 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       // through. An ecs service has NO endpoint (`childUrl` undefined): it
       // just flips to running with no endpoint + no proxy. The FIRST ready
       // line flips the serve to running; later ones append + re-emit.
-      const onReady = async (childUrl?: string): Promise<void> => {
+      const onReady = async (readyUrl?: string): Promise<void> => {
+        // Issue #578 — the bound that does not depend on getting the ready
+        // pattern exactly right: a serve child always listens on THIS machine,
+        // so an endpoint naming any other host did not come from a genuine
+        // ready banner. Refuse it outright — no proxy, no adopted endpoint, and
+        // no flip to running, since flipping would publish a foreign URL to the
+        // UI as this serve's endpoint. The serve stays `starting` and the ready
+        // timeout reports it honestly; the warn says why. A WILDCARD bind
+        // address (`--container-host 0.0.0.0`, or an `api` / `alb` bound to
+        // `::`) is a legitimate serve that IS reachable on loopback, so it is
+        // rewritten to `127.0.0.1` — and the REWRITTEN url is what is adopted
+        // as the endpoint and proxied to, so the composer targets a real
+        // destination rather than a bind address.
+        let childUrl = readyUrl;
+        if (readyUrl !== undefined) {
+          const local = normalizeLocalUpstream(readyUrl);
+          if (local === undefined) {
+            refuseForeignEndpoint(readyUrl, 'ready line');
+            return;
+          }
+          childUrl = local;
+        }
         let endpoint = childUrl;
         if (childUrl && spec.capturesHttp && captureRequests && /^https?:/i.test(childUrl)) {
           try {
@@ -577,27 +713,47 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       };
 
       streamLines(child.stdout, (line) => {
-        const m = spec.readyRe.exec(line);
-        // m[1] is the endpoint URL for api / alb; undefined for ecs (no
-        // capture group) — a ready line with no host endpoint.
-        if (m) void onReady(m[1]);
-        // An additional endpoint line (agentcore-ws: the http:// contract
-        // alongside the ws:// listen line). It does NOT flip the serve to
-        // running on its own (the readyRe line already did, or will) — onReady
-        // appends + re-emits the endpoint, fronting it with the capture proxy.
-        if (spec.extraEndpointRe) {
-          const me = spec.extraEndpointRe.exec(line);
-          if (me) void onReady(me[1]);
-        }
-        // An `ecs` serve auto-publishes its replica host port(s) (issue #392);
-        // surface the FIRST one as `hostUrl` so the request composer fires —
-        // unless an explicit `--host-port` already set it. The publish line can
-        // arrive after the ready line, so re-emit when the serve is running.
-        if (req.kind === 'ecs' && entry.hostUrl === undefined) {
-          const endpoint = parsePublishedHostEndpoint(line);
-          if (endpoint) {
-            entry.hostUrl = endpoint;
-            if (entry.status === 'running') emitServe(entry);
+        // Issue #578 — read the log decoration off the line ONCE, then match
+        // the banners against the stripped text. A WARN / ERROR line is
+        // cdk-local's own diagnostic, the one place wire-derived text (an AWS
+        // SDK error `message`) reaches this stream, so no endpoint is read out
+        // of it at all; the line is still logged verbatim below.
+        const parsed = classifyChildLine(line);
+        if (!parsed.diagnostic) {
+          const m = spec.readyRe.exec(parsed.text);
+          // m[1] is the endpoint URL for api / alb; undefined for ecs (no
+          // capture group) — a ready line with no host endpoint.
+          if (m) void onReady(m[1]);
+          // An additional endpoint line (agentcore-ws: the http:// contract
+          // alongside the ws:// listen line). It does NOT flip the serve to
+          // running on its own (the readyRe line already did, or will) —
+          // onReady appends + re-emits the endpoint, fronting it with the
+          // capture proxy.
+          if (spec.extraEndpointRe) {
+            const me = spec.extraEndpointRe.exec(parsed.text);
+            if (me) void onReady(me[1]);
+          }
+          // An `ecs` serve auto-publishes its replica host port(s) (issue
+          // #392); surface the FIRST one as `hostUrl` so the request composer
+          // fires — unless an explicit `--host-port` already set it. The
+          // publish line can arrive after the ready line, so re-emit when the
+          // serve is running. `hostUrl` is posted to DIRECTLY by the composer
+          // (no proxy in front), so it carries the same loopback bound the
+          // proxied endpoints do (issue #578).
+          if (req.kind === 'ecs' && entry.hostUrl === undefined) {
+            const endpoint = parsePublishedHostEndpoint(parsed.text);
+            if (endpoint) {
+              // Same resolution as the ready path: a wildcard `--container-host`
+              // publish is rewritten to loopback (that IS where it is
+              // reachable), anything else non-loopback is refused.
+              const local = normalizeLocalUpstream(endpoint);
+              if (local === undefined) {
+                refuseForeignEndpoint(endpoint, 'published replica endpoint');
+              } else {
+                entry.hostUrl = local;
+                if (entry.status === 'running') emitServe(entry);
+              }
+            }
           }
         }
         emitLog(config.bus, clock, req.targetId, line, 'stdout');
