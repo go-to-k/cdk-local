@@ -17,17 +17,30 @@
 # class an exit-code-only fence cannot see.
 #
 # So the REFUSE block below is organised by the shape of the staging, not by the
-# byte: what the gate reads has to follow from the command. And the ACCEPT block
-# is as long, because widening a gate that every commit passes through is how a
-# fix turns into a wedge -- `git commit -a` in particular must NOT pick up an
-# untracked file, since `-a` does not.
+# byte: what the gate reads has to follow from the command. Review of the first
+# fix found three more members of the SAME family, all of them measured, none of
+# them visible to the 52 cases that were green at the time:
+#
+#   * a PATHSPEC on `git commit` is an implicit `--only`, so
+#     `git commit -m x f.ts` commits the WORKING TREE and ignores the index;
+#   * `git ls-files` is CWD-scoped while `git add -A` is whole-tree, so from a
+#     SUBDIRECTORY the scan missed everything outside it -- no case had ever
+#     used a subdirectory cwd;
+#   * an UNKNOWN `git add` flag's value was read as a pathspec, which also
+#     suppressed the whole-tree fallback.
+#
+# And the ACCEPT block is as long, because widening a gate that every commit
+# passes through is how a fix turns into a wedge -- `git commit -a` in
+# particular must NOT pick up an untracked file, since `-a` does not, and
+# DELETING the offending file is the remediation this gate's own message asks
+# for, so it cannot be refused.
 #
 # HERMETICITY. Each axis is either pinned or measured-and-recorded:
 #   git repo     every case gets its OWN `mktemp -d` + `git init`, populated by
 #                its `setup` argument. No case reads this repository, so the
 #                suite cannot pass or fail on the state of the worktree it runs
 #                in -- measured by running it from the repo root with a dirty
-#                tree, from /tmp, and from $HOME (not a repo at all): 52/52
+#                tree, from /tmp, and from $HOME (not a repo at all): 93/93
 #                each time.
 #   cwd          pinned per case through the payload's `cwd` field: the case's
 #                own repo, or (for the `git -C` cases) a directory that is NOT a
@@ -87,7 +100,7 @@ mk_repo() {
   printf '%s' "$r"
 }
 
-# run_case <name> <want_exit> <setup> <cmd> [<want_fragment>] [repo|outside]
+# run_case <name> <want_exit> <setup> <cmd> [<want_fragment>] [repo|outside|<subdir>]
 #
 # 2 = blocked, 0 = allowed through. `{REPO}` in <cmd> is replaced with the
 # case's repository path. <want_fragment> ("-" or omitted to skip) must appear
@@ -95,6 +108,13 @@ mk_repo() {
 # file" from "blocked on something else", which is the same lesson
 # gate-command-recognition.test.sh learned by asserting what a gate ASKS its
 # verifier rather than only what it answers.
+#
+# The last argument is the payload's `cwd`: the repo root, a directory that is
+# NOT a repo, or a SUBDIRECTORY of the repo. That third mode is not decoration
+# -- `git ls-files` lists only what is under its CWD while `git add -A` and
+# `git commit -a` are whole-tree, so a scan run in a subdirectory silently
+# missed everything else in the repository. No case used a subdirectory cwd,
+# which is exactly why 52 green cases did not see it.
 run_case() {
   local name="$1" want="$2" setup="$3" cmd="$4" frag="${5:--}" where="${6:-repo}"
   local repo got out payload cwd
@@ -102,7 +122,8 @@ run_case() {
   cmd="${cmd//\{REPO\}/$repo}"
   case "$where" in
     outside) cwd="$SANDBOX" ;;
-    *)       cwd="$repo" ;;
+    repo)    cwd="$repo" ;;
+    *)       cwd="$repo/$where" ;;
   esac
   payload=$(jq -nc --arg c "$cmd" --arg d "$cwd" \
     '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}')
@@ -123,6 +144,33 @@ run_case() {
   pass=$((pass + 1)); printf 'OK   %-62s %s\n' "$name" "(exit $got)"
 }
 
+# run_count <name> <want_offender_lines> <setup> <cmd> [repo|outside|<subdir>]
+# Asserts the number of "  - <file>" lines. The gate collects a file once per
+# PROVENANCE (staged blob / working-tree copy) and both are scanned, so the
+# REPORT has to fold them back into one line -- otherwise the ordinary
+# `git add -A && git commit` over an already-staged file names it twice.
+run_count() {
+  local name="$1" want="$2" setup="$3" cmd="$4" where="${5:-repo}"
+  local repo out got cwd
+  repo="$(mk_repo "$setup")"
+  cmd="${cmd//\{REPO\}/$repo}"
+  case "$where" in
+    outside) cwd="$SANDBOX" ;;
+    repo)    cwd="$repo" ;;
+    *)       cwd="$repo/$where" ;;
+  esac
+  out=$(jq -nc --arg c "$cmd" --arg d "$cwd" \
+      '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' \
+    | env -i PATH="$PINNED_PATH" HOME="$SANDBOX" bash "$GATE" 2>&1)
+  got=$(printf '%s\n' "$out" | grep -c '^  - ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-62s %s\n' "$name" "($got reported)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s reported line(s), got %s)\n  out: %s\n' \
+      "$name" "$want" "$got" "$out"
+  fi
+}
+
 # The offending files, written from escapes. `probe.ts` carries a NUL on line 1;
 # `soh.ts` carries a 0x01, so the suite is not pinned to NUL alone.
 NUL_FILE='printf "const a = \"x\000y\";\n" > probe.ts'
@@ -130,6 +178,10 @@ SOH_FILE='printf "const a = \"x\001y\";\n" > soh.ts'
 # A committed, then locally MODIFIED, NUL file -- the only shape `git commit -a`
 # actually stages.
 TRACKED_NUL='echo clean > probe.ts; git add probe.ts; git commit -qm init; '"$NUL_FILE"
+# The same shape at the repo ROOT, plus a subdirectory that a case can `cd` into.
+# `root.ts` is COMMITTED CLEAN, so the index is clean and only the working copy
+# carries the NUL -- which is what makes an index-only scan answer "clean".
+ROOT_NUL='mkdir -p sub; echo hi > sub/a.ts; echo clean > root.ts; git add -A; git commit -qm init; printf "const a = \"x\000y\";\n" > root.ts'
 
 echo "== REFUSE: the command stages, so the WORKING TREE is in the commit ========"
 # THE case that fails on the pre-fix gate. Everything else in this block is a
@@ -208,6 +260,76 @@ run_case "git add -f over a gitignored file"       2 "$NUL_FILE; echo probe.ts >
   'git add -f probe.ts && git commit -m x' 'probe.ts'
 
 echo
+echo "== REFUSE: a PATHSPEC on git commit is an implicit --only =================="
+# `git commit -m x f.ts` commits the WORKING-TREE content of f.ts and IGNORES
+# the index for it. The commit-argument walk used to read flags only and let
+# positionals fall through, so with the index clean this shipped a NUL. Reading
+# the positional means also knowing which flags take a SEPARATE value, or `-m`'s
+# own message text reads as a pathspec and the real one is never reached.
+run_case "commit -m x <pathspec>"                  2 "$TRACKED_NUL" \
+  'git commit -m x probe.ts' 'probe.ts (line(s): 1)'
+run_case "commit -o -m x <pathspec> (--only)"      2 "$TRACKED_NUL" \
+  'git commit -o -m x probe.ts' 'probe.ts'
+run_case "commit --only -m x <pathspec>"           2 "$TRACKED_NUL" \
+  'git commit --only -m x probe.ts' 'probe.ts'
+run_case "commit -i -m x <pathspec> (--include)"   2 "$TRACKED_NUL" \
+  'git commit -i -m x probe.ts' 'probe.ts'
+run_case "commit -m x -- <pathspec>"               2 "$TRACKED_NUL" \
+  'git commit -m x -- probe.ts' 'probe.ts'
+run_case "commit -F msg.txt <pathspec>"            2 "$TRACKED_NUL; echo m > m.txt" \
+  'git commit -F m.txt probe.ts' 'probe.ts'
+# `-o` / `-i` with no pathspec of their own: cannot be scoped, so widen. BOTH
+# spellings, because they are read by DIFFERENT code -- the long form by the
+# `--only|--include` case arm, the short one by the short-flag cluster walk.
+# Only pinning `-o` left the long arm unfenced: a mutation deleting it kept the
+# suite 89/89 green.
+run_case "commit -o with no pathspec widens"       2 "$TRACKED_NUL" \
+  'git commit -o -m x' 'probe.ts'
+run_case "commit --only with no pathspec widens"   2 "$TRACKED_NUL" \
+  'git commit --only -m x' 'probe.ts'
+run_case "commit --include with no pathspec widens" 2 "$TRACKED_NUL" \
+  'git commit --include -m x' 'probe.ts'
+run_case "commit -i with no pathspec widens"       2 "$TRACKED_NUL" \
+  'git commit -i -m x' 'probe.ts'
+run_case "commit -p (interactive hunks)"           2 "$TRACKED_NUL" \
+  'git commit -p -m x' 'probe.ts'
+run_case "commit --interactive"                    2 "$TRACKED_NUL" \
+  'git commit --interactive' 'probe.ts'
+
+echo
+echo "== REFUSE: unrestricted staging is WHOLE-TREE, not CWD-scoped =============="
+# `git ls-files` lists only what is under its CWD, while `git add -A` and
+# `git commit -a` have been whole-tree since git 2.0. Run from a subdirectory,
+# the scan used to miss a control byte anywhere else in the repository -- the
+# same fail-open class as the issue itself, and invisible to every case that
+# runs at the repo root.
+run_case "from a subdir: add -A, NUL at the root"  2 "$ROOT_NUL" \
+  'git add -A && git commit -m x' 'root.ts (line(s): 1)' sub
+run_case "from a subdir: commit -am, NUL at root"  2 "$ROOT_NUL" \
+  'git commit -am x' 'root.ts' sub
+run_case "from a subdir: add -u, NUL at the root"  2 "$ROOT_NUL" \
+  'git add -u && git commit -m x' 'root.ts' sub
+run_case "from a subdir: commit <pathspec> upward" 2 "$ROOT_NUL" \
+  'git commit -m x ../root.ts' 'root.ts' sub
+
+echo
+echo "== REFUSE: git stage is git add ==========================================="
+run_case "git stage -A"                            2 "$NUL_FILE" \
+  'git stage -A && git commit -m x' 'probe.ts'
+run_case "git stage <pathspec>"                    2 "$NUL_FILE" \
+  'git stage probe.ts && git commit -m x' 'probe.ts'
+
+echo
+echo "== REFUSE: an UNKNOWN git add flag must not suppress the fallback =========="
+# The unknown flag's value used to be read as a pathspec, which ALSO set
+# `seen_pathspec` and so suppressed the whole-tree fallback -- a fail-open, not
+# a widen. An unknown flag now drops the restriction instead.
+run_case "git add --future-flag <value>"           2 "$NUL_FILE" \
+  'git add --future-flag somevalue && git commit -m x' 'probe.ts'
+run_case "git add -Av (unrecognised cluster)"      2 "$NUL_FILE" \
+  'git add -Av && git commit -m x' 'probe.ts'
+
+echo
 echo "== REFUSE: the pre-existing INDEX scan is untouched ========================"
 run_case "already staged, plain git commit"        2 "$NUL_FILE; git add -A" \
   'git commit -m x' 'probe.ts (line(s): 1)'
@@ -221,8 +343,17 @@ run_case "staged NUL, worktree since cleaned"      2 "$NUL_FILE; git add probe.t
 echo
 echo "== ACCEPT: nothing the commit will contain has a control byte =============="
 # THE regression the fix must not break: no staging in the command, so the
-# working tree is none of the gate's business and the index is clean.
+# working tree is none of the gate's business.
 run_case "unstaged NUL, plain commit (no add)"     0 "$NUL_FILE" \
+  'git commit -m x'
+# The same claim over a TRACKED file, which is the sharper half: the index entry
+# EXISTS and is clean, and only the copy on disk is dirty. A gate that reads
+# disk-first for every candidate would block a commit that is genuinely clean.
+# Provenance is what keeps these two apart -- an index candidate is read out of
+# the index and never off disk, and vice versa. The mirror image of this case is
+# "staged NUL, worktree since cleaned" in the REFUSE block, which must still
+# block; together they pin that neither side is simply winning.
+run_case "clean staged blob, dirty working copy"   0 'echo clean > probe.ts; git add probe.ts; printf "x\000y\n" > probe.ts' \
   'git commit -m x'
 # The three cases below carry a TRACKED, LOCALLY MODIFIED NUL file, not an
 # untracked one, and that is the whole point of them: they exist to catch a
@@ -269,6 +400,76 @@ run_case "tab and CRLF only"                       0 'printf "a\tb\r\nc\n" > t.t
 # report a file that is not in the commit at all -- the false-block direction.
 run_case "symlink to a NUL file is not followed"   0 'printf "x\000y\n" > real.ts; ln -s real.ts link.ts; echo real.ts > .gitignore' \
   'git add -A && git commit -m x'
+# A flag VALUE is not a pathspec. Each of these would otherwise be read as an
+# implicit `--only` on a file that happens to share the name.
+run_case "commit -m <value that looks like a path>" 0 "$TRACKED_NUL" \
+  'git commit --amend -m probe.ts'
+run_case "commit --file <value>"                   0 "$TRACKED_NUL; echo m > m.txt" \
+  'git commit --file m.txt'
+run_case "commit --author <value>"                 0 "$TRACKED_NUL" \
+  'git commit --amend --author "A U Thor <a@example.com>"'
+run_case "commit -uall is -u all, not -a"          0 "$TRACKED_NUL" \
+  'git commit -uall --amend --no-edit'
+# A pathspec-RESTRICTED scan still runs where the command does, so a subdirectory
+# pathspec must NOT reach out to the rest of the repo.
+run_case "from a subdir: scoped add stays scoped"  0 "$ROOT_NUL" \
+  'git add a.ts && git commit -m x' - sub
+
+echo
+echo "== ACCEPT: removing the offending file is the REMEDIATION =================="
+# The gate's own message says to get rid of the control byte. Blocking the
+# removal wedges that. Two timings, and only the second is visible in the tree:
+# a `rm` in an EARLIER call leaves no file on disk, while a `rm` in the SAME
+# call has not run yet when the hook looks -- so that one is read off the
+# command, exactly like the staging is.
+STAGED_NUL="$NUL_FILE; git add probe.ts"
+run_case "rm in an earlier call, then add -A"      0 "$STAGED_NUL; rm probe.ts" \
+  'git add -A && git commit -m drop-it'
+run_case "rm in the SAME call as the commit"       0 "$STAGED_NUL" \
+  'rm probe.ts && git add -A && git commit -m drop-it'
+run_case "git rm -f stages the removal itself"     0 "$STAGED_NUL" \
+  'git rm -f probe.ts && git commit -m drop-it'
+run_case "rm -rf <dir> covers the files under it"  0 'mkdir -p s; printf "x\000y\n" > s/probe.ts; git add s/probe.ts' \
+  'rm -rf s && git add -A && git commit -m drop-it'
+# ...and the removal must be READ, not assumed. Each of these still blocks.
+run_case "rm naming a DIFFERENT file still blocks" 2 "$STAGED_NUL" \
+  'rm other.ts && git add -A && git commit -m x' 'probe.ts'
+run_case "git rm --cached, then add -A re-adds it" 2 "$STAGED_NUL" \
+  'git rm --cached probe.ts && git add -A && git commit -m x' 'probe.ts'
+run_case "rm with an unexpanded path still blocks" 2 "$STAGED_NUL" \
+  'rm $F && git add -A && git commit -m x' 'probe.ts'
+run_case "a quoted mention of rm still blocks"     2 "$STAGED_NUL" \
+  'echo "rm probe.ts" && git add -A && git commit -m x' 'probe.ts'
+run_case "rmdir is not rm"                         2 "$STAGED_NUL" \
+  'rmdir probe.ts && git add -A && git commit -m x' 'probe.ts'
+# A GLOB in the removal is not recorded at all, because git's pathspec language
+# is broader than the shell's: the shell expands `rm *.ts` against the CWD, while
+# `ls-files -- '*.ts'` matches every .ts in the REPOSITORY -- so honouring it
+# would suppress the scan of a file the `rm` never touches. Here `sub/probe.ts`
+# is staged and would survive the shell's `rm *.ts`.
+run_case "a glob in rm suppresses nothing"         2 'mkdir -p sub; printf "x\000y\n" > sub/probe.ts; git add sub/probe.ts; echo hi > root.ts' \
+  'rm *.ts && git add -A && git commit -m x' 'sub/probe.ts'
+# A plain `rm` stages nothing, so without a whole-tree staging the blob still
+# commits. ERRS TOWARD BLOCKING, because a wrong entry in the removal list is
+# the one place in this gate where a mistake SUPPRESSES a scan.
+run_case "rm with NO staging in the call"          2 "$STAGED_NUL" \
+  'rm probe.ts && git commit -m x' 'probe.ts'
+run_case "rm under a pathspec-restricted staging"  2 "$STAGED_NUL" \
+  'rm probe.ts && git add probe.ts && git commit -m x' 'probe.ts'
+
+echo
+echo "== one report line per FILE, whatever its provenance ======================="
+# The file is BOTH a staged blob and a dirty working copy here, and both are
+# scanned. Before the keys were made root-relative, an index entry keyed off the
+# command's directory and a working-tree entry keyed off the repo root, so from
+# a subdirectory the same file was named twice.
+run_count "staged AND dirty, at the repo root"     1 "$NUL_FILE; git add probe.ts; printf \"x\000z\n\" > probe.ts" \
+  'git add -A && git commit -m x'
+run_count "staged AND dirty, from a subdirectory"  1 'mkdir -p sub; printf "x\000y\n" > root.ts; git add root.ts; printf "x\000z\n" > root.ts' \
+  'git add -A && git commit -m x' sub
+run_count "a clean commit reports nothing"         0 'echo hi > a.txt' \
+  'git add -A && git commit -m x'
+
 echo
 echo "== ACCEPT: binary/asset extensions are skipped on BOTH scans ==============="
 run_case "NUL in a .png, staged by the command"    0 'printf "x\000y" > i.png' \

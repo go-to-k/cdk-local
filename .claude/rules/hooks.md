@@ -61,19 +61,58 @@ The hooks split into three classes:
   splitting staging and committing into two calls costs two gate round
   trips.
 
-  So the scan target now follows from the command:
+  So every candidate file is collected with its PROVENANCE, and provenance
+  decides which bytes are read: an INDEX candidate is read out of the
+  index (`git show :<file>`) and NEVER off disk, a WORKING-TREE candidate
+  off disk and NEVER out of the index. That is what keeps a plain
+  `git commit` an index-only verdict — a dirty working copy it is not
+  committing must not block it — while `git add -A && git commit` sees
+  the disk. Which candidates exist follows from the command:
 
-  | command shape | what is scanned |
+  | command shape | what is collected |
   |---|---|
-  | plain `git commit` | the INDEX (`git show :<file>`), as before |
-  | `… git add <spec> …` | the index **and** the working-tree content that add would bring in |
+  | plain `git commit` | the INDEX only (`--diff-filter=ACM`), as before |
+  | `… git add\|stage <spec> …` | the index **and** the working-tree content that add would bring in |
   | `git commit -a` / `--all` | the index **and** the working-tree content of TRACKED MODIFIED files |
+  | `git commit [-o\|-i\|--] <spec>` | the index **and** the working-tree content of those paths |
+
+  The last row was a straight fail-open until go-to-k/cdk-local#576's
+  review: a pathspec on `git commit` is an implicit `--only`, which
+  commits the WORKING-TREE content of those paths and ignores the index
+  for them, so `git commit -m x f.ts` shipped a NUL with the index
+  clean. Reading a positional means also knowing which flags take a
+  SEPARATE value, or `-m`'s own message text reads as a pathspec and the
+  real one is never reached.
 
   `git commit -a` stages tracked modifications ONLY — it never picks up
   an untracked file, and neither does this. The index scan is kept ON
   TOP of the working-tree one rather than replaced by it: a file staged
   EARLIER and unmodified since is in the commit but is not "modified"
   relative to the index, so `git ls-files --modified` never lists it.
+
+  **Unrestricted staging is scanned from the repo ROOT.** `git ls-files`
+  lists only what is under its CWD, while `git add -A` and `git commit -a`
+  have been whole-tree since git 2.0 — so run from a subdirectory the
+  scan used to miss a control byte anywhere else in the repository, the
+  same fail-open class as the issue itself and invisible to every case
+  that runs at the repo root. A pathspec-RESTRICTED scan still runs in
+  the command's own directory, because that is what its pathspecs are
+  relative to.
+
+  **Removing the offending file is the remediation, so it is not
+  blocked.** A path the staging DELETES has its index scan skipped:
+  either the file is already gone from disk, or THIS CALL is what
+  removes it (`rm bad.ts && git add -A && git commit`, where the hook
+  still sees the file, so the deletion is read off the command exactly
+  as the staging is). `git rm` counts on its own because it stages;
+  a plain `rm` only counts under a whole-tree staging, and `git rm
+  --cached` never counts because a following `git add -A` re-adds the
+  file. This is the ONE list in the gate where a wrong entry SUPPRESSES
+  a scan, so it errs toward blocking: an unexpanded path, a quoted
+  mention, `rmdir`, or a GLOB records nothing — git's pathspec language
+  is broader than the shell's, so honouring `rm *.ts` would suppress the
+  scan of every `.ts` in the repository rather than the ones the shell
+  would actually have deleted.
 
   The shape is decided with the shared `_command-match.sh` machinery
   (`GATE_RE_GIT_ADD`, and `gate_verb_args` for the arguments after the
@@ -87,10 +126,14 @@ The hooks split into three classes:
   message and a re-run, a false pass is the bug above. `git add -p` /
   `-i` (the human picks interactively), `--pathspec-from-file` (the
   pathspecs are in a file), and an UNEXPANDED pathspec (`git add
-  "$FILE"`) all drop the pathspec restriction and scan the whole tree;
-  an unknown `git add` flag is treated as valueless, so if a future one
-  does take a value that value is read as an extra pathspec, which only
-  ever ADDS files. Two branches err NARROW, knowingly: `git add -f` with
+  "$FILE"`) all drop the pathspec restriction and scan the whole tree.
+  So does an UNKNOWN `git add` flag: the valueless reading it used to
+  get was a FAIL-OPEN rather than a widen, because the flag's value
+  became a pathspec, which also SUPPRESSED the whole-tree fallback —
+  measured, `git add --future-flag somevalue && git commit -m x`
+  returned 0 with an untracked NUL present. The flags `git add` really
+  does accept without a value are enumerated instead, so the default can
+  be the safe one. Two branches err NARROW, knowingly: `git add -f` with
   NO pathspec keeps `--exclude-standard` (an unbounded walk of every
   gitignored path would make the gate the slowest thing in the commit;
   `-f` WITH a pathspec does drop it), and a symlink is skipped, because
@@ -110,9 +153,11 @@ The hooks split into three classes:
   OPEN: the commit proceeds, and the only signal is an error on stderr
   that reads like noise from the hook rather than a refusal.
 
-  `.claude/hooks/control-char-gate.test.sh` (52 cases, run by
+  `.claude/hooks/control-char-gate.test.sh` (93 cases, run by
   `vp run test:hooks`) drives all of the above through the real hook
-  against throwaway repositories, in BOTH directions.
+  against throwaway repositories, in BOTH directions — including from a
+  SUBDIRECTORY cwd, whose absence is why 52 earlier green cases did not
+  see the whole-tree bug.
 
   **The gate is still not the only fence, because it is a PreToolUse
   hook and therefore only ever sees the AGENT's tool calls** — a human

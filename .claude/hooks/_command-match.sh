@@ -515,7 +515,18 @@ GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 # presents the gate with the PRE-add index and the offending file is invisible
 # (go-to-k/cdk-local#576). Built the same way every other verb here is, so
 # `git -C <path> add`, a launcher prefix and quoted spans all reach it.
-GATE_RE_GIT_ADD="^git${GATE_FLAGS}[[:space:]]+add([[:space:]]|$)"
+# `stage` is git's own built-in alias for `add` (not a user alias), so it has
+# to be here or the staging scan is one synonym away from being skipped.
+# The extra group is harmless: nothing reads a numbered BASH_REMATCH off
+# this regex -- `gate_target_dir` and `gate_verb_args` use [0] only.
+GATE_RE_GIT_ADD="^git${GATE_FLAGS}[[:space:]]+(add|stage)([[:space:]]|$)"
+# The removal verbs, for the same reason control-char-gate needs the staging
+# ones: `rm bad.ts && git add -A && git commit` is ONE Bash call, so at hook time
+# the file is still on disk with its control byte in it, while the commit that
+# call produces does not contain the file at all. The only place that deletion
+# is visible BEFORE the command runs is the command.
+GATE_RE_RM="^rm([[:space:]]|$)"
+GATE_RE_GIT_RM="^git${GATE_FLAGS}[[:space:]]+rm([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 # issue-classification-label-gate: the CLAIM site. `/work-issues` says most open
 # bodies are still in the old packed shape and are upgraded to the four-line
@@ -611,6 +622,28 @@ gate_unquote() {
   printf '%s' "$p"
 }
 
+# gate_verb_args <cmd> <verb-ere>
+#
+# Print, one line per matching segment, the text that FOLLOWS the matched verb
+# in that segment -- flags included, because the verb ERE has already consumed
+# the leading flag run. Nothing is printed for a command with no matching
+# segment.
+#
+# This is `gate_pr_selector`'s first two lines, factored out: that function
+# exists because four gates each rolled their own "strip the verb, then read the
+# arguments" and all four broke the moment GATE_GH_C widened. The strip must
+# come from the SAME constant that armed the gate -- `BASH_REMATCH[0]` of the
+# verb ERE -- so a gate cannot match one way and parse another. A caller that
+# wants something other than a PR number (control-char-gate wants `git add`'s
+# pathspecs) gets the same guarantee here instead of writing the strip again.
+gate_verb_args() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s\n' "${segment#"${BASH_REMATCH[0]}"}"
+  done < <(gate_segments "$cmd")
+}
+
 # gate_pr_selector <command> <verb-ere>
 #
 # Print the PR number the guarded command targets, or NOTHING when it carries no
@@ -639,28 +672,6 @@ gate_unquote() {
 # the verb ERE is anchored at the segment start and already absorbs every flag
 # spelling, so `BASH_REMATCH[0]` is exactly the part to remove, whatever flags it
 # swallowed. A gate can no longer match one way and parse another.
-# gate_verb_args <cmd> <verb-ere>
-#
-# Print, one line per matching segment, the text that FOLLOWS the matched verb
-# in that segment -- flags included, because the verb ERE has already consumed
-# the leading flag run. Nothing is printed for a command with no matching
-# segment.
-#
-# This is `gate_pr_selector`'s first two lines, factored out: that function
-# exists because four gates each rolled their own "strip the verb, then read the
-# arguments" and all four broke the moment GATE_GH_C widened. The strip must
-# come from the SAME constant that armed the gate -- `BASH_REMATCH[0]` of the
-# verb ERE -- so a gate cannot match one way and parse another. A caller that
-# wants something other than a PR number (control-char-gate wants `git add`'s
-# pathspecs) gets the same guarantee here instead of writing the strip again.
-gate_verb_args() {
-  local cmd="$1" re="$2" segment
-  while IFS= read -r segment; do
-    [[ "$segment" =~ $re ]] || continue
-    printf '%s\n' "${segment#"${BASH_REMATCH[0]}"}"
-  done < <(gate_segments "$cmd")
-}
-
 gate_pr_selector() {
   local cmd="$1" re="$2" segment args tok
   while IFS= read -r segment; do
