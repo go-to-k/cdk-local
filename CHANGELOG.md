@@ -1,3 +1,10 @@
+## [0.147.11](https://github.com/go-to-k/cdk-local/compare/v0.147.10...v0.147.11) (2026-08-27)
+
+
+### Bug Fixes
+
+* **integ:** compare the redirect Location VALUE, not the header line ([#593](https://github.com/go-to-k/cdk-local/issues/593)) ([455132e](https://github.com/go-to-k/cdk-local/commit/455132e6affed6b18d54e8081f19b27d7371ebba))
+
 ## [0.147.10](https://github.com/go-to-k/cdk-local/compare/v0.147.9...v0.147.10) (2026-08-26)
 
 
