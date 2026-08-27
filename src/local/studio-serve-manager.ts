@@ -189,6 +189,25 @@ interface ServeKindSpec {
    * Anchored + decoration-stripped exactly like {@link readyRe}.
    */
   extraEndpointRe?: RegExp;
+  /**
+   * True when this kind legitimately prints its {@link readyRe} banner MORE
+   * THAN ONCE, so the post-ready stop below must NOT apply to it (issue #578).
+   *
+   * Exactly two kinds do, and both were verified at the emit site rather than
+   * assumed:
+   *
+   *   - `api` — `local-start-api` writes one banner per API GROUP and one per
+   *     WebSocket API (`process.stdout.write`, two consecutive loops).
+   *   - `alb` — `buildFrontDoor` logs one per LISTENER, and the loop `await`s
+   *     `startFrontDoorServer` between them, so those banners land in
+   *     DIFFERENT stdout chunks and therefore on different ticks. A
+   *     settle-based stop would silently drop every listener after the first.
+   *
+   * The other four print theirs once: `cloudfront` (one distribution per
+   * invocation), `agentcore-ws` (one listen line, either `ws://` or `http://`),
+   * and `ecs` / `ecs-task`, whose banners carry no capture group at all.
+   */
+  readyRepeats?: boolean;
 }
 
 /**
@@ -203,6 +222,8 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     portArgs: ['--port', '0', '--host', '127.0.0.1'],
     readyRe: /^Server listening on (\S+)/,
     capturesHttp: true,
+    // One banner per API group + one per WebSocket API.
+    readyRepeats: true,
   },
   alb: {
     // start-alb binds the deployed listener ports directly (no --port);
@@ -214,6 +235,8 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
     portArgs: [],
     readyRe: /^ALB front-door: (https?:\/\/\S+)/,
     capturesHttp: true,
+    // One banner per listener, and the loop awaits between them.
+    readyRepeats: true,
   },
   ecs: {
     // start-service runs the service replicas only — no host port, no
@@ -293,12 +316,41 @@ export function parsePublishedHostEndpoint(line: string): string | undefined {
   return m ? `http://${m[1]}` : undefined;
 }
 
+/**
+ * The one wording for "studio will not send requests to that destination"
+ * (issue #578), shared by every site that resolves a relay target: the ready
+ * line, the agentcore extra-endpoint line, the ecs replica publish banner, and
+ * the `--host-port` mapping. `endpoint` is untrusted text (child stdout, or a
+ * user-supplied flag value), so it is flattened + length-capped before being
+ * quoted back.
+ */
+function describeForeignEndpointRefusal(targetId: string, endpoint: string, what: string): string {
+  return (
+    `refused a non-loopback ${what} '${describeEndpointForMessage(endpoint)}' from ` +
+    `'${targetId}': a serve child always listens on this machine, so studio will ` +
+    'not send requests there. No endpoint was adopted and no capture proxy was started.'
+  );
+}
+
 /** ANSI SGR colour escapes, as the logger wraps a warn / error line with. */
 // eslint-disable-next-line no-control-regex -- ESC is exactly what is being stripped.
 const ANSI_SGR_RE = /\u001b\[[0-9;]*m/g;
 /** The verbose-mode preamble `<iso-timestamp> <LEVEL>  ` (`utils/logger`). */
 const VERBOSE_PREAMBLE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(DEBUG|INFO|WARN|ERROR)\s+/;
-/** A child logger's `[module] ` tag (`utils/logger`'s `ChildLogger`). */
+/**
+ * A child logger's `[module] ` tag (`utils/logger`'s `ChildLogger`).
+ *
+ * Stripped ONLY after a verbose preamble, and ONLY for the ecs publish banner
+ * ({@link ClassifiedChildLine.untagged}) — never for the ready-banner match.
+ * `ChildLogger` emits the tag exclusively at `debug` level (`logger.ts`
+ * `info` / `warn` / `error` prefix only when `getLevel() === 'debug'`), which
+ * is also the level that renders the `<timestamp> <LEVEL>` preamble, so a BARE
+ * `[tag] ` at column 0 is never cdk-local's. It IS how relayed third-party
+ * container output arrives — `[<container>] ` (`ecs-task-runner`) and
+ * `[svc=... r=... c=...] ` (`ecs-service-runner`) — so stripping it
+ * unconditionally re-anchored an application's own log line to `^` and let it
+ * impersonate a ready banner (issue #578).
+ */
 const MODULE_TAG_RE = /^\[[^\]]*\]\s+/;
 /** The compact-mode level prefix `WARN: ` / `ERROR: ` (`utils/logger`). */
 const COMPACT_LEVEL_RE = /^(WARN|ERROR):\s/;
@@ -313,14 +365,26 @@ export interface ClassifiedChildLine {
    */
   diagnostic: boolean;
   /**
-   * The line with ANSI colour, the verbose `<timestamp> <LEVEL>` preamble, a
-   * `[module]` child-logger tag and the compact `WARN: ` / `ERROR: ` prefix
-   * removed — so a ready pattern can be anchored to `^` regardless of which
-   * of the logger's two rendering modes the child ran in. Leading whitespace
-   * is NOT trimmed: the banners start at column 0, and trimming would let an
+   * The line with ANSI colour, the verbose `<timestamp> <LEVEL>` preamble and
+   * the compact `WARN: ` / `ERROR: ` prefix removed — so a ready pattern can
+   * be anchored to `^` regardless of which of the logger's two rendering modes
+   * the child ran in. A `[module]` tag is deliberately NOT removed here: no
+   * ready banner is ever tag-prefixed (`start-api` / `start-cloudfront` use
+   * `process.stdout.write`; `start-alb` / `run-task` / `start-agentcore` use
+   * the ROOT logger), while relayed container output IS, so stripping it would
+   * hand a third-party log line the `^` anchor. Leading whitespace is NOT
+   * trimmed either: the banners start at column 0, and trimming would let an
    * indented line impersonate one.
    */
   text: string;
+  /**
+   * {@link text} with one leading `[module] ` tag additionally removed, and
+   * ONLY when a verbose preamble preceded it — the single shape a cdk-local
+   * child logger can emit. Used by exactly one caller: the ecs publish banner
+   * ({@link parsePublishedHostEndpoint}), the one banner written through
+   * `getLogger().child('ecs')`. The ready-banner match reads {@link text}.
+   */
+  untagged: string;
 }
 
 /**
@@ -345,24 +409,20 @@ export function classifyChildLine(line: string): ClassifiedChildLine {
     if (verbose[1] === 'WARN' || verbose[1] === 'ERROR') diagnostic = true;
     text = text.slice(verbose[0].length);
   }
-  // A `[module]` tag and a compact `WARN: ` prefix can both remain, in either
-  // order (the compact renderer emits `WARN: `; `studio-ui` also tolerates a
-  // leading tag before it), so strip up to two decorations.
-  for (let i = 0; i < 2; i += 1) {
-    const tag = MODULE_TAG_RE.exec(text);
-    if (tag) {
-      text = text.slice(tag[0].length);
-      continue;
-    }
-    const level = COMPACT_LEVEL_RE.exec(text);
-    if (level) {
-      diagnostic = true;
-      text = text.slice(level[0].length);
-      continue;
-    }
-    break;
+  const level = COMPACT_LEVEL_RE.exec(text);
+  if (level) {
+    diagnostic = true;
+    text = text.slice(level[0].length);
   }
-  return { diagnostic, text };
+  // The module tag is peeled into a SEPARATE field, and only behind a verbose
+  // preamble — see {@link MODULE_TAG_RE}. A bare `[tag] ` at column 0 is
+  // relayed container output, so `text` keeps it and no ready pattern anchors.
+  let untagged = text;
+  if (verbose) {
+    const tag = MODULE_TAG_RE.exec(text);
+    if (tag) untagged = text.slice(tag[0].length);
+  }
+  return { diagnostic, text, untagged };
 }
 
 interface ServeEntry extends StudioServeState {
@@ -602,7 +662,27 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         const first = hp.find(
           (r) => r && typeof r === 'object' && typeof r.right === 'string' && r.right.trim() !== ''
         );
-        if (first) entry.hostUrl = 'http://127.0.0.1:' + first.right.trim();
+        if (first) {
+          // Issue #578 review — the ONE relay destination that used to skip
+          // the loopback bound. The port half is interpolated verbatim, so
+          // `--host-port 80=1@evil.example` yields `http://127.0.0.1:1@evil.
+          // example`, whose HOST is `evil.example`. It is user-supplied rather
+          // than child-supplied, but it is the same destination the composer
+          // posts to directly, so it goes through the same resolution.
+          const candidate = 'http://127.0.0.1:' + first.right.trim();
+          const local = normalizeLocalUpstream(candidate);
+          if (local === undefined) {
+            const msg = describeForeignEndpointRefusal(
+              req.targetId,
+              candidate,
+              '--host-port mapping'
+            );
+            emitLog(config.bus, clock, req.targetId, `WARN: ${msg}`, 'stderr');
+            getLogger().warn(msg);
+          } else {
+            entry.hostUrl = local;
+          }
+        }
       }
     }
     entries.set(req.targetId, entry);
@@ -646,13 +726,45 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
        * is untrusted text, so it is flattened + length-capped before being
        * quoted back.
        */
-      const refuseForeignEndpoint = (endpoint: string, what: string): void => {
-        const msg =
-          `refused a non-loopback ${what} '${describeEndpointForMessage(endpoint)}' from ` +
-          `'${req.targetId}': a serve child always listens on this machine, so studio will ` +
-          'not send requests there. No endpoint was adopted and no capture proxy was started.';
+      const refuseForeignEndpoint = (endpoint: string, what: string): string => {
+        const msg = describeForeignEndpointRefusal(req.targetId, endpoint, what);
         emitLog(config.bus, clock, req.targetId, `WARN: ${msg}`, 'stderr');
         getLogger().warn(msg);
+        return msg;
+      };
+
+      /**
+       * Fail the serve NOW with `reason`, instead of leaving it `starting`
+       * until `readyTimeoutMs` expires (issue #578 review).
+       *
+       * A refused ready line is terminal: the child named the only endpoint it
+       * is going to name, and studio will not use it. Waiting out the default
+       * 120 s and then reporting `did not start within 120000ms` buries the
+       * real cause in the LOGS panel, and it is a live configuration rather
+       * than an attack that lands here — `cdkl start-alb --container-host
+       * <non-loopback>` makes the front-door banner the refused line. Mirrors
+       * the timeout path exactly (graceful SIGTERM so the child tears its own
+       * containers down, proxies closed, entry dropped) but carries the
+       * refusal text as the failure reason, so the UI error banner says why.
+       *
+       * The trade: a serve that would have recovered — a foreign-looking line
+       * arriving BEFORE the genuine banner — now dies instead of waiting. That
+       * line has to clear bound 1 (not a WARN / ERROR), bound 2 (column 0, and
+       * as of this change not tag-stripped) and still name a non-loopback,
+       * non-wildcard host, which is the misconfiguration case far more than
+       * the coincidence case; and the old outcome for it was a 120 s wait
+       * ending in the same failure with a worse message.
+       */
+      const failServe = (reason: string): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeoutFn(timer);
+        entry.status = 'error';
+        emitServe(entry, reason);
+        void stopChild(child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
+        void closeProxies(entry);
+        entries.delete(req.targetId);
+        reject(new Error(reason));
       };
 
       // Handle a child ready line. `childUrl` (capture group 1) is the
@@ -679,7 +791,12 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         if (readyUrl !== undefined) {
           const local = normalizeLocalUpstream(readyUrl);
           if (local === undefined) {
-            refuseForeignEndpoint(readyUrl, 'ready line');
+            const msg = refuseForeignEndpoint(readyUrl, 'ready line');
+            // Terminal when the serve has no endpoint yet: settle NOW with the
+            // refusal as the reason rather than hanging until the ready
+            // timeout. Once running (an agentcore extra-endpoint line, a later
+            // alb listener) the serve keeps serving what it already has.
+            failServe(msg);
             return;
           }
           childUrl = local;
@@ -696,9 +813,22 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
             entry.proxies.push(proxy);
             endpoint = proxy.url;
           } catch {
-            // Proxy failed to bind — fall back to the direct child URL so
-            // the serve is still usable (just uncaptured).
-            endpoint = childUrl;
+            // Proxy failed to bind — fall back to the direct child URL so the
+            // serve is still usable (just uncaptured). Re-resolve it: the
+            // value published here is a destination the composer posts to with
+            // no proxy in front, and `startStudioProxy` enforces the same
+            // loopback bound by THROWING, so a caller that lost the guard
+            // above would otherwise have its refusal caught here and the
+            // foreign URL handed to the UI anyway (issue #578, defence in
+            // depth). Idempotent on the normal path — `childUrl` is already
+            // the resolved value.
+            const direct = normalizeLocalUpstream(childUrl);
+            if (direct === undefined) {
+              const msg = refuseForeignEndpoint(childUrl, 'ready line');
+              failServe(msg);
+              return;
+            }
+            endpoint = direct;
           }
         }
         // A stop() may have raced the async proxy startup; if so, drop the
@@ -720,7 +850,34 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         // of it at all; the line is still logged verbatim below.
         const parsed = classifyChildLine(line);
         if (!parsed.diagnostic) {
-          const m = spec.readyRe.exec(parsed.text);
+          // Issue #578 — stop reading `readyRe` once the serve has SETTLED,
+          // for the kinds whose banner is a single event. The banner marks a
+          // serve coming up, so a line arriving after that is not one, and
+          // letting it through is how an ordinary relayed handler log —
+          // `Server listening on http://127.0.0.1:9999`, at column 0 with no
+          // prefix, since Lambda container output is piped through raw
+          // (`docker-runner`'s `streamLogs`) — can add an endpoint and point a
+          // capture proxy, carrying the developer's headers and body, at a
+          // port it named. It stays on-box (the loopback bound holds), and it
+          // is additive rather than a re-point (the first endpoint, the one
+          // the UI shows, is never overwritten), but it is still a
+          // destination the child chose after boot.
+          //
+          // Where the line is drawn, and why it is not drawn wider: `api` and
+          // `alb` legitimately print the banner MORE THAN ONCE (see
+          // `ServeKindSpec.readyRepeats` — per API group / per WebSocket API,
+          // and per ALB listener with an `await` between them), so applying
+          // the stop there would silently drop real endpoints. Their residual
+          // is what bound 2 and bound 3 cover; closing it properly means
+          // prefixing relayed CONTAINER output the way ECS already does, which
+          // is `docker-runner`'s to fix, not this matcher's.
+          //
+          // The stop is scoped to `readyRe` alone. Two reads are legitimately
+          // post-settle and stay live: `extraEndpointRe` (agentcore's `http://`
+          // contract line, which by design follows the `ws://` listen line) and
+          // the `ecs` publish banner (one per replica, as containers come up).
+          // Both are narrower than `readyRe` and both keep the loopback bound.
+          const m = spec.readyRepeats || !settled ? spec.readyRe.exec(parsed.text) : null;
           // m[1] is the endpoint URL for api / alb; undefined for ecs (no
           // capture group) — a ready line with no host endpoint.
           if (m) void onReady(m[1]);
@@ -741,7 +898,10 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
           // (no proxy in front), so it carries the same loopback bound the
           // proxied endpoints do (issue #578).
           if (req.kind === 'ecs' && entry.hostUrl === undefined) {
-            const endpoint = parsePublishedHostEndpoint(parsed.text);
+            // The ONE banner a cdk-local child logger emits, so the one read
+            // that may look past a `[module]` tag — and only behind a verbose
+            // preamble (see `classifyChildLine`).
+            const endpoint = parsePublishedHostEndpoint(parsed.untagged);
             if (endpoint) {
               // Same resolution as the ready path: a wildcard `--container-host`
               // publish is rewritten to loopback (that IS where it is

@@ -94,30 +94,19 @@ export function isWildcardHostname(hostname: string): boolean {
 }
 
 /**
- * Resolve an upstream URL a serve child named into the URL studio may
- * actually use, or `undefined` when it must be refused (issue #578).
+ * Rewrite the HOST TOKEN of a wildcard-bound URL to `127.0.0.1`, leaving
+ * scheme, userinfo, port, path, query and fragment byte-for-byte (rather than
+ * re-serialising the `URL`, which would append a `/` the child never printed).
  *
- * A wildcard host is REWRITTEN to `127.0.0.1` (see
- * {@link isWildcardHostname}) and the rewritten URL is what gets adopted as
- * the endpoint and handed to the proxy, so the destination really is
- * loopback rather than merely tolerated. Everything else must already be
- * loopback ({@link isLoopbackHostname}); a foreign host or an unparseable URL
- * resolves to `undefined`.
- *
- * Only the host token is rewritten — scheme, userinfo, port, path, query and
- * fragment are carried through byte-for-byte (rather than re-serialising the
- * `URL`, which would append a `/` the child never printed).
+ * This is string surgery over an authority the WHATWG parser has ALREADY
+ * accepted, and the two parsers do not agree on where the authority ends —
+ * `\` terminates it for the parser and not for the `[/?#]` scan here, and any
+ * future terminator will diverge the same way. So this is deliberately NOT the
+ * decision-maker: {@link normalizeLocalUpstream} re-parses whatever comes back
+ * and refuses it unless the RESULT is loopback. Returning a wrong string here
+ * costs a refusal, never a foreign destination.
  */
-export function normalizeLocalUpstream(upstream: string): string | undefined {
-  let parsed: URL;
-  try {
-    parsed = new URL(upstream);
-  } catch {
-    return undefined;
-  }
-  if (!isWildcardHostname(parsed.hostname)) {
-    return isLoopbackHostname(parsed.hostname) ? upstream : undefined;
-  }
+function rewriteWildcardHostToken(upstream: string): string | undefined {
   const schemeEnd = upstream.indexOf('://');
   if (schemeEnd === -1) return undefined;
   const head = upstream.slice(0, schemeEnd + 3);
@@ -131,6 +120,62 @@ export function normalizeLocalUpstream(upstream: string): string | undefined {
   const portAt = hostPort.startsWith('[') ? hostPort.indexOf(']') + 1 : hostPort.indexOf(':');
   const port = portAt > 0 ? hostPort.slice(portAt) : '';
   return `${head}${userinfo}127.0.0.1${port}${tail}`;
+}
+
+/**
+ * Resolve an upstream URL a serve child named into the URL studio may
+ * actually use, or `undefined` when it must be refused (issue #578).
+ *
+ * A wildcard host is REWRITTEN to `127.0.0.1` (see
+ * {@link isWildcardHostname}) and the rewritten URL is what gets adopted as
+ * the endpoint and handed to the proxy, so the destination really is
+ * loopback rather than merely tolerated. Everything else must already be
+ * loopback; a foreign host or an unparseable URL resolves to `undefined`.
+ *
+ * # The answer is CHECKED, not asserted
+ *
+ * Whatever string this is about to return — the input verbatim, or the
+ * host-token rewrite of {@link rewriteWildcardHostToken} — is re-parsed with
+ * `new URL` and its `hostname` must satisfy {@link isLoopbackHostname}. That
+ * single post-condition is the whole guarantee, and it is stated over the
+ * VALUE HANDED BACK rather than over the value inspected on the way in, so it
+ * cannot be outrun by a spelling nobody enumerated.
+ *
+ * It has to be, because the string surgery and the URL parser disagree about
+ * where an authority ends. `http://0.0.0.0\@attacker.example/` parses to host
+ * `0.0.0.0` (WHATWG treats `\` as an authority terminator) but the `[/?#]`
+ * scan reads `0.0.0.0\@attacker.example` as one authority, so the rewrite
+ * lands on the wrong token and produces `http://0.0.0.0\@127.0.0.1/` — which
+ * re-parses to host `0.0.0.0`, NOT loopback, and is refused here. Adding `\`
+ * to the cut set would close exactly that spelling and leave the next one
+ * open; the post-condition closes the shape.
+ *
+ * Userinfo rides through byte-for-byte on the accepted path
+ * (`http://tok@0.0.0.0:51234/` -> `http://tok@127.0.0.1:51234/`) — verified,
+ * not assumed, since the post-condition now proves the destination that
+ * string actually names.
+ */
+export function normalizeLocalUpstream(upstream: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(upstream);
+  } catch {
+    return undefined;
+  }
+  const candidate = isWildcardHostname(parsed.hostname)
+    ? rewriteWildcardHostToken(upstream)
+    : upstream;
+  if (candidate === undefined) return undefined;
+  // The post-condition. A non-wildcard input re-parses to the hostname
+  // already read off `parsed`, so this is the ONLY loopback test the function
+  // needs — one check, over the returned value, on every path.
+  let confirmed: URL;
+  try {
+    confirmed = new URL(candidate);
+  } catch {
+    return undefined;
+  }
+  return isLoopbackHostname(confirmed.hostname) ? candidate : undefined;
 }
 
 /**

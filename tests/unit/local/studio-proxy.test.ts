@@ -360,24 +360,6 @@ describe('isLoopbackHostname (issue #578)', () => {
   });
 });
 
-describe('normalizeLocalUpstream over a whole URL (issue #578)', () => {
-  it('accepts every loopback spelling a URL can normalise, including the compressed and integer forms', () => {
-    expect(normalizeLocalUpstream('http://127.0.0.1:51234')).toBe('http://127.0.0.1:51234');
-    expect(normalizeLocalUpstream('ws://localhost:49160/ws')).toBe('ws://localhost:49160/ws');
-    expect(normalizeLocalUpstream('http://[::1]:51234/x')).toBe('http://[::1]:51234/x');
-    // `URL` normalises both of these to the hostname `127.0.0.1`, so they are
-    // loopback despite not looking like it.
-    expect(normalizeLocalUpstream('http://127.1:8080')).toBe('http://127.1:8080');
-    expect(normalizeLocalUpstream('http://2130706433:8080')).toBe('http://2130706433:8080');
-  });
-
-  it('refuses a foreign host, and refuses what it cannot parse rather than guessing', () => {
-    expect(normalizeLocalUpstream('http://attacker.example/')).toBeUndefined();
-    expect(normalizeLocalUpstream('not-a-url')).toBeUndefined();
-    expect(normalizeLocalUpstream('')).toBeUndefined();
-  });
-});
-
 describe('describeEndpointForMessage (issue #578)', () => {
   it('flattens control characters so a quoted endpoint cannot forge output', () => {
     expect(describeEndpointForMessage('http://a.example/\u001b[31m\r\nWARN: fake')).toBe(
@@ -429,7 +411,6 @@ describe('startStudioProxy upstream bound (issue #578)', () => {
   });
 });
 
-
 describe('isWildcardHostname (issue #578)', () => {
   it('recognises every spelling of the unspecified address', () => {
     for (const h of ['0.0.0.0', '::', '[::]', '0:0:0:0:0:0:0:0', '::ffff:0.0.0.0', '[::ffff:0:0]']) {
@@ -445,6 +426,16 @@ describe('isWildcardHostname (issue #578)', () => {
 });
 
 describe('normalizeLocalUpstream (issue #578)', () => {
+  it('accepts every loopback spelling a URL can normalise, including the compressed and integer forms', () => {
+    expect(normalizeLocalUpstream('http://127.0.0.1:51234')).toBe('http://127.0.0.1:51234');
+    expect(normalizeLocalUpstream('ws://localhost:49160/ws')).toBe('ws://localhost:49160/ws');
+    expect(normalizeLocalUpstream('http://[::1]:51234/x')).toBe('http://[::1]:51234/x');
+    // `URL` normalises both of these to the hostname `127.0.0.1`, so they are
+    // loopback despite not looking like it.
+    expect(normalizeLocalUpstream('http://127.1:8080')).toBe('http://127.1:8080');
+    expect(normalizeLocalUpstream('http://2130706433:8080')).toBe('http://2130706433:8080');
+  });
+
   it('rewrites a wildcard bind address to loopback, host token only', () => {
     expect(normalizeLocalUpstream('http://0.0.0.0:51234')).toBe('http://127.0.0.1:51234');
     expect(normalizeLocalUpstream('http://[::]:51234')).toBe('http://127.0.0.1:51234');
@@ -475,6 +466,104 @@ describe('normalizeLocalUpstream (issue #578)', () => {
       '',
     ]) {
       expect(normalizeLocalUpstream(u), u).toBeUndefined();
+    }
+  });
+
+  it('carries userinfo through byte-for-byte on the wildcard rewrite', () => {
+    // The DECISION taken here: userinfo is preserved rather than dropped or
+    // refused. It is preservable safely because the post-condition re-parses
+    // the result and proves the host it actually names - so `tok@` riding
+    // along cannot move the destination without the check catching it.
+    // Dropping it instead would silently strip a credential the child put on
+    // the URL and turn a working upstream into a 401.
+    expect(normalizeLocalUpstream('http://tok@0.0.0.0:51234/')).toBe(
+      'http://tok@127.0.0.1:51234/'
+    );
+    expect(normalizeLocalUpstream('http://u:p@0.0.0.0:8080/x')).toBe(
+      'http://u:p@127.0.0.1:8080/x'
+    );
+    expect(normalizeLocalUpstream('http://u:p@[::]:8080/x?q=1#f')).toBe(
+      'http://u:p@127.0.0.1:8080/x?q=1#f'
+    );
+  });
+
+  it('refuses a rewrite whose RESULT is not loopback (the `\\` authority terminator)', () => {
+    // `\` ends the authority for the WHATWG parser but not for the `[/?#]`
+    // scan, so the host token the rewrite lands on is the wrong one and the
+    // result re-parses to host `0.0.0.0`. Caught by the post-condition rather
+    // than by adding `\` to the cut set - which would fix this one spelling
+    // and leave the next terminator open.
+    expect(normalizeLocalUpstream('http://0.0.0.0\\@attacker.example/')).toBeUndefined();
+    expect(normalizeLocalUpstream('http://0.0.0.0:8080\\@evil.example/')).toBeUndefined();
+    expect(normalizeLocalUpstream('ws://0.0.0.0\\@evil.example/ws')).toBeUndefined();
+  });
+
+  it('POST-CONDITION: every accepted result re-parses to a loopback host', () => {
+    // The property the function actually promises, asserted over the value it
+    // HANDS BACK rather than over the one it inspected on the way in - so a
+    // spelling nobody enumerated cannot slip a non-loopback destination out.
+    const INPUTS = [
+      // loopback, wildcard, and the odd spellings of each
+      'http://127.0.0.1:51234',
+      'http://127.1:8080',
+      'http://2130706433:8080',
+      'http://0177.0.0.1/',
+      'http://LOCALHOST:3000/',
+      'http://[::1]:51234/x',
+      'ws://localhost:49160/ws',
+      'http://0.0.0.0:51234',
+      'https://0.0.0.0:8443/a/b?q=1#f',
+      'http://[::]:51234',
+      'http://[0:0:0:0:0:0:0:0]:51234',
+      'http://[::ffff:0.0.0.0]:51234',
+      'http://tok@0.0.0.0:51234/',
+      'http://u:p@0.0.0.0:8080/x',
+      // things that must be refused rather than returned
+      'http://attacker.example/',
+      'http://0.0.0.0\\@attacker.example/',
+      'http://0.0.0.0:8080\\@evil.example/',
+      'http://127.0.0.1@attacker.example/',
+      'http://2852039166/',
+      'http://169.254.169.254:80',
+      'http://[2001:db8::1]:3000',
+      'http://:::8080',
+      'not-a-url',
+      '',
+    ];
+    let accepted = 0;
+    for (const input of INPUTS) {
+      const out = normalizeLocalUpstream(input);
+      if (out === undefined) continue;
+      accepted += 1;
+      // Must parse, and must name this machine.
+      const parsed = new URL(out);
+      expect(isLoopbackHostname(parsed.hostname), `${input} -> ${out}`).toBe(true);
+    }
+    // Guard the guard: a mutant that refuses everything would satisfy the
+    // loop vacuously.
+    expect(accepted).toBe(14);
+  });
+
+  it('delegates host judgement to `URL`, so its normalisations are the ones that count', () => {
+    const CASES: Array<[string, string | undefined]> = [
+      // userinfo `@` does NOT make the credential the host
+      ['http://127.0.0.1@attacker.example/', undefined],
+      // decimal integer form of 169.254.169.254
+      ['http://2852039166/', undefined],
+      // OCTAL 0177 == 127, which `URL` resolves to 127.0.0.1
+      ['http://0177.0.0.1/', 'http://0177.0.0.1/'],
+      // a rooted (trailing-dot) IPv4 still parses as the IPv4 literal
+      ['http://127.0.0.1./', 'http://127.0.0.1./'],
+      // ...but a rooted NAME is a name, and `localhost.` is not the literal
+      ['http://localhost./', undefined],
+      // hostnames are case-insensitive; `URL` lowercases them
+      ['http://LOCALHOST:3000/', 'http://LOCALHOST:3000/'],
+      ['HTTP://127.0.0.1:3000/', 'HTTP://127.0.0.1:3000/'],
+      // an UNBRACKETED IPv6 authority is not a URL at all
+      ['http://:::8080', undefined],
+    ];
+    for (const [input, expected] of CASES) {
+      expect(normalizeLocalUpstream(input), input).toBe(expected);
     }
   });
 });

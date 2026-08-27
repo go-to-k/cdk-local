@@ -90,13 +90,15 @@
  *
  * # What this does NOT close
  *
- * A single-LINE forged string still reaches readers other than a human.
- * `cdkl studio` matches every serve-child stdout line against an unanchored
- * ready-line regex and proxies to the URL it captures, so a message
- * containing `Server listening on http://...` can redirect the studio proxy.
- * That is not fixed here — the sanitizer bounds the line, it does not stop a
- * machine from reading it — and it predates this change (an ordinary handler
- * log line trips the same matcher). Tracked in issue #578.
+ * A single-LINE forged string still reaches readers other than a human. It no
+ * longer redirects the studio capture proxy: issue #578 anchored every
+ * `cdkl studio` ready pattern to the start of the line, made the serve manager
+ * skip a line carrying cdk-local's own `WARN: ` / `ERROR: ` decoration
+ * outright, and bounded the resolved upstream to loopback — so a message
+ * containing `Server listening on http://...` is neither read as a banner nor
+ * usable as a destination. What remains is the reader this sanitizer was
+ * always aimed at: a HUMAN scanning the log, for whom a forged-looking line is
+ * still misleading text, which is why the flattening + capping stay.
  */
 import { getLogger } from '../utils/logger.js';
 

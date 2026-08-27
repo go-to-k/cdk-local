@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vite-plus/test';
+import { getLogger } from '../../../src/utils/logger.js';
 import {
   StudioEventBus,
   type StudioLogEvent,
@@ -1440,6 +1441,8 @@ function startPending(
   serves: StudioServeEvent[];
   logs: StudioLogEvent[];
   list: () => StudioServeState[];
+  /** The pending `start()` promise. Pre-attached `catch` so it never leaks. */
+  ready: Promise<StudioServeState>;
 } {
   const bus = new StudioEventBus();
   const { serves, logs } = collect(bus);
@@ -1454,7 +1457,7 @@ function startPending(
   });
   const ready = mgr.start({ targetId, kind });
   ready.catch(() => undefined);
-  return { child, fp, serves, logs, list: () => mgr.list() };
+  return { child, fp, serves, logs, list: () => mgr.list(), ready };
 }
 
 describe('classifyChildLine (issue #578)', () => {
@@ -1462,14 +1465,20 @@ describe('classifyChildLine (issue #578)', () => {
     expect(classifyChildLine('WARN: pinned image')).toEqual({
       diagnostic: true,
       text: 'pinned image',
+      untagged: 'pinned image',
     });
-    expect(classifyChildLine('ERROR: boom')).toEqual({ diagnostic: true, text: 'boom' });
+    expect(classifyChildLine('ERROR: boom')).toEqual({
+      diagnostic: true,
+      text: 'boom',
+      untagged: 'boom',
+    });
   });
 
   it('sees through the ANSI colour the logger wraps a warn line in', () => {
     expect(classifyChildLine('\u001b[33mWARN: pinned image\u001b[0m')).toEqual({
       diagnostic: true,
       text: 'pinned image',
+      untagged: 'pinned image',
     });
   });
 
@@ -1477,27 +1486,51 @@ describe('classifyChildLine (issue #578)', () => {
     expect(classifyChildLine('2026-08-27T12:00:00.000Z WARN  pinned image')).toEqual({
       diagnostic: true,
       text: 'pinned image',
+      untagged: 'pinned image',
     });
     expect(classifyChildLine('2026-08-27T12:00:00.000Z ERROR [ecs] boom')).toEqual({
       diagnostic: true,
-      text: 'boom',
+      // The tag stays on `text` and comes off only on `untagged`.
+      text: '[ecs] boom',
+      untagged: 'boom',
     });
   });
 
-  it('strips a `[module]` tag so an INFO banner still anchors', () => {
+  it('peels a `[module]` tag into `untagged` ONLY behind a verbose preamble', () => {
+    // The one shape a cdk-local child logger emits: `ChildLogger` prefixes
+    // info / warn / error only at debug level, which is also the level that
+    // renders the preamble.
     expect(
       classifyChildLine('2026-08-27T12:00:00.000Z INFO  [ecs] Service(s) running: 1.')
-    ).toEqual({ diagnostic: false, text: 'Service(s) running: 1.' });
-    expect(classifyChildLine('[ecs] Service(s) running: 1.')).toEqual({
+    ).toEqual({
       diagnostic: false,
-      text: 'Service(s) running: 1.',
+      text: '[ecs] Service(s) running: 1.',
+      untagged: 'Service(s) running: 1.',
     });
+  });
+
+  it('leaves a BARE `[tag]` in place on BOTH fields - it is relayed container output', () => {
+    // `[<container>] ` (ecs-task-runner) and `[svc=... c=...] ` (
+    // ecs-service-runner) are how a third party's own stdout reaches this
+    // stream. Stripping either would re-anchor an application log line to `^`.
+    for (const line of [
+      '[ecs] Service(s) running: 1.',
+      '[web] Server listening on http://127.0.0.1:9999',
+      '[svc=Api r=0 c=web] Server listening on http://127.0.0.1:9999',
+    ]) {
+      expect(classifyChildLine(line), line).toEqual({
+        diagnostic: false,
+        text: line,
+        untagged: line,
+      });
+    }
   });
 
   it('leaves an ordinary line - and its leading whitespace - alone', () => {
     expect(classifyChildLine('Server listening on http://127.0.0.1:51234')).toEqual({
       diagnostic: false,
       text: 'Server listening on http://127.0.0.1:51234',
+      untagged: 'Server listening on http://127.0.0.1:51234',
     });
     // NOT trimmed: the banners start at column 0, so an indented line must
     // stay unable to impersonate one.
@@ -1623,11 +1656,36 @@ describe('serve readiness anchors its banners to the start of the line (issue #5
     expect(h.fp.upstreams).toEqual([]);
   });
 
-  it('still matches a child-logger banner carrying a [module] tag', async () => {
+  it('does NOT treat a bare [module]-tagged line as a ready banner', async () => {
+    // No ready banner is tag-prefixed: `start-api` / `start-cloudfront` write
+    // straight to stdout, and `start-alb` / `run-task` / `start-agentcore` use
+    // the ROOT logger. A bare `[tag] ` at column 0 is relayed CONTAINER output
+    // (`[<container>] ` / `[svc=... c=...] `), so it must not be re-anchored.
     const h = startPending('ecs', 'Stack/Svc');
     h.child.stdout.emit('data', '[ecs] Service(s) running: 1 replica.\n');
     await tick();
+    expect(h.list()[0]?.status).toBe('starting');
+
+    const a = startPending('api');
+    a.child.stdout.emit('data', '[web] Server listening on http://127.0.0.1:9999\n');
+    await tick();
+    expect(a.list()[0]?.status).toBe('starting');
+    expect(a.fp.upstreams).toEqual([]);
+  });
+
+  it('still matches a child-logger banner behind the verbose preamble it really carries', async () => {
+    // The publish banner is the one banner written through
+    // `getLogger().child('ecs')`, and the tag only appears at debug level -
+    // i.e. always after the `<timestamp> <LEVEL>` preamble.
+    const h = startPending('ecs', 'Stack/Svc');
+    h.child.stdout.emit(
+      'data',
+      "2026-08-27T12:00:00.000Z INFO  [ecs] Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
+    );
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await tick();
     expect(h.list()[0]?.status).toBe('running');
+    expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:54321');
   });
 });
 
@@ -1646,19 +1704,35 @@ describe('serve readiness refuses a non-loopback endpoint (issue #578)', () => {
     'Server listening on not-a-url  (MyApi)',
   ];
 
-  it('adopts no endpoint, starts no proxy, and stays starting', async () => {
+  it('adopts no endpoint, starts no proxy, and fails the serve immediately', async () => {
     for (const line of FOREIGN) {
       const h = startPending('api');
       h.child.stdout.emit('data', `${line}\n`);
       await tick();
-      expect(h.list()[0]?.status, line).toBe('starting');
-      expect(h.list()[0]?.endpoints, line).toEqual([]);
+      // Settled NOW, not after the 120 s ready timeout: the child named the
+      // only endpoint it is going to name and studio will not use it, so the
+      // serve is dropped and the UI is told why (issue #578 review).
+      expect(h.list(), line).toEqual([]);
       expect(h.fp.upstreams, line).toEqual([]);
-      // The refusal is loud: a WARN line lands on the LOGS panel.
+      const last = h.serves.at(-1);
+      expect(last?.status, line).toBe('error');
+      // The failure REASON carries the refusal text - not a bare
+      // "did not start within 120000ms" with the cause buried in the logs.
+      expect(last?.message, line).toContain('non-loopback');
+      expect(last?.endpoints, line).toEqual([]);
+      // The refusal is also loud on the LOGS panel.
       const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
       expect(warn, line).toBeDefined();
       expect(warn, line).toContain('non-loopback');
+      // The child is torn down gracefully so it can stop its own containers.
+      expect(h.child.kill, line).toHaveBeenCalledWith('SIGTERM');
     }
+  });
+
+  it('rejects the pending start() with the refusal, not with a timeout message', async () => {
+    const h = startPending('api');
+    h.child.stdout.emit('data', 'Server listening on http://attacker.example/  (MyApi)\n');
+    await expect(h.ready).rejects.toThrow(/non-loopback/);
   });
 
   it('accepts every loopback spelling', async () => {
@@ -1692,8 +1766,9 @@ describe('serve readiness refuses a non-loopback endpoint (issue #578)', () => {
     const h = startPending('agentcore-ws', 'MyAgent');
     h.child.stdout.emit('data', 'Server listening on ws://attacker.example/ws  (MyAgent)\n');
     await tick();
-    expect(h.list()[0]?.status).toBe('starting');
-    expect(h.list()[0]?.endpoints).toEqual([]);
+    expect(h.list()).toEqual([]);
+    expect(h.serves.at(-1)?.status).toBe('error');
+    expect(h.serves.at(-1)?.message).toContain('non-loopback');
   });
 });
 
@@ -1802,7 +1877,8 @@ describe('a wildcard bind address is normalized to loopback, not refused (issue 
     const f = startPending('api', 'MyApi3');
     f.child.stdout.emit('data', 'Server listening on https://attacker.example/  (MyApi)\n');
     await tick();
-    expect(f.list()[0]?.status).toBe('starting');
+    expect(f.list()).toEqual([]);
+    expect(f.serves.at(-1)?.status).toBe('error');
     expect(f.fp.upstreams).toEqual([]);
   });
 
@@ -1839,5 +1915,310 @@ describe('a wildcard bind address is normalized to loopback, not refused (issue 
     expect(h.list()[0]?.status).toBe('running');
     expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:54321');
     expect(h.logs.map((l) => l.line).some((l) => l.startsWith('WARN: refused'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #578 review round - the bounds the first pass left partly open.
+// ---------------------------------------------------------------------------
+
+describe('the agentcore-ws ready anchor is fenced too (issue #578)', () => {
+  // `agentcore-ws` carries its OWN `readyRe` literal, distinct from `api`'s.
+  // Without this case, reverting the `^` on that one literal alone left the
+  // whole suite green - so "all six anchors are fenced" was 5/6.
+  it('does not treat an embedded phrase as the agentcore ready banner', async () => {
+    for (const line of [
+      'agent boot: Server listening on ws://127.0.0.1:3000/ws',
+      'Reload complete. Server listening on ws://127.0.0.1:3000/ws',
+      '  Server listening on ws://127.0.0.1:3000/ws',
+      'agent boot: Server listening on http://127.0.0.1:3000',
+    ]) {
+      const h = startPending('agentcore-ws', 'MyAgent');
+      h.child.stdout.emit('data', `${line}\n`);
+      await tick();
+      expect(h.list()[0]?.status, line).toBe('starting');
+      expect(h.list()[0]?.endpoints, line).toEqual([]);
+      expect(h.fp.upstreams, line).toEqual([]);
+    }
+  });
+});
+
+describe('a relayed container log cannot impersonate a ready banner (issue #578)', () => {
+  // Bound 2's real target: `[<container>] ` (ecs-task-runner) and
+  // `[svc=... c=...] ` (ecs-service-runner) are how a third party's stdout
+  // reaches this stream, and stripping the tag re-anchored it to `^`.
+  it('leaves an ecs container-prefixed banner unmatched for every kind', async () => {
+    const CASES: Array<[StudioTargetKind, string]> = [
+      ['api', '[web] Server listening on http://127.0.0.1:9999'],
+      ['api', '[svc=Api r=0 c=web] Server listening on http://127.0.0.1:9999'],
+      ['cloudfront', '[web] CloudFront distribution serving on http://127.0.0.1:9999'],
+      ['alb', '[web] ALB front-door: http://127.0.0.1:9999'],
+      ['agentcore-ws', '[agent] Server listening on ws://127.0.0.1:9999/ws'],
+      ['ecs', '[web] Service(s) running: 1'],
+      ['ecs-task', '[web] Task running (family=evil)'],
+    ];
+    for (const [kind, line] of CASES) {
+      const h = startPending(kind, `T-${kind}-${line.length}`);
+      h.child.stdout.emit('data', `${line}\n`);
+      await tick();
+      expect(h.list()[0]?.status, line).toBe('starting');
+      expect(h.list()[0]?.endpoints, line).toEqual([]);
+      expect(h.fp.upstreams, line).toEqual([]);
+    }
+  });
+
+  it('stops reading readyRe once a single-banner serve is running', async () => {
+    // `cloudfront` prints its banner exactly once, so a later line carrying it
+    // is not a banner. (`api` / `alb` are exempt - they legitimately print
+    // several - see ServeKindSpec.readyRepeats.)
+    const h = startPending('cloudfront', 'MyDist');
+    h.child.stdout.emit('data', 'CloudFront distribution serving on http://127.0.0.1:51234\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+    expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+
+    // A handler's own log line, post-boot, at column 0 and unprefixed.
+    h.child.stdout.emit('data', 'CloudFront distribution serving on http://127.0.0.1:9999\n');
+    await tick();
+    expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+    expect(h.list()[0]?.endpoints).toEqual([PROXIED]);
+  });
+
+  it('keeps reading the agentcore extra-endpoint line AFTER the serve is running', async () => {
+    // The stop is scoped to readyRe: agentcore's http:// contract line arrives
+    // by design after the ws:// listen line settled the serve.
+    const h = startPending('agentcore-ws', 'MyAgent');
+    h.child.stdout.emit('data', 'Server listening on ws://127.0.0.1:49160/ws  (MyAgent)\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+    h.child.stdout.emit('data', 'HTTP contract served on http://127.0.0.1:51234\n');
+    await tick();
+    expect(h.list()[0]?.endpoints).toEqual(['ws://127.0.0.1:49160/ws', PROXIED]);
+  });
+
+  it('keeps reading the ecs publish banner AFTER the serve is running', async () => {
+    const h = startPending('ecs', 'Stack/Svc');
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+    h.child.stdout.emit(
+      'data',
+      "Container 'web' container port 80 published on 127.0.0.1:54321. Reach it at 127.0.0.1:54321.\n"
+    );
+    await tick();
+    expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:54321');
+  });
+});
+
+describe('a refused ready line fails the serve immediately (issue #578)', () => {
+  it('does not leave an alb bound to a non-loopback --container-host hanging', async () => {
+    // `cdkl start-alb --container-host <non-loopback>` puts that host in the
+    // front-door banner, so this is a live configuration rather than an
+    // attack. It used to sit `starting` for the full 120 s ready timeout and
+    // then report a timeout, with the real cause only in the LOGS panel.
+    const h = startPending('alb', 'MyAlb');
+    h.child.stdout.emit('data', 'ALB front-door: http://10.1.2.3:8080 (listener port 80)\n');
+    await tick();
+    expect(h.list()).toEqual([]);
+    expect(h.serves.at(-1)?.status).toBe('error');
+    expect(h.serves.at(-1)?.message).toContain('non-loopback');
+    expect(h.child.kill).toHaveBeenCalledWith('SIGTERM');
+    await expect(h.ready).rejects.toThrow(/non-loopback/);
+  });
+
+  it('refuses an UNBRACKETED IPv6 bind address rather than guessing at it', async () => {
+    // `--container-host ::` makes the banner `http://:::8080`, which is not a
+    // URL: `new URL` rejects it, so the wildcard rewrite never runs. Repairing
+    // the spelling would mean re-deriving an authority the parser refused, so
+    // the answer is the honest one - refuse, fast, with the reason.
+    const h = startPending('alb', 'MyAlb');
+    h.child.stdout.emit('data', 'ALB front-door: http://:::8080 (listener port 80)\n');
+    await tick();
+    expect(h.list()).toEqual([]);
+    expect(h.serves.at(-1)?.status).toBe('error');
+    expect(h.serves.at(-1)?.message).toContain('non-loopback');
+  });
+
+  it('does NOT fail an already-running serve when a later endpoint line is refused', async () => {
+    const h = startPending('agentcore-ws', 'MyAgent');
+    h.child.stdout.emit('data', 'Server listening on ws://127.0.0.1:49160/ws  (MyAgent)\n');
+    await tick();
+    h.child.stdout.emit('data', 'HTTP contract served on http://attacker.example:80\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+    expect(h.list()[0]?.endpoints).toEqual(['ws://127.0.0.1:49160/ws']);
+  });
+
+  it('warns on the studio process logger, not only on the bus', async () => {
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    try {
+      const h = startPending('api');
+      h.child.stdout.emit('data', 'Server listening on http://attacker.example/  (MyApi)\n');
+      await tick();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain('non-loopback');
+      expect(warn.mock.calls[0]?.[0]).toContain('MyApi');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('the proxy-failure fallback keeps the loopback bound (issue #578)', () => {
+  /** A serve manager whose capture-proxy factory always fails to bind. */
+  function startWithFailingProxy(ready: string): {
+    child: ReturnType<typeof makeFakeChild>;
+    serves: StudioServeEvent[];
+    list: () => StudioServeState[];
+  } {
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      proxyFactory: () => Promise.reject(new Error('EADDRINUSE')),
+    });
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    p.catch(() => undefined);
+    child.stdout.emit('data', `${ready}\n`);
+    return { child, serves, list: () => mgr.list() };
+  }
+
+  it('publishes the NORMALIZED url, never the raw one the child printed', async () => {
+    // The fallback runs when the proxy cannot bind. It must hand the UI the
+    // resolved destination (127.0.0.1), not the wildcard bind address the
+    // child named - the composer posts to this string with no proxy in front.
+    const h = startWithFailingProxy('Server listening on http://0.0.0.0:51234  (MyApi)');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+    expect(h.list()[0]?.endpoints).toEqual(['http://127.0.0.1:51234']);
+  });
+
+  it('adopts nothing when the REAL proxy refuses a foreign upstream', async () => {
+    // Defence in depth, with no injected factory at all: the serve manager
+    // falls back to the real `startStudioProxy`, which enforces the same
+    // loopback bound by throwing. Green while EITHER guard stands, red only
+    // when both are gone - which is the point of having two.
+    const bus = new StudioEventBus();
+    const { serves } = collect(bus);
+    const child = makeFakeChild();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+    });
+    const p = mgr.start({ targetId: 'MyApi', kind: 'api' });
+    p.catch(() => undefined);
+    child.stdout.emit('data', 'Server listening on http://attacker.example/  (MyApi)\n');
+    await tick();
+    expect(mgr.list().flatMap((e) => e.endpoints)).toEqual([]);
+    expect(serves.some((e) => e.endpoints.includes('http://attacker.example/'))).toBe(false);
+    expect(serves.at(-1)?.status).toBe('error');
+  });
+});
+
+describe('a stdout line split across chunks is reassembled first (issue #578)', () => {
+  it('classifies the REASSEMBLED line, not either half', async () => {
+    const h = startPending('api');
+    // The `WARN: ` prefix and the banner phrase land in different chunks, and
+    // the split is mid-token. Only reassembly makes the diagnostic bound see
+    // the prefix; the URL is LOOPBACK so nothing else would stop it.
+    h.child.stdout.emit('data', 'WARN: Serv');
+    h.child.stdout.emit('data', 'er listening on http://127.0.0.1:51234\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('starting');
+    expect(h.list()[0]?.endpoints).toEqual([]);
+    expect(h.fp.upstreams).toEqual([]);
+    // And the LOGS panel gets one whole line, not two fragments.
+    expect(h.logs.map((l) => l.line)).toEqual([
+      'WARN: Server listening on http://127.0.0.1:51234',
+    ]);
+  });
+});
+
+describe('the serve manager delegates host judgement to normalizeLocalUpstream (issue #578)', () => {
+  // Locks the delegation that was only implicit: these are `URL`'s
+  // normalisations, and the serve manager must inherit every one of them
+  // rather than re-deciding with a regex of its own.
+  const CASES: Array<[string, string | undefined]> = [
+    // userinfo `@` does not make the credential the host
+    ['http://127.0.0.1@attacker.example/', undefined],
+    // decimal integer form of 169.254.169.254
+    ['http://2852039166/', undefined],
+    // OCTAL 0177 == 127
+    ['http://0177.0.0.1/', 'http://0177.0.0.1/'],
+    // a rooted IPv4 literal is still the literal
+    ['http://127.0.0.1.:51234/', 'http://127.0.0.1.:51234/'],
+    // a rooted NAME is a name
+    ['http://localhost./', undefined],
+    // hostnames are case-insensitive
+    ['http://LOCALHOST:51234/', 'http://LOCALHOST:51234/'],
+  ];
+
+  it('adopts exactly what normalizeLocalUpstream accepts', async () => {
+    for (const [url, expected] of CASES) {
+      const h = startPending('api', `T-${url}`);
+      h.child.stdout.emit('data', `Server listening on ${url}  (MyApi)\n`);
+      await tick();
+      if (expected === undefined) {
+        expect(h.list(), url).toEqual([]);
+        expect(h.fp.upstreams, url).toEqual([]);
+      } else {
+        expect(h.list()[0]?.status, url).toBe('running');
+        expect(h.fp.upstreams, url).toEqual([expected]);
+      }
+    }
+  });
+});
+
+describe('the --host-port hostUrl carries the loopback bound too (issue #578)', () => {
+  function startEcsWithHostPort(right: string): {
+    child: ReturnType<typeof makeFakeChild>;
+    logs: StudioLogEvent[];
+    list: () => StudioServeState[];
+    ready: Promise<StudioServeState>;
+  } {
+    const bus = new StudioEventBus();
+    const { logs } = collect(bus);
+    const child = makeFakeChild();
+    const fp = fakeProxies();
+    const mgr = createStudioServeManager({
+      cliEntry: '/p/cli.js',
+      bus,
+      spawnFn: (() => child) as never,
+      clock: fixedClock(),
+      proxyFactory: fp.factory,
+    });
+    const ready = mgr.start({
+      targetId: 'Stack/Svc',
+      kind: 'ecs',
+      options: { '--host-port': [{ left: '80', right }] },
+    });
+    ready.catch(() => undefined);
+    return { child, logs, list: () => mgr.list(), ready };
+  }
+
+  it('refuses a --host-port value that smuggles a foreign host past the interpolation', async () => {
+    // The port half is interpolated verbatim into `http://127.0.0.1:<right>`,
+    // so `1@evil.example` makes `evil.example` the HOST. The composer posts to
+    // hostUrl DIRECTLY, with no proxy in front.
+    const h = startEcsWithHostPort('1@evil.example');
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await h.ready;
+    expect(h.list()[0]?.hostUrl).toBeUndefined();
+    const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('--host-port');
+  });
+
+  it('still adopts an ordinary --host-port value', async () => {
+    const h = startEcsWithHostPort('8080');
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await h.ready;
+    expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:8080');
   });
 });
