@@ -407,6 +407,42 @@ instance: one command factory mishandling a flag, one resolver arm missing a cas
 one caller of a shared helper assuming the old contract. Once the root cause is
 named, grep for the same shape across `src/` before writing the fix.
 
+**Query for the PRECONDITION minus the REMEDY, never for the remedy alone.** When the
+defect is a MISSING thing, the obvious grep searches for the thing that is missing —
+and it can only ever return the sites that already HAVE it. The absent sites are
+invisible to it by construction, so the sweep reports itself complete while covering
+only the half that was never broken. Ask instead: what makes a site ELIGIBLE for this
+defect, and which eligible sites lack the fix?
+
+Measured here on 2026-08-27, in go-to-k/cdk-local#587's lane. The root cause was "a
+fixture leaks the Docker image it builds". The enumeration used to bound the sweep was
+`grep -n "docker rmi\|docker image rm\|docker image prune" tests/integration/*/verify.sh`
+— a search for the REMEDY. It returned five sites, all of them fixtures that already had
+cleanup, and the lane closed all five and declared the class done. The correct query is
+eligibility minus remedy:
+
+```bash
+BUILDERS=$(grep -rl 'DockerImageFunction\|DockerImageCode\|ContainerImage.fromAsset\|fromImageAsset\|image-override\|fromDockerImageAsset' tests/integration/ \
+  | awk -F/ '{print $3}' | sort -u)
+for f in $BUILDERS; do
+  v="tests/integration/$f/verify.sh"; [ -f "$v" ] || continue
+  grep -q 'docker image rm\|docker rmi' "$v" || echo "NO CLEANUP: $f"
+done
+```
+
+It returns **six** further fixtures, and a seventh (`local-invoke-agentcore`) that
+neither query finds because its image comes from a Dockerfile rather than a
+`DockerImageFunction` — filed as the go-to-k/cdk-local#603 umbrella. So the remedy-shaped
+query saw 5 of 12 eligible sites and could not have seen the other 7.
+
+**The same run then repeated the mistake one level up, which is why this is a rule and
+not a footnote.** An agent that had just diagnosed the flaw in the orchestrator's query
+sized the residue from the ONE instance it had tripped over — "one fixture, ~30 min" —
+rather than asking which query would find the class. It was seven fixtures, three of them
+the heaviest in the suite. **A count derived from the instance you happened to hit is not
+a count**; sizing a deferral is exactly where that matters, because the `Effort` and
+`Estimate` lines are what a future session budgets from.
+
 **N sites of one root cause is ONE issue and ONE PR, never N issues.** This is the
 single largest source of unbounded backlog growth: split into N, each site pays the
 full fixed cost — triage, claim, worktree, review tier, integ run, merge — for a fix
@@ -899,8 +935,21 @@ Run `/verify-pr`. It walks the full checklist (typecheck / lint / build / tests,
 status, docs consistency, Docker + integ marker, code review, PR title/body
 freshness) and — critically — **live-tests the changed behavior**:
 
-**Run the integ LAST, and note that "last" does not hold still across review
-rounds — so DECLARE the tree final, in words, to whoever is still editing it.**
+**Run the integ LAST — and set the `check` / `docs` markers AFTER it, not before.**
+A fixture run writes `cdk.out/`, `node_modules/` and a `pnpm-lock.yaml` inside
+`tests/integration/<fixture>/`, and the `check` gate's include set is
+`src/**` + `tests/**` + the configs. markgate's `files` digest covers those
+artifacts even though git ignores them, so a green integ run STALES a `check`
+marker set minutes earlier — with the tracked tree completely unchanged and
+`git status` clean. The symptom is a `git commit` refused for "digest differs"
+that no source edit explains, and re-running `/check` before the integ cannot
+fix it. The working order is: edit -> integ -> `/check` -> `markgate set` ->
+commit. Measured here on 2026-08-27 across all three lanes of one run; the
+first occurrence cost a re-diagnosis plus a full re-run of the unit suite.
+
+**Then run the integ LAST in the other sense too: "last" does not hold still
+across review rounds — so DECLARE the tree final, in words, to whoever is still
+editing it.**
 The `integ` gate is `hash: diff` against `merge-base(origin/main, HEAD)`, so it
 digests this branch's DELTA over the include set rather than the working tree's
 behaviour. That has a consequence worth stating outright: a round of review
@@ -1520,6 +1569,20 @@ Every run appending one more bullet is exactly how a long skill becomes an unrea
   not just this one, since a sentence travels from any of them. Frontmatter,
   fenced code blocks, and backtick spans are exempt, so a paragraph can still
   show a bare `#N` as its own counter-example (this one does).
+
+  **But NOT in a PR or issue BODY — there the qualified form is refused, and a
+  full URL is the only spelling that passes.** The rule above governs the
+  agent-instruction FILES, which travel between repos. A PR body does not
+  travel, and `pr-body-item-number-gate.sh` refuses any `#N` its allow-list
+  does not cover -- `closes #N`, `(#N)`, fenced code and full GitHub URLs are
+  allowed; `go-to-k/cdkd#1821` is not. Measured here on 2026-08-27: a
+  `gh pr create` was blocked on two such refs, both of them correct
+  cross-repo citations written to satisfy the rule above. The two
+  requirements point opposite ways for the same string, so pick by
+  DESTINATION: `go-to-k/<repo>#N` in a file under `.claude/**`, and
+  `https://github.com/go-to-k/<repo>/issues/N` in a PR or issue body. Nothing
+  detects the mismatch until the gate fires at `gh pr create`, which is after
+  the body is written.
 
 ### 10-d. Ship it like any other change
 
