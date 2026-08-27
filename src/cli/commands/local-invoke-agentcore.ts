@@ -13,7 +13,13 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
-import { applyRoleArnIfSet, AssumeRoleFailure } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  AssumeRoleFailure,
+  describeRejectedRoleArn,
+  isIamRoleArn,
+  refusedRoleArnMessage,
+} from '../../utils/role-arn.js';
 import { getDockerCmd } from '../../utils/docker-cmd.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -1508,10 +1514,37 @@ export async function resolveAssumeRoleArn(
   loaded: LocalStateRecord | undefined,
   stateProvider?: Pick<LocalStateProvider, 'resolveAgentCoreRuntimeRoleArn'>
 ): Promise<string | undefined> {
-  if (typeof options.assumeRole === 'string') return options.assumeRole;
+  if (typeof options.assumeRole === 'string') {
+    // Issue #607: `cdkl start-api` validates `--assume-role <arn>` at PARSE
+    // time (`parseAssumeRoleToken`, wired as that command's `argParser`), and
+    // this command has no argParser at all — so the identical spelling reached
+    // STS unchecked here. Rejecting at this resolution point restores the
+    // symmetry AND keeps an unbounded value off the callers' warn lines, which
+    // interpolate `flattenToOneLine(assumeRoleArn)` with no length cap of
+    // their own. A hard error, matching `parseAssumeRoleToken`: the user typed
+    // this, so silently ignoring it and falling back to shell credentials
+    // would be the wrong shape.
+    if (!isIamRoleArn(options.assumeRole)) {
+      throw new CdkLocalError(
+        `Invalid --assume-role value: expected an IAM role ARN like ` +
+          `arn:aws:iam::123456789012:role/MyRole, got ${describeRejectedRoleArn(options.assumeRole)}.`,
+        'LOCAL_INVOKE_AGENTCORE_ASSUME_ROLE_INVALID'
+      );
+    }
+    return options.assumeRole;
+  }
   if (options.assumeRole !== true) return undefined;
   // Bare --assume-role from here on.
-  if (resolved.roleArn) return resolved.roleArn;
+  // Issue #607: the template's literal `RoleArn`, the agentcore twin of
+  // `local-start-api`'s `Properties.Role`. Shape-checked, then FALL THROUGH to
+  // the state lookup on rejection — a runtime whose template RoleArn is not a
+  // usable ARN was always meant to be recoverable from deployed state.
+  if (resolved.roleArn !== undefined) {
+    if (isIamRoleArn(resolved.roleArn)) return resolved.roleArn;
+    getLogger().warn(
+      `--assume-role: the template RoleArn for '${resolved.logicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(resolved.roleArn)}. Ignoring it.`
+    );
+  }
   if (loaded) {
     const fromState = resolveExecutionRoleArnFromState(loaded, resolved.logicalId, 'RoleArn');
     if (fromState) {
@@ -1527,7 +1560,14 @@ export async function resolveAssumeRoleArn(
     const runtimePhysicalId = loaded.resources[resolved.logicalId]?.physicalId;
     if (stateProvider?.resolveAgentCoreRuntimeRoleArn && runtimePhysicalId) {
       const liveArn = await stateProvider.resolveAgentCoreRuntimeRoleArn(runtimePhysicalId);
-      if (liveArn) {
+      // Issue #607: shape-checked here as well as inside cdk-local's own
+      // provider, because `stateProvider` is an INTERFACE a host CLI may
+      // implement. Same reasoning as the `local-invoke.ts` sibling.
+      if (liveArn !== undefined && !isIamRoleArn(liveArn)) {
+        getLogger().warn(
+          `--assume-role: GetAgentRuntime for '${resolved.logicalId}' produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
+        );
+      } else if (liveArn) {
         // Issue #570: FLATTENED. `liveArn` is the deployed `roleArn` off a
         // `GetAgentRuntime` response with only a `startsWith('arn:')` check, and
         // `info` is a default level studio mirrors into an HTTP-served ring.
@@ -1681,6 +1721,33 @@ async function assumeAgentCoreExecutionRole(
   region: string | undefined,
   profile: string | undefined
 ): Promise<{ accessKeyId: string; secretAccessKey: string; sessionToken: string }> {
+  // GUARDED SEND (issue #607). The THIRD of the five `new AssumeRoleCommand(`
+  // sites in `src/`, and the one that matters most after the two in
+  // `utils/role-arn.ts`: every one of this function's three callers passes
+  // `resolveAssumeRoleArn(...)`'s output, so the value can be the runtime's
+  // template `RoleArn`, a deployed-state read, a `GetAgentRuntime` response,
+  // or a host-supplied `LocalStateProvider`'s return. Those are all checked at
+  // their resolution points — but `--assume-role <arn>` returns EARLY from
+  // `resolveAssumeRoleArn` before any of them, and unlike `start-api` this
+  // command has no `parseAssumeRoleToken` argParser, so that spelling reached
+  // STS unchecked while its `start-api` equivalent was rejected at parse.
+  //
+  // Shares `refusedRoleArnMessage` with the two guarded sends in
+  // `utils/role-arn.ts` so all three word the refusal identically. Refuses
+  // BEFORE the SDK is even imported, so nothing is loaded, built or logged.
+  //
+  // Throws `AssumeRoleFailure`, NOT a bare error: all three callers re-render
+  // with `describeAwsFailureForWarn` unless the error is an
+  // `AssumeRoleFailure`, and a non-service error is that policy's WITHHELD
+  // branch — so a `CdkLocalError` here would come out as
+  // `CdkLocalError; 213-character message withheld`, the exact double-withhold
+  // `AssumeRoleFailure`'s own JSDoc exists to document.
+  if (!isIamRoleArn(roleArn)) {
+    throw new AssumeRoleFailure(
+      refusedRoleArnMessage(roleArn),
+      `the role ARN is not well-formed: ${describeRejectedRoleArn(roleArn)}`
+    );
+  }
   const { STSClient, AssumeRoleCommand } = await import('@aws-sdk/client-sts');
   // Thread `--profile` so AssumeRole is signed with the profile's
   // credentials, not the default env-shadowed chain (issue #245).

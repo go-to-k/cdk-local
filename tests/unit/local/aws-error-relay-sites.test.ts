@@ -1175,7 +1175,25 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
   describe('NIT — the wire-derived values on default-level lines', () => {
     const FORGED_ARN = 'arn:aws:iam::1:role/x\nWARN: signature verified';
 
-    it('ecr-puller.ts flattens the role ARN', async () => {
+    /** A well-formed ARN, for the guard-the-guards below. */
+    const CLEAN_ARN = 'arn:aws:iam::999988887777:role/CleanRole';
+
+    /**
+     * REWRITTEN by issue #607, like the sibling cases in
+     * `tests/unit/cli/sts-error-relay-sites.test.ts`.
+     *
+     * These two used to assert the FLATTEN: a forged newline reached the
+     * thrown message and the flatten was what kept it on one line. #607
+     * guards both sends — `--ecr-role-arn` and `--layer-role-arn` — so the
+     * forged value is now REFUSED before either line is built, which is
+     * strictly stronger. The flatten stays as belt-and-braces at the sites
+     * a well-formed ARN still reaches.
+     *
+     * NOTE the reason those two sends are guarded is CONSISTENCY and the
+     * LENGTH BOUND, not #607's threat model: both take their ARN only from
+     * the user's own argv, never from a wire response.
+     */
+    it('ecr-puller.ts REFUSES a forged role ARN before any line is built', async () => {
       __resetStsCachesForTesting();
       mocks.stsSend
         .mockResolvedValueOnce({ Account: '999988887777' })
@@ -1186,11 +1204,27 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
           ecrRoleArn: FORGED_ARN,
         })
       );
-      expect(message).toContain('assume role arn:aws:iam::1:role/x WARN: signature verified');
+      expect(message).toContain('AssumeRole refused');
+      expect(message).toContain('Nothing was sent to STS');
       expect(message).not.toContain('\n');
     });
 
-    it('layer-arn-materializer.ts flattens the role ARN', async () => {
+    it('ecr-puller.ts guard-the-guard: a WELL-FORMED ARN still reaches the flattened line', async () => {
+      __resetStsCachesForTesting();
+      mocks.stsSend
+        .mockResolvedValueOnce({ Account: '999988887777' })
+        .mockRejectedValue(new Error('boom'));
+      const message = await thrownMessage(() =>
+        pullEcrImage('111122223333.dkr.ecr.us-east-1.amazonaws.com/repo:tag', {
+          region: 'us-east-1',
+          ecrRoleArn: CLEAN_ARN,
+        })
+      );
+      expect(message).toContain(`assume role ${CLEAN_ARN}`);
+      expect(message).not.toContain('AssumeRole refused');
+    });
+
+    it('layer-arn-materializer.ts REFUSES a forged role ARN before any line is built', async () => {
       const message = await thrownMessage(() =>
         materializeLayerFromArn(LAYER, {
           roleArn: FORGED_ARN,
@@ -1201,8 +1235,26 @@ describe('#579 round 2 — the fixes that a probe found unfenced', () => {
           }),
         })
       );
-      expect(message).toContain('STS AssumeRole(arn:aws:iam::1:role/x WARN: signature verified)');
+      expect(message).toContain('AssumeRole refused');
       expect(message).not.toContain('\n');
+      // Self-framed: the caller's own wrapper interpolates the raw ARN with no
+      // length cap, so the refusal must not travel through it.
+      expect(message).not.toContain('STS AssumeRole(');
+    });
+
+    it('layer-arn-materializer.ts guard-the-guard: a WELL-FORMED ARN still reaches the flattened line', async () => {
+      const message = await thrownMessage(() =>
+        materializeLayerFromArn(LAYER, {
+          roleArn: CLEAN_ARN,
+          stsClientFactory: () => ({
+            send: async () => {
+              throw new Error('boom');
+            },
+          }),
+        })
+      );
+      expect(message).toContain(`STS AssumeRole(${CLEAN_ARN})`);
+      expect(message).not.toContain('AssumeRole refused');
     });
 
     it("layer-arn-materializer.ts flattens the presigned host's HTTP reason phrase", async () => {

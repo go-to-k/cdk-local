@@ -290,11 +290,28 @@ describe('assumeRoleCredentials (issue #509 shared helper)', () => {
     );
   });
 
-  it('flattens a forged newline in the role ARN', async () => {
-    // Reachable because the bare `--assume-role` form resolves this ARN from a
-    // live `GetFunctionConfiguration` / `GetAgentRuntime` response behind only
-    // a `startsWith('arn:')` check.
-    sendImpl.fn = async () => ({});
+  /**
+   * REWRITTEN by issue #607. This case used to assert the FLATTEN: a forged
+   * newline reached the `AssumeRole(<arn>) failed:` framing, and the flatten
+   * was the only thing keeping it on one line — because the bare
+   * `--assume-role` form resolved the ARN from a live
+   * `GetFunctionConfiguration` / `GetAgentRuntime` response behind only a
+   * `startsWith('arn:')` check.
+   *
+   * #607 put a check at this send. So the forged value no longer gets as far
+   * as the framing, and the property worth asserting is the stronger one: it
+   * is REFUSED, and nothing was sent. The flatten stays as belt-and-braces; it
+   * is simply no longer what is being tested here.
+   *
+   * NOT a process-wide choke point, and an earlier revision of this note said
+   * it was ("one of the two places in the process where a role ARN is handed
+   * to STS"). `grep -rn 'new AssumeRoleCommand(' src/` finds FIVE sends. The
+   * third on the wire path — `local-invoke-agentcore.ts`'s
+   * `assumeAgentCoreExecutionRole` — is guarded separately against the same
+   * `refusedRoleArnMessage`; the remaining two take only `--layer-role-arn` /
+   * `--ecr-role-arn` from the user's own argv.
+   */
+  it('#607: REFUSES a forged newline before anything is sent to STS', async () => {
     const failure = await assumeRoleCredentials({
       roleArn: `${ROLE_ARN}\nWARN: signature verified`,
       region: undefined,
@@ -304,9 +321,66 @@ describe('assumeRoleCredentials (issue #509 shared helper)', () => {
       () => undefined,
       (err: unknown) => err
     );
+    expect(failure).toBeInstanceOf(AssumeRoleFailure);
     const message = (failure as Error).message;
-    expect(message).toContain(`AssumeRole(${ROLE_ARN} WARN: signature verified)`);
+    expect(message).toContain('AssumeRole refused');
+    expect(message).toContain('Nothing was sent to STS');
     expect(message).not.toContain('\n');
+    // The refusal happens BEFORE the client is built, so nothing was sent and
+    // no socket pool was opened.
+    expect(sent).toHaveLength(0);
+    expect(clientConfigs).toHaveLength(0);
+  });
+
+  it('#607: REFUSES an over-long value that merely starts with arn:', async () => {
+    const overlong = `arn:aws:iam::111111111111:role/${'A'.repeat(100_000)}`;
+    // Non-vacuity: it passes the check #607 replaced.
+    expect(overlong.startsWith('arn:')).toBe(true);
+    const failure = await assumeRoleCredentials({
+      roleArn: overlong,
+      region: undefined,
+      profile: undefined,
+      sessionNameSuffix: 'start-api',
+    }).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    const message = (failure as Error).message;
+    expect(message).toContain('AssumeRole refused');
+    // The refusal names the true length without relaying the value.
+    expect(message).toContain(`(${overlong.length} characters)`);
+    expect(message.length).toBeLessThan(500);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('#607: routes the refusal through makeError when a caller supplied one', async () => {
+    class OwnError extends Error {}
+    const failure = await assumeRoleCredentials({
+      roleArn: 'not-an-arn',
+      region: undefined,
+      profile: undefined,
+      sessionNameSuffix: 'start-service',
+      makeError: (m) => new OwnError(m),
+    }).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    expect(failure).toBeInstanceOf(OwnError);
+    expect((failure as Error).message).toContain('AssumeRole refused');
+  });
+
+  it('#607 guard-the-guard: a WELL-FORMED ARN still reaches STS', async () => {
+    // Without this, every refusal above would pass over a helper that had
+    // simply stopped sending anything at all.
+    const creds = await assumeRoleCredentials({
+      roleArn: ROLE_ARN,
+      region: undefined,
+      profile: undefined,
+      sessionNameSuffix: 'start-api',
+    });
+    expect(creds.accessKeyId).toBe('AKIATEST');
+    expect(sent).toHaveLength(1);
+    expect((sent[0] as { input: { RoleArn: string } }).input.RoleArn).toBe(ROLE_ARN);
   });
 });
 
@@ -423,20 +497,96 @@ describe('applyRoleArnIfSet — the uncaught AssumeRole relay (issue #579)', () 
     );
   });
 
-  it('flattens the role ARN on the SUCCESS line, which is the more reachable one', async () => {
-    // The bare `--assume-role` form resolves this ARN from a live
-    // `GetFunctionConfiguration` / `GetAgentRuntime` response behind only a
-    // `startsWith('arn:')` check, and this `info` line fires when the assume
-    // SUCCEEDS — so it is strictly more reachable than any failure path.
-    await applyRoleArnIfSet({
-      roleArn: `${ROLE_ARN}\nWARN: signature verified`,
-      region: undefined,
-      profile: undefined,
-    });
+  /**
+   * REWRITTEN by issue #607, for the same reason as its
+   * `assumeRoleCredentials` sibling. This used to assert the flatten on the
+   * SUCCESS `info` line — the most reachable of the six #570 sites, because it
+   * fires when the assume WORKS. #607 checks the value at this send, ahead of
+   * the flatten AND ahead of the `debug` line, so a forged ARN is refused and
+   * no line is emitted for it at any level.
+   *
+   * This send is also the one that covers `<envPrefix>_ROLE_ARN`, which
+   * reaches the function straight from the environment with no resolution
+   * point in front of it at all.
+   */
+  it('#607: REFUSES a forged newline, emitting no line at any level', async () => {
+    const message = await driveFailure(`${ROLE_ARN}\nWARN: signature verified`);
+    expect(message).toContain('AssumeRole refused');
+    expect(message).toContain('Nothing was sent to STS');
+    expect(message).not.toContain('\n');
+    // Nothing sent, nothing logged, and the process env untouched — the
+    // refusal is ahead of all three.
+    expect(sent).toHaveLength(0);
+    expect(infoLines.filter((l) => l.includes('signature verified'))).toHaveLength(0);
+    expect(debugLines.filter((l) => l.includes('signature verified'))).toHaveLength(0);
+    expect(process.env['AWS_ACCESS_KEY_ID']).not.toBe('AKIATEST');
+  });
+
+  it('#607: REFUSES an over-long value passed as the option', async () => {
+    const overlong = `arn:aws:iam::111111111111:role/${'A'.repeat(100_000)}`;
+    expect(overlong.startsWith('arn:')).toBe(true);
+    const message = await driveFailure(overlong);
+    expect(message).toContain('AssumeRole refused');
+    expect(message).toContain(`(${overlong.length} characters)`);
+    expect(message.length).toBeLessThan(500);
+    expect(sent).toHaveLength(0);
+  });
+
+  /**
+   * The ENV branch, driven through `CDKL_ROLE_ARN` rather than the option.
+   *
+   * An earlier revision titled the case above "read out of the environment"
+   * while `driveFailure` passes `{ roleArn }` — so the env branch, which is
+   * this send's whole justification for existing (it is the ONLY check in
+   * front of `<envPrefix>_ROLE_ARN`, which has no resolution point at all),
+   * was never actually executed. `roleArn || process.env[...]` means an
+   * UNDEFINED option is what selects it.
+   */
+  it('#607: REFUSES a malformed CDKL_ROLE_ARN, the branch with no resolution point', async () => {
+    const saved = process.env['CDKL_ROLE_ARN'];
+    try {
+      process.env['CDKL_ROLE_ARN'] = `arn:aws:iam::111111111111:role/${'A'.repeat(100_000)}`;
+      const message = await applyRoleArnIfSet({
+        roleArn: undefined,
+        region: undefined,
+        profile: undefined,
+      }).then(
+        () => '',
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      );
+      expect(message).toContain('AssumeRole refused');
+      expect(message).toContain('(100031 characters)');
+      expect(message.length).toBeLessThan(500);
+      expect(sent).toHaveLength(0);
+      expect(process.env['AWS_ACCESS_KEY_ID']).not.toBe('AKIATEST');
+    } finally {
+      if (saved === undefined) delete process.env['CDKL_ROLE_ARN'];
+      else process.env['CDKL_ROLE_ARN'] = saved;
+    }
+  });
+
+  it('#607 guard-the-guard: a WELL-FORMED CDKL_ROLE_ARN still assumes', async () => {
+    // Without this the env case above passes over a branch that had simply
+    // stopped reading the variable.
+    const saved = process.env['CDKL_ROLE_ARN'];
+    try {
+      process.env['CDKL_ROLE_ARN'] = ROLE_ARN;
+      await applyRoleArnIfSet({ roleArn: undefined, region: undefined, profile: undefined });
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { input: { RoleArn: string } }).input.RoleArn).toBe(ROLE_ARN);
+      expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
+    } finally {
+      if (saved === undefined) delete process.env['CDKL_ROLE_ARN'];
+      else process.env['CDKL_ROLE_ARN'] = saved;
+    }
+  });
+
+  it('#607 guard-the-guard: a WELL-FORMED ARN still assumes and still logs', async () => {
+    await applyRoleArnIfSet({ roleArn: ROLE_ARN, region: undefined, profile: undefined });
     const line = infoLines.find((l) => l.includes('Assumed role'));
-    expect(line).toContain(`Assumed role ${ROLE_ARN} WARN: signature verified`);
+    expect(line).toContain(`Assumed role ${ROLE_ARN}`);
     expect(line).not.toContain('\n');
-    expect(debugLines.every((l) => !l.includes('\n'))).toBe(true);
+    expect(sent).toHaveLength(1);
     expect(process.env['AWS_ACCESS_KEY_ID']).toBe('AKIATEST');
   });
 });

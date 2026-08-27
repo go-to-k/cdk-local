@@ -8,6 +8,7 @@ import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
 
 /**
  * Materialize a literal-ARN Lambda Layer to a host tmpdir so it can be
@@ -304,6 +305,36 @@ async function assumeRoleForLayer(
   region: string,
   options: MaterializeLayerOptions
 ): Promise<AwsCredentials> {
+  // GUARDED SEND (issue #607) — one of the two ARGV-SOURCED sends, the last of
+  // the five `new AssumeRoleCommand(` sites in `src/` to be guarded. This one
+  // is `--layer-role-arn`; its twin is in the other file.
+  //
+  // The reason is CONSISTENCY and the LENGTH BOUND, explicitly NOT the threat
+  // model. #607 is about a role ARN arriving off the WIRE — a hostile
+  // `GetFunctionConfiguration` / `GetAgentRuntime` response or a compromised
+  // CloudFormation state read — and that path does not reach here: this
+  // function's ARN comes only from `--layer-role-arn` on the user's own command
+  // line. A comment implying otherwise would be the next false invariant, and
+  // this lane already had to retract one ("one of the two places in the
+  // process where a role ARN is handed to STS" — there are five).
+  //
+  // What guarding buys is that all five sends answer "is this a role ARN?" the
+  // same way, and that an unbounded value cannot be sent or printed even when
+  // the user is the one who typed it. `--layer-role-arn` / `--ecr-role-arn`
+  // are declared as plain `new Option('<flag> <arn>', …)` with NO `argParser`
+  // — `local-start-api.ts` holds the repo's only `parseAssumeRoleToken`
+  // wiring — so nothing validated them before this.
+  //
+  // Throws the ALREADY-FRAMED `LayerMaterializationError`, not
+  // `UnframedLayerError`: the caller re-throws a framed error untouched, while
+  // an unframed one is wrapped in `STS AssumeRole(${flattenToOneLine(roleArn)})
+  // failed: …` — which interpolates the raw ARN with no cap, so framing the
+  // refusal there would put the very value being refused for its LENGTH onto
+  // the line. Self-framing keeps the whole message bounded.
+  if (!isIamRoleArn(roleArn)) {
+    throw new LayerMaterializationError(refusedRoleArnMessage(roleArn));
+  }
+
   const factory = options.stsClientFactory ?? (await defaultStsClientFactory());
   const client = factory(region);
   try {

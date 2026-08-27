@@ -18,6 +18,8 @@ import {
   applyRoleArnIfSet,
   assumeRoleCredentials,
   AssumeRoleFailure,
+  describeRejectedRoleArn,
+  isIamRoleArn,
 } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
@@ -1206,21 +1208,33 @@ export async function resolveAssumeRoleArnForLambda(
     // not its ARN. The function's deploy-time `Configuration.Role`
     // carries the full ARN.
     const liveArn = await stateProvider.resolveLambdaExecutionRoleArn(fnPhysicalId);
-    if (liveArn) {
+    // Issue #607: shape-checked HERE and not only inside cdk-local's own
+    // provider, because `LocalStateProvider` is an INTERFACE a host CLI may
+    // implement — `stateProvider` is whatever the caller passed, so the
+    // check inside `CfnLocalStateProvider` covers only cdk-local's own
+    // implementation. The send is bounded at the choke point regardless; this
+    // is what keeps a host provider's bad value off the `info` line below and
+    // names where it came from.
+    if (liveArn !== undefined && !isIamRoleArn(liveArn)) {
+      logger.warn(
+        `--assume-role: GetFunctionConfiguration for '${lambdaLogicalId}' produced a value that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(liveArn)}. Ignoring it.`
+      );
+    } else if (liveArn) {
       // Issue #570: FLATTENED, and this site is the reason the failure warns
       // below are not enough on their own. `liveArn` is the deployed
-      // `Configuration.Role` straight off a `GetFunctionConfiguration` response,
-      // validated only by `startsWith('arn:')`, and `info` is a DEFAULT level
-      // that `cdkl studio` mirrors into an HTTP-served log ring. This fires on
-      // SUCCESS, so it is strictly more reachable than the failure path.
+      // `Configuration.Role` straight off a `GetFunctionConfiguration`
+      // response, and `info` is a DEFAULT level that `cdkl studio` mirrors
+      // into an HTTP-served log ring. This fires on SUCCESS, so it is strictly
+      // more reachable than the failure path.
       //
-      // Deliberately not LENGTH-capped here: unlike a service message, an ARN
-      // has a shape, so the bound belongs at the `startsWith('arn:')`
-      // resolution point rather than at the log line. Tracked in
-      // https://github.com/go-to-k/cdk-local/issues/607 — it used to point at
-      // #579, which carried the ARN-bound paragraph alongside the relay list
-      // and closes with the relay work, so the pointer would have led to a
-      // closed issue.
+      // Issue #607 CLOSED the other half. `liveArn` is no longer merely
+      // `startsWith('arn:')`: `resolveLambdaExecutionRoleArn` now shape- and
+      // length-checks it with `isIamRoleArn` at the resolution point, which is
+      // where the bound had to go — the same value is SENT as
+      // `AssumeRoleCommand.RoleArn`, so a cap at this log line would have
+      // bounded only what gets printed. The flatten here is now
+      // belt-and-braces rather than the only thing standing between a hostile
+      // endpoint and this line.
       logger.info(
         `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${flattenToOneLine(liveArn)}`
       );
@@ -1234,6 +1248,32 @@ export async function resolveAssumeRoleArnForLambda(
   return undefined;
 }
 
+/**
+ * Pull a resource's execution-role ARN out of deployed stack state.
+ *
+ * Both reads below are WIRE-derived — `properties` / `observedProperties` and
+ * the referenced role's cached `Arn` attribute all come from a
+ * CloudFormation-backed state record — and the value is handed to
+ * `AssumeRoleCommand.RoleArn`, so each is shape-checked with
+ * {@link isIamRoleArn} rather than the `startsWith('arn:')` it used to carry
+ * (issue #607).
+ *
+ * A value that is PRESENT and rejected warns, because a caller that gets
+ * `undefined` cannot distinguish "state names no role" from "state names
+ * something that is not a role ARN", and the second is a real misconfiguration
+ * a user needs to see. Rejection still returns `undefined`, so the existing
+ * fallback order (state -> live `GetFunctionConfiguration` -> shell
+ * credentials) is unchanged.
+ *
+ * The warns are worded WITHOUT a `--assume-role:` prefix on purpose. An
+ * earlier revision carried one, on the belief that every caller ends in that
+ * flag's "could not resolve the execution role ARN" line. It does not:
+ * {@link suggestAssumeRoleFromState} calls this function on a plain
+ * `cdkl invoke --from-cfn-stack` with NO role flag at all (its caller is
+ * guarded on `options.assumeRole === undefined`) and is silent on a miss — so
+ * the prefix named a flag the user had not passed, on the one path where the
+ * whole point is to SUGGEST it.
+ */
 export function resolveExecutionRoleArnFromState(
   state: Pick<StackState, 'resources'>,
   logicalId: string,
@@ -1242,17 +1282,36 @@ export function resolveExecutionRoleArnFromState(
   const lambda = state.resources[logicalId];
   if (!lambda) return undefined;
 
+  const logger = getLogger();
   const roleRef = lambda.properties?.[roleProperty] ?? lambda.observedProperties?.[roleProperty];
-  if (typeof roleRef === 'string' && roleRef.startsWith('arn:')) {
-    return roleRef;
+  if (typeof roleRef === 'string') {
+    if (isIamRoleArn(roleRef)) {
+      return roleRef;
+    }
+    logger.warn(
+      `Deployed state for '${logicalId}' carries a ${roleProperty} that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleRef)}. Ignoring it.`
+    );
+    return undefined;
   }
   if (typeof roleRef === 'object' && roleRef !== null) {
     const refLogicalId = pickReferencedLogicalId(roleRef as Record<string, unknown>);
     if (refLogicalId) {
       const roleResource = state.resources[refLogicalId];
       const cached = roleResource?.attributes?.['Arn'];
-      if (typeof cached === 'string' && cached.startsWith('arn:')) {
+      if (isIamRoleArn(cached)) {
         return cached;
+      }
+      // An EMPTY `Arn` is not a misconfiguration — it is the documented
+      // sibling-stack shape (see issue #181 in this function's caller's
+      // JSDoc: `ListStackResources` returns the role's NAME, so the state map
+      // carries an empty `Arn` and the live `GetFunctionConfiguration`
+      // fallback is what resolves it). Warning on it would put a line on the
+      // normal success path. `cached !== undefined` did exactly that, because
+      // `''` passes it.
+      if (typeof cached === 'string' && cached.length > 0) {
+        logger.warn(
+          `The cached Arn attribute of '${refLogicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(cached)}. Ignoring it.`
+        );
       }
     }
   }

@@ -76,6 +76,7 @@ import {
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -312,8 +313,26 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       const resp = await client.send(
         new GetFunctionConfigurationCommand({ FunctionName: functionPhysicalId })
       );
-      if (typeof resp.Role === 'string' && resp.Role.startsWith('arn:')) {
+      // Issue #607: a SHAPE check, not `startsWith('arn:')`. This value is
+      // not only printed — it is handed straight to
+      // `AssumeRoleCommand.RoleArn`, so a bound at the log line would cover
+      // only half of it.
+      if (isIamRoleArn(resp.Role)) {
         return resp.Role;
+      }
+      // A field that is ABSENT stays silent: there is nothing to report and
+      // the caller already warns that it could not resolve a role. A field
+      // that is PRESENT and rejected is different — it is either a real
+      // misconfiguration (a role name, an ARN of the wrong resource type) or
+      // an endpoint returning something it should not, and the caller's
+      // generic "could not resolve" says neither. So it warns HERE, where the
+      // rejected value is still in hand, and still returns `undefined` so the
+      // existing "pass the ARN explicitly" fallback is unchanged.
+      if (resp.Role !== undefined) {
+        logger.warn(
+          `${this.label}: GetFunctionConfiguration(${flattenToOneLine(functionPhysicalId)}) returned a Role that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(resp.Role)}. ` +
+            `Ignoring it. Pass the ARN explicitly: --assume-role <arn>.`
+        );
       }
       return undefined;
     } catch (err) {
@@ -347,8 +366,17 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       const resp = await client.send(
         new GetAgentRuntimeCommand({ agentRuntimeId: runtimePhysicalId })
       );
-      if (typeof resp.roleArn === 'string' && resp.roleArn.startsWith('arn:')) {
+      // Issue #607 — same shape check, same reason, as the Lambda sibling
+      // above: this value is SENT as `AssumeRoleCommand.RoleArn`.
+      if (isIamRoleArn(resp.roleArn)) {
         return resp.roleArn;
+      }
+      // Present-but-rejected warns; absent stays silent. See the sibling.
+      if (resp.roleArn !== undefined) {
+        logger.warn(
+          `${this.label}: GetAgentRuntime(${flattenToOneLine(runtimePhysicalId)}) returned a roleArn that is not a well-formed IAM role ARN: ${describeRejectedRoleArn(resp.roleArn)}. ` +
+            `Ignoring it. Pass the ARN explicitly: --assume-role <arn>.`
+        );
       }
       return undefined;
     } catch (err) {

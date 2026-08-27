@@ -10,6 +10,7 @@ import { getLogger } from '../utils/logger.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
 
 /**
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
@@ -322,6 +323,34 @@ async function assumeRoleForEcr(
   profile: string | undefined,
   logger: ReturnType<ReturnType<typeof getLogger>['child']>
 ): Promise<TempCredentials> {
+  // GUARDED SEND (issue #607) — one of the two ARGV-SOURCED sends, the last of
+  // the five `new AssumeRoleCommand(` sites in `src/` to be guarded. This one
+  // is `--ecr-role-arn`; its twin is in the other file.
+  //
+  // The reason is CONSISTENCY and the LENGTH BOUND, explicitly NOT the threat
+  // model. #607 is about a role ARN arriving off the WIRE — a hostile
+  // `GetFunctionConfiguration` / `GetAgentRuntime` response or a compromised
+  // CloudFormation state read — and that path does not reach here: this
+  // function's ARN comes only from `--ecr-role-arn` on the user's own command
+  // line. A comment implying otherwise would be the next false invariant, and
+  // this lane already had to retract one ("one of the two places in the
+  // process where a role ARN is handed to STS" — there are five).
+  //
+  // What guarding buys is that all five sends answer "is this a role ARN?" the
+  // same way, and that an unbounded value cannot be sent or printed even when
+  // the user is the one who typed it. `--layer-role-arn` / `--ecr-role-arn`
+  // are declared as plain `new Option('<flag> <arn>', …)` with NO `argParser`
+  // — `local-start-api.ts` holds the repo's only `parseAssumeRoleToken`
+  // wiring — so nothing validated them before this.
+  //
+  // Thrown BEFORE the `debug` line and the client, and OUTSIDE the `try`, so a
+  // refused value is never printed, never opens a socket pool, and never meets
+  // the `catch`'s withholding policy — which would render cdk-local's own
+  // sentence as `LocalInvokeBuildError; NNN-character message withheld`.
+  if (!isIamRoleArn(roleArn)) {
+    throw new LocalInvokeBuildError(refusedRoleArnMessage(roleArn));
+  }
+
   logger.debug(`Assuming role ${roleArn} for ECR pull...`);
   // Thread `--profile` so the AssumeRole source identity is the profile's,
   // matching the rest of the pull path.

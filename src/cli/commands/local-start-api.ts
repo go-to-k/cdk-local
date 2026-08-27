@@ -16,7 +16,12 @@ import {
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
-import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assumeRoleCredentials,
+  describeRejectedRoleArn,
+  isIamRoleArn,
+} from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { isInteractive, pickManyTargets } from '../../local/target-picker.js';
@@ -2020,8 +2025,22 @@ export function resolveStartApiAssumeRoleArn(args: {
   // `Properties.Role` first (most CDK apps render this as an intrinsic,
   // but explicit-ARN refs DO surface here), then the deployed state.
   const roleProp = (lambdaResource.Properties ?? {})['Role'];
-  if (typeof roleProp === 'string' && roleProp.startsWith('arn:')) {
-    return roleProp;
+  if (typeof roleProp === 'string') {
+    // Issue #607: shape-checked, not `startsWith('arn:')`. This value is
+    // returned to a caller that hands it to `AssumeRoleCommand.RoleArn`. The
+    // send itself is bounded at the choke point in `utils/role-arn.ts`; the
+    // check HERE is what tells the user WHERE the bad value came from, which a
+    // refusal at the send cannot.
+    if (isIamRoleArn(roleProp)) {
+      return roleProp;
+    }
+    // Warn, then FALL THROUGH to the state lookup — the pre-#607 control flow
+    // for a string that failed the check, preserved deliberately: a template
+    // Role that is not a literal ARN was always meant to be recoverable from
+    // deployed state.
+    getLogger().warn(
+      `--assume-role: the template Role for '${logicalId}' is not a well-formed IAM role ARN: ${describeRejectedRoleArn(roleProp)}. Ignoring it.`
+    );
   }
   if (stateBundle) {
     const fromState = resolveExecutionRoleArnFromState(stateBundle.state, logicalId);
