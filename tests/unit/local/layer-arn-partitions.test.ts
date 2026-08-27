@@ -385,12 +385,23 @@ describe('resolveLambdaLayers — literal layer ARNs resolve in every partition 
     const { stack, props } = makeStackWithLayerArn(
       'arn:aws-cn:lambda:us-east-1:123456789012:layer:my-layer:1'
     );
-    expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(/cannot resolve locally/);
+    // The message must not send a China/GovCloud user back to the shape
+    // they already typed. Before the derived compare existed the only way
+    // to fail was a malformed ARN, so `arn:aws:lambda:...` was a fine
+    // thing to suggest; now a WELL-FORMED ARN can be rejected for the
+    // mismatch, and the remedy has to name the agreement requirement.
+    expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(
+      /arn:<partition>:lambda:.*partition agrees with its region/s
+    );
   });
 
   it('still throws for a literal string that is not a layer ARN at all', () => {
     const { stack, props } = makeStackWithLayerArn('not-an-arn');
     expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(/cannot resolve locally/);
+    // Distinguishable from the mismatch case above: this one quotes the
+    // offending literal back, which the reviewer flagged as untestable
+    // while both cases asserted only the shared prefix.
+    expect(() => resolveLambdaLayers(stack, 'Fn', props)).toThrow(/'not-an-arn'/);
   });
 });
 

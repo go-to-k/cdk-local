@@ -146,7 +146,7 @@ export interface ResolvedArnLambdaLayer {
   logicalId: string;
   /**
    * Full literal ARN as it appeared in the template
-   * (`arn:aws:lambda:<region>:<account>:layer:<name>:<version>`). Kept
+   * (`arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>`). Kept
    * verbatim alongside `logicalId` because callers (the materializer)
    * need the canonical ARN string for SDK calls and the per-kind
    * branch is the only place where the difference matters.
@@ -971,7 +971,7 @@ function resolveSafeZipEntryPath(root: string, entry: string): string {
  *     from outside cdk.out and there's no local directory to bind-mount.
  *
  * **Literal-ARN handling** (issue #448): entries shaped like the string
- * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` are parsed
+ * `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` are parsed
  * into a `{kind: 'arn', ...}` resolved layer. The actual
  * `lambda:GetLayerVersion` + presigned-URL download + unzip happens
  * later in the CLI (`materializeLayerFromArn(...)`), which can optionally
@@ -1010,7 +1010,8 @@ export function resolveLambdaLayers(
           `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: literal string '${entry}'. ` +
             'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
             'OR a literal layer-version ARN of the form ' +
-            'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+            'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
+            'whose partition agrees with its region.'
         );
       }
       out.push({ kind: 'arn', logicalId: parsed.arn, ...parsed });
@@ -1023,7 +1024,8 @@ export function resolveLambdaLayers(
         `Lambda '${logicalId}' has a Layers entry [${i}] ${getEmbedConfig().productName} cannot resolve locally: ${describeLayerEntry(entry)}. ` +
           'Expected a same-stack Ref / Fn::GetAtt to an AWS::Lambda::LayerVersion ' +
           'OR a literal layer-version ARN of the form ' +
-          'arn:aws:lambda:<region>:<account>:layer:<name>:<version>.'
+          'arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>, ' +
+          'whose partition agrees with its region.'
       );
     }
 
@@ -1051,7 +1053,7 @@ export function resolveLambdaLayers(
  * Parse a Lambda layer-version ARN string into its segments.
  *
  * Returns `undefined` for anything that does not match the strict
- * `arn:aws:lambda:<region>:<account>:layer:<name>:<version>` shape so
+ * `arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>` shape so
  * the caller can produce a clearer error than a silent
  * misinterpretation of hand-edited templates.
  *

@@ -177,9 +177,13 @@ export class EcsTaskResolutionError extends Error {
  * this file already imports from it, so the reverse direction would be
  * an import cycle.
  *
- * Re-exported here so the existing importers (`local-invoke.ts`,
- * `ecs-service-emulator.ts`, `local-run-task.ts`, `local-start-api.ts`)
- * keep working unchanged.
+ * `derivePartitionAndUrlSuffix` is re-exported so the existing importers
+ * (`local-invoke.ts`, `ecs-service-emulator.ts`, `local-run-task.ts`,
+ * `local-start-api.ts`) keep working unchanged. `PARTITION_TABLE` is NOT
+ * inherited traffic -- it did not exist before this change -- and is
+ * carried along only so the pair stays reachable from one module; its
+ * sole consumer today is the test asserting the two names resolve to the
+ * SAME objects rather than to a second copy.
  */
 export { PARTITION_TABLE, derivePartitionAndUrlSuffix } from './intrinsic-image.js';
 

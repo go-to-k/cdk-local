@@ -3,7 +3,9 @@ import {
   PARTITION_TABLE,
   derivePartitionAndUrlSuffix,
   derivePseudoParametersFromRegion,
+  tryResolveImageFnJoin,
 } from '../../../src/local/intrinsic-image.js';
+import type { TemplateResource } from '../../../src/types/resource.js';
 import * as ecsTaskResolver from '../../../src/local/ecs-task-resolver.js';
 
 /**
@@ -164,5 +166,104 @@ describe('derivePseudoParametersFromRegion — case asymmetry is deliberate', ()
       partition: 'aws-iso-f',
       urlSuffix: 'csp.hci.ic.gov',
     });
+  });
+});
+
+/**
+ * The end-to-end shape of the defect, composed rather than asserted a
+ * function at a time. go-to-k/cdkd#1821 describes the SYMPTOM as an ECR
+ * host that does not exist: with the short table, an `eusc-` /
+ * `eu-isoe-` / `us-isof-` region produced
+ * `<acct>.dkr.ecr.<region>.amazonaws.com`. Every other
+ * `tryResolveImageFnJoin` case in this repo hardcodes
+ * `urlSuffix: 'amazonaws.com'`, so none of them could ever have caught
+ * it -- the suffix never came from the table.
+ */
+/**
+ * Guard-the-guard for every assertion in this file that maps or filters
+ * `PARTITION_TABLE` and expects `[]`. All of them are satisfiable by an
+ * EMPTY table, so the table's own non-emptiness is what makes them mean
+ * anything. Asserting the exact row count rather than `> 0` so a
+ * silently-dropped row fails here and names itself, instead of leaving
+ * every downstream `toEqual([])` to pass on a shorter list.
+ */
+describe('PARTITION_TABLE is non-empty (the floor under every [] assertion here)', () => {
+  it('carries exactly the seven non-commercial partitions', () => {
+    expect(PARTITION_TABLE.length).toBe(7);
+    expect([...new Set(PARTITION_TABLE.map((r) => r.partition))].sort()).toEqual([
+      'aws-cn',
+      'aws-eusc',
+      'aws-iso',
+      'aws-iso-b',
+      'aws-iso-e',
+      'aws-iso-f',
+      'aws-us-gov',
+    ]);
+    // Commercial is the FALLBACK, deliberately not a row.
+    expect(PARTITION_TABLE.map((r) => r.partition)).not.toContain('aws');
+  });
+});
+
+describe('region -> pseudo parameters -> ECR image URI (issue #575, go-to-k/cdkd#1821)', () => {
+  const repoResources: Record<string, TemplateResource> = {
+    Repo1: { Type: 'AWS::ECR::Repository', Properties: {} },
+  };
+
+  function canonicalFromEcrJoin(repoLogicalId: string, tagOrDigest: string): unknown {
+    return {
+      'Fn::Join': [
+        '',
+        [
+          { 'Fn::Select': [4, { 'Fn::Split': [':', { 'Fn::GetAtt': [repoLogicalId, 'Arn'] }] }] },
+          '.dkr.ecr.',
+          { 'Fn::Select': [3, { 'Fn::Split': [':', { 'Fn::GetAtt': [repoLogicalId, 'Arn'] }] }] },
+          '.',
+          { Ref: 'AWS::URLSuffix' },
+          '/',
+          { Ref: repoLogicalId },
+          `:${tagOrDigest}`,
+        ],
+      ],
+    };
+  }
+
+  it.each([
+    ['us-isof-south-1', 'csp.hci.ic.gov'],
+    ['eu-isoe-west-1', 'cloud.adc-e.uk'],
+    ['eusc-de-east-1', 'amazonaws.eu'],
+    ['cn-north-1', 'amazonaws.com.cn'],
+    ['us-east-1', 'amazonaws.com'],
+  ])('builds the %s ECR host from the derived suffix (%s)', (region, expectedSuffix) => {
+    const pseudoParameters = derivePseudoParametersFromRegion(region);
+    expect(pseudoParameters, 'the region must resolve at all').toBeDefined();
+
+    const result = tryResolveImageFnJoin(canonicalFromEcrJoin('Repo1', 'latest'), repoResources, {
+      pseudoParameters,
+      stateResources: {
+        Repo1: {
+          physicalId: 'my-repo-name',
+          resourceType: 'AWS::ECR::Repository',
+          properties: {},
+          attributes: {
+            Arn: `arn:${pseudoParameters!.partition}:ecr:${region}:111111111111:repository/my-repo-name`,
+          },
+          dependencies: [],
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      kind: 'resolved',
+      uri: `111111111111.dkr.ecr.${region}.${expectedSuffix}/my-repo-name:latest`,
+    });
+  });
+
+  it('would have produced a non-existent host before the table was completed', () => {
+    // Guard-the-guard on the cases above: assert the three new rows do
+    // NOT answer the commercial suffix, so a regression that reverted the
+    // table would fail here even if someone loosened the expectations.
+    for (const region of ['us-isof-south-1', 'eu-isoe-west-1', 'eusc-de-east-1']) {
+      expect(derivePseudoParametersFromRegion(region)!.urlSuffix).not.toBe('amazonaws.com');
+    }
   });
 });

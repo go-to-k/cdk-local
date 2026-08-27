@@ -200,18 +200,24 @@ async function fetchLayerContentUrl(
     // `src/internal.ts`, so a host CLI can hand in a
     // `ResolvedArnLambdaLayer` it built itself, whose `arn` never went
     // through `parseLayerVersionArn`. The old re-interpolation was
-    // structurally immune to that; a bare `lastIndexOf` is not -- on a
-    // colon-free string it returns -1 and `slice(0, -1)` silently drops
-    // the last character, turning a caller's mistake into a confusing
-    // API error instead of a clear local one.
-    const lastColon = layer.arn.lastIndexOf(':');
-    if (lastColon <= 0) {
+    // structurally immune to that; stripping a tail is not.
+    //
+    // The guard asserts what is actually being stripped -- a NUMERIC
+    // version segment -- rather than merely that some colon exists. A
+    // bare `lastIndexOf` admits both failure shapes: a colon-free string
+    // returns -1 and `slice(0, -1)` drops the last character, AND a
+    // version-less `...:layer:MyLayer` strips the NAME instead, leaving
+    // `...:layer` paired with a `Number(undefined)` version. Both turn a
+    // caller's mistake into a confusing API error instead of a clear
+    // local one, which is the whole point of the check.
+    const versionSuffix = /^(.*):(\d+)$/.exec(layer.arn);
+    if (!versionSuffix) {
       throw new LayerMaterializationError(
         `Layer ${layer.arn}: not a layer-version ARN (no ':<version>' suffix to strip). ` +
           `Expected arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>.`
       );
     }
-    const versionLessArn = layer.arn.slice(0, lastColon);
+    const versionLessArn = versionSuffix[1]!;
     const command = await buildGetLayerVersionCommand(versionLessArn, Number(layer.version));
     const response = await client.send(command);
     const url = response?.Content?.Location;

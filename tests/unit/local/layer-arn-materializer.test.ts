@@ -160,6 +160,7 @@ describe('materializeLayerFromArn', () => {
       // partition-mismatched ARN. Deriving it from the original ARN is
       // what makes the parse fix reach the wire.
       const layerNames: unknown[] = [];
+      const versionNumbers: unknown[] = [];
       const arn = `arn:${partition}:lambda:${region}:111122223333:layer:MyLayer:3`;
       const zip = await buildZip([{ name: 'nodejs/index.js', data: 'module.exports = 1;' }]);
 
@@ -167,6 +168,7 @@ describe('materializeLayerFromArn', () => {
         lambdaClientFactory: (): LambdaSendClient => ({
           send: async (command: { input?: { LayerName?: unknown } }) => {
             layerNames.push(command.input?.LayerName);
+            versionNumbers.push(command.input?.VersionNumber);
             return { Content: { Location: 'https://presigned.example/zip' } };
           },
         }),
@@ -177,19 +179,32 @@ describe('materializeLayerFromArn', () => {
       expect(layerNames).toEqual([
         `arn:${partition}:lambda:${region}:111122223333:layer:MyLayer`,
       ]);
+      // The version is stripped from the ARN and passed separately, so
+      // assert BOTH halves of the split -- a strip that took the wrong
+      // segment would show up here even if the prefix looked right.
+      expect(versionNumbers).toEqual([3]);
     }
   );
 
-  it('rejects a hand-built layer whose arn carries no version suffix, instead of silently truncating it', async () => {
+  it.each([
+    ['colon-free', 'not-an-arn'],
+    ['version-less layer ARN', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer'],
+    ['non-numeric version', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:latest'],
+    ['version-less in another partition', 'arn:aws-cn:lambda:cn-north-1:111122223333:layer:MyLayer'],
+    ['empty version', 'arn:aws:lambda:us-east-1:111122223333:layer:MyLayer:'],
+  ])(
+    'rejects a hand-built layer whose arn has no numeric version suffix (%s)',
+    async (_label, arn) => {
     // `materializeLayerFromArn` is re-exported from `src/internal.ts`, so
     // a host CLI can pass a `ResolvedArnLambdaLayer` it built itself,
-    // whose `arn` never went through `parseLayerVersionArn`. Without the
-    // guard, `lastIndexOf(':')` returns -1 on a colon-free string and
-    // `slice(0, -1)` drops the last character, so the caller's mistake
-    // surfaces as a confusing AWS API error rather than a local one.
+    // whose `arn` never went through `parseLayerVersionArn`. Both failure
+    // shapes matter: a colon-free string used to strip the last
+    // CHARACTER, and a version-less `...:layer:MyLayer` used to strip the
+    // NAME -- leaving `...:layer` paired with `Number(undefined)`. The
+    // second is the one a plain colon check admits, so it is pinned here.
     let sent = 0;
     await expect(
-      materializeLayerFromArn(makeLayer({ arn: 'not-an-arn' }), {
+      materializeLayerFromArn(makeLayer({ arn }), {
         lambdaClientFactory: (): LambdaSendClient => ({
           send: async () => {
             sent += 1;
@@ -200,7 +215,8 @@ describe('materializeLayerFromArn', () => {
       })
     ).rejects.toThrow(/not a layer-version ARN/);
     expect(sent, 'must fail before any AWS call').toBe(0);
-  });
+    }
+  );
 
   it('routes through sts:AssumeRole when roleArn is set and forwards the temp creds to the Lambda client', async () => {
     const stsCalls: { region: string }[] = [];
