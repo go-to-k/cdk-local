@@ -121,7 +121,14 @@ for _ in $(seq 1 30); do
   RAW=$(curl -sS -o /dev/null -D- --max-time 5 \
     "http://127.0.0.1:${LB_HOST_PORT}/foo/bar" 2>&1 || true)
   LAST_STATUS=$(echo "${RAW}" | head -1 | tr -d '\r')
-  LAST_LOC=$(echo "${RAW}" | grep -i '^Location:' | head -1 | tr -d '\r')
+  # Capture the VALUE, not the whole header line. HTTP header names are
+  # case-insensitive (RFC 9110 5.1) and this server emits `location`
+  # lowercase, so comparing the name is comparing something the protocol
+  # does not promise -- which is exactly how this fixture came to be red on
+  # main (issue #592): the `-i` here said the case was not guaranteed, and
+  # the comparison below then required a capital `L`.
+  LAST_LOC=$(echo "${RAW}" | grep -i '^Location:' | head -1 | tr -d '\r' \
+    | sed -E 's/^[Ll]ocation:[[:space:]]*//')
   if [[ "${LAST_STATUS}" == HTTP/*\ 302* ]]; then
     READY=1
     break
@@ -141,9 +148,9 @@ if [[ "${READY}" -ne 1 ]]; then
 fi
 echo "    status=${LAST_STATUS}"
 echo "    ${LAST_LOC}"
-EXPECTED_LOC="Location: https://redirected.cdklocal.test/relocated/foo/bar"
+EXPECTED_LOC="https://redirected.cdklocal.test/relocated/foo/bar"
 if [[ "${LAST_LOC}" != "${EXPECTED_LOC}" ]]; then
-  echo "FAIL: Location header mismatch"
+  echo "FAIL: Location URL mismatch"
   echo "  expected: '${EXPECTED_LOC}'"
   echo "  got:      '${LAST_LOC}'"
   exit 1
@@ -155,7 +162,8 @@ echo "==> Phase 2: GET /baz -> 302 + Location (per-request #{path})"
 RAW=$(curl -sS -o /dev/null -D- --max-time 5 \
   "http://127.0.0.1:${LB_HOST_PORT}/baz" 2>&1 || true)
 PHASE2_STATUS=$(echo "${RAW}" | head -1 | tr -d '\r')
-PHASE2_LOC=$(echo "${RAW}" | grep -i '^Location:' | head -1 | tr -d '\r')
+PHASE2_LOC=$(echo "${RAW}" | grep -i '^Location:' | head -1 | tr -d '\r' \
+  | sed -E 's/^[Ll]ocation:[[:space:]]*//')
 echo "    status=${PHASE2_STATUS}"
 echo "    ${PHASE2_LOC}"
 if [[ "${PHASE2_STATUS}" != HTTP/*\ 302* ]]; then
@@ -163,9 +171,9 @@ if [[ "${PHASE2_STATUS}" != HTTP/*\ 302* ]]; then
   cat "${OUT_FILE}"
   exit 1
 fi
-EXPECTED_LOC2="Location: https://redirected.cdklocal.test/relocated/baz"
+EXPECTED_LOC2="https://redirected.cdklocal.test/relocated/baz"
 if [[ "${PHASE2_LOC}" != "${EXPECTED_LOC2}" ]]; then
-  echo "FAIL: Location header mismatch"
+  echo "FAIL: Location URL mismatch"
   echo "  expected: '${EXPECTED_LOC2}'"
   echo "  got:      '${PHASE2_LOC}'"
   exit 1
