@@ -1,3 +1,10 @@
+## [0.147.14](https://github.com/go-to-k/cdk-local/compare/v0.147.13...v0.147.14) (2026-08-27)
+
+
+### Bug Fixes
+
+* **integ:** make a fixture's failure diagnosable, and its image cleanup scoped to its own ([#604](https://github.com/go-to-k/cdk-local/issues/604)) ([248fb0e](https://github.com/go-to-k/cdk-local/commit/248fb0e07270099c19ef8ccd01d0b5fe20e8f5ac))
+
 ## [0.147.13](https://github.com/go-to-k/cdk-local/compare/v0.147.12...v0.147.13) (2026-08-27)
 
 
