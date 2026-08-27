@@ -1,3 +1,10 @@
+## [0.147.12](https://github.com/go-to-k/cdk-local/compare/v0.147.11...v0.147.12) (2026-08-27)
+
+
+### Bug Fixes
+
+* **alb:** sanitize all three raw-socket header writers, and fence control bytes repo-wide ([#595](https://github.com/go-to-k/cdk-local/issues/595)) ([86f1270](https://github.com/go-to-k/cdk-local/commit/86f1270fe969555a11d71eb4d0c41385aecb888f))
+
 ## [0.147.11](https://github.com/go-to-k/cdk-local/compare/v0.147.10...v0.147.11) (2026-08-27)
 
 
