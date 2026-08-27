@@ -59,8 +59,11 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      # PLURAL. Most fixtures own one stack; `local-invoke-from-cfn-stack-multi-stack`
      # owns two, and its cleanup destroys the consumer first — so an interrupted
      # destroy orphans the PRODUCER, which is exactly the one a single-name scan
-     # would skip. Read the fixture's own `integ_stack_name` calls and list all
-     # of them.
+     # would skip. Enumerate them mechanically rather than by reading -- a
+     # hand-read list is what drifted three times in this recipe's history:
+     #
+     #   grep -oE 'integ_stack_name[[:space:]]+[A-Za-z0-9_]+' \
+     #     tests/integration/<test-name>/verify.sh | awk '{print $2}' | sort -u
      for BASE in <FixtureStackBaseName> ...; do
        STACK="$(integ_stack_name "${BASE}")"
        : "${STACK:?stack name did not resolve — the helper is undefined}"
@@ -95,8 +98,19 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      EXECUTED rather than read.
 
 
-     If an orphan stack is reported, abort with a `cdk destroy "${STACK}"`
-     recipe — do NOT proceed. Note that a stack under THIS lane's name can also
+     If an orphan stack is reported, abort — do NOT proceed. Destroy **the
+     names the loop printed**, not `"${STACK}"`: that variable is assigned
+     INSIDE the loop, so after it runs it holds only the LAST base name. On the
+     two-stack fixture the scan finds the orphaned PRODUCER and `"${STACK}"` is
+     the consumer, which does not exist. Pass them to one `cdk destroy` in
+     DEPENDENCY order — consumer before producer, matching the fixture's own
+     cleanup — so the export is released before its exporter goes:
+
+     ```bash
+     cdk destroy <ConsumerStackName> <ProducerStackName> --force \
+       --region "${AWS_REGION:-us-east-1}"
+     ```
+ Note that a stack under THIS lane's name can also
      be a second run of the same fixture in the SAME worktree, i.e. a LIVE peer
      rather than a leftover: check for a running `verify.sh` before destroying
      it. Cross-worktree lanes can no longer collide, which is the point of the
@@ -137,8 +151,9 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    verdict into a fresh `integ` marker.
 
 
-   If the stack remains, run `cdk destroy "${STACK}" --force` until clean --
-   after the SAME live-peer check step 4 describes. A second run of this fixture
+   If any stack remains, destroy the names the loop printed — in dependency
+   order, and NOT `"${STACK}"`, which holds only the last base name (see step 4)
+   — until clean, after the SAME live-peer check step 4 describes. A second run of this fixture
    in the SAME worktree shares the suffix, so the name alone does not tell you
    the stack is a leftover rather than a peer's live one.
 

@@ -448,24 +448,32 @@ if [ -f "${SKILL}" ]; then
   # all, were BOTH green against the line-based check.
   joined=$(printf '%s\n' "${code}" | sed -e :a -e '/\\$/N; s/\\\n//; ta')
 
-  # 1. The scans must EXIST. Round 7 asserted this and the retreat dropped it:
-  #    deleting both blocks outright, leaving the guards and prose, was green --
-  #    a recipe with no scan at all is the purest "clean without looking".
-  scans=$(printf '%s\n' "${joined}" | grep -cE 'aws[[:space:]]+cloudformation[[:space:]]+describe-stacks')
-  if [ "${scans}" -ge 2 ]; then
-    check "run-integ still HAS both stack scans (${scans})" 0
+  # 1. The scans must EXIST -- anchored to a real command at line start, and
+  #    counted PER STEP. Counting the bare token over the whole file was green
+  #    with both scan commands deleted and two PROSE mentions added, and green
+  #    with the post-run scan deleted and the pre-flight one duplicated.
+  scan_re='^[[:space:]]*aws[[:space:]]+cloudformation[[:space:]]+describe-stacks'
+  pre=$(printf '%s\n' "${joined}" | sed -n '1,/^7\. \*\*Verify AWS cleanup/p' | grep -cE "${scan_re}")
+  post=$(printf '%s\n' "${joined}" | sed -n '/^7\. \*\*Verify AWS cleanup/,$p' | grep -cE "${scan_re}")
+  if [ "${pre}" -ge 1 ] && [ "${post}" -ge 1 ]; then
+    check "run-integ has a real stack scan in BOTH steps (pre=${pre} post=${post})" 0
   else
-    check "run-integ still HAS both stack scans" 1 "found ${scans}, want >= 2 (pre-flight and post-run)"
+    check "run-integ has a real stack scan in BOTH steps" 1 \
+      "pre-flight=${pre}, post-run=${post}; each needs >= 1 actual command, not a prose mention"
   fi
 
-  # 2. No verdict attached to a stack query, on the JOINED command.
+  # 2. No verdict attached to a stack query. `||`/`&&` on the joined command,
+  #    AND the `if <query>; then ... else <verdict>` form -- round 7 used that
+  #    one and it carries no `||` at all, so joining continuations closed only
+  #    half of that instance. A previous version of this PR's body claimed both
+  #    were covered; they were not.
   verdicts=$(printf '%s\n' "${joined}" \
     | grep -E 'aws[[:space:]]+cloudformation[[:space:]]+describe-stacks' \
-    | grep -cE '\|\||&&')
+    | grep -cE '\|\||&&|^[[:space:]]*if[[:space:]]')
   case "${verdicts}" in
     0) check "run-integ's stack scans emit no clean verdict of their own" 0 ;;
     *) check "run-integ's stack scans emit no clean verdict of their own" 1 \
-         "${verdicts} stack query/queries carry a ||/&& verdict -- that is what produced eight false ones" ;;
+         "${verdicts} stack query/queries carry a ||/&&/if verdict -- that is what produced nine false ones" ;;
   esac
 
   # 3. No `2>/dev/null` on a stack query: it sends the clean case and the
@@ -507,6 +515,15 @@ if [ -f "${SKILL}" ]; then
     check "run-integ guards the suffix and the resolved name" 1 \
       "suffix=${suffix_guards} (want >= 3), stack=${stack_guards} (want >= 2)"
   fi
+
+  # BOUNDARY, recorded rather than papered over. Checks 2 and 3 read the stack
+  # QUERY's own joined command. A verdict placed further away still escapes:
+  # `[ $? -ne 0 ] && echo clean` on the next line, a blanket echo after `done`,
+  # `case "$out" in *"does not exist"*)`, or the query assembled into a variable
+  # first. Those were each measured green. Fencing them needs a shell parser,
+  # not greps -- which is the argument FOR go-to-k/cdk-local#601 (a real script,
+  # whose failure paths are executed) rather than a reason to grow this file.
+  # What is pinned here is the shape the nine live instances actually took.
 
   # EXECUTE the derivation predicate rather than asserting its text. The old
   # check asserted the fixture sources `stack-name.sh`, which is the criterion
