@@ -129,6 +129,7 @@ import {
 } from '../../local/cognito-jwt.js';
 import { defaultCredentialsLoader, type CredentialsLoader } from '../../local/sigv4-verify.js';
 import { singleFlight } from '../../utils/single-flight.js';
+import { formatAuthority } from '../../utils/url-authority.js';
 import {
   writeProfileCredentialsFile,
   type ProfileCredentialsFile,
@@ -317,6 +318,31 @@ export interface CreateLocalStartApiCommandOptions {
   extraStateProviders?: ExtraStateProviders;
   /** Embed-time branding overrides for a host wrapping this factory. */
   embedConfig?: CdkLocalEmbedConfig;
+}
+
+/**
+ * The `Server listening on <url>  (<label>)` ready banner, terminated with a
+ * newline.
+ *
+ * D8.4 — load-bearing, and the most machine-parsed line in the repo: several
+ * integ fixtures grep the prefix and extract the port from it, and
+ * `cdkl studio` matches it with `SERVE_SPECS.api.readyRe` and then resolves
+ * the captured URL with `new URL(...)` before it will front the serve with a
+ * capture proxy. An authority the WHATWG parser rejects therefore does not
+ * merely read badly — the studio serve is refused (issue #599).
+ *
+ * Exported so that contract has a unit test at the EMITTER. Both banner sites
+ * live inside the long-running boot function, which has no cheap test seam,
+ * so without this the only emitter-side coverage was the source fence.
+ */
+export function formatServerListeningBanner(
+  scheme: string,
+  host: string,
+  port: number,
+  pathSuffix: string,
+  label: string
+): string {
+  return `Server listening on ${scheme}://${formatAuthority(host, port)}${pathSuffix}  (${label})\n`;
 }
 
 async function localStartApiCommand(
@@ -1146,7 +1172,7 @@ async function localStartApiCommand(
   // verify.sh marker scan is unchanged.
   for (const { group, server } of servers) {
     process.stdout.write(
-      `Server listening on ${server.scheme}://${server.host}:${server.port}  (${group.displayName})\n`
+      formatServerListeningBanner(server.scheme, server.host, server.port, '', group.displayName)
     );
   }
   // #462: emit one banner per WebSocket server. The protocol prefix
@@ -1156,7 +1182,13 @@ async function localStartApiCommand(
   for (const ws of wsServers) {
     const scheme = ws.server.scheme === 'https' ? 'wss' : 'ws';
     process.stdout.write(
-      `Server listening on ${scheme}://${ws.server.host}:${ws.server.port}${ws.apiPath}  (${ws.api.apiLogicalId} (WebSocket API))\n`
+      formatServerListeningBanner(
+        scheme,
+        ws.server.host,
+        ws.server.port,
+        ws.apiPath,
+        `${ws.api.apiLogicalId} (WebSocket API)`
+      )
     );
   }
   process.stdout.write('^C to stop and clean up containers.\n');
@@ -3262,7 +3294,9 @@ function filterSpecsForGroup(
  */
 function printPerServerRouteTables(servers: readonly BootedApiServer[]): void {
   for (const { group, server } of servers) {
-    process.stdout.write(`\n${group.displayName}  (http://${server.host}:${server.port})\n`);
+    process.stdout.write(
+      `\n${group.displayName}  (http://${formatAuthority(server.host, server.port)})\n`
+    );
     printRouteTable(group.routes);
   }
 }

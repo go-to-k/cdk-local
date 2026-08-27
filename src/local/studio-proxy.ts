@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage } from 'node
 import { connect as netConnect, type Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { StudioEventBus, type StudioTargetKind } from './studio-events.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /** Config for {@link startStudioProxy}. */
 export interface StudioProxyConfig {
@@ -374,7 +375,7 @@ export function startStudioProxy(config: StudioProxyConfig): Promise<RunningStud
       server.removeListener('error', reject);
       const port = (server.address() as AddressInfo).port;
       resolve({
-        url: `http://${host}:${port}`,
+        url: `http://${formatAuthority(host, port)}`,
         port,
         close: () =>
           new Promise<void>((resolveClose, rejectClose) => {

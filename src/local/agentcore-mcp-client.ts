@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Client for the Bedrock AgentCore Runtime MCP protocol contract.
@@ -69,7 +70,7 @@ export async function mcpInvokeOnce(
   options: McpInvokeOptions = {}
 ): Promise<McpInvokeResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const url = `http://${host}:${port}${MCP_PATH}`;
+  const url = `http://${formatAuthority(host, port)}${MCP_PATH}`;
   const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
 
   const sessionId = await initializeWithRetry(fetchImpl, url, options.readyTimeoutMs ?? 30_000);

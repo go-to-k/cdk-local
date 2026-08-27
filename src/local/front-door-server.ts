@@ -9,6 +9,11 @@ import { createServer as createHttpsServer } from 'node:https';
 import { connect as netConnect, type Socket as NetSocket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { getLogger } from '../utils/logger.js';
+import {
+  formatAuthority,
+  formatHostForAuthority,
+  hostFromAuthority,
+} from '../utils/url-authority.js';
 import type { FrontDoorEndpointPool } from './front-door-pool.js';
 import {
   buildAlbLambdaEvent,
@@ -758,7 +763,9 @@ export function buildRedirectLocation(
   const reqQuery = qIndex === -1 ? '' : url.slice(qIndex + 1);
   const rawHost = req.headers['host'];
   const hostHeaderValue = Array.isArray(rawHost) ? rawHost[0] : rawHost;
-  const reqHostName = (hostHeaderValue ?? '').split(':')[0] ?? '';
+  // `split(':')[0]` reads `'['` out of a bracketed IPv6 Host header
+  // (`[::1]:8080`), which is what a conforming client sends — issue #599.
+  const reqHostName = hostFromAuthority(hostHeaderValue ?? '');
 
   const placeholders: Record<string, string> = {
     protocol: scheme,
@@ -788,7 +795,8 @@ export function buildRedirectLocation(
   // how an ALB-built Location reads.
   const isDefaultPort =
     (protocol === 'http' && port === '80') || (protocol === 'https' && port === '443');
-  const authority = isDefaultPort || port === '' ? host : `${host}:${port}`;
+  const authority =
+    isDefaultPort || port === '' ? formatHostForAuthority(host) : formatAuthority(host, port);
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const queryPart = query ? `?${query}` : '';
   return `${protocol}://${authority}${normalizedPath}${queryPart}`;

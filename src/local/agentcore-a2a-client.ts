@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Client for the Bedrock AgentCore Runtime A2A protocol contract.
@@ -63,7 +64,7 @@ export async function a2aInvokeOnce(
   options: A2aInvokeOptions = {}
 ): Promise<A2aInvokeResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const url = `http://${host}:${port}${A2A_PATH}`;
+  const url = `http://${formatAuthority(host, port)}${A2A_PATH}`;
   const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
   const readyTimeoutMs = options.readyTimeoutMs ?? 30_000;
 

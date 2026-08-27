@@ -111,6 +111,7 @@ import type { FrontDoorAuthGuard } from '../../local/elb-front-door-resolver.js'
 import { buildAuthCheck } from '../../local/front-door-auth.js';
 import { createJwksCache, type WarnedAt } from '../../local/cognito-jwt.js';
 import { isLocalCdkAssetImage, listPinnedTargets } from '../../local/image-pin-detector.js';
+import { formatAuthority } from '../../utils/url-authority.js';
 import {
   enforceImageOverrideOrphans,
   parseImageOverrideFlags,
@@ -2175,7 +2176,7 @@ export async function buildFrontDoor(
       servers.push(server);
 
       logger.info(
-        `ALB front-door: ${server.scheme}://${server.host}:${server.port} (listener port ${listener.listenerPort})`
+        `ALB front-door: ${server.scheme}://${formatAuthority(server.host, server.port)} (listener port ${listener.listenerPort})`
       );
       if (degradedHttps) {
         logger.warn(
@@ -2599,14 +2600,14 @@ export function logEndpointsBanner(
       const scheme = ep.protocol.toLowerCase() === 'udp' ? 'udp' : 'http';
       const override = ep.overridden ? '  (--host-port override)' : '';
       lines.push(
-        `    ${ep.containerName} container port ${ep.containerPort}/${ep.protocol} -> ${scheme}://${ep.host}:${ep.hostPort}${override}`
+        `    ${ep.containerName} container port ${ep.containerPort}/${ep.protocol} -> ${scheme}://${formatAuthority(ep.host, ep.hostPort)}${override}`
       );
     }
   }
   if (frontDoorServers.length > 0) {
     lines.push('  ALB front-door');
     for (const s of frontDoorServers) {
-      lines.push(`    ${s.scheme}://${s.host}:${s.port}`);
+      lines.push(`    ${s.scheme}://${formatAuthority(s.host, s.port)}`);
     }
   }
   if (lines.length === 0) return;

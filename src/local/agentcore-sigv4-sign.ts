@@ -1,6 +1,7 @@
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { AGENTCORE_SESSION_ID_HEADER } from './agentcore-client.js';
+import { formatAuthority } from '../utils/url-authority.js';
 
 /**
  * Client-side SigV4 signing for `cdkl invoke-agentcore --sigv4`.
@@ -92,7 +93,13 @@ export async function signAgentCoreInvocation(
     path: opts.path,
     headers: {
       'Content-Type': 'application/json',
-      Host: `${opts.host}:${opts.port}`,
+      // SIGNED, so this must be byte-identical to what Node puts on the
+      // wire: an IPv6 literal is bracketed there (`[::1]:8080`), and
+      // @smithy/signature-v4 signs this header verbatim rather than deriving
+      // it from `hostname` — both measured, see the unit cases. Concatenating
+      // host and port by hand signed `::1:8080` against a transmitted
+      // `[::1]:8080`, a signature that cannot verify (issue #599).
+      Host: formatAuthority(opts.host, opts.port),
       [AGENTCORE_SESSION_ID_HEADER]: opts.sessionId,
     },
     body: opts.body,

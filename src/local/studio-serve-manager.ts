@@ -289,6 +289,14 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
 };
 
 /**
+ * The `ecs-task-runner` replica publish banner, with its authority captured.
+ * The authority is a dotted-quad IPv4 or a bracketed IPv6 literal, each
+ * followed by `:<port>`.
+ */
+const PUBLISHED_ENDPOINT_RE =
+  /^Container '[^']*' container port \d+ published on ((?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]{2,45}\]):\d+)/;
+
+/**
  * Parse an auto-published replica host endpoint from an `ecs` serve child's
  * stdout (issue #392). `start-service` publishes each replica's declared
  * container port on the host — auto-remapping a privileged port (< 1024) to a
@@ -308,11 +316,17 @@ const SERVE_SPECS: Partial<Record<StudioTargetKind, ServeKindSpec>> = {
  * The loopback bound is applied by the CALLER (a parsed endpoint is still only
  * adopted when {@link normalizeLocalUpstream} accepts it), so this stays a pure
  * reader of the banner.
+ *
+ * The authority half accepts a BRACKETED IPv6 literal alongside the dotted
+ * quad (issue go-to-k/cdk-local#599). `ecs-task-runner` composes that banner
+ * through `formatAuthority`, so `--container-host ::1` prints
+ * `[::1]:54321` — an emitter that brackets and a reader that only knows IPv4
+ * is the same defect moved one file over. Brackets are REQUIRED here rather
+ * than optional: a bare `::1:54321` has no unambiguous split into host and
+ * port, and it is not what the emitter writes.
  */
 export function parsePublishedHostEndpoint(line: string): string | undefined {
-  const m = /^Container '[^']*' container port \d+ published on (\d{1,3}(?:\.\d{1,3}){3}:\d+)/.exec(
-    line
-  );
+  const m = PUBLISHED_ENDPOINT_RE.exec(line);
   return m ? `http://${m[1]}` : undefined;
 }
 
