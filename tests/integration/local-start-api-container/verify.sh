@@ -66,8 +66,10 @@ remove_run_images() {
   if [ -n "${new}" ]; then
     echo "==> Removing image(s) built by this run:"
     echo "${new}" | sed 's/^/      /'
-    # `docker image rm` refuses an image a RUNNING container still uses, so a
-    # concurrent lane mid-run is protected even if its tag lands in the delta.
+    # Unforced: `docker image rm` refuses an image while a container still holds
+    # it, so a lane whose container is UP survives. It does NOT cover a lane
+    # between `docker build` and `docker run` -- the delta scoping is what keeps
+    # this run away from another lane's tag in that window.
     echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
   fi
   rm -f "${IMAGES_BEFORE}"

@@ -34,8 +34,10 @@ BASE_IMAGE="public.ecr.aws/lambda/nodejs:20"
 # `set -e` never fires. On a non-zero exit it prints the status and the tail
 # of the captured stderr, then still emits the (possibly empty) last stdout
 # line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it is byte-identical to the old
-# shape: the last line of stdout, stderr suppressed.
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
 CDKL_STDERR="$(mktemp)"
 capture() {
   local out rc=0
@@ -73,8 +75,10 @@ remove_run_images() {
   if [ -n "${new}" ]; then
     echo "==> Removing image(s) built by this run:"
     echo "${new}" | sed 's/^/      /'
-    # `docker image rm` refuses an image a RUNNING container still uses, so a
-    # concurrent lane mid-run is protected even if its tag lands in the delta.
+    # Unforced: `docker image rm` refuses an image while a container still holds
+    # it, so a lane whose container is UP survives. It does NOT cover a lane
+    # between `docker build` and `docker run` -- the delta scoping is what keeps
+    # this run away from another lane's tag in that window.
     echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
   fi
   rm -f "${IMAGES_BEFORE}"
@@ -148,7 +152,15 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; remove_run_images' EXIT
-${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --no-pull --no-build >"${COMBINED_4}" 2>&1
+# A non-zero exit here used to abort the script (issue #577) BEFORE any of the
+# three FAIL branches below that `cat "${COMBINED_4}"` -- so the one test whose
+# whole point is inspecting the log lost the log. Capture the status instead.
+CDKL_RC_4=0
+${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --no-pull --no-build >"${COMBINED_4}" 2>&1 || CDKL_RC_4=$?
+if [ "${CDKL_RC_4}" -ne 0 ]; then
+  echo "[verify] cdkl invoke exited ${CDKL_RC_4}; combined output follows:" >&2
+  cat "${COMBINED_4}" >&2
+fi
 RESULT_4=$(tail -1 "${COMBINED_4}")
 echo "    response: ${RESULT_4}"
 echo "${RESULT_4}" | grep -q '"greeting":"hello"' || {

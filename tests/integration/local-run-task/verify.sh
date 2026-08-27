@@ -38,8 +38,10 @@ remove_run_override_images() {
   [ -n "${new}" ] || return 0
   echo "==> Removing override image(s) built by this run:"
   echo "${new}" | sed 's/^/      /'
-  # Never force-remove: an unforced `docker image rm` refuses an image a
-  # RUNNING container still holds, which keeps a concurrent lane safe.
+  # Unforced: `docker image rm` refuses an image while a container still holds
+  # it, so a lane whose container is UP survives. It does NOT cover a lane
+  # between `docker build` and `docker run` -- the delta scoping is what keeps
+  # this run away from another lane's tag in that window.
   echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
 }
 

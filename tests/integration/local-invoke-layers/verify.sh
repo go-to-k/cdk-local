@@ -35,8 +35,10 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 # `set -e` never fires. On a non-zero exit it prints the status and the tail
 # of the captured stderr, then still emits the (possibly empty) last stdout
 # line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it is byte-identical to the old
-# shape: the last line of stdout, stderr suppressed.
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
 CDKL_STDERR="$(mktemp)"
 capture() {
   local out rc=0
@@ -124,7 +126,15 @@ echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
 # `console.info`; we just want to verify the layer-count line appears
 # somewhere in the cdk-local output) so users know the layer wiring fired.
 echo "==> [3/3] Verifying cdk-local logs the layer count"
-LOG_OUTPUT=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1)
+# `capture` is not used here: this assertion greps the MERGED stdout+stderr,
+# which `capture` deliberately splits. Only the exit status needs handling --
+# without it a non-zero cdkl abandons the script before the FAIL branch that
+# prints the output (issue #577). The diagnostic is already in LOG_OUTPUT.
+LOG_RC=0
+LOG_OUTPUT=$(${CDKL} invoke CdkLocalInvokeLayersFixture/EchoHandler --event "${EVENT_FILE}" --no-pull 2>&1) || LOG_RC=$?
+if [ "${LOG_RC}" -ne 0 ]; then
+  echo "[verify] cdkl invoke exited ${LOG_RC}; its output is echoed by the assertion below" >&2
+fi
 echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
   echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdk-local output, got:"
   echo "${LOG_OUTPUT}"

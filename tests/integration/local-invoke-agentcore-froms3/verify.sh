@@ -48,9 +48,14 @@ CLI="node ${REPO_ROOT}/dist/cli.js"
 # `set -e` never fires. On a non-zero exit it prints the status and the tail
 # of the captured stderr, then still emits the (possibly empty) last stdout
 # line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it is byte-identical to the old
-# shape: the last line of stdout, stderr suppressed.
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
 CDKL_STDERR="$(mktemp)"
+# Registered immediately, matching the other fixtures: `trap cleanup EXIT` is
+# installed further down, so without this a failure in between leaks the file.
+trap 'rm -f "${CDKL_STDERR}"' EXIT
 capture() {
   local out rc=0
   out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
@@ -89,8 +94,11 @@ KEY="bundles/agent-${SUFFIX}.zip"
 WE_CREATED_BUCKET=0
 EVENT_FILE=""
 cleanup() {
-  rm -f "${CDKL_STDERR}"
+  # rc=$? MUST be the first statement: it captures the SCRIPT's exit status.
+  # Any command above it (an `rm -f`, which always succeeds) overwrites $? and
+  # makes the `exit "${rc}"` below report 0 for a FAILED run.
   rc=$?
+  rm -f "${CDKL_STDERR}"
   if [ "${WE_CREATED_BUCKET}" -eq 1 ]; then
     echo "[verify] cleanup: removing s3://${BUCKET}"
     aws s3 rm "s3://${BUCKET}" --recursive --region "${REGION}" >/dev/null 2>&1 || true

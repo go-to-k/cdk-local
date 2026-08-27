@@ -57,8 +57,10 @@ CODE_BASE_IMAGE="public.ecr.aws/docker/library/python:3.12-slim"
 # `set -e` never fires. On a non-zero exit it prints the status and the tail
 # of the captured stderr, then still emits the (possibly empty) last stdout
 # line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it is byte-identical to the old
-# shape: the last line of stdout, stderr suppressed.
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
 CDKL_STDERR="$(mktemp)"
 capture() {
   local out rc=0
@@ -69,6 +71,20 @@ capture() {
     tail -20 "${CDKL_STDERR}" >&2
   fi
   printf '%s\n' "${out}" | tail -1
+}
+
+# `capture_all` is `capture`'s WHOLE-STDOUT sibling, for the assertions that
+# need every line rather than the last one -- an SSE token stream, an MCP or
+# A2A JSON-RPC body. Identical exit-status handling; only the tail differs.
+capture_all() {
+  local out rc=0
+  out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${CDKL_STDERR}" >&2
+  fi
+  printf '%s\n' "${out}"
 }
 # Registered immediately: the first capture happens before the fixture's own
 # first `trap 'rm -f ...' EXIT`, which would otherwise leave this file behind
@@ -186,7 +202,7 @@ echo "==> [8/20] EchoAgent streams a text/event-stream response to stdout"
 STREAM_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"stream":true}' > "${STREAM_EVENT}"
-RESULT_8=$(${CDKL} invoke-agentcore "${TARGET}" --event "${STREAM_EVENT}" 2>/dev/null)
+RESULT_8=$(capture_all ${CDKL} invoke-agentcore "${TARGET}" --event "${STREAM_EVENT}")
 echo "    response: ${RESULT_8}"
 for tok in hello from sse; do
   echo "${RESULT_8}" | grep -q "\"token\":\"${tok}\"" || {
@@ -203,7 +219,7 @@ echo "${RESULT_8}" | grep -q '\[DONE\]' || {
 # the default tools/list request returns the server's tools. The container
 # serves POST /mcp on 8000 (no /ping); readiness is a successful initialize.
 echo "==> [9/20] McpAgent (no --event) runs the handshake + tools/list"
-RESULT_9=$(${CDKL} invoke-agentcore "${MCP}" 2>/dev/null)
+RESULT_9=$(capture_all ${CDKL} invoke-agentcore "${MCP}")
 echo "    response: ${RESULT_9}"
 echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
   echo "FAIL: expected tools/list to return the add_numbers tool, got: ${RESULT_9}"
@@ -215,7 +231,7 @@ echo "==> [10/20] McpAgent with --event runs tools/call"
 CALL_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"method":"tools/call","params":{"name":"add_numbers","arguments":{"a":2,"b":3}}}' > "${CALL_EVENT}"
-RESULT_10=$(${CDKL} invoke-agentcore "${MCP}" --event "${CALL_EVENT}" 2>/dev/null)
+RESULT_10=$(capture_all ${CDKL} invoke-agentcore "${MCP}" --event "${CALL_EVENT}")
 echo "    response: ${RESULT_10}"
 echo "${RESULT_10}" | grep -q '"text": "5"' || {
   echo "FAIL: expected tools/call add_numbers(2,3) to return text \"5\", got: ${RESULT_10}"
@@ -257,7 +273,7 @@ echo "==> [13/20] EchoAgent over the /ws WebSocket (--ws)"
 WS_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"prompt":"hello ws"}' > "${WS_EVENT}"
-RESULT_13=$(${CDKL} invoke-agentcore "${TARGET}" --ws --event "${WS_EVENT}" 2>/dev/null)
+RESULT_13=$(capture_all ${CDKL} invoke-agentcore "${TARGET}" --ws --event "${WS_EVENT}")
 echo "    response: ${RESULT_13}"
 echo "${RESULT_13}" | grep -q '"ws":true' || {
   echo "FAIL: expected the /ws frame marker \"ws\":true, got: ${RESULT_13}"
@@ -386,7 +402,7 @@ echo "${OUT_17B}" | grep -q 'positive integer' || {
 # JSON-RPC 2.0 contract at POST / on 9000. With no --event, `cdkl
 # invoke-agentcore` defaults to `agent/getCard` (the agent discovery card).
 echo "==> [18/20] A2aAgent (no --event) runs the JSON-RPC agent/getCard request"
-RESULT_19=$(${CDKL} invoke-agentcore "${A2A}" 2>/dev/null)
+RESULT_19=$(capture_all ${CDKL} invoke-agentcore "${A2A}")
 echo "    response: ${RESULT_19}"
 echo "${RESULT_19}" | grep -q '"name": "fixture-a2a-agent"' || {
   echo "FAIL: expected the A2A agent card with name fixture-a2a-agent, got: ${RESULT_19}"
@@ -398,7 +414,7 @@ echo "==> [18/20] A2aAgent with --event runs tasks/send"
 A2A_EVENT=$(mktemp -t cdkl-a2a-event-XXXX.json)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${A2A_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"method":"tasks/send","params":{"id":"task-1","message":{"text":"hello a2a"}}}' > "${A2A_EVENT}"
-RESULT_19B=$(${CDKL} invoke-agentcore "${A2A}" --event "${A2A_EVENT}" 2>/dev/null)
+RESULT_19B=$(capture_all ${CDKL} invoke-agentcore "${A2A}" --event "${A2A_EVENT}")
 echo "    response: ${RESULT_19B}"
 echo "${RESULT_19B}" | grep -q '"id": "task-1"' || {
   echo "FAIL: expected tasks/send result echoing id=task-1, got: ${RESULT_19B}"
@@ -415,7 +431,7 @@ echo "${RESULT_19B}" | grep -q '"state": "completed"' || {
 # and streams each event line to stdout. The agent emits three events in order
 # (RUN_STARTED, MESSAGE_CONTENT, RUN_FINISHED).
 echo "==> [19/20] AguiAgent SSE event stream surfaces RUN_STARTED + MESSAGE_CONTENT + RUN_FINISHED"
-RESULT_20=$(${CDKL} invoke-agentcore "${AGUI}" 2>/dev/null)
+RESULT_20=$(capture_all ${CDKL} invoke-agentcore "${AGUI}")
 echo "    response (head): $(echo "${RESULT_20}" | head -c 300)..."
 echo "${RESULT_20}" | grep -q '"type":"RUN_STARTED"' || {
   echo "FAIL: expected RUN_STARTED event in AGUI SSE stream, got: ${RESULT_20}"

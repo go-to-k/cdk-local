@@ -34,8 +34,10 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 # `set -e` never fires. On a non-zero exit it prints the status and the tail
 # of the captured stderr, then still emits the (possibly empty) last stdout
 # line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it is byte-identical to the old
-# shape: the last line of stdout, stderr suppressed.
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
 CDKL_STDERR="$(mktemp)"
 capture() {
   local out rc=0

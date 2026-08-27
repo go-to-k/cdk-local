@@ -56,12 +56,22 @@ fi
 # it could just as easily land on a concurrent lane's tag.
 #
 # Everything is scoped to THIS fixture's own deterministic tag instead. cdkl
-# prints that tag on its `--no-build` path BEFORE it checks the local
-# registry, so a probe run reports the tag whether or not the image exists;
-# the probe is expected to exit non-zero when it does not, hence `|| true`.
+# prints that tag on its `--no-build` path BEFORE it checks the local registry,
+# so a probe run reports the tag whether or not the image exists.
+#
+# Two honest caveats about that probe:
+#   * It is NOT free. When the image is absent it exits non-zero right after
+#     printing the tag (hence `|| true`), but when the image IS present cdkl
+#     carries on and performs a real invoke -- a container run. That happens
+#     only on a warm host, in exactly the case where the image is about to be
+#     removed and rebuilt anyway, so the cost is accepted rather than hidden.
+#   * The tag arrives on an INFO-level line, so an exported CDKL_LOG_LEVEL=warn
+#     would suppress it and hard-fail the guard below. The level is pinned to
+#     info for the probe alone, so the fixture does not depend on the caller's
+#     environment.
 IMAGES_BEFORE="$(docker image ls --filter 'reference=cdkl-invoke-*' \
   --format '{{.Repository}}:{{.Tag}}' | sort)"
-OWN_TAG="$(${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler \
+OWN_TAG="$(CDKL_LOG_LEVEL=info ${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler \
   --no-pull --no-build 2>&1 | grep -oE 'cdkl-invoke-[0-9a-f]+' | head -1 || true)"
 if [[ -z "${OWN_TAG}" ]]; then
   echo "FAIL: could not resolve this fixture's cdkl-invoke-* tag from the --no-build probe"
@@ -71,9 +81,15 @@ OWN_TAG="${OWN_TAG}:latest"
 echo "==> This fixture's image tag: ${OWN_TAG}"
 
 remove_own_image() {
-  # Never `-f`: unforced `docker image rm` refuses an image a RUNNING
-  # container still holds, which keeps a concurrent lane safe.
-  docker image rm "${OWN_TAG}" >/dev/null 2>&1 || true
+  # Unforced first, so a container still holding the image is respected. But an
+  # unforced rm also refuses an image held by a container that is merely
+  # STOPPED, and a leftover container from an aborted run would then turn a
+  # passing fixture into a hard FAIL at the absence check below, where `-f`
+  # used to proceed. OWN_TAG is this fixture's OWN tag, so a scoped force-remove
+  # is safe as a fallback: it can never reach another fixture's or another
+  # lane's tag.
+  docker image rm "${OWN_TAG}" >/dev/null 2>&1 \
+    || docker image rm -f "${OWN_TAG}" >/dev/null 2>&1 || true
 }
 
 # Force a fresh build to guarantee the test actually exercises every
@@ -85,7 +101,7 @@ remove_own_image
 trap remove_own_image EXIT
 if docker image inspect "${OWN_TAG}" >/dev/null 2>&1; then
   echo "FAIL: ${OWN_TAG} still present after removal — cannot guarantee a fresh build"
-  echo "      (a running container may still hold it; stop it and re-run)"
+  echo "      (a container — running or stopped — may still hold it; remove it and re-run)"
   exit 1
 fi
 # Drop our own tag from the snapshot now that it is gone. A previous run
@@ -98,8 +114,16 @@ echo "    ✓ ${OWN_TAG} absent — any appearance below is a build from THIS ru
 
 
 echo "==> [1/3] Building + invoking BuildkitHandler (exercises every BuildKit feature)"
-${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull >/tmp/cdkl-buildkit-1.log 2>&1
-RESULT_1=$(grep -E '"(buildArg|secretSha|fromBuildkitImage)"' /tmp/cdkl-buildkit-1.log | tail -1)
+# Both lines used to abort the script on failure (issue #577): a non-zero cdkl
+# under `set -e`, and a `grep` that matches nothing under `pipefail`. Either
+# killed the run BEFORE the FAIL branches below that `cat` the log.
+CDKL_RC_1=0
+${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull >/tmp/cdkl-buildkit-1.log 2>&1 || CDKL_RC_1=$?
+if [ "${CDKL_RC_1}" -ne 0 ]; then
+  echo "[verify] cdkl invoke exited ${CDKL_RC_1}; log follows:" >&2
+  cat /tmp/cdkl-buildkit-1.log >&2
+fi
+RESULT_1=$(grep -E '"(buildArg|secretSha|fromBuildkitImage)"' /tmp/cdkl-buildkit-1.log | tail -1 || true)
 echo "    response: ${RESULT_1}"
 
 # Every BuildKit feature must show up in the response.
@@ -165,8 +189,16 @@ echo "    ✓ secret content absent from all image layers"
 # Re-invoke under --no-build to confirm tag stability (the deterministic
 # tag computed from the source must match across builds).
 echo "==> [3/3] Re-invoking under --no-build to confirm tag stability"
-${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build >/tmp/cdkl-buildkit-3.log 2>&1
-RESULT_3=$(grep -E '"buildArg"' /tmp/cdkl-buildkit-3.log | tail -1)
+# Both lines used to abort the script on failure (issue #577): a non-zero cdkl
+# under `set -e`, and a `grep` that matches nothing under `pipefail`. Either
+# killed the run BEFORE the FAIL branches below that `cat` the log.
+CDKL_RC_3=0
+${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build >/tmp/cdkl-buildkit-3.log 2>&1 || CDKL_RC_3=$?
+if [ "${CDKL_RC_3}" -ne 0 ]; then
+  echo "[verify] cdkl invoke exited ${CDKL_RC_3}; log follows:" >&2
+  cat /tmp/cdkl-buildkit-3.log >&2
+fi
+RESULT_3=$(grep -E '"buildArg"' /tmp/cdkl-buildkit-3.log | tail -1 || true)
 echo "${RESULT_3}" | grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" || {
   echo "FAIL: --no-build re-invocation did not pick up the same baked image"
   cat /tmp/cdkl-buildkit-3.log
