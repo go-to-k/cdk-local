@@ -98,23 +98,47 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      EXECUTED rather than read.
 
 
-     If an orphan stack is reported, abort — do NOT proceed. Destroy **the
-     names the loop printed**, not `"${STACK}"`: that variable is assigned
-     INSIDE the loop, so after it runs it holds only the LAST base name. On the
-     two-stack fixture the scan finds the orphaned PRODUCER and `"${STACK}"` is
-     the consumer, which does not exist. Pass them to one `cdk destroy` in
-     DEPENDENCY order — consumer before producer, matching the fixture's own
-     cleanup — so the export is released before its exporter goes:
+     If an orphan stack is reported, abort — do NOT proceed.
+
+     Destroy **the names the loop printed**, not `"${STACK}"`: that variable is
+     assigned INSIDE the loop, so afterwards it holds only the LAST name the
+     loop resolved — one of the set, chosen by iteration order, not the one you
+     want.
+
+     Use `aws cloudformation delete-stack`, NOT `cdk destroy`. Two reasons, both
+     measured:
+
+     - `cdk destroy` needs app context. From the repo root it fails with
+       `--app is required either in command-line, in cdk.json or in ~/.cdk.json`
+       — the fixture runs its own destroy from the fixture directory, not here.
+     - Repaired by hand, it is worse: **`cdk destroy` exits 0, silently, on a
+       name the app never synthesized.** This block is a fresh shell with no
+       `source`, so `INTEG_STACK_SUFFIX` is unset, the app builds UN-suffixed
+       names, your suffixed arguments match nothing, and you read a clean exit
+       with both stacks still deployed. That is this recipe's own defect class,
+       arriving through the remediation instead of the scan.
+
+     `delete-stack` needs no app context and no suffix in the environment, and
+     it takes one stack at a time — so order the calls yourself, in DEPENDENCY
+     order (consumer before producer, matching the fixture's own cleanup), so
+     the export is released before its exporter goes:
 
      ```bash
-     cdk destroy <ConsumerStackName> <ProducerStackName> --force \
-       --region "${AWS_REGION:-us-east-1}"
+     for STACK in <ConsumerStackName> <ProducerStackName>; do   # dependency order
+       aws cloudformation delete-stack --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+       aws cloudformation wait stack-delete-complete --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+     done
      ```
- Note that a stack under THIS lane's name can also
-     be a second run of the same fixture in the SAME worktree, i.e. a LIVE peer
-     rather than a leftover: check for a running `verify.sh` before destroying
-     it. Cross-worktree lanes can no longer collide, which is the point of the
-     suffix.
+
+     **Then RE-RUN the scan.** No delete command reports "I matched nothing",
+     so the only evidence the orphan is gone is the scan saying so.
+
+     Note that a stack under THIS lane's name can also be a second run of the
+     same fixture in the SAME worktree, i.e. a LIVE peer rather than a leftover:
+     check for a running `verify.sh` before destroying it. Cross-worktree lanes
+     can no longer collide, which is the point of the suffix.
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 
@@ -151,9 +175,11 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    verdict into a fresh `integ` marker.
 
 
-   If any stack remains, destroy the names the loop printed — in dependency
-   order, and NOT `"${STACK}"`, which holds only the last base name (see step 4)
-   — until clean, after the SAME live-peer check step 4 describes. A second run of this fixture
+   If any stack remains, destroy the names the loop printed with
+   `aws cloudformation delete-stack` — in dependency order, and NOT
+   `"${STACK}"`, which holds only the last name the loop resolved (see step 4
+   for why `cdk destroy` is the wrong tool here) — then RE-RUN the scan, after
+   the SAME live-peer check step 4 describes. A second run of this fixture
    in the SAME worktree shares the suffix, so the name alone does not tell you
    the stack is a leftover rather than a peer's live one.
 
