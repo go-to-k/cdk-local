@@ -1298,10 +1298,19 @@ function writeRawHttpFixedResponse(socket: Duplex, action: FixedResponseRouteAct
 
 /** Strip CR / LF / NUL from a raw HTTP header value to prevent header injection. */
 function sanitizeRawHeaderValue(value: string): string {
-  // The ` ` literal in the class is the NUL byte; CRLF + NUL are the
-  // three header-injection-relevant control bytes that bypass the header
-  // grammar when raw-written over the upgrade socket.
-  return value.replace(/[\r\n ]/g, ' ');
+  // CR / LF / NUL are the three header-injection-relevant control bytes that
+  // bypass the header grammar when raw-written over the upgrade socket.
+  //
+  // NUL is spelled `\u0000` and NOT as a literal byte (issue #576): a raw
+  // control byte in committed source makes `file` report the whole file as
+  // `data` and makes `grep` return NOTHING for it, silently, for every
+  // pattern -- and this file is on the `UP_PATHS` security surface that
+  // every grep-based audit sweeps. `tests/unit/no-control-bytes.test.ts`
+  // fences that repo-wide.
+  //
+  // Matching a control character is the entire purpose of this sanitizer.
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\r\n\u0000]/g, ' ');
 }
 
 /** Minimal HTTP/1.1 status text map for the codes the raw writers emit. */

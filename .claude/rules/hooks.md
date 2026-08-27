@@ -41,6 +41,25 @@ The hooks split into three classes:
   Fails open when `git` / `perl` are unavailable or nothing is staged.
   No bypass marker — the fix is to remove the stray byte and re-stage.
 
+  **The gate is not the only fence, because it is a PreToolUse hook and
+  therefore only ever sees the AGENT's tool calls.** Issue
+  go-to-k/cdk-local#576 records a command shape that walks past it —
+  `git add -A && git commit ...` in one call presents the gate with the
+  tree as it was BEFORE the `git add`, so nothing is staged yet for the
+  offending file. That is not hypothetical: on 2026-08-27
+  `src/local/front-door-server.ts` was found on `main` carrying two raw
+  NUL bytes (a regex character class and its comment in
+  `sanitizeRawHeaderValue`) — functionally correct JavaScript, so no test
+  or type-check noticed, while `grep -c host` on that 49 KB file answered
+  `0` and `file` reported it as `data`. That file is on the `UP_PATHS`
+  security surface below, so every grep-based audit over `src/local/**`
+  had been silently skipping it.
+  `tests/unit/no-control-bytes.test.ts` closes it from the other side:
+  it derives its population from `git ls-files` (not a hand-kept
+  directory list) and fails in CI on any C0 control byte in any tracked
+  text file, whatever shape the command took. Spell a control character
+  in source as an escape (`\u0000`), never as a literal byte.
+
 - **`closes-paren-form-gate.sh`** blocks `gh pr merge <N>` when the
   target PR's body uses `Closes (#N)` / `Fixes (#N)` /
   `Resolves (#N)` (parens form) — GitHub's auto-close grammar
