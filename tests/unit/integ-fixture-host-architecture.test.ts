@@ -482,6 +482,53 @@ function ownPropValue(call: string, key: string): string | undefined {
   return out.trim();
 }
 
+/**
+ * Known parsing limitations, recorded rather than chased.
+ *
+ * All of them FAIL LOUDLY -- they end in `MISSING`, `NESTED` or
+ * `WRONG_VALUE` on code that is actually correct, never in a silent pass on
+ * code that is wrong. That asymmetry is why they are acceptable: the cost is
+ * a confusing failure someone must read, not an emulated container nobody
+ * notices. None occurs anywhere in the repo today.
+ *
+ *  - A depth-1 STRING that contains the key (`description: 'architecture: x'`)
+ *    hijacks the first regex match; every construction tried yields
+ *    `WRONG_VALUE`.
+ *  - A regex literal containing an unbalanced quote desynchronises the quote
+ *    state and reports `NESTED`. This is inherited: `stripComments` is
+ *    likewise regex-blind, so `/'/` already confuses the whole file.
+ *  - A quoted or computed key (`'architecture':` / `[key]:`) reports
+ *    `MISSING`, because the key regex expects a bare identifier.
+ *  - `constructorCalls` is not quote-aware, so a `)` inside a string can
+ *    truncate a call early; the truncated text then reports `MISSING`.
+ *
+ * The paren/regex COUNT CROSS-CHECK does not catch any of these -- it
+ * compares two views that share the same blindness. It catches a
+ * mis-delimited constructor NAME, which is a different failure.
+ */
+
+/**
+ * Compare property values without depending on how they are laid out.
+ *
+ * Whitespace is removed entirely rather than collapsed, and a trailing comma
+ * before a closing bracket or brace is dropped, so a hand-wrapped L1 array
+ *
+ * ```ts
+ * architectures: [
+ *   HOST_ARCHITECTURE.name,
+ * ],
+ * ```
+ *
+ * still equals `[HOST_ARCHITECTURE.name]`. Collapsing to single spaces was
+ * not enough: it yields `[ HOST_ARCHITECTURE.name, ]`, so a CORRECT fixture
+ * would be reported as having the wrong value. oxfmt would not produce that
+ * shape at `printWidth: 100`, but a person editing the L1 spelling by hand
+ * would, and the L1 spelling is the one that gets hand-edited.
+ */
+function normalizeValue(value: string): string {
+  return value.replace(/\s+/g, '').replace(/,+(?=[\]}])/g, '');
+}
+
 /** Name a call by its construct id, so a failure points at the function to fix. */
 function constructId(call: string): string {
   return /new\s+[\w$.]*\(\s*this,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80).trim();
@@ -644,7 +691,7 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       const nested = call.includes(required);
       const want = required.slice(required.indexOf(':') + 1).trim();
       if (actual === undefined) return nested ? 'NESTED' : 'MISSING';
-      return actual.replace(/\s+/g, ' ') === want ? 'OK' : 'WRONG_VALUE';
+      return normalizeValue(actual) === normalizeValue(want) ? 'OK' : 'WRONG_VALUE';
     };
     const L2 = 'architecture: HOST_ARCHITECTURE';
 
@@ -684,6 +731,31 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       ).toBe('WRONG_VALUE');
     });
 
+    it('accepts a hand-wrapped L1 array with a trailing comma', () => {
+      // The layout a person produces when editing the L1 spelling by hand.
+      // A whitespace-COLLAPSING comparison reports WRONG_VALUE here, i.e. it
+      // fails a correct fixture.
+      const req = 'architectures: [HOST_ARCHITECTURE.name]';
+      const call = `new lambda.CfnFunction(this, 'A', {
+        runtime: 'ruby3.3',
+        architectures: [
+          HOST_ARCHITECTURE.name,
+        ],
+      })`;
+      expect(missingFor(call, 'architectures', req)).toBe('OK');
+    });
+
+    it('accepts a reformatted L2 value and still rejects a different one', () => {
+      const call = `new lambda.Function(this, 'A', {
+        architecture:
+          HOST_ARCHITECTURE,
+      })`;
+      expect(missingFor(call, 'architecture', L2)).toBe('OK');
+      expect(
+        missingFor(`new lambda.Function(this, 'A', { architecture: OTHER })`, 'architecture', L2)
+      ).toBe('WRONG_VALUE');
+    });
+
     it('accepts the L1 array value and rejects a wrong one', () => {
       const req = 'architectures: [HOST_ARCHITECTURE.name]';
       expect(
@@ -702,8 +774,18 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       expect(missingFor(call, 'architecture', L2)).toBe('OK');
     });
 
-    it('is not fooled by a brace inside a string-valued property', () => {
-      const call = `new lambda.Function(this, 'A', { description: '{oops}', ${L2} })`;
+    it('is not fooled by an UNBALANCED brace inside a string-valued property', () => {
+      // The brace must be unbalanced to discriminate. An earlier version used
+      // '{oops}', whose `{` and `}` cancel out, so the depth counter ends up
+      // in the same place with or without quote awareness and the test passed
+      // against a non-quote-aware scanner -- a fence assertion that could not
+      // fail, which is the exact class this file exists to catch.
+      const call = `new lambda.Function(this, 'A', { description: '{', ${L2} })`;
+      expect(missingFor(call, 'architecture', L2)).toBe('OK');
+    });
+
+    it('is not fooled by an unbalanced paren inside a string-valued property', () => {
+      const call = `new lambda.Function(this, 'A', { description: '(', ${L2} })`;
       expect(missingFor(call, 'architecture', L2)).toBe('OK');
     });
 
@@ -868,7 +950,7 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
                         `object or call rather than on the construct's own props -- move it out)`
                     : `${constructId(call)} (needs \`${requiredProp}\`)`
                 );
-              } else if (actual.replace(/\s+/g, ' ') !== wantValue) {
+              } else if (normalizeValue(actual) !== normalizeValue(wantValue)) {
                 // The key IS at depth 1 but carries the wrong value. The
                 // dangerous shape is `architecture: undefined` at depth 1
                 // with the real declaration nested: key present, required
