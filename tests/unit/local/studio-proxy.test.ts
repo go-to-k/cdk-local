@@ -29,14 +29,24 @@ afterEach(async () => {
   );
 });
 
-/** Boot a throwaway upstream HTTP server with the given handler. */
-function bootUpstream(handler: Parameters<typeof createServer>[1]): Promise<string> {
-  return new Promise((resolve) => {
+/**
+ * Boot a throwaway upstream HTTP server with the given handler, bound to
+ * `host` (default `127.0.0.1`). Resolves the URL it is REACHABLE at, which is
+ * not always the URL a test addresses it by - the wildcard / IPv6 cases below
+ * deliberately address it by a different spelling and assert it is still hit.
+ */
+function bootUpstream(
+  handler: Parameters<typeof createServer>[1],
+  host = '127.0.0.1'
+): Promise<string> {
+  return new Promise((resolve, reject) => {
     const server = createServer(handler);
     upstreams.push(server);
-    server.listen(0, '127.0.0.1', () => {
+    server.once('error', reject);
+    server.listen(0, host, () => {
       const port = (server.address() as AddressInfo).port;
-      resolve(`http://127.0.0.1:${port}`);
+      const authority = host.includes(':') ? `[${host}]` : host;
+      resolve(`http://${authority}:${port}`);
     });
   });
 }
@@ -314,7 +324,6 @@ describe('startStudioProxy', () => {
   // the gap is tracked as an accepted known cost in the PR body.
 });
 
-
 // ---------------------------------------------------------------------------
 // Issue #578 - the proxy forwards the developer's request (headers + body) to
 // whatever host its upstream names, so it enforces the loopback bound itself
@@ -569,11 +578,14 @@ describe('normalizeLocalUpstream (issue #578)', () => {
 });
 
 describe('startStudioProxy wildcard upstream (issue #578)', () => {
-  it('accepts a wildcard upstream and forwards it to loopback', async () => {
+  it('accepts the `0.0.0.0` wildcard and forwards it', async () => {
+    // `0.0.0.0` is the ordinary `--container-host` spelling, so ACCEPTING it
+    // is the property under test here - and only that. It does NOT prove the
+    // rewrite: `connect()` to `0.0.0.0` reaches a `127.0.0.1`-only listener on
+    // this platform anyway, so a proxy forwarding `config.upstream` RAW passes
+    // this case too. (It was written claiming otherwise; the `::` case below
+    // is the one that discriminates.)
     const bus = new StudioEventBus();
-    // The real upstream listens on 127.0.0.1 only; naming it `0.0.0.0` must
-    // still reach it, which it can only do if the proxy rewrote the
-    // DESTINATION rather than merely tolerating the string.
     const upstream = await bootUpstream((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end('via-loopback');
@@ -583,5 +595,49 @@ describe('startStudioProxy wildcard upstream (issue #578)', () => {
     const res = await httpReq(`${proxy.url}/`);
     expect(res.status).toBe(200);
     expect(res.body).toBe('via-loopback');
+  });
+
+  it('rewrites the `::` wildcard to loopback, which is the only way this lands', async () => {
+    // The discriminating spelling. `::` against a `127.0.0.1`-only listener is
+    // ECONNREFUSED, so a 200 here can ONLY come from the destination having
+    // been rewritten to `127.0.0.1` before the forward - a proxy that hands
+    // `config.upstream` through raw 502s instead.
+    const bus = new StudioEventBus();
+    const upstream = await bootUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('via-loopback');
+    });
+    const port = new URL(upstream).port;
+    const proxy = await boot(bus, `http://[::]:${port}`);
+    const res = await httpReq(`${proxy.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('via-loopback');
+  });
+});
+
+describe('startStudioProxy IPv6 loopback upstream (issue #578 review)', () => {
+  it('forwards to a `[::1]` upstream instead of 502ing on the brackets', async () => {
+    // `isLoopbackHostname` tolerates the brackets `URL.hostname` keeps on an
+    // IPv6 literal, so `http://[::1]:<port>` is ACCEPTED - and `node:http`
+    // then looks `[::1]` up as a NAME and fails `ENOTFOUND`, making every
+    // request through such a proxy a 502. Accepted-then-broken is the worst of
+    // the three outcomes, and `--host ::1` reaches it through a serve's raw
+    // extra args. Asserts the BODY, so it can only pass on a real round trip.
+    let upstream: string;
+    try {
+      upstream = await bootUpstream((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('via-ipv6-loopback');
+      }, '::1');
+    } catch {
+      // No IPv6 loopback on this host: there is nothing to bind, so there is
+      // no claim to make either way.
+      return;
+    }
+    const bus = new StudioEventBus();
+    const proxy = await boot(bus, upstream);
+    const res = await httpReq(`${proxy.url}/`);
+    expect(res.status).toBe(200);
+    expect(res.body).toBe('via-ipv6-loopback');
   });
 });

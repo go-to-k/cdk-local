@@ -325,11 +325,35 @@ export function parsePublishedHostEndpoint(line: string): string | undefined {
  * quoted back.
  */
 function describeForeignEndpointRefusal(targetId: string, endpoint: string, what: string): string {
+  const quoted = `'${describeEndpointForMessage(endpoint)}'`;
+  const outcome = 'No endpoint was adopted and no capture proxy was started.';
+  // Two different faults reach this one refusal, and calling both
+  // "non-loopback" misnames the commoner one: `--host-port 80=abc` builds
+  // `http://127.0.0.1:abc`, which `new URL` rejects for its port — a value
+  // that names loopback and is refused for not parsing at all. So does
+  // `http://:::8080` (an unbracketed IPv6 authority), which now also tears the
+  // whole serve down, making the wrong reason more expensive to misread.
+  if (!parsesAsUrl(endpoint)) {
+    return (
+      `refused an unparseable ${what} ${quoted} from '${targetId}': it is not a URL, ` +
+      `so studio cannot tell where a request to it would go. ${outcome}`
+    );
+  }
   return (
-    `refused a non-loopback ${what} '${describeEndpointForMessage(endpoint)}' from ` +
+    `refused a non-loopback ${what} ${quoted} from ` +
     `'${targetId}': a serve child always listens on this machine, so studio will ` +
-    'not send requests there. No endpoint was adopted and no capture proxy was started.'
+    `not send requests there. ${outcome}`
   );
+}
+
+/** True when `value` is a URL the WHATWG parser accepts. */
+function parsesAsUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** ANSI SGR colour escapes, as the logger wraps a warn / error line with. */
@@ -427,8 +451,27 @@ export function classifyChildLine(line: string): ClassifiedChildLine {
 
 interface ServeEntry extends StudioServeState {
   child: ChildProcessWithoutNullStreams;
-  /** Capture proxies fronting this serve's HTTP endpoints (slice C2). */
-  proxies: RunningStudioProxy[];
+  /**
+   * Capture proxies fronting this serve's HTTP endpoints (slice C2), keyed by
+   * the RESOLVED upstream each one forwards to.
+   *
+   * A map rather than a list, because `api` / `alb` are exempt from the
+   * post-settle `readyRe` stop (see {@link ServeKindSpec.readyRepeats}) and so
+   * can match the banner any number of times. Starting a fresh proxy per match
+   * bound the socket count to the child's OUTPUT: a handler behind `start-api`
+   * logging `Server listening on http://127.0.0.1:9999` once per invocation
+   * gave N listening sockets and N UI endpoints, released only at serve stop.
+   * The endpoint dedup downstream could never catch it — every proxy carries a
+   * fresh port, so `proxy.url` differs each time. Keying by upstream reuses the
+   * proxy already fronting that destination, while a genuinely NEW upstream
+   * (the multi-listener `alb` case) still gets its own.
+   *
+   * The value is the PENDING promise, not the settled proxy: two identical
+   * ready lines in one stdout chunk both reach this map before either
+   * `proxyFactory` call resolves, so caching the promise is what makes the
+   * second one a reuse instead of a race.
+   */
+  proxies: Map<string, Promise<RunningStudioProxy>>;
   /**
    * Temp dir holding the `--env-vars` SAM-shape file (issue #355), when the
    * serve was started with env-var overrides. Removed on teardown (the file
@@ -490,8 +533,12 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
    * leaks when a serve stops / errors / times out.
    */
   async function closeProxies(e: ServeEntry): Promise<void> {
-    const proxies = e.proxies.splice(0);
-    await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));
+    const proxies = [...e.proxies.values()];
+    e.proxies.clear();
+    // Each entry is a PENDING proxy promise; await it before closing so a
+    // proxy still binding when the serve tears down is not orphaned, and
+    // swallow a rejected one (it never bound, so there is nothing to close).
+    await Promise.all(proxies.map((p) => p.then((x) => x.close()).catch(() => undefined)));
     if (e.envDir) {
       try {
         rmSync(e.envDir, { recursive: true, force: true });
@@ -647,7 +694,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       endpoints: [],
       startedAt,
       child,
-      proxies: [],
+      proxies: new Map(),
     };
     if (child.pid !== undefined) entry.pid = child.pid;
     // Bind the env temp dir to the entry so closeProxies removes it on teardown.
@@ -756,7 +803,14 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
        * ending in the same failure with a worse message.
        */
       const failServe = (reason: string): void => {
-        if (settled) return;
+        // `entry.stopping` as well as `settled`, mirroring the `close` handler
+        // below: `stop()` marks the entry, drops it from the map and then
+        // awaits `stopChild` for up to `stopGraceMs` (45 s — an ALB teardown
+        // really takes that long). A refused ready line arriving inside that
+        // window used to emit an `error` serve event and reject `start()`,
+        // giving the UI a failure banner for a serve the user deliberately
+        // stopped, immediately followed by the `stopped` event.
+        if (settled || entry.stopping) return;
         settled = true;
         clearTimeoutFn(timer);
         entry.status = 'error';
@@ -804,15 +858,26 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         let endpoint = childUrl;
         if (childUrl && spec.capturesHttp && captureRequests && /^https?:/i.test(childUrl)) {
           try {
-            const proxy = await proxyFactory({
-              bus: config.bus,
-              target: req.targetId,
-              kind: req.kind,
-              upstream: childUrl,
-            });
-            entry.proxies.push(proxy);
+            // Reuse the proxy already fronting this exact upstream rather than
+            // starting another (see `ServeEntry.proxies`). Registered BEFORE
+            // the await so a second identical ready line in the same chunk
+            // joins this startup instead of racing a duplicate one.
+            let pending = entry.proxies.get(childUrl);
+            if (pending === undefined) {
+              pending = proxyFactory({
+                bus: config.bus,
+                target: req.targetId,
+                kind: req.kind,
+                upstream: childUrl,
+              });
+              entry.proxies.set(childUrl, pending);
+            }
+            const proxy = await pending;
             endpoint = proxy.url;
           } catch {
+            // A failed startup is not cached: drop it so the fallback below is
+            // reached once per attempt rather than replaying one rejection.
+            entry.proxies.delete(childUrl);
             // Proxy failed to bind — fall back to the direct child URL so the
             // serve is still usable (just uncaptured). Re-resolve it: the
             // value published here is a destination the composer posts to with

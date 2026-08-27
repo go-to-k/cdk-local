@@ -70,6 +70,22 @@ export function isLoopbackHostname(hostname: string): boolean {
 }
 
 /**
+ * Drop the brackets `URL.hostname` keeps around an IPv6 literal (`[::1]`), so
+ * the host can be handed to `node:http` / `node:net`.
+ *
+ * Those two disagree with `URL` about the spelling: `http.request({ host:
+ * '[::1]' })` fails with `ENOTFOUND` (it is looked up as a NAME), while `'::1'`
+ * connects. {@link isLoopbackHostname} already tolerates the bracketed form —
+ * so `--host ::1` on a serve child yields an upstream this proxy ACCEPTS and
+ * then 502s every request through, which is the worst of the three outcomes.
+ * Bracket-stripping is safe for every other spelling: a dotted IPv4, a name
+ * and a bare hextet form carry no brackets to remove.
+ */
+function stripHostBrackets(hostname: string): string {
+  return hostname.replace(/^\[/, '').replace(/\]$/, '');
+}
+
+/**
  * True when `hostname` is the UNSPECIFIED (wildcard) address: IPv4 `0.0.0.0`,
  * IPv6 `::` (`URL` normalises `0:0:0:0:0:0:0:0` to it), or the IPv4-mapped
  * `::ffff:0.0.0.0` (which `URL.hostname` renders as `[::ffff:0:0]`).
@@ -242,7 +258,7 @@ export function startStudioProxy(config: StudioProxyConfig): Promise<RunningStud
     );
   }
   const upstreamUrl = new URL(resolvedUpstream);
-  const upstreamHost = upstreamUrl.hostname;
+  const upstreamHost = stripHostBrackets(upstreamUrl.hostname);
   const upstreamPort = Number(upstreamUrl.port) || 80;
 
   const server = createServer((clientReq, clientRes) => {

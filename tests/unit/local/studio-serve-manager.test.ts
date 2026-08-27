@@ -1090,7 +1090,11 @@ describe('createStudioServeManager', () => {
     expect(serves.at(-1)?.status).toBe('stopped');
     expect(serves.at(-1)?.message).toMatch(/exited/i);
     expect(mgr.list()).toEqual([]);
-    // The capture proxy must be torn down when the serve crashes.
+    // The capture proxy must be torn down when the serve crashes. One
+    // microtask, because the entry now holds the PENDING proxy promise (so a
+    // repeated ready line can join a startup already in flight instead of
+    // beginning a second one) and teardown awaits it before closing.
+    await new Promise((r) => setTimeout(r, 0));
     expect(fp.closes[0]).toHaveBeenCalled();
   });
 
@@ -1443,6 +1447,8 @@ function startPending(
   list: () => StudioServeState[];
   /** The pending `start()` promise. Pre-attached `catch` so it never leaks. */
   ready: Promise<StudioServeState>;
+  /** `stop()` for this target, so a teardown-window race is drivable. */
+  stop: () => Promise<void>;
 } {
   const bus = new StudioEventBus();
   const { serves, logs } = collect(bus);
@@ -1457,7 +1463,15 @@ function startPending(
   });
   const ready = mgr.start({ targetId, kind });
   ready.catch(() => undefined);
-  return { child, fp, serves, logs, list: () => mgr.list(), ready };
+  return {
+    child,
+    fp,
+    serves,
+    logs,
+    list: () => mgr.list(),
+    ready,
+    stop: () => mgr.stop({ targetId }),
+  };
 }
 
 describe('classifyChildLine (issue #578)', () => {
@@ -1694,18 +1708,21 @@ describe('serve readiness refuses a non-loopback endpoint (issue #578)', () => {
   // real banner by shape. The loopback bound is what stops them. (A `0.0.0.0`
   // bind is NOT here: a wildcard is a bind address, reachable on loopback, so
   // it is normalized rather than refused - see the wildcard describe below.)
-  const FOREIGN = [
-    'Server listening on http://attacker.example/  (MyApi)',
-    'Server listening on http://169.254.169.254:80  (MyApi)',
-    'Server listening on http://localhost.attacker.example:8080  (MyApi)',
-    'Server listening on http://127.0.0.1.attacker.example:8080  (MyApi)',
-    'Server listening on http://[2001:db8::1]:3000  (MyApi)',
-    'Server listening on http://192.168.0.5:3000  (MyApi)',
-    'Server listening on not-a-url  (MyApi)',
+  // Paired with the WORD the refusal must use, so the two faults that reach
+  // one refusal stay distinguishable: a value that parses and names another
+  // host, versus one that is not a URL at all (issue #578 review).
+  const FOREIGN: Array<[string, string]> = [
+    ['Server listening on http://attacker.example/  (MyApi)', 'non-loopback'],
+    ['Server listening on http://169.254.169.254:80  (MyApi)', 'non-loopback'],
+    ['Server listening on http://localhost.attacker.example:8080  (MyApi)', 'non-loopback'],
+    ['Server listening on http://127.0.0.1.attacker.example:8080  (MyApi)', 'non-loopback'],
+    ['Server listening on http://[2001:db8::1]:3000  (MyApi)', 'non-loopback'],
+    ['Server listening on http://192.168.0.5:3000  (MyApi)', 'non-loopback'],
+    ['Server listening on not-a-url  (MyApi)', 'unparseable'],
   ];
 
   it('adopts no endpoint, starts no proxy, and fails the serve immediately', async () => {
-    for (const line of FOREIGN) {
+    for (const [line, reason] of FOREIGN) {
       const h = startPending('api');
       h.child.stdout.emit('data', `${line}\n`);
       await tick();
@@ -1718,12 +1735,12 @@ describe('serve readiness refuses a non-loopback endpoint (issue #578)', () => {
       expect(last?.status, line).toBe('error');
       // The failure REASON carries the refusal text - not a bare
       // "did not start within 120000ms" with the cause buried in the logs.
-      expect(last?.message, line).toContain('non-loopback');
+      expect(last?.message, line).toContain(reason);
       expect(last?.endpoints, line).toEqual([]);
       // The refusal is also loud on the LOGS panel.
       const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
       expect(warn, line).toBeDefined();
-      expect(warn, line).toContain('non-loopback');
+      expect(warn, line).toContain(reason);
       // The child is torn down gracefully so it can stop its own containers.
       expect(h.child.kill, line).toHaveBeenCalledWith('SIGTERM');
     }
@@ -2036,7 +2053,11 @@ describe('a refused ready line fails the serve immediately (issue #578)', () => 
     await tick();
     expect(h.list()).toEqual([]);
     expect(h.serves.at(-1)?.status).toBe('error');
-    expect(h.serves.at(-1)?.message).toContain('non-loopback');
+    // And the reason is the one that actually applies. `:::8080` does not
+    // PARSE; calling it non-loopback would name a judgement never reached,
+    // which now costs more than a wrong word since this tears the serve down.
+    expect(h.serves.at(-1)?.message).toContain('unparseable');
+    expect(h.serves.at(-1)?.message).not.toContain('non-loopback');
   });
 
   it('does NOT fail an already-running serve when a later endpoint line is refused', async () => {
@@ -2220,5 +2241,217 @@ describe('the --host-port hostUrl carries the loopback bound too (issue #578)', 
     h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
     await h.ready;
     expect(h.list()[0]?.hostUrl).toBe('http://127.0.0.1:8080');
+  });
+
+  it('says UNPARSEABLE, not non-loopback, for a port half that is not a port', async () => {
+    // `80=abc` interpolates to `http://127.0.0.1:abc`, which `new URL` rejects
+    // for its port. The host it names IS loopback, so telling the user studio
+    // "refused a non-loopback --host-port mapping" describes a judgement that
+    // was never reached and points them at the wrong half of their flag.
+    const h = startEcsWithHostPort('abc');
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await h.ready;
+    expect(h.list()[0]?.hostUrl).toBeUndefined();
+    const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('unparseable');
+    expect(warn).toContain('--host-port');
+    expect(warn).not.toContain('non-loopback');
+  });
+
+  it('still says NON-LOOPBACK for a value that parses and names another host', async () => {
+    // The other branch: `1@evil.example` parses fine, and `evil.example` is
+    // the host. Both branches are pinned so the split cannot collapse back
+    // into one wording in either direction.
+    const h = startEcsWithHostPort('1@evil.example');
+    h.child.stdout.emit('data', 'Service(s) running: 1 replica.\n');
+    await h.ready;
+    const warn = h.logs.map((l) => l.line).find((l) => l.startsWith('WARN: refused'));
+    expect(warn).toContain('non-loopback');
+    expect(warn).not.toContain('unparseable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #578 test-gap round - each block below kills a mutant the suite let
+// through. The comment on each names the mutation it fences.
+// ---------------------------------------------------------------------------
+
+describe('an alb adopts EVERY listener banner (issue #578)', () => {
+  // Mutant: delete `readyRepeats: true` from the `alb` spec. `buildFrontDoor`
+  // logs one banner per LISTENER and awaits `startFrontDoorServer` between
+  // them, so those land in different stdout chunks and therefore after the
+  // serve has settled. Without the exemption every listener but the first is
+  // silently dropped - and the whole suite stayed green, because only `api`'s
+  // exemption was covered.
+  it('reads a second ALB front-door banner arriving after the serve settled', async () => {
+    const h = startPending('alb', 'MyAlb');
+    h.child.stdout.emit('data', 'ALB front-door: http://127.0.0.1:51234 (listener port 80)\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+
+    h.child.stdout.emit('data', 'ALB front-door: http://127.0.0.1:51235 (listener port 443)\n');
+    await tick();
+
+    // BOTH listeners are fronted, and both proxy URLs reach the UI.
+    expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234', 'http://127.0.0.1:51235']);
+    expect(h.list()[0]?.endpoints).toEqual([PROXIED, 'http://127.0.0.1:61235']);
+  });
+});
+
+describe('a ready banner is matched on the TAG-BEARING text (issue #578)', () => {
+  // Mutants: `spec.readyRe.exec(parsed.text)` -> `parsed.untagged`, and the
+  // same on the `extraEndpointRe` line. `untagged` peels a `[module]` tag, and
+  // peeling it before matching is exactly what re-anchored relayed container
+  // output (`[web] `, `[svc=... c=...] `) to column 0. The existing module-tag
+  // cases could not see the difference: they use BARE `[tag]` lines, where no
+  // verbose preamble precedes the tag and so `text === untagged`. These lines
+  // carry a preamble AND a tag, which is the one shape that separates them.
+  it('does not read a banner sitting behind a [module] tag on a verbose line', async () => {
+    const h = startPending('api', 'MyApi');
+    h.child.stdout.emit(
+      'data',
+      '2026-08-27T12:00:00.000Z INFO  [web] Server listening on http://127.0.0.1:9999\n'
+    );
+    await tick();
+    expect(h.list()[0]?.status).toBe('starting');
+    expect(h.list()[0]?.endpoints).toEqual([]);
+    expect(h.fp.upstreams).toEqual([]);
+  });
+
+  it('applies the same to the agentcore extra-endpoint line', async () => {
+    const h = startPending('agentcore-ws', 'MyAgent');
+    h.child.stdout.emit('data', 'Server listening on ws://127.0.0.1:49160/ws  (MyAgent)\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+
+    h.child.stdout.emit(
+      'data',
+      '2026-08-27T12:00:00.000Z INFO  [web] HTTP contract served on http://127.0.0.1:9999\n'
+    );
+    await tick();
+    expect(h.list()[0]?.endpoints).toEqual(['ws://127.0.0.1:49160/ws']);
+    expect(h.fp.upstreams).toEqual([]);
+  });
+});
+
+describe('every single-banner kind stops reading readyRe once settled (issue #578)', () => {
+  // Mutant: add `readyRepeats: true` to `agentcore-ws` / `ecs-task`. Only the
+  // `cloudfront` case covered the post-settle stop, so the exemption could be
+  // handed to a kind that does not need it with the suite still green.
+  it('does not attach a SECOND capture proxy for an agentcore-ws serve', async () => {
+    // This kind matters most of the three: it is `capturesHttp`, so a
+    // post-boot line naming an http:// endpoint would start a real proxy and
+    // publish it to the UI as this serve's endpoint.
+    const h = startPending('agentcore-ws', 'MyAgent');
+    h.child.stdout.emit('data', 'Server listening on ws://127.0.0.1:49160/ws  (MyAgent)\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+
+    h.child.stdout.emit('data', 'Server listening on http://127.0.0.1:9999\n');
+    await tick();
+    expect(h.fp.upstreams).toEqual([]);
+    expect(h.list()[0]?.endpoints).toEqual(['ws://127.0.0.1:49160/ws']);
+  });
+
+  it('does not re-announce an ecs-task run on a repeated Task running banner', async () => {
+    // `ecs-task`'s banner carries no capture group, so the damage is smaller:
+    // a duplicate `running` event rather than a duplicate destination. Pinned
+    // anyway, so the exemption stays a property of the two kinds that need it.
+    const h = startPending('ecs-task', 'Stack/TaskDef');
+    h.child.stdout.emit('data', 'Task running (family=Stack-TaskDef).\n');
+    await tick();
+    expect(h.list()[0]?.status).toBe('running');
+
+    h.child.stdout.emit('data', 'Task running (family=Stack-TaskDef).\n');
+    await tick();
+    expect(h.serves.filter((e) => e.status === 'running')).toHaveLength(1);
+  });
+});
+
+describe('the ready pipeline reads STDOUT only (issue #578)', () => {
+  // Mutant: run `child.stderr` through the same classify + readyRe pipeline.
+  // Nothing pinned the split, and it matters because a Lambda container's
+  // stderr is relayed raw and unprefixed (`docker-runner`'s `streamLogs`), so
+  // a handler writing to stderr would otherwise get the `^` anchor for free.
+  it('names no endpoint from a ready banner arriving on stderr', async () => {
+    const h = startPending('api', 'MyApi');
+    h.child.stderr.emit('data', LISTENING);
+    await tick();
+    expect(h.list()[0]?.status).toBe('starting');
+    expect(h.list()[0]?.endpoints).toEqual([]);
+    expect(h.fp.upstreams).toEqual([]);
+    // The line still reaches the LOGS panel - it is dropped as a SIGNAL, not
+    // hidden from the user.
+    expect(h.logs.map((l) => l.line)).toContain(LISTENING.trimEnd());
+  });
+});
+
+describe('a repeated ready line reuses its capture proxy (issue #578 review)', () => {
+  // Mutant: start a fresh proxy on every readyRe match. `api` / `alb` are
+  // exempt from the post-settle stop, so the socket count was bounded by the
+  // CHILD'S OUTPUT: a handler logging `Server listening on ...` once per
+  // invocation gave N listening sockets and N UI endpoints until serve stop.
+  // The endpoint dedup downstream cannot catch it - each proxy has a fresh
+  // port, so `proxy.url` differs every time.
+  it('starts ONE proxy for two identical api ready lines', async () => {
+    const h = startPending('api', 'MyApi');
+    h.child.stdout.emit('data', LISTENING);
+    await tick();
+    h.child.stdout.emit('data', LISTENING);
+    await tick();
+    expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+    expect(h.list()[0]?.endpoints).toEqual([PROXIED]);
+  });
+
+  it('starts ONE proxy when both lines arrive in the SAME chunk', async () => {
+    // The racing shape: both matches reach the registry before either
+    // `proxyFactory` call resolves, so a map of SETTLED proxies would still
+    // start two. The pending promise is what makes the second one a reuse.
+    const h = startPending('api', 'MyApi');
+    h.child.stdout.emit('data', LISTENING + LISTENING);
+    await tick();
+    expect(h.fp.upstreams).toEqual(['http://127.0.0.1:51234']);
+    expect(h.list()[0]?.endpoints).toEqual([PROXIED]);
+  });
+
+  // The other direction - two DISTINCT upstreams must still get a proxy each -
+  // is the multi-listener alb case above, which asserts exactly that.
+
+  it('closes the reused proxy exactly once on stop', async () => {
+    const h = startPending('api', 'MyApi');
+    h.child.stdout.emit('data', LISTENING);
+    await tick();
+    h.child.stdout.emit('data', LISTENING);
+    await tick();
+
+    const stopP = h.stop();
+    h.child.emit('close', 0);
+    await stopP;
+    expect(h.fp.closes).toHaveLength(1);
+    expect(h.fp.closes[0]).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a refusal during teardown is not an error banner (issue #578 review)', () => {
+  // Mutant: guard `failServe` on `settled` alone. `stop()` marks the entry,
+  // drops it from the map and then awaits `stopChild` for up to `stopGraceMs`
+  // (45 s - a real ALB teardown takes that long). A refused ready line landing
+  // in that window emitted an `error` serve event and rejected `start()` with
+  // the refusal, so the UI showed a failure banner for a serve the user had
+  // deliberately stopped, immediately followed by `stopped`.
+  it('emits no error event for a serve the user already stopped', async () => {
+    const h = startPending('alb', 'MyAlb');
+    const stopP = h.stop();
+    h.child.stdout.emit('data', 'ALB front-door: http://10.1.2.3:8080 (listener port 80)\n');
+    await tick();
+
+    expect(h.serves.map((e) => e.status)).not.toContain('error');
+    h.child.emit('close', 0);
+    await stopP;
+
+    expect(h.serves.map((e) => e.status)).toEqual(['starting', 'stopped']);
+    // And `start()` still rejects for the reason it really failed for.
+    await expect(h.ready).rejects.toThrow(/stopped before it finished starting/i);
   });
 });
