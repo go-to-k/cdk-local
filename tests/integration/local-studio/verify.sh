@@ -58,6 +58,31 @@ RUN_FILE=$(mktemp)
 SSE_FILE=$(mktemp)
 STUDIO_PID=""
 SSE_PID=""
+
+# --- built-image cleanup (issue #587) --------------------------------------
+# This used to force-remove EVERY `cdkl-override-*` tag. Parallel integ lanes
+# share one Docker daemon on a dev host, so that blanket sweep deletes override
+# images another lane is mid-run on. Only the tag(s) THIS run creates are
+# removed: the set present now is snapshotted, and cleanup deletes just what
+# appeared since. A run can produce SEVERAL override tags
+# (`cdkl-override-<svc>-<hash>:local`, one per covered target), so the delta is
+# a set rather than a single tag.
+IMAGES_BEFORE_OVERRIDE="$(docker images --filter 'reference=cdkl-override-*' \
+  --format '{{.Repository}}:{{.Tag}}' | sort)"
+
+remove_run_override_images() {
+  local new
+  new="$(docker images --filter 'reference=cdkl-override-*' --format '{{.Repository}}:{{.Tag}}' \
+    | sort | comm -13 <(printf '%s\n' "${IMAGES_BEFORE_OVERRIDE}") - | grep -v '^$' || true)"
+  [ -n "${new}" ] || return 0
+  echo "==> Removing override image(s) built by this run:"
+  echo "${new}" | sed 's/^/      /'
+  # Unforced: `docker image rm` refuses an image while a container still holds
+  # it, so a lane whose container is UP survives. It does NOT cover a lane
+  # between `docker build` and `docker run` -- the delta scoping is what keeps
+  # this run away from another lane's tag in that window.
+  echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
+}
 cleanup() {
   if [[ -n "${SSE_PID}" ]] && kill -0 "${SSE_PID}" 2>/dev/null; then
     kill "${SSE_PID}" 2>/dev/null || true
@@ -70,7 +95,7 @@ cleanup() {
   rm -f "$(pwd)/.studio-ws-client.mjs" "$(pwd)/.studio-agentcore-ws-client.mjs"
   # Drop the local-only image-override build(s) the ecs / alb / ecs-task picker
   # tests produced (tag prefix is the embed binary name: `cdkl-override-*:local`).
-  docker images --filter 'reference=cdkl-override-*' -q | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  remove_run_override_images
 }
 trap cleanup EXIT
 

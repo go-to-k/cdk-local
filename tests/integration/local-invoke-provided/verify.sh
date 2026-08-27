@@ -26,6 +26,41 @@ CDKL="node ../../../dist/cli.js"
 LAMBDA_IMAGE="public.ecr.aws/lambda/provided:al2023"
 GO_IMAGE="golang:1.21-alpine"
 
+# --- capture (issue #577) --------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CLI} invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the command substitution fails, and `set -e`
+# kills the script BEFORE the grep, before the FAIL message, and before the
+# stderr re-run each FAIL branch does for diagnosis. The operator is left
+# with no response, no assertion and no stderr -- and for a *-from-cfn-stack
+# fixture the EXIT trap then destroys the stack, taking the evidence too.
+#
+# `capture` runs the command with its exit status captured EXPLICITLY, so
+# `set -e` never fires. On a non-zero exit it prints the status and the tail
+# of the captured stderr, then still emits the (possibly empty) last stdout
+# line, so the assertion runs, FAILS, and prints its own diagnostic -- with
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
+CDKL_STDERR="$(mktemp)"
+capture() {
+  local out rc=0
+  out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${CDKL_STDERR}" >&2
+  fi
+  printf '%s\n' "${out}" | tail -1
+}
+# Registered immediately: the first capture happens before the fixture's own
+# first `trap 'rm -f ...' EXIT`, which would otherwise leave this file behind
+# when a run fails on the very first step. Later traps replace this handler
+# and already list "${CDKL_STDERR}" themselves.
+trap 'rm -f "${CDKL_STDERR}"' EXIT
+
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
@@ -85,7 +120,7 @@ fi
 # linux/amd64 emulation. The first invocation pays a one-time emulator
 # warm-up tax (~5s); the function's 30s timeout absorbs it comfortably.
 echo "==> [1/5] Invoking BootstrapHandler with default empty event"
-RESULT_1=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --no-pull 2>/dev/null | tail -1)
+RESULT_1=$(capture ${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -Eq '"Greeting": *"hello"|"greeting": *"hello"' || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
@@ -95,9 +130,9 @@ echo "${RESULT_1}" | grep -Eq '"Greeting": *"hello"|"greeting": *"hello"' || {
 # Test 2 — asset-backed bootstrap with --event payload round-trip
 echo "==> [2/5] Invoking BootstrapHandler with --event payload"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
-RESULT_2=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --event "${EVENT_FILE}" --no-pull 2>/dev/null | tail -1)
+RESULT_2=$(capture ${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
 echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
@@ -108,9 +143,9 @@ echo "${RESULT_2}" | grep -Eq '"key": *"value"' || {
 # bootstrap must keep its executable bit, else RIE -> Runtime.InvalidEntrypoint).
 echo "==> [3/5] Invoking BootstrapZipHandler (Code.fromAsset of a .zip with an executable bootstrap)"
 ZIP_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ZIP_EVENT}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ZIP_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"from":"zip"}' > "${ZIP_EVENT}"
-RESULT_ZIP=$(${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapZipHandler --event "${ZIP_EVENT}" --no-pull 2>/dev/null | tail -1)
+RESULT_ZIP=$(capture ${CDKL} invoke CdkLocalInvokeProvidedFixture/BootstrapZipHandler --event "${ZIP_EVENT}" --no-pull)
 echo "    response: ${RESULT_ZIP}"
 echo "${RESULT_ZIP}" | grep -Eq '"Greeting": *"hello-from-zip"|"greeting": *"hello-from-zip"' || {
   echo "FAIL: expected greeting=hello-from-zip from the extracted zip bootstrap, got: ${RESULT_ZIP}"

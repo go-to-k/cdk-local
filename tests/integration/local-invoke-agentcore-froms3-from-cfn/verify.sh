@@ -31,6 +31,39 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-invoke-agentcore-froms3-from-cfn"
 CLI="node ${REPO_ROOT}/dist/cli.js"
 
+# --- capture (issue #577) --------------------------------------------------
+# Under `set -euo pipefail` the shape
+#     VAR=$(${CLI} invoke ... 2>/dev/null | tail -1)
+# aborts the WHOLE script at the ASSIGNMENT when the CLI exits non-zero:
+# pipefail fails the pipeline, the command substitution fails, and `set -e`
+# kills the script BEFORE the grep, before the FAIL message, and before the
+# stderr re-run each FAIL branch does for diagnosis. The operator is left
+# with no response, no assertion and no stderr -- and for a *-from-cfn-stack
+# fixture the EXIT trap then destroys the stack, taking the evidence too.
+#
+# `capture` runs the command with its exit status captured EXPLICITLY, so
+# `set -e` never fires. On a non-zero exit it prints the status and the tail
+# of the captured stderr, then still emits the (possibly empty) last stdout
+# line, so the assertion runs, FAILS, and prints its own diagnostic -- with
+# the evidence in the log. On the happy path it emits the last NON-BLANK line of
+# stdout with stderr suppressed. That differs from the old shape only when stdout
+# ends in blank lines: the old shape yielded an empty string there, this yields
+# the last non-blank line.
+CDKL_STDERR="$(mktemp)"
+# Registered immediately, matching the other fixtures: `trap cleanup EXIT` is
+# installed further down, so without this a failure in between leaks the file.
+trap 'rm -f "${CDKL_STDERR}"' EXIT
+capture() {
+  local out rc=0
+  out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
+    tail -20 "${CDKL_STDERR}" >&2
+  fi
+  printf '%s\n' "${out}" | tail -1
+}
+
 echo "[verify] region=${REGION} fromS3 intrinsic Code.S3.Bucket (Ref) + --from-cfn-stack"
 
 echo "[verify] step 1a: install + build cdk-local"
@@ -53,7 +86,11 @@ fi
 WE_CREATED_STACK=0
 EVENT_FILE=""
 cleanup() {
+  # rc=$? MUST be the first statement: it captures the SCRIPT's exit status.
+  # Any command above it (an `rm -f`, which always succeeds) overwrites $? and
+  # makes the `exit "${rc}"` below report 0 for a FAILED run.
   rc=$?
+  rm -f "${CDKL_STDERR}"
   if [ "${WE_CREATED_STACK}" -eq 1 ]; then
     echo "[verify] cleanup: cdk destroy ${STACK} (autoDeleteObjects empties the bucket)"
     (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \
@@ -135,7 +172,7 @@ echo "${OUT_NO_STATE}" | grep -q -- "--from-cfn-stack" || {
 echo "[verify] step 8: --event payload echoes through the fromS3-via-Ref agent"
 EVENT_FILE="$(mktemp)"
 echo '{"prompt":"hello froms3 ref"}' > "${EVENT_FILE}"
-RESULT_EVENT=$(${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack --event "${EVENT_FILE}" 2>/dev/null | tail -1)
+RESULT_EVENT=$(capture ${CLI} invoke-agentcore "${TARGET}" --from-cfn-stack --event "${EVENT_FILE}")
 echo "[verify]   response: ${RESULT_EVENT}"
 echo "${RESULT_EVENT}" | grep -q '"prompt":"hello froms3 ref"' || {
   echo "[verify] FAIL: expected the echoed event from the fromS3-via-Ref agent, got: ${RESULT_EVENT}"

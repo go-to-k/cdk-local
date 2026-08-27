@@ -20,13 +20,38 @@ CDKL="node ../../../dist/cli.js"
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 
+# --- built-image cleanup (issue #587) --------------------------------------
+# This used to force-remove EVERY `cdkl-override-*` tag. Parallel integ lanes
+# share one Docker daemon on a dev host, so that blanket sweep deletes override
+# images another lane is mid-run on. Only the tag(s) THIS run creates are
+# removed: the set present now is snapshotted, and cleanup deletes just what
+# appeared since. A run can produce SEVERAL override tags
+# (`cdkl-override-<svc>-<hash>:local`, one per covered target), so the delta is
+# a set rather than a single tag.
+IMAGES_BEFORE_OVERRIDE="$(docker images --filter 'reference=cdkl-override-*' \
+  --format '{{.Repository}}:{{.Tag}}' | sort)"
+
+remove_run_override_images() {
+  local new
+  new="$(docker images --filter 'reference=cdkl-override-*' --format '{{.Repository}}:{{.Tag}}' \
+    | sort | comm -13 <(printf '%s\n' "${IMAGES_BEFORE_OVERRIDE}") - | grep -v '^$' || true)"
+  [ -n "${new}" ] || return 0
+  echo "==> Removing override image(s) built by this run:"
+  echo "${new}" | sed 's/^/      /'
+  # Unforced: `docker image rm` refuses an image while a container still holds
+  # it, so a lane whose container is UP survives. It does NOT cover a lane
+  # between `docker build` and `docker run` -- the delta scoping is what keeps
+  # this run away from another lane's tag in that window.
+  echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
+}
+
 cleanup() {
   echo "==> Cleanup: stopping any leftover containers"
   docker ps --filter "name=cdkl-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkl-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
   # Issue #388 — drop the local-only override image(s) the --image-override run
   # built (tag prefix is the embed binary name: `cdkl-override-*:local`).
-  docker images --filter 'reference=cdkl-override-*' -q | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  remove_run_override_images
 }
 trap cleanup EXIT
 
