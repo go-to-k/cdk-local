@@ -26,29 +26,166 @@ The hooks split into three classes:
 
 - **`control-char-gate.sh`** blocks `git commit` (incl. the
   `cd <path> && git commit` / `git -C <path> commit` worktree forms)
-  when a staged text file's blob contains a NUL (`\x00`) or any other
-  C0 control byte except tab / newline / carriage-return. Catches the
-  editing-artifact foot-gun where a separator lands as a raw control
+  when a text file the commit would contain has a NUL (`\x00`) or any
+  other C0 control byte except tab / newline / carriage-return. Catches
+  the editing-artifact foot-gun where a separator lands as a raw control
   byte inside source (the formatter / linter does NOT flag it, but it
   makes `grep` treat the file as binary and silently suppress matches,
-  and ships a control byte in committed text). Scans the STAGED BLOB
-  (`git show :<file>`) of each `--diff-filter=ACM` file, not the diff —
-  a NUL makes `git diff` report "Binary files differ" and hide the
-  added lines, so a diff-only scan would miss exactly this case.
+  and ships a control byte in committed text).
   Binary / asset extensions (images, fonts, archives, `.wasm`, etc.)
   are skipped (control bytes are legitimate there). Cwd-aware (same
   `git -C` > `cd` > payload `cwd` resolution as `branch-gate.sh`).
-  Fails open when `git` / `perl` are unavailable or nothing is staged.
-  No bypass marker — the fix is to remove the stray byte and re-stage.
+  Fails open when `git` / `perl` are unavailable or when neither scan
+  finds a candidate file. No bypass marker — the fix is to remove the
+  stray byte.
 
-  **The gate is not the only fence, because it is a PreToolUse hook and
-  therefore only ever sees the AGENT's tool calls.** Issue
-  go-to-k/cdk-local#576 records a command shape that walks past it —
-  `git add -A && git commit ...` in one call presents the gate with the
-  tree as it was BEFORE the `git add`, so nothing is staged yet for the
-  offending file. That is not hypothetical: on 2026-08-27
-  `src/local/front-door-server.ts` was found on `main` carrying two raw
-  NUL bytes (a regex character class and its comment in
+  **What it reads is decided by the COMMAND, not by the index**
+  (go-to-k/cdk-local#576). The first version scanned the STAGED BLOB
+  (`git show :<file>` over each `--diff-filter=ACM` entry) and nothing
+  else. That choice was right against the diff — a NUL makes `git diff`
+  report "Binary files differ" and hide the added lines, so a diff-only
+  scan would miss exactly this case — and wrong against the CLOCK: a
+  PreToolUse hook runs BEFORE the command it gates, so
+
+  ```bash
+  git add -A && git commit -F .commit-msg.txt
+  ```
+
+  in ONE Bash call handed the gate the tree as it was BEFORE the
+  `git add`. Nothing was staged for the offending file, the gate found
+  nothing, exit 0, and the control byte shipped. The gate was
+  registered, DID fire, and answered "clean" — "registration is not
+  execution" arriving through command shape rather than through a broken
+  matcher. And that shape is the common one, not an edge case: this
+  repo's own `check-gate.sh` short-circuits the whole Bash call, so
+  splitting staging and committing into two calls costs two gate round
+  trips.
+
+  So every candidate file is collected with its PROVENANCE, and provenance
+  decides which bytes are read: an INDEX candidate is read out of the
+  index (`git show :<file>`) and NEVER off disk, a WORKING-TREE candidate
+  off disk and NEVER out of the index. That is what keeps a plain
+  `git commit` an index-only verdict — a dirty working copy it is not
+  committing must not block it — while `git add -A && git commit` sees
+  the disk. Which candidates exist follows from the command:
+
+  | command shape | what is collected |
+  |---|---|
+  | plain `git commit` | the INDEX only (`--diff-filter=ACM`), as before |
+  | `… git add\|stage <spec> …` | the index **and** the working-tree content that add would bring in |
+  | `git commit -a` / `--all` | the index **and** the working-tree content of TRACKED MODIFIED files |
+  | `git commit [-o\|-i\|--] <spec>` | the index **and** the working-tree content of those paths |
+
+  The last row was a straight fail-open until go-to-k/cdk-local#576's
+  review: a pathspec on `git commit` is an implicit `--only`, which
+  commits the WORKING-TREE content of those paths and ignores the index
+  for them, so `git commit -m x f.ts` shipped a NUL with the index
+  clean. Reading a positional means also knowing which flags take a
+  SEPARATE value, or `-m`'s own message text reads as a pathspec and the
+  real one is never reached.
+
+  `git commit -a` stages tracked modifications ONLY — it never picks up
+  an untracked file, and neither does this. The index scan is kept ON
+  TOP of the working-tree one rather than replaced by it: a file staged
+  EARLIER and unmodified since is in the commit but is not "modified"
+  relative to the index, so `git ls-files --modified` never lists it.
+
+  **Unrestricted staging is scanned from the repo ROOT.** `git ls-files`
+  lists only what is under its CWD, while `git add -A` and `git commit -a`
+  have been whole-tree since git 2.0 — so run from a subdirectory the
+  scan used to miss a control byte anywhere else in the repository, the
+  same fail-open class as the issue itself and invisible to every case
+  that runs at the repo root. A pathspec-RESTRICTED scan still runs in
+  the command's own directory, because that is what its pathspecs are
+  relative to.
+
+  **What it does NOT try to know: segment ORDER, or that something else
+  in the call will delete the file.** `rm bad.ts && git add -A && git
+  commit` is BLOCKED, even though the resulting commit does not contain
+  bad.ts, and the error message says how to proceed — stage the deletion
+  in its own call. A revision of this gate did parse `rm` / `git rm` to
+  avoid that one false block. It bought nothing and cost four things: a
+  FAIL-OPEN (`git add -A && git commit && rm x` passed, because order
+  was never modelled and the commit really did contain the byte), an
+  abbreviation bypass (`git rm --ca`, which git accepts), a
+  directory-expansion miss, and a 90-second hang. Each round's fix was
+  more clever than the last, which is the tell that the artifact was
+  claiming more than it could deliver. The parser is gone and the remedy
+  lives in the message. One tree-level rule survives, and it is an
+  observation rather than a parse: a path ALREADY gone from disk that
+  the staging covers has its index scan skipped, because `git add -A`
+  will stage that deletion.
+
+  **It is bounded in time, which correctness cases cannot see.**
+  `git add -f <pathspec>` may legitimately reach gitignored content, but
+  a pathspec of `.` drags in the whole ignored tree: measured, 4,001
+  candidates and 25 s in this repo, 44,563 and over 90 s in a reviewer's
+  worktree, one `perl` fork each. A gate in the path of every commit
+  that wedges is worse than the bug it prevents. So the listing is
+  PROBED first (cheap — `ls-files` walks directories without reading
+  contents, and the probe stops at the cap) and `--exclude-standard` is
+  dropped only when the result is under `GATE_CC_FORCE_MAX`; and the
+  whole working-tree scan is ONE perl process for all candidates instead
+  of one per file. ERRS NARROW, boundedly: a `git add -f` covering more
+  than the cap leaves its IGNORED files unscanned, while its tracked and
+  unignored files are still scanned. Two cases pin a wall-clock budget.
+
+  The shape is decided with the shared `_command-match.sh` machinery
+  (`GATE_RE_GIT_ADD`, and `gate_verb_args` for the arguments after the
+  matched verb), never a second tokenizer, so `mise exec -- git add -A`,
+  `bash -c "…"`, `git -C <path> add`, quoted spans and multi-line
+  commands all behave as their plain spellings do. The `git add`
+  segment gets its OWN `gate_target_dir` resolution, so an add and a
+  commit naming different trees scan both.
+
+  **Where it must guess, it scans MORE** — a false block costs one
+  message and a re-run, a false pass is the bug above. `git add -p` /
+  `-i` (the human picks interactively), `--pathspec-from-file` (the
+  pathspecs are in a file), and an UNEXPANDED pathspec (`git add
+  "$FILE"`) all drop the pathspec restriction and scan the whole tree.
+  So does an UNKNOWN `git add` flag: the valueless reading it used to
+  get was a FAIL-OPEN rather than a widen, because the flag's value
+  became a pathspec, which also SUPPRESSED the whole-tree fallback —
+  measured, `git add --future-flag somevalue && git commit -m x`
+  returned 0 with an untracked NUL present. The flags `git add` really
+  does accept without a value are enumerated instead, so the default can
+  be the safe one. Two branches err NARROW, knowingly: `git add -f` with
+  NO pathspec keeps `--exclude-standard` (an unbounded walk of every
+  gitignored path would make the gate the slowest thing in the commit;
+  `-f` WITH a pathspec does drop it), and a symlink is skipped, because
+  git stages the link TARGET PATH as the blob and following it would
+  scan bytes the commit does not contain.
+
+  The gate is written to bash 3.2 — no `mapfile`, no `declare -A`. It
+  had used `mapfile -d ''`, which bash 3.2 does not have. Measured on
+  2026-08-27 against `main`, with a NUL-bearing file staged: under the
+  `#!/usr/bin/env bash` shebang's resolution on a host whose `PATH`
+  carries Homebrew bash (5.3.9 here) the gate answered rc=2 and blocked
+  correctly, while the same hook run as `/bin/bash control-char-gate.sh`
+  (3.2.57) printed `mapfile: command not found`, then `staged: unbound
+  variable`, and exited **1** having scanned nothing. So this was a
+  portability hazard rather than a live failure on a developer machine
+  with bash 5 — but rc=1 is not rc=2, so where it did bite it FAILED
+  OPEN: the commit proceeds, and the only signal is an error on stderr
+  that reads like noise from the hook rather than a refusal.
+
+  `.claude/hooks/control-char-gate.test.sh` (115 cases, run by
+  `vp run test:hooks`) drives all of the above through the real hook
+  against throwaway repositories, in BOTH directions. Two review rounds
+  found live blockers behind 52 and then 93 green cases, both times in
+  shapes nobody had enumerated and both times because the cases reused
+  whichever fixture STATE happened to work. So the suite now crosses the
+  two axes explicitly: six states of a NUL-bearing file (untracked / in
+  HEAD / tracked-modified / staged / staged-then-cleaned / deleted on
+  disk) times four command shapes, all 24 cells spelled out with their
+  reasoning, plus a SUBDIRECTORY cwd, segment ORDER, and a wall-clock
+  budget.
+
+  **The gate is still not the only fence, because it is a PreToolUse
+  hook and therefore only ever sees the AGENT's tool calls** — a human
+  typing the same line into a terminal never passes through it. On
+  2026-08-27 `src/local/front-door-server.ts` was found on `main`
+  carrying two raw NUL bytes (a regex character class and its comment in
   `sanitizeRawHeaderValue`) — functionally correct JavaScript, so no test
   or type-check noticed, while `grep -c host` on that 49 KB file answered
   `0` and `file` reported it as `data`. That file is on the `UP_PATHS`
@@ -452,6 +589,14 @@ reviewer at all. All four now call **`gate_pr_selector`** in
 armed the gate — whatever flags it absorbed — and scans only what follows. A
 gate can no longer match one way and parse another. Each of the four also
 fails CLOSED if the library predates the helper.
+
+**`gate_verb_args`** is that same strip with the PR-number reader removed: it
+prints the text following the matched verb, one line per matching segment, and
+nothing else. `control-char-gate.sh` uses it to read `git add`'s pathspecs and
+`git commit`'s `-a` (go-to-k/cdk-local#576). A gate wanting something other than
+a PR number gets the derived-from-the-same-constant guarantee instead of writing
+the strip a fifth time — which is the maintenance shape that produced all four
+bugs above. It too fails CLOSED if the library predates it.
 
 `gate_target_dir`'s `-C` recognition was widened alongside, for the same reason:
 the absorber now admits `gh -C=/w/t pr merge 1`, which previously resolved to the
