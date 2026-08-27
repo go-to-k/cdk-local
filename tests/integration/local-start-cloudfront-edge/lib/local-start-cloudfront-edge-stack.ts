@@ -11,6 +11,23 @@ import type { Construct } from 'constructs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Run this fixture's Lambdas at the HOST's CPU architecture.
+ *
+ * A function that declares no `architecture` defaults to `X86_64`, so on an
+ * arm64 host cdk-local pins `--platform linux/amd64` and the container runs
+ * under CPU emulation -- where the Go RIE in the `public.ecr.aws/lambda/*`
+ * base images faults intermittently (issue #560; extended to the remaining
+ * fixtures by issue #569).
+ *
+ * See the note on `EdgeFn` below: this fixture's Lambda is a Lambda@Edge
+ * function, which real AWS restricts to x86_64, so declaring the host arch
+ * here is a deliberate, measured deviation rather than the routine change it
+ * is everywhere else.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * Lambda@Edge fixture for `cdkl start-cloudfront` (#400). The distribution's
  * default behavior wires ONE Lambda function to BOTH the `viewer-request` and
  * `viewer-response` event types (a single warm RIE container is booted). The
@@ -38,8 +55,38 @@ export class LocalStartCloudFrontEdgeStack extends cdk.Stack {
       destinationBucket: bucket,
     });
 
+    // Declares the HOST architecture, and this fixture is the one place in
+    // the repo where that is a JUDGEMENT CALL rather than the obvious move.
+    //
+    // Real AWS restricts Lambda@Edge to x86_64: a function attached to a
+    // distribution through `edgeLambdas` cannot be arm64. So on paper this
+    // fixture should pin x86_64, and CDK would not stop it either way -- it
+    // does NOT reject arm64 here at synth.
+    //
+    // It declares the host arch anyway, because the pin was measured and it
+    // is not free. Ten runs on an arm64 host, five per arm:
+    //
+    //   pinned x86_64        4/5 passed, 1 emulation warning
+    //   host architecture    5/5 passed, 0 emulation warnings
+    //
+    // and a sixth pinned run failed with the Go RIE dying mid-request --
+    // `fatal error: found pointer to free object`, then `GET /go` returning
+    // 500 instead of the edge function's 302. That is issue #560 exactly, in
+    // the last fixture of the issue that exists to remove it.
+    //
+    // What decides it: this fixture NEVER DEPLOYS. `verify.sh` runs
+    // `cdkl start-cloudfront` against the synthesized assembly, so the
+    // `Architectures` value is read by cdk-local alone and AWS never sees the
+    // template. Trading a reproducible local fault for fidelity to a
+    // constraint nothing here enforces is the wrong way round.
+    //
+    // If this fixture ever grows a `cdk deploy`, this decision reverses:
+    // pin x86_64 and accept the emulation, because then the constraint is
+    // real. **A production Lambda@Edge stack must pin x86_64** -- do not copy
+    // the line below into one.
     const edgeFn = new lambda.Function(this, 'EdgeFn', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromInline(
         [

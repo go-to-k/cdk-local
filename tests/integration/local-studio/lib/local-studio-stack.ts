@@ -16,6 +16,25 @@ import { Construct } from 'constructs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Run this fixture's Lambdas at the HOST's CPU architecture.
+ *
+ * A function that declares no `architecture` defaults to `X86_64`, so on an
+ * arm64 host cdk-local pins `--platform linux/amd64` and every container here
+ * runs under CPU emulation -- where the Go RIE in the `public.ecr.aws/lambda/*`
+ * base images faults intermittently, at a different assertion on every run
+ * (issue #560; extended to the remaining fixtures by issue #569).
+ *
+ * Declaring the HOST arch -- rather than hardcoding either value -- is what
+ * makes the container native on an Apple Silicon dev host AND on an x86_64 CI
+ * runner, instead of trading one host's emulation for the other's. Keep it on
+ * every function here: a new handler that omits it silently reintroduces the
+ * arm64-only flake. The full rationale, the carve-outs, and the fence that
+ * enforces this live in `tests/unit/integ-fixture-host-architecture.test.ts`.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * Fixture stack for `cdkl studio` target enumeration integ test.
  *
  * Hand-rolls one resource of each kind `cdkl studio` emits a group for, using
@@ -49,14 +68,14 @@ export class LocalStudioStack extends cdk.Stack {
     super(scope, id, props);
 
     // Lambda function — inline code so synth has no asset / bundling step.
-    // arm64 so the RIE container runs NATIVELY on an Apple Silicon dev host
-    // (where this Docker integ runs) instead of under QEMU x86 emulation, which
-    // is slow + unstable (the RIE Go binary can panic / the 30s invoke timeout
-    // can trip). The integ exercises studio orchestration, not arch fidelity,
-    // so native arm64 is the right default for this fixture.
+    // Runs at the HOST architecture so the RIE container is native. This was
+    // hardcoded `ARM_64` with the reasoning below, which was right about the
+    // problem and wrong about the fix: hardcoding arm64 is native on an Apple
+    // Silicon dev host but makes an amd64 CI runner emulate instead, trading
+    // one host's emulation for the other's rather than removing it.
     const fn = new lambda.Function(this, 'MyHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      architecture: lambda.Architecture.ARM_64,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       // Echoes the STUDIO_ENV_PROBE env var into the body so the per-target
       // `--env-vars` option (issue #301 slice 2) is observable end-to-end;
@@ -83,6 +102,7 @@ export class LocalStudioStack extends cdk.Stack {
     const crProvider = new Construct(this, 'MyCustomResourceProvider');
     new lambda.Function(crProvider, 'framework-onEvent', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromInline('exports.handler = async () => ({});'),
     });
@@ -97,6 +117,7 @@ export class LocalStudioStack extends cdk.Stack {
     const genericCr = new Construct(this, 'Custom::AcmeWidgetProvider');
     new lambda.Function(genericCr, 'Handler', {
       runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromInline('exports.handler = async () => ({});'),
     });
@@ -130,8 +151,8 @@ export class LocalStudioStack extends cdk.Stack {
     // The body-action selection expression routes every message to `$default`.
     const wsFn = new lambda.Function(this, 'WsEchoHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
-      // arm64 for native execution on the Apple Silicon dev host (see MyHandler).
-      architecture: lambda.Architecture.ARM_64,
+      // Host architecture, for native execution on either host (see MyHandler).
+      architecture: HOST_ARCHITECTURE,
       handler: 'index.handler',
       code: lambda.Code.fromInline(
         [
