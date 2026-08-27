@@ -108,8 +108,15 @@ extend it instead.
      on every L1 `lambda.CfnFunction` (the L1 takes architecture NAMES, not the
      `Architecture` object). Do NOT hardcode either value: `ARM_64` makes an
      amd64 CI runner emulate, and `X86_64` is the default that caused go-to-k/cdk-local#560.
-     The only exception is a handler shipping a PREBUILT binary compiled for a
-     specific arch, which must pin to match the BINARY.
+     Two exceptions, both where an ARTIFACT dictates the architecture rather
+     than the host: a handler shipping a PREBUILT binary compiled for a
+     specific arch (pin to match the BINARY), and a `DockerImageFunction`
+     whose Dockerfile pulls an arch-specific base image or `COPY`s in a
+     cross-compiled executable (the declared architecture drives
+     `docker build` as well as `docker run`, so it cannot be built for the
+     host). A Dockerfile on a multi-arch base such as
+     `public.ecr.aws/lambda/nodejs:20`, with no prebuilt binary copied in, is
+     NOT an exception and should declare the host architecture.
 
      Then add the new file to `HOST_ARCHITECTURE_STACKS` in
      `tests/unit/integ-fixture-host-architecture.test.ts` — that fence asserts

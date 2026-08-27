@@ -122,11 +122,37 @@ const HOST_ARCHITECTURE_STACKS = [
   'tests/integration/local-invoke-from-cfn-stack-large-stack/lib/local-invoke-from-cfn-stack-large-stack-stack.ts',
   'tests/integration/local-invoke-from-cfn-stack-multi-stack/lib/consumer-stack.ts',
   'tests/integration/local-list/lib/local-list-stack.ts',
+  'tests/integration/local-start-api-all-stacks/lib/stack-a.ts',
+  'tests/integration/local-start-api-all-stacks/lib/stack-b.ts',
+  'tests/integration/local-start-api-cognito-jwt/lib/local-start-api-cognito-jwt-stack.ts',
+  'tests/integration/local-start-api-container/lib/local-start-api-container-stack.ts',
+  'tests/integration/local-start-api-from-cfn-stack/lib/local-start-api-from-cfn-stack-stack.ts',
+  'tests/integration/local-start-api-rest-v1-non-proxy/lib/local-start-api-rest-v1-non-proxy-stack.ts',
+  'tests/integration/local-start-api-watch/lib/watch-stack.ts',
 ];
 
 /**
  * Fixture sources whose architecture is pinned to a PREBUILT ARTIFACT and
  * must NOT be converted to the host architecture.
+ *
+ * Two shapes qualify, and both are about the ARTIFACT dictating the
+ * architecture rather than the host:
+ *
+ *  - **A prebuilt executable.** `local-invoke-provided` is the live case:
+ *    its `verify.sh` cross-compiles `bootstrap` with `GOARCH=amd64`, so the
+ *    declared architecture must match that binary. Handing an arm64 base
+ *    image an amd64 executable fails at RIE fork/exec with
+ *    `exec format error`.
+ *  - **A container image that cannot be built for the host.** For a
+ *    `DockerImageFunction` the declared architecture drives `docker build`
+ *    as well as `docker run` (cdk-local passes the same `--platform` to
+ *    both, see `buildContainerImage`), so a fixture whose Dockerfile pulls
+ *    an arch-specific base, or `COPY`s in a cross-compiled binary, cannot
+ *    be converted either. No fixture is in this shape today: the three
+ *    container fixtures all build `FROM public.ecr.aws/lambda/nodejs:20`,
+ *    which is multi-arch, and none copies in a prebuilt executable -- which
+ *    is why they ARE converted. Recorded here because the fixtures point at
+ *    this file for the carve-outs, so the list has to actually contain them.
  */
 const PINNED_STACKS = [
   {
@@ -163,13 +189,6 @@ const PINNED_STACKS = [
 const NOT_YET_CONVERTED = [
   'tests/integration/local-start-alb-lambda/lib/local-start-alb-lambda-stack.ts',
   'tests/integration/local-start-alb-websocket/lib/local-start-alb-websocket-stack.ts',
-  'tests/integration/local-start-api-all-stacks/lib/stack-a.ts',
-  'tests/integration/local-start-api-all-stacks/lib/stack-b.ts',
-  'tests/integration/local-start-api-cognito-jwt/lib/local-start-api-cognito-jwt-stack.ts',
-  'tests/integration/local-start-api-container/lib/local-start-api-container-stack.ts',
-  'tests/integration/local-start-api-from-cfn-stack/lib/local-start-api-from-cfn-stack-stack.ts',
-  'tests/integration/local-start-api-rest-v1-non-proxy/lib/local-start-api-rest-v1-non-proxy-stack.ts',
-  'tests/integration/local-start-api-watch/lib/watch-stack.ts',
   'tests/integration/local-start-cloudfront-edge/lib/local-start-cloudfront-edge-stack.ts',
   'tests/integration/local-start-cloudfront-lambda-url/lib/local-start-cloudfront-lambda-url-stack.ts',
   'tests/integration/local-start-cloudfront-lambda-url-from-cfn-stack/lib/local-start-cloudfront-lambda-url-from-cfn-stack-stack.ts',
@@ -296,6 +315,58 @@ function constructorCalls(source: string, needle: string): string[] {
     from = end + 1;
   }
   return calls;
+}
+
+/**
+ * The text of a constructor call's OWN property object, with everything
+ * nested inside it removed.
+ *
+ * `constructorCalls` returns the whole call, `fromImageAsset(...)` options
+ * and all, so a plain `call.includes('architecture: HOST_ARCHITECTURE')`
+ * matches a property that sits ONE LEVEL IN and does nothing. That is not
+ * hypothetical: moving the declaration into
+ * `DockerImageCode.fromImageAsset(dir, { ... })` keeps the whole suite
+ * green while the synthesized template loses `Architectures` entirely.
+ * TypeScript's excess-property check would normally reject it, but the
+ * fixtures run through `node bin/app.ts` type stripping, so nothing ever
+ * type-checks that object.
+ *
+ * Returning only depth-1 characters means a nested property is invisible
+ * here, and the caller can tell "absent" from "present but nested" and say
+ * which.
+ *
+ * Limitation: brace/paren counting is not string-aware, so a `{` inside a
+ * string literal in a fixture's props would skew it. Sources are
+ * comment-stripped first, no fixture does that today, and the count
+ * cross-check above would surface the resulting mis-delimitation.
+ */
+function ownPropsText(call: string): string {
+  let depth = 0;
+  let start = -1;
+  for (let i = call.indexOf('('); i < call.length; i++) {
+    const c = call[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === '{' && depth === 1) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  let out = '';
+  let d = 0;
+  for (let i = start; i < call.length; i++) {
+    const c = call[i];
+    if (c === '{' || c === '(' || c === '[') {
+      d++;
+      if (d === 1) continue;
+    } else if (c === '}' || c === ')' || c === ']') {
+      d--;
+      if (d === 0) break;
+    }
+    if (d === 1) out += c;
+  }
+  return out;
 }
 
 /** Name a call by its construct id, so a failure points at the function to fix. */
@@ -535,11 +606,23 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
           const missing: string[] = [];
 
           for (const [ctor, requiredProp] of LAMBDA_CTORS) {
+            const key = requiredProp.slice(0, requiredProp.indexOf(':'));
+            // `architecture` is a prefix of `architectures`, so the colon is
+            // load-bearing: it keeps the L2 key from matching the L1 one.
+            const keyAtTopLevel = new RegExp(`(^|[^\\w$])${key}\\s*:`);
             for (const call of constructorCalls(source, ctor)) {
               seen.push(call);
-              // `source` is comment-stripped, so a commented-out
-              // `// architecture: HOST_ARCHITECTURE` cannot satisfy this.
-              if (!call.includes(requiredProp)) {
+              // Two different failures, reported differently, because the
+              // fix differs. `source` is comment-stripped, so a
+              // commented-out declaration counts as absent.
+              if (!keyAtTopLevel.test(ownPropsText(call))) {
+                missing.push(
+                  call.includes(requiredProp)
+                    ? `${constructId(call)} (has \`${key}\`, but NESTED inside another ` +
+                        `object or call rather than on the construct's own props -- move it out)`
+                    : `${constructId(call)} (needs \`${requiredProp}\`)`
+                );
+              } else if (!call.includes(requiredProp)) {
                 missing.push(`${constructId(call)} (needs \`${requiredProp}\`)`);
               }
             }
