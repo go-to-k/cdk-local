@@ -140,6 +140,12 @@ const HOST_ARCHITECTURE_STACKS = [
   'tests/integration/local-start-api-from-cfn-stack/lib/local-start-api-from-cfn-stack-stack.ts',
   'tests/integration/local-start-api-rest-v1-non-proxy/lib/local-start-api-rest-v1-non-proxy-stack.ts',
   'tests/integration/local-start-api-watch/lib/watch-stack.ts',
+  'tests/integration/local-start-alb-lambda/lib/local-start-alb-lambda-stack.ts',
+  'tests/integration/local-start-alb-websocket/lib/local-start-alb-websocket-stack.ts',
+  'tests/integration/local-start-cloudfront-lambda-url/lib/local-start-cloudfront-lambda-url-stack.ts',
+  'tests/integration/local-start-cloudfront-lambda-url-from-cfn-stack/lib/local-start-cloudfront-lambda-url-from-cfn-stack-stack.ts',
+  'tests/integration/local-studio/lib/local-studio-stack.ts',
+  'tests/integration/local-start-cloudfront-edge/lib/local-start-cloudfront-edge-stack.ts',
 ];
 
 /**
@@ -197,14 +203,7 @@ const PINNED_STACKS = [
  * between two literal arrays, and so a fixture cannot join this bucket
  * silently.
  */
-const NOT_YET_CONVERTED = [
-  'tests/integration/local-start-alb-lambda/lib/local-start-alb-lambda-stack.ts',
-  'tests/integration/local-start-alb-websocket/lib/local-start-alb-websocket-stack.ts',
-  'tests/integration/local-start-cloudfront-edge/lib/local-start-cloudfront-edge-stack.ts',
-  'tests/integration/local-start-cloudfront-lambda-url/lib/local-start-cloudfront-lambda-url-stack.ts',
-  'tests/integration/local-start-cloudfront-lambda-url-from-cfn-stack/lib/local-start-cloudfront-lambda-url-from-cfn-stack-stack.ts',
-  'tests/integration/local-studio/lib/local-studio-stack.ts',
-];
+const NOT_YET_CONVERTED: string[] = [];
 
 /**
  * Fixture sources that match `*Function(` but construct NO Lambda at all
@@ -531,7 +530,17 @@ function normalizeValue(value: string): string {
 
 /** Name a call by its construct id, so a failure points at the function to fix. */
 function constructId(call: string): string {
-  return /new\s+[\w$.]*\(\s*this,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80).trim();
+  // The scope argument is not always `this`: local-studio nests its
+  // custom-resource handlers under a Construct variable
+  // (`new lambda.Function(crProvider, 'framework-onEvent', ...)`), and a
+  // `this`-only pattern would fall back to an 80-character source slice for
+  // exactly the constructs whose names are least guessable.
+  // Anchored at the start of the call: unanchored, a construct whose id is
+  // not single-quoted (a template literal, or double quotes) would fall
+  // through to the first NESTED `new ...(scope, 'X')` -- e.g. an
+  // `iam.Role(fnScope, 'FnRole')` inside the props -- and the failure would
+  // name FnRole instead of the Lambda.
+  return /^new\s+[\w$.]*\(\s*[\w$.]+\s*,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80).trim();
 }
 
 const read = (relPath: string): string =>
@@ -764,6 +773,23 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       expect(
         missingFor(`new lambda.CfnFunction(this, 'A', { architectures: ['x86_64'] })`, 'architectures', req)
       ).toBe('WRONG_VALUE');
+    });
+
+    it('names a construct scoped to a VARIABLE, not just to `this`', () => {
+      // Fences the scope-argument widening. With a `this,`-only pattern this
+      // is the case that breaks, and no other test covers it: constructId is
+      // only reached on a FAILING fixture, so reverting the widening left the
+      // whole suite green -- an assertion that could not fail, guarding a
+      // change nothing else observed.
+      const call = `new lambda.Function(crProvider, 'framework-onEvent', { runtime: R })`;
+      expect(constructId(call)).toBe('framework-onEvent');
+    });
+
+    it('names the construct itself, not a nested one, when the id is not single-quoted', () => {
+      // An unanchored pattern skips the double-quoted id and matches the
+      // NESTED role instead, blaming the wrong construct.
+      const call = 'new lambda.Function(this, "Quoted", { role: new iam.Role(scope, \'FnRole\') })';
+      expect(constructId(call)).not.toBe('FnRole');
     });
 
     it('is not fooled by a template-literal construct id', () => {
@@ -1123,20 +1149,35 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
     }
   });
 
-  describe('fixtures not yet converted (#569 is complete when this list is empty)', () => {
-    for (const relPath of NOT_YET_CONVERTED) {
-      it(`${relPath} is genuinely unconverted, so it is parked here honestly`, () => {
-        // Stops the bucket being used as a dumping ground: a fixture that
-        // HAS been converted cannot be parked here to dodge the per-file
-        // assertions above, and a converted fixture that regressed cannot
-        // be "fixed" by moving its path down here.
-        expect(
-          read(relPath).includes('HOST_ARCHITECTURE'),
-          `${relPath} defines HOST_ARCHITECTURE, so it belongs in HOST_ARCHITECTURE_STACKS ` +
-            'where the per-construct assertions apply -- move it up rather than leaving it here'
-        ).toBe(false);
-      });
-    }
+  describe('the #569 backlog', () => {
+    // Written as fixed tests rather than one-per-path, because the list is
+    // now EMPTY and a `for` loop over it would generate no tests at all --
+    // leaving Vitest's "No test found in suite" as the only signal, which is
+    // not an assertion about anything and names nothing.
+    it('is empty, so every fixture Lambda declares the host architecture (#569 complete)', () => {
+      expect(
+        NOT_YET_CONVERTED,
+        'NOT_YET_CONVERTED is the #569 backlog and it reached zero. A path appearing here ' +
+          'again means a fixture Lambda went back to defaulting to x86_64, which emulates ' +
+          'on arm64 hosts. A NEW fixture declares the host architecture from the start ' +
+          '(see .claude/skills/create-integ/SKILL.md) and belongs in ' +
+          'HOST_ARCHITECTURE_STACKS -- do not park it here to make a failure go away'
+      ).toEqual([]);
+    });
+
+    it('lists only genuinely unconverted sources while it is non-empty', () => {
+      // Inert today, and it cannot run without the test above being edited
+      // first -- repopulating the bucket trips that one too. Kept so the
+      // bucket stays honest if it IS ever deliberately reopened: a converted
+      // fixture parked here would otherwise dodge every per-construct
+      // assertion above.
+      const wrong = NOT_YET_CONVERTED.filter((relPath) => read(relPath).includes('HOST_ARCHITECTURE'));
+      expect(
+        wrong,
+        'these define HOST_ARCHITECTURE, so they belong in HOST_ARCHITECTURE_STACKS where ' +
+          'the per-construct assertions apply -- move them up rather than leaving them here'
+      ).toEqual([]);
+    });
   });
 
   describe('fixtures whose only *Function( constructs are not Lambdas', () => {
