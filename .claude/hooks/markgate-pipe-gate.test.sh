@@ -82,6 +82,17 @@ run_case "inside bash -c"                             2 'bash -c "mise exec -- m
 # The pipe OUTSIDE `bash -c`: the recursion used to drop the outer mark, so
 # `gate_piped_segments` emitted nothing and the gate passed.
 run_case "bash -c body with the pipe OUTSIDE"         2 'bash -c "mise exec -- markgate verify integ" | tail -5'
+# go-to-k/cdk-local#585: `mise exec -c "<cmd>"` runs its argument the same way
+# `bash -c` does, but the segment starts with `mise`, so the recursion never
+# fired and this whole gate was blind to the spelling.
+run_case "mise exec -c hosting the pipe"              2 'mise exec -c "markgate verify integ | tail -5"'
+run_case "mise x -c hosting the pipe"                 2 'mise x -c "markgate set integ | tee /tmp/l"'
+run_case "rtx exec -c hosting the pipe"               2 'rtx exec -c "markgate verify integ | tail -5"'
+run_case "mise exec --command hosting the pipe"       2 'mise exec --command "markgate verify integ | tail -5"'
+run_case "mise exec -c body, pipe OUTSIDE"            2 'mise exec -c "markgate verify integ" | tail -5'
+run_case "launcher flag before the -c body"           2 'mise exec --cd /w/t -c "markgate verify integ | tail -5"'
+run_case "global flag before exec -c"                 2 'mise -C /w/t exec -c "markgate set integ | cat"'
+run_case "mise exec -c with 2>&1 before the pipe"     2 'mise exec -c "markgate verify integ 2>&1 | tail -5"'
 # Launcher flags that take a value must still reach the verb.
 run_case "mise exec -C <dir> -- markgate"             2 'mise exec -C /w/t -- markgate verify integ | tail -5'
 run_case "mise exec --cd <dir> -- markgate"           2 'mise exec --cd /w/t -- markgate set integ | tee /tmp/l'
@@ -155,6 +166,18 @@ run_case "grepping behind a boolean launcher flag"    0 'mise exec --raw rg mark
 run_case "grepping behind a short boolean flag"      0 'mise exec -q rg markgate verify . | head'
 run_case "grepping behind a global flag"              0 'mise -C /w/t exec -- rg markgate verify . | head'
 run_case "bash -c body, nothing piped"                0 'bash -c "mise exec -- markgate verify integ"'
+# ...and the go-to-k/cdk-local#585 recursion must not over-fire: the launcher
+# body is now segmented, so the same false blocks the `--` form fights apply to
+# it. Auditing THIS gate is the likeliest reason anyone types `markgate verify`
+# as grep input.
+run_case "mise exec -c grepping for the form"         0 'mise exec -c "rg markgate verify ."'
+run_case "mise exec -c body, nothing piped"           0 'mise exec -c "markgate verify integ"'
+run_case "mise exec -c body reads the status"         0 'mise exec -c "markgate verify integ || echo STALE"'
+run_case "mise exec -c status piped to awk"           0 'mise exec -c "markgate status integ | awk /state/"'
+# `mise -c` is not a thing -- only `mise exec -c` / `mise x -c` is -- so this
+# must NOT recurse into text that never runs.
+run_case "bare mise -c is not a launcher"             0 'mise -c "markgate verify integ | tail -5"'
+run_case "mise run -c is not exec"                    0 'mise run -c "markgate verify integ | tail -5"'
 # Multi-line ACCEPT, so the multi-line REFUSE cases above cannot be satisfied by
 # a mutation that simply refuses everything spanning a newline.
 run_case "multi-line, un-piped verdict"               0 'cd /w/t
