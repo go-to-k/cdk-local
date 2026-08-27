@@ -1,3 +1,10 @@
+## [0.147.16](https://github.com/go-to-k/cdk-local/compare/v0.147.15...v0.147.16) (2026-08-27)
+
+
+### Bug Fixes
+
+* **integ:** give every AWS-deploying fixture a lane-unique name ([#596](https://github.com/go-to-k/cdk-local/issues/596)) ([b7ebcf8](https://github.com/go-to-k/cdk-local/commit/b7ebcf8951a1682cfb4bdce7b79e4ede9654ffad))
+
 ## [0.147.15](https://github.com/go-to-k/cdk-local/compare/v0.147.14...v0.147.15) (2026-08-27)
 
 
