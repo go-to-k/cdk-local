@@ -1,3 +1,10 @@
+## [0.147.17](https://github.com/go-to-k/cdk-local/compare/v0.147.16...v0.147.17) (2026-08-27)
+
+
+### Bug Fixes
+
+* **start-alb:** bracket IPv6 literals when composing a URL authority ([#610](https://github.com/go-to-k/cdk-local/issues/610)) ([a1dec81](https://github.com/go-to-k/cdk-local/commit/a1dec8194a71e04c31fafdffc51c33e70c7cc107))
+
 ## [0.147.16](https://github.com/go-to-k/cdk-local/compare/v0.147.15...v0.147.16) (2026-08-27)
 
 
