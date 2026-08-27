@@ -616,7 +616,7 @@ describe('startStudioProxy wildcard upstream (issue #578)', () => {
 });
 
 describe('startStudioProxy IPv6 loopback upstream (issue #578 review)', () => {
-  it('forwards to a `[::1]` upstream instead of 502ing on the brackets', async () => {
+  it('forwards to a `[::1]` upstream instead of 502ing on the brackets', async (ctx) => {
     // `isLoopbackHostname` tolerates the brackets `URL.hostname` keeps on an
     // IPv6 literal, so `http://[::1]:<port>` is ACCEPTED - and `node:http`
     // then looks `[::1]` up as a NAME and fails `ENOTFOUND`, making every
@@ -630,8 +630,12 @@ describe('startStudioProxy IPv6 loopback upstream (issue #578 review)', () => {
         res.end('via-ipv6-loopback');
       }, '::1');
     } catch {
-      // No IPv6 loopback on this host: there is nothing to bind, so there is
-      // no claim to make either way.
+      // No IPv6 loopback on this host: there is nothing to bind, so there is no
+      // claim to make either way. Report it as SKIPPED rather than returning --
+      // a bare `return` passes with ZERO assertions, which is indistinguishable
+      // from a real pass, and that is precisely the "passed for the wrong
+      // reason" failure this file's `[::]` case exists to correct.
+      ctx.skip();
       return;
     }
     const bus = new StudioEventBus();

@@ -741,7 +741,17 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
       child.stderr.setEncoding('utf8');
 
       const timer = setTimeoutFn(() => {
-        if (settled) return;
+        // `entry.stopping` as well as `settled`, matching `failServe`. Without
+        // it a user `stop()` during boot produces `starting -> error -> stopped`
+        // -- an error banner for a serve they deliberately stopped, the exact
+        // symptom `failServe` guards against one screen below.
+        //
+        // The `entries.delete` below is the sharper reason: it is keyed by
+        // TARGET, not by this entry, so if the same target was restarted inside
+        // the window this stale timer evicts the NEW, running entry. Its child
+        // then has no record in `entries`, so it can never be stopped and its
+        // proxy is never closed, while this branch SIGTERMs the old child.
+        if (settled || entry.stopping) return;
         settled = true;
         entry.status = 'error';
         emitServe(entry, `Timed out after ${readyTimeoutMs}ms waiting for the serve to be ready.`);
@@ -750,7 +760,7 @@ export function createStudioServeManager(config: StudioServeManagerConfig): Stud
         // on a half-booted child would orphan those containers.
         void stopChild(child, stopGraceMs, setTimeoutFn, clearTimeoutFn);
         void closeProxies(entry);
-        entries.delete(req.targetId);
+        if (entries.get(req.targetId) === entry) entries.delete(req.targetId);
         reject(new Error(`'${req.targetId}' did not start within ${readyTimeoutMs}ms.`));
       }, readyTimeoutMs);
       timer.unref?.();

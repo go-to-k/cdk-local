@@ -1091,7 +1091,7 @@ describe('createStudioServeManager', () => {
     expect(serves.at(-1)?.message).toMatch(/exited/i);
     expect(mgr.list()).toEqual([]);
     // The capture proxy must be torn down when the serve crashes. One
-    // microtask, because the entry now holds the PENDING proxy promise (so a
+    // macrotask turn, because the entry now holds the PENDING proxy promise (so a
     // repeated ready line can join a startup already in flight instead of
     // beginning a second one) and teardown awaits it before closing.
     await new Promise((r) => setTimeout(r, 0));
@@ -1438,7 +1438,9 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
  */
 function startPending(
   kind: StudioTargetKind,
-  targetId = 'MyApi'
+  targetId = 'MyApi',
+  /** Short-circuit the ready timeout so its callback is drivable. */
+  readyTimeoutMs?: number
 ): {
   child: ReturnType<typeof makeFakeChild>;
   fp: ReturnType<typeof fakeProxies>;
@@ -1460,6 +1462,7 @@ function startPending(
     spawnFn: (() => child) as never,
     clock: fixedClock(),
     proxyFactory: fp.factory,
+    ...(readyTimeoutMs === undefined ? {} : { readyTimeoutMs }),
   });
   const ready = mgr.start({ targetId, kind });
   ready.catch(() => undefined);
@@ -2453,5 +2456,43 @@ describe('a refusal during teardown is not an error banner (issue #578 review)',
     expect(h.serves.map((e) => e.status)).toEqual(['starting', 'stopped']);
     // And `start()` still rejects for the reason it really failed for.
     await expect(h.ready).rejects.toThrow(/stopped before it finished starting/i);
+  });
+
+  it('emits no error event when the READY TIMEOUT fires on an already-stopped serve', async () => {
+    // The sibling of the case above, one screen up in the source: the ready
+    // timeout had `if (settled)` where `failServe` has `if (settled ||
+    // entry.stopping)`, so a stop() during boot still produced
+    // `starting -> error -> stopped`.
+    const h = startPending('api', 'MyApi', 1);
+    const stopP = h.stop();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(h.serves.map((e) => e.status)).not.toContain('error');
+    h.child.emit('close', 0);
+    await stopP;
+    await expect(h.ready).rejects.toThrow();
+  });
+
+  it('keeps a RESTARTED serve listed while the previous boot timer is still pending', async () => {
+    // End-state property, and deliberately NOT a fence for the identity check
+    // on `entries.delete`. Probing showed that check has no reachable case:
+    // `entries.delete(req.targetId)` is keyed by TARGET rather than by entry,
+    // but every path that could reach it with a FOREIGN entry in the map goes
+    // through `stop()` first, which sets `stopping` -- so the guard above
+    // returns before the delete runs. The identity check stays as a local
+    // statement of the invariant; this case pins the behaviour it protects,
+    // which the guard is what actually delivers.
+    const first = startPending('api', 'MyApi', 1);
+    const stopFirst = first.stop();
+    first.child.emit('close', 0);
+    await stopFirst;
+
+    // Restart the same target, and let the FIRST boot's timer fire underneath.
+    const second = startPending('api', 'MyApi', 50_000);
+    second.child.stdout.emit('data', 'Server listening on http://127.0.0.1:51234\n');
+    await second.ready;
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(second.list().map((s) => s.targetId)).toEqual(['MyApi']);
   });
 });
