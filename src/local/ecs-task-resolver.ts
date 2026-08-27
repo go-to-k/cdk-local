@@ -174,12 +174,16 @@ export class EcsTaskResolutionError extends Error {
  * brand-new commercial region resolves correctly before this table
  * hears about it.
  *
+ * Exported so a test can iterate the REAL rows: a test that re-types
+ * the prefixes locally cannot see a future row, which is the only thing
+ * the ordering claim above needs fencing against.
+ *
  * Issue #575: the table used to carry four of the eight partitions, so
  * an `eusc-` / `eu-isoe-` / `us-isof-` region fell through to the
  * commercial row and produced `amazonaws.com` — a host that does not
  * exist in those partitions.
  */
-const PARTITION_TABLE: ReadonlyArray<{
+export const PARTITION_TABLE: ReadonlyArray<{
   regionPrefix: string;
   partition: string;
   urlSuffix: string;

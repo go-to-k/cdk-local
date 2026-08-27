@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { parseLayerVersionArn, resolveLambdaLayers } from '../../../src/local/lambda-resolver.js';
-import { derivePartitionAndUrlSuffix } from '../../../src/local/ecs-task-resolver.js';
+import {
+  derivePartitionAndUrlSuffix,
+  PARTITION_TABLE,
+} from '../../../src/local/ecs-task-resolver.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -461,11 +464,15 @@ describe('derivePartitionAndUrlSuffix — all eight partitions (issue #575)', ()
   });
 
   it('has no table prefix that shadows another, so no row is order-dependent', () => {
-    // The real fence for the ordering claim. If a future row IS a
-    // prefix of an existing one, this goes red and the table's order
-    // stops being merely defensive -- at which point a case pinning
-    // that specific pair has to be written.
-    const prefixes = [...new Set(table.map((r) => r.regionPrefix))];
+    // Iterates the REAL `PARTITION_TABLE`, not a list re-typed here: a
+    // local copy would not see a future row, which is the only thing
+    // the ordering claim needs fencing against. (The first draft of
+    // this test read `regionPrefix` off the region/partition/urlSuffix
+    // table above, a property that does not exist there, so it compared
+    // `[undefined]` against itself and passed under ANY table -- test
+    // files are excluded from `tsconfig.json`, so nothing typechecked
+    // the property away.)
+    const prefixes = [...new Set(PARTITION_TABLE.map((r) => r.regionPrefix))];
     const shadowing = prefixes.flatMap((a) =>
       prefixes.filter((b) => b !== a && b.startsWith(a)).map((b) => `${a} shadows ${b}`)
     );
