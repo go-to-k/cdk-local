@@ -509,6 +509,13 @@ GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|
 GATE_RE_GIT_SWITCH="^git${GATE_FLAGS}[[:space:]]+switch([[:space:]]|$)"
 GATE_RE_GIT_CHECKOUT="^git${GATE_FLAGS}[[:space:]]+checkout([[:space:]]|$)"
 GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
+# control-char-gate: a `git add` in the SAME Bash call as the `git commit` is
+# what makes the commit's content differ from the index the gate can see. A
+# PreToolUse hook runs BEFORE its command, so `git add -A && git commit -F msg`
+# presents the gate with the PRE-add index and the offending file is invisible
+# (go-to-k/cdk-local#576). Built the same way every other verb here is, so
+# `git -C <path> add`, a launcher prefix and quoted spans all reach it.
+GATE_RE_GIT_ADD="^git${GATE_FLAGS}[[:space:]]+add([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 # issue-classification-label-gate: the CLAIM site. `/work-issues` says most open
 # bodies are still in the old packed shape and are upgraded to the four-line
@@ -632,6 +639,28 @@ gate_unquote() {
 # the verb ERE is anchored at the segment start and already absorbs every flag
 # spelling, so `BASH_REMATCH[0]` is exactly the part to remove, whatever flags it
 # swallowed. A gate can no longer match one way and parse another.
+# gate_verb_args <cmd> <verb-ere>
+#
+# Print, one line per matching segment, the text that FOLLOWS the matched verb
+# in that segment -- flags included, because the verb ERE has already consumed
+# the leading flag run. Nothing is printed for a command with no matching
+# segment.
+#
+# This is `gate_pr_selector`'s first two lines, factored out: that function
+# exists because four gates each rolled their own "strip the verb, then read the
+# arguments" and all four broke the moment GATE_GH_C widened. The strip must
+# come from the SAME constant that armed the gate -- `BASH_REMATCH[0]` of the
+# verb ERE -- so a gate cannot match one way and parse another. A caller that
+# wants something other than a PR number (control-char-gate wants `git add`'s
+# pathspecs) gets the same guarantee here instead of writing the strip again.
+gate_verb_args() {
+  local cmd="$1" re="$2" segment
+  while IFS= read -r segment; do
+    [[ "$segment" =~ $re ]] || continue
+    printf '%s\n' "${segment#"${BASH_REMATCH[0]}"}"
+  done < <(gate_segments "$cmd")
+}
+
 gate_pr_selector() {
   local cmd="$1" re="$2" segment args tok
   while IFS= read -r segment; do

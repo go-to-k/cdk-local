@@ -26,29 +26,99 @@ The hooks split into three classes:
 
 - **`control-char-gate.sh`** blocks `git commit` (incl. the
   `cd <path> && git commit` / `git -C <path> commit` worktree forms)
-  when a staged text file's blob contains a NUL (`\x00`) or any other
-  C0 control byte except tab / newline / carriage-return. Catches the
-  editing-artifact foot-gun where a separator lands as a raw control
+  when a text file the commit would contain has a NUL (`\x00`) or any
+  other C0 control byte except tab / newline / carriage-return. Catches
+  the editing-artifact foot-gun where a separator lands as a raw control
   byte inside source (the formatter / linter does NOT flag it, but it
   makes `grep` treat the file as binary and silently suppress matches,
-  and ships a control byte in committed text). Scans the STAGED BLOB
-  (`git show :<file>`) of each `--diff-filter=ACM` file, not the diff —
-  a NUL makes `git diff` report "Binary files differ" and hide the
-  added lines, so a diff-only scan would miss exactly this case.
+  and ships a control byte in committed text).
   Binary / asset extensions (images, fonts, archives, `.wasm`, etc.)
   are skipped (control bytes are legitimate there). Cwd-aware (same
   `git -C` > `cd` > payload `cwd` resolution as `branch-gate.sh`).
-  Fails open when `git` / `perl` are unavailable or nothing is staged.
-  No bypass marker — the fix is to remove the stray byte and re-stage.
+  Fails open when `git` / `perl` are unavailable or when neither scan
+  finds a candidate file. No bypass marker — the fix is to remove the
+  stray byte.
 
-  **The gate is not the only fence, because it is a PreToolUse hook and
-  therefore only ever sees the AGENT's tool calls.** Issue
-  go-to-k/cdk-local#576 records a command shape that walks past it —
-  `git add -A && git commit ...` in one call presents the gate with the
-  tree as it was BEFORE the `git add`, so nothing is staged yet for the
-  offending file. That is not hypothetical: on 2026-08-27
-  `src/local/front-door-server.ts` was found on `main` carrying two raw
-  NUL bytes (a regex character class and its comment in
+  **What it reads is decided by the COMMAND, not by the index**
+  (go-to-k/cdk-local#576). The first version scanned the STAGED BLOB
+  (`git show :<file>` over each `--diff-filter=ACM` entry) and nothing
+  else. That choice was right against the diff — a NUL makes `git diff`
+  report "Binary files differ" and hide the added lines, so a diff-only
+  scan would miss exactly this case — and wrong against the CLOCK: a
+  PreToolUse hook runs BEFORE the command it gates, so
+
+  ```bash
+  git add -A && git commit -F .commit-msg.txt
+  ```
+
+  in ONE Bash call handed the gate the tree as it was BEFORE the
+  `git add`. Nothing was staged for the offending file, the gate found
+  nothing, exit 0, and the control byte shipped. The gate was
+  registered, DID fire, and answered "clean" — "registration is not
+  execution" arriving through command shape rather than through a broken
+  matcher. And that shape is the common one, not an edge case: this
+  repo's own `check-gate.sh` short-circuits the whole Bash call, so
+  splitting staging and committing into two calls costs two gate round
+  trips.
+
+  So the scan target now follows from the command:
+
+  | command shape | what is scanned |
+  |---|---|
+  | plain `git commit` | the INDEX (`git show :<file>`), as before |
+  | `… git add <spec> …` | the index **and** the working-tree content that add would bring in |
+  | `git commit -a` / `--all` | the index **and** the working-tree content of TRACKED MODIFIED files |
+
+  `git commit -a` stages tracked modifications ONLY — it never picks up
+  an untracked file, and neither does this. The index scan is kept ON
+  TOP of the working-tree one rather than replaced by it: a file staged
+  EARLIER and unmodified since is in the commit but is not "modified"
+  relative to the index, so `git ls-files --modified` never lists it.
+
+  The shape is decided with the shared `_command-match.sh` machinery
+  (`GATE_RE_GIT_ADD`, and `gate_verb_args` for the arguments after the
+  matched verb), never a second tokenizer, so `mise exec -- git add -A`,
+  `bash -c "…"`, `git -C <path> add`, quoted spans and multi-line
+  commands all behave as their plain spellings do. The `git add`
+  segment gets its OWN `gate_target_dir` resolution, so an add and a
+  commit naming different trees scan both.
+
+  **Where it must guess, it scans MORE** — a false block costs one
+  message and a re-run, a false pass is the bug above. `git add -p` /
+  `-i` (the human picks interactively), `--pathspec-from-file` (the
+  pathspecs are in a file), and an UNEXPANDED pathspec (`git add
+  "$FILE"`) all drop the pathspec restriction and scan the whole tree;
+  an unknown `git add` flag is treated as valueless, so if a future one
+  does take a value that value is read as an extra pathspec, which only
+  ever ADDS files. Two branches err NARROW, knowingly: `git add -f` with
+  NO pathspec keeps `--exclude-standard` (an unbounded walk of every
+  gitignored path would make the gate the slowest thing in the commit;
+  `-f` WITH a pathspec does drop it), and a symlink is skipped, because
+  git stages the link TARGET PATH as the blob and following it would
+  scan bytes the commit does not contain.
+
+  The gate is written to bash 3.2 — no `mapfile`, no `declare -A`. It
+  had used `mapfile -d ''`, which bash 3.2 does not have. Measured on
+  2026-08-27 against `main`, with a NUL-bearing file staged: under the
+  `#!/usr/bin/env bash` shebang's resolution on a host whose `PATH`
+  carries Homebrew bash (5.3.9 here) the gate answered rc=2 and blocked
+  correctly, while the same hook run as `/bin/bash control-char-gate.sh`
+  (3.2.57) printed `mapfile: command not found`, then `staged: unbound
+  variable`, and exited **1** having scanned nothing. So this was a
+  portability hazard rather than a live failure on a developer machine
+  with bash 5 — but rc=1 is not rc=2, so where it did bite it FAILED
+  OPEN: the commit proceeds, and the only signal is an error on stderr
+  that reads like noise from the hook rather than a refusal.
+
+  `.claude/hooks/control-char-gate.test.sh` (52 cases, run by
+  `vp run test:hooks`) drives all of the above through the real hook
+  against throwaway repositories, in BOTH directions.
+
+  **The gate is still not the only fence, because it is a PreToolUse
+  hook and therefore only ever sees the AGENT's tool calls** — a human
+  typing the same line into a terminal never passes through it. On
+  2026-08-27 `src/local/front-door-server.ts` was found on `main`
+  carrying two raw NUL bytes (a regex character class and its comment in
   `sanitizeRawHeaderValue`) — functionally correct JavaScript, so no test
   or type-check noticed, while `grep -c host` on that 49 KB file answered
   `0` and `file` reported it as `data`. That file is on the `UP_PATHS`
@@ -452,6 +522,14 @@ reviewer at all. All four now call **`gate_pr_selector`** in
 armed the gate — whatever flags it absorbed — and scans only what follows. A
 gate can no longer match one way and parse another. Each of the four also
 fails CLOSED if the library predates the helper.
+
+**`gate_verb_args`** is that same strip with the PR-number reader removed: it
+prints the text following the matched verb, one line per matching segment, and
+nothing else. `control-char-gate.sh` uses it to read `git add`'s pathspecs and
+`git commit`'s `-a` (go-to-k/cdk-local#576). A gate wanting something other than
+a PR number gets the derived-from-the-same-constant guarantee instead of writing
+the strip a fifth time — which is the maintenance shape that produced all four
+bugs above. It too fails CLOSED if the library predates it.
 
 `gate_target_dir`'s `-C` recognition was widened alongside, for the same reason:
 the absorber now admits `gh -C=/w/t pr merge 1`, which previously resolved to the

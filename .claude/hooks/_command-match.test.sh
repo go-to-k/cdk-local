@@ -788,5 +788,49 @@ else
   pass=$((pass + 1)); printf 'OK   gate_segments is unchanged by the pipe mark\n'
 fi
 
+# --- GATE_RE_GIT_ADD + gate_verb_args (go-to-k/cdk-local#576) ------------------
+# control-char-gate has to know whether the SAME Bash call also stages, because
+# a PreToolUse hook runs before the command and the index it can read is the
+# PRE-add one. The verb regex is built like every other one here, so the flagged
+# and launcher spellings must reach it identically -- and `gate_verb_args` must
+# hand back the arguments with the flag run already consumed, so the gate cannot
+# match one way and parse another.
+A="$GATE_RE_GIT_ADD"
+
+want_match 0 "bare git add"                  'git add -A' "$A"
+want_match 0 "git add before a commit"       'git add -A && git commit -m x' "$A"
+want_match 0 "git -C <path> add"             'git -C /w/t add -A && git commit -m x' "$A"
+want_match 0 "git -C=<path> add (glued sep)" 'git -C=/w/t add -A' "$A"
+want_match 0 "launcher passthrough"          'mise exec -- git add -A' "$A"
+want_match 0 "inside bash -c"                'bash -c "git add -A && git commit -m x"' "$A"
+want_match 1 "add inside a string"           'echo "then git add -A"' "$A"
+want_match 1 "git add-something is not add"  'git add--interactive' "$A"
+want_match 1 "commit is not add"             'git commit -m x' "$A"
+want_match 1 "a pathspec named add"          'git rm add' "$A"
+
+# want_args <expected, newline-joined> <label> <command> <regex>
+want_args() {
+  local want="$1" label="$2" cmd="$3" re="$4" got
+  got=$(gate_verb_args "$cmd" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n  want: [%s]\n  got:  [%s]\n' "$label" "$want" "$got"
+  fi
+}
+
+want_args "-A"          "args after a bare add"        'git add -A' "$A"
+# The `-C /w/t` is consumed by the verb ERE, so it must NOT come back as an
+# argument -- that is the whole reason the strip is BASH_REMATCH[0] of the same
+# regex that armed the gate rather than a locally written prefix chop.
+want_args "-A"          "leading -C is absorbed"       'git -C /w/t add -A' "$A"
+want_args "src/a.ts"    "a pathspec"                   'git add src/a.ts && git commit -m x' "$A"
+want_args '"d i r"'     "a quoted pathspec stays whole" 'git add "d i r"' "$A"
+# One line per matching segment, so two adds in one call are both readable.
+want_args "-u
+docs" "two add segments"                              'git add -u; git add docs' "$A"
+want_args ""            "no matching segment"          'git commit -m x' "$A"
+want_args "-am x"       "commit args, for the -a scan" 'git commit -am x' "$C"
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
