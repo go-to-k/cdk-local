@@ -38,7 +38,18 @@ import { fileURLToPath } from 'node:url';
  * `discovers every fixture that constructs a *Function(` closes it from
  * the other side. It walks `tests/integration/<fixture>/{lib,bin}` for
  * real (non-comment) `*Function(` constructor calls and asserts the
- * discovered set EQUALS the union of the four buckets. A deletion, an
+ * discovered set EQUALS the union of the four buckets.
+ *
+ * Scope, stated precisely because the phrase "every fixture Lambda" would
+ * overclaim: this covers every Lambda CONSTRUCTED DIRECTLY in a fixture's
+ * `lib/` or `bin/`. It does not cover Lambdas an L3 construct synthesizes
+ * on your behalf -- `s3deploy.BucketDeployment` emits an
+ * `AWS::Lambda::Function` with no `Architectures` in several fixtures --
+ * nor a Lambda built in some other directory and imported. Neither is a
+ * fixture handler anyone invokes, and neither is reachable from source
+ * text; closing them means reading synthesized templates, which CI cannot
+ * do (fixtures are not workspace members, so their node_modules never
+ * exist there). A deletion, an
  * addition, a renamed file, and a SECOND stack file inside an
  * already-listed fixture (`local-start-api-all-stacks/lib/stack-a.ts`
  * and `stack-b.ts` are exactly that shape) all become loud.
@@ -226,8 +237,9 @@ const ANY_FUNCTION_CTOR = /new\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*[\w$]*Function\s*\
  * (`const F = lambda.Function`), a parenthesized callee
  * (`new (lambda.Function)(`), and generics. All require going out of the
  * way, none appears in this repo, and closing them means parsing rather
- * than matching. The discovery assertion still accounts for the FILE, so
- * the damage is bounded to a construct inside an already-listed fixture.
+ * than matching. The discovery assertion bounds the damage to a construct
+ * inside an already-listed fixture -- EXCEPT where a fixture's only Lambda
+ * uses such a spelling, in which case the file is never discovered at all.
  */
 
 /**
@@ -318,8 +330,8 @@ function constructorCalls(source: string, needle: string): string[] {
 }
 
 /**
- * The text of a constructor call's OWN property object, with everything
- * nested inside it removed.
+ * Scan a constructor call's OWN property object, returning the depth-1
+ * characters plus, for each, its index in the original call.
  *
  * `constructorCalls` returns the whole call, `fromImageAsset(...)` options
  * and all, so a plain `call.includes('architecture: HOST_ARCHITECTURE')`
@@ -331,20 +343,34 @@ function constructorCalls(source: string, needle: string): string[] {
  * fixtures run through `node bin/app.ts` type stripping, so nothing ever
  * type-checks that object.
  *
- * Returning only depth-1 characters means a nested property is invisible
- * here, and the caller can tell "absent" from "present but nested" and say
- * which.
+ * Quote-aware, because it is not only nesting that skews brace counting: a
+ * construct id written as a template literal (`` `${prefix}Handler` ``)
+ * puts a `${` before the real props brace, and a naive scanner takes that
+ * as the object -- reporting "NESTED, move it out" about a fixture that is
+ * perfectly correct. Wrong-diagnosis failures cost more than no failure.
  *
- * Limitation: brace/paren counting is not string-aware, so a `{` inside a
- * string literal in a fixture's props would skew it. Sources are
- * comment-stripped first, no fixture does that today, and the count
- * cross-check above would surface the resulting mis-delimitation.
+ * The index map is what lets `ownPropValue` recover a property's VALUE from
+ * the original text after finding its key at depth 1.
  */
-function ownPropsText(call: string): string {
+function scanOwnProps(call: string): { text: string; index: number[] } {
+  const text: string[] = [];
+  const index: number[] = [];
+  let quote: string | null = null;
   let depth = 0;
   let start = -1;
+
+  // Find the props object: the first `{` at paren-depth 1, ignoring quotes.
   for (let i = call.indexOf('('); i < call.length; i++) {
     const c = call[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
     if (c === '(') depth++;
     else if (c === ')') depth--;
     else if (c === '{' && depth === 1) {
@@ -352,11 +378,32 @@ function ownPropsText(call: string): string {
       break;
     }
   }
-  if (start === -1) return '';
-  let out = '';
+  if (start === -1) return { text: '', index: [] };
+
   let d = 0;
+  quote = null;
   for (let i = start; i < call.length; i++) {
     const c = call[i];
+    if (quote) {
+      if (c === '\\') {
+        i++;
+        continue;
+      }
+      if (c === quote) quote = null;
+      if (d === 1) {
+        text.push(c);
+        index.push(i);
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      if (d === 1) {
+        text.push(c);
+        index.push(i);
+      }
+      continue;
+    }
     if (c === '{' || c === '(' || c === '[') {
       d++;
       if (d === 1) continue;
@@ -364,9 +411,75 @@ function ownPropsText(call: string): string {
       d--;
       if (d === 0) break;
     }
-    if (d === 1) out += c;
+    if (d === 1) {
+      text.push(c);
+      index.push(i);
+    }
   }
-  return out;
+  return { text: text.join(''), index };
+}
+
+/** The depth-1 characters of a call's own props object. */
+function ownPropsText(call: string): string {
+  return scanOwnProps(call).text;
+}
+
+/**
+ * The SOURCE TEXT of the value assigned to `key` on the construct's own
+ * props, or `undefined` when the key is not there at depth 1.
+ *
+ * Pinning only the key is not enough, and the gap is not theoretical:
+ *
+ * ```ts
+ * new lambda.DockerImageFunction(this, 'F', {
+ *   architecture: undefined,                       // key at depth 1
+ *   code: DockerImageCode.fromImageAsset(dir, {
+ *     architecture: HOST_ARCHITECTURE,             // the real one, nested
+ *   }),
+ * });
+ * ```
+ *
+ * The key is present, the required text appears somewhere in the call, and
+ * CDK emits `Architectures: ["x86_64"]` -- issue #560 verbatim.
+ *
+ * The value is read from the ORIGINAL call rather than from the depth-1
+ * text, because the depth-1 view drops bracket contents and the L1 spelling
+ * `architectures: [HOST_ARCHITECTURE.name]` lives entirely inside them.
+ */
+function ownPropValue(call: string, key: string): string | undefined {
+  const { text, index } = scanOwnProps(call);
+  const m = new RegExp(`(^|[^\\w$])${key}\\s*:`).exec(text);
+  if (!m) return undefined;
+  const colonInText = m.index + m[0].length - 1;
+  let i = index[colonInText] + 1;
+
+  let depth = 0;
+  let quote: string | null = null;
+  let out = '';
+  for (; i < call.length; i++) {
+    const c = call[i];
+    if (quote) {
+      out += c;
+      if (c === '\\') {
+        out += call[++i] ?? '';
+        continue;
+      }
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === '{' || c === '(' || c === '[') depth++;
+    else if (c === '}' || c === ')' || c === ']') {
+      if (depth === 0) break;
+      depth--;
+    } else if (c === ',' && depth === 0) break;
+    out += c;
+  }
+  return out.trim();
 }
 
 /** Name a call by its construct id, so a failure points at the function to fix. */
@@ -522,6 +635,132 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       expect(call.includes('architecture: HOST_ARCHITECTURE')).toBe(false);
     });
 
+    // The BRANCH SELECTION is the part that had no committed coverage: the
+    // helper tests exercise the scanner, but nothing pinned "absent says
+    // needs, nested says NESTED, wrong value says wrong value". Those three
+    // messages send a reader to three different fixes.
+    const missingFor = (call: string, key: string, required: string): string => {
+      const actual = ownPropValue(call, key);
+      const nested = call.includes(required);
+      const want = required.slice(required.indexOf(':') + 1).trim();
+      if (actual === undefined) return nested ? 'NESTED' : 'MISSING';
+      return actual.replace(/\s+/g, ' ') === want ? 'OK' : 'WRONG_VALUE';
+    };
+    const L2 = 'architecture: HOST_ARCHITECTURE';
+
+    it('classifies a correct declaration as OK', () => {
+      expect(
+        missingFor(`new lambda.Function(this, 'A', { runtime: R, ${L2}, timeout: T })`, 'architecture', L2)
+      ).toBe('OK');
+    });
+
+    it('classifies a genuinely absent declaration as MISSING, not NESTED', () => {
+      expect(missingFor(`new lambda.Function(this, 'A', { runtime: R })`, 'architecture', L2)).toBe(
+        'MISSING'
+      );
+    });
+
+    it('classifies a RELOCATED declaration as NESTED', () => {
+      const call = `new lambda.DockerImageFunction(this, 'A', {
+        code: DockerImageCode.fromImageAsset(d, { ${L2} }),
+      })`;
+      expect(missingFor(call, 'architecture', L2)).toBe('NESTED');
+    });
+
+    it('rejects a depth-1 key whose VALUE is wrong even when the right text is nested', () => {
+      // The shape that passed a key-only check: the key IS on the construct's
+      // own props, the required text IS somewhere in the call, and CDK still
+      // emits x86_64.
+      const call = `new lambda.DockerImageFunction(this, 'A', {
+        architecture: undefined,
+        code: DockerImageCode.fromImageAsset(d, { ${L2} }),
+      })`;
+      expect(missingFor(call, 'architecture', L2)).toBe('WRONG_VALUE');
+    });
+
+    it('rejects a depth-1 key holding an indirect value', () => {
+      expect(
+        missingFor(`new lambda.Function(this, 'A', { architecture: props.arch })`, 'architecture', L2)
+      ).toBe('WRONG_VALUE');
+    });
+
+    it('accepts the L1 array value and rejects a wrong one', () => {
+      const req = 'architectures: [HOST_ARCHITECTURE.name]';
+      expect(
+        missingFor(`new lambda.CfnFunction(this, 'A', { runtime: 'r', ${req} })`, 'architectures', req)
+      ).toBe('OK');
+      expect(
+        missingFor(`new lambda.CfnFunction(this, 'A', { architectures: ['x86_64'] })`, 'architectures', req)
+      ).toBe('WRONG_VALUE');
+    });
+
+    it('is not fooled by a template-literal construct id', () => {
+      // `${` is a brace at paren depth 1; a scanner that is not quote-aware
+      // takes it as the props object and reports NESTED about a correct
+      // fixture -- a wrong diagnosis, which costs more than no diagnosis.
+      const call = 'new lambda.Function(this, `${id}Fn`, { runtime: R, ' + L2 + ' })';
+      expect(missingFor(call, 'architecture', L2)).toBe('OK');
+    });
+
+    it('is not fooled by a brace inside a string-valued property', () => {
+      const call = `new lambda.Function(this, 'A', { description: '{oops}', ${L2} })`;
+      expect(missingFor(call, 'architecture', L2)).toBe('OK');
+    });
+
+    it('ownPropsText returns only the construct\'s OWN properties, not nested ones', () => {
+      const call = `new lambda.DockerImageFunction(this, 'A', {
+        code: lambda.DockerImageCode.fromImageAsset(dir, {
+          architecture: HOST_ARCHITECTURE,
+          target: 'final',
+        }),
+        timeout: T,
+      })`;
+      const own = ownPropsText(call);
+      expect(own).toContain('code:');
+      expect(own).toContain('timeout:');
+      // The whole point: a property one level in must NOT appear.
+      expect(own).not.toContain('architecture:');
+      expect(own).not.toContain('target:');
+    });
+
+    it('ownPropsText finds the props object of a WRAPPED call', () => {
+      const call = `new lambda.Function(
+        this,
+        'Wrapped',
+        {
+          runtime: R,
+          architecture: HOST_ARCHITECTURE,
+        }
+      )`;
+      expect(ownPropsText(call)).toContain('architecture:');
+    });
+
+    it('ownPropsText keeps an array-valued own property visible by key', () => {
+      // The L1 spelling is `architectures: [HOST_ARCHITECTURE.name]`. The
+      // bracket contents are nested and therefore dropped, so the fence
+      // matches the KEY here and the full value against the whole call.
+      const call = `new lambda.CfnFunction(this, 'A', {
+        runtime: 'ruby3.3',
+        architectures: [HOST_ARCHITECTURE.name],
+      })`;
+      const own = ownPropsText(call);
+      expect(own).toMatch(/(^|[^\w$])architectures\s*:/);
+      expect(own).not.toContain('HOST_ARCHITECTURE.name');
+    });
+
+    it('ownPropsText does not confuse the L1 and L2 keys', () => {
+      const l2 = ownPropsText(`new lambda.Function(this, 'A', { architecture: X })`);
+      const l1 = ownPropsText(`new lambda.CfnFunction(this, 'A', { architectures: [X] })`);
+      expect(l2).toMatch(/(^|[^\w$])architecture\s*:/);
+      // `architectures:` must not satisfy a search for `architecture:`.
+      expect(l1).not.toMatch(/(^|[^\w$])architecture\s*:/);
+      expect(l1).toMatch(/(^|[^\w$])architectures\s*:/);
+    });
+
+    it('ownPropsText returns empty for a call with no props object', () => {
+      expect(ownPropsText(`new lambda.Function(this, 'A')`)).toBe('');
+    });
+
     it('keeps a `//` inside a string literal', () => {
       expect(stripComments(`const u = 'https://example.com/x';`)).toContain('https://example.com/x');
     });
@@ -606,24 +845,43 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
           const missing: string[] = [];
 
           for (const [ctor, requiredProp] of LAMBDA_CTORS) {
-            const key = requiredProp.slice(0, requiredProp.indexOf(':'));
-            // `architecture` is a prefix of `architectures`, so the colon is
-            // load-bearing: it keeps the L2 key from matching the L1 one.
-            const keyAtTopLevel = new RegExp(`(^|[^\\w$])${key}\\s*:`);
+            const colon = requiredProp.indexOf(':');
+            // A LAMBDA_CTORS value without a colon would silently yield a
+            // truncated key and weaken every check below, so refuse instead.
+            expect(colon, `LAMBDA_CTORS value ${requiredProp} must be "key: value"`).toBeGreaterThan(0);
+            const key = requiredProp.slice(0, colon);
+            const wantValue = requiredProp.slice(colon + 1).trim();
+
             for (const call of constructorCalls(source, ctor)) {
               seen.push(call);
-              // Two different failures, reported differently, because the
-              // fix differs. `source` is comment-stripped, so a
-              // commented-out declaration counts as absent.
-              if (!keyAtTopLevel.test(ownPropsText(call))) {
+              const actual = ownPropValue(call, key);
+              const nestedSomewhere = call.includes(requiredProp);
+
+              if (actual === undefined) {
+                // Absent from the construct's own props. Two different
+                // fixes, so two different messages -- a fence that cries
+                // "NESTED" at a simply-missing property sends the reader
+                // hunting for a nesting problem that is not there.
                 missing.push(
-                  call.includes(requiredProp)
+                  nestedSomewhere
                     ? `${constructId(call)} (has \`${key}\`, but NESTED inside another ` +
                         `object or call rather than on the construct's own props -- move it out)`
                     : `${constructId(call)} (needs \`${requiredProp}\`)`
                 );
-              } else if (!call.includes(requiredProp)) {
-                missing.push(`${constructId(call)} (needs \`${requiredProp}\`)`);
+              } else if (actual.replace(/\s+/g, ' ') !== wantValue) {
+                // The key IS at depth 1 but carries the wrong value. The
+                // dangerous shape is `architecture: undefined` at depth 1
+                // with the real declaration nested: key present, required
+                // text present in the call, and the template still defaults
+                // to x86_64.
+                missing.push(
+                  `${constructId(call)} (declares \`${key}: ${actual}\` on its own props, ` +
+                    `but needs \`${requiredProp}\`` +
+                    (nestedSomewhere
+                      ? ` -- the correct declaration is NESTED one level in and CDK never sees it`
+                      : '') +
+                    `)`
+                );
               }
             }
           }
@@ -672,19 +930,53 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
         });
 
         it('does not set Architectures through an escape hatch the fence cannot read', () => {
-          // `addPropertyOverride('Architectures', ...)` after construction
-          // would override the declared value while leaving the
-          // constructor call looking correct -- green fence, emulated
-          // container.
-          const source = read(relPath);
-          const overrides = source
-            .split('\n')
-            .filter((line) => /add(?:Property)?Override\s*\(/.test(line))
-            .filter((line) => /architectures?/i.test(line));
+          // A post-construction mutation overrides the declared value while
+          // leaving the constructor call looking correct: green fence,
+          // emulated container. Matched against whitespace-collapsed source
+          // rather than line by line, because a formatter splits
+          // `addPropertyOverride(\n  'Architectures',\n  ...)` across lines and
+          // a per-line conjunction then matches neither half.
+          const flat = read(relPath).replace(/\s+/g, ' ');
+          const escapes = [
+            /add(?:Property)?Override\s*\(\s*['"`]Architectures/i,
+            /addPropertyDeletionOverride\s*\(\s*['"`]Architectures/i,
+            /addDeletionOverride\s*\(\s*['"`]Architectures/i,
+            /\.architectures\s*=/i,
+          ]
+            .filter((re) => re.test(flat))
+            .map((re) => re.source);
+
           expect(
-            overrides,
-            `${relPath}: an Architectures override bypasses the declared architecture. ` +
-              'Set it on the constructor instead'
+            escapes,
+            `${relPath}: an Architectures override or direct assignment bypasses the ` +
+              'declared architecture. Set it on the constructor instead'
+          ).toEqual([]);
+        });
+
+        it('does not pin a foreign platform in its Dockerfile', () => {
+          // The PINNED_STACKS note says a Dockerfile pulling an
+          // arch-specific base disqualifies a fixture from conversion --
+          // but nothing READ a Dockerfile, so that carve-out was a claim
+          // rather than a check. `FROM --platform=linux/amd64` restores
+          // emulation on an arm64 host with every other assertion green.
+          const fixtureDir = path.join(REPO_ROOT, relPath.split('/').slice(0, 3).join('/'));
+          let dockerfiles: string[] = [];
+          try {
+            dockerfiles = (readdirSync(fixtureDir, { recursive: true }) as string[]).filter((f) =>
+              path.basename(f).startsWith('Dockerfile')
+            );
+          } catch {
+            dockerfiles = [];
+          }
+          const pinned = dockerfiles.filter((f) =>
+            /^\s*FROM\s+--platform=/im.test(readFileSync(path.join(fixtureDir, f), 'utf8'))
+          );
+          expect(
+            pinned,
+            `${relPath}: these Dockerfiles pin a --platform, which overrides the host ` +
+              'architecture this fixture declares and puts the container back under ' +
+              'emulation. Either drop the pin, or move the fixture to PINNED_STACKS ' +
+              'because its image genuinely cannot be built for the host'
           ).toEqual([]);
         });
       });
@@ -716,6 +1008,27 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
             .filter((call) => !call.includes(pin))
             .map((call) => constructId(call));
           expect(unpinned, `${relPath}: these constructs lost \`${pin}\`: ${why}`).toEqual([]);
+        });
+
+        it('leaves its L1 CfnFunctions undeclared so they default to the pinned arch', () => {
+          // The per-call check above covers `new lambda.Function(` only. This
+          // fixture also has three `CfnFunction`s; they declare no
+          // `architectures` and so default to x86_64, which is correct for an
+          // amd64 bootstrap. Asserted rather than assumed, so a future edit
+          // that gives one of them arm64 -- silently contradicting the pin --
+          // is caught.
+          const source = read(relPath);
+          const wrong = constructorCalls(source, 'new lambda.CfnFunction(')
+            .filter((call) => {
+              const v = ownPropValue(call, 'architectures');
+              return v !== undefined && !v.includes('x86_64');
+            })
+            .map(constructId);
+          expect(
+            wrong,
+            `${relPath}: these L1 constructs declare a non-x86_64 architecture, which ` +
+              `contradicts the fixture's pin: ${why}`
+          ).toEqual([]);
         });
 
         it('is not converted to HOST_ARCHITECTURE', () => {
