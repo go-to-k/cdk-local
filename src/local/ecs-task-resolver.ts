@@ -168,57 +168,20 @@ export class EcsTaskResolutionError extends Error {
 }
 
 /**
- * Region-prefix -> partition / URL-suffix table, most-specific prefix
- * first. Covers all seven non-commercial partitions; the COMMERCIAL
- * partition is deliberately NOT a row but the fallback below, so a
- * brand-new commercial region resolves correctly before this table
- * hears about it.
+ * The partition table + its lookup now live in `./intrinsic-image.js`,
+ * which is the ONE home for them in this package (issue #575,
+ * go-to-k/cdkd#1821: a second copy behind
+ * `derivePseudoParametersFromRegion` there had drifted three rows behind
+ * this one, so a `us-isof-` / `eu-isoe-` / `eusc-` region resolved
+ * commercial on that path). `intrinsic-image.ts` is a leaf module and
+ * this file already imports from it, so the reverse direction would be
+ * an import cycle.
  *
- * Exported so a test can iterate the REAL rows: a test that re-types
- * the prefixes locally cannot see a future row, which is the only thing
- * the ordering claim above needs fencing against.
- *
- * Issue #575: the table used to carry four of the eight partitions, so
- * an `eusc-` / `eu-isoe-` / `us-isof-` region fell through to the
- * commercial row and produced `amazonaws.com` — a host that does not
- * exist in those partitions.
+ * Re-exported here so the existing importers (`local-invoke.ts`,
+ * `ecs-service-emulator.ts`, `local-run-task.ts`, `local-start-api.ts`)
+ * keep working unchanged.
  */
-export const PARTITION_TABLE: ReadonlyArray<{
-  regionPrefix: string;
-  partition: string;
-  urlSuffix: string;
-}> = [
-  { regionPrefix: 'cn-', partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' },
-  { regionPrefix: 'us-gov-', partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' },
-  { regionPrefix: 'us-isob-', partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' },
-  { regionPrefix: 'us-isof-', partition: 'aws-iso-f', urlSuffix: 'csp.hci.ic.gov' },
-  { regionPrefix: 'us-iso-', partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' },
-  { regionPrefix: 'eu-isoe-', partition: 'aws-iso-e', urlSuffix: 'cloud.adc-e.uk' },
-  { regionPrefix: 'eusc-', partition: 'aws-eusc', urlSuffix: 'amazonaws.eu' },
-];
-
-/**
- * Derive the AWS partition / URL suffix for an AWS region. Same mapping
- * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
- * Exported so the CLI can keep the STS hop minimal — caller passes the
- * region in once, this returns the matching partition + suffix.
- *
- * The region is lower-cased before matching: `--region CN-NORTH-1` is a
- * region the AWS CLI accepts, and an unnormalized compare used to send
- * it to the commercial fallback (issue #575).
- */
-export function derivePartitionAndUrlSuffix(region: string): {
-  partition: string;
-  urlSuffix: string;
-} {
-  const normalized = region.toLowerCase();
-  for (const row of PARTITION_TABLE) {
-    if (normalized.startsWith(row.regionPrefix)) {
-      return { partition: row.partition, urlSuffix: row.urlSuffix };
-    }
-  }
-  return { partition: 'aws', urlSuffix: 'amazonaws.com' };
-}
+export { PARTITION_TABLE, derivePartitionAndUrlSuffix } from './intrinsic-image.js';
 
 /**
  * Optional substitution data fed into `parseContainerImage`. Closes issue

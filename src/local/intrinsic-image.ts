@@ -115,16 +115,87 @@ export function formatStateRemedy(context: ImageResolutionContext | undefined): 
 }
 
 /**
+ * Region-prefix -> partition / URL-suffix table, most-specific prefix
+ * first. Covers all seven non-commercial partitions; the COMMERCIAL
+ * partition is deliberately NOT a row but the fallback in
+ * `derivePartitionAndUrlSuffix` below, so a brand-new commercial region
+ * resolves correctly before this table hears about it.
+ *
+ * Exported so a test can iterate the REAL rows: a test that re-types
+ * the prefixes locally cannot see a future row, which is the only thing
+ * the ordering claim above needs fencing against.
+ *
+ * Issue #575: the table used to carry four of the eight partitions, so
+ * an `eusc-` / `eu-isoe-` / `us-isof-` region fell through to the
+ * commercial row and produced `amazonaws.com` — a host that does not
+ * exist in those partitions.
+ *
+ * This module is the ONE home for the table. It lived in
+ * `ecs-task-resolver.ts` until a SECOND, independently-drifting copy
+ * was found here behind `derivePseudoParametersFromRegion`
+ * (go-to-k/cdkd#1821 measured the divergence). `intrinsic-image.ts` is a
+ * leaf — every import it has is an `import type`, erased at compile
+ * time — and `ecs-task-resolver.ts` already imports from it, so this is
+ * the only direction that does not create an import cycle. That module
+ * re-exports both symbols so its own importers stay unchanged.
+ */
+export const PARTITION_TABLE: ReadonlyArray<{
+  regionPrefix: string;
+  partition: string;
+  urlSuffix: string;
+}> = [
+  { regionPrefix: 'cn-', partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' },
+  { regionPrefix: 'us-gov-', partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' },
+  { regionPrefix: 'us-isob-', partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' },
+  { regionPrefix: 'us-isof-', partition: 'aws-iso-f', urlSuffix: 'csp.hci.ic.gov' },
+  { regionPrefix: 'us-iso-', partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' },
+  { regionPrefix: 'eu-isoe-', partition: 'aws-iso-e', urlSuffix: 'cloud.adc-e.uk' },
+  { regionPrefix: 'eusc-', partition: 'aws-eusc', urlSuffix: 'amazonaws.eu' },
+];
+
+/**
+ * Derive the AWS partition / URL suffix for an AWS region. Same mapping
+ * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
+ * Exported so the CLI can keep the STS hop minimal — caller passes the
+ * region in once, this returns the matching partition + suffix.
+ *
+ * The region is lower-cased before matching: `--region CN-NORTH-1` is a
+ * region the AWS CLI accepts, and an unnormalized compare used to send
+ * it to the commercial fallback (issue #575).
+ */
+export function derivePartitionAndUrlSuffix(region: string): {
+  partition: string;
+  urlSuffix: string;
+} {
+  const normalized = region.toLowerCase();
+  for (const row of PARTITION_TABLE) {
+    if (normalized.startsWith(row.regionPrefix)) {
+      return { partition: row.partition, urlSuffix: row.urlSuffix };
+    }
+  }
+  return { partition: 'aws', urlSuffix: 'amazonaws.com' };
+}
+
+/**
  * Derive the AWS pseudo parameters that are trivially knowable from the
  * deploy region alone, without any STS call or state load.
- * `urlSuffix` and `partition` follow the canonical AWS partition rules:
  *
- *   - region prefix `cn-*`        → partition `aws-cn`,     urlSuffix `amazonaws.com.cn`
- *   - region prefix `us-gov-*`    → partition `aws-us-gov`, urlSuffix `amazonaws.com`
- *   - region prefix `us-iso-*`    → partition `aws-iso`,    urlSuffix `c2s.ic.gov`
- *   - region prefix `us-isob-*`   → partition `aws-iso-b`,  urlSuffix `sc2s.sgov.gov`
- *   - everything else (`us-east-1` / `eu-west-2` / `ap-northeast-1` / etc.)
- *                                 → partition `aws`,        urlSuffix `amazonaws.com`
+ * `partition` / `urlSuffix` come from `derivePartitionAndUrlSuffix`
+ * above — the single partition authority in this package. This function
+ * used to carry its OWN if/else chain, which knew four of the eight
+ * partitions and compared case-sensitively, so a `us-isof-` / `eu-isoe-`
+ * / `eusc-` region (and any upper-cased region) resolved to the
+ * commercial partition: `${AWS::Partition}` substituted `aws` into every
+ * ARN built here, and the `Fn::Join` ECR `Code.ImageUri` reconstruction
+ * produced `<acct>.dkr.ecr.<region>.amazonaws.com`, a host that does not
+ * exist in those partitions. Quiet, because the value is structurally
+ * valid and nothing downstream rejects it (issue #575,
+ * go-to-k/cdkd#1821).
+ *
+ * `region` is returned VERBATIM, deliberately: the delegation lower-cases
+ * only for MATCHING. Lower-casing the RETURNED value would change what
+ * `${AWS::Region}` substitutes into templates, which is a separate
+ * behaviour change tracked in go-to-k/cdkd#1831.
  *
  * `accountId` is optional pass-through (caller decides whether to populate
  * it). The bootstrap-ECR URI shape that `lambda.DockerImageCode.fromImageAsset`
@@ -141,26 +212,10 @@ export function derivePseudoParametersFromRegion(
   accountId?: string
 ): { accountId?: string; region: string; partition: string; urlSuffix: string } | undefined {
   if (!region || typeof region !== 'string' || region.length === 0) return undefined;
-  let partition: string;
-  let urlSuffix: string;
-  if (region.startsWith('cn-')) {
-    partition = 'aws-cn';
-    urlSuffix = 'amazonaws.com.cn';
-  } else if (region.startsWith('us-gov-')) {
-    partition = 'aws-us-gov';
-    urlSuffix = 'amazonaws.com';
-  } else if (region.startsWith('us-isob-')) {
-    partition = 'aws-iso-b';
-    urlSuffix = 'sc2s.sgov.gov';
-  } else if (region.startsWith('us-iso-')) {
-    partition = 'aws-iso';
-    urlSuffix = 'c2s.ic.gov';
-  } else {
-    partition = 'aws';
-    urlSuffix = 'amazonaws.com';
-  }
+  const { partition, urlSuffix } = derivePartitionAndUrlSuffix(region);
   return {
     ...(accountId !== undefined && { accountId }),
+    // Verbatim, NOT the lower-cased form the match used — see above.
     region,
     partition,
     urlSuffix,

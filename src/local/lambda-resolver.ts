@@ -15,8 +15,11 @@ import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
 import { buildCdkPathIndex, resolveCdkPathToLogicalIds } from '../cli/cdk-path.js';
 import { matchStacks } from '../cli/stack-matcher.js';
-import { derivePseudoParametersFromRegion, tryResolveImageFnJoin } from './intrinsic-image.js';
-import { derivePartitionAndUrlSuffix } from './ecs-task-resolver.js';
+import {
+  derivePartitionAndUrlSuffix,
+  derivePseudoParametersFromRegion,
+  tryResolveImageFnJoin,
+} from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { getEmbedConfig } from './embed-config.js';
 
