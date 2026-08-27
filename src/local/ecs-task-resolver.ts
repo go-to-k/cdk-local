@@ -168,19 +168,51 @@ export class EcsTaskResolutionError extends Error {
 }
 
 /**
+ * Region-prefix -> partition / URL-suffix table, most-specific prefix
+ * first. Covers all seven non-commercial partitions; the COMMERCIAL
+ * partition is deliberately NOT a row but the fallback below, so a
+ * brand-new commercial region resolves correctly before this table
+ * hears about it.
+ *
+ * Issue #575: the table used to carry four of the eight partitions, so
+ * an `eusc-` / `eu-isoe-` / `us-isof-` region fell through to the
+ * commercial row and produced `amazonaws.com` — a host that does not
+ * exist in those partitions.
+ */
+const PARTITION_TABLE: ReadonlyArray<{
+  regionPrefix: string;
+  partition: string;
+  urlSuffix: string;
+}> = [
+  { regionPrefix: 'cn-', partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' },
+  { regionPrefix: 'us-gov-', partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' },
+  { regionPrefix: 'us-isob-', partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' },
+  { regionPrefix: 'us-isof-', partition: 'aws-iso-f', urlSuffix: 'csp.hci.ic.gov' },
+  { regionPrefix: 'us-iso-', partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' },
+  { regionPrefix: 'eu-isoe-', partition: 'aws-iso-e', urlSuffix: 'cloud.adc-e.uk' },
+  { regionPrefix: 'eusc-', partition: 'aws-eusc', urlSuffix: 'amazonaws.eu' },
+];
+
+/**
  * Derive the AWS partition / URL suffix for an AWS region. Same mapping
  * CloudFormation applies to `${AWS::Partition}` / `${AWS::URLSuffix}`.
  * Exported so the CLI can keep the STS hop minimal — caller passes the
  * region in once, this returns the matching partition + suffix.
+ *
+ * The region is lower-cased before matching: `--region CN-NORTH-1` is a
+ * region the AWS CLI accepts, and an unnormalized compare used to send
+ * it to the commercial fallback (issue #575).
  */
 export function derivePartitionAndUrlSuffix(region: string): {
   partition: string;
   urlSuffix: string;
 } {
-  if (region.startsWith('cn-')) return { partition: 'aws-cn', urlSuffix: 'amazonaws.com.cn' };
-  if (region.startsWith('us-gov-')) return { partition: 'aws-us-gov', urlSuffix: 'amazonaws.com' };
-  if (region.startsWith('us-iso-')) return { partition: 'aws-iso', urlSuffix: 'c2s.ic.gov' };
-  if (region.startsWith('us-isob-')) return { partition: 'aws-iso-b', urlSuffix: 'sc2s.sgov.gov' };
+  const normalized = region.toLowerCase();
+  for (const row of PARTITION_TABLE) {
+    if (normalized.startsWith(row.regionPrefix)) {
+      return { partition: row.partition, urlSuffix: row.urlSuffix };
+    }
+  }
   return { partition: 'aws', urlSuffix: 'amazonaws.com' };
 }
 
