@@ -180,6 +180,28 @@ describe('materializeLayerFromArn', () => {
     }
   );
 
+  it('rejects a hand-built layer whose arn carries no version suffix, instead of silently truncating it', async () => {
+    // `materializeLayerFromArn` is re-exported from `src/internal.ts`, so
+    // a host CLI can pass a `ResolvedArnLambdaLayer` it built itself,
+    // whose `arn` never went through `parseLayerVersionArn`. Without the
+    // guard, `lastIndexOf(':')` returns -1 on a colon-free string and
+    // `slice(0, -1)` drops the last character, so the caller's mistake
+    // surfaces as a confusing AWS API error rather than a local one.
+    let sent = 0;
+    await expect(
+      materializeLayerFromArn(makeLayer({ arn: 'not-an-arn' }), {
+        lambdaClientFactory: (): LambdaSendClient => ({
+          send: async () => {
+            sent += 1;
+            return { Content: { Location: 'https://presigned.example/zip' } };
+          },
+        }),
+        fetchZip: async () => Buffer.alloc(0),
+      })
+    ).rejects.toThrow(/not a layer-version ARN/);
+    expect(sent, 'must fail before any AWS call').toBe(0);
+  });
+
   it('routes through sts:AssumeRole when roleArn is set and forwards the temp creds to the Lambda client', async () => {
     const stsCalls: { region: string }[] = [];
     const lambdaCalls: { credentials?: AwsCredentials }[] = [];

@@ -195,7 +195,23 @@ async function fetchLayerContentUrl(
     // (issue #575). `parseLayerVersionArn` only accepts an ARN whose
     // partition agrees with its region, so the prefix here is already
     // the right one for `layer.region`.
-    const versionLessArn = layer.arn.slice(0, layer.arn.lastIndexOf(':'));
+    //
+    // Guarded because `materializeLayerFromArn` is re-exported from
+    // `src/internal.ts`, so a host CLI can hand in a
+    // `ResolvedArnLambdaLayer` it built itself, whose `arn` never went
+    // through `parseLayerVersionArn`. The old re-interpolation was
+    // structurally immune to that; a bare `lastIndexOf` is not -- on a
+    // colon-free string it returns -1 and `slice(0, -1)` silently drops
+    // the last character, turning a caller's mistake into a confusing
+    // API error instead of a clear local one.
+    const lastColon = layer.arn.lastIndexOf(':');
+    if (lastColon <= 0) {
+      throw new LayerMaterializationError(
+        `Layer ${layer.arn}: not a layer-version ARN (no ':<version>' suffix to strip). ` +
+          `Expected arn:<partition>:lambda:<region>:<account>:layer:<name>:<version>.`
+      );
+    }
+    const versionLessArn = layer.arn.slice(0, lastColon);
     const command = await buildGetLayerVersionCommand(versionLessArn, Number(layer.version));
     const response = await client.send(command);
     const url = response?.Content?.Location;
