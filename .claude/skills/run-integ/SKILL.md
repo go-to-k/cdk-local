@@ -105,6 +105,13 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      loop resolved — one of the set, chosen by iteration order, not the one you
      want.
 
+     **First, confirm it is not a LIVE peer.** A stack under THIS lane's name can
+     also be a second run of the same fixture in the SAME worktree, so check for
+     a running `verify.sh` before destroying anything. This guard is stated
+     BEFORE the command on purpose: an agent works top-down, and a warning
+     printed below a destructive block is read after the damage. Cross-worktree
+     lanes can no longer collide, which is the point of the suffix.
+
      Use `aws cloudformation delete-stack`, NOT `cdk destroy`. Two reasons, both
      measured:
 
@@ -124,7 +131,9 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      the export is released before its exporter goes:
 
      ```bash
-     for STACK in <ConsumerStackName> <ProducerStackName>; do   # dependency order
+     # SUFFIXED names -- the ones the scan printed, not the base names step 4
+     # takes. Pasting base names deletes nothing and reports success.
+     for STACK in <ConsumerStackName-suffix> <ProducerStackName-suffix>; do
        aws cloudformation delete-stack --stack-name "${STACK}" \
          --region "${AWS_REGION:-us-east-1}"
        aws cloudformation wait stack-delete-complete --stack-name "${STACK}" \
@@ -135,10 +144,6 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      **Then RE-RUN the scan.** No delete command reports "I matched nothing",
      so the only evidence the orphan is gone is the scan saying so.
 
-     Note that a stack under THIS lane's name can also be a second run of the
-     same fixture in the SAME worktree, i.e. a LIVE peer rather than a leftover:
-     check for a running `verify.sh` before destroying it. Cross-worktree lanes
-     can no longer collide, which is the point of the suffix.
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 

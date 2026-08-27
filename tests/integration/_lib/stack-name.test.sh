@@ -516,6 +516,27 @@ if [ -f "${SKILL}" ]; then
       "suffix=${suffix_guards} (want >= 3), stack=${stack_guards} (want >= 2)"
   fi
 
+  # 4. The REMEDIATION shape, not just the scan. Five of the eleven instances
+  #    arrived through the previous fix, and the last one was in the remediation
+  #    -- `cdk destroy` needs app context the recipe's own cwd does not provide,
+  #    and repaired by hand it exits 0 SILENTLY on names the app never
+  #    synthesized. Measured: restoring that line verbatim left this suite at
+  #    84/0, so the fence pinned the scan and nothing else. That was the one
+  #    recurrence channel still open.
+  destroys=$(printf '%s\n' "${joined}" | grep -cE '^[[:space:]]*cdk[[:space:]]+destroy')
+  case "${destroys}" in
+    0) check "run-integ's remediation does not use cdk destroy" 0 ;;
+    *) check "run-integ's remediation does not use cdk destroy" 1 \
+         "${destroys} cdk destroy command(s) -- it needs --app from this cwd, and exits 0 on unmatched names" ;;
+  esac
+  del_pre=$(printf '%s\n' "${joined}" | sed -n '1,/^7\. \*\*Verify AWS cleanup/p' \
+    | grep -cE '^[[:space:]]*aws[[:space:]]+cloudformation[[:space:]]+delete-stack')
+  if [ "${del_pre}" -ge 1 ]; then
+    check "run-integ remediates with delete-stack (${del_pre} in the pre-flight step)" 0
+  else
+    check "run-integ remediates with delete-stack" 1 "no delete-stack command found in step 4"
+  fi
+
   # BOUNDARY, recorded rather than papered over. Checks 2 and 3 read the stack
   # QUERY's own joined command. A verdict placed further away still escapes:
   # `[ $? -ne 0 ] && echo clean` on the next line, a blanket echo after `done`,
