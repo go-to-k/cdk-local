@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
  * rather than described: adding `sh` to `BINARY_EXT` silently drops ~92
  * files -- every `.claude/hooks/*.sh`, which is the tree this fence's
  * rationale is about -- while leaving the file count and the three prefix
- * checks comfortably satisfied. So the tests below pin BOTH how many files
+ * checks comfortably satisfied. So the tests below pin BOTH WHICH EXTENSIONS
  * the exclusion removes and that each text extension the repo actually
  * carries survives it.
  */
@@ -128,7 +128,12 @@ describe('committed text carries no C0 control bytes', () => {
       .filter((f) => f.length > 0);
     const excludedExts = [
       ...new Set(
-        allTracked.filter((f) => BINARY_EXT.test(f)).map((f) => path.extname(f).toLowerCase())
+        allTracked
+          .filter((f) => BINARY_EXT.test(f))
+          // `path.extname` is '' for a leading-dot basename ('.gif'), which
+          // would put a token naming nothing into the failure diff. Fall back
+          // to the basename so a failure always names the offender.
+          .map((f) => (path.extname(f) || path.basename(f)).toLowerCase())
       ),
     ].sort();
     expect(excludedExts).toEqual(['.gif']);
