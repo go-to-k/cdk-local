@@ -1,3 +1,10 @@
+## [0.147.18](https://github.com/go-to-k/cdk-local/compare/v0.147.17...v0.147.18) (2026-08-27)
+
+
+### Bug Fixes
+
+* **hooks:** control-char-gate decides its scan target from the command, not the index ([#609](https://github.com/go-to-k/cdk-local/issues/609)) ([78161c8](https://github.com/go-to-k/cdk-local/commit/78161c8861906bac4b48976694341db816bc2405))
+
 ## [0.147.17](https://github.com/go-to-k/cdk-local/compare/v0.147.16...v0.147.17) (2026-08-27)
 
 
