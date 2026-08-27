@@ -1667,5 +1667,114 @@ describe('startFrontDoorServer — WebSocket Upgrade resilience', () => {
     expect(raw).toContain('content-type: text/plain  x-injected: yes');
     // The injection attempt MUST NOT produce a separate header line.
     expect(raw).not.toMatch(/^x-injected: yes/m);
+    // NUL as well as CR / LF -- the sanitizer strips three bytes, and the
+    // source-level assertion in `tests/unit/no-control-bytes.test.ts` only
+    // pins how NUL is SPELLED, not that it is actually stripped on the wire.
+    expect(raw).not.toContain('\u0000');
+  });
+
+  it('sanitizes CR / LF in a raw-socket redirect Location so it cannot inject extra headers', async () => {
+    // The sibling of the fixed-response case above. `writeRawHttpRedirect`
+    // raw-writes the Location into the response, and the value is built from
+    // CFn-literal `RedirectConfig.Host` / `.Path` / `.Query`. The
+    // regular-HTTP counterpart is protected for free (Node's `res.writeHead`
+    // throws `ERR_INVALID_CHAR`), so the upgrade path was the one place a
+    // redirect could inject headers silently.
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'redirect',
+        statusCode: 302,
+        host: 'example.test\r\nx-injected: yes',
+        path: '/moved',
+        protocol: 'https',
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const sock = await new Promise<import('node:net').Socket>((resolve, reject) => {
+      const s = (
+        require('node:net') as typeof import('node:net')
+      ).connect({ port: front.port, host: '127.0.0.1' }, () => resolve(s));
+      s.on('error', reject);
+    });
+    sock.write(
+      [
+        'GET / HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n')
+    );
+    const raw = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = [];
+      sock.on('data', (c: Buffer) => chunks.push(c));
+      sock.on('close', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    });
+
+    expect(raw).toContain('HTTP/1.1 302');
+    // The CRLF is flattened INTO the Location value, not left to start a
+    // header line of its own. Pin the flattened value too, not only the
+    // negative -- a negative alone would also pass if the redirect writer
+    // stopped emitting a Location at all.
+    expect(raw).toContain('location: https://example.test  x-injected: yes:80/moved');
+    expect(raw).not.toMatch(/^x-injected: yes/m);
+  });
+
+  it('sanitizes CR / LF in a 401 www-authenticate realm so it cannot inject extra headers', async () => {
+    // The third raw writer. `escapeRealmQuotes` handles the `"` that would end
+    // the realm TOKEN; CR / LF / NUL end the HEADER, which is a different
+    // problem. `realm` is `guard.label`, built from a CFn literal validated
+    // only as a string -- the same trust class as `RedirectConfig.Host`.
+    const front = await startFrontDoorServer({
+      route: () => ({
+        kind: 'redirect',
+        statusCode: 302,
+        host: 'somewhere.example.com',
+        auth: {
+          realm: 'authenticate-oidc (Issuer=https://idp.test\r\nx-injected: yes)',
+          check: async () => ({ allow: false }),
+        },
+      }),
+      port: 0,
+      host: '127.0.0.1',
+      listenerPort: 80,
+      label: 'listener port 80',
+    });
+    cleanups.push(() => front.close());
+
+    const sock = await new Promise<import('node:net').Socket>((resolve, reject) => {
+      const s = (
+        require('node:net') as typeof import('node:net')
+      ).connect({ port: front.port, host: '127.0.0.1' }, () => resolve(s));
+      s.on('error', reject);
+    });
+    sock.write(
+      [
+        'GET / HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n')
+    );
+    const raw = await new Promise<string>((resolve) => {
+      const chunks: Buffer[] = [];
+      sock.on('data', (c: Buffer) => chunks.push(c));
+      sock.on('close', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    });
+
+    expect(raw).toContain('HTTP/1.1 401');
+    expect(raw).not.toMatch(/^x-injected: yes/m);
   });
 });

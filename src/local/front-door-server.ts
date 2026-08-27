@@ -1226,7 +1226,12 @@ function writeRawHttpUnauthorized(socket: Duplex, realm: string, reason?: string
     'HTTP/1.1 401 Unauthorized',
     'content-type: text/plain; charset=utf-8',
     `content-length: ${Buffer.byteLength(body)}`,
-    `www-authenticate: Bearer realm="${escapeRealmQuotes(realm)}"`,
+    // Sanitize for the same reason the redirect and fixed-response raw
+    // writers do: `realm` is `guard.label`, a CFn literal validated only as a
+    // string, and it is raw-written here. `escapeRealmQuotes` handles the
+    // quote that would end the realm token; CR / LF / NUL would end the
+    // HEADER, which is a different problem and needs the sanitizer.
+    `www-authenticate: Bearer realm="${sanitizeRawHeaderValue(escapeRealmQuotes(realm))}"`,
     'connection: close',
     '',
     '',
@@ -1248,7 +1253,15 @@ function writeRawHttpRedirect(
   scheme: 'http' | 'https'
 ): void {
   if (socket.destroyed) return;
-  const location = buildRedirectLocation(action, req, listenerPort, scheme);
+  // Sanitize for the same reason the fixed-response writer sanitizes its
+  // `content-type` (see `writeRawHttpFixedResponse`): this value is
+  // raw-written into the response, so CR / LF / NUL inside it inject
+  // headers instead of being rejected. It is built from CFn-literal
+  // `RedirectConfig.Host` / `.Path` / `.Query` fields, and the REGULAR-HTTP
+  // counterpart gets this for free -- Node's `res.writeHead` throws
+  // `ERR_INVALID_CHAR` on such a value -- so without this the raw upgrade
+  // path was the one place a redirect could inject silently.
+  const location = sanitizeRawHeaderValue(buildRedirectLocation(action, req, listenerPort, scheme));
   const statusText = action.statusCode === 301 ? 'Moved Permanently' : 'Found';
   const lines = [
     `HTTP/1.1 ${action.statusCode} ${statusText}`,
@@ -1298,10 +1311,19 @@ function writeRawHttpFixedResponse(socket: Duplex, action: FixedResponseRouteAct
 
 /** Strip CR / LF / NUL from a raw HTTP header value to prevent header injection. */
 function sanitizeRawHeaderValue(value: string): string {
-  // The ` ` literal in the class is the NUL byte; CRLF + NUL are the
-  // three header-injection-relevant control bytes that bypass the header
-  // grammar when raw-written over the upgrade socket.
-  return value.replace(/[\r\n ]/g, ' ');
+  // CR / LF / NUL are the three header-injection-relevant control bytes that
+  // bypass the header grammar when raw-written over the upgrade socket.
+  //
+  // NUL is spelled `\u0000` and NOT as a literal byte (issue #576): a raw
+  // control byte in committed source makes `file` report the whole file as
+  // `data` and makes `grep` return NOTHING for it, silently, for every
+  // pattern -- and this file is on the `UP_PATHS` security surface that
+  // every grep-based audit sweeps. `tests/unit/no-control-bytes.test.ts`
+  // fences that repo-wide.
+  //
+  // Matching a control character is the entire purpose of this sanitizer.
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\r\n\u0000]/g, ' ');
 }
 
 /** Minimal HTTP/1.1 status text map for the codes the raw writers emit. */
