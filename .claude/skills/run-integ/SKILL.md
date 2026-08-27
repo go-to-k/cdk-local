@@ -73,12 +73,23 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    Some fixtures also own account-global names that are NOT stacks and outlive a
    failed run — SSM parameter paths and a CloudFormation export name, all
-   suffixed by the same lane hash. Sweep those too:
+   suffixed by the same lane hash. Sweep those too, and **filter by THIS lane's
+   suffix**: a bare `/cdkl` prefix lists every lane's parameters, and step 7's
+   framing is "never end the run with orphan AWS resources", so an unfiltered
+   sweep hands you a peer's LIVE resources to delete — the exact cross-lane harm
+   the lane-unique naming exists to end.
 
    ```bash
-   aws ssm describe-parameters --query "Parameters[?starts_with(Name,'/cdkl')].Name" --output text
-   aws cloudformation list-exports --query "Exports[?starts_with(Name,'cdkl')].[Name,ExportingStackId]" --output text
+   source tests/integration/_lib/stack-name.sh   # exports INTEG_STACK_SUFFIX
+   aws ssm describe-parameters \
+     --query "Parameters[?contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" --output text
+   aws cloudformation list-exports \
+     --query "Exports[?contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" --output text
    ```
+
+   `contains`, not `ends_with`: `local-invoke-from-cfn-stack-large-stack` creates
+   ~105 parameters shaped `/cdkl-ls-<hash>/p000`, where the suffix is a PREFIX
+   segment rather than the tail.
 
 8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks").
 
