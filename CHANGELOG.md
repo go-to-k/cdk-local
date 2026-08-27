@@ -1,3 +1,10 @@
+## [0.147.13](https://github.com/go-to-k/cdk-local/compare/v0.147.12...v0.147.13) (2026-08-27)
+
+
+### Bug Fixes
+
+* **local:** complete and unify the AWS partition tables, so a non-commercial layer ARN resolves ([#602](https://github.com/go-to-k/cdk-local/issues/602)) ([775a4ef](https://github.com/go-to-k/cdk-local/commit/775a4efc8a615a2fa7a340a56a94f5b13b736b6b))
+
 ## [0.147.12](https://github.com/go-to-k/cdk-local/compare/v0.147.11...v0.147.12) (2026-08-27)
 
 
