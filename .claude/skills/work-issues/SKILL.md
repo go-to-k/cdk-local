@@ -1030,7 +1030,48 @@ trickling them.
   in the cascade — adding new code to a command entrypoint at round five is how
   round six happens. Take the narrow fix, file the structural one, and reference
   it from the narrow fix so the next reader sees the choice was made rather than
-  missed. Two shapes recur, and they are distinguishable a round apart:
+  missed.
+
+  **Filing the structural fix does not stop the cascade, and the rule above used
+  to imply it would.** Measured here on 2026-08-27
+  (go-to-k/cdk-local#596): the structural issue was filed at round five and the
+  rounds ran to TWELVE, producing eleven instances of one defect class in one
+  PR, five of them introduced by the fix for the previous one. What ended it was
+  not a better check. It was making the artifact **CLAIM LESS**.
+
+  The tell that you are in this state: each round's fix is more SOPHISTICATED
+  than the last. In that PR a `/run-integ` orphan sweep went from a name scan,
+  to a scoped filter, to a guarded filter, to stderr classification, to a status
+  filter — and the simple `rc`-only sweeps sitting beside it were correct the
+  whole time, under the exact conditions that defeated the clever ones. The
+  sophistication WAS the defect: `grep -q 'does not exist'` also matches
+  botocore's `The source_profile ... does not exist`, raised before any network
+  call, so a broken profile reported CLEAN having queried nothing.
+
+  So when the rounds keep coming, ask what the artifact is CLAIMING, and delete
+  the claim rather than defending it. That sweep now prints the raw command
+  output and names both outcomes instead of emitting a verdict — a command that
+  claims nothing cannot claim something false. Expect this to feel like a
+  retreat; it is one, and it is the move that converges.
+
+  Two corollaries, both paid for in that PR:
+
+  - **Fence the REMEDIATION, not just the detection.** Five of the eleven
+    instances arrived through a fix, and the last one was in the remediation:
+    `cdk destroy` on names built without the suffix exits 0 SILENTLY, so the
+    operator read success with both stacks still deployed. Every fence up to
+    that point pinned the SCAN, so restoring that line left the suite green. If
+    a recipe both detects and repairs, the repair is where the next instance
+    goes.
+  - **Do not pre-commit to a remedy for a finding you have not seen.** Twice
+    there, the plan was "if instance nine appears, delete the whole thing" —
+    stated before instance nine existed. When it arrived, deleting would have
+    left the flow with NO orphan check, which is instance one made permanent.
+    A rule announced in advance is not judgement; it is a way of not having to
+    exercise any. Say what the next finding would have to SHOW, not what you
+    will do about it.
+
+  Two shapes recur, and they are distinguishable a round apart:
   - **TWO SPELLINGS OF ONE QUESTION** — the fix is to make both sites use ONE
     predicate verbatim, not to write a better second spelling. A better spelling
     looks like a fix and passes its own test, so this is the sub-case that keeps
