@@ -7,6 +7,7 @@ import {
   createLocalStartAlbCommand,
 } from '../../../src/cli/commands/local-start-alb.js';
 import { addCommonEcsServiceOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
+import { withoutAction } from '../../helpers/without-action.js';
 
 /**
  * Issue #227 review fix (Test G1) — site-level binding test for the
@@ -37,7 +38,10 @@ import { addCommonEcsServiceOptions } from '../../../src/cli/commands/ecs-servic
  */
 
 function parseWith(create: () => Command, argv: string[]): { logs: unknown } {
-  const cmd = create();
+  // Options only: `parse()` would otherwise run the real start-service /
+  // start-alb action, which shells out to `docker` and leaves live child
+  // processes behind after this file finishes (issue #402).
+  const cmd = withoutAction(create());
   cmd.exitOverride();
   cmd.configureOutput({ writeOut: () => {}, writeErr: () => {} });
   cmd.parse(argv, { from: 'user' });
