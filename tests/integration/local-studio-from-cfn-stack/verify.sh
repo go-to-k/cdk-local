@@ -39,7 +39,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalStudioFromCfnStackFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalStudioFromCfnStackFixture)"
 # The servable ECS service target id is the CDK display path. The L2
 # FargateService nests its AWS::ECS::Service under a `Service` node, so the
 # listed id is `<Stack>/AppService/Service` (confirm with `cdkl list`).

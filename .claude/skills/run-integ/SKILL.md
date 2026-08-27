@@ -1,6 +1,6 @@
 ---
 name: run-integ
-description: Run an integration test (Docker-based, optionally AWS-deploy-backed for `*-from-cfn-stack` tests) and refresh the `integ` markgate marker on a clean run.
+description: Run an integration test (Docker-based, optionally AWS-deploy-backed for the fixtures that own real AWS resources) and refresh the `integ` markgate marker on a clean run.
 argument-hint: "<test-name>"
 ---
 
@@ -8,7 +8,7 @@ argument-hint: "<test-name>"
 
 Run an integration test against real Docker (and, for `*-from-cfn-stack` tests, a real CloudFormation stack deployed via the upstream `cdk` CLI).
 
-cdk-local is a local-execution CLI — it does NOT deploy resources itself. The only AWS-side activity in any integ test is when a fixture's `verify.sh` invokes the upstream `cdk deploy` to create a target stack for `--from-cfn-stack` to point at. Cleanup is always done by the fixture's own `verify.sh`.
+cdk-local is a local-execution CLI — it does NOT deploy resources itself. The only AWS-side activity in any integ test is when a fixture's `verify.sh` invokes the upstream `cdk deploy` (or, for `local-invoke-agentcore-froms3`, `aws s3api create-bucket`) to create a target stack for `--from-cfn-stack` to point at. Cleanup is always done by the fixture's own `verify.sh`.
 
 ## Arguments
 
@@ -22,14 +22,128 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 3. **Pre-flight Docker sweep**: `docker ps --filter name=cdkl- -q | wc -l` and `docker network ls --filter name=cdkl-task- -q | wc -l` should both return `0`. If either is non-zero, abort and ask the user to run `/cleanup` first — running on top of orphans causes name collisions and confusing failures.
 
-4. **For `*-from-cfn-stack` tests only — AWS pre-flight**:
+4. **For AWS-resource-owning tests — AWS pre-flight**. That is the fixtures that own real AWS resources. **Derive that set, do not glob it** —
+   a glob has now silently excluded a resource-owning fixture twice
+   (`*-from-cfn-stack` missed three, and the widened `*-from-cfn*` still missed
+   `local-invoke-assume-role`, which deploys a stack containing an IAM role):
+
+   ```bash
+   # ONE predicate, no hand-maintained exception: a fixture owns a real AWS
+   # resource iff it deploys a stack or creates a bucket out of band. Carrying
+   # the second as a prose footnote is the hand-maintained-list shape that
+   # produced three earlier misses.
+   #
+   # rc-checked like every other query here -- `grep -l` with no match exits 1
+   # with EMPTY stdout and no message, which reads as "this fixture is not
+   # AWS-owning" and skips steps 4 and 7 ENTIRELY. That is a wider blast radius
+   # than any single false clean.
+   if owners=$(grep -lE '(^|[^[:alnum:]_])(cdk[^;&|]*[[:space:]]deploy|aws[[:space:]]+s3api[[:space:]]+create-bucket)([[:space:]]|$)' \
+                 tests/integration/*/verify.sh) && [ -n "${owners}" ]; then
+     printf '%s\n' "${owners}"
+   else
+     echo "FAILED to derive the AWS-owning fixture set -- NOT a clean verdict" >&2
+   fi
+   ```
+
    - Verify the upstream `cdk` CLI is on `$PATH`: `which cdk`.
    - Verify AWS credentials: `aws sts get-caller-identity`.
-   - Scan for orphan stacks from a previous interrupted run:
+   - Scan for orphan stacks from a previous interrupted run. **The stack name
+     is LANE-UNIQUE (issue go-to-k/cdk-local#582)**: every AWS-deploying fixture suffixes its
+     base name with 8 hex derived from this worktree's root path, so scanning
+     the bare `<FixtureStackName>` matches nothing and reports clean no matter
+     what is actually deployed. Resolve the name the same way the fixture does:
+
      ```bash
-     aws cloudformation describe-stacks --stack-name <FixtureStackName> 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
+     source tests/integration/_lib/stack-name.sh
+     : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
+     # PLURAL. Most fixtures own one stack; `local-invoke-from-cfn-stack-multi-stack`
+     # owns two, and its cleanup destroys the consumer first — so an interrupted
+     # destroy orphans the PRODUCER, which is exactly the one a single-name scan
+     # would skip. Enumerate them mechanically rather than by reading -- a
+     # hand-read list is what drifted three times in this recipe's history:
+     #
+     #   grep -oE 'integ_stack_name[[:space:]]+[A-Za-z0-9_]+' \
+     #     tests/integration/<test-name>/verify.sh | awk '{print $2}' | sort -u
+     for BASE in <FixtureStackBaseName> ...; do
+       STACK="$(integ_stack_name "${BASE}")"
+       : "${STACK:?stack name did not resolve — the helper is undefined}"
+       echo "== ${STACK}"
+       # No `2>/dev/null`: it was the original defect's mechanism. It sends the
+       # clean case and the could-not-look case into the same silence, and the
+       # whole point here is that you can tell them apart.
+       aws cloudformation describe-stacks --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+     done
      ```
-     If an orphan stack is reported, abort with a `cdk destroy <FixtureStackName>` recipe — do NOT proceed.
+
+     **Read that output yourself; the recipe deliberately does not classify it.**
+     Both outcomes, because reading only the error is how the inversion happens:
+
+     - `ValidationError ... does not exist` — CLEAN, no such stack.
+     - **exit 0 with a JSON `Stacks` array — ORPHAN.** `describe-stacks`
+       succeeds when the stack is there, so "no error" is the ORPHAN case, not
+       the passing one.
+     - anything else — you did not look. Do not proceed, and do not treat it as
+       clean.
+
+     That is not squeamishness. Every attempt in this recipe's history to EMIT a
+     verdict produced a false one: a name that could never match, a scope that
+     listed every lane, a filter that degraded to the whole account, a stderr
+     phrase match that also matched a broken `source_profile`, and a status
+     filter that hid `DELETE_IN_PROGRESS` — an interrupted `cdk destroy`, which
+     is this sweep's own scenario. `describe-stacks --stack-name` surfaces a
+     stack in every status but `DELETE_COMPLETE`, and a command that claims
+     nothing cannot claim something false.
+     go-to-k/cdk-local#601 replaces this with a script whose failure paths can be
+     EXECUTED rather than read.
+
+
+     If an orphan stack is reported, abort — do NOT proceed.
+
+     Destroy **the names the loop printed**, not `"${STACK}"`: that variable is
+     assigned INSIDE the loop, so afterwards it holds only the LAST name the
+     loop resolved — one of the set, chosen by iteration order, not the one you
+     want.
+
+     **First, confirm it is not a LIVE peer.** A stack under THIS lane's name can
+     also be a second run of the same fixture in the SAME worktree, so check for
+     a running `verify.sh` before destroying anything. This guard is stated
+     BEFORE the command on purpose: an agent works top-down, and a warning
+     printed below a destructive block is read after the damage. Cross-worktree
+     lanes can no longer collide, which is the point of the suffix.
+
+     Use `aws cloudformation delete-stack`, NOT `cdk destroy`. Two reasons, both
+     measured:
+
+     - `cdk destroy` needs app context. From the repo root it fails with
+       `--app is required either in command-line, in cdk.json or in ~/.cdk.json`
+       — the fixture runs its own destroy from the fixture directory, not here.
+     - Repaired by hand, it is worse: **`cdk destroy` exits 0, silently, on a
+       name the app never synthesized.** This block is a fresh shell with no
+       `source`, so `INTEG_STACK_SUFFIX` is unset, the app builds UN-suffixed
+       names, your suffixed arguments match nothing, and you read a clean exit
+       with both stacks still deployed. That is this recipe's own defect class,
+       arriving through the remediation instead of the scan.
+
+     `delete-stack` needs no app context and no suffix in the environment, and
+     it takes one stack at a time — so order the calls yourself, in DEPENDENCY
+     order (consumer before producer, matching the fixture's own cleanup), so
+     the export is released before its exporter goes:
+
+     ```bash
+     # SUFFIXED names -- the ones the scan printed, not the base names step 4
+     # takes. Pasting base names deletes nothing and reports success.
+     for STACK in <ConsumerStackName-suffix> <ProducerStackName-suffix>; do
+       aws cloudformation delete-stack --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+       aws cloudformation wait stack-delete-complete --stack-name "${STACK}" \
+         --region "${AWS_REGION:-us-east-1}"
+     done
+     ```
+
+     **Then RE-RUN the scan.** No delete command reports "I matched nothing",
+     so the only evidence the orphan is gone is the scan saying so.
+
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 
@@ -43,17 +157,103 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    If any are non-zero, dispatch `/cleanup` (no `--detect-only`) and re-run the checks. Never end the run with orphan Docker resources still present.
 
-7. **Verify AWS cleanup** (only for `*-from-cfn-stack` tests):
+7. **Verify AWS cleanup** (the same DERIVED fixture set as step 4):
+
+   Resolve the lane-unique name the same way step 4 does — the bare base name
+   matches nothing and this sweep would silently report clean:
 
    ```bash
-   aws cloudformation describe-stacks --stack-name <FixtureStackName> 2>/dev/null \
-     && echo "ORPHAN STACK REMAINS" \
-     || echo "AWS clean"
+   source tests/integration/_lib/stack-name.sh
+   : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
+   for BASE in <FixtureStackBaseName> ...; do          # PLURAL, see step 4
+     STACK="$(integ_stack_name "${BASE}")"
+     : "${STACK:?stack name did not resolve — the helper is undefined}"
+     echo "== ${STACK}"
+     aws cloudformation describe-stacks --stack-name "${STACK}" \
+       --region "${AWS_REGION:-us-east-1}"
+   done
    ```
 
-   If the stack remains, run `cdk destroy <FixtureStackName> --force` until clean. Same rule: never end the run with orphan AWS resources.
+   Same rule as step 4, including that exit 0 with a `Stacks` array is the ORPHAN
+   case. Only `ValidationError ... does not exist` is clean. This one matters more — it runs
+   after a long test where a session token can expire, and step 9 turns its
+   verdict into a fresh `integ` marker.
 
-8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks").
+
+   If any stack remains, destroy the names the loop printed with
+   `aws cloudformation delete-stack` — in dependency order, and NOT
+   `"${STACK}"`, which holds only the last name the loop resolved (see step 4
+   for why `cdk destroy` is the wrong tool here) — then RE-RUN the scan, after
+   the SAME live-peer check step 4 describes. A second run of this fixture
+   in the SAME worktree shares the suffix, so the name alone does not tell you
+   the stack is a leftover rather than a peer's live one.
+
+   Some fixtures also own account-global names that are NOT stacks and outlive a
+   failed run — SSM parameter paths and a CloudFormation export name, all
+   suffixed by the same lane hash. Sweep those too, and **filter by THIS lane's
+   suffix**: a bare `/cdkl` prefix lists every lane's parameters, and step 7's
+   framing is "never end the run with orphan AWS resources", so an unfiltered
+   sweep hands you a peer's LIVE resources to delete — the exact cross-lane harm
+   the lane-unique naming exists to end.
+
+   ```bash
+   source tests/integration/_lib/stack-name.sh   # exports INTEG_STACK_SUFFIX
+   # Fail LOUDLY if the suffix did not resolve. The `source` path above is
+   # relative, so running this from anywhere but the repo root leaves the
+   # variable unset -- and an unset variable turns the filters below into
+   # `contains(Name,'-')`, which selects every hyphenated parameter in the
+   # ACCOUNT (`/prod/db-password` included) and hands it to you as an orphan to
+   # delete. Degrading to account-wide is far worse than the peer-listing this
+   # filter exists to fix, so it must abort instead.
+   : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
+
+   # BOTH conditions: the `cdkl` anchor keeps the blast radius bounded to this
+   # repo's resources even if the suffix logic is ever changed, and the suffix
+   # bounds it to this lane.
+   # rc-checked for the same reason: on a credential failure these exit non-zero
+   # with EMPTY stdout, which reads as "0 parameters" rather than "I could not
+   # look".
+   aws ssm describe-parameters --region "${AWS_REGION:-us-east-1}" \
+     --query "Parameters[?starts_with(Name,'/cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" \
+     --output text || echo "FAILED to query SSM -- NOT a clean verdict" >&2
+   aws cloudformation list-exports --region "${AWS_REGION:-us-east-1}" \
+     --query "Exports[?starts_with(Name,'cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" \
+     --output text || echo "FAILED to query exports -- NOT a clean verdict" >&2
+
+   # Not lane-suffixed and not a stack resource, so neither sweep above can see
+   # it: `local-invoke-agentcore-froms3` creates a bucket out of band, and its
+   # trap covers EXIT/INT/TERM but not SIGKILL.
+   #
+   # `aws s3 ls` is checked SEPARATELY from the grep. Piping straight into grep
+   # makes a credential / permission / region failure produce no match, which the
+   # `||` branch then reports as "no orphan" -- the same falsely-clean shape as
+   # the stack scan above.
+   #
+   # This one carries NO lane suffix, so it lists EVERY worktree's froms3
+   # buckets, a concurrently running peer's live bucket included. Treat a match
+   # as "someone's", not "mine": confirm no `verify.sh` is running before
+   # deleting.
+   if buckets=$(aws s3 ls); then
+     printf '%s\n' "${buckets}" | grep cdkl-integ-froms3 || echo "(no orphan froms3 bucket)"
+   else
+     echo "FAILED to list buckets — this is NOT a clean verdict" >&2
+   fi
+   ```
+
+   `contains`, not `ends_with`: `local-invoke-from-cfn-stack-large-stack` creates
+   ~105 parameters shaped `/cdkl-ls-<hash>/p000`, where the suffix is a PREFIX
+   segment rather than the tail. A peer's suffix cannot satisfy this lane's
+   filter — both are exactly 8 hex characters, so `-<ours>` inside `-<theirs>`
+   requires equality.
+
+   The same live-peer caveat as the stack scan applies, and matters MORE here: a
+   name carrying this lane's suffix can also belong to a second run of the same
+   fixture in the SAME worktree, i.e. a live peer rather than a leftover — so
+   check for a running `verify.sh` before deleting anything. An export cannot be
+   deleted except by destroying its stack, so `ExportingStackId` in that output
+   is pointing you at a stack that may still be in use.
+
+8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for an AWS-resource-owning fixture: "+ AWS: 0 orphan stacks / parameters / exports / buckets" — name each sweep you actually ran, so a clean report is not writable without running them).
 
 9. **Set the `integ` markgate marker (only on full clean success)**:
 

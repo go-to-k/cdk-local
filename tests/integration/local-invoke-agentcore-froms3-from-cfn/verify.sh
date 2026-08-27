@@ -23,7 +23,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalInvokeAgentCoreFromS3FromCfnFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalInvokeAgentCoreFromS3FromCfnFixture)"
 TARGET="${STACK}/S3Agent"
 CODE_BASE_IMAGE="public.ecr.aws/docker/library/python:3.12-slim"
 

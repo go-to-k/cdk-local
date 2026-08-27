@@ -13,7 +13,7 @@
 #
 # Steps:
 #   1. install + build cdk-local (root) + install fixture deps + docker pull
-#   2. cdk deploy CdkLocalInvokeFromCfnStackFixture (upstream CDK CLI)
+#   2. cdk deploy CdkLocalInvokeFromCfnStackFixture-<lane> (upstream CDK CLI)
 #   3. baseline: cdkl invoke (no --from-cfn-stack) — assert
 #      TABLE_NAME comes through as "unset" (env var dropped because it's
 #      intrinsic-valued and the default behavior warns + drops).
@@ -34,7 +34,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalInvokeFromCfnStackFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalInvokeFromCfnStackFixture)"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
 # issue #94: the stack's DB_HOST env var is a Ref to an
@@ -44,7 +47,7 @@ IMAGE="public.ecr.aws/lambda/nodejs:20"
 # already exist — verify.sh `put-parameter`s it before deploy and deletes
 # it on exit. SSM_PARAM_NAME is kept in sync with the stack's
 # SSM_DB_HOST_PARAM constant.
-SSM_PARAM_NAME="/cdkl-integ/invoke-from-cfn-stack/db-host"
+SSM_PARAM_NAME="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/db-host)"
 SSM_PARAM_VALUE="db.internal.example"
 
 # issue #99: a SECOND SSM parameter that the stack Refs via API_KEY. It is
@@ -55,7 +58,7 @@ SSM_PARAM_VALUE="db.internal.example"
 # sees the SecureString type and must keep the decrypted value off the
 # `docker run` argv. The post-swap value differs from the placeholder to
 # prove cdkl reads SSM fresh (not the deploy-time-baked value).
-SSM_API_KEY_PARAM="/cdkl-integ/invoke-from-cfn-stack/api-key"
+SSM_API_KEY_PARAM="$(integ_scoped_name /cdkl-integ/invoke-from-cfn-stack/api-key)"
 SSM_API_KEY_PLACEHOLDER="placeholder-not-secret"
 SSM_API_KEY_VALUE="s3cr3t-api-key-9f3a2b"
 

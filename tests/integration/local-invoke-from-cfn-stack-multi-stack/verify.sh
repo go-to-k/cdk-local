@@ -47,9 +47,12 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-PRODUCER_STACK="CdkLocalInvokeMultiStackProducer"
-CONSUMER_STACK="CdkLocalInvokeMultiStackConsumer"
-EXPORT_NAME="cdkl-multi-stack-shared-value"
+# Lane-unique names (issue #582): both stack names AND the CloudFormation
+# export name are account-global, so all three collide between worktree lanes.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+PRODUCER_STACK="$(integ_stack_name CdkLocalInvokeMultiStackProducer)"
+CONSUMER_STACK="$(integ_stack_name CdkLocalInvokeMultiStackConsumer)"
+EXPORT_NAME="$(integ_scoped_name cdkl-multi-stack-shared-value)"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

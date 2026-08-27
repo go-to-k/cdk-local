@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Runtime, AgentRuntimeArtifact } from 'aws-cdk-lib/aws-bedrockagentcore';
+import { integScopedName } from '../../_lib/stack-name.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,7 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * BEFORE `cdk deploy` (CloudFormation resolves `AWS::SSM::Parameter::Value`
  * parameters at deploy start). Kept in sync with verify.sh's GREETING_PARAM.
  */
-const SSM_GREETING_PARAM = '/cdkl-integ/invoke-agentcore-from-cfn/greeting';
+const SSM_GREETING_PARAM = integScopedName('/cdkl-integ/invoke-agentcore-from-cfn/greeting');
 
 /**
  * SSM parameter for the SecureString case. `verify.sh` creates it as a plain
@@ -24,7 +25,7 @@ const SSM_GREETING_PARAM = '/cdkl-integ/invoke-agentcore-from-cfn/greeting';
  * sees the SecureString type and must route the decrypted value off the
  * `docker run` argv. Kept in sync with verify.sh's API_KEY_PARAM.
  */
-const SSM_API_KEY_PARAM = '/cdkl-integ/invoke-agentcore-from-cfn/api-key';
+const SSM_API_KEY_PARAM = integScopedName('/cdkl-integ/invoke-agentcore-from-cfn/api-key');
 
 /**
  * Fixture stack for `cdkl invoke-agentcore --from-cfn-stack` (issue #130).

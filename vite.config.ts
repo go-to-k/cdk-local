@@ -230,8 +230,12 @@ export default defineConfig({
       'test:hooks': {
         // Glob, not a hardcoded list: a new `.claude/hooks/*.test.sh` used to be
         // added and then never run by anything (go-to-k/cdk-local#542 review).
+        // `tests/integration/_lib/*.test.sh` is in the same glob for the same
+        // reason: the integ fixtures' shared shell helpers (go-to-k/cdk-local#582)
+        // are bash, so they have no home under `tests/unit/**`, and a smoke test
+        // nothing runs is a smoke test that rots.
         command:
-          'for t in .claude/hooks/*.test.sh; do echo "== $t"; bash "$t" || exit 1; done',
+          'for t in .claude/hooks/*.test.sh tests/integration/_lib/*.test.sh; do echo "== $t"; bash "$t" || exit 1; done',
         // Spawns throwaway git repos and a PATH-stubbed `gh`, so the result
         // depends on the hook script rather than on a tracked input set the
         // task runner can digest -- no caching.

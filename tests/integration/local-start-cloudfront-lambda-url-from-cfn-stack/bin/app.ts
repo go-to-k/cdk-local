@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
 import { LocalStartCloudFrontLambdaUrlFromCfnStackStack } from '../lib/local-start-cloudfront-lambda-url-from-cfn-stack-stack.ts';
+import { integStackName } from '../../_lib/stack-name.ts';
 
 const app = new cdk.App();
 
-new LocalStartCloudFrontLambdaUrlFromCfnStackStack(app, 'CdkLocalStartCfFnUrlFromCfnFixture', {
+new LocalStartCloudFrontLambdaUrlFromCfnStackStack(app, integStackName('CdkLocalStartCfFnUrlFromCfnFixture'), {
   description: 'Fixture stack for cdkl start-cloudfront --from-cfn-stack (Lambda Function URL origin) integ test',
 });

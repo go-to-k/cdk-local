@@ -4,8 +4,18 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { integScopedName } from '../../_lib/stack-name.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * SSM parameter-path prefix for this fixture's ~120 parameters. An SSM
+ * parameter name is ACCOUNT + REGION global, so two worktree lanes running
+ * this fixture at once would both try to create `/cdkl-ls/p000` and the
+ * second `cdk deploy` would fail. Lane-scoped for the same reason the stack
+ * name is (issue #582).
+ */
+const SSM_PARAM_PREFIX = integScopedName('/cdkl-ls');
 
 /**
  * Fixture for `cdkl invoke --from-cfn-stack` against a stack with MORE
@@ -70,7 +80,7 @@ export class LocalInvokeFromCfnStackLargeStack extends cdk.Stack {
       const suffix = String(i).padStart(3, '0');
       const param = new ssm.CfnParameter(this, `Param${suffix}`, {
         type: 'String',
-        name: `/cdkl-ls/p${suffix}`,
+        name: `${SSM_PARAM_PREFIX}/p${suffix}`,
         value: `value-${suffix}`,
       });
       // `param.ref` synthesizes to `{ Ref: Param<suffix> }`, which CFn

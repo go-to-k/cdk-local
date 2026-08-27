@@ -29,7 +29,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalStartCfFnUrlFromCfnFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalStartCfFnUrlFromCfnFixture)"
 TARGET="${STACK}/ApiDist"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 PORT_CFN=18381
