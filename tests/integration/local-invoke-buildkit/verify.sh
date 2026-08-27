@@ -48,13 +48,53 @@ if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
 
+# --- built-image handling (issue #587) -------------------------------------
+# This fixture used to `docker image rm -f` EVERY `cdkl-invoke-*` tag, twice
+# (here, and again in cleanup). Parallel integ lanes share one Docker daemon
+# on a dev host, so that blanket sweep deletes images other lanes are mid-run
+# on -- and the `| head -1` tag pick below had the mirror-image defect, since
+# it could just as easily land on a concurrent lane's tag.
+#
+# Everything is scoped to THIS fixture's own deterministic tag instead. cdkl
+# prints that tag on its `--no-build` path BEFORE it checks the local
+# registry, so a probe run reports the tag whether or not the image exists;
+# the probe is expected to exit non-zero when it does not, hence `|| true`.
+IMAGES_BEFORE="$(docker image ls --filter 'reference=cdkl-invoke-*' \
+  --format '{{.Repository}}:{{.Tag}}' | sort)"
+OWN_TAG="$(${CDKL} invoke CdkLocalInvokeBuildkitFixture/BuildkitHandler \
+  --no-pull --no-build 2>&1 | grep -oE 'cdkl-invoke-[0-9a-f]+' | head -1 || true)"
+if [[ -z "${OWN_TAG}" ]]; then
+  echo "FAIL: could not resolve this fixture's cdkl-invoke-* tag from the --no-build probe"
+  exit 1
+fi
+OWN_TAG="${OWN_TAG}:latest"
+echo "==> This fixture's image tag: ${OWN_TAG}"
+
+remove_own_image() {
+  # Never `-f`: unforced `docker image rm` refuses an image a RUNNING
+  # container still holds, which keeps a concurrent lane safe.
+  docker image rm "${OWN_TAG}" >/dev/null 2>&1 || true
+}
+
 # Force a fresh build to guarantee the test actually exercises every
-# BuildKit feature this run (otherwise a stale Docker layer cache could
-# mask a broken --secret path).
-echo "==> Force-rebuilding (clear stale cdkl image so --secret / --target are re-exercised)"
-docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
-  docker image rm -f "${tag}" >/dev/null 2>&1 || true
-done
+# BuildKit feature this run (otherwise a stale image could satisfy the
+# assertions below without `--secret` / `--target` ever being re-exercised).
+# ONLY this fixture's own tag is removed -- never a tag the snapshot held.
+echo "==> Force-rebuilding (clear this fixture's stale image so --secret / --target are re-exercised)"
+remove_own_image
+trap remove_own_image EXIT
+if docker image inspect "${OWN_TAG}" >/dev/null 2>&1; then
+  echo "FAIL: ${OWN_TAG} still present after removal — cannot guarantee a fresh build"
+  echo "      (a running container may still hold it; stop it and re-run)"
+  exit 1
+fi
+# Drop our own tag from the snapshot now that it is gone. A previous run
+# (or a crash) can leave it behind, and without this the "new since the
+# snapshot" assertion below would fail spuriously on the very rebuild it is
+# meant to certify. Every OTHER tag stays in the snapshot, and so stays
+# untouchable.
+IMAGES_BEFORE="$(printf '%s\n' "${IMAGES_BEFORE}" | grep -vxF "${OWN_TAG}" || true)"
+echo "    ✓ ${OWN_TAG} absent — any appearance below is a build from THIS run"
 
 
 echo "==> [1/3] Building + invoking BuildkitHandler (exercises every BuildKit feature)"
@@ -96,16 +136,25 @@ echo "    ✓ multi-stage --target=final"
 # content — must NOT match.
 echo "==> [2/3] Verifying secret content NEVER baked into image layers (security property of --secret)"
 SECRET_LITERAL=$(cat docker/secret.txt | head -1)
-CDKL_TAG=$(docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' | head -1)
-if [[ -z "${CDKL_TAG}" ]]; then
-  echo "FAIL: no cdkl-invoke-* image found — build did not happen"
+# The tag was proven ABSENT before the build, so its presence now is proof a
+# real build ran in THIS process -- strictly stronger than the old check,
+# which any stale `cdkl-invoke-*` image (from this or any other lane) passed.
+CDKL_TAG="${OWN_TAG}"
+if ! docker image inspect "${CDKL_TAG}" >/dev/null 2>&1; then
+  echo "FAIL: ${CDKL_TAG} absent after the invoke — build did not happen this run"
   exit 1
 fi
+if ! docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
+     | sort | comm -13 <(printf '%s\n' "${IMAGES_BEFORE}") - | grep -qxF "${CDKL_TAG}"; then
+  echo "FAIL: ${CDKL_TAG} is not a NEW tag since the pre-run snapshot — build did not happen this run"
+  exit 1
+fi
+echo "    ✓ ${CDKL_TAG} is new since the pre-run snapshot (a real build ran)"
 # Walk every layer's filesystem and grep for the secret literal. If
 # `--mount=type=secret` worked correctly, the secret was only on the
 # build container's RUN-step tmpfs, never on a layer.
 TMP_DUMP=$(mktemp)
-trap 'rm -rf "${TMP_DUMP}"' EXIT
+trap 'rm -rf "${TMP_DUMP}"; remove_own_image' EXIT
 docker save "${CDKL_TAG}" | tar -t 2>/dev/null > "${TMP_DUMP}"
 if docker save "${CDKL_TAG}" 2>/dev/null | grep -aq "${SECRET_LITERAL}"; then
   echo "FAIL: secret literal '${SECRET_LITERAL}' found in image layers — --mount=type=secret is leaking!"
@@ -127,17 +176,19 @@ echo "    ✓ --no-build reused the cached tag"
 
 rm -f /tmp/cdkl-buildkit-1.log /tmp/cdkl-buildkit-3.log
 
-# Cleanup: remove the cdkl-built image(s) so CI hosts don't accumulate
-# multi-stage builder layers across iterations. The integ owns the
-# `cdkl-invoke-*` namespace and the run-time docker containers are
-# already removed by `docker run --rm` + cdk-local's removeContainer().
-echo "==> Cleanup: removing cdkl-built images"
-docker image ls --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' | while read -r tag; do
-  docker image rm -f "${tag}" >/dev/null 2>&1 || true
-done
-# Also prune any dangling layers from the multi-stage build. `--force` is
-# fine here; we're operating on a known-isolated test image.
-docker image prune -f --filter "label=cdkl-invoke" >/dev/null 2>&1 || true
+# Cleanup: remove the image THIS run built, so CI hosts don't accumulate one
+# per iteration. Scoped to this fixture's own tag -- the fixture does NOT own
+# the whole `cdkl-invoke-*` namespace, which is shared with every other
+# container fixture and with concurrently running lanes. The run-time docker
+# containers are already removed by `docker run --rm` + cdk-local's
+# removeContainer().
+#
+# The `docker image prune --filter label=cdkl-invoke` that used to follow is
+# gone: cdk-local never passes `--label`, so it matched nothing and had never
+# pruned the multi-stage builder layers its comment claimed. An UNFILTERED
+# prune is exactly the cross-lane hazard this change removes.
+echo "==> Cleanup: removing the image built by this run (${OWN_TAG})"
+remove_own_image
 
 echo ""
 echo "==> All 3 BuildKit-Dockerfile checks passed"

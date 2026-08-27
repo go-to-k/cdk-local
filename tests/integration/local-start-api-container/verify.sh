@@ -40,6 +40,39 @@ if [[ ! -d node_modules ]]; then
 fi
 
 
+
+# --- built-image cleanup (issue #587) --------------------------------------
+# This fixture's DockerImageFunction makes cdkl `docker build` a
+# `cdkl-invoke-<hash>:latest` image of ~421 MB. Nothing removed it, so every
+# run leaked one -- and because the tag is a fingerprint of the asset (the
+# platform included), a change to the Dockerfile, the handler or the
+# architecture mints a NEW tag that no later run will ever reuse or reclaim.
+#
+# Only the tag(s) THIS run creates are removed: the set of `cdkl-invoke-*`
+# tags present now is snapshotted, and cleanup deletes only what appeared
+# since. A blanket `docker rmi` of every `cdkl-invoke-*` tag is deliberately
+# NOT used -- parallel integ lanes share one Docker daemon on a dev host, so
+# a blanket sweep deletes images other lanes are mid-run on, and it would
+# also destroy the local cache other container fixtures rely on.
+IMAGES_BEFORE="$(mktemp)"
+docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
+  | sort > "${IMAGES_BEFORE}"
+
+remove_run_images() {
+  [ -f "${IMAGES_BEFORE:-}" ] || return 0
+  local new
+  new="$(docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
+    | sort | comm -13 "${IMAGES_BEFORE}" -)"
+  if [ -n "${new}" ]; then
+    echo "==> Removing image(s) built by this run:"
+    echo "${new}" | sed 's/^/      /'
+    # `docker image rm` refuses an image a RUNNING container still uses, so a
+    # concurrent lane mid-run is protected even if its tag lands in the delta.
+    echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
+  fi
+  rm -f "${IMAGES_BEFORE}"
+}
+
 LOG_FILE="$(mktemp)"
 SERVER_PID=""
 
@@ -65,6 +98,7 @@ cleanup() {
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
   rm -f "${LOG_FILE}"
+  remove_run_images
 }
 trap cleanup EXIT INT TERM
 

@@ -61,8 +61,13 @@ docker pull "${IMAGE}"
 # Sentinel gates the cleanup trap: only run `cdk destroy` on a stack
 # THIS run created, never on a pre-existing one with the same name.
 WE_CREATED_STACK=0
+# Scratch file for invoke_capture's stderr (issue #577). Created here, BEFORE
+# `trap cleanup EXIT` is installed, so the trap that removes it can never fire
+# before the first write.
+CDKL_STDERR="$(mktemp)"
 cleanup() {
   rc=$?
+  rm -f "${CDKL_STDERR}"
   if [ "${rc}" -ne 0 ] && [ "${WE_CREATED_STACK}" -eq 1 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cdk destroy to clean up"
     (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \
@@ -132,9 +137,26 @@ echo "[verify]   IAM trust propagated"
 invoke_capture() {
   # Run cdkl invoke and return the last JSON-looking line on stdout.
   # `--no-pull` skips docker pull (image already cached by step 1c) so the
-  # repeat invocations are fast. Stderr is dropped; if assertion fails we
-  # re-run without the drop for diagnostics in the FAIL branch.
-  ${CLI} invoke "$@" --no-pull 2>/dev/null | tail -1
+  # repeat invocations are fast.
+  #
+  # The exit status is captured EXPLICITLY (issue #577). The old shape,
+  #     ${CLI} invoke "$@" --no-pull 2>/dev/null | tail -1
+  # aborted the WHOLE script at the caller's ASSIGNMENT when cdkl exited
+  # non-zero: pipefail failed the pipeline, the command substitution failed,
+  # and `set -e` killed the script BEFORE the grep, before the FAIL message
+  # and before that branch's stderr re-run -- then the EXIT trap destroyed
+  # the stack, taking the evidence with it. All the operator saw was
+  # `[verify] FAIL (exit 1) - attempting cdk destroy to clean up`.
+  #
+  # Now a non-zero exit prints the status plus the captured stderr and the
+  # assertion still runs, so the FAIL branch below is actually reachable.
+  local out rc=0
+  out="$(${CLI} invoke "$@" --no-pull 2>"${CDKL_STDERR}")" || rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    echo "[verify] cdkl invoke exited ${rc}; stderr (last 20 lines):" >&2
+    tail -20 "${CDKL_STDERR}" >&2
+  fi
+  printf '%s\n' "${out}" | tail -1
 }
 
 echo "[verify] step 5: baseline — cdkl invoke --from-cfn-stack (no --assume-role)"
