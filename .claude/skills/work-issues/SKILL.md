@@ -686,10 +686,29 @@ there). Per lane:
 
 ```bash
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
-( cd .claude/worktrees/<name> \
-  && mise trust && mise install \    # a fresh worktree's .mise.toml is untrusted — vp / markgate won't resolve until this
-  && pnpm install )                  # worktrees have no node_modules
+cd .claude/worktrees/<name>
+# A fresh worktree's .mise.toml is untrusted, so vp / markgate do not resolve
+# until this. (A backslash continuation cannot carry a trailing comment, so
+# these are separate lines rather than one `&&` chain.)
+mise trust && mise install
+pnpm install    # worktrees have no node_modules
+vp run build    # ...and no dist/ — see below
 ```
+
+**Build BEFORE the first test run, and read a fresh worktree's failures with that
+in mind.** A worktree starts with no `dist/`, and any test that spawns the built
+CLI then fails on the missing binary rather than on its subject — with an
+assertion message about the SUBJECT, which is what makes it costly. This repo's
+integ fixtures resolve `node ../../../dist/cli.js`, so they are exposed directly,
+and `/run-integ` builds first for exactly this reason; the trap is that a UNIT
+suite can be exposed too. Measured in go-to-k/cdk-real-drift on 2026-08-27: a
+docs-only lane in a fresh worktree saw 13 failures in a CLI exit-code suite
+(`expected 1 to be 2`), reproduced them with its own edit stashed, and had begun
+writing them up as "a peer merge broke main" — the same file passed in the main
+checkout, which HAS a `dist/`, so every comparison pointed at main. One
+`vp run build` turned it green with no other change. **A fresh worktree failing
+where the main checkout passes is evidence about the WORKTREE first**, and a build
+costs seconds against a false broken-main report.
 
 Do the fix in the worktree (match the existing module/pattern exactly; ESM relative
 imports need the `.js` extension even in TS source). **Always add a test that fails
