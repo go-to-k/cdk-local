@@ -376,20 +376,41 @@ fi
 # file, so a future edit could drop either half silently.
 SKILL="${INTEG_DIR}/../../.claude/skills/run-integ/SKILL.md"
 if [ -f "${SKILL}" ]; then
-  sweep=$(sed -n '/describe-parameters/,/list-exports/p' "${SKILL}")
-  case "${sweep}" in
-    *'INTEG_STACK_SUFFIX'*) check "run-integ's SSM sweep filters by the lane suffix" 0 ;;
-    *) check "run-integ's SSM sweep filters by the lane suffix" 1 "no INTEG_STACK_SUFFIX in the query block" ;;
-  esac
-  case "${sweep}" in
-    *"starts_with(Name,'/cdkl')"*) check "run-integ's SSM sweep keeps the cdkl anchor" 0 ;;
-    *) check "run-integ's SSM sweep keeps the cdkl anchor" 1 "no starts_with(Name,'/cdkl') anchor" ;;
-  esac
-  # The guard is what stops an unresolved suffix becoming an account-wide list.
-  case "$(grep -c 'INTEG_STACK_SUFFIX:?' "${SKILL}")" in
-    0) check "run-integ aborts when the lane suffix is unresolved" 1 "no \${INTEG_STACK_SUFFIX:?...} guard" ;;
-    *) check "run-integ aborts when the lane suffix is unresolved" 0 ;;
-  esac
+  # Assert per QUERY LINE, not over a sed range. The first version of this
+  # fence extracted `/describe-parameters/,/list-exports/p`, whose range ENDS
+  # on the `list-exports \` line -- before its own `--query`. Deleting the
+  # exports filter (restoring the cross-lane defect, on the output whose prose
+  # says it matters MORE) left the suite at 73/0.
+  ssm_q=$(grep -F "Parameters[?starts_with(Name,'/cdkl')" "${SKILL}")
+  exp_q=$(grep -F "Exports[?starts_with(Name,'cdkl')" "${SKILL}")
+
+  for pair in "SSM:${ssm_q}" "exports:${exp_q}"; do
+    label="${pair%%:*}"
+    query="${pair#*:}"
+    if [ -z "${query}" ]; then
+      check "run-integ's ${label} sweep keeps the cdkl anchor" 1 "no anchored query line found"
+      check "run-integ's ${label} sweep filters by the lane suffix" 1 "no anchored query line found"
+      continue
+    fi
+    check "run-integ's ${label} sweep keeps the cdkl anchor" 0
+    case "${query}" in
+      *"contains(Name,'-\${INTEG_STACK_SUFFIX}')"*)
+        check "run-integ's ${label} sweep filters by the lane suffix" 0 ;;
+      *)
+        check "run-integ's ${label} sweep filters by the lane suffix" 1 "no suffix filter in the ${label} query" ;;
+    esac
+  done
+
+  # Structural, not token-presence: the guard must be a real `: "${VAR:?...}"`
+  # statement at the start of a line, so prose merely MENTIONING it does not
+  # satisfy the check. Both the pre-flight scan and the post-run sweep need it.
+  guards=$(grep -cE '^[[:space:]]*: "\$\{INTEG_STACK_SUFFIX:\?' "${SKILL}")
+  if [ "${guards}" -ge 3 ]; then
+    check "run-integ aborts when the lane suffix is unresolved (${guards} guards)" 0
+  else
+    check "run-integ aborts when the lane suffix is unresolved" 1 \
+      "expected >= 3 guard statements (pre-flight stack, post-run stack, sweeps), found ${guards}"
+  fi
 else
   check "run-integ SKILL.md is present to check" 1 "not found at ${SKILL}"
 fi

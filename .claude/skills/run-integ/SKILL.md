@@ -22,7 +22,11 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 3. **Pre-flight Docker sweep**: `docker ps --filter name=cdkl- -q | wc -l` and `docker network ls --filter name=cdkl-task- -q | wc -l` should both return `0`. If either is non-zero, abort and ask the user to run `/cleanup` first — running on top of orphans causes name collisions and confusing failures.
 
-4. **For `*-from-cfn-stack` tests only — AWS pre-flight**:
+4. **For AWS-deploying tests — AWS pre-flight**. That is every fixture matching
+   `*-from-cfn*`, PLUS `local-invoke-agentcore-froms3`, which creates a real S3
+   bucket without deploying a stack. Scoping this to `*-from-cfn-stack` (the
+   original wording) silently skipped three fixtures that own real AWS
+   resources:
    - Verify the upstream `cdk` CLI is on `$PATH`: `which cdk`.
    - Verify AWS credentials: `aws sts get-caller-identity`.
    - Scan for orphan stacks from a previous interrupted run. **The stack name
@@ -33,8 +37,16 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
      ```bash
      source tests/integration/_lib/stack-name.sh
+     # Abort if the suffix did not resolve. The `source` path is RELATIVE, so
+     # running this from anywhere but the repo root leaves the helper undefined
+     # -- and then `STACK` is empty, `describe-stacks` errors, `2>/dev/null`
+     # swallows the error, and the `||` branch prints "(no orphan stack)". A
+     # false CLEAN on the primary resource, which step 9 then converts into a
+     # fresh `integ` marker over a live orphan stack.
+     : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
      STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
-     aws cloudformation describe-stacks --stack-name "${STACK}" 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
+     aws cloudformation describe-stacks --stack-name "${STACK}" \
+       --region "${AWS_REGION:-us-east-1}" 2>/dev/null && echo "ORPHAN" || echo "(no orphan stack)"
      ```
 
      If an orphan stack is reported, abort with a `cdk destroy "${STACK}"`
@@ -56,15 +68,22 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    If any are non-zero, dispatch `/cleanup` (no `--detect-only`) and re-run the checks. Never end the run with orphan Docker resources still present.
 
-7. **Verify AWS cleanup** (only for `*-from-cfn-stack` tests):
+7. **Verify AWS cleanup** (same fixture set as step 4 — `*-from-cfn*` plus
+   `local-invoke-agentcore-froms3`):
 
    Resolve the lane-unique name the same way step 4 does — the bare base name
    matches nothing and this sweep would silently report clean:
 
    ```bash
    source tests/integration/_lib/stack-name.sh
+   # Same guard as step 4, and for the same reason: without it an unresolved
+   # helper makes `STACK` empty, `describe-stacks` error, `2>/dev/null` swallow
+   # the error, and the `||` branch print `AWS clean` -- a false clean on the
+   # PRIMARY resource, which step 9 turns into a fresh `integ` marker.
+   : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
    STACK="$(integ_stack_name <FixtureStackBaseName>)"
-   aws cloudformation describe-stacks --stack-name "${STACK}" 2>/dev/null \
+   aws cloudformation describe-stacks --stack-name "${STACK}" \
+     --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
      && echo "ORPHAN STACK REMAINS" \
      || echo "AWS clean"
    ```
@@ -93,17 +112,31 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    # BOTH conditions: the `cdkl` anchor keeps the blast radius bounded to this
    # repo's resources even if the suffix logic is ever changed, and the suffix
    # bounds it to this lane.
-   aws ssm describe-parameters \
+   aws ssm describe-parameters --region "${AWS_REGION:-us-east-1}" \
      --query "Parameters[?starts_with(Name,'/cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].Name" \
      --output text
-   aws cloudformation list-exports \
+   aws cloudformation list-exports --region "${AWS_REGION:-us-east-1}" \
      --query "Exports[?starts_with(Name,'cdkl') && contains(Name,'-${INTEG_STACK_SUFFIX}')].[Name,ExportingStackId]" \
      --output text
 
    # Not lane-suffixed and not a stack resource, so neither sweep above can see
    # it: `local-invoke-agentcore-froms3` creates a bucket out of band, and its
    # trap covers EXIT/INT/TERM but not SIGKILL.
-   aws s3 ls | grep cdkl-integ-froms3 || echo "(no orphan froms3 bucket)"
+   #
+   # `aws s3 ls` is checked SEPARATELY from the grep. Piping straight into grep
+   # makes a credential / permission / region failure produce no match, which the
+   # `||` branch then reports as "no orphan" -- the same falsely-clean shape as
+   # the stack scan above.
+   #
+   # This one carries NO lane suffix, so it lists EVERY worktree's froms3
+   # buckets, a concurrently running peer's live bucket included. Treat a match
+   # as "someone's", not "mine": confirm no `verify.sh` is running before
+   # deleting.
+   if buckets=$(aws s3 ls); then
+     printf '%s\n' "${buckets}" | grep cdkl-integ-froms3 || echo "(no orphan froms3 bucket)"
+   else
+     echo "FAILED to list buckets — this is NOT a clean verdict" >&2
+   fi
    ```
 
    `contains`, not `ends_with`: `local-invoke-from-cfn-stack-large-stack` creates
@@ -118,10 +151,6 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    check for a running `verify.sh` before deleting anything. An export cannot be
    deleted except by destroying its stack, so `ExportingStackId` in that output
    is pointing you at a stack that may still be in use.
-
-   Pass `--region` to match the fixture's (`AWS_REGION`, default `us-east-1`) if
-   your shell's default region differs — otherwise these queries report a false
-   clean from the wrong region.
 
 8. **Report results**: Show pass/fail for the test, plus a one-line cleanup summary ("docker: 0 orphans, network: 0 orphans" / for `from-cfn-stack`: "+ AWS: 0 orphan stacks / parameters / exports / buckets" — name each sweep you actually ran, so a clean report is not writable without running them).
 
