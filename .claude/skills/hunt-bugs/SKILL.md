@@ -309,13 +309,20 @@ and (rarely) vitest worker forks:
   `cdkl-` containers / networks AND orphaned vitest fork workers). `/run-integ`
   already runs the post-run sweep — but a manual `verify.sh` / a crashed serve does
   not, so run `/cleanup` after any hand-run.
-- For a `*-from-cfn-stack` scenario (a real deploy via the upstream `cdk` CLI), ALSO
-  confirm no orphan CloudFormation stacks remain and tear them down (`cdk destroy` /
-  `aws cloudformation delete-stack`), then sweep the stack-EXTERNAL orphans a delete
-  leaves behind (auto-created `/aws/lambda/*` log groups, RETAIN resources, KMS
-  pending-deletion). Use a UNIQUE hunt-style stack name, never a shared fixed name
-  and never a real prod stack — the account may hold the maintainer's production
-  stacks.
+- For a scenario that really deploys (via the upstream `cdk` CLI), ALSO confirm no
+  orphan CloudFormation stacks remain. For a REPO FIXTURE, run
+  `bash tests/integration/_lib/aws-orphan-sweep.sh <fixture>` and require rc 0 —
+  it derives the lane-unique names and prints a remediation plan on a find.
+  For a throwaway stack of your own, tear it down with
+  **`aws cloudformation delete-stack` + `wait stack-delete-complete`**, NOT
+  `cdk destroy`: `cdk destroy` needs `--app` context, and run from the wrong
+  directory or without the fixture's `INTEG_STACK_SUFFIX` in the environment it
+  exits 0 SILENTLY on a name the app never synthesized — you read a clean exit
+  with the stack still deployed (go-to-k/cdk-local#601). Then sweep the
+  stack-EXTERNAL orphans a delete leaves behind (auto-created `/aws/lambda/*`
+  log groups, RETAIN resources, KMS pending-deletion). Use a UNIQUE hunt-style
+  stack name, never a shared fixed name and never a real prod stack — the
+  account may hold the maintainer's production stacks.
 
 The `integ` gate (`integ-gate.sh`) blocks `gh pr merge` when the `integ` marker is
 stale for a `src/**` / `tests/integration/**` touch, and `/run-integ` sets that

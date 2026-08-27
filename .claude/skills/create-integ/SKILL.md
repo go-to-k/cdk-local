@@ -141,12 +141,18 @@ extend it instead.
    /run-integ <name>
    ```
    `/run-integ` does the Docker pre-flight, `verify.sh`, the post-run orphan
-   sweep (+ AWS stack sweep for `*-from-cfn-stack`), and sets the `integ` marker
-   on a clean run. Fix anything it surfaces and re-run until green with 0
-   orphans.
+   sweep, and the AWS orphan sweep — which it runs for EVERY fixture, not just
+   `*-from-cfn-stack` ones: that glob missed three resource-owning fixtures and
+   the widened `*-from-cfn*` still missed `local-invoke-assume-role`, so
+   `tests/integration/_lib/aws-orphan-sweep.sh` derives ownership itself and
+   makes no AWS call for a fixture that owns nothing. A brand-new Docker-only
+   fixture therefore passes it at exit 0 with nothing deployed. It then sets the
+   `integ` marker on a clean run. Fix anything it surfaces and re-run until
+   green with 0 orphans.
 
 6. **Record the `create-integ` marker** — ONLY after `/run-integ` finished
-   clean (verify.sh exit 0, 0 docker orphans, 0 AWS orphan stacks):
+   clean (verify.sh exit 0, 0 docker orphans, and the AWS orphan sweep at
+   exit 0):
    ```bash
    mise exec -- markgate set create-integ
    ```
