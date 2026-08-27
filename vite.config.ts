@@ -72,20 +72,23 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['./tests/setup.ts'],
-    // Diagnostics for issue #402's "Worker exited unexpectedly" crash variant:
-    // a reused forks worker occasionally dies on a native handle AFTER all
-    // assertions pass. It is intermittent and not locally reproducible, so we
-    // arm Node's diagnostic report on the forks workers — a fatal C++ error or
-    // an uncaught exception writes a `report.*.json` (native + JS stack, open
-    // libuv handles) to cwd, which CI dumps to the log on failure (see
-    // `.github/workflows/ci.yml`). No overhead on a clean run — a report is
-    // written ONLY when a worker actually crashes.
+    // Diagnostics for issue #402's "Worker exited unexpectedly" exit-1
+    // variant: a forks worker exits non-zero AFTER all assertions pass, and
+    // whether that races vitest's `emitUnexpectedExit` teardown decides
+    // whether a green suite reports exit 1. Node's diagnostic report writes a
+    // `report.*.json` (native + JS stack, open libuv handles) to cwd on a
+    // fatal error or an uncaught exception, which CI dumps to the log on
+    // failure (see `.github/workflows/ci.yml`). No overhead on a clean run.
+    //
+    // These MUST stay top-level: vitest 4 REMOVED `test.poolOptions` (it
+    // warns `DEPRECATED \`test.poolOptions\` was removed in Vitest 4` and
+    // ignores the block), so the `poolOptions.forks.execArgv` these lived in
+    // until #402's root-cause pass never reached a worker at all — which is
+    // why the CI dump step had been reporting "No Node diagnostic report
+    // written" for every occurrence and the crash looked native when it was
+    // an ordinary non-zero exit.
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        execArgv: ['--report-on-fatalerror', '--report-uncaught-exception'],
-      },
-    },
+    execArgv: ['--report-on-fatalerror', '--report-uncaught-exception'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],

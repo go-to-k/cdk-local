@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vite-plus/test';
 import { Command } from 'commander';
 import { createLocalStartApiCommand } from '../../../src/cli/commands/local-start-api.js';
 import type { AssumeRoleOption } from '../../../src/cli/options.js';
+import { withoutAction } from '../../helpers/without-action.js';
 
 const ARN = 'arn:aws:iam::123456789012:role/MyRole';
 const ARN_2 = 'arn:aws:iam::123456789012:role/OtherRole';
@@ -25,9 +26,10 @@ function parseStartApiArgs(args: string[]): {
   assumeRole: AssumeRoleOption | undefined;
   assumeRoleAuto: boolean;
 } {
-  const cmd = createLocalStartApiCommand();
-  // Stub the action so parseAsync doesn't try to boot the server.
-  cmd.action(() => {});
+  // Options only: `parse()` would otherwise run the real start-api action
+  // and boot the server. Single-sourced with the other parse-only sites so
+  // one documented helper carries the reason (issue #402).
+  const cmd = withoutAction(createLocalStartApiCommand());
   cmd.exitOverride();
   cmd.parse(['node', 'cdkl', ...args]);
   return cmd.opts() as {

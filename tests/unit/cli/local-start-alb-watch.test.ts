@@ -6,6 +6,7 @@ import {
   createLocalStartAlbCommand,
 } from '../../../src/cli/commands/local-start-alb.js';
 import { type EcsServiceEmulatorOptions } from '../../../src/cli/commands/ecs-service-emulator.js';
+import { withoutAction } from '../../helpers/without-action.js';
 
 /**
  * Phase 3 of issue #214 — locks the `cdkl start-alb --watch` wiring
@@ -63,7 +64,10 @@ describe('start-alb --watch (Phase 3 of #214)', () => {
     // argument would leave the gate's `=== true` check falsy and
     // silently disable `--watch` for start-alb. Drive the parse
     // end-to-end so any drift trips this test.
-    const cmd = createLocalStartAlbCommand();
+    // Options only: `parse()` would otherwise run the real start-alb
+    // action, which shells out to `docker` and leaves live child processes
+    // behind after this file finishes (issue #402).
+    const cmd = withoutAction(createLocalStartAlbCommand());
     // Disable Commander's default exit + output so a parse misstep
     // throws into the test rather than calling process.exit(1).
     cmd.exitOverride();
@@ -74,7 +78,7 @@ describe('start-alb --watch (Phase 3 of #214)', () => {
     // Default value: a parse WITHOUT `--watch` must leave `opts().watch`
     // falsy so the gate's `=== true` check rejects it (and the watcher
     // is never installed).
-    const cmd2 = createLocalStartAlbCommand();
+    const cmd2 = withoutAction(createLocalStartAlbCommand());
     cmd2.exitOverride();
     cmd2.configureOutput({ writeOut: () => {}, writeErr: () => {} });
     cmd2.parse(['node', 'cdkl', 'start-alb', 'MyStack:WebLB'], { from: 'user' });

@@ -1,6 +1,6 @@
 /// <reference types="node" />
 
-import { afterAll, vi } from 'vite-plus/test';
+import { afterAll, expect, vi } from 'vite-plus/test';
 import {
   installTerminateGuard,
   pruneForeignSignalListeners,
@@ -161,14 +161,7 @@ interface UndiciDispatcher {
   constructor: new () => UndiciDispatcher;
 }
 
-afterAll(async () => {
-  // Prune any SIGTERM / SIGINT handlers a CLI command action registered while
-  // driving its parse during this file (issue #402). They accumulate across
-  // files in the reused worker (MaxListeners noise) and retain server / socket
-  // references that feed the "Worker exited unexpectedly" native-handle crash;
-  // our prepended fast-terminate guard is preserved.
-  pruneForeignSignalListeners(process, fastTerminate);
-
+async function destroyUndiciPool(): Promise<void> {
   const slot = globalThis as Record<symbol, unknown>;
   const dispatcher = slot[UNDICI_GLOBAL_DISPATCHER] as UndiciDispatcher | undefined;
   // Undefined until the worker issues its first `fetch`; nothing to clear.
@@ -182,4 +175,62 @@ afterAll(async () => {
   } catch {
     // Best-effort teardown — never fail a green suite over pool cleanup.
   }
+}
+
+/**
+ * Fail a test file that finishes while a child process it spawned is still
+ * running (issue go-to-k/cdk-local#402).
+ *
+ * This is the fence for the root cause of the "Worker exited unexpectedly"
+ * exit-1 flake: a unit test that builds a REAL `createLocal*Command()` and
+ * calls `cmd.parse(...)` also RUNS the command's action, which reaches
+ * `ensureDockerAvailable` and shells out to `docker`. The file's assertions
+ * pass and the file ends, but the orphaned action chain keeps running in the
+ * forked worker and eventually rejects; `process.exit` is a no-op here, so
+ * Node 24 turns that into a non-zero worker exit. Vitest defers worker
+ * termination to the end of the run, so whether the parent has already
+ * dropped its `emitUnexpectedExit` listener is a race — losing it fails the
+ * whole run with every test passing. Measured 5 failures in 10 local runs
+ * before the fix, 0 in 27 after.
+ *
+ * The leak is deterministic even though the crash is not, which is what makes
+ * it worth asserting: the flake needs a race, this check does not.
+ *
+ * `tests/helpers/without-action.ts` is the fix a tripped assertion wants.
+ */
+async function assertNoLeakedChildProcesses(): Promise<void> {
+  // Yield one macrotask first: a child the file legitimately spawned AND
+  // awaited (front-door-tls shells out to `openssl`) can still be listed for
+  // a tick after it exits, and flagging that would make this check itself
+  // flaky.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const leaked = process.getActiveResourcesInfo().filter((r) => r === 'ProcessWrap').length;
+  if (leaked === 0) {
+    return;
+  }
+
+  const testPath = expect.getState().testPath ?? 'this test file';
+  throw new Error(
+    `${testPath} finished with ${leaked} child process(es) still running.\n` +
+      'A unit test spawned a real subprocess and never waited for it. The usual ' +
+      "cause is calling `parse()` on a real `createLocal*Command()`: Commander runs " +
+      'the action, which shells out to `docker`. Wrap the command in ' +
+      '`withoutAction()` from `tests/helpers/without-action.ts` to parse options ' +
+      'without running the action, or await / kill the process the test starts. ' +
+      'See issue go-to-k/cdk-local#402.'
+  );
+}
+
+afterAll(async () => {
+  // Prune any SIGTERM / SIGINT handlers a CLI command action registered while
+  // driving its parse during this file (issue #402). They accumulate across
+  // files in the reused worker (MaxListeners noise) and retain server / socket
+  // references; our prepended fast-terminate guard is preserved.
+  pruneForeignSignalListeners(process, fastTerminate);
+
+  await destroyUndiciPool();
+
+  // Last, so the cleanup above always runs even when this throws.
+  await assertNoLeakedChildProcesses();
 });

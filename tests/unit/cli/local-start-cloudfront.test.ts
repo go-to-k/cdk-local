@@ -8,6 +8,7 @@ import {
 } from '../../../src/cli/commands/local-start-cloudfront.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import { withoutAction } from '../../helpers/without-action.js';
 
 function stack(name: string, template: CloudFormationTemplate): StackInfo {
   return {
@@ -197,8 +198,9 @@ describe('createLocalStartCloudFrontCommand — option surface', () => {
   });
 
   it('resolves --no-pull to pull=false (Commander negation)', () => {
-    const fresh = createLocalStartCloudFrontCommand();
-    fresh.action(() => {});
+    // Options only: `parse()` would otherwise run the real start-cloudfront
+    // action (issue #402).
+    const fresh = withoutAction(createLocalStartCloudFrontCommand());
     const parsed = fresh.parse(['node', 'cdkl', 'My/Dist', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
