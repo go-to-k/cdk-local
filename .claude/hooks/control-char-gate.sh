@@ -53,11 +53,10 @@
 # The index scan is still done ALONGSIDE the working-tree one rather than being
 # replaced by it: a file staged EARLIER and unmodified since is in the commit
 # but is not "modified" relative to the index, so `git ls-files --modified`
-# never lists it. The one exception is a path the staging will DELETE -- either
-# the file is already gone from disk, or THIS CALL is what removes it
-# (`rm bad.ts && git add -A && git commit`, where the hook still sees the file).
-# Its staged blob is on its way out of the tree, so blocking on it would wedge
-# the very remediation this gate's own message asks for.
+# never lists it. The one exception is a path that is ALREADY GONE from disk
+# while the staging covers it: `git add -A` will stage that deletion, so the
+# staged blob is on its way out of the tree. That is a fact about the TREE, not
+# a reading of the command -- see "what this gate does NOT try to know" below.
 #
 # The working-tree scan is deliberately a SUPERSET of what the commit will
 # contain in the ambiguous cases: a false block costs one message and a re-run,
@@ -81,6 +80,19 @@
 # fail-open of exactly the same class as the one above. A pathspec-RESTRICTED
 # scan still runs in the command's own directory, because that is what its
 # pathspecs are relative to.
+#
+# WHAT THIS GATE DOES NOT TRY TO KNOW: the ORDER of the segments, or that some
+# other command in the same call will delete the file before the commit runs.
+# A `rm bad.ts && git add -A && git commit` is therefore BLOCKED even though the
+# resulting commit would not contain bad.ts, and the message says how to proceed
+# (stage the deletion in its own call). An earlier revision parsed `rm` / `git
+# rm` to avoid that one false block. It cost a FAIL-OPEN (`git add -A && git
+# commit && rm x` passed, because order was not modelled), an abbreviation
+# bypass (`git rm --ca`), and a 90-second hang. The trade is not close: this
+# gate exists because a false PASS shipped a control byte to main, while a false
+# BLOCK costs one message and a second call -- the same asymmetry every "ERRS
+# BROAD" note below already argues for. So the parser is gone and the remedy
+# lives in the error message instead.
 #
 # Fails open (exit 0) when git / perl are unavailable, or when neither scan
 # finds any candidate file (a clean tree) -- a safety net must never wedge an
@@ -327,82 +339,6 @@ if [ "$wt_scan" -eq 1 ] && [ "$wt_all_paths" -eq 0 ] && [ -z "$wt_paths" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Paths this same call REMOVES.
-# ---------------------------------------------------------------------------
-# `rm bad.ts && git add -A && git commit -m drop-it` is one Bash call, so at hook
-# time bad.ts is still on disk with its control byte, while the commit that call
-# produces does not contain the file at all. Blocking there wedges the exact
-# remediation this gate's own message asks for. The deletion is only visible in
-# the COMMAND before it runs -- the same place the staging had to be read from.
-#
-# Recorded as root-relative keys, and ONLY consulted for INDEX candidates: a
-# working-tree candidate that is being removed already reads as "no file on
-# disk" and is skipped on its own.
-removed_keys="
-"
-
-# gate_cc_collect_removals <verb-ere> <is-git-rm>
-# Resolve each removal segment's positional paths to root-relative names by
-# asking GIT to match them (`ls-files --cached -- <path>`), rather than doing
-# path arithmetic here: git owns pathspec semantics, handles a directory
-# argument, and normalises `/var` vs `/private/var` for free.
-gate_cc_collect_removals() {
-  local re="$1" is_git="$2" seg_args dir root tok cached f end_of_flags skip_seg
-  dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$re")
-  root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
-  [ -n "$root" ] || return 0
-  while IFS= read -r seg_args; do
-    end_of_flags=0
-    skip_seg=0
-    # `git rm --cached` un-tracks WITHOUT deleting, and a following `git add -A`
-    # would re-add the file. Not a removal; the whole segment is ignored.
-    if [ "$is_git" = "1" ]; then
-      case " $seg_args " in *" --cached "*) skip_seg=1 ;; esac
-    fi
-    [ "$skip_seg" -eq 1 ] && continue
-    while [ -n "${seg_args// /}" ] && [[ "$seg_args" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
-      tok="${BASH_REMATCH[1]}"
-      seg_args="${BASH_REMATCH[3]}"
-      [ -n "$tok" ] || break
-      if [ "$end_of_flags" -eq 0 ]; then
-        case "$tok" in
-          --) end_of_flags=1; continue ;;
-          -*) continue ;;
-        esac
-      fi
-      tok=$(gate_unquote "$tok")
-      [ -n "$tok" ] || continue
-      # ERRS TOWARD BLOCKING: an unrecognised removal is simply not recorded, so
-      # the index candidate keeps its scan. That is the safe direction here --
-      # unlike everywhere else in this file, a wrong entry in THIS list
-      # SUPPRESSES a scan.
-      #   $ / `   an unexpanded path is not a path.
-      #   * ? [   a GLOB, and git's pathspec language is BROADER than the
-      #           shell's: the shell expands `rm *.ts` against the CWD only,
-      #           while `ls-files -- '*.ts'` matches every .ts in the repository
-      #           and would suppress the scan of files the `rm` never touches.
-      case "$tok" in *'$'*|*'`'*|*'*'*|*'?'*|*'['*) continue ;; esac
-      while IFS= read -r -d '' f; do
-        [ -n "$f" ] || continue
-        removed_keys="$removed_keys$root/$f
-"
-      done < <(git -C "$dir" ls-files --full-name --cached -z -- "$tok" 2>/dev/null || true)
-    done
-  done < <(gate_verb_args "$cmd" "$re")
-}
-
-# `git rm` STAGES the removal itself, so it counts whatever else the call does.
-gate_cc_collect_removals "$GATE_RE_GIT_RM" 1
-# A plain `rm` only touches the disk; something else has to stage the deletion,
-# and only a WHOLE-TREE staging (`git add -A` / `-u` / `git commit -a`) is
-# certain to cover it. Under a pathspec-restricted staging the deletion may not
-# be staged at all, and a wrong skip here is a FAIL-OPEN, so that case
-# deliberately keeps the index scan.
-if [ "$wt_scan" -eq 1 ] && [ "$wt_all_paths" -eq 1 ]; then
-  gate_cc_collect_removals "$GATE_RE_RM" 0
-fi
-
-# ---------------------------------------------------------------------------
 # Collect the candidate files, each with its provenance.
 # ---------------------------------------------------------------------------
 # Three parallel arrays rather than one array of joined strings: a path may
@@ -415,38 +351,64 @@ scan_path=()
 wt_keys="
 "
 
+# How many entries a `git add -f <pathspec>` listing may reach before the gate
+# gives up on scanning gitignored content. See the --exclude-standard comment.
+GATE_CC_FORCE_MAX=200
+
 collect_worktree() {
-  local dir="$1" root f run_in
+  local dir="$1" root f run_in n
   root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
   # Not a repo (or git refused): nothing to add. The index scan handles the same
   # case the same way, and this is the pre-existing fail-open shape.
   [ -n "$root" ] || return 0
+
   # `--full-name` so paths come back relative to the repo ROOT and can be read
   # without depending on which subdirectory the command ran in.
-  local args=(ls-files -z --full-name --modified)
-  [ "$wt_untracked" -eq 1 ] && args=("${args[@]}" --others)
-  # `--exclude-standard` keeps gitignored files out. It is dropped ONLY when a
-  # `git add -f` is bounded by a pathspec: `-f` really can stage an ignored
-  # file, but an UNBOUNDED scan of every ignored path (node_modules, dist, the
-  # build cache) would make the gate itself the slowest thing in the commit.
-  # ERRS NARROW, knowingly, and only for `git add -f` with no pathspec.
-  if [ "$wt_force" -eq 0 ] || [ "$wt_all_paths" -eq 1 ]; then
-    args=("${args[@]}" --exclude-standard)
-  fi
+  local base=(ls-files -z --full-name --modified)
+  [ "$wt_untracked" -eq 1 ] && base=("${base[@]}" --others)
+
   # WHERE the listing runs is the difference between whole-tree and
   # subtree-only, because `git ls-files` lists what is under its CWD:
   #   unrestricted -> the repo ROOT, because `git add -A` / `git commit -a` are
   #                   whole-tree regardless of where they were typed.
   #   restricted   -> the command's OWN directory, because that is what its
   #                   pathspecs are relative to.
+  local paths=()
   run_in="$root"
   if [ "$wt_all_paths" -eq 0 ] && [ -n "$wt_paths" ]; then
     run_in="$dir"
-    args=("${args[@]}" --)
+    paths=(--)
     while IFS= read -r f; do
-      [ -n "$f" ] && args=("${args[@]}" "$f")
+      [ -n "$f" ] && paths=("${paths[@]}" "$f")
     done <<< "$wt_paths"
   fi
+
+  # `--exclude-standard` keeps gitignored files out of the listing, and it is
+  # kept unless dropping it is provably CHEAP.
+  #
+  # `git add -f` really can stage an ignored file, so the ignored content is in
+  # scope in principle. In practice a pathspec like `.` or a directory drags in
+  # the whole ignored tree: measured in this repo, `git add -f .` produced 4,001
+  # candidates and the gate took 25 s (44,563 and >90 s in the reviewer's
+  # worktree). A gate that wedges every commit is worse than the bug it
+  # prevents. So the listing is PROBED first -- cheap, since `ls-files` walks
+  # directories without reading file contents, and the probe stops as soon as it
+  # passes the cap -- and the exclusion is only dropped when the result is small.
+  #
+  # ERRS NARROW, knowingly and boundedly: a `git add -f` whose pathspec covers
+  # more than GATE_CC_FORCE_MAX entries has its IGNORED files unscanned. Its
+  # tracked and untracked-but-unignored files are still scanned, because those
+  # come from the listing that keeps --exclude-standard.
+  local excl=(--exclude-standard)
+  if [ "$wt_force" -eq 1 ] && [ "$wt_all_paths" -eq 0 ]; then
+    n=0
+    while IFS= read -r -d '' f; do
+      n=$((n + 1))
+      [ "$n" -gt "$GATE_CC_FORCE_MAX" ] && break
+    done < <(git -C "$run_in" "${base[@]}" ${paths[@]+"${paths[@]}"} 2>/dev/null || true)
+    [ "$n" -le "$GATE_CC_FORCE_MAX" ] && excl=()
+  fi
+
   while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
     scan_kind[${#scan_kind[@]}]="W"
@@ -454,7 +416,7 @@ collect_worktree() {
     scan_path[${#scan_path[@]}]="$f"
     wt_keys="$wt_keys$root/$f
 "
-  done < <(git -C "$run_in" "${args[@]}" 2>/dev/null || true)
+  done < <(git -C "$run_in" "${base[@]}" ${excl[@]+"${excl[@]}"} ${paths[@]+"${paths[@]}"} 2>/dev/null || true)
 }
 
 collect_index() {
@@ -492,14 +454,39 @@ collect_index "$commit_dir"
 # Extensions whose blobs legitimately contain control bytes — never scanned.
 binary_ext_re='\.(png|jpe?g|gif|webp|bmp|ico|icns|pdf|woff2?|ttf|otf|eot|zip|gz|tgz|bz2|xz|tar|jar|war|7z|rar|wasm|mp4|m4v|mov|webm|avi|mkv|mp3|wav|flac|ogg|bin|exe|dll|so|dylib|node|class|keystore|jks|p12|pfx)$'
 
-# The C0 scan itself. Line-oriented (not `-0777`) so the reported line numbers
-# are useful; a control byte never spans a line.
+# The C0 scan itself.
+#
+# ONE perl process for ALL working-tree candidates, not one per file. The
+# per-file fork was the other half of the `git add -f` slowness above: forks
+# dominate when the candidate list is long, and the list is only bounded by the
+# repository. Line-oriented (not `-0777`) so the reported line numbers stay
+# useful; a control byte never spans a line, and each file stops after 3 hits.
+#
+# Reads NUL-delimited names on stdin and runs with the repo root as its cwd, so
+# the names it prints back are the same root-relative ones used as keys here.
+# `$/` is localised for the name list: leaving it as NUL would make the inner
+# read see whole files as one "line" and every reported line number would be 1.
+C0_BATCH_PL='
+my @f;
+{ local $/ = "\0"; while (my $x = <STDIN>) { chomp $x; push @f, $x if length $x; } }
+for my $n (@f) {
+  open(my $fh, "<", $n) or next;
+  my $ln = 0; my @hit;
+  while (my $l = <$fh>) {
+    $ln++;
+    if ($l =~ /[\x00-\x08\x0B\x0C\x0E-\x1F]/) { push @hit, $ln; last if @hit >= 3; }
+  }
+  close $fh;
+  print $n, "\t", join(",", @hit), "\n" if @hit;
+}
+'
+# The single-file form, for staged blobs (which arrive on stdin as content).
 C0_RE='print "$.\n" if /[\x00-\x08\x0B\x0C\x0E-\x1F]/'
 
-offenders=()
+# Pass 1: filter and split the candidates by provenance. No file is read here.
+w_root=(); w_rel=()
+i_root=(); i_rel=()
 seen_scan="
-"
-seen_offender="
 "
 i=0
 while [ "$i" -lt ${#scan_path[@]} ]; do
@@ -531,7 +518,6 @@ $kind $key
   esac
   seen_scan="$seen_scan$kind $key
 "
-  lines=""
   if [ "$kind" = "W" ]; then
     # WORKING-TREE content: the half a plain `git show :<f>` could not see
     # before the `git add` had run. A path listed here but MISSING from disk is
@@ -540,46 +526,86 @@ $kind $key
     # blob, not the pointee's bytes, so following the link would scan a file the
     # commit does not contain.
     if [ -f "$key" ] && [ ! -L "$key" ]; then
-      lines=$(LC_ALL=C perl -ne "$C0_RE" "$key" 2>/dev/null | head -3 | paste -sd, -)
+      w_root[${#w_root[@]}]="$root"
+      w_rel[${#w_rel[@]}]="$f"
     fi
   else
-    # STAGED blob. Read ONLY out of the index -- never off disk, so a dirty
+    # STAGED blob, read ONLY out of the index -- never off disk, so a dirty
     # working copy cannot block a `git commit` that is not committing it.
     #
-    # ...unless the staging in this same call is REMOVING the path: the file is
-    # gone from disk and the same path is a working-tree candidate, so the blob
-    # is on its way out of the tree. Blocking there would wedge the remediation
-    # this gate's own message asks for (`rm bad.ts && git add -A && git commit`
-    # would be refused, for a file that no longer exists).
+    # ...unless the path is already GONE from disk while the staging covers it
+    # (it is a working-tree candidate): `git add -A` will stage that deletion,
+    # so the blob is on its way out of the tree and blocking on it would refuse
+    # a commit for a file that no longer exists. This is a fact about the tree,
+    # not a reading of the command -- the gate does not model `rm` (see header).
     skip_removed=0
-    # Already gone from disk, and the staging covers it: the blob is on its way
-    # out of the tree.
     case "$wt_keys" in
       *"
 $key
 "*) [ -e "$key" ] || skip_removed=1 ;;
     esac
-    # ...or this same call is what removes it, before the commit runs.
-    case "$removed_keys" in
-      *"
-$key
-"*) skip_removed=1 ;;
-    esac
     if [ "$skip_removed" -eq 0 ]; then
-      lines=$(git -C "$root" show ":$f" 2>/dev/null | LC_ALL=C perl -ne "$C0_RE" 2>/dev/null | head -3 | paste -sd, -)
+      i_root[${#i_root[@]}]="$root"
+      i_rel[${#i_rel[@]}]="$f"
     fi
   fi
-  if [ -n "$lines" ]; then
-    # One report line per FILE, even when both provenances flagged it.
-    case "$seen_offender" in
-      *"
-$key
-"*) continue ;;
-    esac
-    seen_offender="$seen_offender$key
+done
+
+# Pass 2: read the bytes. Offenders are keyed by "<root>/<rel>" so one file is
+# reported once however many provenances flagged it.
+offenders=()
+seen_offender="
 "
-    offenders[${#offenders[@]}]="$f (line(s): $lines)"
-  fi
+record() {
+  local root="$1" rel="$2" lines="$3" key="$1/$2"
+  [ -n "$lines" ] || return 0
+  case "$seen_offender" in
+    *"
+$key
+"*) return 0 ;;
+  esac
+  seen_offender="$seen_offender$key
+"
+  offenders[${#offenders[@]}]="$rel (line(s): $lines)"
+}
+
+# Working-tree candidates: one perl per distinct root (at most two -- the
+# commit's and the add's).
+j=0
+roots_done="
+"
+while [ "$j" -lt ${#w_rel[@]} ]; do
+  root="${w_root[$j]}"
+  j=$((j + 1))
+  case "$roots_done" in
+    *"
+$root
+"*) continue ;;
+  esac
+  roots_done="$roots_done$root
+"
+  while IFS=$'\t' read -r rel lines; do
+    [ -n "$rel" ] && record "$root" "$rel" "$lines"
+  done < <(
+    {
+      k=0
+      while [ "$k" -lt ${#w_rel[@]} ]; do
+        [ "${w_root[$k]}" = "$root" ] && printf '%s\0' "${w_rel[$k]}"
+        k=$((k + 1))
+      done
+    } | ( cd "$root" 2>/dev/null && LC_ALL=C perl -e "$C0_BATCH_PL" 2>/dev/null )
+  )
+done
+
+# Staged blobs: content comes from `git show`, so this stays one call per file.
+# Bounded by what the user actually staged, unlike the working-tree listing.
+j=0
+while [ "$j" -lt ${#i_rel[@]} ]; do
+  root="${i_root[$j]}"
+  f="${i_rel[$j]}"
+  j=$((j + 1))
+  lines=$(git -C "$root" show ":$f" 2>/dev/null | LC_ALL=C perl -ne "$C0_RE" 2>/dev/null | head -3 | paste -sd, -)
+  record "$root" "$f" "$lines"
 done
 
 if [ ${#offenders[@]} -gt 0 ]; then
@@ -592,6 +618,10 @@ if [ ${#offenders[@]} -gt 0 ]; then
   echo "These are almost always an editing artifact (e.g. a separator that landed as a raw" >&2
   echo "NUL); they break grep / diff / tooling and must not ship in committed text. Open the" >&2
   echo "file(s) and remove the stray control character(s) before committing." >&2
+  echo "If you are DELETING the file rather than fixing it, stage the deletion in its own" >&2
+  echo "call first ('git rm <path>', or 'rm <path>' then 'git add -A'), then commit: this" >&2
+  echo "gate reads the tree as it is BEFORE your command runs, so a deletion later in the" >&2
+  echo "same command line has not happened yet and the file still looks present to it." >&2
   exit 2
 fi
 

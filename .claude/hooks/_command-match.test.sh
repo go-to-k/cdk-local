@@ -838,20 +838,6 @@ want_match 0 "git -C <path> stage"           'git -C /w/t stage src' "$A"
 want_match 1 "git stash is not git stage"    'git stash push -m x' "$A"
 want_args "-A"          "args after git stage"         'git stage -A' "$A"
 
-# The removal verbs: `rm bad.ts && git add -A && git commit` is one call, so the
-# deletion exists only in the command text when the hook runs.
-RM="$GATE_RE_RM"
-GRM="$GATE_RE_GIT_RM"
-want_match 0 "bare rm"                       'rm bad.ts && git add -A && git commit -m x' "$RM"
-want_match 0 "rm -rf"                        'rm -rf dir && git commit -am x' "$RM"
-want_match 1 "rmdir is not rm"               'rmdir dir && git commit -m x' "$RM"
-want_match 1 "rm inside a string"            'echo "rm bad.ts"' "$RM"
-want_match 1 "git rm is not bare rm"         'git rm bad.ts' "$RM"
-want_match 0 "git rm"                        'git rm -f bad.ts && git commit -m x' "$GRM"
-want_match 0 "git -C <path> rm"              'git -C /w/t rm bad.ts' "$GRM"
-want_match 1 "bare rm is not git rm"         'rm bad.ts' "$GRM"
-want_args "-f bad.ts"   "args after git rm"                'git rm -f bad.ts && git commit -m x' "$GRM"
-want_args "-rf dir"     "args after rm, cd absorbed"       'cd /w/t && rm -rf dir' "$RM"
 
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -99,20 +99,36 @@ The hooks split into three classes:
   the command's own directory, because that is what its pathspecs are
   relative to.
 
-  **Removing the offending file is the remediation, so it is not
-  blocked.** A path the staging DELETES has its index scan skipped:
-  either the file is already gone from disk, or THIS CALL is what
-  removes it (`rm bad.ts && git add -A && git commit`, where the hook
-  still sees the file, so the deletion is read off the command exactly
-  as the staging is). `git rm` counts on its own because it stages;
-  a plain `rm` only counts under a whole-tree staging, and `git rm
-  --cached` never counts because a following `git add -A` re-adds the
-  file. This is the ONE list in the gate where a wrong entry SUPPRESSES
-  a scan, so it errs toward blocking: an unexpanded path, a quoted
-  mention, `rmdir`, or a GLOB records nothing — git's pathspec language
-  is broader than the shell's, so honouring `rm *.ts` would suppress the
-  scan of every `.ts` in the repository rather than the ones the shell
-  would actually have deleted.
+  **What it does NOT try to know: segment ORDER, or that something else
+  in the call will delete the file.** `rm bad.ts && git add -A && git
+  commit` is BLOCKED, even though the resulting commit does not contain
+  bad.ts, and the error message says how to proceed — stage the deletion
+  in its own call. A revision of this gate did parse `rm` / `git rm` to
+  avoid that one false block. It bought nothing and cost four things: a
+  FAIL-OPEN (`git add -A && git commit && rm x` passed, because order
+  was never modelled and the commit really did contain the byte), an
+  abbreviation bypass (`git rm --ca`, which git accepts), a
+  directory-expansion miss, and a 90-second hang. Each round's fix was
+  more clever than the last, which is the tell that the artifact was
+  claiming more than it could deliver. The parser is gone and the remedy
+  lives in the message. One tree-level rule survives, and it is an
+  observation rather than a parse: a path ALREADY gone from disk that
+  the staging covers has its index scan skipped, because `git add -A`
+  will stage that deletion.
+
+  **It is bounded in time, which correctness cases cannot see.**
+  `git add -f <pathspec>` may legitimately reach gitignored content, but
+  a pathspec of `.` drags in the whole ignored tree: measured, 4,001
+  candidates and 25 s in this repo, 44,563 and over 90 s in a reviewer's
+  worktree, one `perl` fork each. A gate in the path of every commit
+  that wedges is worse than the bug it prevents. So the listing is
+  PROBED first (cheap — `ls-files` walks directories without reading
+  contents, and the probe stops at the cap) and `--exclude-standard` is
+  dropped only when the result is under `GATE_CC_FORCE_MAX`; and the
+  whole working-tree scan is ONE perl process for all candidates instead
+  of one per file. ERRS NARROW, boundedly: a `git add -f` covering more
+  than the cap leaves its IGNORED files unscanned, while its tracked and
+  unignored files are still scanned. Two cases pin a wall-clock budget.
 
   The shape is decided with the shared `_command-match.sh` machinery
   (`GATE_RE_GIT_ADD`, and `gate_verb_args` for the arguments after the
@@ -153,11 +169,17 @@ The hooks split into three classes:
   OPEN: the commit proceeds, and the only signal is an error on stderr
   that reads like noise from the hook rather than a refusal.
 
-  `.claude/hooks/control-char-gate.test.sh` (93 cases, run by
+  `.claude/hooks/control-char-gate.test.sh` (115 cases, run by
   `vp run test:hooks`) drives all of the above through the real hook
-  against throwaway repositories, in BOTH directions — including from a
-  SUBDIRECTORY cwd, whose absence is why 52 earlier green cases did not
-  see the whole-tree bug.
+  against throwaway repositories, in BOTH directions. Two review rounds
+  found live blockers behind 52 and then 93 green cases, both times in
+  shapes nobody had enumerated and both times because the cases reused
+  whichever fixture STATE happened to work. So the suite now crosses the
+  two axes explicitly: six states of a NUL-bearing file (untracked / in
+  HEAD / tracked-modified / staged / staged-then-cleaned / deleted on
+  disk) times four command shapes, all 24 cells spelled out with their
+  reasoning, plus a SUBDIRECTORY cwd, segment ORDER, and a wall-clock
+  budget.
 
   **The gate is still not the only fence, because it is a PreToolUse
   hook and therefore only ever sees the AGENT's tool calls** — a human

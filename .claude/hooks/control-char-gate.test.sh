@@ -29,6 +29,14 @@
 #   * an UNKNOWN `git add` flag's value was read as a pathspec, which also
 #     suppressed the whole-tree fallback.
 #
+# A third round found four more, including a FAIL-OPEN and a 90-second HANG, in
+# the `rm` parser that had been added to avoid ONE false block. That parser is
+# deleted rather than fixed again: a false PASS is what shipped a control byte
+# to main, a false BLOCK costs one message and a second call, and the remedy now
+# lives in the error text. What replaced the enumeration habit is the STATE x
+# SHAPE table near the end of this file -- both earlier rounds missed cases
+# because the tests reused whichever fixture state happened to work.
+#
 # And the ACCEPT block is as long, because widening a gate that every commit
 # passes through is how a fix turns into a wedge -- `git commit -a` in
 # particular must NOT pick up an untracked file, since `-a` does not, and
@@ -40,7 +48,7 @@
 #                its `setup` argument. No case reads this repository, so the
 #                suite cannot pass or fail on the state of the worktree it runs
 #                in -- measured by running it from the repo root with a dirty
-#                tree, from /tmp, and from $HOME (not a repo at all): 93/93
+#                tree, from /tmp, and from $HOME (not a repo at all): 115/115
 #                each time.
 #   cwd          pinned per case through the payload's `cwd` field: the case's
 #                own repo, or (for the `git -C` cases) a directory that is NOT a
@@ -171,6 +179,35 @@ run_count() {
   fi
 }
 
+# run_timed <name> <want_exit> <max_seconds> <setup> <cmd> [<want_fragment>]
+# Same as run_case plus a WALL-CLOCK bound. A correctness-only suite cannot see
+# a gate that answers correctly in four minutes, and that is a real failure mode
+# for a PreToolUse hook: it is in the path of every commit.
+run_timed() {
+  local name="$1" want="$2" budget="$3" setup="$4" cmd="$5" frag="${6:--}"
+  local repo got out payload started elapsed
+  repo="$(mk_repo "$setup")"
+  payload=$(jq -nc --arg c "$cmd" --arg d "$repo" \
+    '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}')
+  started=$(date +%s)
+  out=$(printf '%s' "$payload" | env -i PATH="$PINNED_PATH" HOME="$SANDBOX" \
+    bash "$GATE" 2>&1); got=$?
+  elapsed=$(( $(date +%s) - started ))
+  if [ "$got" != "$want" ]; then
+    fail=$((fail + 1)); printf 'FAIL %s (want exit %s, got %s)\n  out: %s\n' "$name" "$want" "$got" "$out"
+    return
+  fi
+  if [ "$frag" != "-" ] && ! printf '%s' "$out" | grep -qF "$frag"; then
+    fail=$((fail + 1)); printf 'FAIL %s (exit %s as wanted, but output does not name "%s")\n' "$name" "$got" "$frag"
+    return
+  fi
+  if [ "$elapsed" -gt "$budget" ]; then
+    fail=$((fail + 1)); printf 'FAIL %s took %ss, budget %ss\n' "$name" "$elapsed" "$budget"
+    return
+  fi
+  pass=$((pass + 1)); printf 'OK   %-62s %s\n' "$name" "(exit $got, ${elapsed}s <= ${budget}s)"
+}
+
 # The offending files, written from escapes. `probe.ts` carries a NUL on line 1;
 # `soh.ts` carries a 0x01, so the suite is not pinned to NUL alone.
 NUL_FILE='printf "const a = \"x\000y\";\n" > probe.ts'
@@ -182,6 +219,8 @@ TRACKED_NUL='echo clean > probe.ts; git add probe.ts; git commit -qm init; '"$NU
 # `root.ts` is COMMITTED CLEAN, so the index is clean and only the working copy
 # carries the NUL -- which is what makes an index-only scan answer "clean".
 ROOT_NUL='mkdir -p sub; echo hi > sub/a.ts; echo clean > root.ts; git add -A; git commit -qm init; printf "const a = \"x\000y\";\n" > root.ts'
+# NUL written and STAGED, worktree copy identical. Used by the deletion block.
+STAGED_NUL="$NUL_FILE; git add probe.ts"
 
 echo "== REFUSE: the command stages, so the WORKING TREE is in the commit ========"
 # THE case that fails on the pre-fix gate. Everything else in this block is a
@@ -194,6 +233,15 @@ run_case "issue repro: add -A && commit -F msg"    2 "$NUL_FILE; echo msg > m.tx
   'git add -A && git commit -F m.txt' 'probe.ts'
 run_case "a 0x01, not only NUL"                    2 "$SOH_FILE" \
   'git add -A && git commit -m x' 'soh.ts (line(s): 1)'
+# The reported LINE NUMBERS, which every case above happens to leave at 1. The
+# batch reader localises `$/` for the name list; without that the inner file
+# read also splits on NUL, each file comes back as a single "line", and every
+# report says line 1 -- correct-looking and useless. A mutation dropping the
+# `local` stayed 115/115 green until these two cases existed.
+run_case "line number beyond the first"            2 'printf "a\nb\nconst x = \"q\000r\";\nd\n" > deep.ts' \
+  'git add -A && git commit -m x' 'deep.ts (line(s): 3)'
+run_case "several lines, comma-joined and capped"  2 'printf "a\nx\000\ny\nz\000\nw\000\nv\000\n" > many.ts' \
+  'git add -A && git commit -m x' 'many.ts (line(s): 2,4,5)'
 run_case "git add --all (long form)"               2 "$NUL_FILE" \
   'git add --all && git commit -m x' 'probe.ts'
 run_case "git add . "                              2 "$NUL_FILE" \
@@ -416,46 +464,43 @@ run_case "from a subdir: scoped add stays scoped"  0 "$ROOT_NUL" \
   'git add a.ts && git commit -m x' - sub
 
 echo
-echo "== ACCEPT: removing the offending file is the REMEDIATION =================="
-# The gate's own message says to get rid of the control byte. Blocking the
-# removal wedges that. Two timings, and only the second is visible in the tree:
-# a `rm` in an EARLIER call leaves no file on disk, while a `rm` in the SAME
-# call has not run yet when the hook looks -- so that one is read off the
-# command, exactly like the staging is.
-STAGED_NUL="$NUL_FILE; git add probe.ts"
-run_case "rm in an earlier call, then add -A"      0 "$STAGED_NUL; rm probe.ts" \
+echo "== REFUSE: a deletion later in the SAME command line is NOT modelled ======="
+# These are DELIBERATE false blocks, and the message carries the remedy.
+#
+# An earlier revision parsed `rm` / `git rm` out of the command so that
+# `rm bad.ts && git add -A && git commit` would pass. It bought one avoided
+# false block and cost: a FAIL-OPEN (`git add -A && git commit && rm x` passed,
+# because segment ORDER was never modelled, and the commit really did contain
+# the byte), an abbreviation bypass (`git rm --ca`, which git accepts), a
+# directory-expansion miss, and a 90-second hang. The parser is gone. This gate
+# exists because a false PASS shipped a control byte to main; a false BLOCK
+# costs one message and a second call.
+run_case "rm in the same call is still blocked"    2 "$STAGED_NUL" \
+  'rm probe.ts && git add -A && git commit -m drop-it' 'probe.ts'
+run_case "git rm in the same call is still blocked" 2 "$STAGED_NUL" \
+  'git rm -f probe.ts && git commit -m drop-it' 'probe.ts'
+# ORDER. This is the shape the parser turned into a fail-open: the commit runs
+# BEFORE the cleanup, so the byte really is in it and refusing is correct.
+run_case "commit THEN rm (the byte IS committed)"  2 "$STAGED_NUL" \
+  'git add -A && git commit -m x && rm probe.ts' 'probe.ts'
+# ...and the reverse order, pinned so the direction is visible: a `git add`
+# anywhere in the call makes the working tree in scope, whether or not it runs
+# before the commit. ERRS TOWARD BLOCKING, by design.
+run_case "commit THEN add (order not modelled)"    2 "$NUL_FILE" \
+  'git commit -m x && git add -A' 'probe.ts'
+# The remedy has to be IN the message, since it is now the whole mitigation for
+# the cases above.
+run_case "the block names the deletion remedy"     2 "$STAGED_NUL" \
+  'rm probe.ts && git add -A && git commit -m drop-it' 'stage the deletion in its own'
+# And the remedy must actually WORK: once the deletion is staged, the path is a
+# `D` in the index, which `--diff-filter=ACM` excludes, so there is no candidate.
+run_case "remedy: deletion already staged"         0 "$STAGED_NUL; rm probe.ts; git add -A" \
+  'git commit -m drop-it'
+# The other half of the remedy: `rm` in an EARLIER call, deletion not yet
+# staged. Here the file's absence is a fact about the TREE rather than a reading
+# of the command, and the staging in this call covers it.
+run_case "remedy: rm earlier, staged in this call" 0 "$STAGED_NUL; rm probe.ts" \
   'git add -A && git commit -m drop-it'
-run_case "rm in the SAME call as the commit"       0 "$STAGED_NUL" \
-  'rm probe.ts && git add -A && git commit -m drop-it'
-run_case "git rm -f stages the removal itself"     0 "$STAGED_NUL" \
-  'git rm -f probe.ts && git commit -m drop-it'
-run_case "rm -rf <dir> covers the files under it"  0 'mkdir -p s; printf "x\000y\n" > s/probe.ts; git add s/probe.ts' \
-  'rm -rf s && git add -A && git commit -m drop-it'
-# ...and the removal must be READ, not assumed. Each of these still blocks.
-run_case "rm naming a DIFFERENT file still blocks" 2 "$STAGED_NUL" \
-  'rm other.ts && git add -A && git commit -m x' 'probe.ts'
-run_case "git rm --cached, then add -A re-adds it" 2 "$STAGED_NUL" \
-  'git rm --cached probe.ts && git add -A && git commit -m x' 'probe.ts'
-run_case "rm with an unexpanded path still blocks" 2 "$STAGED_NUL" \
-  'rm $F && git add -A && git commit -m x' 'probe.ts'
-run_case "a quoted mention of rm still blocks"     2 "$STAGED_NUL" \
-  'echo "rm probe.ts" && git add -A && git commit -m x' 'probe.ts'
-run_case "rmdir is not rm"                         2 "$STAGED_NUL" \
-  'rmdir probe.ts && git add -A && git commit -m x' 'probe.ts'
-# A GLOB in the removal is not recorded at all, because git's pathspec language
-# is broader than the shell's: the shell expands `rm *.ts` against the CWD, while
-# `ls-files -- '*.ts'` matches every .ts in the REPOSITORY -- so honouring it
-# would suppress the scan of a file the `rm` never touches. Here `sub/probe.ts`
-# is staged and would survive the shell's `rm *.ts`.
-run_case "a glob in rm suppresses nothing"         2 'mkdir -p sub; printf "x\000y\n" > sub/probe.ts; git add sub/probe.ts; echo hi > root.ts' \
-  'rm *.ts && git add -A && git commit -m x' 'sub/probe.ts'
-# A plain `rm` stages nothing, so without a whole-tree staging the blob still
-# commits. ERRS TOWARD BLOCKING, because a wrong entry in the removal list is
-# the one place in this gate where a mistake SUPPRESSES a scan.
-run_case "rm with NO staging in the call"          2 "$STAGED_NUL" \
-  'rm probe.ts && git commit -m x' 'probe.ts'
-run_case "rm under a pathspec-restricted staging"  2 "$STAGED_NUL" \
-  'rm probe.ts && git add probe.ts && git commit -m x' 'probe.ts'
 
 echo
 echo "== one report line per FILE, whatever its provenance ======================="
@@ -486,6 +531,108 @@ run_case "git add on its own (no commit)"          0 "$NUL_FILE" 'git add -A'
 run_case "a quoted mention of the command"         0 "$NUL_FILE; git add -A" 'echo "git commit -m x"'
 run_case "git commit-tree is not git commit"       0 "$NUL_FILE; git add -A" 'git commit-tree HEAD^{tree}'
 run_case "empty command"                           0 "$NUL_FILE; git add -A" ''
+
+echo
+echo "== STATE x SHAPE: every combination, spelled out =========================="
+# THE LESSON FROM TWO REVIEW ROUNDS. Round 1 shipped 52 green cases with two
+# live blockers; round 2 shipped 93 with four. Both times the missing cases were
+# shapes nobody had enumerated, and both times the tests reused whichever
+# FIXTURE STATE happened to work. Listing command shapes is only half the space:
+# what the gate answers depends just as much on where the bytes are.
+#
+# So the two axes are crossed exhaustively here. Six states of one NUL-bearing
+# file, times four command shapes, all 24 spelled out with the reasoning:
+#
+#            S1 commit   S2 add -A   S3 commit   S4 commit
+#            -m x        && commit   -am x       -m x f.ts
+#   A untracked      0        2           0           0
+#   B in HEAD        0        0           0           0
+#   C tracked-mod    0        2           2           2
+#   D staged         2        2           2           2
+#   E staged/clean   2        2*          2*          2*
+#   F deleted        2        0           0           0
+#
+# The cells marked * are KNOWN FALSE BLOCKS and the only ones in the table: the
+# index blob is dirty, the working copy is clean, and a whole-tree staging would
+# overwrite the index with that clean copy. Keeping the index scan is what
+# catches the file staged EARLIER and untouched since, which no `ls-files
+# --modified` will ever list; that is worth one false block in a state you reach
+# only by staging a control byte and then cleaning the file without re-staging.
+st_A='printf "const a = \"x\000y\";\n" > f.ts'
+st_B='printf "const a = \"x\000y\";\n" > f.ts; git add f.ts; git commit -qm init'
+st_C='echo clean > f.ts; git add f.ts; git commit -qm init; printf "const a = \"x\000y\";\n" > f.ts'
+st_D='printf "const a = \"x\000y\";\n" > f.ts; git add f.ts'
+st_E='printf "const a = \"x\000y\";\n" > f.ts; git add f.ts; echo clean > f.ts'
+st_F='printf "const a = \"x\000y\";\n" > f.ts; git add f.ts; rm f.ts'
+
+# A: untracked. Only a `git add` reaches it -- `-a` never stages an untracked
+# file, and a commit pathspec on one is an error in git.
+run_case "A untracked  x  commit -m"               0 "$st_A" 'git commit -m x'
+run_case "A untracked  x  add -A && commit"        2 "$st_A" 'git add -A && git commit -m x' 'f.ts'
+run_case "A untracked  x  commit -am"              0 "$st_A" 'git commit -am x'
+run_case "A untracked  x  commit -m x f.ts"        0 "$st_A" 'git commit -m x f.ts'
+# B: the byte is already in HEAD. Nothing here introduces it, so nothing blocks
+# -- the gate judges what THIS commit adds, not what the history holds.
+run_case "B in HEAD     x  commit -m"              0 "$st_B" 'git commit -m x'
+run_case "B in HEAD     x  add -A && commit"       0 "$st_B" 'git add -A && git commit -m x'
+run_case "B in HEAD     x  commit -am"             0 "$st_B" 'git commit -am x'
+run_case "B in HEAD     x  commit -m x f.ts"       0 "$st_B" 'git commit -m x f.ts'
+# C: committed clean, dirty on disk. The index is clean, so a plain commit is
+# genuinely clean; every staging shape picks the file up.
+run_case "C tracked-mod x  commit -m"              0 "$st_C" 'git commit -m x'
+run_case "C tracked-mod x  add -A && commit"       2 "$st_C" 'git add -A && git commit -m x' 'f.ts'
+run_case "C tracked-mod x  commit -am"             2 "$st_C" 'git commit -am x' 'f.ts'
+run_case "C tracked-mod x  commit -m x f.ts"       2 "$st_C" 'git commit -m x f.ts' 'f.ts'
+# D: staged, worktree identical. Every shape commits the byte.
+run_case "D staged       x  commit -m"             2 "$st_D" 'git commit -m x' 'f.ts'
+run_case "D staged       x  add -A && commit"      2 "$st_D" 'git add -A && git commit -m x' 'f.ts'
+run_case "D staged       x  commit -am"            2 "$st_D" 'git commit -am x' 'f.ts'
+run_case "D staged       x  commit -m x f.ts"      2 "$st_D" 'git commit -m x f.ts' 'f.ts'
+# E: staged dirty, then cleaned on disk. S1 is CORRECT (the index blob is what a
+# plain commit writes). S2-S4 are the table's only false blocks.
+run_case "E staged/clean x  commit -m"             2 "$st_E" 'git commit -m x' 'f.ts'
+run_case "E staged/clean x  add -A && commit  (*)" 2 "$st_E" 'git add -A && git commit -m x' 'f.ts'
+run_case "E staged/clean x  commit -am        (*)" 2 "$st_E" 'git commit -am x' 'f.ts'
+run_case "E staged/clean x  commit -m x f.ts  (*)" 2 "$st_E" 'git commit -m x f.ts' 'f.ts'
+# F: staged, then gone from disk, deletion not yet staged. S1 really does commit
+# the blob. The other three stage the deletion, so the blob leaves the tree --
+# and the file's ABSENCE is a fact about the tree, not a reading of the command.
+run_case "F deleted      x  commit -m"             2 "$st_F" 'git commit -m x' 'f.ts'
+run_case "F deleted      x  add -A && commit"      0 "$st_F" 'git add -A && git commit -m x'
+run_case "F deleted      x  commit -am"            0 "$st_F" 'git commit -am x'
+run_case "F deleted      x  commit -m x f.ts"      0 "$st_F" 'git commit -m x f.ts'
+
+echo
+echo "== BOUNDED TIME on a repo with a large ignored tree ========================"
+# `git add -f <pathspec>` is the one shape that may scan gitignored content, and
+# a pathspec of `.` drags in the entire ignored tree. Measured before the fix:
+# 4,001 candidates and 25 s here (44,563 and >90 s in the reviewer's worktree),
+# one `perl` fork each. A gate that wedges every commit is worse than the bug it
+# prevents, so the listing is probed and the exclusion only dropped when small,
+# and the working-tree scan is now ONE perl process rather than one per file.
+#
+# The budget is deliberately far below the pre-fix number and far above the
+# post-fix one (measured 0.11 s), so it discriminates without being flaky on a
+# loaded CI box.
+BIG_IGNORED='echo "ignored/" > .gitignore; mkdir -p ignored; i=0; while [ $i -lt 4000 ]; do printf "padding\n" > "ignored/f$i.txt"; i=$((i + 1)); done; printf "const a = \"x\000y\";\n" > probe.ts; git add .gitignore'
+run_timed "add -f . over 4000 ignored files"       2 20 "$BIG_IGNORED" \
+  'git add -f . && git commit -m x' 'probe.ts'
+run_timed "add -A over 4000 ignored files"         2 20 "$BIG_IGNORED" \
+  'git add -A && git commit -m x' 'probe.ts'
+# The cap's effect is BEHAVIOURAL, not only temporal -- which matters, because
+# batching alone already makes 4,000 files fast, so a wall-clock budget cannot
+# see the cap at all (measured: removing the cap kept the suite green until this
+# case existed). Here 300 ignored files each carry a NUL and the cap is 200, so
+# `--exclude-standard` is KEPT and exactly one file -- the unignored probe.ts --
+# is reported. That is the documented narrow trade, pinned: without the cap the
+# gate would report 301 files and print a 301-line error.
+BIG_IGNORED_NUL='echo "ignored/" > .gitignore; mkdir -p ignored; i=0; while [ $i -lt 300 ]; do printf "q\000r\n" > "ignored/f$i.ts"; i=$((i + 1)); done; printf "const a = \"x\000y\";\n" > probe.ts; git add .gitignore'
+run_count "add -f . past the cap reports only the unignored" 1 "$BIG_IGNORED_NUL" \
+  'git add -f . && git commit -m x'
+# ...and the narrow `-f` that CAN cheaply reach ignored content still does, so
+# the cap is a bound rather than a silent removal of the capability.
+run_case "add -f <one ignored file> still scans"   2 'printf "const a = \"x\000y\";\n" > ig.ts; echo ig.ts > .gitignore' \
+  'git add -f ig.ts && git commit -m x' 'ig.ts'
 
 echo
 echo "== the harness itself ======================================================"

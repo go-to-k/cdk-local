@@ -520,13 +520,6 @@ GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
 # The extra group is harmless: nothing reads a numbered BASH_REMATCH off
 # this regex -- `gate_target_dir` and `gate_verb_args` use [0] only.
 GATE_RE_GIT_ADD="^git${GATE_FLAGS}[[:space:]]+(add|stage)([[:space:]]|$)"
-# The removal verbs, for the same reason control-char-gate needs the staging
-# ones: `rm bad.ts && git add -A && git commit` is ONE Bash call, so at hook time
-# the file is still on disk with its control byte in it, while the commit that
-# call produces does not contain the file at all. The only place that deletion
-# is visible BEFORE the command runs is the command.
-GATE_RE_RM="^rm([[:space:]]|$)"
-GATE_RE_GIT_RM="^git${GATE_FLAGS}[[:space:]]+rm([[:space:]]|$)"
 GATE_RE_GH_ISSUE_CREATE="^gh${GATE_GH_C}[[:space:]]+issue[[:space:]]+create([[:space:]]|$)"
 # issue-classification-label-gate: the CLAIM site. `/work-issues` says most open
 # bodies are still in the old packed shape and are upgraded to the four-line
