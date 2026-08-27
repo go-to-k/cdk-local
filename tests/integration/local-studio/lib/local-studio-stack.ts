@@ -69,10 +69,11 @@ export class LocalStudioStack extends cdk.Stack {
 
     // Lambda function — inline code so synth has no asset / bundling step.
     // Runs at the HOST architecture so the RIE container is native. This was
-    // hardcoded `ARM_64` with the reasoning below, which was right about the
-    // problem and wrong about the fix: hardcoding arm64 is native on an Apple
-    // Silicon dev host but makes an amd64 CI runner emulate instead, trading
-    // one host's emulation for the other's rather than removing it.
+    // hardcoded `ARM_64`, on the reasoning that arm64 is native on the Apple
+    // Silicon dev host where this Docker integ runs. That was right about the
+    // problem and wrong about the fix: hardcoding arm64 makes an amd64 CI
+    // runner emulate instead, trading one host's emulation for the other's
+    // rather than removing it.
     const fn = new lambda.Function(this, 'MyHandler', {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: HOST_ARCHITECTURE,

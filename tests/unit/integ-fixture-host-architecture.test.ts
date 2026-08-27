@@ -535,7 +535,12 @@ function constructId(call: string): string {
   // (`new lambda.Function(crProvider, 'framework-onEvent', ...)`), and a
   // `this`-only pattern would fall back to an 80-character source slice for
   // exactly the constructs whose names are least guessable.
-  return /new\s+[\w$.]*\(\s*[\w$.]+\s*,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80).trim();
+  // Anchored at the start of the call: unanchored, a construct whose id is
+  // not single-quoted (a template literal, or double quotes) would fall
+  // through to the first NESTED `new ...(scope, 'X')` -- e.g. an
+  // `iam.Role(fnScope, 'FnRole')` inside the props -- and the failure would
+  // name FnRole instead of the Lambda.
+  return /^new\s+[\w$.]*\(\s*[\w$.]+\s*,\s*'([^']+)'/.exec(call)?.[1] ?? call.slice(0, 80).trim();
 }
 
 const read = (relPath: string): string =>
@@ -768,6 +773,23 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
       expect(
         missingFor(`new lambda.CfnFunction(this, 'A', { architectures: ['x86_64'] })`, 'architectures', req)
       ).toBe('WRONG_VALUE');
+    });
+
+    it('names a construct scoped to a VARIABLE, not just to `this`', () => {
+      // Fences the scope-argument widening. With a `this,`-only pattern this
+      // is the case that breaks, and no other test covers it: constructId is
+      // only reached on a FAILING fixture, so reverting the widening left the
+      // whole suite green -- an assertion that could not fail, guarding a
+      // change nothing else observed.
+      const call = `new lambda.Function(crProvider, 'framework-onEvent', { runtime: R })`;
+      expect(constructId(call)).toBe('framework-onEvent');
+    });
+
+    it('names the construct itself, not a nested one, when the id is not single-quoted', () => {
+      // An unanchored pattern skips the double-quoted id and matches the
+      // NESTED role instead, blaming the wrong construct.
+      const call = 'new lambda.Function(this, "Quoted", { role: new iam.Role(scope, \'FnRole\') })';
+      expect(constructId(call)).not.toBe('FnRole');
     });
 
     it('is not fooled by a template-literal construct id', () => {
@@ -1144,9 +1166,11 @@ describe('integ fixture Lambdas run at the host architecture (issues #560, #569)
     });
 
     it('lists only genuinely unconverted sources while it is non-empty', () => {
-      // Inert today. Kept because the bucket must stay honest if it is ever
-      // repopulated: a converted fixture parked here would dodge every
-      // per-construct assertion above.
+      // Inert today, and it cannot run without the test above being edited
+      // first -- repopulating the bucket trips that one too. Kept so the
+      // bucket stays honest if it IS ever deliberately reopened: a converted
+      // fixture parked here would otherwise dodge every per-construct
+      // assertion above.
       const wrong = NOT_YET_CONVERTED.filter((relPath) => read(relPath).includes('HOST_ARCHITECTURE'));
       expect(
         wrong,

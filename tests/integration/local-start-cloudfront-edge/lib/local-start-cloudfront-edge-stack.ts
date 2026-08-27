@@ -69,7 +69,8 @@ export class LocalStartCloudFrontEdgeStack extends cdk.Stack {
     //   pinned x86_64        4/5 passed, 1 emulation warning
     //   host architecture    5/5 passed, 0 emulation warnings
     //
-    // and a sixth pinned run failed with the Go RIE dying mid-request --
+    // and a further pinned run, in the batch sweep that preceded this A/B,
+    // failed outright with the Go RIE dying mid-request --
     // `fatal error: found pointer to free object`, then `GET /go` returning
     // 500 instead of the edge function's 302. That is issue #560 exactly, in
     // the last fixture of the issue that exists to remove it.
