@@ -187,7 +187,15 @@ async function fetchLayerContentUrl(
     // account references without a separate account-id flag. AWS docs:
     // "When provided the layer-version's ARN as LayerName, the
     // VersionNumber must still be set."
-    const versionLessArn = `arn:aws:lambda:${layer.region}:${layer.accountId}:layer:${layer.name}`;
+    //
+    // Derived from the ORIGINAL ARN by dropping its `:<version>` tail
+    // rather than re-interpolated from the parsed fields, because
+    // re-interpolation has to name a partition and hardcoding `aws`
+    // sends a partition-mismatched ARN to a non-commercial endpoint
+    // (issue #575). `parseLayerVersionArn` only accepts an ARN whose
+    // partition agrees with its region, so the prefix here is already
+    // the right one for `layer.region`.
+    const versionLessArn = layer.arn.slice(0, layer.arn.lastIndexOf(':'));
     const command = await buildGetLayerVersionCommand(versionLessArn, Number(layer.version));
     const response = await client.send(command);
     const url = response?.Content?.Location;

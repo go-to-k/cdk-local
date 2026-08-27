@@ -448,9 +448,27 @@ describe('derivePartitionAndUrlSuffix — all eight partitions (issue #575)', ()
     });
   });
 
-  it('does not confuse the three us-iso* prefixes with one another', () => {
+  it('resolves each us-iso* prefix to its own partition', () => {
+    // NOT an ordering test, despite how it reads: no table prefix is a
+    // prefix of another (`'us-isob-east-1'.startsWith('us-iso-')` is
+    // false -- index 6 is `b`, not `-`), so these three pass under ANY
+    // table order. The "most-specific first" ordering in the table is
+    // defensive against a FUTURE row, and the assertion that actually
+    // fences it is the no-shadowing check below.
     expect(derivePartitionAndUrlSuffix('us-iso-east-1').partition).toBe('aws-iso');
     expect(derivePartitionAndUrlSuffix('us-isob-east-1').partition).toBe('aws-iso-b');
     expect(derivePartitionAndUrlSuffix('us-isof-east-1').partition).toBe('aws-iso-f');
+  });
+
+  it('has no table prefix that shadows another, so no row is order-dependent', () => {
+    // The real fence for the ordering claim. If a future row IS a
+    // prefix of an existing one, this goes red and the table's order
+    // stops being merely defensive -- at which point a case pinning
+    // that specific pair has to be written.
+    const prefixes = [...new Set(table.map((r) => r.regionPrefix))];
+    const shadowing = prefixes.flatMap((a) =>
+      prefixes.filter((b) => b !== a && b.startsWith(a)).map((b) => `${a} shadows ${b}`)
+    );
+    expect(shadowing).toEqual([]);
   });
 });
