@@ -28,11 +28,21 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    `local-invoke-assume-role`, which deploys a stack containing an IAM role):
 
    ```bash
-   # The 12 that own a lane-suffixed stack, by construction -- they are exactly
-   # the fixtures that source the lane library.
-   grep -ln 'stack-name.sh' tests/integration/*/verify.sh
-   # Plus one that owns a real S3 bucket without deploying a stack:
-   #   local-invoke-agentcore-froms3
+   # ONE predicate, no hand-maintained exception: a fixture owns a real AWS
+   # resource iff it deploys a stack or creates a bucket out of band. Carrying
+   # the second as a prose footnote is the hand-maintained-list shape that
+   # produced three earlier misses.
+   #
+   # rc-checked like every other query here -- `grep -l` with no match exits 1
+   # with EMPTY stdout and no message, which reads as "this fixture is not
+   # AWS-owning" and skips steps 4 and 7 ENTIRELY. That is a wider blast radius
+   # than any single false clean.
+   if owners=$(grep -lE '(^|[^[:alnum:]_])(cdk[^;&|]*[[:space:]]deploy|aws[[:space:]]+s3api[[:space:]]+create-bucket)([[:space:]]|$)' \
+                 tests/integration/*/verify.sh) && [ -n "${owners}" ]; then
+     printf '%s\n' "${owners}"
+   else
+     echo "FAILED to derive the AWS-owning fixture set -- NOT a clean verdict" >&2
+   fi
    ```
 
    - Verify the upstream `cdk` CLI is on `$PATH`: `which cdk`.
@@ -53,18 +63,23 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
      # fresh `integ` marker over a live orphan stack.
      : "${INTEG_STACK_SUFFIX:?lane suffix unresolved — run this from the repo root}"
      STACK="$(integ_stack_name <FixtureStackBaseName>)"   # e.g. CdkLocalInvokeFromCfnStackFixture
-     # Do NOT write `2>/dev/null && ... || echo clean`. Every failure mode --
-     # expired token, AccessDenied, throttling, an undefined helper leaving
-     # `STACK` empty -- then lands in the `||` branch and prints a CLEAN verdict.
-     # Measured: invalid credentials exit 254 with `InvalidClientTokenId`, and
-     # the naive form reports "no orphan stack". Only "does not exist" is clean.
-     if err=$(aws cloudformation describe-stacks --stack-name "${STACK}" \
-                --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null); then
-       echo "ORPHAN"
-     elif printf '%s' "${err}" | grep -q 'does not exist'; then
-       echo "(no orphan stack)"
+     # Ask with `list-stacks --query`, NOT `describe-stacks --stack-name`.
+     # `describe-stacks` ERRORS when the stack is absent, so the clean case and
+     # the could-not-look case both arrive as a non-zero exit and have to be
+     # told apart by matching stderr -- and that phrase match has already been
+     # wrong: `grep -q 'does not exist'` also matches botocore's
+     # `The source_profile "x" ... does not exist`, an InvalidConfigError raised
+     # BEFORE any network call, so a broken SSO or role-chaining profile printed
+     # a CLEAN verdict. `list-stacks` exits 0 whether or not the stack is there,
+     # so rc alone separates "looked, found nothing" from "could not look".
+     if names=$(aws cloudformation list-stacks \
+                  --region "${AWS_REGION:-us-east-1}" \
+                  --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE CREATE_IN_PROGRESS CREATE_FAILED DELETE_FAILED \
+                  --query "StackSummaries[?StackName=='${STACK}'].StackName" \
+                  --output text); then
+       [ -n "${names}" ] && echo "ORPHAN" || echo "(no orphan stack)"
      else
-       echo "FAILED to query -- this is NOT a clean verdict: ${err}" >&2
+       echo "FAILED to query -- this is NOT a clean verdict" >&2
      fi
      ```
 
@@ -103,17 +118,21 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    # Same shape as step 4, and for the same reason -- this one matters more, as
    # it runs after a long test where a session token can expire, and step 9
    # converts its verdict into a fresh `integ` marker.
-   if err=$(aws cloudformation describe-stacks --stack-name "${STACK}" \
-              --region "${AWS_REGION:-us-east-1}" 2>&1 >/dev/null); then
-     echo "ORPHAN STACK REMAINS"
-   elif printf '%s' "${err}" | grep -q 'does not exist'; then
-     echo "AWS clean"
+   if names=$(aws cloudformation list-stacks \
+                --region "${AWS_REGION:-us-east-1}" \
+                --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE UPDATE_ROLLBACK_COMPLETE CREATE_IN_PROGRESS CREATE_FAILED DELETE_FAILED \
+                --query "StackSummaries[?StackName=='${STACK}'].StackName" \
+                --output text); then
+     [ -n "${names}" ] && echo "ORPHAN STACK REMAINS" || echo "AWS clean"
    else
-     echo "FAILED to query -- this is NOT a clean verdict: ${err}" >&2
+     echo "FAILED to query -- this is NOT a clean verdict" >&2
    fi
    ```
 
-   If the stack remains, run `cdk destroy "${STACK}" --force` until clean. Same rule: never end the run with orphan AWS resources.
+   If the stack remains, run `cdk destroy "${STACK}" --force` until clean --
+   after the SAME live-peer check step 4 describes. A second run of this fixture
+   in the SAME worktree shares the suffix, so the name alone does not tell you
+   the stack is a leftover rather than a peer's live one.
 
    Some fixtures also own account-global names that are NOT stacks and outlive a
    failed run — SSM parameter paths and a CloudFormation export name, all

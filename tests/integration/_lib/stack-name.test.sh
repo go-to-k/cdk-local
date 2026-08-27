@@ -417,7 +417,7 @@ if [ -f "${SKILL}" ]; then
   # missed `local-invoke-assume-role`, which deploys a stack holding an IAM
   # role. Pin that the skill DERIVES the set rather than globbing it, and that
   # the fixture both globs missed is reachable by the derivation.
-  case "$(grep -c "grep -ln 'stack-name.sh' tests/integration/\*/verify.sh" "${SKILL}")" in
+  case "$(grep -c 'owners=\$(grep -lE' "${SKILL}")" in
     0) check "run-integ derives the AWS fixture set instead of globbing it" 1 "no derivation command in the skill" ;;
     *) check "run-integ derives the AWS fixture set instead of globbing it" 0 ;;
   esac
@@ -428,16 +428,35 @@ if [ -f "${SKILL}" ]; then
       "it no longer sources the lane library, so the derived set would skip it"
   fi
 
-  # Every failure mode of `describe-stacks` -- expired token, AccessDenied,
-  # throttling, an empty STACK -- lands in the `||` branch of
-  # `2>/dev/null && ... || echo clean`, printing a CLEAN verdict. Measured: bad
-  # credentials exit 254 and the naive form reports no orphan. Step 9 turns that
-  # into a fresh `integ` marker.
-  case "$(grep -c '2>/dev/null && echo' "${SKILL}")" in
-    0) check "run-integ's stack scans do not map every failure to clean" 0 ;;
-    *) check "run-integ's stack scans do not map every failure to clean" 1 \
-         "a bare 2>/dev/null && ... || echo-clean form is back" ;;
+  # BIJECTION, not literal spellings. The previous version grepped for one
+  # exact bad form, and three equivalent spellings of the defect scored zero
+  # while restoring it (`>/dev/null 2>&1 && echo ... || echo clean` -- which is
+  # what this repo's own fixtures use -- `2> /dev/null && ...`, and a line-split
+  # `&&`). Adding a FOURTH unguarded query was green too.
+  #
+  # So assert the property instead: every CloudFormation query in the skill
+  # must sit inside an `if <var>=$(...)` capture, whose else-branch is the loud
+  # non-verdict. Counting both sides makes an unguarded addition fail.
+  cfn_queries=$(grep -cE 'aws cloudformation (list-stacks|describe-stacks)' "${SKILL}")
+  guarded=$(grep -cE '^[[:space:]]*if [a-z_]+=\$\(aws cloudformation (list-stacks|describe-stacks)' "${SKILL}")
+  if [ "${cfn_queries}" -gt 0 ] && [ "${cfn_queries}" -eq "${guarded}" ]; then
+    check "every CloudFormation query in run-integ is rc-guarded (${guarded}/${cfn_queries})" 0
+  else
+    check "every CloudFormation query in run-integ is rc-guarded" 1 \
+      "${guarded} guarded of ${cfn_queries} present -- an unguarded query can report a false clean"
+  fi
+
+  # And the phrase-match must not come back: `grep -q 'does not exist'` also
+  # matches botocore's `The source_profile "x" ... does not exist`, an
+  # InvalidConfigError raised BEFORE any network call -- so a broken SSO or
+  # role-chaining profile printed a CLEAN verdict. Measured against awscli
+  # 2.36.19. rc alone is strictly stronger than classifying stderr.
+  case "$(grep -vE '^[[:space:]]*#' "${SKILL}" | grep -cE "grep -[a-zA-Z]* *[\"']does not exist")" in
+    0) check "run-integ does not classify a stack scan by matching stderr" 0 ;;
+    *) check "run-integ does not classify a stack scan by matching stderr" 1 \
+         "a 'does not exist' phrase match is back; it fires on credential-config errors too" ;;
   esac
+
 else
   check "run-integ SKILL.md is present to check" 1 "not found at ${SKILL}"
 fi
