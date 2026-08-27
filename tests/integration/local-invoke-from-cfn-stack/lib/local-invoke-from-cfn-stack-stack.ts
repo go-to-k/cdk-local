@@ -5,6 +5,7 @@ import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import { integScopedName } from '../../_lib/stack-name.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -14,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * parameters at the start of a deploy, so the SSM value must already exist).
  * Kept in sync with `verify.sh`'s `SSM_PARAM_NAME`.
  */
-const SSM_DB_HOST_PARAM = '/cdkl-integ/invoke-from-cfn-stack/db-host';
+const SSM_DB_HOST_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/db-host');
 
 /**
  * SSM parameter name for the issue #99 SecureString case. `verify.sh`
@@ -26,7 +27,7 @@ const SSM_DB_HOST_PARAM = '/cdkl-integ/invoke-from-cfn-stack/db-host';
  * it sees the SecureString type and routes the decrypted value off the
  * `docker run` argv. Kept in sync with `verify.sh`'s `SSM_API_KEY_PARAM`.
  */
-const SSM_API_KEY_PARAM = '/cdkl-integ/invoke-from-cfn-stack/api-key';
+const SSM_API_KEY_PARAM = integScopedName('/cdkl-integ/invoke-from-cfn-stack/api-key');
 
 /**
  * Run this fixture's Lambdas at the HOST's CPU architecture.

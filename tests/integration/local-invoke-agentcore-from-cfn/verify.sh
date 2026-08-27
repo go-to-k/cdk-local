@@ -26,13 +26,16 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalInvokeAgentCoreFromCfnFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalInvokeAgentCoreFromCfnFixture)"
 TARGET="${STACK}/EchoAgent"
 BASE_IMAGE="public.ecr.aws/docker/library/node:20-slim"
 
-GREETING_PARAM="/cdkl-integ/invoke-agentcore-from-cfn/greeting"
+GREETING_PARAM="$(integ_scoped_name /cdkl-integ/invoke-agentcore-from-cfn/greeting)"
 GREETING_VALUE="hello-from-ssm-state"
-API_KEY_PARAM="/cdkl-integ/invoke-agentcore-from-cfn/api-key"
+API_KEY_PARAM="$(integ_scoped_name /cdkl-integ/invoke-agentcore-from-cfn/api-key)"
 API_KEY_PLACEHOLDER="placeholder-not-secret"
 API_KEY_VALUE="s3cr3t-agentcore-9f3a2b"
 

@@ -17,7 +17,7 @@
 #
 # Steps:
 #   1. install + build cdk-local (root) + docker pull
-#   2. cdk deploy CdkLocalStartApiFromCfnStackFixture (upstream CDK CLI)
+#   2. cdk deploy CdkLocalStartApiFromCfnStackFixture-<lane> (upstream CDK CLI)
 #   3. read deployed table name + sibling ARN from AWS
 #   4. baseline: cdkl start-api (no flag) — assert TABLE_NAME / SIBLING_ARN
 #      come through as "unset" (intrinsic-valued, default warn-and-drop).
@@ -36,7 +36,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalStartApiFromCfnStackFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalStartApiFromCfnStackFixture)"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 CONTAINER_HOST="127.0.0.1"
 

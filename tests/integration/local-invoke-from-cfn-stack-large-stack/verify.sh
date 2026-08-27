@@ -18,7 +18,7 @@
 #
 # Steps:
 #   1. install + build cdk-local (root) + install fixture deps + docker pull
-#   2. cdk deploy CdkLocalInvokeFromCfnStackLargeFixture (upstream CDK CLI)
+#   2. cdk deploy CdkLocalInvokeFromCfnStackLargeFixture-<lane> (upstream CDK CLI)
 #   3. baseline: cdkl invoke (no --from-cfn-stack) — assert paramCount=0
 #      (every intrinsic-valued env var dropped via warn-and-drop).
 #   4. cdkl invoke --from-cfn-stack — assert paramCount=105, i.e. ALL
@@ -38,7 +38,10 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 export AWS_REGION="${REGION}"
-STACK="CdkLocalInvokeFromCfnStackLargeFixture"
+# Lane-unique stack name (issue #582): every AWS-deploying fixture used to
+# hard-code ONE name, so two worktree lanes shared one CloudFormation stack.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/stack-name.sh"
+STACK="$(integ_stack_name CdkLocalInvokeFromCfnStackLargeFixture)"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 EXPECTED_COUNT=105
 

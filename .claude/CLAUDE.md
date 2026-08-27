@@ -1378,6 +1378,29 @@ vp run runtime:smoke
   cloudformation` calls — leaving orphan resources after an integ
   run is never acceptable.
 
+- **Every account-global name an AWS-deploying fixture owns is
+  lane-unique** (issue #582). `tests/integration/_lib/stack-name.sh` is
+  the single place the suffix is derived — 8 hex of the SHA-256 of the
+  worktree root, exported as `INTEG_STACK_SUFFIX` — and
+  `tests/integration/_lib/stack-name.ts` is the only place the CDK app
+  READS it, so `cdk deploy "${STACK}"` and what `bin/app.ts` synthesizes
+  agree. A fixture builds its names through `integ_stack_name` /
+  `integ_scoped_name` (shell) or `integStackName` / `integScopedName`
+  (app); with the variable unset — a bare `cdk synth` by hand — the
+  historical un-suffixed name comes back, so nothing outside `verify.sh`
+  changes. It covers stack names, SSM parameter paths and the multi-stack
+  fixture's CloudFormation EXPORT name, all of which are unique per
+  account+region. Before this, two worktree lanes running the same
+  fixture deployed, read and destroyed THE SAME stack: the pre-flight
+  scan mistook a peer's live stack for a leftover, the cleanup trap could
+  `cdk destroy` it, and a colliding run could report GREEN having
+  asserted against a peer's resources — which then refreshed the `integ`
+  merge gate. `tests/integration/_lib/stack-name.test.sh` fences it and
+  runs in CI via `vp run test:hooks`. **Host-global names are NOT covered
+  yet** — the fixtures still hard-code TCP ports, and seven of them
+  `kill -9` whoever holds one (issue #591), so two lanes running a
+  `local-start-*` serve fixture still break each other.
+
 - **cdkd parity** (host-CLI library-surface drift):
   `cdkd-parity-gate.sh` blocks `gh pr create` when the `cdkd-parity`
   marker is stale AND the diff touches the cdk-local library surface
