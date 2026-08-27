@@ -116,6 +116,12 @@ const HOST_ARCHITECTURE_STACKS = [
   'tests/integration/local-invoke-ruby/lib/local-invoke-ruby-stack.ts',
   'tests/integration/local-invoke-java/lib/local-invoke-java-stack.ts',
   'tests/integration/local-invoke-dotnet/lib/local-invoke-dotnet-stack.ts',
+  'tests/integration/local-invoke-buildkit/lib/local-invoke-buildkit-stack.ts',
+  'tests/integration/local-invoke-container/lib/local-invoke-container-stack.ts',
+  'tests/integration/local-invoke-from-cfn-stack/lib/local-invoke-from-cfn-stack-stack.ts',
+  'tests/integration/local-invoke-from-cfn-stack-large-stack/lib/local-invoke-from-cfn-stack-large-stack-stack.ts',
+  'tests/integration/local-invoke-from-cfn-stack-multi-stack/lib/consumer-stack.ts',
+  'tests/integration/local-list/lib/local-list-stack.ts',
 ];
 
 /**
@@ -155,12 +161,6 @@ const PINNED_STACKS = [
  * silently.
  */
 const NOT_YET_CONVERTED = [
-  'tests/integration/local-invoke-buildkit/lib/local-invoke-buildkit-stack.ts',
-  'tests/integration/local-invoke-container/lib/local-invoke-container-stack.ts',
-  'tests/integration/local-invoke-from-cfn-stack/lib/local-invoke-from-cfn-stack-stack.ts',
-  'tests/integration/local-invoke-from-cfn-stack-large-stack/lib/local-invoke-from-cfn-stack-large-stack-stack.ts',
-  'tests/integration/local-invoke-from-cfn-stack-multi-stack/lib/consumer-stack.ts',
-  'tests/integration/local-list/lib/local-list-stack.ts',
   'tests/integration/local-start-alb-lambda/lib/local-start-alb-lambda-stack.ts',
   'tests/integration/local-start-alb-websocket/lib/local-start-alb-websocket-stack.ts',
   'tests/integration/local-start-api-all-stacks/lib/stack-a.ts',
