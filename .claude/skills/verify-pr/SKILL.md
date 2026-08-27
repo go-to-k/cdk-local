@@ -93,6 +93,19 @@ Run each check and report pass/fail:
      - **3-axis parallel** (large PR `>=` 1000 LOC OR security-sensitive paths) — dispatch all three of `pr-spec-reviewer` / `pr-code-reviewer` / `pr-test-reviewer` in parallel (single message, three Agent tool calls).
 
      The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down). Trust the recommendation; override only when you have a concrete reason (note the reason here).
+
+     **Recompute the tier at the sha you will bind the marker to, not at the
+     sha you first reviewed.** The tier is a function of the diff, and the diff
+     GROWS across fix-back rounds while the tier decision, made once, does not.
+     The `pr-review` marker is sha-bound so it correctly goes stale on a new
+     push — but staleness only forces a re-REVIEW at whatever tier you last
+     chose, so an under-tiered PR is re-reviewed just as thinly the second time.
+     Measured here on 2026-08-27: go-to-k/cdk-local#609 was tiered from its
+     first commit at 819 LOC / 5 files, which is `1-reviewer`, and one reviewer
+     was dispatched. Its fix round took it to 1342 LOC, which is `3-axis`. The
+     spec and test reviewers added only after re-computing then found a live
+     order-blind fail-open in the new code and two wrong counts in the PR body,
+     neither of which the single code reviewer's remit covered.
    - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
    - `git diff origin/main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?
