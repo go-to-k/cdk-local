@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 
 /**
  * Materialize a literal-ARN Lambda Layer to a host tmpdir so it can be
@@ -106,6 +107,49 @@ export class LayerMaterializationError extends Error {
   }
 }
 
+/**
+ * cdk-local's OWN rejection raised INSIDE a guarded region, still needing the
+ * call site's framing (issue #579, review round 2).
+ *
+ * Two classes are needed, not one, because the guarded regions contain BOTH
+ * kinds of cdk-local throw and they want opposite handling:
+ *
+ *   - ALREADY FRAMED — the ARN-shape guard raises
+ *     `Layer <arn>: not a layer-version ARN ...`, which names the layer and the
+ *     problem and fires before any AWS call. Re-raising it INTACT is right;
+ *     wrapping it would double the `Layer <arn>:` prefix and, worse, prepend
+ *     `GetLayerVersion failed` to a failure where no call was ever made.
+ *   - UNFRAMED — `AssumeRole returned no Credentials` and
+ *     `GetLayerVersion response did not include Content.Location` are bare
+ *     sentences that mean nothing without the site's `Layer <arn>: <call>
+ *     failed: ... <remedy>` envelope.
+ *
+ * A first pass at #579 made both `LayerMaterializationError` and re-raised
+ * both, which silently DROPPED the envelope (and the `looksLikeAccessDenied`
+ * hint) from the second group. The existing tests only substring-match the
+ * inner sentence, so nothing went red. Hence a distinct type rather than a
+ * shared one: the catch keeps the message verbatim — it is cdk-local's own
+ * text, never anything off the wire, so the credential-error policy has
+ * nothing to decide about it — and still applies the framing.
+ */
+class UnframedLayerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnframedLayerError';
+    Object.setPrototypeOf(this, UnframedLayerError.prototype);
+  }
+}
+
+/**
+ * The detail half of a layer failure message: cdk-local's own text kept
+ * verbatim, anything else rendered by the shared credential-error policy.
+ */
+function layerFailureDetail(err: unknown, operation: string): string {
+  return err instanceof UnframedLayerError
+    ? err.message
+    : describeAwsFailureForWarn(err, operation);
+}
+
 export async function materializeLayerFromArn(
   layer: ResolvedArnLambdaLayer,
   options: MaterializeLayerOptions = {}
@@ -118,9 +162,21 @@ export async function materializeLayerFromArn(
       credentials = await assumeRoleForLayer(options.roleArn, layer.region, options);
       logger.debug(`Layer ${layer.arn}: assumed role ${options.roleArn} for GetLayerVersion`);
     } catch (err) {
+      // An ALREADY-FRAMED cdk-local throw passes through untouched; see
+      // {@link UnframedLayerError} for why the two cases are separate types.
+      if (err instanceof LayerMaterializationError) throw err;
+      // Issue #579. LEVEL: this THROWS rather than logging, but the text lands
+      // on the user through the top-level error handler, which is
+      // default-level output by construction. RECONSTRUCTION:
+      // `assumeRoleForLayer` wraps `sts.send(AssumeRoleCommand)` — the same
+      // two-population `catch` issue #570 split at nine sites in
+      // `src/cli/commands/**`; this one sits outside that scope, which is the
+      // only reason it was not covered there.
       throw new LayerMaterializationError(
-        `Layer ${layer.arn}: STS AssumeRole(${options.roleArn}) failed: ${errMsg(err)}. ` +
-          'Check the role trust policy permits your principal and sts:AssumeRole is allowed.'
+        `Layer ${layer.arn}: STS AssumeRole(${flattenToOneLine(options.roleArn)}) failed: ${layerFailureDetail(
+          err,
+          'STS AssumeRole (--layer-role-arn)'
+        )}. ` + 'Check the role trust policy permits your principal and sts:AssumeRole is allowed.'
       );
     }
   }
@@ -129,13 +185,24 @@ export async function materializeLayerFromArn(
   try {
     presignedUrl = await fetchLayerContentUrl(layer, credentials, options);
   } catch (err) {
+    // The ARN-shape guard frames itself (and fires before any call), so it
+    // passes through; the missing-`Content.Location` guard does not, and is
+    // kept verbatim inside this site's envelope by `layerFailureDetail`.
+    if (err instanceof LayerMaterializationError) throw err;
     const hint = looksLikeAccessDenied(err)
       ? ' GetLayerVersion access denied; check the credentials / role can read the layer ' +
         '(grant lambda:GetLayerVersion on the layer ARN, or pass --layer-role-arn <arn> ' +
         'to assume a role in the layer account).'
       : '';
+    // Issue #579 — same two-axis call as the AssumeRole site above;
+    // `fetchLayerContentUrl` is a `lambda:GetLayerVersion` call. `hint` is
+    // cdk-local's own literal and is derived from `looksLikeAccessDenied`,
+    // which reads the error rather than printing it, so it stays as is.
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: GetLayerVersion failed in region ${layer.region}: ${errMsg(err)}.${hint}`
+      `Layer ${layer.arn}: GetLayerVersion failed in region ${layer.region}: ${layerFailureDetail(
+        err,
+        'Lambda GetLayerVersion'
+      )}.${hint}`
     );
   }
 
@@ -222,7 +289,7 @@ async function fetchLayerContentUrl(
     const response = await client.send(command);
     const url = response?.Content?.Location;
     if (!url || typeof url !== 'string') {
-      throw new Error(
+      throw new UnframedLayerError(
         'GetLayerVersion response did not include Content.Location (presigned ZIP URL)'
       );
     }
@@ -244,7 +311,7 @@ async function assumeRoleForLayer(
     const response = await client.send(command);
     const creds = response?.Credentials;
     if (!creds?.AccessKeyId || !creds.SecretAccessKey) {
-      throw new Error('AssumeRole returned no Credentials');
+      throw new UnframedLayerError('AssumeRole returned no Credentials');
     }
     return {
       accessKeyId: creds.AccessKeyId,
@@ -309,7 +376,14 @@ async function downloadPresignedZip(
   const response = await fetch(presignedUrl);
   if (!response.ok) {
     throw new Error(
-      `HTTP ${response.status} ${response.statusText} from layer Content.Location URL`
+      // Issue #579 review round 2 — `statusText` is the HTTP REASON PHRASE, i.e.
+      // a string the presigned host chose, and it lands on a default-level
+      // line. The HTTP parser forbids CR/LF there, so the forged-LINE half was
+      // already closed by the protocol; `\x1b` (an ANSI escape) and U+2028 (a
+      // forced break in the studio UI's `<pre>`) are NOT forbidden, and
+      // `flattenToOneLine` covers all four categories rather than just the two
+      // the parser happens to stop.
+      `HTTP ${response.status} ${flattenToOneLine(response.statusText)} from layer Content.Location URL`
     );
   }
   const buf = await response.arrayBuffer();
@@ -431,6 +505,27 @@ async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
   });
 }
 
+/**
+ * Message of a thrown value, for the two throws that are NOT AWS SDK relays.
+ *
+ * Issue #579 deliberately left these two on `errMsg`: the presigned-URL
+ * download is a plain HTTPS fetch (the URL already carries its authorization,
+ * so no credential chain is resolved and no modeled service exception is
+ * parsed) and the unzip is a purely LOCAL operation. Neither `catch` can see a
+ * `credential_process` command line, so there is nothing for the
+ * credential-error policy to DECIDE about them. The two AWS calls in this
+ * module — STS `AssumeRole` and `lambda:GetLayerVersion` — go through
+ * `describeAwsFailureForWarn` instead.
+ *
+ * CORRECTED in review round 2: an earlier revision of this note claimed these
+ * catches see nothing wire-derived at all, which was stronger than the code.
+ * The download `catch` DOES see wire-derived text — `downloadPresignedZip`
+ * raises `HTTP <status> <statusText> ...`, and the reason phrase is whatever
+ * the presigned host sent. Nothing there needs WITHHOLDING (no credential
+ * chain, no secret), but it does need FLATTENING, which is applied at that
+ * throw rather than here, because `errMsg` is also used by the unzip `catch`
+ * whose input is a local `fflate` error.
+ */
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

@@ -9,6 +9,7 @@ import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
+import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 
 /**
  * ECR pull fallback for `cdkl invoke` / `cdkl start-api` /
@@ -215,6 +216,26 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
       }
       callerAccount = identity.Account;
       CALLER_IDENTITY_CACHE.set(callerIdentityKey, callerAccount);
+    } catch (err) {
+      // Issue #579 review round 3 — the `try { send } finally { destroy }` with
+      // NO `catch`, the same shape whose mis-triage is documented at length in
+      // `agentcore-s3-bundle.ts`. `pullEcrImage` has six callers and none of
+      // them catches, so the raw SDK error reached `withErrorHandling` ->
+      // `formatError`, which prints `${error.name}: ${error.message}`
+      // unflattened and unclamped at DEFAULT level.
+      //
+      // This is the SAME `GetCallerIdentity` call issue #570 guarded at five
+      // sites under `src/cli/commands/**`, and it fires on the plain default
+      // credential chain — no `--assume-role` and no `--ecr-role-arn` needed,
+      // so it is the most reachable of the three sites this round adds.
+      // cdk-local's own no-Account throw is re-raised intact.
+      if (err instanceof LocalInvokeBuildError) throw err;
+      throw new LocalInvokeBuildError(
+        `STS GetCallerIdentity failed while preparing the ECR pull: ${describeAwsFailureForWarn(
+          err,
+          'STS GetCallerIdentity (ECR pull)'
+        )}. Verify your AWS credentials.`
+      );
     } finally {
       sts.destroy();
     }
@@ -327,9 +348,21 @@ async function assumeRoleForEcr(
     };
   } catch (err) {
     if (err instanceof LocalInvokeBuildError) throw err;
-    const reason = err instanceof Error ? err.message : String(err);
+    // Issue #579. LEVEL: thrown, so the top-level error handler prints it at
+    // default level. RECONSTRUCTION: the `catch` wraps
+    // `sts.send(AssumeRoleCommand)`, so it sees the credential chain (a
+    // `credential_process` command line is reachable here) as well as a modeled
+    // STS exception whose message is the diagnosis. cdk-local's own
+    // "returned no usable credentials" throw is re-raised on the line above, so
+    // withholding never eats it.
+    const reason = describeAwsFailureForWarn(err, 'STS AssumeRole (ECR pull)');
     throw new LocalInvokeBuildError(
-      `Failed to assume role ${roleArn} for ECR pull: ${reason}. ` +
+      // `roleArn` flattened for parity with the four #570 sites and
+      // `local-invoke-agentcore.ts`: it is usually the user's own
+      // `--ecr-role-arn` value, but the bare `--assume-role` form resolves an
+      // ARN from a live `GetFunctionConfiguration` / `GetAgentRuntime`
+      // response behind only a `startsWith('arn:')` check.
+      `Failed to assume role ${flattenToOneLine(roleArn)} for ECR pull: ${reason}. ` +
         "Verify the role exists and its trust policy permits the caller's identity to assume it."
     );
   } finally {
@@ -346,7 +379,22 @@ async function ecrLogin(client: ECRClient, accountId: string, region: string): P
   const logger = getLogger().child('ecr-puller');
   logger.debug(`ECR login (account=${accountId}, region=${region})`);
 
-  const response = await client.send(new GetAuthorizationTokenCommand({}));
+  // Issue #579 review round 3 — same shape one level down: this `send` sat in
+  // NO `try` at all, and its only caller wraps it in
+  // `try { ecrLogin(...) } finally { ecr.destroy() }`, so nothing between here
+  // and `formatError` could see it. `GetAuthorizationToken` runs on the
+  // assumed-role credentials when `--ecr-role-arn` is set and on the default
+  // chain otherwise, so both populations reach it.
+  const response = await client
+    .send(new GetAuthorizationTokenCommand({}))
+    .catch((err: unknown): never => {
+      throw new LocalInvokeBuildError(
+        `ECR GetAuthorizationToken failed (account=${accountId}, region=${region}): ${describeAwsFailureForWarn(
+          err,
+          'ECR GetAuthorizationToken'
+        )}. Verify the credentials can call ecr:GetAuthorizationToken.`
+      );
+    });
   const authData = response.authorizationData?.[0];
   if (!authData?.authorizationToken) {
     throw new LocalInvokeBuildError('Failed to get ECR authorization token');

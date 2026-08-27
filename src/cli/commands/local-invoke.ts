@@ -14,7 +14,11 @@ import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/pro
 import { resolveContainerFallbackRegion } from './local-start-api.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
-import { applyRoleArnIfSet, assumeRoleCredentials } from '../../utils/role-arn.js';
+import {
+  applyRoleArnIfSet,
+  assumeRoleCredentials,
+  AssumeRoleFailure,
+} from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
@@ -1069,7 +1073,20 @@ export async function resolveLambdaContainerEnv(
       // file's own hijacked-endpoint model it is wire-derived text sitting on
       // the very line the helper beside it just made forge-proof. On a real
       // ARN the call is a no-op, so the integ grep is unaffected.
-      const reason = describeAwsFailureForWarn(err, 'STS AssumeRole');
+      //
+      // Issue #579 review round 4: `assumeRoleCredentials` now renders the
+      // failure ITSELF, because three of its four call paths are unguarded all
+      // the way to `formatError`. Re-rendering its output here would hand
+      // `describeAwsFailureForWarn` a plain `Error` -- cdk-local's own, so no
+      // `$fault` -- and WITHHOLD text the policy had already sanitized, which
+      // is how `ExpiredTokenException: ...` briefly became
+      // `Error; 138-character message withheld`. Take the pre-rendered
+      // `detail` when it is there; the `debug` line was emitted at render
+      // time, so the withheld/at-debug pairing still holds exactly once.
+      const reason =
+        err instanceof AssumeRoleFailure
+          ? err.detail
+          : describeAwsFailureForWarn(err, 'STS AssumeRole');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(resolvedAssumeRoleArn)}) failed: ${reason}. ` +
           "Falling back to the developer's shell credentials."
@@ -1199,8 +1216,11 @@ export async function resolveAssumeRoleArnForLambda(
       //
       // Deliberately not LENGTH-capped here: unlike a service message, an ARN
       // has a shape, so the bound belongs at the `startsWith('arn:')`
-      // resolution point rather than at the log line. Recorded in issue #579
-      // (which carries the ARN-bound paragraph as well as the relay list).
+      // resolution point rather than at the log line. Tracked in
+      // https://github.com/go-to-k/cdk-local/issues/607 — it used to point at
+      // #579, which carried the ARN-bound paragraph alongside the relay list
+      // and closes with the relay work, so the pointer would have led to a
+      // closed issue.
       logger.info(
         `--assume-role: auto-resolved execution role from GetFunctionConfiguration: ${flattenToOneLine(liveArn)}`
       );

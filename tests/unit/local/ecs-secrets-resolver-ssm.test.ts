@@ -181,36 +181,53 @@ describe('resolveSsm — the failure shapes (issue #557)', () => {
     expect(message).not.toContain('Failed to resolve SSM parameter');
   });
 
+  /**
+   * A MODELED service exception. `$fault` + `$metadata` are what the SDK sets
+   * from the HTTP response, and issue #579 made that the discriminator for
+   * whether the message may print: a service message is the diagnosis and is
+   * kept, everything else -- a credential-chain failure above all -- is
+   * withheld. A fixture without `$fault` is a chain failure.
+   */
+  function ssmServiceError(message: string, name: string): Error {
+    const e = new Error(message);
+    Object.defineProperty(e, 'name', { value: name });
+    return Object.assign(e, { $fault: 'client', $metadata: { httpStatusCode: 400 } });
+  }
+
   it('wraps an SDK rejection with the container, env, parameter name and cause', async () => {
     // The shape `ssm:GetParameter` answers with for a name that does not
     // exist, or for one the profile's credentials may not read.
-    const sdkError = Object.assign(new Error('Parameter /app/db/password not found.'), {
-      name: 'ParameterNotFound',
-    });
-    ssmSend.mockRejectedValue(sdkError);
+    ssmSend.mockRejectedValue(
+      ssmServiceError('Parameter /app/db/password not found.', 'ParameterNotFound')
+    );
     const message = await ssmFailure();
     expect(message).toContain(
       "Failed to resolve SSM parameter for container 'ApiContainer' / env 'DB_PASSWORD'"
     );
     expect(message).toContain(`(${SSM_NAME})`);
-    expect(message).toContain('Parameter /app/db/password not found.');
+    expect(message).toContain('ParameterNotFound: Parameter /app/db/password not found.');
   });
 
   it('wraps an InvalidParameters-style rejection the same way', async () => {
-    const sdkError = Object.assign(new Error('InvalidParameters: /app/db/password'), {
-      name: 'InvalidParameters',
-    });
-    ssmSend.mockRejectedValue(sdkError);
+    ssmSend.mockRejectedValue(
+      ssmServiceError('InvalidParameters: /app/db/password', 'InvalidParameters')
+    );
     const message = await ssmFailure();
     expect(message).toContain('Failed to resolve SSM parameter');
     expect(message).toContain('InvalidParameters: /app/db/password');
   });
 
-  it('stringifies a non-Error rejection instead of reporting undefined', async () => {
+  it('withholds a non-Error rejection instead of relaying it (issue #579)', async () => {
+    // Before #579 this printed `socket hang up` verbatim. A non-service throw
+    // is withheld to a clamped class name plus a length -- `unknown` here,
+    // because a bare string names no class at all -- and the text moves to
+    // `debug`. This message reaches `ecs-service-emulator.ts`'s
+    // `logger.error`, a default-level line studio mirrors into its log ring.
     ssmSend.mockRejectedValue('socket hang up');
     const message = await ssmFailure();
     expect(message).toContain('Failed to resolve SSM parameter');
-    expect(message).toContain('socket hang up');
+    expect(message).not.toContain('socket hang up');
+    expect(message).toContain('unknown; 14-character message withheld');
   });
 });
 

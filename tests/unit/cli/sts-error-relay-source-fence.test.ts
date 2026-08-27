@@ -36,12 +36,27 @@ import { dirname, join } from 'node:path';
  *   - It is wording-bound. A tenth site spelled `STS ${op} failure` or with no
  *     `STS` token at all produces no finding — though a copy-paste-shaped one
  *     trips the exact-9 count loudly.
- *   - Its directory scope is `src/cli/commands/*.ts`, non-recursively. A
- *     relay of the same shape lives outside it today —
- *     `src/local/layer-arn-materializer.ts:122` renders
- *     `STS AssumeRole(${roleArn}) failed: ${errMsg(err)}` with an unflattening
- *     `errMsg`. It THROWS rather than logging, so it is a different surface,
- *     and it is pre-existing; it is enumerated in issue #579 with the rest.
+ *   - Its directory scope is `src/cli/commands/*.ts`, non-recursively. FOUR
+ *     relays of the same shape live outside it, and issue #579 added two of
+ *     them: `src/utils/role-arn.ts`'s `assumeRoleCredentials` and
+ *     `applyRoleArnIfSet`. The second is the NINE-caller site, the most
+ *     reachable AssumeRole relay in the repo, and neither is reachable by this
+ *     scan. Both are fenced behaviourally in
+ *     `tests/unit/utils/role-arn.test.ts` — but that is per-occurrence
+ *     coverage, NOT the tenth-site property: a NEW unguarded relay added
+ *     beside them still produces no finding here. Stated rather than left
+ *     implicit, because "it has tests" and "a new sibling cannot slip in" are
+ *     different guarantees and only the first holds there. The other two —
+ *     `src/local/layer-arn-materializer.ts`'s `STS AssumeRole(${roleArn})
+ *     failed:` and `src/local/ecr-puller.ts`'s `Failed to assume role ${arn}
+ *     for ECR pull:`. Issue #579 routed both through the shared policy and
+ *     fences them per-occurrence in
+ *     `tests/unit/local/aws-error-relay-sites.test.ts`, but this file's
+ *     TENTH-SITE property does not extend to them: a NEW unguarded STS relay
+ *     added under `src/local/**` still produces no finding here. Widening the
+ *     scan is not free — `src/local/**` carries far more prose naming STS than
+ *     the command layer does, and a fence that has to be suppressed is a fence
+ *     nobody keeps — so it is left undone deliberately rather than overlooked.
  *   - `stripComments` handles a leading and a trailing `//`, not a trailing
  *     BLOCK comment: one opening with a slash-star, naming the helper, and
  *     closing again on the same line, placed beside a destructured
@@ -184,7 +199,19 @@ describe('#570 — a tenth STS relay site cannot be added unguarded', () => {
     // count AND the identity of the files carrying them are pinned, so a new
     // site in a file not previously carrying one fails here rather than
     // slipping past a hard-coded list.
-    expect(all).toHaveLength(9);
+    // ELEVEN since issue #579, which derived the population of catch-less SDK
+    // sends rather than working the enumerated list: round 3 added
+    // `local-run-task.ts`'s `resolvePlaceholderAccount` and round 4 its twin in
+    // `ecs-service-emulator.ts` (deferred one round only because PR #610 held
+    // that file). Both had no `catch` at all.
+    //
+    // This assertion FIRED on each of them as they were written — the
+    // tenth-site property the file exists for, triggering on real new sites
+    // rather than on hypothetical ones. It also caught a formatting detail on
+    // the first: an inline render wrapped across three lines put the helper
+    // call outside the guard window, and the fix was to hoist it into a `const`
+    // rather than to widen the window.
+    expect(all).toHaveLength(11);
     expect([...new Set(all.map((f) => f.file))].sort()).toEqual([
       'ecs-service-emulator.ts',
       'local-invoke-agentcore.ts',

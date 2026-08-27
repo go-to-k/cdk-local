@@ -112,10 +112,28 @@ describe('classifyS3Error', () => {
     expect(classifyS3Error({ $metadata: { httpStatusCode: 403 } }).kind).toBe('denied');
   });
 
-  it('maps anything else to error with a message', () => {
-    const r = classifyS3Error(new Error('connection reset'));
+  it('maps a modeled service exception to error, keeping its message', () => {
+    const e = new Error('connection reset');
+    Object.defineProperty(e, 'name', { value: 'InternalError' });
+    const r = classifyS3Error(Object.assign(e, { $fault: 'server', $metadata: {} }));
     expect(r.kind).toBe('error');
-    if (r.kind === 'error') expect(r.message).toContain('connection reset');
+    if (r.kind === 'error') expect(r.message).toBe('InternalError: connection reset');
+  });
+
+  it('withholds a credential-chain failure, which is NOT a service response', () => {
+    // Issue #579 -- this origin exists to read a DEPLOYED bucket with the
+    // developer's own credentials, so a chain failure here is common, and its
+    // message can be a `credential_process` command line. It is withheld to a
+    // clamped class name plus a length, and the full text moves to `debug`.
+    const e = new Error('Command failed: /opt/bin/get-creds --pass s3cr3t');
+    Object.defineProperty(e, 'name', { value: 'CredentialsProviderError' });
+    const r = classifyS3Error(e);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).not.toContain('s3cr3t');
+      expect(r.message).toContain('CredentialsProviderError; ');
+      expect(r.message).toContain('message withheld');
+    }
   });
 });
 

@@ -572,21 +572,68 @@ compute-locally category for Lambda + API Gateway).
   websocket-server, ecs-task-runner, ecs-service-runner, ecs-network,
   cloud-map-registry, lambda-resolver, ecs-task-resolver,
   route-discovery, authorizer-resolver, lambda-authorizer, cognito-jwt,
-  sigv4-verify, credential-error (issues #564 / #570 — how an AWS SDK
-  failure is rendered into a DEFAULT-level log line: `describeAwsFailureForWarn`
-  keeps a modeled service exception's message, since that message is the
+  sigv4-verify, credential-error (issues #564 / #570 / #579 — how an AWS SDK
+  failure is rendered into a line a third party can read at DEFAULT level —
+  a log line, and since #579 a served HTTP response body too:
+  `describeAwsFailureForWarn` keeps a modeled service exception's message,
+  since that message is the
   diagnosis, flattened to one line and length-capped, and withholds every
   other error — credential-chain failures above all, which can carry a
   `credential_process` command line — to a clamped class name plus a
   character count, emitting the full text at `debug`;
   `describeCredentialLoadFailure` is the unconditional-withhold form for a
   `catch` around credential resolution alone, which is what `sigv4-verify`
-  uses. Both are re-exported from `src/internal.ts`. SCOPE: it governs
-  `sigv4-verify` plus the nine STS relays in `src/cli/commands/**`; the
-  remaining AWS SDK error relays elsewhere under `src/local/**` — notably
-  `formatAwsErrorForWarn` in `cfn-local-state-provider` and `formatSsmError`
-  in `ssm-parameter-resolver`, which still print an UNCLAMPED wire-derived
-  `err.name` — are enumerated in issue #579),
+  uses. Both are re-exported from `src/internal.ts`. Which one a site wants
+  is decided per occurrence on TWO axes — LEVEL (is the line default-level,
+  and does it reach somewhere a third party reads, such as the studio log
+  ring?) and RECONSTRUCTION (does the `catch` see only the credential chain,
+  or also a service RESPONSE whose message is the diagnosis?) — never
+  mechanically.
+  SCOPE: issue #570 covered `sigv4-verify` plus nine STS relays in
+  `src/cli/commands/**`; issue #579 extended the policy to the rest of the
+  codebase, so it now also governs `cfn-local-state-provider`
+  (`formatAwsErrorForWarn`, six callers, now a thin decoration over the
+  shared helper that appends a range-guarded HTTP status),
+  `ssm-parameter-resolver` (whose competing `formatSsmError` spelling was
+  DELETED rather than fixed), `state-resolver`, `cloudfront-kvs-client`,
+  `cloudfront-s3-origin`, `layer-arn-materializer`, `ecr-puller`,
+  `ecs-secrets-resolver`, `httpv2-service-integration` and
+  `local-studio`'s deployed-state image-context warn. #579 also closed two
+  NON-error leaks on those same lines: `cfn-local-state-provider` flattens the
+  wire-derived `PhysicalResourceId` it interpolates into three warns, and
+  `ecs-service-runner`'s exited-container log tail is emitted as ONE warn PER
+  LINE (so every line carries the `WARN: ` prefix `studio-serve-manager`'s
+  ready-line matcher skips) instead of one warn holding embedded newlines.
+  Note that `httpv2-service-integration` is the one governed site whose output
+  is an HTTP RESPONSE BODY rather than a log line — the widest reader of the
+  set — which is why the axes are stated in terms of readers, not logs.
+  DELIBERATELY OUTSIDE it, so the next sweep finds a decision rather than an
+  oversight — and note the test is what a `catch` CAN SEE, never where it
+  happens to sit: a `catch` around a purely LOCAL operation sees neither
+  population, which covers `agentcore-s3-bundle`'s unzip `catch` (it wraps
+  `unzipSync` and nothing else) and `layer-arn-materializer`'s presigned-URL
+  download and unzip (the URL carries its own authorization, so no credential
+  chain is resolved and no modeled service exception is parsed — though the
+  download's `HTTP <status> <statusText>` throw does relay a wire-derived
+  reason phrase, so it is FLATTENED even though it needs no withholding).
+  Applying that test by LOCATION instead is exactly how the sweep first got
+  `agentcore-s3-bundle`'s S3 GetObject wrong: it sits OUTSIDE the unzip `try`,
+  which made it uncovered rather than out of scope — it had no `catch` at all,
+  so the raw SDK error reached `formatError`'s
+  `${error.name}: ${error.message}` at default level. It now has one.
+  Genuinely outside, as a separate change: the role ARN has no LENGTH bound,
+  which wants a shape check at the three RESOLUTION points rather than a
+  log-line fix, since that also bounds the value SENT to
+  `AssumeRoleCommand.RoleArn` — tracked in
+  https://github.com/go-to-k/cdk-local/issues/607. Also still uncovered and
+  named here rather than left implicit: `cloudfront-server.ts:129`'s
+  catch-all `Request handling failed:` relay. Two calling
+  conventions the policy imposes, both learned the hard way in #579 — render
+  each failure ONCE (the helper EMITS the `debug` line, so a second call
+  prints it twice), and give cdk-local's OWN throws an identifiable class and
+  re-raise them ABOVE the relay (the policy is defined positively, so it
+  withholds anything that is not a parsed service response — including text
+  cdk-local wrote itself)),
   rie-client, intrinsic-image, runtime-image, target-lister
   (`cdkl list` target enumeration), target-picker (interactive arrow-key
   target selection via `@clack/prompts` when a target is omitted in a TTY),

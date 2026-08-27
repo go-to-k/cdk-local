@@ -11,6 +11,11 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-cloudfront-keyvaluestore';
 import { getLogger } from '../utils/logger.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  stringifyThrown,
+} from './credential-error.js';
 import type { KvsDataSource } from './cloudfront-kvs.js';
 
 /**
@@ -76,10 +81,24 @@ export function createDeployedKvsDataSource(
         return out.Value;
       } catch (err) {
         if (isKeyNotFound(err)) return undefined;
+        // Issue #579. LEVEL: this throw propagates out of the function sandbox
+        // to `cloudfront-server.ts`'s top-level handler, which relays its
+        // `message` into a DEFAULT-level `Request handling failed:` warn (and
+        // answers a fixed 500) -- so it IS a default-level line, one level up.
+        // RECONSTRUCTION: the `catch` wraps `client.send(GetKeyCommand)`, which
+        // resolves the credential chain before the request, so it sees both a
+        // `CredentialsProviderError` and a modeled
+        // `cloudfront-keyvaluestore` exception whose message is the diagnosis.
         throw new Error(
-          `cf.kvs().get('${key}') against ${options.kvsArn} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          // `kvsArn` is WIRE-DERIVED: `resolveDeployedKvsArnByName` copies
+          // `item.ARN` out of a `ListKeyValueStores` response with no
+          // validation, and this throw is relayed into a DEFAULT-level warn by
+          // `cloudfront-server.ts`. Same class as the `PhysicalResourceId`
+          // flatten (issue #579 review round 3).
+          `cf.kvs().get('${key}') against ${flattenToOneLine(options.kvsArn)} failed: ${describeAwsFailureForWarn(
+            err,
+            'CloudFront KeyValueStore GetKey'
+          )}`
         );
       }
     },
@@ -114,8 +133,15 @@ export async function resolveDeployedKvsArnByName(
       }
     }
   } catch (err) {
+    // Issue #579. LEVEL: `debug`, so only a reader who asked with `--verbose`
+    // sees it -- the message is KEPT rather than withheld, exactly as
+    // `sigv4-verify` keeps its own text at `debug`. It is still FLATTENED,
+    // because the `debug` stream is the same stdout `cdkl studio` mirrors into
+    // an HTTP-served ring, so a `\n` would forge a line there as surely as at
+    // `warn`. RECONSTRUCTION does not arise: nothing is withheld, so there is
+    // no population to split.
     getLogger().debug(
-      `ListKeyValueStores lookup for '${name}' failed: ${err instanceof Error ? err.message : String(err)}`
+      `ListKeyValueStores lookup for '${name}' failed: ${flattenToOneLine(stringifyThrown(err))}`
     );
   }
   return undefined;

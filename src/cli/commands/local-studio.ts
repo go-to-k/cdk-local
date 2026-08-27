@@ -10,6 +10,7 @@ import {
   parseContextOptions,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { describeAwsFailureForWarn } from '../../local/credential-error.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
@@ -664,11 +665,19 @@ export async function prepareEcsImageContexts(args: {
       );
       contextByStack.set(stack.stackName, ctx);
     } catch (err) {
+      // Issue #579. LEVEL: a DEFAULT-level warn on studio's own stdout, the
+      // stream studio mirrors into the log ring it serves over HTTP.
+      // RECONSTRUCTION: `buildEcsImageResolutionContext` calls
+      // `stateProvider.load()` and `resolveTemplateSsmParameters()`, both AWS
+      // calls on the same credential chain, so a `CredentialsProviderError`
+      // reaches this `catch` alongside a modeled CloudFormation / SSM
+      // exception whose message is the diagnosis.
       logger.warn(
         `studio: could not build deployed-state image context for stack '${stack.stackName}'; ` +
-          `ECS services in it resolve against the synthed template only. ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          `ECS services in it resolve against the synthed template only. ${describeAwsFailureForWarn(
+            err,
+            'deployed-state image context (CloudFormation + SSM)'
+          )}`
       );
       contextByStack.set(stack.stackName, undefined);
     } finally {

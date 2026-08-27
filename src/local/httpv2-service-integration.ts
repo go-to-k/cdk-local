@@ -54,6 +54,13 @@ import type * as SqsNs from '@aws-sdk/client-sqs';
 import { stringifyValue } from '../utils/stringify.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
+import {
+  clampErrorName,
+  describeAwsFailureForWarn,
+  isAwsServiceException,
+  sanitizeServiceExceptionMessage,
+  stringifyThrown,
+} from './credential-error.js';
 
 const logger = getLogger();
 
@@ -438,14 +445,39 @@ async function dispatchAppConfigGetConfiguration(
 // Helpers
 // ---------------------------------------------------------------------
 
+/**
+ * A REQUEST-shape rejection raised by cdk-local itself, before any AWS call.
+ *
+ * Issue #579 — it needs its own class so {@link translateSdkError} can tell it
+ * apart from a relayed SDK failure. Its message is cdk-local's own literal and
+ * names the missing parameter, so it is the diagnosis and must reach the
+ * client verbatim; the credential-error policy withholds every non-service
+ * exception, which would otherwise have turned this 400 into a class name and
+ * a character count. `credential-error.ts` names exactly this remedy: make
+ * cdk-local's own throws identifiable rather than guess at their text.
+ *
+ * The ONE remaining cdk-local-authored throw inside the guarded `try` is
+ * `getClient`'s `unknown service '<x>'`, and it is left withheld deliberately:
+ * its `switch` is exhaustive over the dispatched subtypes, so the arm is dead
+ * code guarding against a future subtype added without a client case. If it
+ * ever does fire, the developer who added that subtype reads the full text on
+ * the `debug` line the helper emits.
+ */
+class ServiceIntegrationRequestError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServiceIntegrationRequestError';
+    Object.setPrototypeOf(this, ServiceIntegrationRequestError.prototype);
+  }
+}
+
 function requireParams(params: Record<string, string>, required: readonly string[]): void {
   const missing = required.filter((k) => !params[k] || params[k].trim() === '');
   if (missing.length > 0) {
-    const err: Error & { statusCode?: number } = new Error(
+    throw new ServiceIntegrationRequestError(
       `missing required RequestParameter(s): ${missing.join(', ')}`
     );
-    err.statusCode = 400;
-    throw err;
   }
 }
 
@@ -512,8 +544,39 @@ function errorResponse(statusCode: number, message: string): ServiceIntegrationR
  * Translate an AWS SDK error to an HTTP response. AWS SDK v3 surfaces
  * errors as instances carrying `$metadata.httpStatusCode` + `name`;
  * we honor the status code when present, default to 500.
+ *
+ * Issue #579 routed the two relayed fields through the credential-error
+ * policy. LEVEL: this one is NOT a log line — it is a RESPONSE BODY served on
+ * the local API port, which makes it the widest reader of the set: the studio
+ * capture proxy records a served response body onto the timeline, so the text
+ * reaches the same browser the log ring does, and any HTTP client reaches it
+ * without `--verbose`. RECONSTRUCTION: the `catch` wraps the per-subtype
+ * dispatch, i.e. one `client.send(...)`, so a `CredentialsProviderError`
+ * carrying a `credential_process` command line would have been JSON-encoded
+ * into that body verbatim. A modeled service exception's message is what a
+ * real API Gateway service integration surfaces and is the diagnosis, so it
+ * keeps printing; `code` is `err.name`, wire-derived, and is clamped.
  */
+/** A value usable as an HTTP status line without raising `ERR_HTTP_INVALID_STATUS_CODE`. */
+function isHttpStatus(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value < 600;
+}
+
 function translateSdkError(subtype: SupportedSubtype, err: unknown): ServiceIntegrationResult {
+  if (err instanceof ServiceIntegrationRequestError) {
+    // The RESPONSE SHAPE is preserved, not just the message. Before #579 this
+    // throw fell through the SDK branch below and produced `{ message, code }`,
+    // so returning the bare `{ message }` `errorResponse` builds would have
+    // dropped a field from a served body — a silent contract change riding
+    // along with a security fix. `code` carries the class name (it used to be
+    // the string `Error`, this throw having been an anonymous `Error`), which
+    // is cdk-local's own literal rather than anything off the wire.
+    return {
+      statusCode: err.statusCode,
+      body: JSON.stringify({ message: err.message, code: err.name }),
+      headers: { 'content-type': 'application/json' },
+    };
+  }
   if (err && typeof err === 'object') {
     const e = err as {
       name?: string;
@@ -521,13 +584,48 @@ function translateSdkError(subtype: SupportedSubtype, err: unknown): ServiceInte
       $metadata?: { httpStatusCode?: number };
       statusCode?: number;
     };
-    const status =
-      typeof e.statusCode === 'number' && e.statusCode >= 100 && e.statusCode < 600
-        ? e.statusCode
-        : (e.$metadata?.httpStatusCode ?? 500);
+    // Both candidates are RANGE-GUARDED. `e.statusCode` always was; issue #579
+    // review round 2 caught that `$metadata.httpStatusCode` was not, and this
+    // value becomes `res.statusCode` on a real `http.ServerResponse`, where a
+    // non-integer raises `ERR_HTTP_INVALID_STATUS_CODE` and takes the server's
+    // request handler down instead of answering. `$metadata` is a plain object
+    // that `decorateServiceException` copies parsed response-body keys onto, so
+    // "the SDK sets it" is not the same as "it is an integer".
+    const status = isHttpStatus(e.statusCode)
+      ? e.statusCode
+      : isHttpStatus(e.$metadata?.httpStatusCode)
+        ? e.$metadata.httpStatusCode
+        : 500;
     const body = {
-      message: e.message ?? 'AWS SDK call failed',
-      code: e.name ?? 'UnknownError',
+      // The KEPT branch uses `sanitizeServiceExceptionMessage` rather than the
+      // whole of `describeAwsFailureForWarn`, and the difference is this
+      // site's alone: a log line has one field, so the helper concatenates
+      // `<name>: <message>` into it, but this body already carries the name in
+      // `code`. Prefixing it into `message` as well would both duplicate it and
+      // change what a client parsing `message` reads (`Rate exceeded` becoming
+      // `ThrottlingException: Rate exceeded`). The WITHHELD branch still goes
+      // through the helper, so the `debug` line pairing is preserved.
+      // On the KEPT branch, read `e.message` when it is a string rather than
+      // going through `stringifyThrown`, which keys on `instanceof Error` and
+      // would render a service-exception-SHAPED plain object as the literal
+      // `[object Object]` — claiming to have kept the diagnosis while printing
+      // a placeholder. Safe on this branch specifically: the message is already
+      // judged printable here, and the sanitizer still flattens and caps it, so
+      // reading the field is exactly as bounded as reading `err.message` off an
+      // `Error`. (Every SDK-modeled exception DOES extend `Error`, so this is
+      // belt-and-braces for a hand-rolled or proxied throw rather than
+      // something `@aws-sdk/*` produces. Issue #579 review round 3.)
+      message: isAwsServiceException(err)
+        ? sanitizeServiceExceptionMessage(
+            typeof e.message === 'string' ? e.message : stringifyThrown(err)
+          )
+        : describeAwsFailureForWarn(err, `${subtype} service integration`),
+      // `code` is NOT widened the same way, and that asymmetry is deliberate:
+      // `clampErrorName` degrades a non-`Error` to `unknown` on purpose, "so
+      // the field never names a class the throw was not". A shape that is not
+      // an `Error` has no class, and `unknown` is the honest answer; the
+      // message half above carries the diagnosis regardless.
+      code: clampErrorName(err),
     };
     logger.debug(`[${subtype}] SDK error (${status}): ${stringifyValue(body)}`);
     return {
@@ -536,7 +634,16 @@ function translateSdkError(subtype: SupportedSubtype, err: unknown): ServiceInte
       headers: { 'content-type': 'application/json' },
     };
   }
-  return errorResponse(500, `Unexpected error invoking ${subtype}: ${String(err)}`);
+  // A non-object throw (`throw 'x'`) never carries a credential chain's message
+  // -- `CredentialsProviderError` is an `Error` -- but it is still relayed into
+  // a response body, so it goes through the same helper rather than `String()`.
+  return errorResponse(
+    500,
+    `Unexpected error invoking ${subtype}: ${describeAwsFailureForWarn(
+      err,
+      `${subtype} service integration`
+    )}`
+  );
 }
 
 // ---------------------------------------------------------------------

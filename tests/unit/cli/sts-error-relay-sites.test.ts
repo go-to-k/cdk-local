@@ -550,3 +550,62 @@ describe('#570 — a forged newline in the role ARN cannot forge a line either',
     });
   });
 });
+
+/**
+ * Issue #579 review round 5 — the RENDER PATHS for cdk-local's own
+ * no-usable-credentials throw.
+ *
+ * `credential-error.ts` used to name this exact string as an accepted
+ * diagnostic loss: `AssumeRole(<arn>) returned no usable credentials.` is a
+ * plain `Error` with no `$fault`, so every relay below withheld it to
+ * `Error; 47-character message withheld` — cdk-local's own sentence hidden
+ * from the user by cdk-local's own policy, at all four sites at once. The
+ * remedy that note named (make the throw identifiable) is applied in
+ * `utils/role-arn.ts` and `local-invoke-agentcore.ts`; these cases are the
+ * other half of it, asserting what each site actually PRINTS.
+ *
+ * Driven by an STS response that RESOLVES with no `Credentials`, which is the
+ * only way to reach the throw — a rejection takes the transport branch instead.
+ */
+describe("#579 — cdk-local's own no-credentials sentence survives every relay", () => {
+  let warnLines: string[];
+
+  beforeEach(() => {
+    warnLines = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      warnLines.push(String(m));
+    });
+    vi.spyOn(getLogger(), 'debug').mockImplementation(() => {});
+    vi.spyOn(getLogger(), 'info').mockImplementation(() => {});
+    sendMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const quoting = sites.filter((s) => s.quotesRoleArn);
+
+  it('covers all four ARN-quoting sites', () => {
+    expect(quoting).toHaveLength(4);
+  });
+
+  describe.each(quoting)('$name', (site) => {
+    it('prints the rendered detail, not a withheld character count', async () => {
+      // Resolves with no `Credentials` -> cdk-local's own guard fires.
+      sendMock.mockResolvedValue({});
+      await site.drive();
+
+      const matches = warnLines.filter((l) => l.includes(site.reached));
+      expect(matches, `no warn line at ${site.name} contained its own literal`).toHaveLength(1);
+      const line = matches[0]!;
+      expect(line).toContain(`${site.reached}the response carried no usable credentials`);
+      // The regression this closes, asserted directly.
+      expect(line).not.toContain('message withheld');
+      expect(line).not.toContain('47-character');
+      // And no double framing from the inner sentence leaking through.
+      expect(line).not.toContain('returned no usable credentials.');
+    });
+  });
+});
+
