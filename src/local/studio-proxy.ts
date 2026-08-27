@@ -40,6 +40,174 @@ export interface RunningStudioProxy {
 let proxyIdCounter = 0;
 
 /**
+ * True when `hostname` names this machine's loopback interface: `localhost`,
+ * an IPv4 address in `127.0.0.0/8`, IPv6 `::1`, or an IPv4-mapped loopback
+ * (`::ffff:127.0.0.1`, which `URL.hostname` renders in hex as
+ * `[::ffff:7f00:1]`). Surrounding brackets, as `URL.hostname` keeps them for
+ * an IPv6 literal, are tolerated. The match is EXACT — `localhost.example.com`
+ * and `127.0.0.1.example.com` are ordinary DNS names that resolve wherever
+ * their owner points them, and are NOT loopback.
+ *
+ * A `cdkl` serve child always listens on this machine, so this is the bound
+ * studio puts on where it will ever forward a composer request (issue #578).
+ * A destination that is not loopback did not come from a genuine serve, and
+ * forwarding to it would carry the developer's request — headers and body —
+ * off-box.
+ */
+export function isLoopbackHostname(hostname: string): boolean {
+  const h = hostname.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+  if (h === 'localhost') return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  // IPv4-mapped IPv6 in hex form (`::ffff:7f00:1`): the high hextet's top
+  // byte is the first IPv4 octet.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (mapped) return parseInt(mapped[1]!, 16) >> 8 === 127;
+  const dotted = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!dotted) return false;
+  const octets = dotted.slice(1).map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  return octets[0] === 127;
+}
+
+/**
+ * Drop the brackets `URL.hostname` keeps around an IPv6 literal (`[::1]`), so
+ * the host can be handed to `node:http` / `node:net`.
+ *
+ * Those two disagree with `URL` about the spelling: `http.request({ host:
+ * '[::1]' })` fails with `ENOTFOUND` (it is looked up as a NAME), while `'::1'`
+ * connects. {@link isLoopbackHostname} already tolerates the bracketed form —
+ * so `--host ::1` on a serve child yields an upstream this proxy ACCEPTS and
+ * then 502s every request through, which is the worst of the three outcomes.
+ * Bracket-stripping is safe for every other spelling: a dotted IPv4, a name
+ * and a bare hextet form carry no brackets to remove.
+ */
+function stripHostBrackets(hostname: string): string {
+  return hostname.replace(/^\[/, '').replace(/\]$/, '');
+}
+
+/**
+ * True when `hostname` is the UNSPECIFIED (wildcard) address: IPv4 `0.0.0.0`,
+ * IPv6 `::` (`URL` normalises `0:0:0:0:0:0:0:0` to it), or the IPv4-mapped
+ * `::ffff:0.0.0.0` (which `URL.hostname` renders as `[::ffff:0:0]`).
+ *
+ * A wildcard is a BIND address, not a destination — a server bound to it IS
+ * reachable on loopback, and `--container-host 0.0.0.0` is an ordinary value
+ * for `start-service` / `run-task` (default `127.0.0.1`) that `cdkl studio`
+ * auto-renders in its "All options" section. So a wildcard is normalised to
+ * loopback rather than refused; the security property is untouched, because a
+ * line naming a real foreign host still names a real foreign host, and no
+ * spelling of the wildcard reaches anywhere but this machine.
+ */
+export function isWildcardHostname(hostname: string): boolean {
+  const h = hostname.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+  return (
+    h === '0.0.0.0' ||
+    h === '::' ||
+    h === '0:0:0:0:0:0:0:0' ||
+    h === '::ffff:0.0.0.0' ||
+    h === '::ffff:0:0'
+  );
+}
+
+/**
+ * Rewrite the HOST TOKEN of a wildcard-bound URL to `127.0.0.1`, leaving
+ * scheme, userinfo, port, path, query and fragment byte-for-byte (rather than
+ * re-serialising the `URL`, which would append a `/` the child never printed).
+ *
+ * This is string surgery over an authority the WHATWG parser has ALREADY
+ * accepted, and the two parsers do not agree on where the authority ends —
+ * `\` terminates it for the parser and not for the `[/?#]` scan here, and any
+ * future terminator will diverge the same way. So this is deliberately NOT the
+ * decision-maker: {@link normalizeLocalUpstream} re-parses whatever comes back
+ * and refuses it unless the RESULT is loopback. Returning a wrong string here
+ * costs a refusal, never a foreign destination.
+ */
+function rewriteWildcardHostToken(upstream: string): string | undefined {
+  const schemeEnd = upstream.indexOf('://');
+  if (schemeEnd === -1) return undefined;
+  const head = upstream.slice(0, schemeEnd + 3);
+  const rest = upstream.slice(schemeEnd + 3);
+  const cut = rest.search(/[/?#]/);
+  const authority = cut === -1 ? rest : rest.slice(0, cut);
+  const tail = cut === -1 ? '' : rest.slice(cut);
+  const at = authority.lastIndexOf('@');
+  const userinfo = at === -1 ? '' : authority.slice(0, at + 1);
+  const hostPort = at === -1 ? authority : authority.slice(at + 1);
+  const portAt = hostPort.startsWith('[') ? hostPort.indexOf(']') + 1 : hostPort.indexOf(':');
+  const port = portAt > 0 ? hostPort.slice(portAt) : '';
+  return `${head}${userinfo}127.0.0.1${port}${tail}`;
+}
+
+/**
+ * Resolve an upstream URL a serve child named into the URL studio may
+ * actually use, or `undefined` when it must be refused (issue #578).
+ *
+ * A wildcard host is REWRITTEN to `127.0.0.1` (see
+ * {@link isWildcardHostname}) and the rewritten URL is what gets adopted as
+ * the endpoint and handed to the proxy, so the destination really is
+ * loopback rather than merely tolerated. Everything else must already be
+ * loopback; a foreign host or an unparseable URL resolves to `undefined`.
+ *
+ * # The answer is CHECKED, not asserted
+ *
+ * Whatever string this is about to return — the input verbatim, or the
+ * host-token rewrite of {@link rewriteWildcardHostToken} — is re-parsed with
+ * `new URL` and its `hostname` must satisfy {@link isLoopbackHostname}. That
+ * single post-condition is the whole guarantee, and it is stated over the
+ * VALUE HANDED BACK rather than over the value inspected on the way in, so it
+ * cannot be outrun by a spelling nobody enumerated.
+ *
+ * It has to be, because the string surgery and the URL parser disagree about
+ * where an authority ends. `http://0.0.0.0\@attacker.example/` parses to host
+ * `0.0.0.0` (WHATWG treats `\` as an authority terminator) but the `[/?#]`
+ * scan reads `0.0.0.0\@attacker.example` as one authority, so the rewrite
+ * lands on the wrong token and produces `http://0.0.0.0\@127.0.0.1/` — which
+ * re-parses to host `0.0.0.0`, NOT loopback, and is refused here. Adding `\`
+ * to the cut set would close exactly that spelling and leave the next one
+ * open; the post-condition closes the shape.
+ *
+ * Userinfo rides through byte-for-byte on the accepted path
+ * (`http://tok@0.0.0.0:51234/` -> `http://tok@127.0.0.1:51234/`) — verified,
+ * not assumed, since the post-condition now proves the destination that
+ * string actually names.
+ */
+export function normalizeLocalUpstream(upstream: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(upstream);
+  } catch {
+    return undefined;
+  }
+  const candidate = isWildcardHostname(parsed.hostname)
+    ? rewriteWildcardHostToken(upstream)
+    : upstream;
+  if (candidate === undefined) return undefined;
+  // The post-condition. A non-wildcard input re-parses to the hostname
+  // already read off `parsed`, so this is the ONLY loopback test the function
+  // needs — one check, over the returned value, on every path.
+  let confirmed: URL;
+  try {
+    confirmed = new URL(candidate);
+  } catch {
+    return undefined;
+  }
+  return isLoopbackHostname(confirmed.hostname) ? candidate : undefined;
+}
+
+/**
+ * Render an UNTRUSTED endpoint string for a human-readable message. The
+ * string reached studio from a child's stdout, so it can carry control
+ * characters (ANSI escapes, a bare CR) that would forge extra output, and it
+ * can be arbitrarily long. Non-printable-ASCII bytes become `?` and the result
+ * is length-capped, the same shape `credential-error` applies to a relayed
+ * service message.
+ */
+export function describeEndpointForMessage(value: string): string {
+  const flat = value.replace(/[^\x20-\x7e]/g, '?');
+  return flat.length > 120 ? `${flat.slice(0, 120)}...` : flat;
+}
+
+/**
  * Start a capturing reverse proxy in front of a studio serve target
  * (decision D4a: because every request to the served port flows through
  * `cdkl studio`, the timeline observes them regardless of source —
@@ -56,6 +224,12 @@ let proxyIdCounter = 0;
  * Studio is a control plane over the CLI, so this proxy sits in front of
  * the long-running `cdkl start-api` child the serve manager spawned; it
  * does NOT re-implement any routing — it forwards verbatim.
+ *
+ * Throws SYNCHRONOUSLY (rather than rejecting) when `upstream` is unparseable
+ * or names a non-loopback host (issue #578) — a refusal to attempt the proxy
+ * at all, rather than a runtime failure of one. A wildcard bind address
+ * (`0.0.0.0` / `::`) is not a refusal: it is rewritten to `127.0.0.1` and
+ * forwarded there ({@link normalizeLocalUpstream}).
  */
 export function startStudioProxy(config: StudioProxyConfig): Promise<RunningStudioProxy> {
   const host = config.host ?? '127.0.0.1';
@@ -68,8 +242,23 @@ export function startStudioProxy(config: StudioProxyConfig): Promise<RunningStud
       return `req-${clock()}-${proxyIdCounter}`;
     });
 
-  const upstreamUrl = new URL(config.upstream);
-  const upstreamHost = upstreamUrl.hostname;
+  // Defence in depth (issue #578). The serve manager already resolves a ready
+  // URL before it ever reaches a proxy, but this proxy is the component that
+  // actually forwards the developer's request, so it enforces the same bound
+  // itself: every caller — now and later — has to name a local upstream. A
+  // wildcard BIND address is rewritten to loopback (so the forwarded request
+  // goes to 127.0.0.1, not 0.0.0.0); anything else non-loopback is refused,
+  // which also means the guard cannot be lost by a future call site that
+  // forgets it.
+  const resolvedUpstream = normalizeLocalUpstream(config.upstream);
+  if (resolvedUpstream === undefined) {
+    throw new Error(
+      `studio proxy refuses the non-loopback upstream '${describeEndpointForMessage(config.upstream)}': ` +
+        'a serve child always listens on this machine, so a request forwarded there would leave it.'
+    );
+  }
+  const upstreamUrl = new URL(resolvedUpstream);
+  const upstreamHost = stripHostBrackets(upstreamUrl.hostname);
   const upstreamPort = Number(upstreamUrl.port) || 80;
 
   const server = createServer((clientReq, clientRes) => {

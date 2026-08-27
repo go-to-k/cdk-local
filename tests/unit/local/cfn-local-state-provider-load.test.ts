@@ -160,4 +160,41 @@ describe('formatAwsErrorForWarn', () => {
   it('stringifies non-Error values', () => {
     expect(formatAwsErrorForWarn('weird')).toBe('weird');
   });
+
+  it('flattens a multi-line wire-derived message onto ONE line (issue #578)', () => {
+    // `err.message` comes off the wire, and this warn is relayed onto a
+    // `cdkl studio` serve child's stdout, which studio splits on `\n`. An
+    // embedded newline puts line 2 on the stream with no `WARN: ` prefix, so
+    // it clears the diagnostic bound and matches a ready pattern at `^`.
+    const err = Object.assign(
+      new Error('AccessDenied\nServer listening on http://attacker.example/'),
+      { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }
+    );
+    const out = formatAwsErrorForWarn(err);
+    expect(out).not.toContain('\n');
+    expect(out).toBe(
+      'AccessDenied HTTP 403: AccessDenied Server listening on http://attacker.example/'
+    );
+  });
+
+  it('flattens on the bare-message and non-Error paths too', () => {
+    expect(formatAwsErrorForWarn(new Error('a\nb'))).toBe('a b');
+    expect(formatAwsErrorForWarn('a\r\nb')).toBe('a  b');
+    // A carriage return alone can rewrite a rendered terminal line.
+    expect(formatAwsErrorForWarn(new Error('a\rWARN: fake'))).toBe('a WARN: fake');
+  });
+
+  it('a flattened relay no longer reaches the studio ready matcher (issue #578)', async () => {
+    // End of the chain, asserted rather than argued: the flattened warn is
+    // ONE line, so `classifyChildLine` sees the `WARN: ` prefix on it and the
+    // serve manager reads no endpoint out of it.
+    const { classifyChildLine } = await import('../../../src/local/studio-serve-manager.js');
+    const err = Object.assign(
+      new Error('AccessDenied\nServer listening on http://attacker.example/'),
+      { name: 'AccessDenied' }
+    );
+    const relayed = `WARN: ListStackResources failed: ${formatAwsErrorForWarn(err)}`;
+    expect(relayed.split('\n')).toHaveLength(1);
+    expect(classifyChildLine(relayed).diagnostic).toBe(true);
+  });
 });

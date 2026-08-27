@@ -75,6 +75,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { flattenToOneLine } from './credential-error.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
 import type { ResolvedSsmParameters } from './ssm-parameter-resolver.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
@@ -715,14 +716,23 @@ export async function fetchAllExports(client: CloudFormationClient): Promise<Map
  * S3-bucket-specific (it rewrites the synthetic `Unknown`/`UnknownError`
  * with bucket / region context), so the CFn provider extracts the
  * pieces directly here.
+ *
+ * Issue #578 — the result is FLATTENED TO ONE LINE via
+ * {@link flattenToOneLine}, the same helper `credential-error` applies to
+ * every other wire-derived value that lands on a log line, rather than a
+ * second spelling of it. Both `err.name` and `err.message` come off the wire,
+ * and this warn is relayed onto a `cdkl studio` serve child's stdout, where
+ * `studio-serve-manager` splits on `\n`: an embedded newline puts line 2 on
+ * the stream with no `WARN: ` prefix, so it clears the diagnostic bound and
+ * matches a ready pattern at `^`. One line in, one line out.
  */
 export function formatAwsErrorForWarn(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
+  if (!(err instanceof Error)) return flattenToOneLine(String(err));
   const name = err.name && err.name !== 'Error' ? err.name : undefined;
   const status = (err as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
   const prefixParts: string[] = [];
   if (name !== undefined) prefixParts.push(name);
   if (status !== undefined) prefixParts.push(`HTTP ${status}`);
-  if (prefixParts.length === 0) return err.message;
-  return `${prefixParts.join(' ')}: ${err.message}`;
+  if (prefixParts.length === 0) return flattenToOneLine(err.message);
+  return flattenToOneLine(`${prefixParts.join(' ')}: ${err.message}`);
 }
