@@ -25,55 +25,48 @@
 - **Start every marker / gate command with an explicit `cd <worktree> &&`** — the
   shell cwd does not reliably persist across tool calls, and a `markgate set` /
   sha-sentinel write that lands in the WRONG worktree surfaces later as a
-  mystifying `no marker` (each worktree has its own markgate store). On
-  2026-08-19 this fired twice in one run: a `markgate status check` diagnosed
-  "no marker" because it ran in the main checkout while the marker sat in the
-  lane's store, and a `.markgate-pr-review-sha` was written into the main
-  checkout before the mistake was caught and redone from the lane. `pwd` costs
-  nothing; a marker in the wrong store costs a re-diagnosis. **A KILLED or
-  REFUSED call is a named trigger for the cwd going wrong, and it lies about
-  the filesystem too**: a tool-call timeout that kills a call mid-run can bring
-  the persistent shell back at the session cwd, and a PreToolUse refusal aborts
-  the WHOLE call, so a directory it was going to `mkdir` never exists for a
-  later call's relative `cd` — and a failed `cd` stops an `&&` chain but NOT
-  the later lines of a multi-line call, which then write into whatever cwd was
-  current. Both measured in a cdkd `/work-issues` run on 2026-08-28 (retro
-  go-to-k/cdkd#2370); this repo has no main-tree EDIT gate to catch the stray
-  write, so the receipt matters more here. After any timeout or refusal, run
-  `pwd` and re-verify what the aborted call was supposed to create, before the
-  next relative-path command.
+  mystifying `no marker` (each worktree has its own markgate store; fired twice
+  in one run on 2026-08-19). `pwd` costs nothing; a marker in the wrong store
+  costs a re-diagnosis. **A KILLED or REFUSED call is a named trigger for the
+  cwd going wrong, and it lies about the filesystem too**: a tool-call timeout
+  that kills a call mid-run can bring the persistent shell back at the session
+  cwd, and a PreToolUse refusal aborts the WHOLE call, so a directory it was
+  going to `mkdir` never exists for a later call's relative `cd` — and a failed
+  `cd` stops an `&&` chain but NOT the later lines of a multi-line call, which
+  then write into whatever cwd was current. Both measured in a cdkd
+  `/work-issues` run (2026-08-28, go-to-k/cdkd#2370); this repo has no
+  main-tree EDIT gate to catch the stray write, so the receipt matters more
+  here. After any timeout or refusal, run `pwd` and re-verify what the aborted
+  call was supposed to create, before the next relative-path command.
 - **A hook's `if` takes ONE pattern — ` or ` matches nothing and disables the
-  gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen gates
-  here were written as
+  gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen
+  gates here were written as
   `"if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)"`
   and every one was INERT: `git commit` on `main` with no markers reached git,
-  while running `branch-gate.sh` by hand on the same payload blocked with exit 2.
-  Three throwaway hooks separated the causes — an `if`-less hook fired,
-  `if: "Bash(git status*)"` fired, the ` or ` one never did. A gate guarding two
-  verbs gets two ENTRIES, and the pattern is written UNANCHORED
-  (`Bash(*git commit*)`) so a compound command still selects it; the script
-  re-matches precisely anyway. `tests/unit/hooks/gate-if-matchers.test.ts` pins
-  all three properties. **The general shape: a gate you have never watched go RED
-  is not a gate** — the failure here was invisible for as long as nobody typed a
-  command that should have been blocked and noticed that it was not.
+  while the same payload run through the script by hand blocked with exit 2.
+  Bisect with throwaway hooks: an `if`-less hook, a known-good single pattern,
+  the suspect — whichever stops firing names the cause.
+  A gate guarding two verbs gets two ENTRIES, and the pattern is written
+  UNANCHORED (`Bash(*git commit*)`) so a compound command still selects it; the
+  script re-matches precisely anyway. `tests/unit/hooks/gate-if-matchers.test.ts`
+  pins all three properties. **The general shape: a gate you have never watched
+  go RED is not a gate** — the failure stays invisible until someone types a
+  command that should have been blocked and notices it was not.
 - **A gated command must be the ONLY thing in its Bash call.** A PreToolUse hook
   denial aborts the WHOLE command string BEFORE any line runs — including
-  preamble side effects you assumed happened. On 2026-08-19 a
-  `cat > body.md <<EOF ... && gh pr create --body-file body.md` was blocked by
-  `verify-pr-gate`, so the body file was never written; a later `cat >>` append
-  then CREATED the file as a fragment, and PR go-to-k/cdk-local#525 opened with
-  only its review section — no summary and no `Closes` line, which silently
-  cost the issue's auto-close at merge. Same mechanism as the documented
+  preamble side effects you assumed happened: a blocked
+  `cat > body.md <<EOF ... && gh pr create --body-file body.md` never wrote the
+  body, a later `cat >>` CREATED the file as a fragment, and PR
+  go-to-k/cdk-local#525 opened with no summary and no `Closes` line, silently
+  costing the auto-close (2026-08-19). Same mechanism as the documented
   markgate-set rule (`.claude/rules/hooks.md`, gh-pr-merge-worktree-gate): write
   files and set markers in their own calls, then run `git commit` /
-  `gh pr create` / `gh pr merge` alone.
-  Its worst signature is not the ABSENT file that case describes but a STALE one
-  left by an earlier session, since these paths are conventional
-  (`/tmp/pr-body.md`) and shared. The gate then inspects that file and reports
-  violations from content this session never wrote — measured 2026-08-21 in the
-  sibling repo, where a `gh pr create` whose heredoc had not run was refused for
-  four bare `#N` refs belonging to a lane days old, none of them in the draft on
-  screen. If a gate names text you do not recognise, check the file's mtime
+  `gh pr create` / `gh pr merge` alone. Its worst signature is not the ABSENT
+  file but a STALE one left by an earlier session — these paths are conventional
+  (`/tmp/pr-body.md`) and shared, so the gate inspects that file and reports
+  violations from content this session never wrote (measured 2026-08-21 in the
+  sibling repo: a refused `gh pr create` cited four bare refs from a lane days
+  old). If a gate names text you do not recognise, check the file's mtime
   before hunting for the text; and give body files a per-session name for the
   same reason probe files get one.
 - **`/merge-pr`, not a hand-run merge** — a hand-run `gh pr merge --delete-branch`
@@ -83,12 +76,11 @@
   the SAME PR (the `integ` gate enforces it at merge time).
 - **Do not restore an agent's uncommitted work with `git checkout -- <file>`.**
   It resets to HEAD, and a fan-out agent's work is UNCOMMITTED by instruction, so
-  the file goes back to `origin/main` and the agent's edit is gone. On 2026-08-27
-  this destroyed a lane's fix while restoring after a mutation probe; it was
-  recoverable only because the probe had copied the file first. Copy before you
-  mutate, restore from the copy, and confirm by a property of the agent's work
-  (`grep -c <the symbol it added>`), not by `git status` being clean — clean is
-  exactly what the wrong restore produces.
+  the file goes back to `origin/main` and the agent's edit is gone (destroyed a
+  lane's fix on 2026-08-27; recoverable only because the probe had copied the
+  file first). Copy before you mutate, restore from the copy, and confirm by a
+  property of the agent's work (`grep -c <the symbol it added>`), not by
+  `git status` being clean — clean is exactly what the wrong restore produces.
 - **`git add -N` to get a diffstat leaves the index dirty and breaks the next
   `rebase` / `stash`.** Both refuse with `Entry '<path>' not uptodate` or
   `your index contains uncommitted changes`, which reads as a merge problem
@@ -98,12 +90,11 @@
   stat and say so.
 - **A green suite in the MAIN checkout can be measuring nothing.** The
   worktree rule in section 5 says a fresh worktree has no `node_modules` and no
-  `dist/`; the main checkout can be the one that is missing them, because the
-  lanes have been running `pnpm install` and it has not. On 2026-08-27 six runs
-  there returned `exit 1` and were read as a reproduction of a flake, when every
-  one was `Cannot find module .../vite-plus/dist/bin.js`. Read the failure text
-  before counting exit codes, and prefer measuring in a worktree that is set up
-  and whose diff cannot touch the subject.
+  `dist/`; the main checkout can be the one missing them, because the lanes have
+  been running `pnpm install` and it has not (six `exit 1` runs read as a flake
+  repro on 2026-08-27 were all `Cannot find module .../vite-plus/dist/bin.js`).
+  Read the failure text before counting exit codes, and prefer measuring in a
+  worktree that is set up and whose diff cannot touch the subject.
 
 ## Important existing rules this skill leans on
 

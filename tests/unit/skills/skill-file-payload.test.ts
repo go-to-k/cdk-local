@@ -40,14 +40,14 @@ const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 24,816 B (hunt-bugs)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~7 KB at the split
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 35,620 B (implement.md)
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 25,748 B (implement.md, post-#627 compression)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
 // that narrative COMPRESSION stays legal while wholesale deletion fails.
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
-const MIN_REFERENCE_CORPUS_BYTES = 60_000;
+const MIN_REFERENCE_CORPUS_BYTES = 72_000; // re-measured 2026-08-28 after go-to-k/cdk-local#627's compression: corpus 96,422 B; 72,000 also catches hollowing the largest file (96,422 - 25,748 = 70,674 < floor)
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
