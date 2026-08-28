@@ -719,7 +719,12 @@ construction.
     stops naming any include entry. The include
     used to name `vitest.config.ts`, `.eslintrc*` and `.prettierrc*`,
     none of which exist here; `tests/unit/gates/markgate-include-globs.test.ts`
-    now fails on any include entry matching no tracked file.
+    now fails on any include entry matching no file (tracked OR on
+    disk — `hash: files` digests untracked content too) and on any
+    entry naming a bare directory rather than `<dir>/**`. It
+    deliberately over-approximates rather than under-reports;
+    `markgate config lint --json` is the exact instrument, and is not
+    available in CI.
 
     `.claude/hooks/**` needs BOTH halves and one alone is worse
     than neither: the path in the include makes a hook edit stale

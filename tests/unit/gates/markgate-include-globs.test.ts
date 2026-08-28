@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { globSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { globSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -11,60 +11,76 @@ import { fileURLToPath } from 'node:url';
  * entry there fails SILENTLY in the direction that matters: a glob matching
  * nothing looks exactly like one doing its job.
  *
- * MEASURED on the tree this test was added to. The `check` gate's include
+ * MEASURED on the tree this was written for. The `check` gate's include
  * carried `vitest.config.ts`, `.eslintrc*` and `.prettierrc*`, none of which
  * this repo has ever had, while the real `vite.config.ts` -- the file holding
  * the vitest `include` globs and every `vp run <task>` definition, i.e. the
- * file that decides what "green" MEANS -- was absent. Against markgate's OWN
- * resolution rather than an `ls`, `markgate verify check --explain` on the
- * pre-fix config resolved 949 files with zero of `vite.config.ts` /
- * `.mise.toml` / `.node-version` / `.claude/hooks/**` among them; on the fixed
- * config it resolves 981 with all of them present.
+ * file that decides what "green" MEANS -- was absent. markgate's own linter
+ * named all three on the pre-fix config:
  *
- * ## Why this is re-implemented here rather than delegated to markgate
+ *   gates.check.include[11]: 'vitest.config.ts' matches 0 files
+ *   gates.check.include[12]: '.eslintrc*' matches 0 files
+ *   gates.check.include[13]: '.prettierrc*' matches 0 files
  *
- * markgate 0.4.1 ships `markgate config lint --json`, which reports exactly
- * this class -- run against the pre-fix config it named all three dead entries
- * by index (`gates.check.include[11]: 'vitest.config.ts' matches 0 files`).
- * It is the better instrument and the PR body cites it. It cannot be the fence
- * that RUNS, because `.github/workflows/ci.yml` installs `vp` only: there is
- * no mise and no markgate binary in CI, so a test shelling out to it would
- * fail there. So the check is duplicated in TypeScript, and the duplication is
- * declared rather than hidden.
+ * and `markgate verify check --explain` resolved zero of `vite.config.ts` /
+ * `.mise.toml` / `.node-version` and zero `.claude/hooks/*` files into the
+ * scope, against 30 hook files after the fix. (The scope's absolute SIZE is
+ * deliberately not quoted anywhere here: `hash: files` digests untracked files
+ * too, so the total moves with `dist/`, `node_modules/` and any scratch file
+ * in the tree -- two reviewers measuring the same commit got different totals.
+ * The counts above are the stable, reproducible half.)
  *
- * ## The parser refuses what it cannot model, and that is the whole design
+ * ## What this fence claims, and what it does NOT
  *
- * A hand-rolled YAML reader's failure mode is silent truncation: an entry
- * spelled in a shape the regex misses ends the list, taking every later entry
- * in that gate with it, and the sweep then reports "no dead globs" over a
- * population it never saw. Three defences, in order of importance:
+ * markgate 0.4.1 ships `markgate config lint --json`, which decides this
+ * question EXACTLY -- it parses with yaml.v3 and matches with the same
+ * doublestar walk `hash: files` uses. It is the right instrument and the PR
+ * body cites its output. It cannot be the fence that RUNS, because
+ * `.github/workflows/ci.yml` installs `vp` only: no mise, no markgate binary,
+ * so a test shelling out to it would fail in CI. What runs here is therefore a
+ * DELIBERATELY WEAKER approximation, and the weakness has a direction:
  *
- *   1. every `      - ` line inside a scope list MUST parse, or the parser
- *      THROWS -- an unmodelled spelling is loud, never a quiet skip;
- *   2. the entry count is reconciled against an independent scan of those
- *      lines, and the gate-name set likewise, so a whole gate cannot vanish;
- *   3. `exclude:` is parsed and REFUSED. markgate honours it and subtracts it
- *      from the scope -- measured here with one variable changed: adding
- *      `exclude: ["vite.config.ts"]` while leaving the include untouched took
- *      `markgate verify check --explain` from 981 resolved files to 980 and
- *      removed `vite.config.ts` from the listing, while
- *      `markgate config lint --json` reported nothing about it. A fence
- *      modelling only `include` would keep reporting full coverage while an
- *      `exclude` silently subtracted. No gate uses one today; if one ever
- *      should, teach the sweep to subtract it BEFORE deleting that assertion.
+ *   it may call a dead entry LIVE (over-approximation), and must never call a
+ *   live entry DEAD.
  *
- * Matching is the union of `git ls-files -- ':(glob)<entry>'` and
- * `fs.globSync`, and an entry counts as dead only when BOTH are empty. Neither
- * alone is right: git sees only the index, so an entry like `dist/**` (16 real
- * files here, none tracked) is live for markgate's `hash: files` and would
- * read as dead; and git's wildmatch does not do brace alternation, which
- * markgate's doublestar does. The union errs toward NOT reporting a dead glob,
- * which is the right direction for a fence whose false positive would block a
- * legitimate config.
+ * That is the safe direction for a fence whose false positive would block a
+ * legitimate config. Two known over-approximations, both from git's pathspec
+ * and Node's glob being more permissive than doublestar-over-files: a bare
+ * directory name (`.claude/agents` rather than `.claude/agents/**`) and a glob
+ * matching only directories. Both are checked EXPLICITLY below rather than
+ * left to the general sweep, because writing `src` for `src/**` is this PR's
+ * own defect class. Anything subtler belongs to `markgate config lint`, and
+ * this file says so instead of pretending otherwise.
+ *
+ * ## The parser refuses what it cannot model
+ *
+ * A hand-rolled YAML reader's failure mode is silent truncation: an entry in a
+ * shape the regex misses ends the list, taking every later entry in that gate
+ * with it, and the sweep then reports "no dead globs" over a population it
+ * never saw. An earlier draft of this file had exactly that bug twice -- first
+ * for single-quoted and bare scalars, then for a block sequence indented at
+ * the parent key's own column, which is valid YAML that markgate accepts and
+ * which a reviewer used to hide three dead globs from a 9/9 green run.
+ *
+ * The remedy is not a better regex. It is a COMPLETENESS check: the parser
+ * records which lines it consumed, and a separate pass fails if any `- ` line
+ * anywhere under `gates:` was not consumed. Item indentation is learned rather
+ * than assumed, non-scope keys (`requires:`) have their items consumed and
+ * discarded, and anything still unrecognised THROWS. A shape this file cannot
+ * model becomes a loud failure, never a quiet omission.
+ *
+ * `exclude:` is parsed and REFUSED. markgate honours it and subtracts it from
+ * the scope -- measured with one variable changed, adding
+ * `exclude: ["vite.config.ts"]` while leaving the include untouched removed
+ * `vite.config.ts` from `markgate verify check --explain` and dropped the
+ * resolved total by exactly one, while `markgate config lint --json` reported
+ * nothing about it. A fence modelling only `include` would keep reporting full
+ * coverage while an `exclude` silently subtracted. No gate uses one today; if
+ * one ever should, teach the sweep to subtract it BEFORE deleting that
+ * assertion. (Cross-lane finding, go-to-k/cdk-real-drift#1838.)
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const CONFIG = join(repoRoot, '.markgate.yml');
 
 interface Entry {
   gate: string;
@@ -77,37 +93,51 @@ interface ParsedConfig {
   entries: Entry[];
   /** Every gate key seen under `gates:`, whether or not it declares a scope. */
   gates: string[];
+  /** 1-based line numbers of every `- ` item line the parser consumed. */
+  consumed: Set<number>;
+}
+
+/** Scalar forms a list item may take. Anything else throws. */
+function scalar(raw: string, at: string, gate: string | null, key: string): string {
+  const m = /^(?:"([^"]*)"|'([^']*)'|([^\s#[\]{}&*!|>%@`'"][^#]*?))\s*(?:#.*)?$/.exec(raw);
+  if (!m) {
+    throw new Error(
+      `${at}: could not parse this list item inside gate '${gate}'.${key}:\n  ${raw}\n` +
+        `Unparsed items used to END the list silently, dropping this entry AND every ` +
+        `later one in the gate. Extend this parser instead of loosening the check that ` +
+        `caught you.`
+    );
+  }
+  return (m[1] ?? m[2] ?? (m[3] ?? '').trim()).trim();
 }
 
 /**
- * Reader for the block shape `.markgate.yml` uses: two-space-indented gate
- * keys under a top-level `gates:`, each optionally carrying a
- * four-space-indented `include:` / `exclude:` whose items are
- * six-space-indented scalars. Double-quoted, single-quoted and bare scalars
- * are all accepted; anything else THROWS rather than ending the list.
+ * Reader for `.markgate.yml`'s block shape. Gate keys sit at two spaces under
+ * a top-level `gates:`; a gate's keys at four. List items may be indented at
+ * any column at or beyond their key's -- learned, not assumed, because the
+ * assumption is what failed before.
  */
 function parseConfig(yaml: string): ParsedConfig {
   const entries: Entry[] = [];
   const gates: string[] = [];
+  const consumed = new Set<number>();
   let inGates = false;
   let gate: string | null = null;
-  let key: 'include' | 'exclude' | null = null;
+  let key: string | null = null;
   const lines = yaml.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
+    const line = (lines[i] ?? '').replace(/﻿/g, '').replace(/\t/g, '  ');
     const at = `.markgate.yml:${i + 1}`;
     if (/^gates:\s*$/.test(line)) {
       inGates = true;
       continue;
     }
     if (!inGates) continue;
+    if (/^\s*(#.*)?$/.test(line)) continue; // blank or comment, at any indent
     if (/^\S/.test(line)) {
-      // A non-indented, non-blank, non-comment line ends the `gates:` block.
-      if (!/^\s*(#.*)?$/.test(line)) {
-        inGates = false;
-        gate = null;
-        key = null;
-      }
+      inGates = false; // a new top-level key ends the gates block
+      gate = null;
+      key = null;
       continue;
     }
     const gateHeader = /^ {2}([A-Za-z0-9_-]+):\s*(#.*)?$/.exec(line);
@@ -117,72 +147,83 @@ function parseConfig(yaml: string): ParsedConfig {
       key = null;
       continue;
     }
-    const scopeKey = /^ {4}(include|exclude):\s*(.*)$/.exec(line);
-    if (scopeKey) {
-      const rest = (scopeKey[2] ?? '').trim();
-      if (rest !== '' && !rest.startsWith('#')) {
+    const keyLine = /^ {4}([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (keyLine) {
+      const name = keyLine[1] ?? '';
+      const rest = (keyLine[2] ?? '').trim();
+      const hasInlineValue = rest !== '' && !rest.startsWith('#');
+      if ((name === 'include' || name === 'exclude') && hasInlineValue) {
         // A flow sequence (`include: ["a","b"]`) or an anchor / alias.
-        // Refusing is the point: silently skipping would drop the whole gate.
+        // Refusing is the point: skipping it would drop the whole gate.
         throw new Error(
-          `${at}: unsupported inline value for \`${scopeKey[1]}\` in gate '${gate}': ${rest}\n` +
+          `${at}: unsupported inline value for \`${name}\` in gate '${gate}': ${rest}\n` +
             `This parser models the block-sequence form only. Rewrite it as a block list, ` +
-            `or teach parseConfig the new shape -- do NOT let it be skipped.`
+            `or teach the parser the new shape -- do NOT let it be skipped.`
         );
       }
-      key = scopeKey[1] === 'exclude' ? 'exclude' : 'include';
+      // A key with an inline value takes no items; one without may.
+      key = hasInlineValue ? null : name;
       continue;
     }
-    if (key === null || gate === null) continue;
-    if (/^\s*(#.*)?$/.test(line)) continue; // blank line or comment inside the list
-    if (/^ {4}\S/.test(line)) {
-      key = null; // a sibling key at the gate's own indent ends the list
+    const itemLine = /^(\s+)- (.*)$/.exec(line);
+    if (itemLine) {
+      if (gate === null || key === null) {
+        throw new Error(
+          `${at}: a list item with no scope key above it:\n  ${line}\n` +
+            `The parser cannot tell which key owns it, so it refuses rather than guessing.`
+        );
+      }
+      consumed.add(i + 1);
+      if (key !== 'include' && key !== 'exclude') continue; // e.g. `requires:`
+      entries.push({
+        gate,
+        key,
+        // `.replace(/^\s+/, '')` because `-  "x"` (two spaces) is legal
+        // YAML that markgate accepts; the item regex captures the extra space.
+        glob: scalar((itemLine[2] ?? '').replace(/^\s+/, ''), at, gate, key),
+        line: i + 1,
+      });
       continue;
     }
-    // The bare-scalar arm excludes YAML indicator characters in FIRST
-    // position -- `[`/`{` open a flow collection, `&`/`*`/`!` an anchor,
-    // alias or tag -- so `- [a, b]` throws instead of being read as the
-    // literal glob "[a, b]". Later positions are unrestricted, because a
-    // real glob may legitimately contain braces (`tsconfig{,.test}.json`).
-    // A glob that genuinely starts with `*` must be quoted, which YAML
-    // requires anyway.
-    const item =
-      /^ {6}- (?:"([^"]*)"|'([^']*)'|([^\s#[\]{}&*!|>%@`'"][^#]*?))\s*(?:#.*)?$/.exec(line);
-    if (!item) {
-      throw new Error(
-        `${at}: could not parse this line inside gate '${gate}'.${key}:\n  ${line}\n` +
-          `An unparsed line used to END the list silently, dropping this entry AND every ` +
-          `later entry in the gate -- the sweep then reports "no dead globs" over a ` +
-          `population it never saw. Extend parseConfig instead of loosening this.`
-      );
-    }
-    entries.push({ gate, key, glob: item[1] ?? item[2] ?? (item[3] ?? '').trim(), line: i + 1 });
+    throw new Error(
+      `${at}: unrecognised line inside gate '${gate}':\n  ${line}\n` +
+        `Nested mappings and other shapes are not modelled. Extend the parser.`
+    );
   }
-  return { entries, gates };
+  return { entries, gates, consumed };
 }
 
 /**
- * Independent counts, used to reconcile the parse. Deliberately NOT derived
- * from `parseConfig` -- a floor computed by the thing it is checking cannot
- * notice that thing losing entries.
+ * Independent scan, sharing NO assumption with `parseConfig`. The previous
+ * version counted `^ {6}- ` lines -- the very indentation assumption that
+ * failed -- so it agreed with the parser precisely when both were wrong.
  */
-function rawCounts(yaml: string): { items: number; gates: string[] } {
+function rawScan(yaml: string): { itemLines: number[]; gates: string[] } {
   const lines = yaml.split(/\r?\n/);
   const start = lines.findIndex((l) => /^gates:\s*$/.test(l));
-  const body = start === -1 ? [] : lines.slice(start + 1);
-  const end = body.findIndex((l) => /^\S/.test(l) && !/^\s*#/.test(l));
-  const scoped = end === -1 ? body : body.slice(0, end);
-  return {
-    items: scoped.filter((l) => /^ {6}- /.test(l)).length,
-    gates: scoped.flatMap((l) => {
-      const m = /^ {2}([A-Za-z0-9_-]+):/.exec(l);
-      return m?.[1] !== undefined ? [m[1]] : [];
-    }),
-  };
+  const itemLines: number[] = [];
+  const gates: string[] = [];
+  if (start === -1) return { itemLines, gates };
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) break;
+    if (/^\s+-\s/.test(line)) itemLines.push(i + 1);
+    const m = /^ {2}([A-Za-z0-9_-]+):/.exec(line);
+    if (m?.[1] !== undefined) gates.push(m[1]);
+  }
+  return { itemLines, gates };
 }
 
+const trackedCache = new Map<string, string[]>();
+
+/** Tracked FILES matching a git `:(glob)` pathspec. */
 function trackedFiles(glob: string): string[] {
+  const hit = trackedCache.get(glob);
+  if (hit !== undefined) return hit;
+  let out: string[] = [];
   try {
-    return execFileSync('git', ['ls-files', '-z', '--', `:(glob)${glob}`], {
+    out = execFileSync('git', ['ls-files', '-z', '--', `:(glob)${glob}`], {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
@@ -191,73 +232,94 @@ function trackedFiles(glob: string): string[] {
       .split('\0')
       .filter((f) => f.length > 0);
   } catch {
-    // A pathspec git refuses (e.g. a leading `/`) falls through to the on-disk
+    // A pathspec git refuses (a leading `/`, say) falls through to the on-disk
     // arm rather than escaping as a bare "Command failed: git ls-files".
+    out = [];
+  }
+  trackedCache.set(glob, out);
+  return out;
+}
+
+/**
+ * On-disk FILES matching the glob, confined to the repo. `hash: files` digests
+ * untracked and gitignored files too, so the tracked set alone would call
+ * `dist/**` dead; and without the file/containment filters an entry like
+ * `../**` or a directory-only glob reads as live when markgate says otherwise.
+ */
+function onDiskFiles(glob: string): string[] {
+  try {
+    return globSync(glob, { cwd: repoRoot, withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => resolve(d.parentPath, d.name))
+      .filter((p) => p.startsWith(repoRoot + sep))
+      .map((p) => relative(repoRoot, p));
+  } catch {
     return [];
   }
 }
 
-/** Tracked matches (git's wildmatch) union on-disk matches (doublestar-ish). */
 function matchCount(glob: string): number {
   const tracked = trackedFiles(glob).length;
-  if (tracked > 0) return tracked;
+  return tracked > 0 ? tracked : onDiskFiles(glob).length;
+}
+
+/** A wildcard-free entry naming a DIRECTORY matches no FILE for markgate. */
+function isBareDirectory(glob: string): boolean {
+  if (/[*?[\]{}]/.test(glob)) return false;
   try {
-    return globSync(glob, { cwd: repoRoot }).length;
+    return statSync(join(repoRoot, glob)).isDirectory();
   } catch {
-    return 0;
+    return false;
   }
 }
 
 /**
  * The single documented zero-match entry: a gitignored sentinel `/review-pr`
- * rewrites, which does not exist at all in a fresh worktree. Spelled as an
- * explicit one-element allow-list rather than a `git check-ignore` rule --
- * that rule exempted every ignored path, so a typo'd `dist/index.js` would
- * have been waved through as well.
+ * rewrites, absent entirely in a fresh worktree. An explicit one-element
+ * allow-list rather than a `git check-ignore` rule -- that rule exempted every
+ * ignored path, so a typo'd `dist/index.js` would have been waved through too.
  */
 const ZERO_MATCH_ALLOWED = ['.markgate-pr-review-sha'];
 
 describe('.markgate.yml gate scopes', () => {
-  const yaml = readFileSync(CONFIG, 'utf8');
+  const yaml = readFileSync(join(repoRoot, '.markgate.yml'), 'utf8');
   const parsed = parseConfig(yaml);
-  const raw = rawCounts(yaml);
+  const raw = rawScan(yaml);
+  const includes = parsed.entries.filter((e) => e.key === 'include');
+  const checkGlobs = includes.filter((e) => e.gate === 'check').map((e) => e.glob);
 
-  it('the parse loses nothing (reconciled against an independent count)', () => {
-    // Asserted as an EQUALITY against a separate scan rather than as a `>=`
-    // floor: a floor with slack is exactly what let an earlier draft of this
-    // file drop 11 of 26 entries and still pass.
+  it('the parse consumed every list item in the file', () => {
+    // COMPLETENESS, not a count. A `>=` floor let an earlier draft drop 11 of
+    // 26 entries; a count against a scan sharing the parser's indentation
+    // assumption then let a whole gate vanish at a different indent. This
+    // compares line NUMBERS: every `- ` line under `gates:` must have been
+    // consumed by name, so an entry cannot be missed without failing here.
+    const missed = raw.itemLines.filter((n) => !parsed.consumed.has(n));
     expect(
-      parsed.entries.length,
-      `parseConfig produced ${parsed.entries.length} entries but .markgate.yml has ` +
-        `${raw.items} \`      - \` lines under \`gates:\`. The parse is losing entries, ` +
-        `and every lost entry is one this sweep never checks.`
-    ).toBe(raw.items);
+      missed.map((n) => `.markgate.yml:${n}`),
+      `these list items were never consumed by the parser, so nothing below checks ` +
+        `them:\n${missed.join(', ')}`
+    ).toEqual([]);
     expect(parsed.gates, 'a gate key was missed by the parse').toEqual(raw.gates);
     expect(parsed.gates, 'the check gate vanished from the parse').toContain('check');
-    expect(raw.items, 'the config has almost no scope entries -- did the scan find it?')
-      .toBeGreaterThanOrEqual(15);
+    expect(
+      raw.itemLines.length,
+      'the config has almost no scope entries -- did the scan find it at all?'
+    ).toBeGreaterThanOrEqual(15);
   });
 
   it('no gate declares an `exclude:` this sweep would not subtract', () => {
-    // markgate honours `exclude` and subtracts it from the resolved scope.
-    // MEASURED with one variable changed (include untouched): adding
-    // `exclude: ["vite.config.ts"]` to the check gate took
-    // `markgate verify check --explain` from 981 resolved files to 980 and
-    // removed `vite.config.ts` from the listing, while
-    // `markgate config lint --json` reported nothing about it. The sweep below
-    // models `include` only, so it would keep reporting full coverage while an
-    // `exclude` silently subtracted. Refuse the shape rather than mis-model it.
     const excludes = parsed.entries.filter((e) => e.key === 'exclude');
     expect(
       excludes.map((e) => `.markgate.yml:${e.line} gate '${e.gate}' excludes "${e.glob}"`),
-      'a gate grew an `exclude:`. Teach the dead-glob sweep below to subtract it from ' +
-        'the include set FIRST, then remove this assertion -- do not just delete it.'
+      'a gate grew an `exclude:`. markgate SUBTRACTS it from the resolved scope, so the ' +
+        'sweep below would keep reporting full coverage over a smaller reality. Teach the ' +
+        'sweep to subtract it FIRST, then remove this assertion -- do not just delete it.'
     ).toEqual([]);
   });
 
   it('every include entry matches at least one file', () => {
-    const dead = parsed.entries
-      .filter((e) => e.key === 'include')
+    const dead = includes
       .filter((e) => !ZERO_MATCH_ALLOWED.includes(e.glob))
       .filter((e) => matchCount(e.glob) === 0)
       .map((e) => `.markgate.yml:${e.line} gate '${e.gate}' includes "${e.glob}"`);
@@ -265,24 +327,45 @@ describe('.markgate.yml gate scopes', () => {
       dead,
       `these include entries match no file, so they scope nothing:\n${dead.join('\n')}\n` +
         `A glob matching nothing is indistinguishable from one doing its job. Remove it, ` +
-        `or correct it to the file it was meant to name. (markgate's own ` +
-        `\`markgate config lint --json\` reports the same class, but CI has no markgate.)`
+        `or correct it to the file it was meant to name.`
+    ).toEqual([]);
+  });
+
+  it('no include entry is a bare directory name', () => {
+    // The over-approximation this fence covers explicitly, because it IS this
+    // PR's defect class one step over: `.claude/agents` instead of
+    // `.claude/agents/**` scopes NOTHING for markgate (`hash: files` keeps
+    // files, and doublestar matches only the directory entry), while git's
+    // pathspec happily reports every file beneath it and `globSync` returns
+    // the directory. Both of this file's arms would call it live.
+    const bare = includes
+      .filter((e) => isBareDirectory(e.glob))
+      .map((e) => `.markgate.yml:${e.line} gate '${e.gate}' includes "${e.glob}"`);
+    expect(
+      bare,
+      `these entries name a DIRECTORY, which matches no file for markgate:\n${bare.join('\n')}\n` +
+        `Write "<dir>/**".`
     ).toEqual([]);
   });
 
   it('the allow-listed zero-match entry really is a gitignored sentinel', () => {
-    // Guard the exemption: it must stay a deliberate sentinel, not a place to
-    // park a broken glob. Both properties are required -- still referenced by
-    // a gate, and still ignored by git.
     for (const glob of ZERO_MATCH_ALLOWED) {
       expect(
         parsed.entries.some((e) => e.glob === glob),
         `${glob} is allow-listed here but no gate references it any more -- drop the entry`
       ).toBe(true);
-      const ignored = execFileSync('git', ['check-ignore', '-v', '--', glob], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      });
+      let ignored = '';
+      try {
+        // Exits 1 when the path is NOT ignored, which `execFileSync` throws on
+        // -- the crafted message below never printed until this catch existed.
+        ignored = execFileSync('git', ['check-ignore', '-v', '--', glob], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch {
+        ignored = '';
+      }
       expect(ignored, `${glob} is no longer gitignored, so it should not be exempt`).toContain(
         glob
       );
@@ -290,44 +373,54 @@ describe('.markgate.yml gate scopes', () => {
   });
 
   it('every file this fence READS is inside the check gate it guards', () => {
-    // The go-to-k/cdk-local#620 rule, applied to this file: a checker INPUT
+    // The go-to-k/cdk-local#620 rule applied to this file: a checker INPUT
     // outside the include can red the suite while the marker stays fresh.
     // This fence became such a reader in its own second commit (it asserts
-    // `ci.yml` still runs `test:hooks`), which would have re-introduced the
-    // very class it exists to close -- measured as probe Q17, GREEN before
-    // this case existed.
+    // `ci.yml` still runs `test:hooks`), which re-introduced the very class it
+    // exists to close.
     //
-    // The population is DERIVED from this file's own source rather than
-    // hand-listed, so a `readFileSync(join(repoRoot, ...))` added later is
-    // covered with no edit here.
+    // The population is derived from this file's own source. A regex can only
+    // see the spelling it models, so the file also FORBIDS every other read
+    // spelling: the total number of read calls must equal the derived reads
+    // plus the one self-read below. Adding a read via `resolve()`, a template
+    // literal or a joined array fails here instead of slipping past.
+    //
+    // Careful when editing the text in this case: the scan reads its own
+    // source, so writing the scanned spelling into a comment or a message
+    // counts as a read and makes the equality fail on prose. It did, twice.
     const selfSource = readFileSync(fileURLToPath(import.meta.url), 'utf8');
     const reads = [
       ...new Set(
-        [...selfSource.matchAll(/join\(\s*repoRoot,([^)]*)\)/g)]
-          .map((m) =>
-            [...(m[1] ?? '').matchAll(/'([^']+)'/g)].map((q) => q[1] ?? '').join('/')
-          )
+        [...selfSource.matchAll(/readFileSync\(\s*join\(\s*repoRoot,([^)]*)\)/g)]
+          .map((m) => [...(m[1] ?? '').matchAll(/'([^']+)'/g)].map((q) => q[1] ?? '').join('/'))
           .filter((path) => path.length > 0)
       ),
     ].sort();
+    const readCalls = (selfSource.match(/readFileSync\(/g) ?? []).length;
     expect(
-      reads.length,
-      'the self-scan found almost no `join(repoRoot, ...)` reads -- it has stopped ' +
-        'matching this file, so it would report full coverage over nothing'
-    ).toBeGreaterThanOrEqual(5);
+      readCalls,
+      `this file makes ${readCalls} readFileSync calls but only ${reads.length} resolve ` +
+        `through the modelled spelling (plus one self-read). A read the extractor cannot ` +
+        `see is a checker input nothing below checks. Spell new reads the same way the ` +
+        `others are spelled, or extend the extractor -- and do not write that spelling ` +
+        `into a comment or a message here, because this scan reads its own source.`
+    ).toBe(reads.length + 1);
 
-    const checkGlobs = parsed.entries
-      .filter((e) => e.gate === 'check' && e.key === 'include')
-      .map((e) => e.glob);
-    const uncovered = reads.filter(
-      (path) => !checkGlobs.some((g) => trackedFiles(g).includes(path))
-    );
+    const covered = (path: string): boolean =>
+      checkGlobs.some((g) => trackedFiles(g).includes(path));
+    const uncovered = reads.filter((path) => !covered(path));
     expect(
       uncovered,
       `this test reads ${uncovered.join(', ')}, which no \`check\` include entry covers. ` +
         `Editing one of those reds this suite while a previously-set marker stays FRESH ` +
         `-- the go-to-k/cdk-local#620 class. Scope it in, or stop reading it.`
     ).toEqual([]);
+    // Negative control: `covered` must be able to say NO, or the assertion
+    // above passes for any input. CONTRIBUTING.md is tracked and in no gate.
+    expect(
+      covered('CONTRIBUTING.md'),
+      'the coverage predicate reports everything as in-scope, so it proves nothing'
+    ).toBe(false);
   });
 
   it("the check gate scopes the files that decide what 'green' means", () => {
@@ -335,11 +428,7 @@ describe('.markgate.yml gate scopes', () => {
     // the other entries do not share -- they are not READ by any assertion.
     // They decide what the suite selects (`vite.config.ts`), which binaries
     // run it (`.mise.toml` pins vp + markgate, `.node-version` pins the Node
-    // they run on), and what the marker MEANS (`.markgate.yml`). Nothing else
-    // would notice one being dropped.
-    const checkGlobs = parsed.entries
-      .filter((e) => e.gate === 'check' && e.key === 'include')
-      .map((e) => e.glob);
+    // they run on), and what the marker MEANS (`.markgate.yml`).
     for (const g of ['vite.config.ts', '.mise.toml', '.node-version', '.markgate.yml']) {
       expect(checkGlobs, `the check gate no longer scopes ${g}`).toContain(g);
     }
@@ -349,57 +438,43 @@ describe('.markgate.yml gate scopes', () => {
     // The two halves of issue #630's decision, each inert without the other:
     // the include entry makes a hook edit stale the marker, and `/check`
     // running `test:hooks` makes the run that clears it execute the suites.
-    const checkGlobs = parsed.entries
-      .filter((e) => e.gate === 'check' && e.key === 'include')
-      .map((e) => e.glob);
     expect(checkGlobs, 'the check gate no longer scopes .claude/hooks/**').toContain(
       '.claude/hooks/**'
     );
 
     const skill = readFileSync(join(repoRoot, '.claude', 'skills', 'check', 'SKILL.md'), 'utf8');
-    // Anchored to a NUMBERED STEP, not to any mention. A bare `toContain`
-    // passed with the step deleted (measured as probe P4): the rationale
-    // paragraph below the list also spells `vp run test:hooks`, so the
-    // assertion was reading a confluence point rather than the instruction.
+    // Anchored to a NUMBERED STEP, not to any mention: a bare `toContain`
+    // passed with the step deleted, because the rationale paragraph below the
+    // list also spells the command.
     expect(
       skill,
       '/check no longer lists `vp run test:hooks` as a numbered step, so the check marker ' +
-        'would attest to a suite that excludes the .claude/hooks/*.test.sh assertions ' +
-        '(issue #630)'
+        'would attest to a suite that excludes the .claude/hooks/*.test.sh assertions'
     ).toMatch(/^\d+\. `vp run test:hooks`/m);
 
     const verifyPr = readFileSync(
       join(repoRoot, '.claude', 'skills', 'verify-pr', 'SKILL.md'),
       'utf8'
     );
-    // /verify-pr sets the same marker, so it owes the same step -- anchored to
-    // the STEP BULLET, not to any mention. A bare `toContain` stayed GREEN with
-    // the bullet deleted (measured as probe Q13), because the skill's own
-    // output table also names the command: the identical confluence-point
-    // mistake this file already fixed once for check/SKILL.md, one file over.
+    // Same trap, one file over: this skill names the command in its output
+    // table as well, so the step and the row are asserted separately.
     expect(
       verifyPr,
-      '/verify-pr sets the `check` marker but no longer lists `vp run test:hooks` as a ' +
-        'step under "Tests"'
+      '/verify-pr sets the `check` marker but no longer lists `vp run test:hooks` as a step'
     ).toMatch(/^ {3}- `vp run test:hooks` — the shell suites/m);
-    // ...and the report table must still carry it, or the step can be run and
-    // silently omitted from the verdict the marker is set on.
     expect(
       verifyPr,
       "/verify-pr's output table lost its `vp run test:hooks` row"
     ).toMatch(/^\| hook shell suites \(`vp run test:hooks`\) \|/m);
 
     const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8');
-    // The claimed backstop. `.markgate.yml` and both skills say CI runs this;
-    // nothing else re-reads the workflow.
+    // The claimed backstop. `.markgate.yml` and both skills say CI runs this.
     expect(ci, 'ci.yml no longer runs `vp run test:hooks`').toMatch(
       /^\s*- run: vp run test:hooks\s*$/m
     );
 
     const config = readFileSync(join(repoRoot, 'vite.config.ts'), 'utf8');
-    // `[^}]*` keeps the match inside the `verify:` block -- with `[\s\S]*?`
-    // the scan would run past it and could be satisfied by an occurrence in
-    // any later task.
+    // `[^}]*` keeps the match inside the `verify:` block.
     expect(
       config,
       '`vp run verify` no longer chains test:hooks, so the alias reports a green the ' +
@@ -412,44 +487,38 @@ describe('.markgate.yml gate scopes', () => {
     ).toMatch(/verify:\s*\{[^}]*cache:\s*false/);
   });
 
-  it('the rules doc names the same scope the config does', () => {
+  it('the rules doc names exactly the scope the config does', () => {
     // `.claude/rules/hooks.md` restates the check gate's scope in prose, and
-    // this PR's own subject is a scope enumeration going stale unnoticed.
-    // Every include entry must appear in that paragraph.
-    // Whitespace-NORMALISED before matching. The paragraph is hard-wrapped
-    // prose, so a line-sensitive regex breaks whenever an edit moves the wrap
-    // column -- which it did, the first time this paragraph was edited after
-    // the assertion was written.
+    // this PR's own subject is a scope enumeration going stale unnoticed. Set
+    // EQUALITY, both directions: a dropped entry and an invented one both
+    // fail. Whitespace-normalised first, because the paragraph is hard-wrapped
+    // and a line-sensitive regex broke the first time it was re-wrapped.
     const rules = readFileSync(join(repoRoot, '.claude', 'rules', 'hooks.md'), 'utf8').replace(
       /\s+/g,
       ' '
     );
-    const block = /- `check` — recorded by `\/check`.*?Only invalidated by changes in that scope\./.exec(
-      rules
-    );
+    const block = /Scope: (.*?) Only invalidated by changes in that scope\./.exec(rules);
     expect(
       block,
-      'the check-gate scope paragraph in .claude/rules/hooks.md moved or was renamed'
+      "the check-gate `Scope:` sentence in .claude/rules/hooks.md moved or was renamed"
     ).not.toBeNull();
-    const prose = block?.[0] ?? '';
-    const missing = parsed.entries
-      .filter((e) => e.gate === 'check' && e.key === 'include')
-      .map((e) => e.glob)
-      .filter((g) => !prose.includes(g));
+    const named = [
+      ...new Set([...(block?.[1] ?? '').matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? '')),
+    ].sort();
     expect(
-      missing,
-      `.claude/rules/hooks.md's check-gate scope paragraph does not name ${missing.join(', ')}. ` +
-        `A prose enumeration of a config is exactly the thing issue #630 found stale; keep ` +
-        `it in step with .markgate.yml or stop enumerating.`
-    ).toEqual([]);
+      named,
+      `.claude/rules/hooks.md's check-gate scope sentence and .markgate.yml's include list ` +
+        `disagree. A prose enumeration of a config is exactly what issue #630 found stale; ` +
+        `keep it in step, or stop enumerating.`
+    ).toEqual([...new Set(checkGlobs)].sort());
   });
 
-  it('the parser reports a dead entry rather than dropping it (guard the guard)', () => {
-    // Guard-the-guard: without this, a parser that silently returned [] would
-    // make the sweep above pass on any config at all. Uses the three entries
-    // this issue actually removed, so the fixture is the measured defect, plus
-    // the spellings a future contributor might reach for instead.
-    const parsedFixture = parseConfig(
+  it('the parser refuses shapes it cannot model (guard the guard)', () => {
+    // Without this, a parser that quietly returned [] would make every sweep
+    // above pass on any config at all. The fixtures are the measured defects:
+    // the three entries this issue removed, plus every spelling a reviewer
+    // used to hide a dead glob from a green run.
+    const canonical = parseConfig(
       [
         'gates:',
         '  demo:',
@@ -465,48 +534,113 @@ describe('.markgate.yml gate scopes', () => {
         '',
       ].join('\n')
     );
-    expect(parsedFixture.entries.map((e) => e.glob)).toEqual([
+    expect(canonical.entries.map((e) => e.glob)).toEqual([
       'vitest.config.ts',
       '.eslintrc*',
       '.prettierrc*',
       'vite.config.ts',
     ]);
-    expect(parsedFixture.gates).toEqual(['demo', 'other']);
-    expect(parsedFixture.entries.every((e) => e.gate === 'demo')).toBe(true);
+    expect(canonical.gates).toEqual(['demo', 'other']);
 
-    // An `exclude:` must be PARSED (so the refusal above can see it), not
-    // skipped as an unknown key.
-    const withExclude = parseConfig(
-      ['gates:', '  demo:', '    exclude:', '      - "docs/**"', '    include:', '      - "src/**"', ''].join(
-        '\n'
-      )
+    // Items at the PARENT key's own indent: valid YAML, accepted by markgate,
+    // and invisible to the previous 6-space assumption. A reviewer hid three
+    // dead globs behind it while the suite stayed 9/9 green.
+    const parentIndent = parseConfig(
+      ['gates:', '  demo:', '    include:', '    - "a.txt"', '    - "b.txt"', ''].join('\n')
     );
-    expect(withExclude.entries.map((e) => `${e.key}:${e.glob}`)).toEqual([
-      'exclude:docs/**',
-      'include:src/**',
-    ]);
+    expect(parentIndent.entries.map((e) => e.glob)).toEqual(['a.txt', 'b.txt']);
+    expect(parentIndent.consumed.size).toBe(2);
 
-    // An unmodelled spelling must THROW, not silently end the list.
+    // Deeper indent, and a second space after the dash: both legal, both
+    // previously a hard failure on a config markgate accepts.
+    expect(
+      parseConfig(
+        ['gates:', '  demo:', '    include:', '        - "a.txt"', '      -  "b.txt"', ''].join('\n')
+      ).entries.map((e) => e.glob)
+    ).toEqual(['a.txt', 'b.txt']);
+
+    // A non-scope key's block list is consumed and discarded, not counted.
+    const withRequires = parseConfig(
+      [
+        'gates:',
+        '  demo:',
+        '    requires:',
+        '      - check',
+        '      - docs',
+        '    include:',
+        '      - "a.txt"',
+        '',
+      ].join('\n')
+    );
+    expect(withRequires.entries.map((e) => e.glob)).toEqual(['a.txt']);
+    expect(withRequires.consumed.size, 'the `requires:` items must still be CONSUMED').toBe(3);
+
+    // `exclude:` must be PARSED, so the refusal above can see it.
+    expect(
+      parseConfig(
+        ['gates:', '  demo:', '    exclude:', '      - "docs/**"', '    include:', '      - "src/**"', '']
+          .join('\n')
+      ).entries.map((e) => `${e.key}:${e.glob}`)
+    ).toEqual(['exclude:docs/**', 'include:src/**']);
+
+    // Unmodelled shapes THROW rather than ending the list.
     expect(() =>
       parseConfig(['gates:', '  demo:', '    include:', '      - [a, b]', ''].join('\n'))
-    ).toThrow(/could not parse this line/);
+    ).toThrow(/could not parse this list item/);
     expect(() =>
       parseConfig(['gates:', '  demo:', '    include: ["a", "b"]', ''].join('\n'))
     ).toThrow(/unsupported inline value/);
+    expect(() =>
+      parseConfig(['gates:', '  demo:', '    include:', '      nested:', '        - "a"', ''].join('\n'))
+    ).toThrow(/unrecognised line/);
+  });
 
-    // And the matcher must actually call the three removed globs dead: if it
-    // returned a positive number for anything, the sweep could never fail.
+  it('the matcher calls the removed globs dead and sees untracked files (guard the guard)', () => {
+    // If `matchCount` returned a positive number for anything, the sweep could
+    // never fail.
     expect(
       ['vitest.config.ts', '.eslintrc*', '.prettierrc*'].map(matchCount),
       'a file now matches one of the globs #630 removed as dead -- re-check the include'
     ).toEqual([0, 0, 0]);
     expect(matchCount('vite.config.ts')).toBe(1);
-    // The union arm: an untracked-but-real path is LIVE for markgate's
-    // `hash: files`, and git alone would call it dead.
+
+    // The bare-directory rule, on a directory this repo certainly has.
+    expect(isBareDirectory('src'), 'a bare directory name must be recognised as such').toBe(true);
+    expect(isBareDirectory('src/**')).toBe(false);
+    expect(isBareDirectory('vite.config.ts')).toBe(false);
+
+    // The on-disk arm: `hash: files` digests untracked files, so an entry
+    // matching only untracked content is LIVE and git alone would call it
+    // dead. Probed with a file created here rather than against `dist/` --
+    // CI runs `vp run test` BEFORE `vp run build`, so a `dist/**` probe passed
+    // locally and failed in CI on a tree that simply had not been built.
+    const dir = mkdtempSync(join(repoRoot, 'node_modules', '.cdkl-glob-probe-'));
+    const probe = join(dir, 'probe.txt');
+    try {
+      writeFileSync(probe, 'x');
+      const rel = relative(repoRoot, probe).split(sep).join('/');
+      expect(trackedFiles(rel), 'the probe file must be untracked for this to mean anything')
+        .toEqual([]);
+      expect(
+        onDiskFiles(rel),
+        'the on-disk arm stopped seeing untracked files, so an entry matching only ' +
+          'untracked-but-real content would be reported dead while markgate digests it'
+      ).toEqual([rel]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    // Containment: a `..` glob may legitimately re-enter this repo (a linked
+    // worktree's parent contains it), so the invariant is that nothing OUTSIDE
+    // repoRoot is ever returned -- not that the match is empty. markgate would
+    // resolve `../**` to nothing at all; over-approximating is the safe
+    // direction this file documents, under-reporting would not be.
     expect(
-      matchCount('dist/**'),
-      'the on-disk arm of matchCount stopped seeing untracked files, so an entry like ' +
-        '`dist/**` would be reported dead while markgate digests it'
-    ).toBeGreaterThan(0);
+      onDiskFiles('../**').filter((f) => f.startsWith('..')),
+      'the on-disk arm returned a path outside the repository'
+    ).toEqual([]);
+    // File-only: a directory is not a file match, which is what makes the
+    // bare-directory rule above able to fire.
+    expect(onDiskFiles('src'), 'a directory is not a file match').toEqual([]);
   });
 });

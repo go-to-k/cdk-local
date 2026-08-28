@@ -9,7 +9,7 @@ changed behavior**:
 
 **Run the integ LAST — and set the `check` / `docs` markers AFTER it, not before.**
 A fixture run writes `cdk.out/`, `node_modules/` and `pnpm-lock.yaml` under
-`tests/integration/<fixture>/`; the `check` gate covers `tests/**` (plus `src/**`, `vite.config.ts` / `.mise.toml` / `.markgate.yml`, `.claude/hooks/**` and the checker-input agent-instruction files) and markgate
+`tests/integration/<fixture>/`; the `check` gate covers `tests/**` (plus `src/**`, the files that decide what green means — `vite.config.ts` / `.mise.toml` / `.node-version` / `.markgate.yml` — `.claude/hooks/**` and the checker-input agent-instruction files and workflows; `.claude/rules/hooks.md` has the authoritative list) and markgate
 digests those artifacts even though git ignores them (go-to-k/cdk-local#620), so
 a green integ STALES a `check` marker set minutes earlier with `git status`
 clean — a `git commit` refused for "digest differs" that no source edit explains

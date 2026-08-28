@@ -121,7 +121,7 @@ Required action — no exceptions:
   /verify-pr [PR-number]
 
 The skill walks the full PR-readiness checklist:
-  - typecheck / lint / build / unit tests
+  - typecheck / lint / build / unit tests / vp run test:hooks
   - test coverage for the diff
   - CI status / working tree / docs consistency
   - Docker + integ marker verification (for src/** or tests/integration/** touches)

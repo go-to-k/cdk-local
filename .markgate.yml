@@ -145,7 +145,8 @@ gates:
       # returned zero rows, and `ls` found no untracked copy either. A glob
       # matching nothing is indistinguishable from a glob doing its job, which
       # is why `tests/unit/gates/markgate-include-globs.test.ts` now fails on
-      # any include entry that matches no tracked file.
+      # any include entry matching no file — tracked OR on disk, since
+      # `hash: files` digests untracked content too.
       - "vite.config.ts"
       - ".mise.toml"
       - ".node-version"
