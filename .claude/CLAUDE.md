@@ -1420,8 +1420,10 @@ vp run runtime:smoke
 - **When running integration tests**: use `/run-integ <test-name>`
   (e.g., `/run-integ local-invoke`). Never bypass by shelling into
   the fixture's `verify.sh` directly — the skill encodes Docker
-  pre-flight + verify.sh + post-run orphan sweep + (for
-  `*-from-cfn-stack` tests) AWS stack orphan check in one block.
+  pre-flight + verify.sh + post-run orphan sweep + the AWS orphan
+  sweep (`tests/integration/_lib/aws-orphan-sweep.sh`, run for EVERY
+  fixture — NOT a `*-from-cfn-stack` glob, which missed three
+  resource-owning fixtures) in one block.
   Skipping any step risks setting the `integ` marker on incomplete
   verification. The `integ-gate.sh` hook blocks
   `gh pr merge` when `src/**` or `tests/integration/**` is touched
@@ -1437,12 +1439,25 @@ vp run runtime:smoke
 
 - **After running integration tests**: verify no leftover Docker
   containers / networks remain (`docker ps --filter name=cdkl-`,
-  `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`). For
-  `*-from-cfn-stack` tests, also verify no orphan CloudFormation
-  stacks remain. If the run failed or left orphans, clean them up
-  immediately via direct Docker / `cdk destroy` / `aws
-  cloudformation` calls — leaving orphan resources after an integ
-  run is never acceptable.
+  `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`), and run
+  the AWS orphan sweep for EVERY fixture, requiring exit 0:
+
+  ```bash
+  bash tests/integration/_lib/aws-orphan-sweep.sh <test-name>; rc=$?
+  ```
+
+  **Not a `*-from-cfn-stack` glob** — that glob missed three
+  resource-owning fixtures and the widened `*-from-cfn*` still missed
+  `local-invoke-assume-role`. The script derives ownership itself and
+  makes no AWS call for a fixture that owns nothing, so it is safe to
+  run unconditionally. Exit codes: 0 clean / 1 usage or internal /
+  2 orphan / 3 indeterminate (it could not look — NOT clean) /
+  4 report-only. On a find it prints a remediation plan; run what it
+  printed, which uses `aws cloudformation delete-stack` and never
+  `cdk destroy` (that needs `--app` context and exits 0 SILENTLY on a
+  name the app never synthesized). Leaving orphan resources after an
+  integ run is never acceptable. Full history and rationale:
+  `tests/integration/_lib/aws-orphan-sweep.sh` (issue #601).
 
 - **Every account-global name an AWS-deploying fixture owns is
   lane-unique** (issue #582). `tests/integration/_lib/stack-name.sh` is

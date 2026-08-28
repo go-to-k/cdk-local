@@ -78,9 +78,34 @@ Run each check and report pass/fail:
 
    If `rc` is non-zero (1 = digest differs OR expired by 14d TTL; >= 2 = markgate
    could not evaluate — for this gate most often an unresolvable `base` ref,
-   fixed with a bare `git fetch origin`), run `/run-integ <test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS task changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes, `local-invoke-from-cfn-stack` for `--from-cfn-stack` AWS-binding changes. The `/run-integ` skill calls `markgate set integ` itself when the Docker-side check passes (0 orphan containers / networks; for `*-from-cfn-stack` tests, also 0 orphan CloudFormation stacks). CI is necessary but not sufficient — it does not exercise Docker-based local execution.
+   fixed with a bare `git fetch origin`), run `/run-integ <test>` against a test that exercises the changed surface — `local-start-api` for HTTP-server / route-discovery / authorizer / container-pool changes, `local-invoke` for Lambda-runtime / ZIP-asset changes, `local-run-task` for ECS task changes, `local-invoke-container` for container-Lambda changes, `local-invoke-layers` for Lambda Layers changes, `local-invoke-from-cfn-stack` for `--from-cfn-stack` AWS-binding changes. The `/run-integ` skill calls `markgate set integ` itself when the Docker-side check passes (0 orphan containers / networks, plus a clean AWS orphan sweep for any fixture that owns real AWS resources). CI is necessary but not sufficient — it does not exercise Docker-based local execution.
 
-   For `*-from-cfn-stack` integ tests only: verify no orphan CloudFormation stack remains (`aws cloudformation describe-stacks --stack-name <FixtureStackName>` should return `Stack does not exist`).
+   To verify no orphan AWS resource remains, run the sweep — never a
+   hand-written `describe-stacks`:
+
+   ```bash
+   bash tests/integration/_lib/aws-orphan-sweep.sh <test-name>; rc=$?   # rc 0 = clean
+   ```
+
+   Two things this replaces, both of which were live here until
+   go-to-k/cdk-local#601 (see `tests/integration/_lib/aws-orphan-sweep.sh`'s
+   header for the full history):
+
+   - **Not a `*-from-cfn-stack` glob.** That glob missed three
+     resource-owning fixtures, and the widened `*-from-cfn*` still missed
+     `local-invoke-assume-role`, which deploys a stack holding an IAM role.
+     Run the sweep for EVERY fixture; it derives ownership itself from one
+     predicate and makes no AWS call for a fixture that owns nothing.
+   - **Not `describe-stacks --stack-name <FixtureStackName>`.** Every
+     AWS-deploying fixture's stack name is LANE-UNIQUE (issue
+     go-to-k/cdk-local#582), so the bare base name matches nothing and
+     reports clean no matter what is actually deployed. That was historical
+     instance 1 of this defect class verbatim.
+
+   Gate on the exit code (0 clean / 1 usage or internal / 2 orphan /
+   3 indeterminate / 4 report-only). Anything non-zero means do not proceed —
+   `3` in particular means the sweep could not look, not that nothing is
+   there.
 
 8. **No stale references**
    - Grep for removed imports, old module names, or deprecated references in source files.

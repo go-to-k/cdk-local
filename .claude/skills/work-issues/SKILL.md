@@ -1247,9 +1247,11 @@ trickling them.
   had accumulated on its own.
 
 After a Docker-backed run, sweep for orphans and clean up via `/cleanup` (the
-container / network filters and the `*-from-cfn-stack` stack check are in
-`.claude/CLAUDE.md` -> "After running integration tests"). Leaving orphan resources
-after a run is never acceptable.
+container / network filters and the AWS orphan sweep -- run for EVERY fixture via
+`tests/integration/_lib/aws-orphan-sweep.sh`, not scoped by a `*-from-cfn-stack`
+glob, which missed three resource-owning fixtures -- are in `.claude/CLAUDE.md` ->
+"After running integration tests"). Leaving orphan resources after a run is never
+acceptable.
 
 `/verify-pr` sets the `check` + `docs` + `verify-pr` markers, which clear
 `verify-pr-gate` — not `gh pr merge` as a whole. That merge is additionally gated by

@@ -109,7 +109,25 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
 
 - This skill cleans up LOCAL state from cdk-local runs only — Docker resources
   and orphaned vitest forks worker PROCESSES.
-- cdk-local itself does NOT deploy AWS resources, so there is no AWS-side orphan scan here — use the upstream `cdk destroy` (or the host's deploy tool) for AWS resources created by a `--from-cfn-stack` deploy.
+- cdk-local itself does NOT deploy AWS resources, so there is no AWS-side orphan
+  scan here. For AWS resources a fixture's `--from-cfn-stack` deploy created, run
+  the sweep and require exit 0 — it derives the lane-unique names, so it is the
+  only thing that can tell an orphan from a peer's live stack:
+
+  ```bash
+  bash tests/integration/_lib/aws-orphan-sweep.sh <fixture-name>; rc=$?
+  ```
+
+  **Do NOT reach for `cdk destroy` here.** It needs `--app` context this cwd does
+  not provide, and — run by hand from outside the fixture, where
+  `INTEG_STACK_SUFFIX` is unset — the app builds UN-suffixed names, your
+  suffixed argument matches nothing, and it **exits 0 SILENTLY with the stack
+  still deployed**. In a skill whose whole job is orphan cleanup that reads as
+  "cleaned up" when nothing was. The sweep prints a remediation plan built on
+  `aws cloudformation delete-stack`, which needs neither app context nor the
+  suffix in the environment (issue go-to-k/cdk-local#601). A fixture's OWN
+  cleanup trap using `cdk destroy` is a different case and is correct — it runs
+  from the fixture directory with the suffix exported.
 - The `cdkl-*` / `cdk-local-*` name prefix is the contract for Docker:
   anything not matching that prefix is presumed external and is never touched.
 - For processes the contract is: tinypool fork-worker entry + cwd under a

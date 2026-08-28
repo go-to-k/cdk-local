@@ -167,12 +167,15 @@ Required action — no exceptions:
                                     # local-invoke-dotnet / local-invoke-provided
 
 The /run-integ skill is the ONLY legitimate setter of this marker. It
-runs the Docker-based fixture (no AWS deploy needed except for
-`*-from-cfn-stack` tests) and only calls `markgate set integ` if ALL
+runs the Docker-based fixture (only a fixture that owns real AWS
+resources needs a deploy) and only calls `markgate set integ` if ALL
 of the following hold:
   - the verify.sh run exited cleanly,
   - 0 orphan containers / networks after the post-run docker sweep,
-  - for *-from-cfn-stack tests: 0 orphan CloudFormation stacks.
+  - tests/integration/_lib/aws-orphan-sweep.sh exited 0, run for EVERY
+    fixture rather than for a `*-from-cfn-stack` glob (that glob missed
+    three resource-owning fixtures; the script derives ownership itself
+    and makes no AWS call for a fixture that owns nothing).
 
 Do NOT call `markgate set integ` directly from a shell to bypass this
 hook. The whole point of the gate is that an unverified local code
