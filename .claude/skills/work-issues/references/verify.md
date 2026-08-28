@@ -2,13 +2,14 @@
 
 ## 8. Verify before merge (`/verify-pr`)
 
-Run `/verify-pr`. It walks the full checklist (typecheck / lint / build / tests,
-CI status, docs consistency, Docker + integ marker, code review, PR title/body
-freshness) and — critically — **live-tests the changed behavior**:
+Run `/verify-pr`. It walks the full checklist (typecheck / lint / build / unit
+tests / `vp run test:hooks`, CI status, docs consistency, Docker + integ marker,
+code review, PR title/body freshness) and — critically — **live-tests the
+changed behavior**:
 
 **Run the integ LAST — and set the `check` / `docs` markers AFTER it, not before.**
 A fixture run writes `cdk.out/`, `node_modules/` and `pnpm-lock.yaml` under
-`tests/integration/<fixture>/`; the `check` gate covers `tests/**` (plus `src/**`, configs and the checker-input agent-instruction files) and markgate
+`tests/integration/<fixture>/`; the `check` gate covers `tests/**` (plus `src/**`, `vite.config.ts` / `.mise.toml` / `.markgate.yml`, `.claude/hooks/**` and the checker-input agent-instruction files) and markgate
 digests those artifacts even though git ignores them (go-to-k/cdk-local#620), so
 a green integ STALES a `check` marker set minutes earlier with `git status`
 clean — a `git commit` refused for "digest differs" that no source edit explains

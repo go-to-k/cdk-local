@@ -12,7 +12,8 @@
 # misleading "run /check first" that re-running `/check` cannot clear.
 #
 # Gates:
-#   check          — typecheck/lint/build/unit tests
+#   check          — typecheck/lint/build/unit tests, plus the shell hook
+#                    suites (`vp run test:hooks`, issue #630)
 #                    (set by /check and /verify-pr).
 #   docs           — README/CLAUDE.md/docs consistency with src
 #                    (set by /check-docs and /verify-pr).
@@ -66,16 +67,43 @@ gates:
       #   - tests/unit/hooks/pr-inherit-issue-labels.test.ts reads its
       #     workflow YAML
       # `.claude/rules/**` sits in `docs` too — same overlap cdkd carries,
-      # for the same two reasons. Known limit, deliberate: the repo-wide
-      # scanners (e.g. tests/unit/no-control-bytes.test.ts globs every
-      # tracked text file) read a population scoping cannot follow without
-      # making the marker stale on every edit anywhere; CI remains the
-      # backstop there.
+      # for the same two reasons.
+      #
+      # Known limit, deliberate — and the test is NOT "repo-wide vs finite"
+      # (issue #630). A whole-tree scanner is a proportionate carve-out only
+      # while the condition it fires on is RARE: tests/unit/no-control-bytes.test.ts
+      # globs every tracked text file, but a C0 control byte in committed text
+      # is a freak event, so the marker reading fresh over an edit anywhere is
+      # a real but tiny exposure and CI remains the backstop there. A scanner
+      # whose predicate is ORDINARY CONTENT does not get the carve-out — its
+      # population has to be inside this include, or the assertion has to move
+      # out of the `check` suite. That file's excluded-extension assertion used
+      # to be exactly such a case (it pinned the set to `['.gif']`, so adding
+      # any .png / .pdf / .woff2 anywhere reddened it); #630 relaxed it to a
+      # subset check against a named binary-extension list, which restores the
+      # rare-predicate premise this paragraph rests on.
       - ".claude/skills/**"
       - ".claude/agents/**"
       - ".claude/rules/**"
       - ".claude/settings.json"
       - ".github/workflows/pr-inherit-issue-labels.yml"
+      # The shell half (issue #630). Eight `.claude/hooks/*.test.sh` suites
+      # read `.claude/hooks/*.sh`, each resolving its subject self-relatively,
+      # and two more live under `tests/integration/_lib/`. Adding the path here
+      # is only HALF the fix and would be misleading on its own: `vp run test`
+      # does not execute them (`test:hooks` is a separate task in
+      # `vite.config.ts`), so a stale marker cleared by a `/check` that never
+      # ran those assertions would attest to a suite that does not contain
+      # them. `/check` and `/verify-pr` therefore run `vp run test:hooks` too —
+      # the decision #630 asked for, taken in the direction that makes the
+      # marker mean what it appears to mean rather than documenting the hole.
+      # This also closes the inverse shape: `.claude/hooks/pr-review-gate.test.sh`
+      # asserts four copies of the UP_PATHS list stay in sync across
+      # `.claude/rules/hooks.md`, `.claude/agents/pr-code-reviewer.md` and
+      # `.claude/skills/review-pr/SKILL.md` — all already in this include, so
+      # editing one DID stale the marker while the `/check` that cleared it
+      # never ran the sync assertion.
+      - ".claude/hooks/**"
       # This file itself (issue #623): the gate's own definition decides
       # what the marker MEANS, so editing it — including this include
       # list — must stale a marker recorded under the old definition.
@@ -87,9 +115,25 @@ gates:
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
-      - "vitest.config.ts"
-      - ".eslintrc*"
-      - ".prettierrc*"
+      # The files that decide what "green" MEANS, same class as `.markgate.yml`
+      # above (issue #630). `vite.config.ts` holds the vitest `include` globs,
+      # the lint/format rules and every `vp run <task>` definition, so
+      # narrowing `include: ['tests/**/*.test.ts', ...]` there leaves the suite
+      # GREEN and the marker FRESH while most of it has stopped running — the
+      # silent direction, and the one that matters (breaking `setupFiles` reds
+      # it loudly). `.mise.toml` pins the `vp` and `markgate` binaries that RUN
+      # those definitions, so a toolchain bump changes what green attests to;
+      # cdkd scopes its own `.mise.toml` for that reason and this file's header
+      # already warns that a `.mise.toml` change can silently break every gate.
+      #
+      # These replace `vitest.config.ts` / `.eslintrc*` / `.prettierrc*`, which
+      # named nothing in this repo: `git ls-files | grep -E '^(vitest\.config\.ts|\.eslintrc|\.prettierrc)'`
+      # returned zero rows, and `ls` found no untracked copy either. A glob
+      # matching nothing is indistinguishable from a glob doing its job, which
+      # is why `tests/unit/gates/markgate-include-globs.test.ts` now fails on
+      # any include entry that matches no tracked file.
+      - "vite.config.ts"
+      - ".mise.toml"
 
   docs:
     hash: files

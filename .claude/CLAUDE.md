@@ -1246,7 +1246,7 @@ vp run test:coverage
 # Hook smoke tests (bash, run in CI alongside the unit suite)
 vp run test:hooks
 
-# verify = check + test + build
+# verify = check + test + test:hooks + build
 vp run verify
 
 # Build artifact smoke test
@@ -1315,9 +1315,13 @@ vp run runtime:smoke
   `cdkl` bin), so source changes without a build have no runtime
   effect.
 
-- **Before opening a PR**: run `vp run verify` (= check + test + build).
-  This is what CI runs; failing locally is faster feedback than failing
-  in GitHub Actions.
+- **Before opening a PR**: run `vp run verify` (= check + test +
+  test:hooks + build). `test:hooks` is in that chain because the `check`
+  markgate marker attests to it (go-to-k/cdk-local#630) and it is a
+  SEPARATE task from `vp run test` — an alias stopping short of it
+  reports a green the gate does not mean. This is what CI's
+  `check-build-test` job runs; failing locally is faster feedback than
+  failing in GitHub Actions.
 
 - **Registration is not execution — prove the gates are ALIVE before the first
   commit of a session**: run `git commit --dry-run -m "gate liveness probe"` from
@@ -1333,8 +1337,12 @@ vp run runtime:smoke
   both the `check` and `docs` markgate markers are fresh. Run
   `/check` and/or `/check-docs` proactively based on what your diff
   touches (a tests-only commit needs `/check`; a docs-only commit
-  needs `/check-docs`; a src edit needs both; changes outside both
-  scopes need neither). `/verify-pr` refreshes both in one shot.
+  needs `/check-docs`; a src edit needs both; a `.claude/hooks/**`,
+  `.markgate.yml`, `vite.config.ts` or `.mise.toml` edit needs
+  `/check`, because those decide what "green" means or what the
+  marker attests to — go-to-k/cdk-local#624, go-to-k/cdk-local#630;
+  changes outside both scopes need neither). `/verify-pr` refreshes
+  both in one shot.
   Per-gate scopes, error-message decoding, and other details:
   [.claude/rules/hooks.md](.claude/rules/hooks.md). Install `vp` +
   `markgate` via `mise install` at the repo root, and re-run it after
