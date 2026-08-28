@@ -1,3 +1,10 @@
+## [0.147.21](https://github.com/go-to-k/cdk-local/compare/v0.147.20...v0.147.21) (2026-08-28)
+
+
+### Bug Fixes
+
+* **local:** bound the role ARN's shape and length before it reaches STS ([#617](https://github.com/go-to-k/cdk-local/issues/617)) ([67db9a3](https://github.com/go-to-k/cdk-local/commit/67db9a37ab27e6d1ad4d8d1f91a552ed5e30de5b))
+
 ## [0.147.20](https://github.com/go-to-k/cdk-local/compare/v0.147.19...v0.147.20) (2026-08-27)
 
 
