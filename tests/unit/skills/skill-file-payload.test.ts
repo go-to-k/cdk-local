@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -112,6 +112,23 @@ describe('skill file payload budget', () => {
   }
 
   for (const name of SPLIT_SKILLS) {
+    it(`${name}'s orchestrator points only at stage files that exist (no stranded stages)`, () => {
+      // The count/byte floors below tolerate deleting the one or two SMALLEST
+      // stage files, which would leave orchestrator table rows pointing at
+      // nothing. Every `references/<x>.md` the orchestrator names must exist.
+      const skillMd = readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf-8');
+      const named = [...new Set([...skillMd.matchAll(/references\/([A-Za-z0-9._-]+\.md)/g)].map((m) => m[1]!))];
+      expect(named.length, `SKILL.md of ${name} names no references/*.md at all`).toBeGreaterThanOrEqual(
+        MIN_REFERENCE_FILES
+      );
+      const missing = named.filter((f) => !existsSync(join(skillsDir, name, 'references', f)));
+      expect(
+        missing,
+        `.claude/skills/${name}/SKILL.md points at stage file(s) that do not exist — ` +
+          `restore the file(s) or fix the table`
+      ).toEqual([]);
+    });
+
     it(`${name} keeps its stage files (the split moved content, it did not drop it)`, () => {
       const refs = referenceFiles(name);
       expect(

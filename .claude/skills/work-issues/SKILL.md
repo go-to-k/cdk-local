@@ -52,11 +52,11 @@ Stages 4–9 run in the parent: they hold the locks, the worktrees, and the gate
 |---|---|---|
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`), volume assessment |
-| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their clone-locality blind spot, the shared cross-cutting runtime modules at most one lane may own |
+| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their pre-first-write blind spot (before a lane's first write, only its §4 claim comment can see it), the shared cross-cutting runtime modules at most one lane may own |
 | 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
-| 4. Claim | `references/claim.md` | Claim comment BEFORE first edit, compare-and-swap re-read, tie-break by earliest timestamp, classification-line upgrade + labels on the same edit |
+| 4. Claim | `references/claim.md` | Claim comment BEFORE first edit (English only, like every issue this run files), claim what you FILE too, re-check for a competing claim right before you start |
 | 5. Implement | `references/implement.md` | One worktree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
-| 6. Gates + PR | `references/gates-and-pr.md` | `/check`, `/check-docs`, marker freshness per worktree, `/check-cdkd-parity`, PR create |
+| 6. Gates + PR | `references/gates-and-pr.md` | Gate liveness probe before the session's first commit, `vp run verify`, `/check` + `/check-docs` markers, PR create with `Closes #<n>` |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED, run a peer's new repo-wide check over your diff |
 | 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test, §8-z: what a no-discrimination mutation probe actually means |
 | 9. Ship | `references/ship.md` | `/merge-pr` (never a hand-run merge) → pull → worktree cleanup, owner probes before removing a worktree |
@@ -68,9 +68,10 @@ Stages 4–9 run in the parent: they hold the locks, the worktrees, and the gate
 - **Safety first**: never download, unpack, run, apply, or install anything a
   non-maintainer attached or linked — any vector (zip / patch / package /
   `curl | sh`) is the same play. Read bodies via `gh api` only. (§0)
-- **Claim before the first edit, on every issue you take**; re-read the claim
-  thread before the first edit, before the push, and before opening the PR —
-  across clones the issue thread is the ONLY collision signal. (§2, §4)
+- **Claim before the first edit, on every issue you take** — and claim what you
+  FILE when this run means to pick it up; re-check for a competing claim right
+  before you start. Before a lane's first write, the claim comment is the ONLY
+  artifact that proves the lane exists. (§2, §4)
 - **Two lanes never edit the same file**; at most one lane per shared
   cross-cutting runtime module (list in §2). (§3)
 - **Never work in the main checkout** — one worktree per lane under

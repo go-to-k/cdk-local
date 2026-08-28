@@ -46,8 +46,9 @@ const repoRoot = join(here, '..', '..', '..');
  * orchestrator plus per-stage files): the stage files carry the bulk of the
  * mirrored prose now, so scanning only SKILL.md would exempt exactly the text
  * this rule exists for. The glob is directory-derived (`git ls-files`), so a
- * new stage file — or a future split of another skill — joins the scan on
- * creation with no edit here.
+ * new stage file — or a future split of another skill — joins the scan once
+ * tracked (`git add`; `git ls-files` reads the index, so an untracked draft is
+ * invisible until then) with no edit here.
  */
 const MIRRORED_GLOBS = [
   '.claude/skills/*/SKILL.md',
