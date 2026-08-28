@@ -52,6 +52,18 @@ import { fileURLToPath } from 'node:url';
  * own defect class. Anything subtler belongs to `markgate config lint`, and
  * this file says so instead of pretending otherwise.
  *
+ * ## Why a hand-rolled parser at all
+ *
+ * Because this repo has no YAML parser to reach for: `package.json` declares
+ * none, and neither does the dev-dependency set (the sibling repos cdkd and
+ * cdk-real-drift both DO have one, which is why their equivalents parse rather
+ * than refuse). Adding a dependency to a lockfile so a single fence can read a
+ * single config is a worse trade than refusing the shapes it cannot model —
+ * and refusal turns out to be the STRICTER option, not the weaker one: a
+ * parser accepts a novel spelling and quietly gets it wrong, while this one
+ * stops. Read the refusals below as the point of the design, not as its
+ * limitation.
+ *
  * ## The parser refuses what it cannot model
  *
  * A hand-rolled YAML reader's failure mode is silent truncation: an entry in a
@@ -93,6 +105,10 @@ interface ParsedConfig {
   entries: Entry[];
   /** Every gate key seen under `gates:`, whether or not it declares a scope. */
   gates: string[];
+  /** `hash:` value per gate, when one is declared. */
+  hashOf: Map<string, string>;
+  /** `base:` value per gate, when one is declared. */
+  baseOf: Map<string, string>;
   /** 1-based line numbers of every `- ` item line the parser consumed. */
   consumed: Set<number>;
   /** Gates that DECLARED an `include:` key, whether or not items followed. */
@@ -124,6 +140,8 @@ function parseConfig(yaml: string): ParsedConfig {
   const gates: string[] = [];
   const consumed = new Set<number>();
   const declaredInclude: string[] = [];
+  const hashOf = new Map<string, string>();
+  const baseOf = new Map<string, string>();
   let inGates = false;
   let gate: string | null = null;
   let key: string | null = null;
@@ -153,17 +171,27 @@ function parseConfig(yaml: string): ParsedConfig {
     const keyLine = /^ {4}([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
     if (keyLine) {
       const name = keyLine[1] ?? '';
-      // markgate's OWN key set, not the keys this repo happens to use. An
-      // unknown key used to be consumed and DISCARDED, so a typo'd `includes:`
-      // took five globs out of the sweep while every assertion stayed green --
-      // and a future markgate key that subtracts from the scope, as `exclude`
-      // does, would arrive the same silent way. Refuse instead.
+      // The keys this fence has VERIFIED do not change the resolved scope --
+      // deliberately NOT "markgate's key set", which an earlier version of
+      // this comment claimed and which was false. markgate 0.4.1 also accepts
+      // `composes` and `state_dir` (both silent under `config lint`, both
+      // measured here as leaving `verify check --explain` at 983 files), and
+      // they are refused anyway: this fence models scope, and a key whose
+      // scope effect has only been spot-checked is not a key it can model.
+      // Unknown keys used to be consumed and DISCARDED, so a typo'd
+      // `includes:` took five globs out of the sweep with every assertion
+      // green -- and a future key that SUBTRACTS from the scope, as `exclude`
+      // does, would arrive the same silent way.
       if (!/^(hash|base|ttl|include|exclude|requires)$/.test(name)) {
+        const known = /^(composes|state_dir)$/.test(name)
+          ? `\`${name}\` IS a real markgate 0.4.1 key, and is refused here rather than ` +
+            `ignored: this fence reports scope coverage, so it must not run over a key ` +
+            `whose effect on scope it has not established. Establish it (one variable, ` +
+            `against the pinned binary), then add it beside \`requires\`.`
+          : `An unmodelled key may add to or SUBTRACT from the resolved scope, which ` +
+            `would make every check below report coverage it does not have.`;
         throw new Error(
-          `${at}: unknown gate key \`${name}\` in gate '${gate}'.\n` +
-            `This fence models markgate's key set; an unmodelled key may add to or ` +
-            `SUBTRACT from the resolved scope, which would make every check below ` +
-            `report coverage it does not have. Teach the parser what it means.`
+          `${at}: gate key \`${name}\` in gate '${gate}' is not modelled.\n${known}`
         );
       }
       const rest = (keyLine[2] ?? '').trim();
@@ -178,6 +206,13 @@ function parseConfig(yaml: string): ParsedConfig {
         );
       }
       if (name === 'include' && gate !== null) declaredInclude.push(gate);
+      // The VALUES of `hash` and `base`, not just their presence. `hash` is
+      // the one knob that silently makes an include list inert; see the case
+      // below for the measurement.
+      if (gate !== null && hasInlineValue && (name === 'hash' || name === 'base')) {
+        const value = rest.replace(/\s*#.*$/, '').trim();
+        (name === 'hash' ? hashOf : baseOf).set(gate, value);
+      }
       // A key with an inline value takes no items; one without may.
       key = hasInlineValue ? null : name;
       continue;
@@ -207,7 +242,7 @@ function parseConfig(yaml: string): ParsedConfig {
         `Nested mappings and other shapes are not modelled. Extend the parser.`
     );
   }
-  return { entries, gates, consumed, declaredInclude };
+  return { entries, gates, consumed, declaredInclude, hashOf, baseOf };
 }
 
 /**
@@ -298,6 +333,21 @@ function isBareDirectory(glob: string): boolean {
  */
 const ZERO_MATCH_ALLOWED = ['.markgate-pr-review-sha'];
 
+/**
+ * Files this fence reads through a spelling the `readFileSync` scan below
+ * cannot see. `git check-ignore` consults `.gitignore`, so `.gitignore` is a
+ * checker INPUT of this suite exactly as `ci.yml` is -- deleting its
+ * `.markgate-pr-review-sha` line reds this file, and without the include entry
+ * the `check` marker would stay FRESH over it. That is the go-to-k/cdk-local#620
+ * class for the THIRD time in this PR, and the first two were also introduced
+ * by the fence written to close it.
+ *
+ * Hand-listed because a regex cannot follow an argument into a subprocess. The
+ * `execFileSync` budget in the same case is what stops the list going stale:
+ * adding a new subprocess read fails until it is declared here.
+ */
+const EXTRA_READS = ['.gitignore'];
+
 describe('.markgate.yml gate scopes', () => {
   const yaml = readFileSync(join(repoRoot, '.markgate.yml'), 'utf8');
   const parsed = parseConfig(yaml);
@@ -338,6 +388,58 @@ describe('.markgate.yml gate scopes', () => {
       parsed.declaredInclude.length,
       'no gate declares an include at all -- the parse found nothing to check'
     ).toBeGreaterThan(0);
+  });
+
+  it('no gate\'s `hash` value makes its include list inert', () => {
+    // `exclude` one key over, and measured against the pinned markgate 0.4.1
+    // on this tree. The include list only means something under a hasher that
+    // READS it:
+    //
+    //   hash: files      -> `verify check --explain` resolves 983 files
+    //   hash: git-tree   ->                          resolves 1, and
+    //                       `markgate config lint` is SILENT (rc=0)
+    //   hash: diff       -> lint WARNS and verify fails to parse (no `base`)
+    //   worktree/content -> lint WARNS, verify fails to parse
+    //
+    // So exactly one value collapses the scope quietly, and every assertion in
+    // this file passes underneath it: the entries still parse, still match
+    // files, and still name the right paths -- they are simply no longer what
+    // the marker digests. Only the VALUE check below can see it.
+    const usesInclude = /^(files|diff)$/;
+    const inert = parsed.declaredInclude
+      .filter((g) => !usesInclude.test(parsed.hashOf.get(g) ?? 'files'))
+      .map((g) => `gate '${g}' has hash: ${parsed.hashOf.get(g)}`);
+    expect(
+      inert,
+      `these gates declare an \`include:\` under a hasher that ignores it, so the list ` +
+        `scopes NOTHING while everything else here still passes:\n${inert.join('\n')}`
+    ).toEqual([]);
+
+    // `check` and `docs` are pinned to `files` specifically. `.markgate.yml`
+    // records the reason -- they are cheap to re-run, so they stay strict --
+    // and `diff` would quietly weaken them to a merge-base delta.
+    for (const gate of ['check', 'docs']) {
+      expect(
+        parsed.hashOf.get(gate),
+        `gate '${gate}' is meant to be strict \`hash: files\`; \`diff\` would weaken it ` +
+          `to a merge-base delta and \`git-tree\` would ignore its include entirely`
+      ).toBe('files');
+    }
+
+    // `base` is meaningful only under `hash: diff`. markgate's own linter
+    // already refuses the combination loudly (measured: `base is only valid
+    // with hash=diff`, and `verify` then fails to parse), so this is a
+    // fail-fast echo rather than the only guard -- but a config that cannot
+    // parse takes EVERY gate down, so it is worth catching in the suite.
+    for (const gate of parsed.gates) {
+      const hasBase = parsed.baseOf.has(gate);
+      const isDiff = parsed.hashOf.get(gate) === 'diff';
+      expect(
+        hasBase,
+        `gate '${gate}': \`base\` is valid only with \`hash: diff\` (has hash: ` +
+          `${parsed.hashOf.get(gate) ?? '<none>'}, base: ${parsed.baseOf.get(gate) ?? '<none>'})`
+      ).toBe(isDiff);
+    }
   });
 
   it('no gate declares an `exclude:` this sweep would not subtract', () => {
@@ -452,9 +554,20 @@ describe('.markgate.yml gate scopes', () => {
         `into a comment or a message here, because this scan reads its own source.`
     ).toBe(reads.length + 1);
 
+    // The `execFileSync` spelling has its own budget: the scan cannot follow a
+    // path into a subprocess, so the only defence is to notice a new one. Three
+    // occurrences today -- `git ls-files`, `git check-ignore`, and one mention
+    // inside a comment.
+    expect(
+      (selfSource.match(/execFileSync\(/g) ?? []).length,
+      'this file gained or lost an `execFileSync` site. A subprocess read is invisible ' +
+        'to the scan above, so any file it consults must be listed in EXTRA_READS and ' +
+        'scoped into the check gate -- then update this count.'
+    ).toBe(3);
+
     const covered = (path: string): boolean =>
       checkGlobs.some((g) => trackedFiles(g).includes(path));
-    const uncovered = reads.filter((path) => !covered(path));
+    const uncovered = [...reads, ...EXTRA_READS].filter((path) => !covered(path));
     expect(
       uncovered,
       `this test reads ${uncovered.join(', ')}, which no \`check\` include entry covers. ` +
@@ -525,7 +638,12 @@ describe('.markgate.yml gate scopes', () => {
       config,
       '`vp run verify` no longer chains test:hooks, so the alias reports a green the ' +
         'check gate does not mean'
-    ).toMatch(/verify:\s*\{[^}]*vp run test:hooks/);
+      // Anchored to the `command:` STRING, not to anywhere in the block. The
+      // block carries a comment inside the same `[^}]*` window, so a reword
+      // that happens to quote the command would keep this green with the
+      // command DELETED -- the confluence-point trap this file has now hit
+      // three times.
+    ).toMatch(/verify:\s*\{[^}]*command:\s*'[^']*vp run test:hooks/);
     expect(
       config,
       'the `verify` task is cacheable again, so `vp run verify` can replay a green ' +

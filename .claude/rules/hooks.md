@@ -701,8 +701,8 @@ construction.
     `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
     `.claude/rules/**`, `.claude/settings.json`,
-    `.github/workflows/pr-inherit-issue-labels.yml` and
-    `.github/workflows/ci.yml` (go-to-k/cdk-local#620,
+    `.github/workflows/pr-inherit-issue-labels.yml`,
+    `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in
     `.markgate.yml`). The other two workflows are read by nothing
     and stay out of scope. Only invalidated by changes in that

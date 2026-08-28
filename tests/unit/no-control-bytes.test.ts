@@ -253,12 +253,20 @@ describe('committed text carries no C0 control bytes', () => {
         `that extension is plain text. Excluding it removes real files from the ` +
         `control-byte scan for nothing -- narrow the list, and narrow BINARY_EXT with it.`
     ).toEqual([]);
-    // Vacuity floor: if the repo tracked none of these extensions the loop
-    // above would judge nothing and pass silently.
-    expect(
-      judged,
-      'no extension in LEGITIMATELY_BINARY is present in the repo, so this test judged nothing'
-    ).not.toEqual([]);
+    // NO vacuity floor here, deliberately (issue #630, review round 4). The
+    // obvious one -- `expect(judged).not.toEqual([])` -- was satisfied by
+    // exactly ONE extension: `.gif`, from the three demo GIFs in `assets/`, a
+    // directory in no gate's include. Reformatting or deleting them reddened
+    // this suite with the `check` marker FRESH -- measured, and it is the
+    // go-to-k/cdk-local#620 class this PR exists to close, re-introduced by a
+    // floor guarding a harmless case: an extension the repo does not carry
+    // excludes nothing, so there is nothing at risk in not judging it. The
+    // failure this arm exists for -- a TEXT extension entering
+    // LEGITIMATELY_BINARY -- always has files to judge, because having files
+    // is what makes it a problem. Scoping `assets/**` in was the alternative
+    // and buys nothing: it would make every demo-GIF change stale the marker
+    // to keep a floor that guards nothing.
+    void judged;
   });
 
   it('keeps every text extension the repo actually carries', () => {

@@ -97,6 +97,15 @@ gates:
       # the #620 class, freshly reintroduced by the very fence added to close
       # it. The other two workflows are read by nothing and stay out of scope.
       - ".github/workflows/ci.yml"
+      # Same class a THIRD time, found in #630's fourth review round:
+      # markgate-include-globs.test.ts runs `git check-ignore` to prove its one
+      # allow-listed zero-match entry is a real gitignored sentinel, so
+      # `.gitignore` is a checker INPUT of that suite -- deleting its
+      # `.markgate-pr-review-sha` line reds the suite while a marker set
+      # beforehand stays fresh. Invisible to that file's read scan, which
+      # follows `readFileSync` but cannot follow an argument into a
+      # subprocess; the `execFileSync` budget there is what keeps this honest.
+      - ".gitignore"
       # The shell half (issue #630). Eight `.claude/hooks/*.test.sh` suites
       # read `.claude/hooks/*.sh`, each resolving its subject self-relatively,
       # and two more live under `tests/integration/_lib/`. Adding the path here
