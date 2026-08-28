@@ -40,14 +40,21 @@ const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 24,816 B (hunt-bugs)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~7 KB at the split
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 25,748 B (implement.md, post-#627 compression)
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 27,474 B (implement.md, 2026-08-29)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
 // that narrative COMPRESSION stays legal while wholesale deletion fails.
 const SPLIT_SKILLS = ['work-issues'];
 const MIN_REFERENCE_FILES = 6;
-const MIN_REFERENCE_CORPUS_BYTES = 72_000; // re-measured 2026-08-28 after go-to-k/cdk-local#627's compression: corpus 96,422 B; 72,000 also catches hollowing the largest file (96,422 - 25,748 = 70,674 < floor)
+// The floor has a SECOND job beyond "the files still exist": it must sit above
+// `corpus - largest file`, so DELETING the biggest stage file cannot pass. That
+// property decays as the OTHER files grow (it is invariant when the largest one
+// is compressed, since both terms drop together), and it had already decayed:
+// at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
+// (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
+// stage file changes size materially -- the property is silent when it lapses.
+const MIN_REFERENCE_CORPUS_BYTES = 78_000; // re-measured 2026-08-29: corpus 102,735 B, largest 27,474 B; 78,000 > 102,735 - 27,474 = 75,261, so hollowing the largest file still fails, with ~24 KB of compression headroom left below the floor
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

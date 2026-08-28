@@ -307,15 +307,18 @@ the first two both went red against this repo's own
   the tree used `??` at four sites; widening it surfaced a real unfiled bug.
 
   **But when round three is still ADDING spellings, the instrument is wrong —
-  change it rather than write a better pattern.** Measured 2026-08-29 across
-  go-to-k/cdk-local#630, go-to-k/cdkd#2381 and go-to-k/cdk-real-drift#1838, one
-  defect class in five escalating spellings: a fence over `.markgate.yml` read
-  block items only, so a FLOW list passed; then unquoted keys only, so
-  `"exclude":` passed; then a block scan terminating on `/^ {2}\S/`, which a
-  two-space COMMENT ended early while every case stayed GREEN and markgate
-  really did subtract; then a merge key (`<<: *anchor`) splicing an `exclude`
-  declared on a SIBLING gate. Each round added one more regex. **Three
-  spellings in three rounds is the signal to stop patterning.** Two shapes end
+  change it rather than write a better pattern.** Measured 2026-08-29 in three
+  repos at once, one defect class in a hand-rolled `.markgate.yml` reader.
+  go-to-k/cdkd#2383 tallies its own run as **four spellings across four rounds,
+  each patch moving the hole rather than closing it** — block items only, so a
+  FLOW list passed; then a quoted key; then a multi-line flow list; then a
+  merge key (`<<: *anchor`) splicing an `exclude` declared on a SIBLING gate,
+  which the raw-text tripwire added as that very backstop did not fire on. This
+  repo's own two were different again (go-to-k/cdk-local#631): single-quoted
+  and bare scalars, then a block sequence indented at the PARENT key's column,
+  which a reviewer used to hide three dead globs from a 9/9 green run. Same
+  shape, different spellings — which is the point. **Three spellings in three
+  rounds is the signal to stop patterning.** Two shapes end
   it and neither is a sixth pattern: parse the config with a REAL parser (a
   third-party, versioned library is not the fence checking its own work),
   ALLOW-LIST the tool's own keys, fail CLOSED outside them, and raw-scan the

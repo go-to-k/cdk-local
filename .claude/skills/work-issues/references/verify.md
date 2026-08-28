@@ -207,22 +207,29 @@ marker rather than through the review. Measured 2026-08-29: this repo's own
 go-to-k/cdk-local#631 lane set it before any independent review existed, as did
 the sibling go-to-k/cdkd#2383 lane, both reading it as part of finishing rather
 than as merging. Say the marker out loud in the lane's brief, beside "stop at
-merge-ready". The gate is not what breaks: `pr-review-gate.sh` compares the
-recorded `.markgate-pr-review-sha` sentinel against the PR's current HEAD and
-refuses with a `(mismatch)` line, so a lane-set marker does not authorize an
-unreviewed merge; what it destroys is the record.
+merge-ready".
+
+**Do not read the sha binding as a backstop for this.**
+`pr-review-gate.sh` compares the recorded `.markgate-pr-review-sha` sentinel
+against the PR's current HEAD and refuses on a mismatch — which catches a
+marker a later PUSH left behind, not one set by the wrong AGENT. It cannot tell
+who set it; the sentinel is per-worktree, and `/merge-pr` merges from inside
+the feature worktree, so a lane that sets it after its final push produces a
+matching sha and merges unreviewed. go-to-k/cdk-local#631 was 1220 LOC over 13
+files — `3-axis` tier — and merged. The rule is the only thing standing there.
 
 **And the orchestrator's own review round is not optional because the lane
 already ran one.** A lane's reviewers are its children — same brief, same
-framing — so they clear what the lane already believes. Measured 2 for 2 in
-that run: on go-to-k/cdk-real-drift#1838 the lane's own 3-axis round reported
-clean and an independent 3-axis pass found a HIGH blocker (a flow-style
-`exclude:` a hand-rolled YAML scanner could not see, leaving its "no exclude
-declared" tripwire green while markgate really did subtract); on
-go-to-k/cdkd#2383 the same again one spelling deeper (a merge key splicing an
-`exclude` from a SIBLING gate, invisible to both the parser and a tripwire that
-grepped only the `check` block). Take the tier `/review-pr` gives for YOUR
-pass; a lane's clean round is not a measurement that lowers it.
+framing — so the thing they are least able to doubt is the premise the lane
+handed them. Measured on go-to-k/cdkd#2383 (2026-08-29): three rounds of the
+lane's own reviewers each found the next spelling of one defect, and it took an
+independent orchestrator-level round — round 4, A/B-ing the hand-rolled parser
+against the `yaml` library over 15 spellings and then against markgate 0.4.1
+itself — to find the YAML merge key, **the spelling the lane's own raw-text
+tripwire had been added specifically to backstop and did not fire on**. The
+sibling go-to-k/cdk-real-drift#1838 spent its own rounds on the same class.
+Take the tier `/review-pr` gives for YOUR pass: a lane's clean round is
+evidence about the lane's assumptions, not about the diff.
 
 **A reviewer's scratch COPY of a worktree is not detached from git, so its
 `git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
@@ -234,14 +241,17 @@ tracked DELETIONS in the live tree that the lane's next commit would have
 shipped — nothing announced it, because the reviewer believed it was on a copy.
 Two lines therefore belong in every read-only reviewer's brief: **run no
 WRITING git verb** (`add` / `commit` / `restore` / `checkout` / `stash` /
-`clean`) anywhere, copy included, severing the pointer with `rm .git` if you
-must copy at all; and **report the TARGET worktree's `git status --porcelain`
-before AND after the round.** The pair is what makes damage attributable rather
-than a mystery a later agent finds: that incident surfaced only because the
-NEXT reviewer volunteered "the tree went dirty mid-review, not mine", after
-which the responsible one repaired the index with `git restore --staged` (index
-only, never the working tree). This repo runs its lanes in
-`.claude/worktrees/`, so the hazard is identical here.
+`clean`) anywhere, copy included — and if you must copy, copy OUTSIDE every
+repository, since deleting the `.git` file does not detach the copy, it only
+makes discovery walk UPWARD into whatever encloses it; and **report the TARGET
+worktree's `git status --porcelain` before AND after the round.** The pair is
+what makes damage attributable rather than a mystery a later agent finds: that
+incident surfaced only because the NEXT reviewer volunteered "the tree went
+dirty mid-review, not mine", after which the responsible one repaired the index
+with `git restore --staged` (index only, never the working tree). This repo
+runs its lanes in `.claude/worktrees/`, so the hazard is identical — and both
+lines now live in `.claude/agents/pr-*-reviewer.md`, so a dispatch cannot omit
+them.
 
 ### 8-z. When a mutation probe reports NO discrimination
 
