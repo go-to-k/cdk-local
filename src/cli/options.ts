@@ -1,5 +1,6 @@
 import { Option } from 'commander';
 import { getEmbedConfig } from '../local/embed-config.js';
+import { isIamRoleArn } from '../utils/role-arn.js';
 
 /**
  * Parse context key=value pairs from CLI arguments into a Record.
@@ -141,8 +142,16 @@ export interface AssumeRoleOption {
   bareAutoResolve?: boolean;
 }
 
-const IAM_ROLE_ARN_REGEX = /^arn:[^:]+:iam::\d+:role\//;
-
+/**
+ * Shape-checks both forms against {@link isIamRoleArn}.
+ *
+ * This file used to own a private `IAM_ROLE_ARN_REGEX`, while three WIRE
+ * resolution points asked the same question with `startsWith('arn:')` (issue
+ * #607) — so "is this a role ARN?" had two answers depending on whether the
+ * value came from the flag or off a `GetFunctionConfiguration` response. The
+ * predicate now lives in `src/utils/role-arn.ts`, beside the AssumeRole call
+ * that consumes it, and this site calls it rather than keeping a copy.
+ */
 export function parseAssumeRoleToken(
   raw: string,
   previous: AssumeRoleOption | undefined
@@ -152,12 +161,21 @@ export function parseAssumeRoleToken(
 
   const eqIndex = raw.indexOf('=');
   if (eqIndex === -1) {
-    if (!IAM_ROLE_ARN_REGEX.test(raw)) {
+    // TRIMMED, like the pair form two lines below (issue #607). The pair form
+    // has always trimmed both sides and the bare form never did, which was an
+    // inconsistency between two spellings of one flag before this change and
+    // became user-visible with it: the old regex was unanchored, so a
+    // copy-pasted `--assume-role "arn:...:role/R "` with trailing whitespace
+    // was silently accepted, and an anchored pattern rejects it. Trimming is
+    // the fix that keeps the two forms agreeing, rather than making the bare
+    // form newly stricter than the pair form for the same text.
+    const bare = raw.trim();
+    if (!isIamRoleArn(bare)) {
       throw new Error(
         `Invalid --assume-role value "${raw}": expected an IAM role ARN like arn:aws:iam::123456789012:role/MyRole, or LogicalId=<arn>.`
       );
     }
-    acc.globalArn = raw;
+    acc.globalArn = bare;
     return acc;
   }
 
@@ -168,7 +186,7 @@ export function parseAssumeRoleToken(
       `Invalid --assume-role value "${raw}": left-hand side "${logicalId}" must be a CloudFormation logical ID (alphanumeric, leading letter).`
     );
   }
-  if (!IAM_ROLE_ARN_REGEX.test(arn)) {
+  if (!isIamRoleArn(arn)) {
     throw new Error(
       `Invalid --assume-role value "${raw}": right-hand side "${arn}" must be an IAM role ARN like arn:aws:iam::123456789012:role/MyRole.`
     );

@@ -75,6 +75,36 @@ describe('parseAssumeRoleToken', () => {
       ).toThrow(/Invalid --assume-role/);
     });
 
+    // Issue #607: the bare form now TRIMS, like the pair form always has. The
+    // old pattern was unanchored, so a copy-pasted value with trailing
+    // whitespace was silently accepted; an anchored one rejects it, and the
+    // two forms disagreeing about the same text would be a new bug rather than
+    // a fixed one. Both directions pinned.
+    it('trims surrounding whitespace on the bare form (issue #607)', () => {
+      const result = parseAssumeRoleToken(`  ${VALID_ARN}  `, undefined);
+      expect(result.globalArn).toBe(VALID_ARN);
+    });
+
+    it('trims a trailing newline on the bare form, the copy-paste shape', () => {
+      const result = parseAssumeRoleToken(`${VALID_ARN}\n`, undefined);
+      expect(result.globalArn).toBe(VALID_ARN);
+    });
+
+    it('agrees with the pair form on the same padded text', () => {
+      const bare = parseAssumeRoleToken(`  ${VALID_ARN}  `, undefined);
+      const pair = parseAssumeRoleToken(`  MyFn  =  ${VALID_ARN}  `, undefined);
+      expect(bare.globalArn).toBe(pair.perLambda['MyFn']);
+    });
+
+    it('still rejects INTERIOR whitespace, which trimming must not launder', () => {
+      expect(() =>
+        parseAssumeRoleToken('arn:aws:iam::123456789012:role/My Role', undefined)
+      ).toThrow(/Invalid --assume-role/);
+      expect(() =>
+        parseAssumeRoleToken('arn:aws:iam::123456789012:role/R\nERROR: forged', undefined)
+      ).toThrow(/Invalid --assume-role/);
+    });
+
     it('accepts gov-cloud / china partition (regex matches arn:<partition>)', () => {
       const arn = 'arn:aws-cn:iam::123456789012:role/CnRole';
       const result = parseAssumeRoleToken(arn, undefined);

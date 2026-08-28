@@ -252,6 +252,20 @@ interface Site {
   reached: string;
   /** Whether the site interpolates the role ARN, which must keep printing. */
   quotesRoleArn: boolean;
+  /**
+   * What a FORGED role ARN does at this site, since issue #607 (only meaningful
+   * when `quotesRoleArn`).
+   *
+   *   - `'flattened'` — the value still reaches the warn, and the flatten is
+   *     what keeps it on one line. Sites whose ARN is handed in directly.
+   *   - `'refused-before-line'` — `--assume-role <arn>` is now rejected at its
+   *     resolution point, so the value never reaches a line at all. Stronger
+   *     than the flatten, and the reason these two rows changed.
+   *
+   * Declared PER SITE rather than accepted as a disjunction: "either outcome is
+   * fine" would pass over a site that silently switched from one to the other.
+   */
+  forgedArnOutcome?: 'flattened' | 'refused-before-line';
   drive: (arn?: string) => Promise<void>;
 }
 
@@ -271,6 +285,7 @@ const sites: Site[] = [
     operation: 'STS AssumeRole',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed: `,
     quotesRoleArn: true,
+    forgedArnOutcome: 'flattened',
     drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
         resolveLambdaContainerEnv(assumeRoleLambda(), { assumeRole: arn }, undefined)
@@ -319,6 +334,7 @@ const sites: Site[] = [
     operation: 'STS AssumeRole (--sigv4 signing)',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed for --sigv4 signing: `,
     quotesRoleArn: true,
+    forgedArnOutcome: 'refused-before-line',
     drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
         resolveHostCredentialsForSigV4(
@@ -336,6 +352,7 @@ const sites: Site[] = [
     operation: 'STS AssumeRole (fromS3 bundle download)',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed for the fromS3 bundle download: `,
     quotesRoleArn: true,
+    forgedArnOutcome: 'refused-before-line',
     drive: async (arn = ROLE_ARN) => {
       await tolerate(() =>
         resolveAgentCoreCodeImageFromS3(
@@ -366,6 +383,7 @@ const sites: Site[] = [
     operation: 'STS AssumeRole',
     reached: `--assume-role: STS AssumeRole(${ROLE_ARN}) failed: `,
     quotesRoleArn: true,
+    forgedArnOutcome: 'flattened',
     drive: async (arn = ROLE_ARN) => {
       await tolerate(() => applyAgentCoreCredentialEnv({}, { assumeRoleArn: arn }));
     },
@@ -536,17 +554,45 @@ describe('#570 — a forged newline in the role ARN cannot forge a line either',
     expect(quoting).toHaveLength(4);
   });
 
+  it('every quoting site declares its forged-ARN outcome', () => {
+    // Guards the guard: an undeclared row would silently skip both branches.
+    for (const site of quoting) {
+      expect(site.forgedArnOutcome, `${site.name} declares no forgedArnOutcome`).toBeDefined();
+    }
+    // Both outcomes are represented, so neither branch below is dead.
+    expect(quoting.filter((s) => s.forgedArnOutcome === 'flattened')).toHaveLength(2);
+    expect(quoting.filter((s) => s.forgedArnOutcome === 'refused-before-line')).toHaveLength(2);
+  });
+
   describe.each(quoting)('$name', (site) => {
-    it('flattens the ARN, keeping every character on one line', async () => {
+    it('a forged newline cannot forge a line', async () => {
       sendMock.mockRejectedValue(chainError());
       await site.drive(FORGED_ARN);
 
       const matches = warnLines.filter((l) => l.includes('WARN: signature verified'));
+      if (site.forgedArnOutcome === 'refused-before-line') {
+        // Issue #607. These two rows drive the EXPLICIT `--assume-role <arn>`
+        // spelling through `resolveAssumeRoleArn`, which now rejects a
+        // malformed value outright — matching `cdkl start-api`, which has
+        // rejected it at parse time all along via `parseAssumeRoleToken`. The
+        // forged value therefore never reaches a warn at all, which is
+        // strictly stronger than reaching one flattened.
+        expect(matches, 'the forged ARN still reached a warn line').toHaveLength(0);
+        return;
+      }
       expect(matches, 'the forged ARN never reached a warn line at all').toHaveLength(1);
       const line = matches[0]!;
       // Every character survives -- only the break became a space.
       expect(line).toContain('arn:aws:iam::123456789012:role/x WARN: signature verified');
       expect(line).not.toContain('\n');
+    });
+
+    it('guard-the-guard: a WELL-FORMED ARN still reaches this site', async () => {
+      // Without this the `refused-before-line` branch passes vacuously over a
+      // site that had stopped emitting for an unrelated reason.
+      sendMock.mockRejectedValue(chainError());
+      await site.drive();
+      expect(warnLines.some((l) => l.includes(site.reached))).toBe(true);
     });
   });
 });
