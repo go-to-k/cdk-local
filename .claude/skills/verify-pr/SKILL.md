@@ -206,6 +206,7 @@ Present results as a table:
 | typecheck + lint + format | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) | pass/fail |
+| hook shell suites (`vp run test:hooks`) | pass/fail |
 | test coverage for changes | pass/fail |
 | CI | pass/fail |
 | working tree | clean/dirty |

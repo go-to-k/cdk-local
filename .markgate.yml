@@ -125,6 +125,10 @@ gates:
       # those definitions, so a toolchain bump changes what green attests to;
       # cdkd scopes its own `.mise.toml` for that reason and this file's header
       # already warns that a `.mise.toml` change can silently break every gate.
+      # `.node-version` is the same argument for the runtime the suite executes
+      # ON: `.mise.toml` pins only `vp` and `markgate`, so without this entry a
+      # Node bump -- the thing most likely to change what the suite does -- left
+      # the marker fresh. Added during #630's review round.
       #
       # These replace `vitest.config.ts` / `.eslintrc*` / `.prettierrc*`, which
       # named nothing in this repo: `git ls-files | grep -E '^(vitest\.config\.ts|\.eslintrc|\.prettierrc)'`
@@ -134,6 +138,7 @@ gates:
       # any include entry that matches no tracked file.
       - "vite.config.ts"
       - ".mise.toml"
+      - ".node-version"
 
   docs:
     hash: files

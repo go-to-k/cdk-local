@@ -697,20 +697,23 @@ construction.
   - `check` — recorded by `/check` (typecheck + lint + format +
     build + unit tests + `vp run test:hooks`). Scope: `src/**`,
     `tests/**`, `package.json`, `pnpm-lock.yaml`, `tsconfig*.json`,
-    `vite.config.ts`, `.mise.toml`, `.markgate.yml`,
+    `vite.config.ts`, `.mise.toml`, `.node-version`, `.markgate.yml`,
     `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
-    `.claude/rules/**`, `.claude/settings.json`, and the
-    pr-inherit-issue-labels workflow YAML (go-to-k/cdk-local#620;
+    `.claude/rules/**`, `.claude/settings.json`, and
+    `.github/workflows/pr-inherit-issue-labels.yml` (go-to-k/cdk-local#620;
     see the mapping comment in `.markgate.yml`). Only invalidated
     by changes in that scope.
 
-    `vite.config.ts` / `.mise.toml` / `.markgate.yml` are in for a
-    different reason than the rest: they decide what "green" MEANS
-    rather than being read by an assertion — the test-selection
-    globs and task definitions, the pinned `vp` / `markgate`
-    binaries that run them, and the gate's own definition
-    (go-to-k/cdk-local#630 / go-to-k/cdk-local#624). The include
+    `vite.config.ts` / `.mise.toml` / `.node-version` /
+    `.markgate.yml` are in for a different reason than the rest:
+    they decide what "green" MEANS rather than being read by an
+    assertion — the test-selection globs and task definitions, the
+    pinned `vp` / `markgate` binaries that run them, the Node they
+    run on, and the gate's own definition (go-to-k/cdk-local#630 /
+    go-to-k/cdk-local#624). This paragraph is itself fenced:
+    `tests/unit/gates/markgate-include-globs.test.ts` fails if it
+    stops naming any include entry. The include
     used to name `vitest.config.ts`, `.eslintrc*` and `.prettierrc*`,
     none of which exist here; `tests/unit/gates/markgate-include-globs.test.ts`
     now fails on any include entry matching no tracked file.
@@ -737,18 +740,27 @@ construction.
   (and `/check` too when it touches `.claude/rules/**`, which sits
   in BOTH scopes); a src edit needs both; a skills / agents /
   settings.json edit needs `/check` (checker input,
-  go-to-k/cdk-local#620); a hooks / `.markgate.yml` / `vite.config.ts`
-  / `.mise.toml` edit needs `/check` too (go-to-k/cdk-local#624,
-  go-to-k/cdk-local#630). What is left outside both scopes is
-  narrow — `.github/workflows/` other than the pr-inherit one,
-  `CONTRIBUTING.md`, `.vscode/`, `.markdownlint.json` (an editor
-  setting nothing in `vp run check` or CI reads) — and needs
-  neither. This sentence used to name `.claude/hooks/**` and
-  `.markgate.yml` as the out-of-scope examples and was already
-  false for `.markgate.yml` when go-to-k/cdk-local#624 scoped it
-  in; keep it in step with `.markgate.yml` rather than describing
-  it from memory. The hook is a safety net, not the primary
-  trigger.
+  go-to-k/cdk-local#620); a hooks / `.markgate.yml` /
+  `vite.config.ts` / `.mise.toml` / `.node-version` edit needs
+  `/check` too (go-to-k/cdk-local#624, go-to-k/cdk-local#630).
+  What is left outside both scopes is stated as a RULE rather than
+  a list, because a list of the complement is the same enumeration
+  that went stale above: a file is outside both scopes when no
+  assertion READS it AND it does not decide what "green" means —
+  `CONTRIBUTING.md`, `.vscode/`, `.releaserc.json`, `CHANGELOG.md`
+  and `.markdownlint.json` (an editor setting nothing in
+  `vp run check` or CI reads) are examples, not the whole set. Two
+  cautions from go-to-k/cdk-local#630's review: the previous
+  wording named `.claude/hooks/**` and `.markgate.yml` as
+  out-of-scope examples and was ALREADY false for `.markgate.yml`
+  when go-to-k/cdk-local#624 scoped it in; and `.github/workflows/`
+  is not wholly outside — the pr-inherit workflow is a checker
+  input and `ci.yml` is asserted on by
+  `tests/unit/gates/markgate-include-globs.test.ts`. Settle a
+  borderline case against `.markgate.yml`, or against
+  `markgate verify check --explain`, which prints the RESOLVED
+  scope (include minus exclude) to stderr. The hook is a safety
+  net, not the primary trigger.
 
   **Run `mise install` after pulling a change to `.mise.toml`.** An
   older markgate binary rejects a newer `.markgate.yml` (an unknown

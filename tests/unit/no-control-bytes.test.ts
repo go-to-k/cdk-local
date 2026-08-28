@@ -207,22 +207,58 @@ describe('committed text carries no C0 control bytes', () => {
     ).toEqual([]);
   });
 
-  it('LEGITIMATELY_BINARY names no extension the repo carries as text', () => {
+  it('every extension LEGITIMATELY_BINARY names really holds binary bytes', () => {
     // Guard-the-guard, in the direction the subset check cannot see: the
     // subset only asks "is every EXCLUDED extension listed here", so an
-    // over-broad entry (`.sh`, `.yml`) would be waved through the moment
-    // someone also widened BINARY_EXT to match. Anchored to the extensions
-    // the scan's own population proves are text.
-    const textExts = [
-      ...new Set(files.map((f) => path.extname(f).toLowerCase()).filter((e) => e.length > 0)),
-    ];
-    expect(textExts.length, 'the scanned population has no extensions at all').toBeGreaterThan(5);
-    const overlap = LEGITIMATELY_BINARY.filter((e) => textExts.includes(e));
+    // over-broad entry is waved through the moment someone widens BINARY_EXT
+    // to match it.
+    //
+    // The anchor is deliberately NOT the scanned population. An earlier draft
+    // compared LEGITIMATELY_BINARY against `files`'s extensions -- but `files`
+    // is ALREADY filtered by BINARY_EXT, so adding `yaml` to BOTH lists
+    // removed every .yaml from `files` and the overlap came back empty: the
+    // one case the guard existed for was the one case it could not see
+    // (measured during #630's review: 13 tracked files silently dropped from
+    // the scan, suite still 7 passed).
+    //
+    // So judge by CONTENT instead, from the unfiltered index: for every listed
+    // extension the repo actually tracks, at least one of those files must
+    // really contain a byte no text file has. A text extension smuggled into
+    // the list fails here whatever BINARY_EXT says.
+    const allTracked = execFileSync('git', ['ls-files', '-z'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter((f) => f.length > 0);
+    expect(allTracked.length, 'git ls-files returned no tracked files').toBeGreaterThan(500);
+
+    const judged: string[] = [];
+    const notBinary: string[] = [];
+    for (const ext of LEGITIMATELY_BINARY) {
+      const held = allTracked.filter((f) => f.toLowerCase().endsWith(ext));
+      // An extension the repo does not carry excludes nothing, so there is
+      // nothing to judge -- and nothing at risk either.
+      if (held.length === 0) continue;
+      judged.push(ext);
+      const anyBinary = held.some((f) =>
+        FORBIDDEN.test(readFileSync(path.join(REPO_ROOT, f), 'latin1'))
+      );
+      if (!anyBinary) notBinary.push(`${ext} (${held.length} file(s), e.g. ${held[0]})`);
+    }
     expect(
-      overlap,
-      `LEGITIMATELY_BINARY names ${overlap.join(', ')}, which the repo also tracks as ` +
-        `scanned text -- one of the two lists is wrong`
+      notBinary,
+      `LEGITIMATELY_BINARY names ${notBinary.join(', ')}, but every tracked file with ` +
+        `that extension is plain text. Excluding it removes real files from the ` +
+        `control-byte scan for nothing -- narrow the list, and narrow BINARY_EXT with it.`
     ).toEqual([]);
+    // Vacuity floor: if the repo tracked none of these extensions the loop
+    // above would judge nothing and pass silently.
+    expect(
+      judged,
+      'no extension in LEGITIMATELY_BINARY is present in the repo, so this test judged nothing'
+    ).not.toEqual([]);
   });
 
   it('keeps every text extension the repo actually carries', () => {

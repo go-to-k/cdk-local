@@ -1373,7 +1373,8 @@ vp run runtime:smoke
   `gh pr create` / `gh pr merge` unless the `verify-pr` marker
   (declared `requires: [check, docs]`) is fresh. The marker is set
   ONLY by `/verify-pr`, which walks the full checklist: typecheck /
-  lint / build / tests, CI status, working tree, docs consistency,
+  lint / build / unit tests / `vp run test:hooks`, CI status,
+  working tree, docs consistency,
   Docker + integ marker check, code review (incl. shared-utility
   caller verification), live-test, retrospective + rule proposals,
   residual review-nit sweep + auto-close audit, and PR title + body
@@ -1804,5 +1805,5 @@ vp run runtime:smoke
   surface (factory exports, `LocalStateProvider` API) — linked from
   README's "Programmatic use" pointer.
 - `vite.config.ts` — vp tasks, lint / fmt / pack / test config.
-- `.github/workflows/ci.yml` — CI (typecheck + lint + test + build +
-  Node 20/22/24 matrix smoke).
+- `.github/workflows/ci.yml` — CI (`vp run check` + `test` +
+  `test:hooks` + `build`, then a Node 20/22/24 matrix smoke).
