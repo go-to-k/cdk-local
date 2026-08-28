@@ -712,7 +712,7 @@ cd .claude/worktrees/<name>
 # until this. (A backslash continuation cannot carry a trailing comment, so
 # these are separate lines rather than one `&&` chain.)
 mise trust && mise install
-pnpm install    # worktrees have no node_modules
+pnpm install    # worktrees have no node_modules -- and neither may the MAIN checkout
 vp run build    # ...and no dist/ — see below
 ```
 
@@ -914,6 +914,43 @@ if the fix needs a forbidden file" guardrail. Note: a subagent's Bash **bypasses
 the PreToolUse gate hooks**, so it can `gh pr create` past `verify-pr-gate` —
 enforce quality yourself; you (the orchestrator) still gate the MERGE via
 `/merge-pr`.
+
+**A FACT you assert to an implementing agent becomes a code comment.** This is
+the orchestrator's own version of the relayed-count rule above, and it is worse,
+because the agent cannot check you cheaply: it is inside one lane's files while
+you are the only one holding the repo-wide view. So it writes what you said into
+a JSDoc or an invariant comment, in good faith, and the claim outlives the
+session.
+
+Measured here on 2026-08-27 across one run, which produced THREE wrong
+orchestrator assertions, all from verification scoped narrower than the claim:
+
+- "there are two `RoleArn:` sends" — derived from a grep scoped to ONE file and
+  reported as a repo-wide count. There are five. The agent had already written
+  "one of the two places in the process where a role ARN is handed to STS" into
+  `src/utils/role-arn.ts` before review caught it.
+- "those two sends are safe, their values already passed `parseAssumeRoleToken`"
+  — the flags are declared as plain `new Option('<flag> <arn>', …)` with no
+  `argParser`, so they never reach that function. The real reason they were
+  low-risk is provenance (argv, never a wire source), which is a different
+  argument that survives a different set of changes.
+- "count the call sites and die when derived < found" — a rule specified without
+  running it against a correct fixture, where naming one base twice (deploy, then
+  destroy) makes `found > derived` on a fixture with nothing wrong.
+
+All three were caught by the agent verifying rather than obeying, and each cost a
+round. Two cheap habits fix it: **derive a repo-wide claim with a repo-wide
+query** (`grep -rn` over `src/`, not over the file you happen to be reading), and
+when you cannot, **say the claim is unverified** so the agent checks it before
+building on it rather than after.
+
+The converse is worth stating too, because it is what made those rounds
+recoverable: an agent that pushes back with a measurement is doing its job. When
+one does, correct the record where the false claim landed — in the code comment,
+not only in the chat — and keep the rejected version executable if you can. That
+run kept the orchestrator's wrong rule as a mutation probe, killed by a case
+named after the counterexample, so the decision is legible to whoever reads the
+file next.
 
 ## 6. Gates + PR (per lane)
 
@@ -1820,6 +1857,29 @@ the run evidence behind it — or "no skill change" plus what held.
   remote merge lands but local cleanup fails) and is gate-blocked besides.
 - **Never defer the integ** — a `src/**` fix ships its Docker/fixture coverage in
   the SAME PR (the `integ` gate enforces it at merge time).
+- **Do not restore an agent's uncommitted work with `git checkout -- <file>`.**
+  It resets to HEAD, and a fan-out agent's work is UNCOMMITTED by instruction, so
+  the file goes back to `origin/main` and the agent's edit is gone. On 2026-08-27
+  this destroyed a lane's fix while restoring after a mutation probe; it was
+  recoverable only because the probe had copied the file first. Copy before you
+  mutate, restore from the copy, and confirm by a property of the agent's work
+  (`grep -c <the symbol it added>`), not by `git status` being clean — clean is
+  exactly what the wrong restore produces.
+- **`git add -N` to get a diffstat leaves the index dirty and breaks the next
+  `rebase` / `stash`.** Both refuse with `Entry '<path>' not uptodate` or
+  `your index contains uncommitted changes`, which reads as a merge problem
+  rather than as your own earlier command. `git reset` clears it. Cheaper: get
+  the true size with `git status --porcelain | wc -l` plus
+  `git diff --shortstat`, or accept that untracked files are missing from the
+  stat and say so.
+- **A green suite in the MAIN checkout can be measuring nothing.** The
+  worktree rule in section 5 says a fresh worktree has no `node_modules` and no
+  `dist/`; the main checkout can be the one that is missing them, because the
+  lanes have been running `pnpm install` and it has not. On 2026-08-27 six runs
+  there returned `exit 1` and were read as a reproduction of a flake, when every
+  one was `Cannot find module .../vite-plus/dist/bin.js`. Read the failure text
+  before counting exit codes, and prefer measuring in a worktree that is set up
+  and whose diff cannot touch the subject.
 
 ## Important existing rules this skill leans on
 
