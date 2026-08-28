@@ -228,7 +228,16 @@ export default defineConfig({
         command: 'tsc --project tsconfig.json --noEmit',
       },
       verify: {
-        command: 'vp run check && vp run test && vp run build',
+        // Kept in step with what `/check` runs (issue #630): `test:hooks` is
+        // part of what the `check` markgate marker attests to, so an alias
+        // that stopped short would hand back a green this repo's gate does
+        // not mean.
+        command: 'vp run check && vp run test && vp run test:hooks && vp run build',
+        // `run.cache.tasks` is on, and an alias that REPLAYS is the same
+        // false green one level up: a recorded exit code from before a
+        // `.claude/hooks/**` edit would satisfy the very step added to catch
+        // it. The links it chains keep their own caching.
+        cache: false,
       },
       'test:hooks': {
         // Glob, not a hardcoded list: a new `.claude/hooks/*.test.sh` used to be

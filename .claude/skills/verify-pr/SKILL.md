@@ -26,6 +26,7 @@ Run each check and report pass/fail:
 
 2. **Tests**
    - `vp run test` — all unit tests pass
+   - `vp run test:hooks` — the shell suites under `.claude/hooks/*.test.sh` and `tests/integration/_lib/*.test.sh` (~75 s, uncached). **Not optional, and not covered by `vp run test`**: it is a separate task in `vite.config.ts`, while `.claude/hooks/**` sits inside the `check` gate's include — so this step is what stops the `check` marker this skill sets from attesting to a suite that excludes those assertions (go-to-k/cdk-local#630). CI runs it as its own step, so skipping it here only moves the failure to the PR.
    - Report test count (files and tests)
    - **Test coverage check**: compare `git diff origin/main...HEAD` for `src/` changes vs `tests/` changes. If new logic was added or modified in `src/` but no corresponding test files were added or updated, flag as **fail** and add the missing tests before proceeding.
 
@@ -205,6 +206,7 @@ Present results as a table:
 | typecheck + lint + format | pass/fail |
 | build | pass/fail |
 | tests (N files, M tests) | pass/fail |
+| hook shell suites (`vp run test:hooks`) | pass/fail |
 | test coverage for changes | pass/fail |
 | CI | pass/fail |
 | working tree | clean/dirty |

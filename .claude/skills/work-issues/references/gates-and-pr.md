@@ -25,8 +25,13 @@ by hand and say so in the report, because nothing else will.
 From inside the worktree, run the full check that CI runs:
 
 ```bash
-vp run verify        # = check (typecheck + lint + format) + test + build
+vp run verify        # = check (typecheck + lint + format) + test + test:hooks + build
 ```
+
+`test:hooks` is in that alias because it is in what `/check` runs and therefore
+in what the `check` marker attests to (go-to-k/cdk-local#630); it is a separate
+task from `vp run test`, so an alias stopping short of it would report green on
+a suite the gate does not mean.
 
 All green, then run `/check` (and `/check-docs` if the diff touches docs) to refresh
 the markers the check-gate demands, commit (conventional-commit prefix), push, and

@@ -43,13 +43,69 @@ import { fileURLToPath } from 'node:url';
  * rather than described: adding `sh` to `BINARY_EXT` silently drops ~92
  * files -- every `.claude/hooks/*.sh`, which is the tree this fence's
  * rationale is about -- while leaving the file count and the three prefix
- * checks comfortably satisfied. So the tests below pin BOTH WHICH EXTENSIONS
- * the exclusion removes and that each text extension the repo actually
- * carries survives it.
+ * checks comfortably satisfied. So the tests below pin BOTH that every
+ * excluded extension is one this file names as genuinely binary, and that
+ * each text extension the repo actually carries survives the filter.
+ *
+ * ## Why a SUBSET check and not an equality pin (issue #630)
+ *
+ * That first assertion used to read `expect(excludedExts).toEqual(['.gif'])`
+ * -- `.gif` being the only excluded extension the tree carried. This file is
+ * a repo-wide scanner and therefore sits OUTSIDE the `check` markgate gate's
+ * include (the deliberate carve-out documented in `.markgate.yml`), and that
+ * carve-out is only proportionate while the condition the scanner fires on is
+ * RARE. A raw C0 control byte in committed text is rare. Committing a `.png`
+ * screenshot, a `.pdf`, or a `.woff2` font is ORDINARY -- and under the
+ * equality pin any one of them reddened this suite, in a file the committer
+ * has no reason to open. The predicate, not the breadth of the population,
+ * is what decides whether a whole-tree scanner is a fair carve-out.
+ *
+ * The subset form keeps everything the equality pin was for. The failure it
+ * exists to catch is a TEXT extension entering `BINARY_EXT` and silently
+ * shrinking the population; such an extension is absent from
+ * LEGITIMATELY_BINARY, so it still fails here on the FIRST file of that
+ * extension, and never on an 8th GIF or a 1st PNG. LEGITIMATELY_BINARY is
+ * hand-written and deliberately NOT derived from `BINARY_EXT`: derived, the
+ * check would be a tautology satisfied by whatever the regex happens to say.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..');
+
+/**
+ * The extensions whose exclusion from the scan is legitimate, spelled
+ * INDEPENDENTLY of `BINARY_EXT` below (see the docblock): a value appearing
+ * in `BINARY_EXT` but not here is the regression this list exists to catch,
+ * so deriving one from the other would make the assertion vacuous. Adding an
+ * entry here is the deliberate, reviewable second edit that widening
+ * `BINARY_EXT` should cost.
+ */
+const LEGITIMATELY_BINARY = [
+  '.bmp',
+  '.class',
+  '.dll',
+  '.dylib',
+  '.eot',
+  '.gif',
+  '.gz',
+  '.ico',
+  '.jar',
+  '.jpeg',
+  '.jpg',
+  '.mov',
+  '.mp4',
+  '.otf',
+  '.pdf',
+  '.png',
+  '.so',
+  '.tgz',
+  '.ttf',
+  '.wasm',
+  '.webp',
+  '.woff',
+  '.woff2',
+  '.zip',
+];
 
 /** Extensions whose bytes are legitimately non-text. */
 const BINARY_EXT =
@@ -114,11 +170,12 @@ describe('committed text carries no C0 control bytes', () => {
     // while every other assertion here stays green (`sh` alone costs ~92 files,
     // every `.claude/hooks/*.sh` -- the tree this fence's rationale is about).
     //
-    // Asserted as a SET rather than a count. A count has to be tuned between
-    // "loud enough to catch `yaml`" and "quiet enough to survive one more demo
-    // GIF", and at the tuned value `html` cleared by exactly one file -- drop an
-    // .html from the repo and that escape reopens silently. The set fires on the
-    // FIRST file of a newly-excluded extension and never fires on an 8th GIF.
+    // Asserted as a SUBSET of LEGITIMATELY_BINARY rather than as an equality
+    // pin or a count. A count has to be tuned between "loud enough to catch
+    // `yaml`" and "quiet enough to survive one more demo GIF"; an equality pin
+    // fired on ordinary content (see the docblock, issue #630). The subset
+    // fires on the FIRST file of a newly-excluded TEXT extension, and never on
+    // an 8th GIF or a 1st PNG.
     const allTracked = execFileSync('git', ['ls-files', '-z'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
@@ -126,6 +183,10 @@ describe('committed text carries no C0 control bytes', () => {
     })
       .split('\0')
       .filter((f) => f.length > 0);
+    // Floor: an empty or broken `git ls-files` would leave `excludedExts`
+    // empty, and an empty set is a subset of everything -- the assertion below
+    // would pass having examined nothing.
+    expect(allTracked.length, 'git ls-files returned no tracked files').toBeGreaterThan(500);
     const excludedExts = [
       ...new Set(
         allTracked
@@ -136,7 +197,76 @@ describe('committed text carries no C0 control bytes', () => {
           .map((f) => (path.extname(f) || path.basename(f)).toLowerCase())
       ),
     ].sort();
-    expect(excludedExts).toEqual(['.gif']);
+    const unexpected = excludedExts.filter((e) => !LEGITIMATELY_BINARY.includes(e));
+    expect(
+      unexpected,
+      `BINARY_EXT excludes ${unexpected.join(', ')} from the control-byte scan, and ` +
+        `LEGITIMATELY_BINARY does not name ${unexpected.length === 1 ? 'it' : 'them'}. ` +
+        `If the extension really is binary, add it there too; if it is text, this is ` +
+        `the population silently shrinking -- narrow BINARY_EXT instead.`
+    ).toEqual([]);
+  });
+
+  it('every extension LEGITIMATELY_BINARY names really holds binary bytes', () => {
+    // Guard-the-guard, in the direction the subset check cannot see: the
+    // subset only asks "is every EXCLUDED extension listed here", so an
+    // over-broad entry is waved through the moment someone widens BINARY_EXT
+    // to match it.
+    //
+    // The anchor is deliberately NOT the scanned population. An earlier draft
+    // compared LEGITIMATELY_BINARY against `files`'s extensions -- but `files`
+    // is ALREADY filtered by BINARY_EXT, so adding `yaml` to BOTH lists
+    // removed every .yaml from `files` and the overlap came back empty: the
+    // one case the guard existed for was the one case it could not see
+    // (measured during #630's review: 13 tracked files silently dropped from
+    // the scan, suite still 7 passed).
+    //
+    // So judge by CONTENT instead, from the unfiltered index: for every listed
+    // extension the repo actually tracks, at least one of those files must
+    // really contain a byte no text file has. A text extension smuggled into
+    // the list fails here whatever BINARY_EXT says.
+    const allTracked = execFileSync('git', ['ls-files', '-z'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter((f) => f.length > 0);
+    expect(allTracked.length, 'git ls-files returned no tracked files').toBeGreaterThan(500);
+
+    const judged: string[] = [];
+    const notBinary: string[] = [];
+    for (const ext of LEGITIMATELY_BINARY) {
+      const held = allTracked.filter((f) => f.toLowerCase().endsWith(ext));
+      // An extension the repo does not carry excludes nothing, so there is
+      // nothing to judge -- and nothing at risk either.
+      if (held.length === 0) continue;
+      judged.push(ext);
+      const anyBinary = held.some((f) =>
+        FORBIDDEN.test(readFileSync(path.join(REPO_ROOT, f), 'latin1'))
+      );
+      if (!anyBinary) notBinary.push(`${ext} (${held.length} file(s), e.g. ${held[0]})`);
+    }
+    expect(
+      notBinary,
+      `LEGITIMATELY_BINARY names ${notBinary.join(', ')}, but every tracked file with ` +
+        `that extension is plain text. Excluding it removes real files from the ` +
+        `control-byte scan for nothing -- narrow the list, and narrow BINARY_EXT with it.`
+    ).toEqual([]);
+    // NO vacuity floor here, deliberately (issue #630, review round 4). The
+    // obvious one -- `expect(judged).not.toEqual([])` -- was satisfied by
+    // exactly ONE extension: `.gif`, from the three demo GIFs in `assets/`, a
+    // directory in no gate's include. Reformatting or deleting them reddened
+    // this suite with the `check` marker FRESH -- measured, and it is the
+    // go-to-k/cdk-local#620 class this PR exists to close, re-introduced by a
+    // floor guarding a harmless case: an extension the repo does not carry
+    // excludes nothing, so there is nothing at risk in not judging it. The
+    // failure this arm exists for -- a TEXT extension entering
+    // LEGITIMATELY_BINARY -- always has files to judge, because having files
+    // is what makes it a problem. Scoping `assets/**` in was the alternative
+    // and buys nothing: it would make every demo-GIF change stale the marker
+    // to keep a floor that guards nothing.
+    void judged;
   });
 
   it('keeps every text extension the repo actually carries', () => {

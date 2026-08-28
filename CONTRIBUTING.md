@@ -34,7 +34,10 @@ vp run build
 # Unit tests (vitest)
 vp run test
 
-# Full check + tests + build (what CI runs)
+# Hook / integ-lib shell suites (bash) — a separate task from `vp run test`
+vp run test:hooks
+
+# Full check + tests + hook suites + build (what CI's check job runs)
 vp run verify
 ```
 
@@ -99,7 +102,9 @@ docs: lead getting-started with the interactive picker form
 5. Push and open the PR with `gh pr create`. The default template
    asks for a Summary + Test plan; fill both.
 
-CI runs `vp run verify` on Node 20 / 22 / 24. The CHANGELOG and
+CI's `check-build-test` job runs the same four steps `vp run verify`
+chains; a second job then builds and smoke-runs `dist/cli.js` on Node
+20 / 22 / 24. The CHANGELOG and
 GitHub release are produced automatically by semantic-release on
 merge to `main`.
 

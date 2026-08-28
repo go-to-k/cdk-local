@@ -695,13 +695,44 @@ construction.
 - **`check-gate.sh`** blocks `git commit` unless both the `check`
   and `docs` markgate markers are fresh.
   - `check` — recorded by `/check` (typecheck + lint + format +
-    build + tests). Scope: `src/**`, `tests/**`, lockfiles,
-    build/test configs, plus the checker-INPUT files the unit suite
+    build + unit tests + `vp run test:hooks`). Scope: `src/**`,
+    `tests/**`, `package.json`, `pnpm-lock.yaml`, `tsconfig*.json`,
+    `vite.config.ts`, `.mise.toml`, `.node-version`, `.markgate.yml`,
+    `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
-    `.claude/rules/**`, `.claude/settings.json`, and the
-    pr-inherit-issue-labels workflow YAML (go-to-k/cdk-local#620;
-    see the mapping comment in `.markgate.yml`). Only invalidated
-    by changes in that scope.
+    `.claude/rules/**`, `.claude/settings.json`,
+    `.github/workflows/pr-inherit-issue-labels.yml`,
+    `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
+    go-to-k/cdk-local#630; see the mapping comment in
+    `.markgate.yml`). The other two workflows are read by nothing
+    and stay out of scope. Only invalidated by changes in that
+    scope.
+
+    `vite.config.ts` / `.mise.toml` / `.node-version` /
+    `.markgate.yml` are in for a different reason than the rest:
+    they decide what "green" MEANS rather than being read by an
+    assertion — the test-selection globs and task definitions, the
+    pinned `vp` / `markgate` binaries that run them, the Node they
+    run on, and the gate's own definition (go-to-k/cdk-local#630 /
+    go-to-k/cdk-local#624). This paragraph is itself fenced:
+    `tests/unit/gates/markgate-include-globs.test.ts` asserts this
+    sentence names EXACTLY the include set — a dropped entry and an
+    invented one both fail. The include
+    used to name `vitest.config.ts`, `.eslintrc*` and `.prettierrc*`,
+    none of which exist here; `tests/unit/gates/markgate-include-globs.test.ts`
+    now fails on any include entry matching no file (tracked OR on
+    disk — `hash: files` digests untracked content too) and on any
+    entry naming a bare directory rather than `<dir>/**`. It
+    deliberately over-approximates rather than under-reports;
+    `markgate config lint --json` is the exact instrument, and is not
+    available in CI.
+
+    `.claude/hooks/**` needs BOTH halves and one alone is worse
+    than neither: the path in the include makes a hook edit stale
+    the marker, and `/check` running `vp run test:hooks` is what
+    makes the `/check` that clears it actually execute the eight
+    `.claude/hooks/*.test.sh` suites. With only the include, the
+    marker would attest to a suite that does not contain them.
   - `docs` — recorded by `/check-docs` (README.md /
     `.claude/CLAUDE.md` / `docs/` / `.claude/rules/` consistency
     with src). Scope: `src/**`, `docs/**`, `README.md`,
@@ -718,9 +749,28 @@ construction.
   (and `/check` too when it touches `.claude/rules/**`, which sits
   in BOTH scopes); a src edit needs both; a skills / agents /
   settings.json edit needs `/check` (checker input,
-  go-to-k/cdk-local#620); changes that fall outside both scopes
-  (`.claude/hooks/**`, `.markgate.yml`) need neither. The hook is a
-  safety net, not the primary trigger.
+  go-to-k/cdk-local#620); a hooks / `.markgate.yml` /
+  `vite.config.ts` / `.mise.toml` / `.node-version` edit needs
+  `/check` too (go-to-k/cdk-local#624, go-to-k/cdk-local#630).
+  What is left outside both scopes is stated as a RULE rather than
+  a list, because a list of the complement is the same enumeration
+  that went stale above: a file is outside both scopes when no
+  assertion READS it AND it does not decide what "green" means —
+  `CONTRIBUTING.md`, `.vscode/`, `.releaserc.json`, `CHANGELOG.md`
+  and `.markdownlint.json` (an editor setting nothing in
+  `vp run check` or CI reads) are examples, not the whole set. Two
+  cautions from go-to-k/cdk-local#630's review: the previous
+  wording named `.claude/hooks/**` and `.markgate.yml` as
+  out-of-scope examples and was ALREADY false for `.markgate.yml`
+  when go-to-k/cdk-local#624 scoped it in; and `.github/workflows/`
+  is not wholly outside — `pr-inherit-issue-labels.yml` and
+  `ci.yml` are both checker inputs and both scoped in, while
+  `release.yml` and `pr-title-check.yml` are read by nothing.
+  Settle a
+  borderline case against `.markgate.yml`, or against
+  `markgate verify check --explain`, which prints the RESOLVED
+  scope (include minus exclude) to stderr. The hook is a safety
+  net, not the primary trigger.
 
   **Run `mise install` after pulling a change to `.mise.toml`.** An
   older markgate binary rejects a newer `.markgate.yml` (an unknown
@@ -739,7 +789,7 @@ construction.
   freshness is the AND of those children plus the `/verify-pr`
   skill's own work. The skill walks the full checklist:
 
-  - typecheck / lint / build / tests
+  - typecheck / lint / build / unit tests / `vp run test:hooks`
   - test coverage for the diff
   - CI status / working tree / docs consistency
   - Docker + integ marker check (for `src/**` or
