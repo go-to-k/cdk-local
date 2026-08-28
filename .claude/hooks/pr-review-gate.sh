@@ -240,8 +240,8 @@ up_bias_path() {
 # of the low risk a down-bias assumes, and the `.*\.md` entry below would
 # otherwise re-admit every SKILL.md through the back door. cdkd made the same
 # change in its own copy of this gate; keep this regex, that one,
-# `/review-pr`'s down-bias list, `.claude/skills/work-issues/SKILL.md` (its
-# section 10-d describes this tier for skill-only PRs) and
+# `/review-pr`'s down-bias list, `.claude/skills/work-issues/references/retro.md`
+# (its section 10-d describes this tier for skill-only PRs) and
 # `.claude/rules/hooks.md` in sync.
 AGENT_INSTRUCTION_REGEX='^(CLAUDE\.md|\.claude/.*|\.markgate\.yml)$'
 DOWN_DOCS_REGEX='^(\.gitignore|README\.md|.*\.md|docs/.*|package\.json)$'
