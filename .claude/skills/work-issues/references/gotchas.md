@@ -30,7 +30,18 @@
   "no marker" because it ran in the main checkout while the marker sat in the
   lane's store, and a `.markgate-pr-review-sha` was written into the main
   checkout before the mistake was caught and redone from the lane. `pwd` costs
-  nothing; a marker in the wrong store costs a re-diagnosis.
+  nothing; a marker in the wrong store costs a re-diagnosis. **A KILLED or
+  REFUSED call is a named trigger for the cwd going wrong, and it lies about
+  the filesystem too**: a tool-call timeout that kills a call mid-run can bring
+  the persistent shell back at the session cwd, and a PreToolUse refusal aborts
+  the WHOLE call, so a directory it was going to `mkdir` never exists for a
+  later call's relative `cd` — and a failed `cd` stops an `&&` chain but NOT
+  the later lines of a multi-line call, which then write into whatever cwd was
+  current. Both measured in a cdkd `/work-issues` run on 2026-08-28 (retro
+  go-to-k/cdkd#2370); this repo has no main-tree EDIT gate to catch the stray
+  write, so the receipt matters more here. After any timeout or refusal, run
+  `pwd` and re-verify what the aborted call was supposed to create, before the
+  next relative-path command.
 - **A hook's `if` takes ONE pattern — ` or ` matches nothing and disables the
   gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen gates
   here were written as
