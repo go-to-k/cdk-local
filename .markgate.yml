@@ -53,6 +53,29 @@ gates:
     include:
       - "src/**"
       - "tests/**"
+      # Checker-INPUT files outside src/tests (issue #620): these are files
+      # the unit suite READS, so an edit to one can red the suite while a
+      # previously-set `check` marker stays FRESH — the marker then attests
+      # to a tree the checker's input no longer matches.
+      #   - tests/unit/skills/skill-file-payload.test.ts reads every
+      #     SKILL.md + references/*.md (byte caps, moved-not-dropped floors)
+      #   - tests/unit/skills/work-issues-skill-refs.test.ts reads skills +
+      #     agents + rules (bare-ref scan)
+      #   - tests/unit/hooks/gate-if-matchers.test.ts reads
+      #     .claude/settings.json (the #1801 inert-`if:` class)
+      #   - tests/unit/hooks/pr-inherit-issue-labels.test.ts reads its
+      #     workflow YAML
+      # `.claude/rules/**` sits in `docs` too — same overlap cdkd carries,
+      # for the same two reasons. Known limit, deliberate: the repo-wide
+      # scanners (e.g. tests/unit/no-control-bytes.test.ts globs every
+      # tracked text file) read a population scoping cannot follow without
+      # making the marker stale on every edit anywhere; CI remains the
+      # backstop there.
+      - ".claude/skills/**"
+      - ".claude/agents/**"
+      - ".claude/rules/**"
+      - ".claude/settings.json"
+      - ".github/workflows/pr-inherit-issue-labels.yml"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
