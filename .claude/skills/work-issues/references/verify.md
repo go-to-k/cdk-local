@@ -8,8 +8,9 @@ freshness) and — critically — **live-tests the changed behavior**:
 
 **Run the integ LAST — and set the `check` / `docs` markers AFTER it, not before.**
 A fixture run writes `cdk.out/`, `node_modules/` and a `pnpm-lock.yaml` inside
-`tests/integration/<fixture>/`, and the `check` gate's include set is
-`src/**` + `tests/**` + the configs. markgate's `files` digest covers those
+`tests/integration/<fixture>/`, and the `check` gate's include set covers
+`src/**` + `tests/**` + the configs + the checker-input agent-instruction files
+(go-to-k/cdk-local#620). markgate's `files` digest covers those
 artifacts even though git ignores them, so a green integ run STALES a `check`
 marker set minutes earlier — with the tracked tree completely unchanged and
 `git status` clean. The symptom is a `git commit` refused for "digest differs"

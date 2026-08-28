@@ -714,11 +714,13 @@ construction.
   in one shot.
 
   Match against the scope before running the skills — a tests-only
-  commit only needs `/check`; a docs-only commit only needs
-  `/check-docs`; a src edit needs both; changes that fall outside
-  both scopes (`.claude/hooks/**`, `.claude/skills/**`,
-  `.markgate.yml`) need neither. The hook is a safety net, not the
-  primary trigger.
+  commit only needs `/check`; a docs-only commit needs `/check-docs`
+  (and `/check` too when it touches `.claude/rules/**`, which sits
+  in BOTH scopes); a src edit needs both; a skills / agents /
+  settings.json edit needs `/check` (checker input,
+  go-to-k/cdk-local#620); changes that fall outside both scopes
+  (`.claude/hooks/**`, `.markgate.yml`) need neither. The hook is a
+  safety net, not the primary trigger.
 
   **Run `mise install` after pulling a change to `.mise.toml`.** An
   older markgate binary rejects a newer `.markgate.yml` (an unknown
