@@ -305,6 +305,29 @@ the first two both went red against this repo's own
   `new (await import(…)).STSClient(…)`. go-to-k/cdkd#2111, same shape: a region
   scanner calibrated at 19 hits / zero false positives matched `||` only while
   the tree used `??` at four sites; widening it surfaced a real unfiled bug.
+
+  **But when round three is still ADDING spellings, the instrument is wrong —
+  change it rather than write a better pattern.** Measured 2026-08-29 in three
+  repos at once, one defect class in a hand-rolled `.markgate.yml` reader.
+  go-to-k/cdkd#2383 tallies its own run as **four spellings across four rounds,
+  each patch moving the hole rather than closing it** — block items only, so a
+  FLOW list passed; then a quoted key; then a multi-line flow list; then a
+  merge key (`<<: *anchor`) splicing an `exclude` declared on a SIBLING gate,
+  which the raw-text tripwire added as that very backstop did not fire on. This
+  repo's own two were different again (go-to-k/cdk-local#631): single-quoted
+  and bare scalars, then a block sequence indented at the PARENT key's column,
+  which a reviewer used to hide three dead globs from a 9/9 green run. Same
+  shape, different spellings — which is the point. **Three spellings in three
+  rounds is the signal to stop patterning.** Two shapes end
+  it and neither is a sixth pattern: parse the config with a REAL parser (a
+  third-party, versioned library is not the fence checking its own work),
+  ALLOW-LIST the tool's own keys, fail CLOSED outside them, and raw-scan the
+  whole map; or, as here — this repo declares no YAML dependency and adding one
+  so a single fence can read a single config is the worse trade — REFUSE every
+  shape the reader cannot model, which is the STRICTER option, not the weaker
+  one: an unmodelled shape stops the fence instead of passing through it.
+  `tests/unit/gates/markgate-include-globs.test.ts` is the worked example, and
+  it then held against every respelling its reviewers could construct.
 - **Delete the thing the fence REQUIRES, and watch it fail.** A predicate ORing
   whole-file substrings is satisfied by any one of them. A STATEFUL scanner
   fails the same way without any OR: the `#N` scan flipped one `inFence` boolean

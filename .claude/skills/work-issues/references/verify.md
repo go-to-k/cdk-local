@@ -109,12 +109,12 @@ SCOPED to the delta, whole round's findings at once, not trickled.
   probe. go-to-k/cdkd#2166 carries the worked example (a live arm written,
   passed, mutation-probed, reverted — none rebuilt).
 - **When two reviewers CONTRADICT each other, settle it in the code YOURSELF
-  before forwarding either.** In cdkd the spec reviewer CLEARED what the
-  security reviewer called a blocker on the same lines; the code's own comment
-  settled it. Forwarding both hands the implementer a contradiction with LESS
-  context; forwarding only the reassuring one is how a blocker ships. Routine
-  here (`/review-pr` dispatches 1 or 3 reviewers): read the disputed lines, then
-  say who was right and why.
+  before forwarding either** — forwarding both hands the implementer a
+  contradiction with LESS context than you have, forwarding only the reassuring
+  one is how a blocker ships. In cdkd a spec reviewer CLEARED what a security
+  reviewer called a blocker on the same lines, and the code's own comment
+  settled it. Routine here, since `/review-pr` dispatches 1 or 3 reviewers:
+  read the disputed lines, then say who was right and why.
 - **A diff with no `src/**` change** (docs, skills, rules, hooks, CI, config) is
   EXEMPT from the live-test, and from the integ unless it touches
   `tests/integration/**` — `integ-gate` short-circuits on `src/**` OR
@@ -198,6 +198,60 @@ glob, which missed three resource-owning fixtures — are in `.claude/CLAUDE.md`
 by `integ-gate` (any `src/**` / `tests/integration/**` touch; only `/run-integ`
 sets it), `pr-review-gate` (size / bias tier; only `/review-pr`), and, from a
 side worktree, `gh-pr-merge-worktree-gate` (only `/merge-pr`).
+
+**"Only `/review-pr`" is not the whole rule: `/review-pr` is run by the
+ORCHESTRATOR, and a LANE must never set `pr-review`.** The marker records who
+reviewed what at which sha, so a lane setting it is self-certification — the
+"sub-agent self-review is not independent review" failure, arriving through the
+marker rather than through the review. Measured 2026-08-29: this repo's own
+go-to-k/cdk-local#631 lane set it before any independent review existed, as did
+the sibling go-to-k/cdkd#2383 lane, both reading it as part of finishing rather
+than as merging. Say the marker out loud in the lane's brief, beside "stop at
+merge-ready".
+
+**Do not read the sha binding as a backstop for this.**
+`pr-review-gate.sh` compares the recorded `.markgate-pr-review-sha` sentinel
+against the PR's current HEAD and refuses on a mismatch — which catches a
+marker a later PUSH left behind, not one set by the wrong AGENT. It cannot tell
+who set it; the sentinel is per-worktree, and `/merge-pr` merges from inside
+the feature worktree, so a lane that sets it after its final push produces a
+matching sha and merges unreviewed. go-to-k/cdk-local#631 was 1220 LOC over 13
+files — `3-axis` tier — and merged. The rule is the only thing standing there.
+
+**And the orchestrator's own review round is not optional because the lane
+already ran one.** A lane's reviewers are its children — same brief, same
+framing — so the thing they are least able to doubt is the premise the lane
+handed them. Measured on go-to-k/cdkd#2383 (2026-08-29): three rounds of the
+lane's own reviewers each found the next spelling of one defect, and it took an
+independent orchestrator-level round — round 4, A/B-ing the hand-rolled parser
+against the `yaml` library over 15 spellings and then against markgate 0.4.1
+itself — to find the YAML merge key, **the spelling the lane's own raw-text
+tripwire had been added specifically to backstop and did not fire on**. The
+sibling go-to-k/cdk-real-drift#1838 spent its own rounds on the same class.
+Take the tier `/review-pr` gives for YOUR pass: a lane's clean round is
+evidence about the lane's assumptions, not about the diff.
+
+**A reviewer's scratch COPY of a worktree is not detached from git, so its
+`git add -A` writes to the LIVE tree.** A linked worktree's `.git` is a FILE
+holding `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the
+pointer: every git command inside the copy reads and WRITES the real worktree's
+index and HEAD. Measured 2026-08-29 in the sibling cdkd, where a read-only code
+reviewer copied a lane's worktree, ran `git add -A` there, and staged three
+tracked DELETIONS in the live tree that the lane's next commit would have
+shipped — nothing announced it, because the reviewer believed it was on a copy.
+Two lines therefore belong in every read-only reviewer's brief: **run no
+WRITING git verb** (`add` / `commit` / `restore` / `checkout` / `stash` /
+`clean`) anywhere, copy included — and if you must copy, copy OUTSIDE every
+repository, since deleting the `.git` file does not detach the copy, it only
+makes discovery walk UPWARD into whatever encloses it; and **report the TARGET
+worktree's `git status --porcelain` before AND after the round.** The pair is
+what makes damage attributable rather than a mystery a later agent finds: that
+incident surfaced only because the NEXT reviewer volunteered "the tree went
+dirty mid-review, not mine", after which the responsible one repaired the index
+with `git restore --staged` (index only, never the working tree). This repo
+runs its lanes in `.claude/worktrees/`, so the hazard is identical — and both
+lines now live in `.claude/agents/pr-*-reviewer.md`, so a dispatch cannot omit
+them.
 
 ### 8-z. When a mutation probe reports NO discrimination
 
