@@ -305,6 +305,26 @@ the first two both went red against this repo's own
   `new (await import(…)).STSClient(…)`. go-to-k/cdkd#2111, same shape: a region
   scanner calibrated at 19 hits / zero false positives matched `||` only while
   the tree used `??` at four sites; widening it surfaced a real unfiled bug.
+
+  **But when round three is still ADDING spellings, the instrument is wrong —
+  change it rather than write a better pattern.** Measured 2026-08-29 across
+  go-to-k/cdk-local#630, go-to-k/cdkd#2381 and go-to-k/cdk-real-drift#1838, one
+  defect class in five escalating spellings: a fence over `.markgate.yml` read
+  block items only, so a FLOW list passed; then unquoted keys only, so
+  `"exclude":` passed; then a block scan terminating on `/^ {2}\S/`, which a
+  two-space COMMENT ended early while every case stayed GREEN and markgate
+  really did subtract; then a merge key (`<<: *anchor`) splicing an `exclude`
+  declared on a SIBLING gate. Each round added one more regex. **Three
+  spellings in three rounds is the signal to stop patterning.** Two shapes end
+  it and neither is a sixth pattern: parse the config with a REAL parser (a
+  third-party, versioned library is not the fence checking its own work),
+  ALLOW-LIST the tool's own keys, fail CLOSED outside them, and raw-scan the
+  whole map; or, as here — this repo declares no YAML dependency and adding one
+  so a single fence can read a single config is the worse trade — REFUSE every
+  shape the reader cannot model, which is the STRICTER option, not the weaker
+  one: an unmodelled shape stops the fence instead of passing through it.
+  `tests/unit/gates/markgate-include-globs.test.ts` is the worked example, and
+  it then held against every respelling its reviewers could construct.
 - **Delete the thing the fence REQUIRES, and watch it fail.** A predicate ORing
   whole-file substrings is satisfied by any one of them. A STATEFUL scanner
   fails the same way without any OR: the `#N` scan flipped one `inFence` boolean
