@@ -76,6 +76,14 @@ gates:
       - ".claude/rules/**"
       - ".claude/settings.json"
       - ".github/workflows/pr-inherit-issue-labels.yml"
+      # This file itself (issue #623): the gate's own definition decides
+      # what the marker MEANS, so editing it — including this include
+      # list — must stale a marker recorded under the old definition.
+      # Same argument as cdkd scoping `.mise.toml` into its check gate
+      # (the toolchain pin decides what green means). Measured during
+      # the #620 review: without this entry, appending include entries
+      # left `markgate verify check` at rc=0.
+      - ".markgate.yml"
       - "package.json"
       - "pnpm-lock.yaml"
       - "tsconfig*.json"
