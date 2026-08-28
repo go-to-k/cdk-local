@@ -696,8 +696,12 @@ construction.
   and `docs` markgate markers are fresh.
   - `check` — recorded by `/check` (typecheck + lint + format +
     build + tests). Scope: `src/**`, `tests/**`, lockfiles,
-    build/test configs (see `.markgate.yml`). Only invalidated by
-    changes in that scope.
+    build/test configs, plus the checker-INPUT files the unit suite
+    reads — `.claude/skills/**`, `.claude/agents/**`,
+    `.claude/rules/**`, `.claude/settings.json`, and the
+    pr-inherit-issue-labels workflow YAML (go-to-k/cdk-local#620;
+    see the mapping comment in `.markgate.yml`). Only invalidated
+    by changes in that scope.
   - `docs` — recorded by `/check-docs` (README.md /
     `.claude/CLAUDE.md` / `docs/` / `.claude/rules/` consistency
     with src). Scope: `src/**`, `docs/**`, `README.md`,

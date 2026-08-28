@@ -329,11 +329,14 @@ pnpm install                  # worktrees have no node_modules
   cdk-local change that never happened.
 - English only in every committed line (`non-english-text-gate` enforces it at PR
   time).
-- A `work-issues`-only edit is outside BOTH the `check` and `docs` gate scopes, but
-  `check-gate` verifies both markers on every commit without computing scope, and a
-  fresh worktree starts with NONE — and `gh pr create` is gated on `verify-pr` with
-  no diff-scope exemption. So run `/check`, `/check-docs`, `/verify-pr` there. No
-  `src/**` change means no integ and no live-test.
+- A `work-issues`-only edit sits INSIDE the `check` gate's scope
+  (go-to-k/cdk-local#620: `.claude/skills/**` / `.claude/agents/**` /
+  `.claude/rules/**` are the unit suite's INPUT — the byte-cap and bare-ref
+  scanners read them — so a skills edit stales the marker exactly as a
+  `tests/**` edit does), and `check-gate` verifies both markers on every commit
+  anyway, and a fresh worktree starts with NONE — and `gh pr create` is gated on
+  `verify-pr` with no diff-scope exemption. So run `/check`, `/check-docs`,
+  `/verify-pr` there. No `src/**` change means no integ and no live-test.
 - Merge it with `/merge-pr <n>` like every other lane — a hand-run `gh pr merge`
   from a side worktree is gate-blocked.
 - `/review-pr` no longer down-biases `.claude/**` (issue go-to-k/cdk-local#501), so a skill-only PR
