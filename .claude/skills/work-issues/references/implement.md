@@ -2,6 +2,18 @@
 
 ## 5. One worktree per lane, then implement
 
+This stage (and stages 6–8) normally runs INSIDE a lane subagent the
+orchestrator dispatched — one general-purpose agent per claimed issue, so the
+lane's diffs, test output and review round-trips never land in the parent
+context. Every rule below applies unchanged inside the lane: hooks fire on the
+lane's tool calls, and markgate markers land in the lane's own worktree.
+Two actions are reserved to the parent's serialization turn and are NOT the
+lane's to start: a Docker-side integ run (`/run-integ` — and the
+`/create-integ` run a new-factory PR needs before `gh pr create`: ask the
+parent for that turn mid-lane) and the merge (`/merge-pr`) — the
+orchestrator's serialization invariant; §9. A lane stops at merge-ready and
+reports.
+
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does, sweep
 them in THIS lane rather than filing them.** Most defects here are a CLASS, not an
 instance: one command factory mishandling a flag, one resolver arm missing a case,
