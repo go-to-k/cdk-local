@@ -42,8 +42,19 @@ const repoRoot = join(here, '..', '..', '..');
  * The mirrored set: files that travel to `../cdkd` / `../cdk-real-drift` and so
  * lose the repo a bare `#N` means. `.claude/CLAUDE.md` is deliberately NOT here
  * — it is repo-specific and never mirrored, so its bare refs are correct.
+ * `references/*.md` joins the set with the work-issues split (a thin SKILL.md
+ * orchestrator plus per-stage files): the stage files carry the bulk of the
+ * mirrored prose now, so scanning only SKILL.md would exempt exactly the text
+ * this rule exists for. The glob is directory-derived (`git ls-files`), so a
+ * new stage file — or a future split of another skill — joins the scan on
+ * creation with no edit here.
  */
-const MIRRORED_GLOBS = ['.claude/skills/*/SKILL.md', '.claude/agents/*.md', '.claude/rules/*.md'];
+const MIRRORED_GLOBS = [
+  '.claude/skills/*/SKILL.md',
+  '.claude/skills/*/references/*.md',
+  '.claude/agents/*.md',
+  '.claude/rules/*.md',
+];
 
 interface Violation {
   line: number;
@@ -122,6 +133,37 @@ describe('mirrored agent-instruction issue references (go-to-k/cdk-local#514)', 
     expect(files).toContain('.claude/agents/pr-code-reviewer.md');
     expect(files).toContain('.claude/rules/hooks.md');
     expect(files.length).toBeGreaterThan(5);
+  });
+
+  it('scans the work-issues per-stage reference files (the split moved the prose there)', () => {
+    // The split left SKILL.md a thin orchestrator; the mirrored prose — and
+    // with it nearly every cross-repo citation — lives in references/*.md now.
+    // A glob that silently stopped matching them would leave this suite green
+    // while exempting the bulk of the corpus, so pin the population: 8 stage
+    // files at the split.
+    const refs = mirroredFiles().filter((f) =>
+      f.startsWith('.claude/skills/work-issues/references/')
+    );
+    expect(refs).toContain('.claude/skills/work-issues/references/triage.md');
+    expect(refs).toContain('.claude/skills/work-issues/references/retro.md');
+    expect(refs.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('the work-issues corpus still carries its qualified citations (the split moved content, not dropped it)', () => {
+    // Every other assertion in this file is a "no bad refs" upper bound, which
+    // an emptied file satisfies vacuously. This floor notices the incident
+    // citations being DROPPED rather than moved: the pre-split SKILL.md carried
+    // well over 60 qualified `go-to-k/<repo>#N` refs in its prose.
+    const docs = mirroredFiles().filter((f) => f.startsWith('.claude/skills/work-issues/'));
+    const qualified = /[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+#\d+/g;
+    const total = docs.reduce(
+      (n, f) => n + (readFileSync(join(repoRoot, f), 'utf-8').match(qualified)?.length ?? 0),
+      0
+    );
+    expect(
+      total,
+      'the work-issues skill docs (SKILL.md + references/*.md) have almost no qualified refs left'
+    ).toBeGreaterThanOrEqual(60);
   });
 
   it('has no unqualified #N issue references in plain prose', () => {
