@@ -117,7 +117,7 @@ if [ "$check_status" -ne 0 ]; then
   if [ -n "$reason" ]; then
     msg="$msg run /check first $reason;"
   else
-    msg="$msg run /check first (or re-run if src/tests/config changed);"
+    msg="$msg run /check first (or re-run if src/tests/hooks/config changed);"
   fi
 fi
 if [ "$docs_status" -ne 0 ]; then

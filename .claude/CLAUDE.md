@@ -1338,9 +1338,12 @@ vp run runtime:smoke
   `/check` and/or `/check-docs` proactively based on what your diff
   touches (a tests-only commit needs `/check`; a docs-only commit
   needs `/check-docs`; a src edit needs both; a `.claude/hooks/**`,
-  `.markgate.yml`, `vite.config.ts` or `.mise.toml` edit needs
-  `/check`, because those decide what "green" means or what the
-  marker attests to — go-to-k/cdk-local#624, go-to-k/cdk-local#630;
+  `.markgate.yml`, `vite.config.ts`, `.mise.toml`, `.node-version`
+  or `.github/workflows/ci.yml` edit needs `/check`, because those
+  decide what "green" means, what runs it, or what the marker
+  attests to — go-to-k/cdk-local#624, go-to-k/cdk-local#630. The
+  authoritative list is `.markgate.yml` itself, restated once in
+  `.claude/rules/hooks.md` under a set-equality fence;
   changes outside both scopes need neither). `/verify-pr` refreshes
   both in one shot.
   Per-gate scopes, error-message decoding, and other details:

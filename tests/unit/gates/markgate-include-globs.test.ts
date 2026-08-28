@@ -95,6 +95,8 @@ interface ParsedConfig {
   gates: string[];
   /** 1-based line numbers of every `- ` item line the parser consumed. */
   consumed: Set<number>;
+  /** Gates that DECLARED an `include:` key, whether or not items followed. */
+  declaredInclude: string[];
 }
 
 /** Scalar forms a list item may take. Anything else throws. */
@@ -121,6 +123,7 @@ function parseConfig(yaml: string): ParsedConfig {
   const entries: Entry[] = [];
   const gates: string[] = [];
   const consumed = new Set<number>();
+  const declaredInclude: string[] = [];
   let inGates = false;
   let gate: string | null = null;
   let key: string | null = null;
@@ -150,6 +153,19 @@ function parseConfig(yaml: string): ParsedConfig {
     const keyLine = /^ {4}([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
     if (keyLine) {
       const name = keyLine[1] ?? '';
+      // markgate's OWN key set, not the keys this repo happens to use. An
+      // unknown key used to be consumed and DISCARDED, so a typo'd `includes:`
+      // took five globs out of the sweep while every assertion stayed green --
+      // and a future markgate key that subtracts from the scope, as `exclude`
+      // does, would arrive the same silent way. Refuse instead.
+      if (!/^(hash|base|ttl|include|exclude|requires)$/.test(name)) {
+        throw new Error(
+          `${at}: unknown gate key \`${name}\` in gate '${gate}'.\n` +
+            `This fence models markgate's key set; an unmodelled key may add to or ` +
+            `SUBTRACT from the resolved scope, which would make every check below ` +
+            `report coverage it does not have. Teach the parser what it means.`
+        );
+      }
       const rest = (keyLine[2] ?? '').trim();
       const hasInlineValue = rest !== '' && !rest.startsWith('#');
       if ((name === 'include' || name === 'exclude') && hasInlineValue) {
@@ -161,6 +177,7 @@ function parseConfig(yaml: string): ParsedConfig {
             `or teach the parser the new shape -- do NOT let it be skipped.`
         );
       }
+      if (name === 'include' && gate !== null) declaredInclude.push(gate);
       // A key with an inline value takes no items; one without may.
       key = hasInlineValue ? null : name;
       continue;
@@ -190,7 +207,7 @@ function parseConfig(yaml: string): ParsedConfig {
         `Nested mappings and other shapes are not modelled. Extend the parser.`
     );
   }
-  return { entries, gates, consumed };
+  return { entries, gates, consumed, declaredInclude };
 }
 
 /**
@@ -306,6 +323,21 @@ describe('.markgate.yml gate scopes', () => {
       raw.itemLines.length,
       'the config has almost no scope entries -- did the scan find it at all?'
     ).toBeGreaterThanOrEqual(15);
+    // Per-gate floor. The global one above is satisfied by 28 entries however
+    // they are distributed, so emptying one gate's `include:` entirely -- five
+    // globs out of `docs`, say -- sails through it.
+    const emptied = parsed.declaredInclude.filter(
+      (g) => !parsed.entries.some((e) => e.gate === g && e.key === 'include')
+    );
+    expect(
+      emptied,
+      `these gates declare an \`include:\` with no entries, so they scope NOTHING: ` +
+        `${emptied.join(', ')}`
+    ).toEqual([]);
+    expect(
+      parsed.declaredInclude.length,
+      'no gate declares an include at all -- the parse found nothing to check'
+    ).toBeGreaterThan(0);
   });
 
   it('no gate declares an `exclude:` this sweep would not subtract', () => {
@@ -380,15 +412,29 @@ describe('.markgate.yml gate scopes', () => {
     // exists to close.
     //
     // The population is derived from this file's own source. A regex can only
-    // see the spelling it models, so the file also FORBIDS every other read
-    // spelling: the total number of read calls must equal the derived reads
-    // plus the one self-read below. Adding a read via `resolve()`, a template
-    // literal or a joined array fails here instead of slipping past.
+    // see the spelling it models, so the count of read calls must equal the
+    // derived reads plus the one self-read below: adding a read via
+    // `resolve()`, a template literal or a joined path fails here instead of
+    // slipping past. It is a budget, not a proof -- aliasing `readFileSync` to
+    // another name, or reading through `execFileSync('cat', ...)`, still
+    // evades it. The claim is "the obvious respellings are caught", not "no
+    // read can hide".
     //
     // Careful when editing the text in this case: the scan reads its own
     // source, so writing the scanned spelling into a comment or a message
     // counts as a read and makes the equality fail on prose. It did, twice.
     const selfSource = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    // The equality below permits exactly ONE unmodelled read -- this one. That
+    // budget is TRANSFERABLE unless it is nailed down: respelling the self-read
+    // through the modelled form frees the slot for a smuggled read of a file in
+    // no gate, and two coordinated edits then pass. Pin the self-read's own
+    // spelling so the slot cannot be vacated.
+    expect(
+      (selfSource.match(/readFileSync\(fileURLToPath\(/g) ?? []).length,
+      'the self-read must keep this exact spelling: it is the one read the equality ' +
+        'below allows to be unmodelled, and respelling it frees that allowance for a ' +
+        'read of a file nothing checks'
+    ).toBe(1);
     const reads = [
       ...new Set(
         [...selfSource.matchAll(/readFileSync\(\s*join\(\s*repoRoot,([^)]*)\)/g)]
@@ -630,13 +676,22 @@ describe('.markgate.yml gate scopes', () => {
       rmSync(dir, { recursive: true, force: true });
     }
 
-    // Containment: a `..` glob may legitimately re-enter this repo (a linked
-    // worktree's parent contains it), so the invariant is that nothing OUTSIDE
-    // repoRoot is ever returned -- not that the match is empty. markgate would
-    // resolve `../**` to nothing at all; over-approximating is the safe
-    // direction this file documents, under-reporting would not be.
+    // Containment, probed where it can actually fail. `../**` does NOT escape:
+    // measured, Node's glob does not walk upward, so it returns 1225 entries
+    // all inside the repo and an assertion on it is unfalsifiable (deleting
+    // the containment filter leaves it green). An ABSOLUTE pattern does
+    // escape, so that is what this probes -- raw `globSync` must yield paths
+    // outside the repo, and `onDiskFiles` must return none of them.
+    const escapes = globSync('/etc/*', { cwd: repoRoot, withFileTypes: true })
+      .filter((d) => d.isFile())
+      .map((d) => resolve(d.parentPath, d.name))
+      .filter((f) => !f.startsWith(repoRoot + sep));
     expect(
-      onDiskFiles('../**').filter((f) => f.startsWith('..')),
+      escapes.length,
+      'the probe found no file outside the repo, so it cannot show containment working'
+    ).toBeGreaterThan(0);
+    expect(
+      onDiskFiles('/etc/*'),
       'the on-disk arm returned a path outside the repository'
     ).toEqual([]);
     // File-only: a directory is not a file match, which is what makes the

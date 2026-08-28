@@ -715,8 +715,9 @@ construction.
     pinned `vp` / `markgate` binaries that run them, the Node they
     run on, and the gate's own definition (go-to-k/cdk-local#630 /
     go-to-k/cdk-local#624). This paragraph is itself fenced:
-    `tests/unit/gates/markgate-include-globs.test.ts` fails if it
-    stops naming any include entry. The include
+    `tests/unit/gates/markgate-include-globs.test.ts` asserts this
+    sentence names EXACTLY the include set — a dropped entry and an
+    invented one both fail. The include
     used to name `vitest.config.ts`, `.eslintrc*` and `.prettierrc*`,
     none of which exist here; `tests/unit/gates/markgate-include-globs.test.ts`
     now fails on any include entry matching no file (tracked OR on
