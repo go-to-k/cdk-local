@@ -700,10 +700,13 @@ construction.
     `vite.config.ts`, `.mise.toml`, `.node-version`, `.markgate.yml`,
     `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
-    `.claude/rules/**`, `.claude/settings.json`, and
-    `.github/workflows/pr-inherit-issue-labels.yml` (go-to-k/cdk-local#620;
-    see the mapping comment in `.markgate.yml`). Only invalidated
-    by changes in that scope.
+    `.claude/rules/**`, `.claude/settings.json`,
+    `.github/workflows/pr-inherit-issue-labels.yml` and
+    `.github/workflows/ci.yml` (go-to-k/cdk-local#620,
+    go-to-k/cdk-local#630; see the mapping comment in
+    `.markgate.yml`). The other two workflows are read by nothing
+    and stay out of scope. Only invalidated by changes in that
+    scope.
 
     `vite.config.ts` / `.mise.toml` / `.node-version` /
     `.markgate.yml` are in for a different reason than the rest:
@@ -754,9 +757,10 @@ construction.
   wording named `.claude/hooks/**` and `.markgate.yml` as
   out-of-scope examples and was ALREADY false for `.markgate.yml`
   when go-to-k/cdk-local#624 scoped it in; and `.github/workflows/`
-  is not wholly outside — the pr-inherit workflow is a checker
-  input and `ci.yml` is asserted on by
-  `tests/unit/gates/markgate-include-globs.test.ts`. Settle a
+  is not wholly outside — `pr-inherit-issue-labels.yml` and
+  `ci.yml` are both checker inputs and both scoped in, while
+  `release.yml` and `pr-title-check.yml` are read by nothing.
+  Settle a
   borderline case against `.markgate.yml`, or against
   `markgate verify check --explain`, which prints the RESOLVED
   scope (include minus exclude) to stderr. The hook is a safety

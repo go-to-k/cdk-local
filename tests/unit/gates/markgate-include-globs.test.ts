@@ -180,23 +180,26 @@ function rawCounts(yaml: string): { items: number; gates: string[] } {
   };
 }
 
-/** Tracked matches (git's wildmatch) union on-disk matches (doublestar-ish). */
-function matchCount(glob: string): number {
-  let tracked = 0;
+function trackedFiles(glob: string): string[] {
   try {
-    tracked = execFileSync('git', ['ls-files', '-z', '--', `:(glob)${glob}`], {
+    return execFileSync('git', ['ls-files', '-z', '--', `:(glob)${glob}`], {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
       .split('\0')
-      .filter((f) => f.length > 0).length;
+      .filter((f) => f.length > 0);
   } catch {
     // A pathspec git refuses (e.g. a leading `/`) falls through to the on-disk
     // arm rather than escaping as a bare "Command failed: git ls-files".
-    tracked = 0;
+    return [];
   }
+}
+
+/** Tracked matches (git's wildmatch) union on-disk matches (doublestar-ish). */
+function matchCount(glob: string): number {
+  const tracked = trackedFiles(glob).length;
   if (tracked > 0) return tracked;
   try {
     return globSync(glob, { cwd: repoRoot }).length;
@@ -286,6 +289,47 @@ describe('.markgate.yml gate scopes', () => {
     }
   });
 
+  it('every file this fence READS is inside the check gate it guards', () => {
+    // The go-to-k/cdk-local#620 rule, applied to this file: a checker INPUT
+    // outside the include can red the suite while the marker stays fresh.
+    // This fence became such a reader in its own second commit (it asserts
+    // `ci.yml` still runs `test:hooks`), which would have re-introduced the
+    // very class it exists to close -- measured as probe Q17, GREEN before
+    // this case existed.
+    //
+    // The population is DERIVED from this file's own source rather than
+    // hand-listed, so a `readFileSync(join(repoRoot, ...))` added later is
+    // covered with no edit here.
+    const selfSource = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const reads = [
+      ...new Set(
+        [...selfSource.matchAll(/join\(\s*repoRoot,([^)]*)\)/g)]
+          .map((m) =>
+            [...(m[1] ?? '').matchAll(/'([^']+)'/g)].map((q) => q[1] ?? '').join('/')
+          )
+          .filter((path) => path.length > 0)
+      ),
+    ].sort();
+    expect(
+      reads.length,
+      'the self-scan found almost no `join(repoRoot, ...)` reads -- it has stopped ' +
+        'matching this file, so it would report full coverage over nothing'
+    ).toBeGreaterThanOrEqual(5);
+
+    const checkGlobs = parsed.entries
+      .filter((e) => e.gate === 'check' && e.key === 'include')
+      .map((e) => e.glob);
+    const uncovered = reads.filter(
+      (path) => !checkGlobs.some((g) => trackedFiles(g).includes(path))
+    );
+    expect(
+      uncovered,
+      `this test reads ${uncovered.join(', ')}, which no \`check\` include entry covers. ` +
+        `Editing one of those reds this suite while a previously-set marker stays FRESH ` +
+        `-- the go-to-k/cdk-local#620 class. Scope it in, or stop reading it.`
+    ).toEqual([]);
+  });
+
   it("the check gate scopes the files that decide what 'green' means", () => {
     // Named rather than derived: these four are in the include for a reason
     // the other entries do not share -- they are not READ by any assertion.
@@ -372,16 +416,22 @@ describe('.markgate.yml gate scopes', () => {
     // `.claude/rules/hooks.md` restates the check gate's scope in prose, and
     // this PR's own subject is a scope enumeration going stale unnoticed.
     // Every include entry must appear in that paragraph.
-    const rules = readFileSync(join(repoRoot, '.claude', 'rules', 'hooks.md'), 'utf8');
-    const block =
-      /- `check` — recorded by `\/check`[\s\S]*?Only invalidated\s*\n?\s*by changes in that scope\./.exec(
-        rules
-      );
+    // Whitespace-NORMALISED before matching. The paragraph is hard-wrapped
+    // prose, so a line-sensitive regex breaks whenever an edit moves the wrap
+    // column -- which it did, the first time this paragraph was edited after
+    // the assertion was written.
+    const rules = readFileSync(join(repoRoot, '.claude', 'rules', 'hooks.md'), 'utf8').replace(
+      /\s+/g,
+      ' '
+    );
+    const block = /- `check` — recorded by `\/check`.*?Only invalidated by changes in that scope\./.exec(
+      rules
+    );
     expect(
       block,
       'the check-gate scope paragraph in .claude/rules/hooks.md moved or was renamed'
     ).not.toBeNull();
-    const prose = (block?.[0] ?? '').replace(/\s+/g, ' ');
+    const prose = block?.[0] ?? '';
     const missing = parsed.entries
       .filter((e) => e.gate === 'check' && e.key === 'include')
       .map((e) => e.glob)

@@ -66,6 +66,9 @@ gates:
       #     .claude/settings.json (the #1801 inert-`if:` class)
       #   - tests/unit/hooks/pr-inherit-issue-labels.test.ts reads its
       #     workflow YAML
+      #   - tests/unit/gates/markgate-include-globs.test.ts reads THIS file,
+      #     ci.yml, vite.config.ts, .claude/rules/hooks.md and the check /
+      #     verify-pr SKILL.md files (#630)
       # `.claude/rules/**` sits in `docs` too — same overlap cdkd carries,
       # for the same two reasons.
       #
@@ -87,6 +90,13 @@ gates:
       - ".claude/rules/**"
       - ".claude/settings.json"
       - ".github/workflows/pr-inherit-issue-labels.yml"
+      # `ci.yml` became a checker INPUT in #630: markgate-include-globs.test.ts
+      # asserts CI still runs `vp run test:hooks`, which is the backstop this
+      # file's `.claude/hooks/**` block names. Deleting that step reds the unit
+      # suite, so without this entry the marker would stay fresh over it --
+      # the #620 class, freshly reintroduced by the very fence added to close
+      # it. The other two workflows are read by nothing and stay out of scope.
+      - ".github/workflows/ci.yml"
       # The shell half (issue #630). Eight `.claude/hooks/*.test.sh` suites
       # read `.claude/hooks/*.sh`, each resolving its subject self-relatively,
       # and two more live under `tests/integration/_lib/`. Adding the path here
