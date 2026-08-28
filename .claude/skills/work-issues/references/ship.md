@@ -2,6 +2,21 @@
 
 ## 9. Ship: merge → pull → cleanup (all via `/merge-pr`)
 
+With subagent lanes, this stage is the PARENT's serialization point: grant one
+merge-ready lane at a time its turn — resume that lane agent (SendMessage) to
+run its named integ fixture(s) and `/merge-pr` while it holds the turn, or run
+`/run-integ` and `/merge-pr` yourself FROM THAT LANE'S WORKTREE. The worktree
+matters mechanically, not stylistically: markgate markers are per-worktree
+(`.claude/rules/hooks.md` — `markgate set` runs in the worktree whose gated
+command it clears), so the `integ` marker a `/run-integ` sets is visible only
+to a merge judged from the same tree — cdkd measured the wrong-tree shape live
+on 2026-08-28 (go-to-k/cdkd#2363). Within the turn, run the fixture(s) first
+and refresh whatever markers the run staled (§8's ordering rule), then
+`/merge-pr`. The Docker daemon is shared host state (container / network
+names, host ports, image tags, the post-run orphan sweep), so never two lanes'
+integ runs — nor two merges — concurrently; everything after the merge in this
+section (pull → worktree/branch audit) stays with the parent.
+
 Merge every verified PR with the `/merge-pr` skill — NOT a hand-run
 `gh pr merge --squash --delete-branch`:
 
