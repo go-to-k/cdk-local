@@ -8,7 +8,7 @@ freshness) and — critically — **live-tests the changed behavior**:
 
 **Run the integ LAST — and set the `check` / `docs` markers AFTER it, not before.**
 A fixture run writes `cdk.out/`, `node_modules/` and `pnpm-lock.yaml` under
-`tests/integration/<fixture>/`; the `check` gate covers `tests/**` and markgate
+`tests/integration/<fixture>/`; the `check` gate covers `tests/**` (plus `src/**`, configs and the checker-input agent-instruction files) and markgate
 digests those artifacts even though git ignores them (go-to-k/cdk-local#620), so
 a green integ STALES a `check` marker set minutes earlier with `git status`
 clean — a `git commit` refused for "digest differs" that no source edit explains
@@ -46,7 +46,9 @@ SCOPED to the delta, whole round's findings at once, not trickled.
   symptom: a bare `No such file or directory` far from the cause (cost a real
   cycle in cdkd). This repo is exposed: `local-*` fixtures DO call `cleanup`
   pre-run (`local-start-alb-redirect` and peers), surviving only because their
-  `cleanup` sweeps PROCESSES and containers, which phases re-create. Anything `cleanup` removes must be re-created by a phase or
+  `cleanup` sweeps PROCESSES and containers, which phases re-create — and
+  because no fixture yet computes a scratch dir at variable-definition time;
+  the first one that does arms this. Anything `cleanup` removes must be re-created by a phase or
   created AFTER the pre-run call; a stubbed dry run (pre-run cleanup, then the
   full run) catches it in seconds.
 - **When a fix round produces the NEXT round's blocker twice, stop reviewing the

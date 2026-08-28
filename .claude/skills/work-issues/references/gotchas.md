@@ -44,6 +44,8 @@
   `"if": "Bash(git commit*) or Bash(git -C * commit*) or Bash(cd * && git commit*)"`
   and every one was INERT: `git commit` on `main` with no markers reached git,
   while the same payload run through the script by hand blocked with exit 2.
+  Bisect with throwaway hooks: an `if`-less hook, a known-good single pattern,
+  the suspect — whichever stops firing names the cause.
   A gate guarding two verbs gets two ENTRIES, and the pattern is written
   UNANCHORED (`Bash(*git commit*)`) so a compound command still selects it; the
   script re-matches precisely anyway. `tests/unit/hooks/gate-if-matchers.test.ts`

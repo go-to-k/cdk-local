@@ -211,9 +211,9 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   `https://github.com/go-to-k/<repo>/issues/N` in a body. Nothing detects the
   mismatch until `gh pr create`; measured 2026-08-27, the refusal aborted a
   whole `python3 <<PY ... PY` heredoc chained to the publishing `gh api`
-  before the heredoc ran — the retry then reports the identical violation:
-  "my fix never ran", not "my fix did not work" (a gated command needs its own
-  Bash call).
+  before the heredoc ran — the retry then reports the identical violation,
+  which reads as "my fix did not work" when the truth is "my fix never ran"
+  (a gated command needs its own Bash call).
 
 ### 10-d. Ship it like any other change
 

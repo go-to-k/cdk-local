@@ -396,7 +396,7 @@ run, all from verification scoped narrower than the claim — "two `RoleArn:`
 sends" (a one-file grep reported repo-wide; there are five, already written into
 `src/utils/role-arn.ts` by the agent); "those sends already passed
 `parseAssumeRoleToken`" (the flags have no `argParser`, so they never reach it —
-the real safety was provenance, a different argument); a
+the real safety was provenance — argv, never a wire source — a different argument); a
 die-when-`derived < found` rule never run against a correct fixture (naming one
 base twice makes `found > derived` with nothing wrong). All three were caught by
 the agent verifying rather than obeying; each cost a round. Two habits: **derive
