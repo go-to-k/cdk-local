@@ -344,9 +344,11 @@ seg_has_marker() {
   # `extract_files`, deliberately not shared, and it has already DIVERGED in
   # three ways: it runs on ONE SEGMENT rather than the whole command, it adds
   # the bare `-F <file>` arm (gh's short `--body-file`), and its caller treats
-  # an unreadable path as a BLOCK where that hook simply skips the file. The
-  # third is a deliberate opposite -- that gate objects to content it FINDS, so
-  # a missed read costs one warning, while a missed read here costs the gate.
+  # an unreadable path as a BLOCK where that hook falls back to scanning the
+  # whole command (go-to-k/cdk-local#637). The third stays a deliberate
+  # opposite -- that gate objects to content it FINDS, so the command text is a
+  # usable substitute for the body, while this one must FIND a marker, and a
+  # missed read there costs one warning where a missed read here costs the gate.
   # Stated rather than left to be discovered: if you fix a path-extraction bug
   # in either, check the other.
   done < <(printf '%s' "$seg" | perl -0777 -ne '

@@ -1,10 +1,11 @@
 # Hooks and Gates
 
-Reference for the `.claude/hooks/*.sh` PreToolUse safety + enforcement
-hooks shipped in cdk-local. Auto-loaded when working on
-`.claude/hooks/**` or `.markgate.yml`.
+Reference for the `.claude/hooks/*.sh` safety + enforcement hooks
+shipped in cdk-local — PreToolUse gates, plus the one `Stop` hook in
+section 4. Auto-loaded when working on `.claude/hooks/**` or
+`.markgate.yml`.
 
-The hooks split into three classes:
+The hooks split into four classes:
 
 1. **Universal-shape one-shot safety hooks** — block known foot-guns
    at the source. Each produces an actionable error with the exact
@@ -16,6 +17,9 @@ The hooks split into three classes:
    the corresponding skill (`/check`, `/check-docs`, `/run-integ`,
    `/review-pr`, `/verify-pr`, `/merge-pr`) to be re-run before the
    gated action can proceed.
+4. **Stop hooks** — fire when a turn is about to end rather than on a
+   tool call, and choose an OUTPUT CHANNEL that decides whether the turn
+   continues. Section 4 covers the channel table and the nudge cadence.
 
 ## 1. Universal-shape safety hooks
 
@@ -234,7 +238,17 @@ The hooks split into three classes:
   contexts (`closes #N` / `(#N)` / fenced code blocks / GitHub URLs
   / backtick code spans) pass through; bare `Must-fix #N` /
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
-  line-numbered offender output.
+  line-numbered offender output. When the named body file cannot be
+  READ, or exists but the same command REWRITES it, the gate scans the
+  WHOLE COMMAND instead (go-to-k/cdk-local#637). The hook runs BEFORE
+  the command, so in the one-call `heredoc -> file -> --body-file`
+  publishing shape the path is absent or still holds the PREVIOUS body;
+  skipping was a silent pass, and reading the stale file looked like a
+  working gate while judging text nobody was submitting. Same fallback
+  the two `issue-*-gate.sh` siblings already carry for the same window.
+  Note the SAME-repo qualified `go-to-k/cdk-local#N` form is NOT
+  allow-listed in a body — `/work-issues` §10-c names a full URL as the
+  only body spelling — so it is refused here on purpose.
 
 - **`issue-dup-check-gate.sh`** blocks `gh issue create` — and a
   `gh api repos/<owner>/<repo>/issues` that is actually a MINT (an
@@ -1115,3 +1129,110 @@ call `markgate set integ` directly from a shell.
   side worktree. The `/merge-pr` skill is the ONLY legitimate setter of
   the `merge-pr` marker — never `markgate set merge-pr` directly from a
   shell to bypass this gate.
+
+## 4. Stop hooks
+
+One hook fires on `Stop` rather than on a tool call:
+`.claude/hooks/stop-unmerged-lane-warn.sh`. It catches the quiet half of
+unfinished work — a linked worktree whose branch is COMMITTED but still
+ahead of `origin/main`, a lane that is finished as far as the editor is
+concerned and unfinished as far as the repo is. (The sibling cdkd repo
+pairs it with a `stop-warn.sh` covering the UNCOMMITTED half in the main
+tree; this repo has no such hook, so do not read the pair as coverage
+here.)
+
+On `Stop` the OUTPUT CHANNEL is the behaviour, not formatting:
+
+| channel | who reads it | the turn |
+| --- | --- | --- |
+| `hookSpecificOutput.additionalContext` | the MODEL | CONTINUES — it gets another turn to act |
+| `systemMessage` | the USER only | ends normally |
+| stdout / stderr at exit 0 | nobody (both are discarded on `Stop`) | ends normally |
+
+There is no fourth option that reaches the model WITHOUT continuing the
+turn, which is why the hook has to choose rather than simply emit.
+
+**A continuation is not free, and it is not merely slow.** Read from the
+installed Claude Code (2.1.251): a Stop hook's `additionalContext`
+travels in the SAME `blockingErrors` return value as a
+`decision: "block"`, and the main loop re-queries on either. Both count
+against one budget — `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default **8**
+consecutive blocks — after which the harness overrides the hook and ends
+the turn. So a hook that nudges on every turn-end spends a budget shared
+with every other Stop hook, and the one spending it is not necessarily
+the one with something urgent to say.
+
+**Channel by OWNERSHIP** (go-to-k/cdkd#2389 / go-to-k/cdkd#2392):
+
+- **this session's own worktree is a lane** → `additionalContext`,
+  subject to the cadence rule below. This is the failure the hook exists
+  for: ending the turn with your own branch committed and no PR.
+- **only OTHER worktrees are lanes** → `systemMessage`. The model cannot
+  act on another session's lane, so a continuation buys one extra reply
+  that can only say "not mine".
+- **`stop_hook_active` set** (the harness already continued once this
+  turn) → silent, so one nudge never becomes a spin.
+
+**The cadence rule** (go-to-k/cdkd#2391, which asks for it in all three
+repos). `stop_hook_active` stops a nudge SPINNING inside one turn, and
+that is all it does. Across turns the condition persists, so an
+unconditional `additionalContext` fires at every turn-end for as long as
+the lane exists — including two states with nothing left to do: the PR
+is open and CI is running (the session is legitimately WAITING), and the
+lane was squash-merged with its worktree left behind, which reads as
+ahead FOREVER. So the model is nudged **at most once per distinct
+SUBJECT**, and a repeat of the same subject falls back to
+`systemMessage`: the user still sees it, the turn ends.
+
+The subject is `<own branch>:<pushed|unpushed>`, chosen so that ORDINARY
+WORK does not change it. Two choices are load-bearing, each arrived at by
+rejecting the obvious alternative:
+
+- NOT the commit COUNT, which changes every time the model commits —
+  re-arming on ordinary work bounds nothing.
+- Push state is NOT the CHANNEL discriminator, the shape go-to-k/cdkd#2391 proposed.
+  That goes quiet on a branch pushed with NO PR, a real failure and one
+  of the two this hook exists for. Push state earns its keep in the
+  SUBJECT (so `unpushed -> pushed` re-arms exactly once) and in the TEXT
+  (so the message names which half of the work is left).
+
+The record is ONE file in the PER-WORKTREE git dir
+(`<git dir>/stop-nudge-lane`) holding `<session id>TAB<subject>TABepoch`,
+written tmp-then-`mv`. Per-worktree because that is where markgate keeps
+its markers too, and because removing a worktree takes its record with
+it. One file rather than one per session, because a per-session file
+would accumulate with nobody to clean it up; a concurrent session in the
+same worktree can therefore clobber it, which costs an EXTRA nudge rather
+than a missed one — the safe direction, pinned by a case rather than left
+to be rediscovered as a bug.
+
+One false positive is expected and is named in the warning text itself:
+this repo squash-merges, so a merged branch never becomes an ancestor of
+`origin/main` and keeps reading as ahead until its worktree is removed.
+The remedy is `git worktree remove` plus `git branch -D`, not another PR
+— and when the tree is one you must NOT remove (an outer tool owns it, or
+you were launched inside it), `git switch --detach origin/main` clears
+the lane, because a worktree with no current branch is not a lane at all.
+
+It shipped INERT for its own primary case once (go-to-k/cdkd#2279): it
+derived its root from `BASH_SOURCE` and SKIPPED the worktree that
+matched, but in a linked worktree `BASH_SOURCE` IS the lane. The main
+tree is identified by BRANCH (`main` / `master`), which the loop already
+checks, so the path skip was redundant AND the entire defect. Note the
+POLARITY — the same path is right as an IDENTIFIER of the session's own
+lane, which is how it is used now.
+
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`) carries three
+fixture traps worth knowing before editing it, because each cost a case a
+wrong-reason pass:
+
+- On macOS `mktemp -d` returns a `/var/folders/...` path whose real
+  location is `/private/var/...`, while the hook canonicalises its own
+  root — so the sandbox root must be `cd "$(mktemp -d)" && pwd -P` or any
+  case whose subject IS that equality passes regardless.
+- A push-state fixture needs `remote.origin.fetch` set to
+  `+refs/heads/*:refs/remotes/origin/*`, or `@{u}` fails with "not stored
+  as a remote-tracking branch" and the case measures nothing.
+- `run_hook` resets the nudge record and `run_hook_keep` does not. Without
+  the reset the pre-cadence cases pass or fail on their POSITION in the
+  file rather than on behaviour — measured on the port: six flip.

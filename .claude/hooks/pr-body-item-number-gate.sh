@@ -170,9 +170,70 @@ find_offender() {
 declare -a OFFENDERS=()
 MAX_REPORT=10
 
+# When the named body file cannot be READ, scan the WHOLE COMMAND instead of
+# skipping (go-to-k/cdk-local#637, ported from go-to-k/cdkd#2397). The hook runs
+# BEFORE the command does, so whenever the heredoc that writes the body and the
+# `gh` call that consumes it sit in ONE Bash call -- the publishing shape this
+# repo mandates, since a gated command needs its own Bash call and the body has
+# to exist by then -- the path does not exist yet. `[[ ! -f "$f" ]] && continue`
+# made that a SILENT PASS.
+#
+# Both sibling gates already do this: `issue-dup-check-gate.sh` and
+# `issue-classification-label-gate.sh` hit the same window and fall back to the
+# command, each with a comment saying that failing closed there would refuse the
+# flow the rules prescribe. So this is a port, not a design decision.
+#
+# A file that EXISTS is scanned too when the command REWRITES it, because then
+# what is on disk is the PREVIOUS body -- the other half of the same window, and
+# the one that reads as a working gate while judging text nobody submitted.
+#
+# Note the direction differs from `issue-dup-check-gate.sh`'s fallback and that
+# is deliberate: this gate objects to content it FINDS, so scanning extra text
+# can only add a refusal that names a real `#N`, while that gate needs to FIND a
+# marker and so treats an unreadable path as a block.
+cmd_writes_path() {
+  local path="$1"
+  CMD="$cmd" TARGET="$path" perl -0777 -e '
+    my $cmd = $ENV{CMD};
+    my $t   = quotemeta($ENV{TARGET});
+    # `>` / `>>` / `tee [-a]` naming the path, quoted or bare. A heredoc body is
+    # written through exactly this redirect (`cat > f <<EOF`), so matching the
+    # redirect covers the heredoc shape without parsing heredocs.
+    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:\s|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+scan_text() {
+  # $1 = label used in the offender report, $2 = the text to scan.
+  local label="$1"
+  while IFS=$'\t' read -r ln content; do
+    [[ -z "$content" ]] && continue
+    hit=$(find_offender "$content")
+    if [[ -n "$hit" ]]; then
+      OFFENDERS+=("$label:$ln: $content")
+      if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
+        return
+      fi
+    fi
+  done < <(printf '%s' "$2" | strip_code_blocks)
+}
+
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  [[ ! -f "$f" ]] && continue
+  if [[ ! -f "$f" ]]; then
+    scan_text "<command>" "$cmd"
+    if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
+      break
+    fi
+    continue
+  fi
+  if cmd_writes_path "$f"; then
+    scan_text "<command>" "$cmd"
+    if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
+      break
+    fi
+  fi
 
   while IFS=$'\t' read -r ln content; do
     [[ -z "$content" ]] && continue
