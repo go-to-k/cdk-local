@@ -344,11 +344,15 @@ seg_has_marker() {
   # `extract_files`, deliberately not shared, and it has already DIVERGED in
   # three ways: it runs on ONE SEGMENT rather than the whole command, it adds
   # the bare `-F <file>` arm (gh's short `--body-file`), and its caller treats
-  # an unreadable path as a BLOCK where that hook falls back to scanning the
-  # whole command (go-to-k/cdk-local#637). The third stays a deliberate
-  # opposite -- that gate objects to content it FINDS, so the command text is a
-  # usable substitute for the body, while this one must FIND a marker, and a
-  # missed read there costs one warning where a missed read here costs the gate.
+  # an unreadable path as a BLOCK where that hook extracts the HEREDOC BODY the
+  # command is about to write there (go-to-k/cdk-local#637). The third stays a
+  # deliberate opposite, and note the two fallbacks are NOT the same shape: this
+  # gate must FIND an anchored marker, so extra text can only make it pass and
+  # the whole COMMAND is a safe substitute for the body; that gate objects to
+  # content it FINDS, so extra text makes it BLOCK -- a whole-command scan there
+  # was measured refusing an ordinary `gh issue create --title '... #2397 ...'`,
+  # which is why it reads the heredoc alone. A missed read there costs one
+  # warning; a missed read here costs the gate.
   # Stated rather than left to be discovered: if you fix a path-extraction bug
   # in either, check the other.
   done < <(printf '%s' "$seg" | perl -0777 -ne '

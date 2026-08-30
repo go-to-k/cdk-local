@@ -18,9 +18,11 @@
 #           and the skill in direct contradiction
 #   - BLOCK for chained spellings, PASS for a command that merely QUOTES the verb
 #   - both halves of the go-to-k/cdk-local#637 window, below
+#   - the two FALSE-BLOCK controls that rule out a whole-command scan, and the
+#     `printf > f` limit the heredoc extraction cannot reach
 #
 # Measured rather than asserted (2026-08-31, bash 5.3): an always-`exit 0` stub
-# fails 8 of these and an always-`exit 2` stub fails 9, so neither direction
+# fails 10 of these and an always-`exit 2` stub fails 13, so neither direction
 # can pass vacuously. Keep these numbers current when cases are added -- a stale
 # count in a comment that exists to prove non-vacuity is itself the thing it
 # warns about.
@@ -116,8 +118,9 @@ run "empty command passes"                     "" 0
 # --- go-to-k/cdk-local#637: the body file does not exist YET ----------------
 # The hook runs BEFORE the command, so in the one-call `heredoc -> file ->
 # --body-file` shape the path is absent and the pre-fix `[[ ! -f "$f" ]] &&
-# continue` was a silent pass. Both sibling gates that hit this window already
-# fall back to scanning the whole command; these pin the port.
+# continue` was a silent pass. The two sibling gates that hit this window fall
+# back to the whole COMMAND; this one falls back to the HEREDOC BODY alone, for
+# the reason the false-block controls further down measure.
 ABSENT="$TMPROOT/never-written.md"
 HEREDOC_BAD="cat > $ABSENT <<'EOF'
 # Title
@@ -155,6 +158,69 @@ run "a stale body file is not trusted when the command rewrites it" "$STALE_REWR
 # rewritten by the command, must still pass. (It is also `clean bare-number body
 # passes` above, restated here so deleting either case leaves the pair visible.)
 run "a clean body file the command does not rewrite passes" "gh pr create --body-file $CLEAN" 0
+
+# --- The FALSE-BLOCK controls -----------------------------------------------
+# The first port of this fallback scanned the WHOLE COMMAND when the path was
+# absent or rewritten, copying `issue-dup-check-gate.sh`. That is safe for THAT
+# gate and not for this one: it needs one anchored marker to be PRESENT, so
+# extra text can only make it pass, while this gate objects to content it FINDS,
+# so extra text makes it BLOCK. Both of these are ORDINARY commands, and both
+# were measured going 0 -> 2 against the whole-command version. They are the
+# cases that force the heredoc extraction rather than a command scan, so they
+# are the two that must never be deleted as "obviously fine".
+run "an issue TITLE carrying #N does not block an absent body" \
+  "gh issue create --title 'follow-up to #2397 discussion' --body-file $TMPROOT/never-written-2.md" 0
+COMMIT_PREAMBLE="git commit -m 'address review #3' && cat > $ABSENT <<'EOF'
+# Title
+
+Must-fix 1: thing one
+EOF
+gh pr create --body-file $ABSENT"
+run "a COMMIT MESSAGE carrying #N does not block a clean body" "$COMMIT_PREAMBLE" 0
+
+# --- The stale file is not consulted at all once a heredoc is extracted ------
+# The inverse of `a stale body file is not trusted when the command rewrites
+# it`: here the file on disk OFFENDS and the body being submitted is clean, so a
+# gate that read the file would block a submission whose offending line does not
+# exist -- unclearable, because the author cannot edit text they are not sending.
+STALE_OFFENDING_CLEAN_REWRITE="cat > $ITEMNUM <<'EOF'
+# Title
+
+Must-fix 1: rewritten clean
+EOF
+gh pr create --body-file $ITEMNUM"
+run "an offending stale file rewritten by a CLEAN heredoc passes" "$STALE_OFFENDING_CLEAN_REWRITE" 0
+
+# --- The TIGHT heredoc spelling ---------------------------------------------
+# `cat >f<<EOF`, no spaces. `cmd_writes_path`'s terminator class used to be
+# `(?:\s|$)`, which matched neither this nor `>f;` nor `>f&&` -- so the tightest
+# spelling of the very shape the fallback exists for went unscanned. Measured
+# before the widening: this command exited 0.
+TIGHT="cat >$CLEAN<<'EOF'
+# Title
+
+Must-fix #3: tight redirect
+EOF
+gh pr create --body-file $CLEAN"
+run "the tight 'cat >f<<EOF' spelling is still scanned" "$TIGHT" 2
+
+# --- KNOWN LIMIT: a body not written by a heredoc cannot be extracted --------
+# `printf > f` / `python3 -c ... > f` write the body through a redirect this
+# gate recognises, but there is no heredoc to read, so the scan falls back to
+# whatever is ON DISK. Asserted in both directions so the limit is a recorded
+# behaviour rather than a surprise:
+#   - path ABSENT  -> nothing to scan at all, so an offending body PASSES
+#   - path EXISTS  -> the STALE file is scanned, so its content decides
+# Neither is a silent pass in the shape the repo actually mandates (a heredoc);
+# widening to cover them would mean interpreting arbitrary shell, which is the
+# whole-command scan the two controls above rule out.
+PRINTF_ABSENT="printf 'Must-fix #4: not extractable\\n' > $TMPROOT/never-written-3.md
+gh pr create --body-file $TMPROOT/never-written-3.md"
+run "KNOWN LIMIT: a printf-written body with an absent path is not scanned" "$PRINTF_ABSENT" 0
+PRINTF_OVER_STALE="printf 'Must-fix 4: clean now\\n' > $ITEMNUM
+gh pr create --body-file $ITEMNUM"
+run "KNOWN LIMIT: a printf-written body falls back to the stale file" "$PRINTF_OVER_STALE" 2
+
 
 # --- Registration -----------------------------------------------------------
 # A gate nothing invokes is a gate that does not fire, which no behavioural case

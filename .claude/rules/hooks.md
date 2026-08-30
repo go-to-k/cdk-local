@@ -239,16 +239,49 @@ The hooks split into four classes:
   / backtick code spans) pass through; bare `Must-fix #N` /
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
   line-numbered offender output. When the named body file cannot be
-  READ, or exists but the same command REWRITES it, the gate scans the
-  WHOLE COMMAND instead (go-to-k/cdk-local#637). The hook runs BEFORE
-  the command, so in the one-call `heredoc -> file -> --body-file`
-  publishing shape the path is absent or still holds the PREVIOUS body;
-  skipping was a silent pass, and reading the stale file looked like a
-  working gate while judging text nobody was submitting. Same fallback
-  the two `issue-*-gate.sh` siblings already carry for the same window.
+  READ, or exists but the same command REWRITES it, the gate extracts
+  the HEREDOC BODY the command is about to write there and scans that
+  (go-to-k/cdk-local#637). The hook runs BEFORE the command, so in the
+  one-call `heredoc -> file -> --body-file` publishing shape the path is
+  absent or still holds the PREVIOUS body; skipping was a silent pass,
+  and reading the stale file looked like a working gate while judging
+  text nobody was submitting — in both directions, since a stale file
+  can also BLOCK a clean submission over a line that will not exist,
+  which the author cannot clear.
+
+  It does NOT scan the whole command, and that is the one place this
+  gate must diverge from the `issue-*-gate.sh` siblings' fallback even
+  though the window is identical. The difference is what each looks
+  for: they need one anchored marker to be PRESENT, so extra text can
+  only make them pass, while this gate objects to content it FINDS, so
+  extra text makes it BLOCK. Two ordinary commands were measured going
+  0 -> 2 against the first, whole-command port — one whose ISSUE TITLE
+  cites an issue number and whose body file is absent, and one whose
+  COMMIT MESSAGE cites a review round ahead of a clean heredoc body:
+
+  ```sh
+  gh issue create --title 'follow-up to #2397 discussion' --body-file "$ABSENT"
+  git commit -m 'address review #3' && cat > "$BODY" <<'EOF'
+  ...clean body...
+  EOF
+  gh pr create --body-file "$BODY"
+  ```
+
+  Both are pinned as cases.
+
+  Two edges worth knowing. The redirect terminator class is
+  `[\s;&|)<]` rather than `\s`, because the narrow class missed
+  `>f<<EOF` — the TIGHT spelling of the very shape the fallback exists
+  for — as well as `>f;` and `>f&&`. And a body written by something
+  other than a heredoc (`printf > f`, `python3 -c ... > f`) cannot be
+  extracted, so it falls back to whatever is on disk, and to nothing at
+  all when the path is absent; that limit is asserted in both
+  directions rather than left to be rediscovered.
+
   Note the SAME-repo qualified `go-to-k/cdk-local#N` form is NOT
   allow-listed in a body — `/work-issues` §10-c names a full URL as the
-  only body spelling — so it is refused here on purpose.
+  only body spelling — so it is refused here on purpose. Covered by
+  `.claude/hooks/pr-body-item-number-gate.test.sh` (24 cases).
 
 - **`issue-dup-check-gate.sh`** blocks `gh issue create` — and a
   `gh api repos/<owner>/<repo>/issues` that is actually a MINT (an
@@ -1171,7 +1204,15 @@ the one with something urgent to say.
   act on another session's lane, so a continuation buys one extra reply
   that can only say "not mine".
 - **`stop_hook_active` set** (the harness already continued once this
-  turn) → silent, so one nudge never becomes a spin.
+  turn) → the ARM is suppressed, so one nudge never becomes a spin, but
+  the warning still leaves on `systemMessage`. Going fully silent was
+  the earlier behaviour and it was wrong: a lane can be COMMITTED
+  DURING the continuation, in which case that pass is the first time
+  the condition holds at all and the user would never be told. A bare
+  `systemMessage` does not continue a turn, so saying it cannot spin.
+  A resumed pass also writes NO record — recording a subject as seen
+  while the model was never told would spend the model's one nudge on a
+  turn it never heard about.
 
 **The cadence rule** (go-to-k/cdkd#2391, which asks for it in all three
 repos). `stop_hook_active` stops a nudge SPINNING inside one turn, and
@@ -1185,8 +1226,8 @@ SUBJECT**, and a repeat of the same subject falls back to
 `systemMessage`: the user still sees it, the turn ends.
 
 The subject is `<own branch>:<pushed|unpushed>`, chosen so that ORDINARY
-WORK does not change it. Two choices are load-bearing, each arrived at by
-rejecting the obvious alternative:
+WORK does not change it. Three choices are load-bearing, each arrived at
+by rejecting the obvious alternative:
 
 - NOT the commit COUNT, which changes every time the model commits —
   re-arming on ordinary work bounds nothing.
@@ -1195,6 +1236,14 @@ rejecting the obvious alternative:
   of the two this hook exists for. Push state earns its keep in the
   SUBJECT (so `unpushed -> pushed` re-arms exactly once) and in the TEXT
   (so the message names which half of the work is left).
+- The comparison against the stored subject is **DIRECTED**, not a plain
+  equality. `pushed -> unpushed` is what an ordinary COMMIT looks like,
+  so `prev != current` re-armed on every commit AND again on every push:
+  measured on one lane as `commit ctx, repeat sys, push ctx, repeat sys,
+  commit ctx, push ctx, ...` — two forced continuations per commit/push
+  cycle, forever, which is the per-commit cadence the design explicitly
+  rejects. It arms on a new session, a lane never seen, a DIFFERENT
+  branch, or `unpushed -> pushed` — and on nothing else.
 
 The record is ONE file in the PER-WORKTREE git dir
 (`<git dir>/stop-nudge-lane`) holding `<session id>TAB<subject>TABepoch`,
@@ -1205,6 +1254,47 @@ would accumulate with nobody to clean it up; a concurrent session in the
 same worktree can therefore clobber it, which costs an EXTRA nudge rather
 than a missed one — the safe direction, pinned by a case rather than left
 to be rediscovered as a bug.
+
+Three properties of the record are as load-bearing as its content:
+
+- It is written on **BOTH** arms — the nudged one and the downgraded one
+  — because it holds the last OBSERVED subject, not the last NUDGED one.
+  Writing only on the arm freezes `prev_push` at `pushed` and silences
+  the next genuine `unpushed -> pushed`.
+- A record that cannot be PERSISTED (an unresolvable or unwritable git
+  dir) downgrades to `systemMessage`. A nudge that cannot be recorded
+  cannot be bounded, and an unbounded nudge is the thing the cadence
+  exists to remove — so the failure costs the MODEL channel, never the
+  warning itself.
+- A MALFORMED record — not exactly three tab-separated fields, or a
+  non-numeric epoch — is treated as NO record and falls to ARM. That is
+  the same safe direction as the concurrent clobber: an extra nudge,
+  never a missed one.
+
+The session id that keys the record comes from the event payload's
+`session_id` OR from `CLAUDE_CODE_SESSION_ID`, and **both are resolved
+and normalised in one place**, inside the Python block. The fold that
+strips tabs and newlines used to apply only to the payload's copy, with
+the env fallback landing after it in shell — so a tab in the env value
+added a FIELD to the record and a newline ended its line early. Either
+way the read-back shifts, `prev_sid` never matches the value the hook
+itself just wrote, and the cadence stops bounding anything. Measured on
+a payload carrying no `session_id`: a plain value gave `ctx, sys, sys`
+across three turns while a leading tab, an embedded tab and an embedded
+newline each gave `ctx, ctx, ctx`. It survived because every suite
+payload named a `session_id`, leaving that line with zero coverage.
+
+**The downgrade changes the TEXT, not only the channel.** Three paths
+reach `systemMessage` on the session's own lane — a repeat subject, a
+resumed pass, and an unpersistable record — and on all three the reader
+is a human. Emitting the model's wording there ("you are not done:
+rebase, run the gates, open the PR") addresses a person as the agent,
+which is go-to-k/cdkd#2389's defect reappearing on three paths instead
+of one. So the own-lane case builds two messages: the imperative one for
+`additionalContext`, and a short status line for `systemMessage` naming
+the lane, its push state, and the fact that the agent has already been
+told. A case asserts the two differ, so collapsing them back into one
+string fails the suite.
 
 One false positive is expected and is named in the warning text itself:
 this repo squash-merges, so a merged branch never becomes an ancestor of
@@ -1222,9 +1312,9 @@ checks, so the path skip was redundant AND the entire defect. Note the
 POLARITY — the same path is right as an IDENTIFIER of the session's own
 lane, which is how it is used now.
 
-Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`) carries three
-fixture traps worth knowing before editing it, because each cost a case a
-wrong-reason pass:
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 86 cases)
+carries five fixture traps worth knowing before editing it, because each
+cost a case a wrong-reason pass:
 
 - On macOS `mktemp -d` returns a `/var/folders/...` path whose real
   location is `/private/var/...`, while the hook canonicalises its own
@@ -1236,3 +1326,16 @@ wrong-reason pass:
 - `run_hook` resets the nudge record and `run_hook_keep` does not. Without
   the reset the pre-cadence cases pass or fail on their POSITION in the
   file rather than on behaviour — measured on the port: six flip.
+- A hand-written record cannot express an EMPTY subject field. Bash's
+  `read` with `IFS=<tab>` treats tab as IFS *whitespace*, so a run of
+  tabs delimits as one and `sid<TAB><TAB>epoch` arrives as a TWO-field
+  record. The malformed-record cases are written as short / long /
+  non-numeric records for that reason; a case named "empty subject"
+  passes through the field-count guard while claiming to test a path it
+  never takes.
+- Every payload naming an explicit `session_id` leaves the
+  `CLAUDE_CODE_SESSION_ID` fallback with ZERO coverage. The cases that
+  drive it go through `run_hook_sid`, which sends a payload WITHOUT the
+  field and sets the env var — and each asserts that the SECOND turn
+  downgrades, since the defect there is that the nudge never stops
+  firing, not that the first one is missing.

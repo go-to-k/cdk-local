@@ -170,27 +170,18 @@ find_offender() {
 declare -a OFFENDERS=()
 MAX_REPORT=10
 
-# When the named body file cannot be READ, scan the WHOLE COMMAND instead of
-# skipping (go-to-k/cdk-local#637, ported from go-to-k/cdkd#2397). The hook runs
-# BEFORE the command does, so whenever the heredoc that writes the body and the
-# `gh` call that consumes it sit in ONE Bash call -- the publishing shape this
-# repo mandates, since a gated command needs its own Bash call and the body has
-# to exist by then -- the path does not exist yet. `[[ ! -f "$f" ]] && continue`
-# made that a SILENT PASS.
+# When the named body file cannot be READ, scan the text the command is about to
+# WRITE there instead of skipping (go-to-k/cdk-local#637, ported from
+# go-to-k/cdkd#2397). The hook runs BEFORE the command does, so whenever the
+# heredoc that writes the body and the `gh` call that consumes it sit in ONE Bash
+# call -- the publishing shape this repo mandates, since a gated command needs
+# its own Bash call and the body has to exist by then -- the path does not exist
+# yet. `[[ ! -f "$f" ]] && continue` made that a SILENT PASS.
 #
-# Both sibling gates already do this: `issue-dup-check-gate.sh` and
-# `issue-classification-label-gate.sh` hit the same window and fall back to the
-# command, each with a comment saying that failing closed there would refuse the
-# flow the rules prescribe. So this is a port, not a design decision.
-#
-# A file that EXISTS is scanned too when the command REWRITES it, because then
-# what is on disk is the PREVIOUS body -- the other half of the same window, and
-# the one that reads as a working gate while judging text nobody submitted.
-#
-# Note the direction differs from `issue-dup-check-gate.sh`'s fallback and that
-# is deliberate: this gate objects to content it FINDS, so scanning extra text
-# can only add a refusal that names a real `#N`, while that gate needs to FIND a
-# marker and so treats an unreadable path as a block.
+# A file that EXISTS is treated the same way when the command REWRITES it,
+# because then what is on disk is the PREVIOUS body -- the other half of the same
+# window, and the one that reads as a working gate while judging text nobody
+# submitted.
 cmd_writes_path() {
   local path="$1"
   CMD="$cmd" TARGET="$path" perl -0777 -e '
@@ -199,8 +190,40 @@ cmd_writes_path() {
     # `>` / `>>` / `tee [-a]` naming the path, quoted or bare. A heredoc body is
     # written through exactly this redirect (`cat > f <<EOF`), so matching the
     # redirect covers the heredoc shape without parsing heredocs.
-    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:\s|$)/;
+    # The terminator class is not decoration. `(?:\s|$)` alone missed the TIGHT
+    # spelling of the very shape this exists for -- `>f<<EOF` -- as well as `>f;`
+    # and `>f&&`. Measured here before the widening: an EXISTING clean body file
+    # rewritten by `cat >f<<EOF` carrying `Must-fix #1` exited 0.
+    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
     exit 1;
+  ' 2>/dev/null
+}
+
+# The body of the heredoc that writes a given path. Handles both orders
+# (`cat > f <<EOF` / `cat <<EOF > f`), quoted and unquoted delimiters, and
+# `<<-`'s tab-stripped terminator. Prints nothing when the command does not write
+# the path through a heredoc.
+heredoc_body_for() {
+  CMD="$cmd" TARGET="$1" perl -0777 -e '
+    my $c = $ENV{CMD};
+    my $t = quotemeta($ENV{TARGET});
+    my @lines = split /\n/, $c, -1;
+    for my $i (0 .. $#lines) {
+      my $l = $lines[$i];
+      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
+      my $dash  = ($1 eq "<<-");
+      my $delim = $3;
+      my @body;
+      for my $j ($i + 1 .. $#lines) {
+        my $probe = $lines[$j];
+        $probe =~ s/^\t+// if $dash;
+        last if $probe eq $delim;
+        push @body, $lines[$j];
+      }
+      print join("\n", @body), "\n" if @body;
+      last;
+    }
   ' 2>/dev/null
 }
 
@@ -219,21 +242,44 @@ scan_text() {
   done < <(printf '%s' "$2" | strip_code_blocks)
 }
 
+# A file the command REWRITES holds the PREVIOUS body, so reading it judges text
+# nobody is submitting -- in both directions. It can miss (the stale copy is
+# clean, the new one is not) and it can BLOCK a clean submission while quoting a
+# line that will not exist, which the author cannot clear because the offending
+# text is not in what they are submitting. So the text being SUBMITTED is
+# extracted from the heredoc instead.
+#
+# The first attempt scanned the WHOLE COMMAND here, copying
+# `issue-dup-check-gate.sh`. That is safe for THAT gate and not for this one, and
+# the difference is what each looks for: it needs one anchored marker to be
+# PRESENT, so extra text can only make it pass; this gate objects to content it
+# FINDS, so extra text makes it BLOCK. Measured on that first attempt, both
+# against this repo's own copy: `gh issue create --title 'follow-up to #2397
+# discussion' --body-file <absent>` went from 0 to 2, and so did
+# `git commit -m 'address review #3' && gh pr create --body-file <absent>`. Both
+# are ordinary commands. (go-to-k/cdkd#2397's sibling reached the same verdict
+# from its own `gh-body-english-gate.sh`, which had refused whole-command
+# scanning for exactly this reason; this repo has no such gate, so the evidence
+# here is the two controls above, pinned as cases.)
+#
+# Known miss, stated rather than hidden: a one-call body written by something
+# other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
+# extracted, so it falls back to whatever is on disk -- and to nothing at all
+# when the path does not exist yet. Both halves are pinned by cases.
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  if [[ ! -f "$f" ]]; then
-    scan_text "<command>" "$cmd"
+  body_text=""
+  if [[ ! -f "$f" ]] || cmd_writes_path "$f"; then
+    body_text=$(heredoc_body_for "$f")
+  fi
+  if [[ -n "$body_text" ]]; then
+    scan_text "$f (heredoc, not yet written)" "$body_text"
     if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
       break
     fi
     continue
   fi
-  if cmd_writes_path "$f"; then
-    scan_text "<command>" "$cmd"
-    if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
-      break
-    fi
-  fi
+  [[ -f "$f" ]] || continue
 
   while IFS=$'\t' read -r ln content; do
     [[ -z "$content" ]] && continue

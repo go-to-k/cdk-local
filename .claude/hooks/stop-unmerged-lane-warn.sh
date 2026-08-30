@@ -124,7 +124,7 @@ command -v python3 >/dev/null 2>&1 || exit 0
 #     session's to touch. And because this repo SQUASH-merges, a merged branch
 #     reads as ahead forever, so one un-removed worktree would have made that
 #     permanent.
-parsed=$(HOOK_INPUT="$input" python3 -c '
+parsed=$(HOOK_INPUT="$input" ENV_SID="${CLAUDE_CODE_SESSION_ID:-}" python3 -c '
 import json, os
 
 try:
@@ -142,16 +142,36 @@ if isinstance(flag, str):
     flag = flag.strip().lower() not in ("", "false", "0", "no")
 print("1" if flag else "0")
 print(data.get("cwd") or "")
-print((data.get("session_id") or "").replace("\t", " ").replace("\n", " "))
+
+# BOTH sources of the session id are resolved HERE, and normalised once, on the
+# way out. The fallback used to sit in shell AFTER this block, so it skipped the
+# fold entirely: a tab or a newline in `CLAUDE_CODE_SESSION_ID` reached the
+# record, where a tab adds a FIELD and a newline ends the line early. Either way
+# the read-back shifts, `prev_sid` never matches its own write, and the cadence
+# stops bounding anything -- unbounded `additionalContext`, one per turn,
+# against `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`. Measured with a payload carrying no
+# `session_id`: a plain value gave `ctx, sys, sys` while a leading tab, an
+# embedded tab and an embedded newline each gave `ctx, ctx, ctx`.
+sid = data.get("session_id") or os.environ.get("ENV_SID") or "shared"
+sid = sid.replace("\t", " ").replace("\n", " ").replace("\r", " ")
+print(sid or "shared")
 ')
 active=$(printf '%s\n' "$parsed" | sed -n 1p)
 hook_cwd=$(printf '%s\n' "$parsed" | sed -n 2p)
 sid=$(printf '%s\n' "$parsed" | sed -n 3p)
-[ -n "$sid" ] || sid="${CLAUDE_CODE_SESSION_ID:-shared}"
+# Defence in depth only: `parsed` is line-structured, so an empty line 3 would
+# mean the python block failed outright.
+[ -n "$sid" ] || sid="shared"
 
-# Already nudged once this turn and the model came back to Stop. Saying it again
-# would spin the turn instead of ending it, so stand down.
-[ "$active" = "1" ] && exit 0
+# Already continued once this turn on a hook's account. ARMING again would spin
+# the turn instead of ending it -- but going fully SILENT here was wrong, and
+# `exit 0` was exactly that. A lane can be COMMITTED during the continuation, in
+# which case this pass is the FIRST time the condition holds at all and the user
+# would never be told. A bare `systemMessage` does not continue a turn, so
+# saying it costs nothing. `resumed` is consumed where the channel is decided,
+# below; it suppresses the ARM and nothing else.
+resumed=0
+[ "$active" = "1" ] && resumed=1
 
 # Where is the SESSION? `cwd` from the event payload, resolved to its worktree
 # root. Falling back to this hook copy's own checkout is correct rather than
@@ -198,12 +218,15 @@ if [ -n "$self_branch" ]; then
   if [ -z "$unpushed" ]; then
     push_state="unpushed"
     push_line="It has no upstream yet, so nothing has been submitted: push it, open the PR, then merge."
+    push_line_user="It has no upstream yet, so nothing has been submitted."
   elif [ "$unpushed" -gt 0 ]; then
     push_state="unpushed"
     push_line="It has ${unpushed} commit(s) not yet pushed, so nothing carrying them has been submitted: push, open or update the PR, then merge."
+    push_line_user="It has ${unpushed} commit(s) not yet pushed."
   else
     push_state="pushed"
     push_line="It is fully pushed, so a PR may already be in flight -- but a pushed branch with NO PR is exactly the failure this catches. Check, and open one if there is none."
+    push_line_user="It is fully pushed, so a PR may already be in flight -- but a pushed branch with NO PR is exactly the failure this catches."
   fi
   msg="WARNING: YOUR OWN lane is unmerged -- a NOT-CLOSEABLE verdict is a TO-DO LIST, not a stopping point.
 This session's worktree is on '$self_branch', which is committed but not on origin/main, so you are not
@@ -216,6 +239,22 @@ is one you must NOT remove (an outer tool owns it, or you were launched inside i
 'git switch --detach origin/main' clears the lane here, because a worktree with no current branch is not
 a lane at all.
 Every unmerged lane in this checkout:"
+  # The DOWNGRADE text, and it is a different message rather than the same one
+  # on a quieter channel. Three paths reach it -- a repeat subject, a resumed
+  # pass, and a record that could not be persisted -- and on all three the
+  # reader is a HUMAN. Sending them the model's text ("you are not done: rebase,
+  # run the gates, open the PR") addresses the person as the agent, which is
+  # go-to-k/cdkd#2389's defect in miniature: that issue was exactly a message
+  # written AT the agent reaching only the party who cannot act on it, and
+  # emitting one string on both channels reproduces it on three paths instead of
+  # one. So this says what is true for a person: which lane, what state it is
+  # in, and that the agent has already been told.
+  msg_user="NOTE: this session's worktree is on '$self_branch', which is committed but not on origin/main.
+$push_line_user
+The agent has already been told about this lane in this session, so this is a status line for you rather
+than another nudge. If '$self_branch' is in fact already merged (this repo SQUASH-merges, so a merged
+branch keeps reading as ahead), clearing it means removing the worktree and deleting the branch.
+Every unmerged lane in this checkout:"
   channel="ctx"
 else
   msg="NOTE: unmerged lane(s) exist in this checkout, none of them this session's.
@@ -224,6 +263,9 @@ other sessions, or are already merged (this repo SQUASH-merges, so a merged bran
 ancestor of origin/main and keeps reading as ahead -- clearing one means removing its worktree and
 deleting the branch, not opening another PR).
 Lanes:"
+  # Already user-facing -- this branch never reaches the model channel at all,
+  # so there is nothing to split.
+  msg_user="$msg"
   channel="sys"
 fi
 
@@ -250,11 +292,17 @@ fi
 #   the same lane, unpushed -> pushed   -> nudge (a PR should exist now, and a
 #                                          pushed branch with none is the
 #                                          failure this hook is for)
+#   the same lane, pushed -> unpushed   -> quiet (that is an ordinary COMMIT)
 #   the same lane, same push state      -> quiet
 #   a DIFFERENT lane                    -> nudge (it is a different subject)
 #
-# The commit COUNT is deliberately not in the key: it changes every time the
-# model commits, which would re-arm the nudge on ordinary work and leave the
+# The comparison is DIRECTED, and reading it as a plain `prev != current`
+# equality is the shape that made this cadence per-commit rather than
+# per-subject. Only `unpushed -> pushed` re-arms; the reverse is what happens
+# every time the model commits.
+#
+# The commit COUNT is deliberately not in the key either: it changes every time
+# the model commits, which would re-arm the nudge on ordinary work and leave the
 # cadence as unbounded as it started.
 #
 # The record lives in the PER-WORKTREE git dir, so lanes never share one and
@@ -265,28 +313,93 @@ fi
 # nudge rather than a missed one, the safe direction.
 if [ "$channel" = "ctx" ]; then
   git_dir=$(git -C "$session_root" rev-parse --absolute-git-dir 2>/dev/null || true)
+  arm=1
+  persisted=0
   if [ -n "$git_dir" ]; then
     state_file="${git_dir}/stop-nudge-lane"
     subject="${self_branch}:${push_state}"
     prev_sid=""
     prev_subject=""
+    prev_ts=""
+    prev_rest=""
     if [ -r "$state_file" ]; then
-      IFS="$TAB" read -r prev_sid prev_subject _ <"$state_file" 2>/dev/null || true
+      IFS="$TAB" read -r prev_sid prev_subject prev_ts prev_rest <"$state_file" 2>/dev/null || true
     fi
-    if [ "$prev_sid" = "$sid" ] && [ "$prev_subject" = "$subject" ]; then
-      channel="sys"
-    else
+    # A record is consulted only when it is WELL-FORMED: exactly three
+    # tab-separated fields with a numeric epoch. Anything else -- an empty file,
+    # a truncated write, a fourth field from a future format, a clobber that
+    # interleaved two writers -- is treated as NO record, which falls to ARM.
+    # That is the safe direction: an extra nudge, never a missed one, matching
+    # the concurrent-clobber trade the record already accepts.
+    case "$prev_ts" in
+      "" | *[!0-9]*) prev_sid=""; prev_subject="" ;;
+    esac
+    [ -z "$prev_rest" ] || { prev_sid=""; prev_subject=""; }
+    prev_branch=${prev_subject%:*}
+    prev_push=${prev_subject##*:}
+
+    # The predicate is DIRECTED, and an undirected equality test was a real bug
+    # rather than a simplification. `pushed -> unpushed` is what an ordinary
+    # COMMIT looks like, so `prev_subject != subject` re-armed on every commit
+    # and again on every push. Measured on one lane before this fix:
+    # `commit ctx, repeat sys, push ctx, repeat sys, commit ctx, push ctx, ...`
+    # -- two forced continuations per commit/push cycle, forever, which is the
+    # per-commit cadence the comment above explicitly disclaims.
+    #
+    # So: a new session, a lane never seen, a DIFFERENT branch, or the one
+    # transition that opens an action the model did not have (`unpushed ->
+    # pushed`, after which a PR should exist and its absence is the failure this
+    # hook is for). Never `pushed -> unpushed`.
+    if [ "$prev_sid" = "$sid" ] && [ -n "$prev_subject" ] && [ "$prev_branch" = "$self_branch" ]; then
+      if [ "$prev_push" = "unpushed" ] && [ "$push_state" = "pushed" ]; then
+        arm=1
+      else
+        arm=0
+      fi
+    fi
+
+    # Written on BOTH arms: the record holds the last OBSERVED subject, not the
+    # last NUDGED one. Recording only on the arm would freeze `prev_push` at
+    # `pushed` and silence the next genuine `unpushed -> pushed`.
+    #
+    # ...except on a RESUMED pass, which never arms (below). Writing there would
+    # record a subject as seen while the model was never told about it, so the
+    # next ordinary turn would find its own first nudge already spent.
+    # `2>/dev/null` precedes the write redirect so a failed redirect is not
+    # reported on the hook's real stderr.
+    if [ "$resumed" != "1" ]; then
       tmp="${state_file}.$$"
-      if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" >"$tmp" 2>/dev/null; then
-        mv -f "$tmp" "$state_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+      if printf '%s\t%s\t%s\n' "$sid" "$subject" "$(date +%s)" 2>/dev/null >"$tmp"; then
+        if mv -f "$tmp" "$state_file" 2>/dev/null; then
+          persisted=1
+        else
+          rm -f "$tmp" 2>/dev/null || true
+        fi
       else
         rm -f "$tmp" 2>/dev/null || true
       fi
     fi
   fi
+
+  # A resumed pass suppresses the ARM and nothing else -- the warning still
+  # leaves, on the user channel.
+  [ "$resumed" = "1" ] && arm=0
+  # A nudge that cannot be RECORDED cannot be bounded, and an unbounded one is
+  # what this mechanism exists to remove -- so an unresolvable or unwritable git
+  # dir costs the MODEL channel, not the warning.
+  [ "$persisted" = "1" ] || arm=0
+  [ "$arm" = "1" ] || channel="sys"
 fi
 
-MSG="$msg
+# The channel decides WHICH TEXT, not just where it goes. A downgrade means the
+# reader changed from the agent to a person, so the message changes with it.
+if [ "$channel" = "ctx" ]; then
+  out_msg="$msg"
+else
+  out_msg="$msg_user"
+fi
+
+MSG="$out_msg
 $lanes" CHANNEL="$channel" python3 -c '
 import json, os
 

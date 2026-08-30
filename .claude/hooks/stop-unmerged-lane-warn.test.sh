@@ -49,6 +49,16 @@ run_hook() {
   run_hook_keep "$@"
 }
 
+# The same call with `CLAUDE_CODE_SESSION_ID` set, for the payloads that carry
+# NO `session_id` -- the only shape that reaches the env fallback. Every other
+# case here sends an explicit id, which is exactly why that line had no
+# coverage.
+run_hook_sid() {
+  local envsid="$1" dir="$2" hook="$3" stdin="$4"
+  printf '%s' "$stdin" | (cd "$dir" && CLAUDE_CODE_SESSION_ID="$envsid" bash "$hook")
+  printf '%s' "$?" > "$RC_FILE"
+}
+
 # The same call WITHOUT the reset -- for the cadence cases, which are precisely
 # about what a second invocation does.
 run_hook_keep() {
@@ -80,6 +90,20 @@ if not raw.strip():
 d = json.loads(raw)
 msg = d.get("hookSpecificOutput", {}).get("additionalContext") or d.get("systemMessage") or ""
 print(sum(1 for line in msg.splitlines() if line.startswith("  ")))
+'
+}
+
+# `msg_of <output>` -> the message text, whichever channel carried it. Used by
+# the cases that compare the two channels' WORDING; `channel_of` answers where
+# the payload went, and this answers what it said.
+msg_of() {
+  printf '%s' "$1" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+if not raw.strip():
+    raise SystemExit
+d = json.loads(raw)
+print(d.get("hookSpecificOutput", {}).get("additionalContext") or d.get("systemMessage") or "")
 '
 }
 
@@ -307,16 +331,23 @@ ln -s "$REPO/wt-two" "$SANDBOX/wt-two-link"
 out=$(run_hook "$SANDBOX/wt-two-link" "$SANDBOX/wt-two-link/.claude/hooks/$(basename "$HOOK")")
 check "a symlinked lane path is still the session's own lane" "ctx" "$(channel_of "$out")"
 
-# --- SILENT on the continuation pass. `additionalContext` CONTINUES the turn,
+# --- NO ARM on the continuation pass. `additionalContext` CONTINUES the turn,
 # so a hook that keeps emitting it turns one nudge into a spin: the model is
 # pushed back to work, reaches Stop again with the same unmerged lane, and is
 # pushed again. The harness marks that second pass with `stop_hook_active`, and
 # standing down on it is what bounds this hook to a single forced continuation.
 # Without this case the loop is unfenced -- every case above passes `{}`, where
-# the flag is absent, so the branch could be deleted and the suite stay green. ---
+# the flag is absent, so the branch could be deleted and the suite stay green.
+#
+# This case used to assert total SILENCE, and that was wrong: a lane can be
+# COMMITTED during the continuation, in which case this pass is the FIRST time
+# the condition holds at all and the user would never hear about it. Only the
+# ARM is suppressed now -- a bare `systemMessage` does not continue a turn, so
+# it cannot spin. ---
 out=$(run_hook "$REPO/wt-two" "$REPO/wt-two/.claude/hooks/$(basename "$HOOK")" '{"stop_hook_active": true}')
-check "silent once the harness reports a continuation already happened" "" "$out"
-check "...standing down is exit 0, not a crash" "0" "$(rc_of)"
+check "a continuation does not re-arm the model channel" "sys" "$(channel_of "$out")"
+check "...but the user is still told, in case the lane appeared mid-turn" "2" "$(lanes_in "$out")"
+check "...and standing down is exit 0, not a crash" "0" "$(rc_of)"
 
 # --- ...and NOT silent when the flag is present but false, which is the shape
 # every ordinary turn actually sends. A truthiness check that reads the KEY
@@ -380,12 +411,20 @@ done
 
 # --- `stop_hook_active` as the STRING "false" must not silence the hook. Python
 # treats any non-empty string as truthy, so the naive read makes this the same
-# as `true` -- and since a hook that goes quiet still exits 0, the failure looks
-# exactly like "no lanes" forever. The boolean cases above cannot see it. ---
-out=$(run_hook "$REPO" "$RUN" '{"stop_hook_active": "false"}')
-check "the string \"false\" does not count as a continuation" "2" "$(lanes_in "$out")"
-out=$(run_hook "$REPO" "$RUN" '{"stop_hook_active": "true"}')
-check "the string \"true\" does count as one" "" "$out"
+# as `true` -- and the boolean cases above cannot see it.
+#
+# Read from a LANE, not from the main tree. The flag now suppresses the ARM
+# rather than the whole payload, so its effect is a channel change -- and the
+# main tree already answers `sys` for the unrelated reason that none of the
+# lanes are its own. Running these there would compare `sys` against `sys` and
+# pass whatever the flag did. ---
+WT2="$REPO/wt-two/.claude/hooks/$(basename "$HOOK")"
+out=$(run_hook "$REPO/wt-two" "$WT2" '{"stop_hook_active": "false"}')
+check "the string \"false\" does not count as a continuation" "ctx" "$(channel_of "$out")"
+out=$(run_hook "$REPO/wt-two" "$WT2" '{"stop_hook_active": "true"}')
+check "the string \"true\" does count as one" "sys" "$(channel_of "$out")"
+check "...and even then the lane is named for the user" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'feat/two' && echo yes || echo no)"
 
 # --- Malformed / absent stdin must not take the warning down with it. The hook
 # reads stdin only to find one flag; a harness that sends nothing parseable is
@@ -498,12 +537,146 @@ check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "...and a pushed lane stops nagging again after that one" "sys" "$(channel_of "$out")"
 
+# --- The predicate is DIRECTED. `pushed -> unpushed` is what an ordinary COMMIT
+# looks like, so an undirected `prev != current` re-armed on every commit AND on
+# every push: measured on one lane as `commit ctx, repeat sys, push ctx, repeat
+# sys, commit ctx, push ctx, ...`, two forced continuations per cycle, forever.
+# `feat/cad-a` is pushed and quiet at this point, so committing to it is exactly
+# that transition. ---
+git -C "$REPO/wt-cad-a" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+check "the fixture really did make the lane unpushed again" "1" "$(git -C "$REPO/wt-cad-a" rev-list --count '@{u}..' 2>/dev/null || echo MISSING)"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "an ordinary COMMIT (pushed -> unpushed) does NOT re-arm" "sys" "$(channel_of "$out")"
+# ...and the MIDDLE push arm: an upstream exists, N commits are unpushed. The
+# fixture above only ever produced the two ENDS (no upstream at all, and fully
+# pushed), so the branch naming the count had no case of its own.
+check "...and the text names the unpushed COUNT, not the no-upstream wording" "yes" \
+  "$(printf '%s' "$out" | grep -qF '1 commit(s) not yet pushed' && echo yes || echo no)"
+# Pushing it again is the ONE transition that re-arms, and exactly once.
+git -C "$REPO" update-ref "refs/remotes/origin/feat/cad-a" "$(git -C "$REPO" rev-parse feat/cad-a)"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "unpushed -> pushed re-arms" "ctx" "$(channel_of "$out")"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "...exactly once" "sys" "$(channel_of "$out")"
+
+# --- A MALFORMED record falls to ARM, which is the safe direction: an extra
+# nudge, never a missed one -- the same direction the concurrent-clobber trade
+# above already accepts. Without the shape check the record is trusted verbatim,
+# so one junk write in the git dir silences the lane for the rest of the
+# session. Every spelling below carries the RIGHT session and the RIGHT branch,
+# so nothing but the shape check can reject it.
+#
+# An EMPTY subject is not among them because it is not representable: bash's
+# `read` with `IFS=<tab>` treats tab as IFS WHITESPACE, so a run of tabs
+# delimits as one and `sid\t\tts` arrives as the TWO-field record below rather
+# than as three fields with an empty middle. Measured, not assumed -- the first
+# draft asserted an empty subject and was passing through the field-count guard
+# under a name that described a path it never took.
+CAD_A_REC="$(git -C "$REPO/wt-cad-a" rev-parse --absolute-git-dir)/stop-nudge-lane"
+printf 'sess-one\tfeat/cad-a:pushed\n' > "$CAD_A_REC"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "a TRUNCATED two-field record arms" "ctx" "$(channel_of "$out")"
+printf 'sess-one\tfeat/cad-a:pushed\t%s\textra\n' "$(date +%s)" > "$CAD_A_REC"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "a record with a FOURTH field arms" "ctx" "$(channel_of "$out")"
+printf 'sess-one\tfeat/cad-a:pushed\tnot-a-number\n' > "$CAD_A_REC"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "a record with a NON-NUMERIC timestamp arms" "ctx" "$(channel_of "$out")"
+# The control: the well-formed record the hook itself just wrote is trusted, so
+# the three above are not passing merely because every record arms.
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "...while the WELL-FORMED record it wrote is still trusted" "sys" "$(channel_of "$out")"
+
+# --- A nudge that cannot be RECORDED cannot be BOUNDED, and an unbounded nudge
+# is what the cadence exists to remove -- so an unwritable git dir costs the
+# MODEL channel, not the warning. Asserted in both halves, because a hook that
+# simply exited would also read as "not ctx". ---
+CAD_A_GITDIR="$(git -C "$REPO/wt-cad-a" rev-parse --absolute-git-dir)"
+clear_nudge_records
+chmod a-w "$CAD_A_GITDIR"
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+chmod u+w "$CAD_A_GITDIR"
+check "an unwritable git dir downgrades to the user channel" "sys" "$(channel_of "$out")"
+check "...but still WARNS about the lane" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'feat/cad-a' && echo yes || echo no)"
+
 # The continuation flag outranks the cadence: the harness has already resumed
-# once inside this turn, so even a freshly-armed subject must stay silent rather
-# than swap channels and print the same wall of text twice.
+# once inside this turn, so even a freshly-armed subject must not force a second
+# continuation. It used to go fully SILENT, and that lost the case where the
+# lane is COMMITTED during the continuation -- that pass is then the first time
+# the condition holds at all, and the user heard nothing. Only the ARM is
+# suppressed now; a bare `systemMessage` does not continue a turn.
 clear_nudge_records
 out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-three\", \"stop_hook_active\": true}")
-check "a resumed turn stays silent even when armed" "" "$out"
+check "a resumed turn does not arm, even with a fresh subject" "sys" "$(channel_of "$out")"
+check "...and the user is told about it on that pass" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'feat/cad-b' && echo yes || echo no)"
+# ...and it writes NO record. A resumed pass never arms, so recording its
+# subject as SEEN would spend the model's one nudge on a turn the model was
+# never told about -- the next ordinary turn would find the subject already
+# used and downgrade its own first nudge.
+CAD_B_REC="$(git -C "$REPO/wt-cad-b" rev-parse --absolute-git-dir)/stop-nudge-lane"
+check "a resumed pass writes no record" "no" "$([ -e "$CAD_B_REC" ] && echo yes || echo no)"
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-three\"}")
+check "...so the next ordinary turn still gets its one nudge" "ctx" "$(channel_of "$out")"
+
+# The same property with an EXISTING record, which is the shape that actually
+# loses a nudge: the subject CHANGES during the continuation (the lane is
+# committed inside it), so a write there records a subject as seen that the
+# model was never told about. Asserting the record is UNCHANGED, not merely
+# absent -- a hook that stopped recording altogether would satisfy "absent".
+printf 'sess-four\tfeat/other:unpushed\t%s\n' "$(date +%s)" > "$CAD_B_REC"
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-four\", \"stop_hook_active\": true}")
+check "a resumed pass with a NEW subject stays off the model channel" "sys" "$(channel_of "$out")"
+check "...and leaves the existing record untouched" "feat/other:unpushed" \
+  "$(cut -f2 <"$CAD_B_REC")"
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": \"sess-four\"}")
+check "...so the unconsumed nudge survives to the next ordinary turn" "ctx" "$(channel_of "$out")"
+
+# --- The SESSION ID's env fallback. Every case above sends an explicit
+# `session_id`, so the `CLAUDE_CODE_SESSION_ID` path had zero coverage -- and it
+# used to sit in SHELL, after the normalisation that folds tabs and newlines out
+# of the payload's copy. A tab in the id adds a FIELD to the record and a
+# newline ends its line early; either way the read-back shifts, `prev_sid` never
+# matches the value the hook itself just wrote, and the cadence stops bounding:
+# `additionalContext` every turn, against `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`.
+#
+# Each probe asserts the SECOND turn downgrades, not merely that the first
+# fires. A case that only checked turn 1 passes against the broken hook, since
+# the failure is that it never STOPS firing.
+SID_PAYLOAD="{\"cwd\": \"$REPO/wt-cad-b\"}"
+sid_cadence() {
+  local envsid="$1" first second
+  clear_nudge_records
+  first=$(run_hook_sid "$envsid" "$REPO" "$RUN" "$SID_PAYLOAD")
+  second=$(run_hook_sid "$envsid" "$REPO" "$RUN" "$SID_PAYLOAD")
+  printf '%s,%s' "$(channel_of "$first")" "$(channel_of "$second")"
+}
+check "a plain env session id bounds the cadence" "ctx,sys" "$(sid_cadence 's1')"
+check "a LEADING TAB in the env session id still bounds it" "ctx,sys" "$(sid_cadence "$(printf '\tabc')")"
+check "an EMBEDDED TAB in the env session id still bounds it" "ctx,sys" "$(sid_cadence "$(printf 'a\tb')")"
+check "an EMBEDDED NEWLINE in the env session id still bounds it" "ctx,sys" "$(sid_cadence "$(printf 'a\nb')")"
+check "an UNSET env session id still bounds it" "ctx,sys" "$(sid_cadence '')"
+
+# --- The two channels carry DIFFERENT TEXT. A downgrade changes the READER
+# from the agent to a person, so sending the model's wording ("you are not done:
+# rebase, run the gates, open the PR") down `systemMessage` addresses a human as
+# the agent -- which is go-to-k/cdkd#2389's defect, the one this hook's channel
+# split exists to fix, reappearing on the three downgrade paths. Asserted as a
+# difference AND on the specific phrase, so collapsing the two back into one
+# string fails here rather than in a review. ---
+clear_nudge_records
+ctx_out=$(run_hook_keep "$REPO" "$RUN" "$B1")
+sys_out=$(run_hook_keep "$REPO" "$RUN" "$B1")
+check "the two channels really are ctx then sys" "ctx,sys" "$(channel_of "$ctx_out"),$(channel_of "$sys_out")"
+check "...and they do NOT carry the same text" "different" \
+  "$([ "$(msg_of "$ctx_out")" = "$(msg_of "$sys_out")" ] && echo same || echo different)"
+check "...the model text tells the AGENT what to do" "yes" \
+  "$(printf '%s' "$(msg_of "$ctx_out")" | grep -qF 'rebase, run the gates, open the PR' && echo yes || echo no)"
+check "...and the user text does not" "no" \
+  "$(printf '%s' "$(msg_of "$sys_out")" | grep -qF 'rebase, run the gates, open the PR' && echo yes || echo no)"
+check "...while still naming the lane for the user" "yes" \
+  "$(printf '%s' "$(msg_of "$sys_out")" | grep -qF 'feat/cad-b' && echo yes || echo no)"
 
 # The detach wording, which is the other half of the go-to-k/cdkd#2391 port: a
 # tree an outer tool owns must not be removed, and a worktree with no current
