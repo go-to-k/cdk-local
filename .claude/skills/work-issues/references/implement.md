@@ -141,12 +141,27 @@ lines stay exactly as written, and the same two values ride the command as
 `--label severity:<high|medium|low> --label effort:<small|medium|large>`:
 
 ```bash
-B=$(mktemp)   # assign it HERE and write the body into it -- a separate fenced
-              # block is a separate shell, so a `B` set in an earlier one is
-              # already empty by the time this block runs
+B=$(mktemp)   # assign it HERE and WRITE it before `gh` reads it -- a separate
+              # fenced block is a separate shell, so a `B` set in an earlier one
+              # is already empty by the time this block runs
+cat > "$B" <<'BODY'
+<one paragraph: the root cause, and where the evidence for it is>
+
+Dup-check: searched open issues for <terms> -- none covers this root cause
+Session-fit: next (not this session) -- <reason>
+Severity: high -- <what stays broken while it is undone>
+Effort: large (L) -- <which verification cycle it drags>
+Estimate: ~3 h+ -- <what eats the time>
+BODY
 gh issue create -t 'fix(local): ...' --body-file "$B" \
   --label severity:high --label effort:large
 ```
+
+The `cat` is load-bearing, not filler: `mktemp` creates the file EMPTY, so
+`B=$(mktemp)` followed straight by `--body-file "$B"` files an issue with NO
+body — no `Dup-check:` line, no classification. `heredoc -> file -> --body-file`
+in one call is the mandated shape here, with the delimiter QUOTED so backticks
+and `$` in the body stay literal instead of running.
 
 Prose is invisible to `gh issue list`, so ranking by `Severity` costs one
 `gh issue view` per candidate without labels. Only these two get labels:

@@ -40,7 +40,7 @@ const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 26,092 B (hunt-bugs, 2026-08-31)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~7 KB at the split
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 28,013 B (implement.md, 2026-08-31)
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 28,972 B (implement.md, 2026-08-31, review round 2)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -54,7 +54,7 @@ const MIN_REFERENCE_FILES = 6;
 // at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
 // (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
 // stage file changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 88_000; // re-measured 2026-08-31 (second pass, after the ship.md merge-pr / launch-mode text): corpus 113,468 B, largest implement.md 28,227 B; 88,000 > 113,468 - 28,227 = 85,241, so hollowing the largest file still fails, with ~25 KB of compression headroom left below the floor. 78,000 had lapsed silently as the other stage files grew, and the 86,000 set earlier the same day was already down to 759 B of margin -- exactly the decay the paragraph above warns about, which is why the raise takes real margin rather than the minimum that passes
+const MIN_REFERENCE_CORPUS_BYTES = 88_000; // re-measured 2026-08-31 (second pass, after the ship.md merge-pr / launch-mode text): corpus 114,213 B, largest implement.md 28,972 B; 88,000 > 114,213 - 28,972 = 85,241 (re-measured 2026-08-31, review round 2: the round's edit grew the largest file and the corpus by the same 745 B, so the difference is unchanged -- the invariance the paragraph above names), so hollowing the largest file still fails, with ~25 KB of compression headroom left below the floor. 78,000 had lapsed silently as the other stage files grew, and the 86,000 set earlier the same day was already down to 759 B of margin -- exactly the decay the paragraph above warns about, which is why the raise takes real margin rather than the minimum that passes
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
