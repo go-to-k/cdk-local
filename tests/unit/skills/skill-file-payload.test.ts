@@ -38,9 +38,9 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
-const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 24,816 B (hunt-bugs)
+const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 26,092 B (hunt-bugs, 2026-08-31)
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator measured ~7 KB at the split
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 27,474 B (implement.md, 2026-08-29)
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file measured 28,013 B (implement.md, 2026-08-31)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -54,7 +54,7 @@ const MIN_REFERENCE_FILES = 6;
 // at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
 // (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
 // stage file changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 78_000; // re-measured 2026-08-29: corpus 102,735 B, largest 27,474 B; 78,000 > 102,735 - 27,474 = 75,261, so hollowing the largest file still fails, with ~24 KB of compression headroom left below the floor
+const MIN_REFERENCE_CORPUS_BYTES = 86_000; // re-measured 2026-08-31: corpus 111,313 B, largest 28,013 B; 86,000 > 111,313 - 28,013 = 83,300, so hollowing the largest file still fails, with ~25 KB of compression headroom left below the floor. The previous 78,000 had lapsed silently as the other stage files grew -- exactly the decay the paragraph above warns about
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

@@ -9,6 +9,19 @@ the session accountable for the lane — and the claim's `<ref>` names the branc
 holds. Everything else in this section is unchanged, including the re-check for
 a competing claim/PR right before the lane starts.
 
+**An IN-PLACE run names the tree it is STANDING IN** (§3's launch-mode probe):
+the `<ref>` is the branch and worktree already checked out, so read them out of
+git rather than composing a name —
+
+```bash
+git branch --show-current      # the branch the claim must name
+git rev-parse --show-toplevel  # the worktree the claim must name
+```
+
+— because nothing new will be created, and a claim pointing at a worktree that
+never appears is exactly what §9's owner probes misread. Such a run claims ONE
+issue (§3), not a set.
+
 For EACH issue you will start:
 
 ```bash

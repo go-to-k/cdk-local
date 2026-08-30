@@ -19,6 +19,22 @@ and colliding on the same file. The run does not end at the last merge: the retr
 stage folds what this run taught you back into this skill's files, while the
 evidence still exists.
 
+## Launch mode: compute it before stage 0
+
+Every worktree instruction below assumes the launch location is the MAIN
+checkout. Launched from a linked worktree instead (an Orca/ADE workspace, or a
+session that `cd`-ed into `.claude/worktrees/<x>`), `git worktree add` NESTS a
+worktree inside one, and deleting the outer workspace takes the inner directory,
+its uncommitted work and its git registration with it (go-to-k/cdk-local#635).
+Run the one-line probe at the top of §3, state the answer in the opening report,
+and pass it into every lane dispatch. `IN-PLACE` changes four things and nothing
+else: ONE issue rather than a batch (§3); create no worktree, work on the branch
+already checked out here (§5); remove no worktree and delete no branch, so
+`/merge-pr` stops after its step 4 (§9, §10-d); and pull the main checkout
+through `git -C`, because `main` is checked out THERE (§9). Adopting a tree you
+did not create needs the ownership probes in §3 first — a peer's live lane is a
+lane, not a workspace.
+
 ## How this skill is packaged (read this before stage 0)
 
 This file is a thin orchestrator. The full procedure lives in per-stage files
@@ -44,11 +60,13 @@ and markgate gate fired inside the lane's tool calls exactly as in the parent
   raw backlog listing and issue bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — the claim is the lock,
   so it names the session accountable for the lane; it also names the lane
-  branch/worktree the dispatched subagent will create (§4).
+  branch/worktree the dispatched subagent will create (§4) — or, IN-PLACE, the
+  branch already checked out here.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
   files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`).
-  The lane creates its own worktree per §5, implements (unit + fixture
+  The lane creates its own worktree per §5 — or works in place, so pass the
+  launch mode in the dispatch — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs
   `/check` + `/check-docs`, opens the PR, dispatches its review tier (a lane
   may spawn reviewer subagents), addresses findings, and drives CI to green —
@@ -81,9 +99,9 @@ the user wants to watch); the stage files apply unchanged either way.
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`), volume assessment |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their pre-first-write blind spot (before a lane's first write, only its §4 claim comment can see it), the shared cross-cutting runtime modules at most one lane may own |
-| 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
+| 3. Pick file-disjoint issues | `references/triage.md` | Launch-mode probe (how many lanes you may take), disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit (English only, like every issue this run files), claim what you FILE too, re-check for a competing claim right before you start |
-| 5. Implement | `references/implement.md` | One worktree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
+| 5. Implement | `references/implement.md` | One tree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
 | 6. Gates + PR | `references/gates-and-pr.md` | Gate liveness probe before the session's first commit, `vp run verify`, `/check` + `/check-docs` markers, PR create with `Closes #<n>` |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED, run a peer's new repo-wide check over your diff |
 | 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test, §8-z: what a no-discrimination mutation probe actually means |
@@ -102,8 +120,9 @@ the user wants to watch); the stage files apply unchanged either way.
   artifact that proves the lane exists. (§2, §4)
 - **Two lanes never edit the same file**; at most one lane per shared
   cross-cutting runtime module (list in §2). (§3)
-- **Never work in the main checkout** — one worktree per lane under
-  `.claude/worktrees/<branch>/`. (§5)
+- **Never work in the main checkout** — one tree per lane: a new worktree under
+  `.claude/worktrees/<branch>/`, or the launch worktree itself when the mode is
+  IN-PLACE. (§3, §5)
 - **Never defer the integ**: a `src/**` fix ships its Docker/fixture coverage in
   the SAME PR — the `integ` gate enforces it at merge time. (§5, §8)
 - **Merge only via `/merge-pr`** — a hand-run `gh pr merge` from a side worktree

@@ -1295,7 +1295,16 @@ vp run runtime:smoke
   `.claude/worktrees/<branch>/`; use
   `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`
   rather than branching in the main worktree (shared state across
-  parallel agents).
+  parallel agents). **That recipe is the MAIN-CHECKOUT case and is wrong
+  from anywhere else** (go-to-k/cdk-local#635): when the session is ALREADY
+  inside a linked worktree -- an Orca/ADE workspace, or a stray `cd` into an
+  existing lane -- `git worktree add` NESTS one worktree inside another, and
+  deleting the outer workspace takes the inner directory, its uncommitted
+  work and its git registration with it. There, create nothing and remove
+  nothing: work on the branch already checked out, stop `/merge-pr` after
+  step 4, and leave the tree for whoever made it. `/work-issues` computes
+  which case applies before its first stage and `/hunt-bugs` points at that
+  probe; do not re-implement it here.
 
 - **Squash merge only, via `/merge-pr`**: merge every PR with the
   `/merge-pr <N>` skill — it squash-merges (flat history) from inside the

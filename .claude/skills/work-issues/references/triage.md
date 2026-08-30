@@ -147,6 +147,52 @@ rest; a fix living entirely in one is naturally disjoint.
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
+**How many lanes you may pick is decided by the LAUNCH MODE, so compute that
+first — it is one command and it is not guessable from the prompt:**
+
+```bash
+[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
+ = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
+```
+
+Equal only in the main checkout: a linked worktree's `--git-dir` is
+`<common-dir>/worktrees/<name>`, while the main checkout's is the common dir
+itself. `pwd -P` is load-bearing in BOTH directions — the main checkout answers
+`.git` RELATIVELY for both, so an unnormalised compare is only accidentally
+right, and macOS spells `/tmp` as `/private/tmp`. Chosen over comparing against
+the first row of `git worktree list --porcelain` because it needs no listing
+order, no path parsing and no awareness of other worktrees.
+
+`IN-PLACE` means this run was launched inside a worktree someone else created
+(an Orca/ADE workspace, a stray `cd` into `.claude/worktrees/<x>`), so it has
+exactly ONE working tree: **take ONE issue and finish it.** A second lane would
+need a worktree nested inside this one, and deleting the outer workspace then
+takes the inner directory with it — uncommitted work gone, the git registration
+orphaned until a `prune`, plus the same-branch double-checkout collision
+(go-to-k/cdk-local#635). Rank as usual, claim the top candidate, and leave the
+rest for the next run. The other consequences live where they fire: the claim
+names the tree you are STANDING IN (§4), no worktree is created (§5), none is
+removed and no branch deleted (§9, §10-d), and `main` is pulled through
+`git -C` because it is checked out in the main checkout (§9).
+
+**Adopting a tree you did not create needs an ownership check FIRST**, because a
+stray `cd` into a peer's live lane looks exactly like an empty workspace:
+
+```bash
+git status --porcelain          # non-empty = someone's uncommitted work; STOP
+git branch --show-current       # the branch you would be committing to
+git log --oneline -3            # whose commits are these
+gh pr list --state all --head "$(git branch --show-current)"
+```
+
+This repo keeps no worktree-owner sentinel (the sibling cdkd's
+`session-owner` file has no counterpart here), so those probes plus the §4 claim
+comments on the issue thread are the whole ownership record — and §9's rule
+applies unchanged: read every probe as evidence of LIFE only, never of absence.
+If the tree is not yours, stop and report; do not nest a worktree inside it.
+
+Everything below is the MAIN-CHECKOUT case.
+
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files** — two issues landing in the same file (e.g.
 `ecs-service-emulator.ts`) bundle into ONE lane (one worktree, one PR) or one

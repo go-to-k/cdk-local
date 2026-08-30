@@ -24,6 +24,17 @@ Merge every verified PR with the `/merge-pr` skill — NOT a hand-run
 /merge-pr <n>
 ```
 
+**An IN-PLACE run (§3's launch-mode probe) stops `/merge-pr` after its step 4.**
+Steps 1-4 (resolve paths, set the `merge-pr` marker, `gh pr merge --squash`,
+confirm `state=MERGED`) run unchanged; step 5 must NOT — `git worktree remove
+"$WT" --force` on the tree this run is standing in deletes its own cwd, and
+`git branch -D "$BR"` targets the branch it is standing on. Skip step 5
+entirely, do step 6 (confirm the remote branch is gone) from this tree, and say
+in the report that the local tree and branch are still there ON PURPOSE.
+Cleanup of a workspace this run did not create belongs to whoever did — the
+outer tool, or the operator. `/merge-pr`'s own step 1 already has the sibling
+case (`WT` == `MAIN`, skip the remove); this is the second one it does not name.
+
 `/merge-pr` squash-merges from inside the feature worktree WITHOUT
 `--delete-branch` (so gh runs no local cleanup and never trips the `'main' is
 already used by worktree` fatal a hand-run merge hits from a side worktree), then
@@ -48,8 +59,19 @@ distrusting the check (go-to-k/cdk-local#524 failed on a line
 go-to-k/cdk-local#520 merged in parallel).
 
 ```bash
+# The main checkout is always the FIRST row of `git worktree list`.
+MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git checkout main && git pull origin main    # bring the merges local
+# IN-PLACE: `main` is checked out in $MAIN, so a `checkout main` HERE dies with
+# `'main' is already used by worktree at ...` -- never leave your own tree, pull
+# the main checkout through -C instead:
+git -C "$MAIN" pull origin main
 ```
+
+(There is no post-release rebuild step to relocate: this repo's flow ends at the
+pull, and users invoke `node dist/cli.js` from their own checkout rather than a
+globally linked binary built in the main tree. The sibling cdkd has that step
+and has to run it in `$MAIN`; do not import it here.)
 
 When your PR landed into a file another PR touched in the same window, grep the
 merged `main` for a marker string from EACH side before believing both survived —
@@ -89,8 +111,11 @@ squash-merges: a merged tip is never an ancestor of `main`, so `-d` refuses it a
 "not fully merged". Read that refusal as the expected squash artifact, not as
 unmerged work — but only after confirming the PR is MERGED. The closing check is
 that **every worktree AND every local branch THIS run added is gone** — never that
-only the main checkout remains. `git worktree remove` on its own never deletes a
-branch, so a crashed or interrupted `/merge-pr` leaves the local ref behind
+only the main checkout remains. **An IN-PLACE run ADDED none, so it removes
+none**: its closing check is that it left the launch tree and its branch exactly
+as it found them, and the wrap SAYS whose cleanup that is instead of doing it.
+`git worktree remove` on its own never deletes a branch, so a crashed or
+interrupted `/merge-pr` leaves the local ref behind
 (cdkd's section 9 claimed otherwise and accumulated a dozen stale merged
 branches before go-to-k/cdkd#2015 corrected it):
 

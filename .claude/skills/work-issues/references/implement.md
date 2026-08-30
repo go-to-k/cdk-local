@@ -1,6 +1,6 @@
 <!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 5. One worktree per lane, then implement
+## 5. One tree per lane, then implement
 
 This stage (and stages 6–8) normally runs INSIDE a lane subagent the
 orchestrator dispatched — one general-purpose agent per claimed issue, so the
@@ -220,6 +220,13 @@ Never edit in the main checkout (`main-tree-branch-gate.sh` blocks branch creati
 there). Per lane:
 
 ```bash
+# MAIN-CHECKOUT mode only (§3's launch-mode probe). An IN-PLACE run skips these
+# two lines, keeps the tree and branch it was launched in, and creates nothing:
+# a nested worktree dies with the outer workspace, taking its uncommitted work
+# (go-to-k/cdk-local#635). If that branch is detached or its PR already merged,
+# `git switch -c <branch> origin/main` IN THIS TREE instead --
+# `main-tree-branch-gate.sh` fires only when the target dir IS the main tree.
+# The setup lines below still apply: an adopted workspace may be missing them.
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
 cd .claude/worktrees/<name>
 # A fresh worktree's .mise.toml is untrusted, so vp / markgate do not resolve
@@ -240,7 +247,7 @@ reproduced them with its edit stashed, and had begun writing up "a peer merge
 broke main" — one `vp run build` turned them green. **A fresh worktree failing
 where the main checkout passes is evidence about the WORKTREE first.**
 
-Do the fix in the worktree (match the existing module/pattern exactly; ESM
+Do the fix in the lane's tree (match the existing module/pattern exactly; ESM
 relative imports need the `.js` extension even in TS source). **Always add a test
 that fails without the fix and passes with it** — usually a unit test:
 `tests/unit/**` mirrors `src/**`, external boundaries (toolkit-lib, docker CLI,

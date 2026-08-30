@@ -22,7 +22,7 @@
   cannot tell a finished lane from a session working right now, already-merged
   branch tip included. The closing check is "mine are gone", not "only main
   remains".
-- **Start every marker / gate command with an explicit `cd <worktree> &&`** — the
+- **Start every marker / gate command with an explicit `cd <lane tree> &&`** — the
   shell cwd does not reliably persist across tool calls, and a `markgate set` /
   sha-sentinel write that lands in the WRONG worktree surfaces later as a
   mystifying `no marker` (each worktree has its own markgate store; fired twice
@@ -52,6 +52,19 @@
   pins all three properties. **The general shape: a gate you have never watched
   go RED is not a gate** — the failure stays invisible until someone types a
   command that should have been blocked and notices it was not.
+- **An IN-PLACE run ends with the Stop hook still calling its lane unmerged, and
+  the remedy it names is one this mode forbids.**
+  `.claude/hooks/stop-unmerged-lane-warn.sh` enumerates every worktree whose
+  branch is ahead of `origin/main`, and this repo SQUASH-merges, so a merged
+  branch reads as ahead forever; because the launch worktree IS the session's,
+  the warning arrives as `additionalContext` — "remove its worktree and delete
+  the branch" — which §3's launch-mode rule forbids here. Expected, not a
+  defect: confirm the PR is MERGED (`gh pr view <n> --json state`) and say so in
+  the wrap. The tree is only clearable from inside by LEAVING the branch —
+  `git switch --detach origin/main`, since the hook skips a detached worktree
+  (`git branch --show-current` is empty) and `main` itself is checked out in the
+  main checkout — and whether to do that belongs to the tool that owns the
+  workspace, not to this run.
 - **A gated command must be the ONLY thing in its Bash call.** A PreToolUse hook
   denial aborts the WHOLE command string BEFORE any line runs — including
   preamble side effects you assumed happened: a blocked
@@ -102,7 +115,9 @@
   messages, issue comments on this repo).
 - **Always add unit tests** for a fix — do not wait to be asked.
 - **All changes via PR; never commit to `main`.** Develop in a git worktree under
-  `.claude/worktrees/<branch>/` with DISJOINT files; merge via `/merge-pr`.
+  `.claude/worktrees/<branch>/` — or, when the run was launched inside a worktree
+  already, in that one (§3's launch-mode probe) — with DISJOINT files; merge via
+  `/merge-pr`.
   (`.claude/CLAUDE.md` → Workflow rules.)
 - **Never defer integration tests to a later PR** — every slice ships its own integ
   coverage green before merge. (`.claude/CLAUDE.md` → Workflow rules.)
