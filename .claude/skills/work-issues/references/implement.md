@@ -141,6 +141,9 @@ lines stay exactly as written, and the same two values ride the command as
 `--label severity:<high|medium|low> --label effort:<small|medium|large>`:
 
 ```bash
+B=$(mktemp)   # assign it HERE and write the body into it -- a separate fenced
+              # block is a separate shell, so a `B` set in an earlier one is
+              # already empty by the time this block runs
 gh issue create -t 'fix(local): ...' --body-file "$B" \
   --label severity:high --label effort:large
 ```

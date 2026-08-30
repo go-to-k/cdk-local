@@ -221,6 +221,8 @@ After `/merge-pr` you are back on `main` (`branch-gate` blocks commits;
 `main-tree-branch-gate` blocks branching there), so the retro gets its own
 worktree:
 
+MAIN-CHECKOUT (§3's launch-mode probe) — run THIS block, and not the next one:
+
 ```bash
 # Suffix the branch with the LESSON, not just the date: a merged branch is
 # deleted (re-pushing that name is refused by post-merge-orphan-push-gate), and
@@ -232,12 +234,19 @@ git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
 pnpm install                  # worktrees have no node_modules
+```
 
-# IN-PLACE (§3's launch-mode probe): there is no `main` to be back on and no
-# worktree to add -- the lane's own tree is still here, deps installed. Take the
-# retro branch IN IT. `main-tree-branch-gate` fires only when the target dir IS
-# the main tree, and the merged lane branch cannot be reused (re-pushing it is
-# refused by post-merge-orphan-push-gate).
+IN-PLACE — run THIS block INSTEAD of the one above, never both: there is no
+worktree to add, and `git worktree add` from inside this tree NESTS the very
+worktree this mode exists to prevent. There is also no `main` to be back on;
+the lane's own tree is still here with its deps installed, so take the retro
+branch IN IT. `B` is re-assigned because a separate fenced block is a separate
+shell (§9's `$MAIN` trap). `main-tree-branch-gate` fires only when the target
+dir IS the main tree, and the merged lane branch cannot be reused (re-pushing
+it is refused by post-merge-orphan-push-gate).
+
+```bash
+B=chore/work-issues-retro-<lesson-slug>
 git fetch origin && git switch -c "$B" origin/main
 ```
 

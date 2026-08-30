@@ -161,7 +161,10 @@ itself. `pwd -P` is load-bearing in BOTH directions — the main checkout answer
 `.git` RELATIVELY for both, so an unnormalised compare is only accidentally
 right, and macOS spells `/tmp` as `/private/tmp`. Chosen over comparing against
 the first row of `git worktree list --porcelain` because it needs no listing
-order, no path parsing and no awareness of other worktrees.
+order, no path parsing and no awareness of other worktrees. Run it INSIDE the
+repo: outside one both substitutions are empty and `cd ""` returns 0, so it
+prints MAIN-CHECKOUT — a wrong verdict, saved only by the next git command
+failing loudly.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd` into `.claude/worktrees/<x>`), so it has

@@ -54,7 +54,7 @@ const MIN_REFERENCE_FILES = 6;
 // at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
 // (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
 // stage file changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 86_000; // re-measured 2026-08-31: corpus 111,313 B, largest 28,013 B; 86,000 > 111,313 - 28,013 = 83,300, so hollowing the largest file still fails, with ~25 KB of compression headroom left below the floor. The previous 78,000 had lapsed silently as the other stage files grew -- exactly the decay the paragraph above warns about
+const MIN_REFERENCE_CORPUS_BYTES = 88_000; // re-measured 2026-08-31 (second pass, after the ship.md merge-pr / launch-mode text): corpus 113,468 B, largest implement.md 28,227 B; 88,000 > 113,468 - 28,227 = 85,241, so hollowing the largest file still fails, with ~25 KB of compression headroom left below the floor. 78,000 had lapsed silently as the other stage files grew, and the 86,000 set earlier the same day was already down to 759 B of margin -- exactly the decay the paragraph above warns about, which is why the raise takes real margin rather than the minimum that passes
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

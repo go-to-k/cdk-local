@@ -24,16 +24,35 @@ Merge every verified PR with the `/merge-pr` skill — NOT a hand-run
 /merge-pr <n>
 ```
 
-**An IN-PLACE run (§3's launch-mode probe) stops `/merge-pr` after its step 4.**
-Steps 1-4 (resolve paths, set the `merge-pr` marker, `gh pr merge --squash`,
-confirm `state=MERGED`) run unchanged; step 5 must NOT — `git worktree remove
-"$WT" --force` on the tree this run is standing in deletes its own cwd, and
-`git branch -D "$BR"` targets the branch it is standing on. Skip step 5
-entirely, do step 6 (confirm the remote branch is gone) from this tree, and say
-in the report that the local tree and branch are still there ON PURPOSE.
-Cleanup of a workspace this run did not create belongs to whoever did — the
-outer tool, or the operator. `/merge-pr`'s own step 1 already has the sibling
-case (`WT` == `MAIN`, skip the remove); this is the second one it does not name.
+**An IN-PLACE run (§3's launch-mode probe) stops `/merge-pr` once the merge is
+CONFIRMED** — its step 4, the `state=MERGED` read. Everything up to there
+(resolve paths, set the `merge-pr` marker, `gh pr merge --squash`, confirm the
+merge) runs unchanged. **The LOCAL-CLEANUP step must not run at all**: that is
+the one doing `git worktree remove "$WT" --force` plus `git branch -D "$BR"`,
+numbered 5 today — name it by what it DOES, because `/merge-pr`'s own step 1
+still calls the removal "step 4" and the number is the one part of this that
+drifts. Skip it entirely, do the remote-branch confirmation (step 6) from this
+tree, and say in the report that the local tree and branch are still there ON
+PURPOSE. Cleanup of a workspace this run did not create belongs to whoever did
+— the outer tool, or the operator.
+
+`/merge-pr`'s step 1 names one adjacent case (`WT` == `MAIN` — main worktree,
+nothing to detach). There are TWO it does not, and they are different from each
+other:
+
+- **A linked worktree under `.claude/worktrees/`** — the ordinary IN-PLACE case
+  above. The gate fires, `/merge-pr` is mandatory, and only the cleanup step is
+  dropped.
+- **A linked worktree that is NOT under `.claude/worktrees/`** — an Orca/ADE
+  workspace, which is neither the main checkout nor a path the gate recognises.
+  `gh-pr-merge-worktree-gate.sh` matches `*/.claude/worktrees/*` only, so from
+  there it FAILS OPEN: a hand-run `gh pr merge` is not blocked, and nothing
+  forces the merge through `/merge-pr` at all. Step 1's sanity check ("`WT`
+  should be under `.claude/worktrees/`") has no arm for it either. Use
+  `/merge-pr` anyway — its marker is harmless when the gate never consults it —
+  and drop the local-cleanup step exactly as above. Treat a gate that stays
+  silent here as a gate that did not run, never as a verdict that the merge was
+  checked.
 
 `/merge-pr` squash-merges from inside the feature worktree WITHOUT
 `--delete-branch` (so gh runs no local cleanup and never trips the `'main' is
@@ -58,13 +77,22 @@ content your local green never saw — the fix is fetch + rebase + re-run, not
 distrusting the check (go-to-k/cdk-local#524 failed on a line
 go-to-k/cdk-local#520 merged in parallel).
 
+MAIN-CHECKOUT — run THIS block, and not the next one:
+
+```bash
+git checkout main && git pull origin main    # bring the merges local
+```
+
+IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
+tree, so a `checkout main` HERE dies with `'main' is already used by worktree at
+...`. Never leave your own tree; pull the main checkout through `-C`. `MAIN` is
+derived HERE rather than borrowed from a neighbouring block — each fenced block
+is its own Bash call and its own shell, so a variable assigned in another one is
+empty here:
+
 ```bash
 # The main checkout is always the FIRST row of `git worktree list`.
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
-git checkout main && git pull origin main    # bring the merges local
-# IN-PLACE: `main` is checked out in $MAIN, so a `checkout main` HERE dies with
-# `'main' is already used by worktree at ...` -- never leave your own tree, pull
-# the main checkout through -C instead:
 git -C "$MAIN" pull origin main
 ```
 
