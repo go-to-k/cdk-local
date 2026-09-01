@@ -62,6 +62,34 @@ The skill wraps the run with Docker pre-flight, the verify.sh
 invocation, and a post-run orphan sweep. Bypassing it risks setting
 the integ marker on incomplete verification.
 
+### You are not required to run them
+
+CI does not run the integration fixtures, and you do not need to run
+them to contribute. If your change needs integration coverage (see
+below), just say so in your PR — the maintainer runs the required
+fixtures before merging, and the maintainer's merge gates block the
+merge until they pass, so coverage is guaranteed either way. This
+matters especially for the `*-from-cfn-stack` fixtures (they deploy
+real AWS resources and incur real charges) and for contributors
+without a local Docker daemon.
+
+### When is an integration run needed, and which one?
+
+Which verification a PR needs is derived mechanically from the paths
+it touches. The path lists are the gate scopes in
+[`.markgate.yml`](.markgate.yml) — the maintainer's merge gates read
+exactly those, so that file is the source of truth. In summary:
+
+| Your PR touches | Required verification (gate) |
+| --- | --- |
+| Any `src/**` or `tests/integration/**` file | A `local-*` fixture run covering the changed surface (`integ`) |
+| A NEW `src/cli/commands/local-<verb>.ts` subcommand factory | A new integ fixture for the subcommand, shipped in the same PR — the maintainer can run it for you (`create-integ`) |
+| `src/cli/commands/**`, `src/index.ts`, or `src/internal.ts` | A host-CLI embedding parity check, run by the maintainer (`cdkd-parity`) |
+| Docs / tooling only | No integration run — unit tests and CI are enough |
+
+When in doubt, open the PR and ask; the maintainer will pick and run
+the right fixtures.
+
 ## Workflow rules
 
 - **English only for committed artifacts**: source, comments, docs,
@@ -98,7 +126,8 @@ docs: lead getting-started with the interactive picker form
 2. Run `vp run verify` locally — that is what CI gates on.
 3. For source changes, add unit tests under `tests/unit/<mirroring-path>`.
 4. For CLI-surface changes, add or update an integ fixture under
-   `tests/integration/local-*` and run it via `/run-integ`.
+   `tests/integration/local-*` and run it via `/run-integ` — or ask in
+   the PR and the maintainer runs it for you (see "Integration tests").
 5. Push and open the PR with `gh pr create`. The default template
    asks for a Summary + Test plan; fill both.
 
