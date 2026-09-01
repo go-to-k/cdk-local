@@ -24,7 +24,39 @@ git init -q -b feature "$repo"
 git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 : > "$repo/.markgate.yml"   # opt in to the markgate convention
 
+# --- BASH INTERPRETER FENCE ---
+# Every case launches its hook through `env PATH="$SHIM:/usr/bin:/bin"`, and the
+# hooks' `#!/usr/bin/env bash` resolves `bash` off THAT path -- so until now the
+# interpreter was whatever `/bin/bash` happens to be, which on macOS is 3.2 and
+# on most Linux distros is 5.x. That is the right DEFAULT (the shipped hook has
+# to survive the bash a user actually has) but it made the other tally
+# untakeable: there was no way to re-run the same 149 cases under the OTHER
+# major version without editing this file.
+#
+# So the interpreter is now an explicit symlink at the FRONT of that PATH.
+# Default `/bin/bash` -- byte-identical behaviour to before -- and
+# `HOOK_BASH=/opt/homebrew/bin/bash bash .claude/hooks/gate-command-recognition.test.sh`
+# takes the 5.x tally. An explicitly set HOOK_BASH that is not executable is
+# FATAL rather than a silent fall-back: a typo'd override that quietly ran the
+# default would report the version it did not run.
+if [ -n "${HOOK_BASH:-}" ]; then
+  if [ ! -x "$HOOK_BASH" ]; then
+    printf 'FATAL - HOOK_BASH is not an executable: %s\n' "$HOOK_BASH" >&2
+    exit 1
+  fi
+else
+  HOOK_BASH=/bin/bash
+  [ -x "$HOOK_BASH" ] || HOOK_BASH="$(command -v bash)"
+  [ -n "$HOOK_BASH" ] && [ -x "$HOOK_BASH" ] || {
+    printf 'FATAL - no usable bash found for the hooks\n' >&2
+    exit 1
+  }
+fi
+
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
+ln -sf "$HOOK_BASH" "$SHIM/bash"
+printf 'hook interpreter: %s (bash %s)\n' "$HOOK_BASH" \
+  "$("$HOOK_BASH" -c 'echo "$BASH_VERSION"')"
 # Both stubs LOG THEIR $PWD when asked to. A gate `cd`s into the directory it
 # resolved before asking markgate, so that log is a direct read of
 # gate_target_dir's answer through the real hook -- which is the only way to
@@ -111,6 +143,64 @@ run_case_cwd() {
     fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n  out: %s\n' "$name" "$want" "$got" "$out"
   fi
 }
+
+# The exit code alone cannot say WHICH segment a block is about, and the message
+# is the whole product of a block -- it names the branch the user must replay
+# somewhere else. `run_case` compares exit codes only, so a gate that blocks for
+# the right reason and then NAMES THE WRONG BRANCH is green there. Assert the
+# text: `have` must appear, `nothave` (when given) must not.
+#
+# run_case_msg <name> <expect_exit> <hook> <cmd> <have> [<nothave>]
+run_case_msg() {
+  local name="$1" want="$2" hook="$3" cmd="$4" have="$5" nothave="${6:-}" got out payload why=""
+  payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd")
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 \
+    "$HOOKS/$hook" 2>&1); got=$?
+  [ "$got" = "$want" ] || why="exit $got, want $want"
+  printf '%s' "$out" | grep -qF -- "$have" || why="${why:+$why; }message lacks [$have]"
+  if [ -n "$nothave" ] && printf '%s' "$out" | grep -qF -- "$nothave"; then
+    why="${why:+$why; }message wrongly contains [$nothave]"
+  fi
+  if [ -z "$why" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(exit $got, names [$have])"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (%s)\n  out: %s\n' "$name" "$why" "$out"
+  fi
+}
+
+# How many times a hook emits one line of stderr for ONE command. A note that
+# describes a per-COMMAND decision ("this machine has no gh, so nothing was
+# checked") must be stated once however many segments the walk judges.
+# PATH is a hermetic symlink farm rather than a subtraction from the real PATH:
+# `gh` lives in /usr/bin on some distros and in /opt/homebrew/bin here, so
+# "PATH minus the shim dir" is gh-free only by luck of the host.
+#
+# run_note_count <name> <hook> <cmd> <substring> <expected count>
+run_note_count() {
+  local name="$1" hook="$2" cmd="$3" needle="$4" want="$5" got out
+  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$NOGH" "$HOOKS/$hook" 2>&1)
+  got=$(printf '%s\n' "$out" | grep -cF -- "$needle" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(said it $got time(s))"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (said it %s time(s), expected %s)\n  out: %s\n' \
+      "$name" "$got" "$want" "$out"
+  fi
+}
+# The farm itself: everything the gate and the shared matcher shell out to, and
+# NOTHING else -- no `gh` exists anywhere on this PATH, on any host.
+NOGH="$TMPDIR/nogh"; mkdir -p "$NOGH"
+ln -sf "$HOOK_BASH" "$NOGH/bash"
+for _t in git jq cat dirname sed grep awk tr head; do
+  _p="$(command -v "$_t" 2>/dev/null || true)"
+  [ -n "$_p" ] && ln -sf "$_p" "$NOGH/$_t"
+done
+unset _t _p
+if [ -x "$NOGH/gh" ] || env PATH="$NOGH" command -v gh >/dev/null 2>&1; then
+  printf 'FATAL - the gh-free farm resolved a gh; run_note_count would be vacuous\n' >&2
+  exit 1
+fi
 
 # check-gate guards `git commit` — and ONLY that verb.
 run_case "check-gate: bare commit"            2 check-gate.sh 'git commit -m x'
@@ -223,6 +313,44 @@ run_case "orphan-push: -u with no branch, on feature" 0 post-merge-orphan-push-g
 MERGED_WT="$TMPDIR/wt-merged"
 git -C "$repo" worktree add -q -b feat/merged "$MERGED_WT" 2>/dev/null
 run_case_cwd "orphan-push: -u with no branch, on the merged branch" 2 post-merge-orphan-push-gate.sh "$MERGED_WT" 'git push -u origin'
+# ...and the same shape with a trailing REDIRECTION, which is what pins the
+# `args="${args%%>*}"` strip in parse_push_args. Deleting that strip leaves all
+# the cases above green, because every one of them fills `branch` from a real
+# positional before the `>` token is ever reached. Only a push that OMITS the
+# branch lets `>/tmp/log` BE the first free positional -- gh then answers an
+# empty list for a branch named `>/tmp/log` and the gate exits 0 on a push to a
+# merged branch. Measured: with the strip removed this case returns 0.
+run_case_cwd "orphan-push: -u, redirected, on the merged branch" 2 post-merge-orphan-push-gate.sh "$MERGED_WT" 'git push -u origin >/tmp/log'
+
+# A NON-GATEABLE push BEFORE the merged one. The two chain cases above both put
+# a push that IS judged (and passes) first, so they only pin the
+# judged-and-allowed arm of the walk; `parse_push_args … || continue` -- the arm
+# for a segment that is not gateable AT ALL -- had no case. Mutating that
+# `continue` to `break` leaves all 149 of them green while these two return 0:
+# the walk gives up at the first un-judgeable segment and never reaches the
+# merged push behind it. Both non-gateable shapes get a case, because they
+# return 1 from different places in the parse (the remote check and the refspec
+# check).
+run_case "orphan-push: non-origin push FIRST, merged one after" 2 post-merge-orphan-push-gate.sh 'git push upstream feat/x && git push origin feat/merged'
+run_case "orphan-push: deletion refspec FIRST, merged one after" 2 post-merge-orphan-push-gate.sh 'git push origin :feat/x && git push origin feat/merged'
+
+# The block MESSAGE names the segment that blocked, not the last one walked.
+# `blocked=1; break` is what makes that true, and deleting the `break` also
+# leaves 149 green -- the walk runs on, `branch` is overwritten by the trailing
+# `main`, and the refusal tells the user to replay a branch that is not the
+# problem. Exit codes cannot see that, so assert the text both ways.
+run_case_msg "orphan-push: refusal names the blocking segment" 2 post-merge-orphan-push-gate.sh \
+  'git push origin feat/merged && git push origin main' \
+  "branch 'feat/merged'" "branch 'main'"
+
+# The "gh not installed" note describes a per-COMMAND fact, so a chain of three
+# gateable pushes must state it ONCE. Memoising only the SUCCESS arm of
+# resolve_gh (`[ -n "$gh_bin" ] && return 0`, with nothing recording a failed
+# probe) prints it three times; no exit code moves, since the gate fails open
+# either way.
+run_note_count "orphan-push: the no-gh note is stated once" post-merge-orphan-push-gate.sh \
+  'git push origin a && git push origin b && git push origin c' \
+  'gh not installed' 1
 
 # markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
 # exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook

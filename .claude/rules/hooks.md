@@ -478,21 +478,73 @@ The hooks split into four classes:
   `git push origin main && git push origin <merged>` blocks whichever
   half is the merged one; the walk stops at the first segment that
   blocks, so an ordinary single push still makes at most one `gh` call.
+  Three separate properties hide behind that one sentence, and each
+  needed its own case because each mutates independently:
+
+  - a segment the parse cannot gate at all (a non-`origin` remote, a
+    `:branch` deletion refspec) must be SKIPPED, not treated as the end
+    of the walk. Turning that `continue` into a `break` left every
+    other case green while `git push upstream feat/x && git push
+    origin <merged>` returned rc=0 — a live bypass, since putting any
+    un-gateable push first buys a free pass for everything behind it.
+  - the walk stops at the first segment that BLOCKS, and the refusal
+    therefore names THAT segment's branch. Deleting the `break` is
+    invisible to an exit-code comparison: the command still blocks, but
+    `git push origin <merged> && git push origin main` then tells the
+    user to replay `main`, which is not the branch in trouble. The case
+    asserts the message text in both directions.
+  - the "gh not installed" note describes a per-COMMAND decision, so a
+    chain of three gateable pushes states it once. `resolve_gh`
+    memoises the FAILED probe as well as the successful one; keying the
+    memo on the resolved path alone re-probed and re-printed per
+    segment.
+
   The `|` / `;` / `&&` strips are gone from the argument parse — a
   segment already ends at those, and a `push` after one is now its own
   turn in the walk — while the REDIRECTION strip stays, since `>x` can
-  still sit inside a segment.
+  still sit inside a segment. That strip only discriminates on a push
+  that OMITS its branch (`git push -u origin >/tmp/log`), where the
+  redirection token would otherwise become the branch; with a branch
+  present it is already consumed. The case is written that way for
+  exactly that reason.
 
   One limit, stated rather than hidden: `target_dir` is resolved ONCE
-  for the whole command, because `gate_target_dir` reports the LAST
-  matching segment's tree and the helper exposes no per-segment answer.
-  Rebuilding a per-segment prefix to ask again was rejected —
-  re-splitting already-segmented text would let a newline inside a
-  quoted argument surface as a `cd` segment, a worse hole than the one
-  it closes. The exposure is narrow: the positional branch comes from
+  for the whole command, because `gate_target_dir` reports the **FIRST**
+  matching segment's tree — it `break`s at the first segment matching
+  the verb ERE — and the helper exposes no per-segment answer. Measured:
+  `gate_target_dir 'git -C /aaa push origin && git -C /bbb push origin'`
+  answers `/aaa`. The BOUND is the same either way, but the direction is
+  not a detail for a reader: the EARLIEST push's tree is in force for
+  every segment, so the LAST `-C` in a command is precisely the one that
+  is not consulted.
+
+  Rebuilding a per-segment prefix to ask again was rejected, but not for
+  the reason once recorded here. That reason — that re-splitting
+  already-segmented text would let a newline inside a quoted argument
+  surface as a `cd` segment — does not reproduce: `gate_segments`
+  flattens a quoted newline to a space, so
+  `gh pr create --body "line1<newline>cd /evil" && git push origin
+  feat/x` splits into two segments and re-splitting either returns it
+  unchanged. Re-splitting is idempotent. The obstacle that does exist is
+  the `break` above: handed a prefix ending at segment N,
+  `gate_target_dir` still answers for the first matching segment in that
+  prefix rather than for N, so the per-segment question cannot be asked
+  without changing the shared helper — a change to every gate that calls
+  it, not just this one.
+
+  The exposure is narrow either way: the positional branch comes from
   the segment itself, so `target_dir` only decides the `symbolic-ref`
   fallback for a push that OMITS its branch, and only when one command
   pushes from two different trees.
+
+  `git push origin --delete <branch>` is **not** a pass-through, despite
+  reading like the `:branch` case. `--delete` is in the valueless-flag
+  list, so `<branch>` lands in the branch slot as an ordinary positional
+  and a merged branch blocks. Deliberate: re-deleting an
+  already-deleted branch is a no-op on GitHub, so the false block costs
+  nothing, whereas teaching the flag list to swallow its argument would
+  hand every `--delete` spelling the pass-through that the `:branch`
+  arm grants only after reading a refspec.
 
 - **`markgate-pipe-gate.sh`** blocks a Bash call in which
   `markgate verify <gate>`, `markgate set <gate>` or `markgate run
@@ -649,9 +701,13 @@ The hooks split into four classes:
   a preceding `cd` can put two segments of one command in two trees.
   Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
   main-tree block pins the chained blocks, the per-segment allowances,
-  the linked-worktree pass and the quoted-mention pair (149 cases in
+  the linked-worktree pass and the quoted-mention pair (154 cases in
   that file overall, alongside the `post-merge-orphan-push-gate` block
-  added for the same defect).
+  added for the same defect). The interpreter those cases run the hooks
+  under is now explicit: a `bash` symlink at the front of the pinned
+  PATH, defaulting to `/bin/bash` (3.2 on macOS) and overridable with
+  `HOOK_BASH=<path> bash .claude/hooks/gate-command-recognition.test.sh`
+  to take the 5.x tally.
 
 ## 3. Markgate-backed gates
 

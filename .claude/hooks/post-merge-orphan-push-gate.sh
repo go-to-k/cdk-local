@@ -105,22 +105,57 @@ target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_PUSH")
 # most one `gh` call.
 #
 # LIMIT, stated rather than hidden: `target_dir` is resolved ONCE, for the whole
-# command, because `gate_target_dir` reports the LAST matching segment's tree
-# and the shared helper exposes no per-segment answer. Reconstructing a
-# per-segment prefix to ask again was considered and rejected -- re-splitting
-# text that has already been segmented would let a NEWLINE inside a quoted
-# argument (`gh pr create --body "...\ncd /evil"`) surface as a `cd` segment,
-# which is a worse hole than the one it closes. The exposure is narrow: the
-# positional branch is read from the segment itself, so `target_dir` only
-# decides the `symbolic-ref` fallback for a push that OMITS the branch, and only
-# when one command pushes from two different trees.
+# command, because `gate_target_dir` reports the FIRST matching segment's tree
+# and the shared helper exposes no per-segment answer. FIRST, not last: the
+# helper `break`s out of its segment walk as soon as a segment matches the verb
+# ERE. Measured, not assumed --
+#
+#   gate_target_dir 'git -C /aaa push origin && git -C /bbb push origin' \
+#                   /fallback "$GATE_RE_GIT_PUSH"          -> /aaa
+#
+# -- and the direction matters to a reader even though the BOUND does not: it is
+# the EARLIEST push's tree that is in force for every segment, so the last
+# `-C` in the command is precisely the one that is NOT consulted.
+#
+# Reconstructing a per-segment prefix to ask again was considered and rejected,
+# but NOT for the reason once given here. That reason -- that re-splitting text
+# which `gate_segments` has already segmented would let a NEWLINE inside a
+# quoted argument (`gh pr create --body "...<newline>cd /evil"`) surface as a
+# `cd` segment -- does not reproduce: `gate_segments` flattens a quoted newline
+# to a SPACE, so `gh pr create --body "line1<newline>cd /evil" && git push
+# origin feat/x` splits into exactly two segments, and re-splitting either of
+# them returns that same segment unchanged. Re-splitting is idempotent and no
+# `cd` segment appears.
+#
+# The obstacle that DOES exist is the `break` above. Handed a prefix that ends
+# at segment N, `gate_target_dir` still answers for the first matching segment
+# inside that prefix rather than for N, so the per-segment question cannot be
+# asked at all without changing the shared helper -- which is a change to every
+# gate that calls it, not to this one.
+#
+# The exposure is narrow either way: the positional branch is read from the
+# segment itself, so `target_dir` only decides the `symbolic-ref` fallback for a
+# push that OMITS the branch, and only when one command pushes from two
+# different trees.
 
 # Resolved lazily and memoised: a command whose remote is not `origin` must not
 # print the "gh not installed" note, which is what hoisting this above the walk
 # would do.
+#
+# BOTH ARMS are memoised, via `gh_probed` rather than via `gh_bin`. Keying the
+# memo on `gh_bin` alone memoised only SUCCESS: on a machine without `gh`,
+# `gh_bin` stays empty, so every gateable segment re-ran the lookup and re-printed
+# the note, and `git push origin a && git push origin b && git push origin c`
+# emitted it three times. The note is a debug aid for ONE decision -- "this gate
+# could not check anything on this machine" -- so it is stated once per command.
 gh_bin=""
+gh_probed=0
 resolve_gh() {
-  [ -n "$gh_bin" ] && return 0
+  if [ "$gh_probed" -eq 1 ]; then
+    [ -n "$gh_bin" ] && return 0
+    return 1
+  fi
+  gh_probed=1
   # $GH_BIN, when set and executable, wins — this is the mock injection point
   # for smoke tests. Otherwise look up on PATH. When gh is missing, pass through
   # with a stderr debug note rather than failing closed.
@@ -149,6 +184,12 @@ parse_push_args() {
   # have cut is no longer in `args` to begin with — and a `push` after one of
   # them is now its own segment with its own turn in the walk, which is the
   # whole point.
+  # Pinned by "orphan-push: -u, redirected, on the merged branch": without this
+  # strip `git push -u origin >/tmp/log` parses `>/tmp/log` as the positional
+  # BRANCH, gh answers an empty list for it, and the gate exits 0 on a push to a
+  # merged branch. (`git push origin feat/merged >/tmp/log` does NOT
+  # discriminate -- the branch is already filled by then and the stray token is
+  # dropped -- which is why the case omits the branch.)
   args="${args%%>*}"
 
   # Tokenise. Single-quoted args stay together by best effort; an exotic case
@@ -219,11 +260,22 @@ parse_push_args() {
   # through.
   [ "$remote" = "origin" ] || return 1
 
-  # `git push origin :branch` (or `git push origin --delete branch`) is an
-  # explicit deletion request, not a content push — let it through. Likewise
-  # `git push origin <sha>:<branch>` (force-push from a specific sha) — we
-  # cannot safely reason about whether the destination ref is the merged PR's
-  # old head without parsing refspecs, so we pass through.
+  # `git push origin :branch` is an explicit deletion request, not a content
+  # push — let it through. Likewise `git push origin <sha>:<branch>`
+  # (force-push from a specific sha) — we cannot safely reason about whether the
+  # destination ref is the merged PR's old head without parsing refspecs, so we
+  # pass through.
+  #
+  # `git push origin --delete branch` is NOT covered here and does NOT pass
+  # through, contrary to what this comment used to claim: `--delete` sits in the
+  # valueless-flag list above, so it is skipped and `branch` lands in `$branch`
+  # as an ordinary positional, which then blocks like any content push. Left as
+  # is deliberately. Deleting the merged branch again is a no-op on GitHub (the
+  # merge already deleted it), so the false block costs nothing real, whereas
+  # teaching the flag list to swallow its argument would hand every `--delete`
+  # spelling a pass-through the `:branch` arm grants only after reading a
+  # refspec. If it ever needs to pass, the fix is a `--delete`-specific arm
+  # here, not a change to the flag list.
   case "$branch" in
     :*|*:*) return 1 ;;
   esac
@@ -232,7 +284,13 @@ parse_push_args() {
   # alone, or `git push -u origin` with no branch), derive the current branch
   # from the resolved target dir.
   if [ -z "$branch" ]; then
-    branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
+    # `</dev/null`: this runs inside a `while IFS= read -r` loop whose stdin IS
+    # the `gate_segments` process substitution, so a callee that reads stdin
+    # would consume segments the walk has not judged yet. `symbolic-ref` does
+    # not read stdin today; the fence is here so that stays a property of the
+    # CALL SITE rather than of the callee. No case can pin it -- the failure it
+    # forecloses does not exist yet -- which is why it is stated here.
+    branch=$(git -C "$target_dir" symbolic-ref --short HEAD </dev/null 2>/dev/null || echo "")
   fi
 
   # Still no branch (detached HEAD, non-git dir) — nothing to gate.
@@ -263,8 +321,10 @@ judge_push() {
   # `gh pr list` exits non-zero on auth failure / network error. We treat that
   # as "couldn't check" and pass through with a debug note — same fail-open
   # posture as the missing-gh branch.
+  # `</dev/null` for the same reason as the `symbolic-ref` call above: the walk
+  # that reaches here is reading `gate_segments` on stdin.
   pr_json=$("${gh_bin}" pr list --head "$branch" --state merged --limit 1 \
-              --json number,mergedAt,headRefName,title 2>/dev/null || true)
+              --json number,mergedAt,headRefName,title </dev/null 2>/dev/null || true)
 
   if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
     echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2
