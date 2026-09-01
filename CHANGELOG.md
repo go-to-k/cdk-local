@@ -1,3 +1,10 @@
+## [0.147.22](https://github.com/go-to-k/cdk-local/compare/v0.147.21...v0.147.22) (2026-09-01)
+
+
+### Bug Fixes
+
+* **test:** require the own-throw branch in the STS relay fence; hoist in-body dynamic imports ([#613](https://github.com/go-to-k/cdk-local/issues/613), [#615](https://github.com/go-to-k/cdk-local/issues/615)) ([#644](https://github.com/go-to-k/cdk-local/issues/644)) ([0358879](https://github.com/go-to-k/cdk-local/commit/03588794b83efb164d8c7df9bdf157ca6193a5d2))
+
 ## [0.147.21](https://github.com/go-to-k/cdk-local/compare/v0.147.20...v0.147.21) (2026-08-28)
 
 
