@@ -19,21 +19,24 @@ and colliding on the same file. The run does not end at the last merge: the retr
 stage folds what this run taught you back into this skill's files, while the
 evidence still exists.
 
-## Launch mode: compute it before stage 0
+## Launch mode: main checkout, or already inside a worktree
 
 Every worktree instruction below assumes the launch location is the MAIN
 checkout. Launched from a linked worktree instead (an Orca/ADE workspace, or a
 session that `cd`-ed into `.claude/worktrees/<x>`), `git worktree add` NESTS a
 worktree inside one, and deleting the outer workspace takes the inner directory,
 its uncommitted work and its git registration with it (go-to-k/cdk-local#635).
-Run the one-line probe at the top of §3, state the answer in the opening report,
-and pass it into every lane dispatch. `IN-PLACE` changes four things and nothing
-else: ONE issue rather than a batch (§3); create no worktree, work on the branch
-already checked out here (§5); remove no worktree and delete no branch, so
-`/merge-pr` stops after its step 4 (§9, §10-d); and pull the main checkout
-through `git -C`, because `main` is checked out THERE (§9). Adopting a tree you
-did not create needs the ownership probes in §3 first — a peer's live lane is a
-lane, not a workspace.
+COMPUTE which one you are in AT THE TOP OF STAGE 3: the one-line probe sits
+there (`references/triage.md` holds the ONLY copy of it), and §3 is the first
+place the answer is used. State the answer in the opening report — the first
+message you write after running the probe, before any lane starts — and pass it
+into every lane dispatch. `IN-PLACE` changes four things and nothing else: ONE
+issue rather than a batch (§3); create no worktree, work on the branch already
+checked out here (§5); remove no worktree and delete no branch, so `/merge-pr`
+stops after its step 4 (§9, §10-d); and pull the main checkout through
+`git -C`, because `main` is checked out THERE (§9). Adopting a tree you did not
+create needs the ownership probes in §3 first — a peer's live lane is a lane,
+not a workspace.
 
 ## How this skill is packaged (read this before stage 0)
 

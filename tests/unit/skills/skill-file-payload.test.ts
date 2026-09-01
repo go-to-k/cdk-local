@@ -39,13 +39,13 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 26,092 B (hunt-bugs, 2026-08-31)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~7 KB at the 2026-08-28 split; re-measured 11,066 B on 2026-09-01 (934 B of margin)
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~7 KB at the 2026-08-28 split; re-measured 11,306 B on 2026-09-01, review round 4 (694 B of margin)
 // The re-measurement is the point, not trivia: the orchestrator grew to within
 // 934 B of its cap while this comment still quoted the at-split figure, so nobody
 // adding a paragraph could see how little room was left. Re-measure it whenever
 // the orchestrator is edited -- a cap with an unmeasured margin is one nobody can
 // plan against.
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 32,000 B (implement.md, 2026-09-01, review round 3)
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 33,572 B (implement.md, 2026-09-01, review round 4)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -59,7 +59,7 @@ const MIN_REFERENCE_FILES = 6;
 // at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
 // (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
 // stage file changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 90_000; // re-derived 2026-09-01 (review round 3) at the final tree: corpus 118,751 B, largest implement.md 32,000 B, so the property needs a floor above 118,751 - 32,000 = 86,751. The 88,000 held here still cleared it, but by only 1,249 B -- the same thin margin that let 78,000 and then 86,000 lapse silently on 2026-08-31 -- so it is raised to 90,000: 3,249 B of margin, with ~28 KB (118,751 - 90,000 = 28,751 B) of narrative compression headroom left below the floor. Re-measure BOTH numbers whenever a stage file changes size materially; a lapsed floor is not a weaker guard but a SILENT one
+const MIN_REFERENCE_CORPUS_BYTES = 90_000; // re-derived 2026-09-01 (review round 4) at the final tree: corpus 120,739 B, largest implement.md 33,572 B, so the property needs a floor above 120,739 - 33,572 = 87,167. 90,000 clears that by 2,833 B and is left UNCHANGED -- it was raised from 88,000 one round earlier, when 78,000 and then 86,000 had lapsed silently on 2026-08-31, and it still holds. ~31 KB (120,739 - 90,000 = 30,739 B) of narrative compression headroom remains below the floor. Re-measure BOTH numbers whenever a stage file changes size materially; a lapsed floor is not a weaker guard but a SILENT one
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })

@@ -148,8 +148,13 @@ lines stay exactly as written, and the same two values ride the command as
 # Measured: with a file already there carrying `Dup-check:`, a command whose
 # heredoc omits that line exits 0 and then overwrites it, filing the
 # marker-less body. Reusing one slug for a second finding is exactly how that
-# happens. (The reverse cannot: a blocked call runs nothing, so a marker-less
-# file can only exist if a marked command wrote it.)
+# happens. The REVERSE is reachable too, and it costs a FALSE BLOCK: run that
+# same slug a THIRD time with a properly marked heredoc and the gate returns
+# rc=2, because it reads the STALE marker-less file on disk in preference to
+# the heredoc about to replace it -- the refusal is about a stale READABLE
+# file, not a missing marker (measured 2026-09-01, here and in cdkd). Nor does
+# a marker-less file need a gated writer: a plain
+# `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
@@ -305,8 +310,22 @@ the one the gate missed. This session's hooks lane makes the gate match in
 COMMAND POSITION and judge the matched SEGMENT; driven against that copy the
 chained form is refused (rc=2) and the allowance for `git fetch origin &&
 git switch main` still passes (rc=0). The protection is that FIXED gate. Until
-`fix/body-file-gate-fallback` (go-to-k/cdk-local#637) merges to `main` -- check with `git log origin/main --oneline -1 -- .claude/hooks/main-tree-branch-gate.sh` --, re-run `git rev-parse --show-toplevel`
-immediately before the switch and confirm it is this lane's tree.
+`fix/body-file-gate-fallback` (go-to-k/cdk-local#639) merges to `main`, re-run
+`git rev-parse --show-toplevel` immediately before the switch and confirm it is
+this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
+commit subject on the file. That subject today opens
+`fix(hooks): see a gated verb behind if/while/sudo/xargs/case ...`, which reads
+like exactly this command-position fix while that same `main` copy still passes
+the chained form -- believe it and you retire the anchor early:
+
+```bash
+git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_args
+```
+
+`0` means the fix is NOT on `main` and the anchor still stands (measured
+2026-09-01); non-zero means it landed and the anchor can be retired.
+`gate_verb_args` strips the verb off the MATCHED segment, so it exists only in
+the fixed copy -- the same grep against go-to-k/cdk-local#639's head prints 2.
 
 **Build BEFORE the first test run, and read a fresh worktree's failures with that
 in mind.** A worktree starts with no `dist/`; any test spawning the built CLI
