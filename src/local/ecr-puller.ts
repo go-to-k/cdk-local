@@ -7,6 +7,7 @@ import {
 } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { buildStsClientConfig } from '../utils/profile-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
@@ -288,6 +289,7 @@ export async function pullEcrImage(imageUri: string, options: EcrPullOptions): P
   // When `assumed` is set, the ECR client uses those temporary
   // credentials; otherwise the default credential chain.
   const ecr = new ECRClient({
+    ...buildProxyClientConfig({ profile: options.profile }),
     region: parsed.region,
     // Assumed-role creds (the `ecrRoleArn` path) take precedence; otherwise
     // authenticate as the supplied `--profile` rather than the default chain.

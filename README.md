@@ -146,6 +146,19 @@ cdkl invoke --from-cfn-stack --assume-role              # auto-assume deployed e
 
 Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with the deployed physical IDs / exports, decrypts `AWS::SSM::Parameter::Value` entries (kept off the `docker run` argv), and resolves same-stack ECR `ContainerUri` to the deployed image. `Fn::GetAtt` in the Lambda's own env is recovered from the deployed function's resolved `Environment.Variables` via `lambda:GetFunctionConfiguration`. Full resolution rules: [docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack](docs/cli-reference.md#cloudformation-driven-env-recovery---from-cfn-stack).
 
+## Corporate proxy — `HTTPS_PROXY` / `NO_PROXY`
+
+cdk-local routes its own AWS SDK calls (`--from-cfn-stack` state reads, `--assume-role` STS, ECR auth, deployed-S3 origins, KeyValueStore reads, credential resolution — SSO included) through the standard proxy environment variables: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, with `NO_PROXY` exemptions. Lowercase spellings (`https_proxy`, `no_proxy`) are honored too and win over the uppercase ones. With none of them set, nothing changes.
+
+`NO_PROXY` matching is stricter than you may expect:
+
+- An entry is an **exact** hostname match unless it starts with `.` or `*`, which make it a suffix match — `NO_PROXY=example.com` does NOT exempt `api.example.com`; `NO_PROXY=.example.com` does.
+- Entries split on commas AND whitespace; an entry may carry a `:port` (then it applies only to that port); a bare `*` disables proxying entirely. CIDR ranges are not supported.
+
+Against a TLS-terminating (interception) proxy, routing alone is not enough — the proxy re-signs the traffic with its own CA, so also point `NODE_EXTRA_CA_CERTS` at that CA bundle.
+
+Two boundaries: the Docker daemon pulls images through its own egress (configure the daemon's proxy separately), and your handler / task code running inside containers reads whatever proxy variables you pass it (e.g. via `--env-vars`) — cdk-local does not inject them.
+
 ## Environment variables — `--env-vars`
 
 Every command except `start-cloudfront` (whose CloudFront Functions and Lambda@Edge have no env vars) accepts `--env-vars <file>`, a SAM-shape JSON file that overlays the container's environment — point a Lambda function or ECS container at a different backend for a local run, or supply a value the synthesized template only knows as an intrinsic:

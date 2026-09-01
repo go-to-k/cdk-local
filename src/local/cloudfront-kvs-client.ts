@@ -11,6 +11,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-cloudfront-keyvaluestore';
 import { getLogger } from '../utils/logger.js';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import {
   describeAwsFailureForWarn,
   flattenToOneLine,
@@ -69,6 +70,7 @@ export function createDeployedKvsDataSource(
   options: CreateDeployedKvsDataSourceOptions
 ): KvsDataSource {
   const client = new CloudFrontKeyValueStoreClient({
+    ...buildProxyClientConfig(),
     region: options.region ?? 'us-east-1',
     ...(options.credentials !== undefined && { credentials: options.credentials }),
   });
@@ -121,6 +123,7 @@ export async function resolveDeployedKvsArnByName(
   options: { region?: string; credentials?: KvsClientCredentials } = {}
 ): Promise<{ arn: string; id?: string } | undefined> {
   const client = new CloudFrontClient({
+    ...buildProxyClientConfig(),
     region: options.region ?? 'us-east-1',
     ...(options.credentials !== undefined && { credentials: options.credentials }),
   });

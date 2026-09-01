@@ -1,3 +1,4 @@
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { describeS3OriginDomain } from './cloudfront-resolver.js';
 
 /**
@@ -65,6 +66,7 @@ async function defaultGetOrigins(
   const { CloudFrontClient, GetDistributionConfigCommand } =
     await import('@aws-sdk/client-cloudfront');
   const client = new CloudFrontClient({
+    ...buildProxyClientConfig(),
     region: 'us-east-1', // CloudFront is global; the control plane lives in us-east-1.
     ...(options.credentials && {
       credentials: {

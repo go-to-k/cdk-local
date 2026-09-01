@@ -44,6 +44,24 @@ import {
  *   work as before.
  */
 
+// Issue #634: `buildProxyClientConfig` reads the proxy environment LIVE, so a
+// dev machine with `HTTPS_PROXY` set would flip exact-equality assertions all
+// over the suite (e.g. `buildStsClientConfig({...})` growing a
+// `requestHandler`). Scrub every standard spelling once at worker start;
+// suites that test the proxy path set the variables per test and restore.
+for (const key of [
+  'https_proxy',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'HTTP_PROXY',
+  'all_proxy',
+  'ALL_PROXY',
+  'no_proxy',
+  'NO_PROXY',
+]) {
+  delete process.env[key];
+}
+
 const originalViFn = vi.fn.bind(vi);
 type MockableImplementation =
   | ((this: unknown, ...args: any[]) => any)

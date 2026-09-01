@@ -77,7 +77,7 @@ rm -f zip-lambda.zip
 
 
 # Test 1 — asset-backed Lambda echoes event + env var
-echo "==> [1/6] Invoking EchoHandler with default empty event"
+echo "==> [1/8] Invoking EchoHandler with default empty event"
 RESULT_1=$(capture ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -86,7 +86,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/6] Invoking EchoHandler with --event payload"
+echo "==> [2/8] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -98,7 +98,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override (Parameters)
-echo "==> [3/6] Invoking EchoHandler with --env-vars Parameters block"
+echo "==> [3/8] Invoking EchoHandler with --env-vars Parameters block"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
@@ -112,7 +112,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — --env-vars function-specific key by display path (issue #27)
-echo "==> [4/6] Invoking EchoHandler with --env-vars display-path key"
+echo "==> [4/8] Invoking EchoHandler with --env-vars display-path key"
 DP_ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
@@ -126,7 +126,7 @@ echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
 }
 
 # Test 5 — inline (Code.ZipFile) Lambda
-echo "==> [5/6] Invoking InlineHandler (Code.ZipFile)"
+echo "==> [5/8] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
@@ -140,7 +140,7 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
 # Test 6 — ZIP-FILE asset Lambda (Code.fromAsset of a .zip). `aws:asset:path`
 # points at `asset.<hash>.zip`, so cdkl must extract it before bind-mounting.
 # A successful echo with the zip-only env var proves the extracted code ran.
-echo "==> [6/6] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
+echo "==> [6/8] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
 ZIP_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${ZIP_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"zip":"asset"}' > "${ZIP_EVENT}"
@@ -155,5 +155,67 @@ echo "${RESULT_6}" | grep -q '"greeting":"from-zip-asset"' || {
   exit 1
 }
 
+# Test 7 — HTTPS_PROXY is honored for AWS SDK calls (issue #634). A tiny
+# recording proxy (OS-assigned port; proxy-recorder.mjs) captures CONNECT
+# request lines and answers 502. With HTTPS_PROXY pointing at it, the
+# `--assume-role` STS AssumeRole call must be tunneled THROUGH the proxy —
+# proving the built CLI reads the proxy environment end-to-end. The 502 makes
+# AssumeRole fail; `cdkl invoke` warns and falls back to the shell
+# credentials (dummy env creds here, resolved locally — no network), so the
+# invoke itself still completes and proves the fallback stays graceful.
+echo "==> [7/8] HTTPS_PROXY routes the STS AssumeRole call through the proxy"
+PROXY_LOG=$(mktemp)
+PROXY_PORT_FILE=$(mktemp)
+node proxy-recorder.mjs "${PROXY_LOG}" > "${PROXY_PORT_FILE}" &
+PROXY_PID=$!
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${ZIP_EVENT}" "${CDKL_STDERR}" "${PROXY_LOG}" "${PROXY_PORT_FILE}"; kill "${PROXY_PID}" 2>/dev/null || true' EXIT
+for _ in $(seq 1 50); do
+  [ -s "${PROXY_PORT_FILE}" ] && break
+  sleep 0.1
+done
+PROXY_PORT=$(cat "${PROXY_PORT_FILE}")
+[ -n "${PROXY_PORT}" ] || {
+  echo "FAIL: proxy recorder did not report a port"
+  exit 1
+}
+RESULT_7=$(capture env \
+  HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}" \
+  AWS_ACCESS_KEY_ID=cdkl-integ-dummy AWS_SECRET_ACCESS_KEY=cdkl-integ-dummy AWS_REGION=us-east-1 \
+  ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler \
+  --assume-role arn:aws:iam::123456789012:role/cdkl-proxy-integ --no-pull)
+echo "    response: ${RESULT_7}"
+grep -q '^CONNECT sts\.us-east-1\.amazonaws\.com:443 ' "${PROXY_LOG}" || {
+  echo "FAIL: expected a recorded CONNECT to sts.us-east-1.amazonaws.com:443; proxy log:"
+  cat "${PROXY_LOG}"
+  exit 1
+}
+echo "${RESULT_7}" | grep -q '"greeting":"hello"' || {
+  echo "FAIL: expected the invoke to complete via the graceful shell-creds fallback, got: ${RESULT_7}"
+  exit 1
+}
+
+# Test 8 — NO_PROXY exempts the call: same command, same proxy env, but a
+# bare `*` disables proxying entirely, so NO CONNECT may be recorded. The
+# AssumeRole then goes DIRECT to real AWS with the dummy creds (a fast
+# unauthenticated failure — needs outbound network, which this suite already
+# requires for the docker pull), warns, and falls back the same way.
+echo "==> [8/8] NO_PROXY='*' keeps the same call OFF the proxy"
+: > "${PROXY_LOG}"
+RESULT_8=$(capture env \
+  HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}" NO_PROXY='*' \
+  AWS_ACCESS_KEY_ID=cdkl-integ-dummy AWS_SECRET_ACCESS_KEY=cdkl-integ-dummy AWS_REGION=us-east-1 \
+  ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler \
+  --assume-role arn:aws:iam::123456789012:role/cdkl-proxy-integ --no-pull)
+echo "    response: ${RESULT_8}"
+if [ -s "${PROXY_LOG}" ]; then
+  echo "FAIL: NO_PROXY='*' was set but the proxy still recorded a CONNECT:"
+  cat "${PROXY_LOG}"
+  exit 1
+fi
+echo "${RESULT_8}" | grep -q '"greeting":"hello"' || {
+  echo "FAIL: expected the invoke to complete via the graceful shell-creds fallback, got: ${RESULT_8}"
+  exit 1
+}
+
 echo ""
-echo "==> All 6 local-invoke tests passed"
+echo "==> All 8 local-invoke tests passed"

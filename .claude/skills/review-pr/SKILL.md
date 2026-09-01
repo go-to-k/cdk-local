@@ -55,6 +55,7 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
      - _Credential / secret material_
        - `src/utils/role-arn.ts`
        - `src/utils/profile-resolver.ts`
+       - `src/utils/aws-proxy.ts`
        - `src/cli/commands/local-profile-credentials-file.ts`
        - `src/local/ecs-secrets-resolver.ts`
        - `src/local/ssm-parameter-resolver.ts`

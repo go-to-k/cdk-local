@@ -181,6 +181,7 @@ UP_PATHS=(
   # Credential / secret material
   'src/utils/role-arn.ts'
   'src/utils/profile-resolver.ts'
+  'src/utils/aws-proxy.ts'
   'src/cli/commands/local-profile-credentials-file.ts'
   'src/local/ecs-secrets-resolver.ts'
   'src/local/ssm-parameter-resolver.ts'

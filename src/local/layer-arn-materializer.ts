@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -360,6 +361,7 @@ async function defaultLambdaClientFactory(): Promise<
   const { LambdaClient } = await import('@aws-sdk/client-lambda');
   return (region, credentials) =>
     new LambdaClient({
+      ...buildProxyClientConfig(),
       region,
       ...(credentials && {
         credentials: {
@@ -380,7 +382,7 @@ async function defaultStsClientFactory(): Promise<(region: string) => StsSendCli
   // assumes default-credential-chain access to the layer's account);
   // when --profile threading is extended to layer materialization, this
   // becomes a `buildStsClientConfig({ region, profile })` call.
-  return (region) => new STSClient({ region });
+  return (region) => new STSClient({ ...buildProxyClientConfig(), region });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

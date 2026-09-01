@@ -1205,6 +1205,17 @@ compute-locally category for Lambda + API Gateway).
   time window). alb / ecs serve kinds still to
   come), etc.
 - `src/assets/` — asset manifest loader + docker-build for container Lambdas.
+- `src/utils/` — cross-cutting helpers, notably aws-proxy (issue #634:
+  `buildProxyClientConfig()` — the proxy-aware AWS SDK client seam. The SDK
+  does not read `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` on its own, so
+  EVERY AWS SDK client construction in `src/**` spreads this fragment —
+  directly, or via `buildStsClientConfig`, which spreads it internally. It
+  is `{}` when no proxy variable is set (zero behavior change); when one is
+  set it carries a per-request NO_PROXY-routing `requestHandler` plus a
+  default-chain `credentials` provider whose `clientConfig` threads the
+  handler into the SSO / SSOOIDC hops the service client's own handler
+  never reaches. `tests/unit/utils/aws-proxy-client-audit.test.ts` fences
+  the sweep repo-wide; both helpers are re-exported from `src/internal.ts`).
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
   schema so host-side state can flow into cdk-local unchanged.
