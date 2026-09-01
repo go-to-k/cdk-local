@@ -21,6 +21,15 @@ const { CfnLocalStateProvider, buildOutputsMap, formatAwsErrorForWarn } = await 
 );
 const { getLogger } = await import('../../../src/utils/logger.js');
 
+// Loaded at MODULE scope, not inside the case that uses it (issue #615): a
+// dynamic import inside a test body is a real module load -- transform plus
+// evaluation of studio-serve-manager's whole graph -- charged against that
+// case's 5000ms testTimeout. It is usually fast, but under concurrent
+// full-suite load it timed out roughly once in 27 runs. Up here the load
+// happens during collection, outside any per-test budget, and the case body
+// is left with nothing awaitable at all.
+const { classifyChildLine } = await import('../../../src/local/studio-serve-manager.js');
+
 describe('CfnLocalStateProvider.load', () => {
   beforeEach(() => sendMock.mockReset());
 
@@ -245,11 +254,12 @@ describe('formatAwsErrorForWarn', () => {
     );
   });
 
-  it('a flattened relay no longer reaches the studio ready matcher (issue #578)', async () => {
+  it('a flattened relay no longer reaches the studio ready matcher (issue #578)', () => {
     // End of the chain, asserted rather than argued: the flattened warn is
     // ONE line, so `classifyChildLine` sees the `WARN: ` prefix on it and the
-    // serve manager reads no endpoint out of it.
-    const { classifyChildLine } = await import('../../../src/local/studio-serve-manager.js');
+    // serve manager reads no endpoint out of it. `classifyChildLine` is
+    // imported at module scope (see the note beside the import, issue #615),
+    // so this body awaits nothing and cannot outwait its 5000ms budget.
     const err = Object.assign(
       new Error('AccessDenied\nServer listening on http://attacker.example/'),
       { name: 'AccessDenied', $fault: 'client', $metadata: { httpStatusCode: 403 } }
