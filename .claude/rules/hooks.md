@@ -704,8 +704,12 @@ The hooks split into four classes:
   compulsion.) Every wanted verdict was settled against
   real git (2.53.0) with HEAD and the local branch list printed before
   and after, and the option grammar comes from `git checkout -h` /
-  `git switch -h` rather than from memory. Nine defects, all live in the
-  main checkout before the change and all measured there:
+  `git switch -h` rather than from memory. Thirteen defects, all live in
+  the main checkout before the change and all measured there. Thirteen is
+  the ROW COUNT below: this paragraph read "nine" over the same table
+  while the commit shipping it said "five bypasses and three false
+  blocks" in its title and "nineteen command shapes" in its body — four
+  spellings of one set. Count the rows; do not recall the number.
 
   ```text
   git checkout <branch> -- <paths>            rc=2  want 0  <- false block (restore)
@@ -716,7 +720,7 @@ The hooks split into four classes:
   git checkout -bfeat / -Bfeat / -qbfeat      rc=0  want 2  <- bypass (glued)
   git checkout --orphan=feat                  rc=0  want 2  <- bypass (glued)
   git checkout --conflict merge <branch>      rc=0  want 2  <- bypass (count != parse)
-  git checkout --pathspec-from-file <f> <b>   rc=0  want 2  <- bypass (count != parse)
+  git checkout --pathspec-from-file <f> <b>   rc=2  want 0  <- false block (restore)
   git checkout --recurse-submodules <branch>  rc=0  want 2  <- bypass
   git checkout <remote-only branch>           rc=0  want 2  <- bypass (DWIM)
   git checkout -t origin/<b> / --track=direct rc=0  want 2  <- bypass (DWIM)
@@ -733,19 +737,114 @@ The hooks split into four classes:
   a lane's branch usually FIRST appears in a checkout, so a local-only
   `show-ref` was blind to the commonest spelling of what the gate guards.
 
+  The `--pathspec-from-file` row is a CORRECTION rather than a find: the
+  first pass filed that flag with `--conflict` as merely value-taking,
+  wrote `want 2` here, and pinned rc=2 in a test. Backwards — the
+  pathspecs come FROM THE FILE, so the trailing token is the tree-ish and
+  the command is a RESTORE (measured: "Updated 1 path from <sha>", HEAD
+  stayed on `main`, for the spaced and the `=` spelling alike). A wrong
+  `want` in a table is worse than a missing row, because the test written
+  from it defends the defect.
+
+  **That parse then shipped a REGRESSION and five more holes, closed
+  2026-09-02.** Measured against a fixture main checkout with a
+  CONFIGURED `origin`, a SLASH-named remote, a ref under an unconfigured
+  remote and a real local branch; `OLD` is cdkd's `origin/main` copy of
+  the gate, so the first four rows read as regressions rather than as
+  plain failures:
+
+  ```text
+  command                                     OLD  NEW  now  want
+  git checkout <branch> 2>/dev/null             2    0    2     2
+  git checkout <branch> >/dev/null 2>&1         2    0    2     2
+  git checkout <branch> # switch lane           2    0    2     2
+  git checkout <branch> --                      2    0    2     2
+  git checkout -q <branch> 2>&1                 0    0    2     2
+  git checkout - 2>/dev/null                    0    0    2     2
+  git checkout --orph <b> / --or <b>            0    0    2     2
+  git checkout --trac origin/<b>                0    0    2     2
+  git checkout <b on a SLASH-named remote>      0    0    2     2
+  git switch -- main                            2    2    0     0
+  git checkout <ref under an UNCONFIGURED rem>  0    2    0     0
+  git checkout --no-guess <remote-only>         0    2    0     0
+  git checkout --pathspec-from-file <f> <b>     0    2    0     0
+  control: git checkout <branch>                2    2    2     2
+  ```
+
+  Four causes. (1) **The input is ARGV, not shell WORDS** — a
+  redirection, its spaced target, a trailing `&` and a `#` comment are
+  the SHELL's, and git never sees them; a new `gate_argv` in
+  `_command-match.sh` drops them, leaving `gate_tokens` for callers that
+  want the raw words. (2) **A positional COUNT relaxed a verdict on an
+  incomplete parse, twice** — first a flag's VALUE read as a positional,
+  then a shell WORD. The count cannot simply be removed: git's own
+  grammar makes `git checkout <b> <path>` a restore and `git checkout
+  <b>` a switch, so only the extra OPERAND tells them apart. The rule is
+  now that an INCOMPLETE parse may not ALLOW — an unresolvable or
+  ambiguous option sets `parse_certain=0` and the verdict is a
+  conservative block naming it. (3) **git accepts any unambiguous PREFIX
+  of a long name** (measured: `--orph newb`, `--or newb`, `--trac
+  origin/<b>` all move HEAD), which `-h` does not show — so each verb now
+  carries its COMPLETE long-option table with per-name arity, since a
+  prefix can only be resolved against the whole name set. (4) **`--` is
+  checkout's pathspec separator and switch's end-of-options** — `git
+  checkout <b> --` switches (no operand follows), and `git switch -- main`
+  prints "Already on 'main'" while `git switch -- <feature>` switches.
+
+  **The DWIM list is the CONFIGURED remotes, stripped per remote**, which
+  is what git does and what cdk-real-drift's copy already did. A remote
+  NAME may contain a slash (`git remote add a/b <url>` is accepted), so a
+  fixed `lstrip=3` renders its `deep-only` as `b/deep-only` while git
+  DWIMs the bare name — a fail-open; and a ref under an UNCONFIGURED
+  remote is not DWIMed at all ("pathspec did not match", HEAD stays) — a
+  false block. Dropping SYMREFS replaces the old literal `HEAD`
+  exclusion and is the same rule stated properly. `--no-guess` turns the
+  DWIM off entirely and the arm is skipped for it. The list does NOT
+  check uniqueness: with one name on two remotes git refuses while the
+  gate blocks — the conservative direction, so the behaviour stays, but
+  no comment may claim the list holds only names one remote carries.
+
+  **A truncated argument list is refused, not parsed.** An unbalanced
+  quote cannot be split into words, and `gate_tokens` returned the prefix
+  it managed silently — `-b agent's-branch` yielded just `-b`, read as a
+  bare `git checkout`, and PASSED. It now REPORTS the truncation and the
+  gate blocks naming the cause.
+
   Two shapes are ALLOWED for measured reasons that look like gaps and are
   not. `git checkout HEAD` creates nothing ("Your branch is up to date",
-  HEAD stays), yet the DWIM lookup reads `refs/remotes/` and every clone
-  carries the SYMBOLIC `refs/remotes/origin/HEAD`, which `lstrip=3`
-  renders as the bare word `HEAD` — so the literal `HEAD` is excluded, or
-  the gate would refuse a read-only command. The pattern is the PREFIX
-  `refs/remotes/` and NOT `refs/remotes/*/*`: a `*` does not cross a `/`
-  there, so the two-star form lists `origin/feat` and misses
-  `origin/topic/nested` while git DWIMs the nested name identically —
-  fail-open for most branch names in this flow. And `-p` / `--ours` /
-  `--theirs` leave HEAD alone (`-p` prints a diff; the other two print
-  "Updated 0 paths from the index"), so blocking them would be the same
-  false block as the `<branch> -- <paths>` one.
+  HEAD stays), and it is excluded by the SYMREF rule rather than by a
+  literal — a branch cannot be NAMED `HEAD` anyway. And `-p` / `--ours` /
+  `--theirs` / `--pathspec-from-file` leave HEAD alone, so blocking them
+  would be the same false block as the `<branch> -- <paths>` one.
+  `--pathspec-file-nul` is deliberately NOT in that restore set: git
+  refuses it without `--pathspec-from-file`, so it never appears in an
+  accepted command this arm would judge.
+
+  **A block must not name an operation git will not perform.**
+  `git checkout -d <branch>` / `--detach <branch>` really DETACHES
+  (measured: HEAD went to a raw sha) and the block announced it as
+  "switches to feature branch '<b>'". The verdict is unchanged; the
+  wording now matches.
+
+  **Known bound, in the message rather than the verdict**: `gate_segments`
+  truncates a segment at a `}`, so `git switch -c 'feat/{id}'` blocks
+  correctly while the message and its `git worktree add … -b feat/{id`
+  recipe name a TRUNCATED branch. The cause is in the shared splitter
+  every gate calls, so it is recorded rather than worked around here.
+
+  **This repo's `main_tree_of` has NO memo** and forks `git worktree
+  list` once per matching segment, while cdkd's carries a one-entry memo
+  plus an out-variable (a command substitution would put both memo
+  variables in a subshell). The divergence used to live only in a commit
+  message, so neither repo's reader could see it; the argument for this
+  gate is "one function with two homes", which makes the difference worth
+  stating in both.
+
+  **This repo keeps the gate's cases in `gate-command-recognition.test.sh`**
+  while cdkd and cdk-real-drift each keep a per-gate
+  `main-tree-branch-gate.test.sh`. The choice is deliberate, and the
+  consequence for a porter is that a case added in one repo has no
+  same-named home in the other — a port has to be told where to land.
 
   **Correction to an older rationale.** `git checkout <sha>` was
   justified here as "read-only inspection". That is false: it rewrites

@@ -288,6 +288,21 @@ git -C "$repo" worktree add -q -b wt-lane "$MT_WT" 2>/dev/null
 # bare word `HEAD`, and `git checkout HEAD` creates nothing, so a DWIM list that
 # keeps it false-blocks a read-only command.
 MT_SHA=$(git -C "$repo" rev-parse HEAD)
+# The remotes must be CONFIGURED, not merely have refs under their prefix: git
+# DWIMs `<name>` only for a remote it knows about. Measured -- with
+# `refs/remotes/ghostremote/ghost` present and no `ghostremote` remote,
+# `git checkout ghost` answers "pathspec 'ghost' did not match any file(s) known
+# to git" and HEAD stays. A URL is enough; nothing is ever fetched here.
+git -C "$repo" remote add origin https://example.invalid/origin.git
+# A remote whose NAME contains a SLASH. `git remote add a/b <url>` is accepted
+# (measured), and `deep-only` on it lands at `refs/remotes/a/b/deep-only`, which
+# a fixed `lstrip=3` renders as `b/deep-only` while git DWIMs plain `deep-only`
+# ("Switched to a new branch 'deep-only'", HEAD moved) -- a FAIL-OPEN.
+git -C "$repo" remote add a/b https://example.invalid/ab.git
+git -C "$repo" update-ref refs/remotes/a/b/deep-only "$MT_SHA"
+# A ref under a remote that is NOT configured -- what a removed remote or a hand
+# `update-ref` leaves behind. Real git does not DWIM it (see above).
+git -C "$repo" update-ref refs/remotes/ghostremote/ghost "$MT_SHA"
 git -C "$repo" update-ref refs/remotes/origin/remote-only "$MT_SHA"
 git -C "$repo" update-ref refs/remotes/origin/topic/nested-remote-only "$MT_SHA"
 git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/remote-only
@@ -452,18 +467,17 @@ run_case_msg "main-tree-branch: bundled -fb <b> names the branch" 2 main-tree-br
 # consume the branch that follows it.
 run_case "main-tree-branch: --conflict <style> <branch> blocked"       2 main-tree-branch-gate.sh 'git checkout --conflict merge feature'
 run_case "main-tree-branch: --conflict=<style> <branch> blocked"       2 main-tree-branch-gate.sh 'git checkout --conflict=merge feature'
-run_case "main-tree-branch: --pathspec-from-file <f> <branch> blocked" 2 main-tree-branch-gate.sh 'git checkout --pathspec-from-file /dev/null feature'
+# `--pathspec-from-file` is a RESTORE marker, not merely a value-taking flag, and
+# this row used to pin the opposite: the pathspecs come FROM THE FILE, so the
+# trailing token is the tree-ish to restore FROM. Measured with a real one-line
+# pathspec file -- "Updated 1 path from <sha>", HEAD stayed on `main`, for both
+# the spaced and the `=` spelling.
+run_case "main-tree-branch: --pathspec-from-file <f> <branch> is a restore" 0 main-tree-branch-gate.sh 'git checkout --pathspec-from-file /dev/null feature'
+run_case "main-tree-branch: --pathspec-from-file=<f> <branch> is a restore" 0 main-tree-branch-gate.sh 'git checkout --pathspec-from-file=/dev/null feature'
 run_case "main-tree-branch: --recurse-submodules <branch> blocked"     2 main-tree-branch-gate.sh 'git checkout --recurse-submodules feature'
 # CONTROL: consuming a flag value must not turn an ALLOWED target into a block.
 run_case "main-tree-branch: --conflict <style> main still allowed"     0 main-tree-branch-gate.sh 'git checkout --conflict merge main'
 
-# --- RESTORE MODES MUST NOT BE BLOCKED ----------------------------------------
-#
-# `-p` / `--ours` / `--theirs` restore FILES -- measured, `git checkout -p feat`
-# printed a diff and left HEAD on `main`, and `--ours` / `--theirs` printed
-# "Updated 0 paths from the index". Blocking them is the same false block as the
-# `<branch> -- <paths>` one, and it is exactly what the naive fix for the `-f`
-# defect ("any single positional after flags is a switch target") introduces.
 # --- THE CHECKOUT ERE MUST CARRY THE FLAG RUN ---------------------------------
 #
 # Every checkout case above puts the DECISIVE segment in a `git checkout ...`
@@ -499,10 +513,242 @@ run_case_msg "main-tree-branch: -c \"<name with a space>\" kept whole" 2 main-tr
 run_case_msg "main-tree-branch: switch @{-1} is the previous branch" 2 main-tree-branch-gate.sh \
   'git switch @{-1}' "previous branch"
 
+# --- RESTORE MODES MUST NOT BE BLOCKED ----------------------------------------
+#
+# `-p` / `--ours` / `--theirs` restore FILES -- measured, `git checkout -p feat`
+# printed a diff and left HEAD on `main`, and `--ours` / `--theirs` are refused
+# outright without paths. Blocking them is the same false block as the
+# `<branch> -- <paths>` one, and it is exactly what the naive fix for the `-f`
+# defect ("any single positional after flags is a switch target") introduces.
+# The header used to sit ~40 lines above with no cases under it at all.
+#
+# The PATHSPEC in the last four is a real LOCAL BRANCH NAME on purpose. With
+# `README.md` the `--ours` / `--theirs` rows were vacuous -- deleting them from
+# the restore list left the suite green, because `README.md` resolves to no
+# branch and the command passed on the ordinary "not a branch" arm.
 run_case "main-tree-branch: checkout -p <branch> is a restore"         0 main-tree-branch-gate.sh 'git checkout -p feature'
 run_case "main-tree-branch: checkout --patch <branch> is a restore"    0 main-tree-branch-gate.sh 'git checkout --patch feature'
-run_case "main-tree-branch: checkout --ours <path>"                    0 main-tree-branch-gate.sh 'git checkout --ours README.md'
-run_case "main-tree-branch: checkout --theirs <path>"                  0 main-tree-branch-gate.sh 'git checkout --theirs README.md'
+run_case "main-tree-branch: checkout --ours <branch-named path>"       0 main-tree-branch-gate.sh 'git checkout --ours feature'
+run_case "main-tree-branch: checkout --theirs <branch-named path>"     0 main-tree-branch-gate.sh 'git checkout --theirs feature'
+run_case "main-tree-branch: checkout -2 <branch-named path>"           0 main-tree-branch-gate.sh 'git checkout -2 feature'
+run_case "main-tree-branch: checkout -3 <branch-named path>"           0 main-tree-branch-gate.sh 'git checkout -3 feature'
+
+# --- SHELL WORDS ARE NOT ARGUMENTS --------------------------------------------
+#
+# `gate_tokens` splits SHELL WORDS, and a redirection, a trailing `&` and a `#`
+# comment are all words the SHELL owns -- git never sees any of them. Feeding
+# them to an option parse inflated the positional count and read a real switch as
+# a file restore. Every command below moves HEAD for real (measured against git
+# 2.53.0 with HEAD printed before and after: `main` -> `feature`, and
+# `main` -> `other` for the `-` one), and the first three were scored rc=0 by the
+# gate while its own `origin/main` predecessor scored them 2 -- a REGRESSION.
+run_case "git checkout <branch> 2>/dev/null blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature 2>/dev/null'
+run_case "git checkout <branch> >/dev/null 2>&1 blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature >/dev/null 2>&1'
+run_case "git checkout <branch> # <comment> blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature # switch lane'
+run_case "git checkout -q <branch> 2>&1 blocked" 2 main-tree-branch-gate.sh \
+  'git checkout -q feature 2>&1'
+run_case "git checkout - 2>/dev/null blocked" 2 main-tree-branch-gate.sh \
+  'git checkout - 2>/dev/null'
+# The SPACED redirection target is a separate word and must be dropped WITH its
+# operator; dropping only the `>` leaves `/dev/null` as a phantom pathspec.
+run_case "git checkout <branch> > /dev/null (spaced target) blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature > /dev/null'
+run_case "git checkout <branch> 2>>log blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature 2>>log'
+# CONTROL, and it is what stops "drop every word after the first positional":
+# a real restore beside a redirection must STILL pass.
+run_case "git checkout <branch> -- <path> 2>/dev/null still allowed" 0 main-tree-branch-gate.sh \
+  'git checkout feature -- README.md 2>/dev/null'
+run_case "git checkout <branch> <path> # <comment> still allowed" 0 main-tree-branch-gate.sh \
+  'git checkout feature README.md # restore one file'
+# A QUOTED `#` is an argument, not a comment, so a branch name that starts with
+# one must still be judged rather than swallowed.
+run_case "git checkout '#not-a-comment' allowed (quoted # is an argument)" 0 main-tree-branch-gate.sh \
+  "git checkout '#not-a-comment'"
+
+# --- A `--` WITH NOTHING AFTER IT IS NOT A PATHSPEC ---------------------------
+#
+# Measured: `git checkout feature --` prints "Switched to branch
+# 'feature'" and HEAD moves, while `git checkout feature -- f.txt`
+# updates the file and HEAD stays. So the rule is "a pathspec OPERAND exists",
+# not "a `--` was seen" -- the reading that shipped one fix earlier.
+run_case "git checkout <branch> -- (nothing after) blocked" 2 main-tree-branch-gate.sh \
+  'git checkout feature --'
+run_case "git checkout main -- (nothing after) allowed" 0 main-tree-branch-gate.sh \
+  'git checkout main --'
+run_case "git checkout -- (no positional at all) allowed" 0 main-tree-branch-gate.sh \
+  'git checkout --'
+# `git switch` has NO pathspec form (`usage: git switch [<options>] [<branch>]`),
+# so `--` there only ends the options. Measured: `git switch -- main` prints
+# "Already on 'main'" and `git switch -- feature` switches. Applying
+# checkout's grammar to both verbs made the first a FALSE BLOCK ("no resolvable
+# target") in all three repos, including the `origin/main` predecessor.
+run_case "git switch -- main allowed (switch has no pathspec form)" 0 main-tree-branch-gate.sh \
+  'git switch -- main'
+run_case "git switch -- <feature> blocked (it really switches)" 2 main-tree-branch-gate.sh \
+  'git switch -- feature'
+
+# --- GIT ACCEPTS UNAMBIGUOUS PREFIXES OF A LONG NAME --------------------------
+#
+# `git checkout -h` does not show it, but git's parse-options resolves any
+# unambiguous prefix. Measured: `--orph newb` and `--or newb` both print
+# "Switched to a new branch 'newb'"; `--trac origin/remote-only` creates local
+# `remote-only`; `git switch --creat newb` creates `newb`. All four scored rc=0
+# against the gate before the option table carried the whole grammar.
+run_case_msg "git checkout --orph <b> blocked (prefix of --orphan)" 2 main-tree-branch-gate.sh \
+  'git checkout --orph newb' "creates new feature branch 'newb'"
+run_case_msg "git checkout --or <b> blocked (shortest unambiguous prefix)" 2 main-tree-branch-gate.sh \
+  'git checkout --or newb' "creates new feature branch 'newb'"
+run_case_msg "git checkout --trac <remote-ref> blocked (prefix of --track)" 2 main-tree-branch-gate.sh \
+  'git checkout --trac origin/remote-only' "creates new feature branch 'remote-only'"
+run_case_msg "git switch --creat <b> blocked (prefix of --create)" 2 main-tree-branch-gate.sh \
+  'git switch --creat newb' "creates new feature branch 'newb'"
+# The prefix table has to work in the ALLOW direction too, or it is only a
+# fail-closed accident: both of these resolve to a restore / a no-DWIM read and
+# must pass. Without prefix resolution they would be unknown options and block.
+run_case "git checkout --pathspec-from-f <f> <branch> allowed (prefix, restore)" 0 main-tree-branch-gate.sh \
+  'git checkout --pathspec-from-f /dev/null feature'
+run_case "git checkout --no-gu <remote-only> allowed (prefix of --no-guess)" 0 main-tree-branch-gate.sh \
+  'git checkout --no-gu remote-only'
+
+# --- AN OPTION THE GRAMMAR CANNOT RESOLVE MAY NOT ALLOW -----------------------
+#
+# The general form of the two defects a positional COUNT produced: an unmodelled
+# flag moves every positional after it, so the walk does not know where the
+# switch target is. Every ALLOWING arm depends on that knowledge and the blocking
+# arms do not, so an unresolved option blocks. Today it fires only on commands
+# git itself refuses -- measured, `--creat` under checkout is "error: unknown
+# option `creat'" and `--pat` is "error: ambiguous option: pat" -- so it costs
+# nothing now; it is what keeps a FUTURE git option from re-opening the hole.
+run_case_msg "git checkout --frobnicate main blocked (unknown long option)" 2 main-tree-branch-gate.sh \
+  'git checkout --frobnicate main' "cannot resolve"
+run_case_msg "git checkout --pat main blocked (AMBIGUOUS prefix)" 2 main-tree-branch-gate.sh \
+  'git checkout --pat main' "cannot resolve"
+run_case_msg "git checkout -Z main blocked (unknown short letter)" 2 main-tree-branch-gate.sh \
+  'git checkout -Z main' "cannot resolve"
+run_case_msg "git checkout --creat main blocked (switch-only name under checkout)" 2 main-tree-branch-gate.sh \
+  'git checkout --creat main' "cannot resolve"
+# CONTROLS: a KNOWN option beside `main` must still pass, in the long, the
+# negated and the short spelling. Without these, "block whenever any flag is
+# present" scores green on the four cases above.
+run_case "git checkout --quiet main allowed" 0 main-tree-branch-gate.sh \
+  'git checkout --quiet main'
+run_case "git checkout --no-overwrite-ignore main allowed (negated form)" 0 main-tree-branch-gate.sh \
+  'git checkout --no-overwrite-ignore main'
+run_case "git checkout -q main allowed" 0 main-tree-branch-gate.sh \
+  'git checkout -q main'
+run_case "git switch --discard-changes main allowed (switch-only name)" 0 main-tree-branch-gate.sh \
+  'git switch --discard-changes main'
+
+# --- EVERY VALUE-TAKING FLAG, NOT A SAMPLE OF THE ARM -------------------------
+#
+# `--conflict` and `--pathspec-from-file` had cases while `--unified` and
+# `--inter-hunk-context` -- the other two members of the same arity class under
+# `checkout` -- had none, and `-U` had none either. A value-taking flag with no
+# case is an untested member of a class that has produced three defects. Each
+# command below really switches (the flag's value is consumed by git, so the
+# trailing name is the branch); if the table gives the flag arity 0 instead, the
+# value becomes a phantom positional and the command reads as a restore.
+run_case "git checkout --unified 3 <branch> blocked (value consumed)" 2 main-tree-branch-gate.sh \
+  'git checkout --unified 3 feature'
+run_case "git checkout --unified=3 <branch> blocked (glued value)" 2 main-tree-branch-gate.sh \
+  'git checkout --unified=3 feature'
+run_case "git checkout --inter-hunk-context 2 <branch> blocked (value consumed)" 2 main-tree-branch-gate.sh \
+  'git checkout --inter-hunk-context 2 feature'
+run_case "git checkout -U 3 <branch> blocked (short value consumed)" 2 main-tree-branch-gate.sh \
+  'git checkout -U 3 feature'
+run_case "git checkout -U3 <branch> blocked (short glued value)" 2 main-tree-branch-gate.sh \
+  'git checkout -U3 feature'
+run_case "git switch --conflict merge <branch> blocked (value consumed)" 2 main-tree-branch-gate.sh \
+  'git switch --conflict merge feature'
+# ...and the CONTROL for the whole arity class: an ALLOWED command must not be
+# turned into a block by the consumption. `git checkout --unified 3 main` really
+# stays on main.
+run_case "git checkout --unified 3 main allowed" 0 main-tree-branch-gate.sh \
+  'git checkout --unified 3 main'
+
+# --- OPTIONAL-VALUE FLAGS CONSUME NOTHING -------------------------------------
+#
+# `-t` / `--track` / `--recurse-submodules` take an OPTIONAL value, so the SPACED
+# form does NOT eat the next token -- measured, `git checkout -t
+# origin/remote-only` creates local `remote-only`, i.e. the ref is a start-point
+# POSITIONAL. The glued and `=` spellings were fenced; the SPACED `--track` was
+# not.
+run_case_msg "git checkout --track <remote-ref> (spaced) blocked" 2 main-tree-branch-gate.sh \
+  'git checkout --track origin/remote-only' "creates new feature branch 'remote-only'"
+run_case_msg "git switch --track <remote-ref> (spaced) blocked" 2 main-tree-branch-gate.sh \
+  'git switch --track origin/remote-only' "creates new feature branch 'remote-only'"
+
+# --- THE DWIM LIST IS THE CONFIGURED REMOTES, STRIPPED PER REMOTE -------------
+#
+# A remote NAME may contain a slash, so a fixed `lstrip=3` is wrong: `deep-only`
+# on remote `a/b` lstrips to `b/deep-only` while git DWIMs plain `deep-only`
+# (measured: "Switched to a new branch 'deep-only'", HEAD moved) -- a FAIL-OPEN.
+# And a ref under a remote that is not CONFIGURED is not DWIMmed at all
+# (measured: "pathspec 'ghost' did not match any file(s) known to git", HEAD
+# stays) -- a FALSE BLOCK for a `refs/remotes/` scan.
+run_case "git checkout <branch on a SLASH-named remote> blocked" 2 main-tree-branch-gate.sh \
+  'git checkout deep-only'
+run_case "git checkout <ref under an UNCONFIGURED remote> allowed" 0 main-tree-branch-gate.sh \
+  'git checkout ghost'
+# `--no-guess` turns the DWIM off, so git answers "pathspec did not match" and
+# HEAD stays -- measured against the SAME name that moves HEAD without the flag.
+# It does not disable the LOCAL branch lookup: `--no-guess feature` switches.
+run_case "git checkout --no-guess <remote-only> allowed" 0 main-tree-branch-gate.sh \
+  'git checkout --no-guess remote-only'
+run_case "git checkout --no-guess <local branch> still blocked" 2 main-tree-branch-gate.sh \
+  'git checkout --no-guess feature'
+run_case "git checkout --guess <remote-only> blocked (the default)" 2 main-tree-branch-gate.sh \
+  'git checkout --guess remote-only'
+run_case "git checkout --no-guess --guess <remote-only> blocked (last wins)" 2 main-tree-branch-gate.sh \
+  'git checkout --no-guess --guess remote-only'
+
+# --- A BLOCK MUST NOT NAME AN OPERATION GIT WILL NOT PERFORM ------------------
+#
+# `git checkout -d <branch>` / `--detach <branch>` DETACHES (measured: HEAD went
+# to a raw sha, not to the branch), and the block announced it as "switches to
+# feature branch '<b>'". The VERDICT was right and is unchanged; the wording was
+# describing something git does not do.
+run_case_msg "git checkout -d <local branch> is reported as a detach" 2 main-tree-branch-gate.sh \
+  'git checkout -d feature' "detaches HEAD" "switches to feature branch"
+run_case_msg "git checkout --detach <local branch> is reported as a detach" 2 main-tree-branch-gate.sh \
+  'git checkout --detach feature' "detaches HEAD" "switches to feature branch"
+run_case_msg "git checkout --detach <remote-only> is reported as a detach" 2 main-tree-branch-gate.sh \
+  'git checkout --detach remote-only' "detaches HEAD" "switches to it"
+# The `d` cluster letter under SWITCH had no case either, only the long spelling.
+run_case_msg "git switch -d blocked and reported as a detach" 2 main-tree-branch-gate.sh \
+  'git switch -d' "detaches HEAD"
+# The documented ASYMMETRY, kept deliberately: the sha form under checkout passes.
+run_case "git checkout --detach <sha> allowed (documented asymmetry)" 0 main-tree-branch-gate.sh \
+  "git checkout --detach $MT_SHA"
+
+# --- A BARE `git switch` ------------------------------------------------------
+#
+# A git error, but blocked conservatively rather than reasoned about. It had no
+# case, so deleting the arm was invisible.
+run_case_msg "bare git switch blocked conservatively" 2 main-tree-branch-gate.sh \
+  'git switch' "no resolvable target"
+
+# --- AN UNSPLITTABLE ARGUMENT LIST IS REFUSED, NOT TRUNCATED ------------------
+#
+# An UNBALANCED quote cannot be split into shell words at all, and the splitter
+# used to return the prefix it managed silently: `-b agent's-branch` yielded the
+# single token `-b`, which read as a bare `git checkout` and PASSED -- a
+# FAIL-OPEN on a command that creates a branch (measured: `git checkout -b
+# agent\'s-br` prints "Switched to a new branch 'agent's-br'"). Refusing is the
+# deliberate choice: the text is a shell syntax error in the first place
+# (measured: "unexpected EOF while looking for matching `''").
+run_case_msg "git checkout -b <unbalanced quote> blocked, not truncated" 2 main-tree-branch-gate.sh \
+  "git checkout -b agent's-branch" "unbalanced quote"
+run_case_msg "git checkout <branch>'s blocked (fails CLOSED)" 2 main-tree-branch-gate.sh \
+  "git checkout feature's" "unbalanced quote"
+# CONTROL: a BALANCED quote around a name with an apostrophe in it is ordinary
+# and must reach the normal arms, not the refusal.
+run_case "git checkout \"main\" (balanced quotes) still allowed" 0 main-tree-branch-gate.sh \
+  'git checkout \"main\"'
 
 # --- FAIL-CLOSED on a library that predates GATE_EMBEDDING_TOKEN --------------
 #
@@ -945,7 +1191,7 @@ done
 # reads `fail: 0`. No suite in this repo had one, so the only thing standing
 # between a gutted loop and a green run was somebody noticing the number move.
 # Raise it when cases are added; never lower it to make a red run green.
-CASE_FLOOR=213
+CASE_FLOOR=269
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

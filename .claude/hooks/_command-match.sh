@@ -640,8 +640,82 @@ gate_tokens() {
     rest="${BASH_REMATCH[4]}"
     [ -n "$rest" ] || break
   done
+  # TRUNCATION IS REPORTED, not swallowed. An UNBALANCED quote cannot be split
+  # into words at all: `"[^"]*"` needs its closing quote and the bare-run
+  # alternative excludes quote characters, so the pattern stops dead at the
+  # opening one. Measured before this line existed: `gate_tokens "a'unbalanced"`
+  # printed NOTHING and returned 0, and `gate_tokens "-b agent's-branch"`
+  # printed only `-b` -- so a caller parsing an option grammar saw a command
+  # with no arguments and allowed it. Silence is the one answer that is wrong
+  # here; a caller can now refuse, or fall back to a coarser scan, but it can no
+  # longer mistake a truncation for a short command line.
+  [ -z "${rest//[[:space:]]/}" ]
+}
+
+# gate_argv <text>
+#
+# The ARGV a shell would hand the command, one token per line: the SHELL's own
+# words are dropped -- a redirection and, when it is not glued, its target; a
+# trailing `&`; and everything from a comment `#` onwards. Returns 1 having
+# printed nothing when the text cannot be split into words at all (the
+# `gate_tokens` truncation above), so a caller can refuse rather than parse a
+# fragment.
+#
+# WHY THIS IS A SEPARATE FUNCTION FROM `gate_tokens`, and why an option parse
+# must call THIS one. A gate that reads an option grammar is reading ARGV -- the
+# vector the command itself receives -- and a shell WORD is not an ARGUMENT.
+# `2>/dev/null`, `>`, `/dev/null`, `&` and `# switch lane` are all words, and
+# git never sees any of them. Measured against the gate that first parsed
+# `gate_tokens` output directly, with a branch that existed locally:
+#
+#   git checkout <branch> 2>/dev/null      rc=0, want 2
+#   git checkout <branch> >/dev/null 2>&1  rc=0, want 2
+#   git checkout <branch> # switch lane    rc=0, want 2
+#
+# -- every one a command that really moves HEAD, waved through because the extra
+# WORDS were counted as extra ARGUMENTS and the command therefore read as a file
+# restore. Callers that genuinely want the shell's words (a `-C` scan, a heredoc
+# probe) keep `gate_tokens`; callers that want git's argv use this.
+#
+# The comment strip is deliberately NOT in `gate_segments`: that splitter feeds
+# every gate in this library, and widening it is a change to all of them. Here
+# the effect is bounded to callers that asked for argv.
+GATE_REDIR_TOKEN='^([0-9]*(>>|>[|]|>&|>|<<<|<<-|<<|<&|<)|&>>|&>)(.*)$'
+
+gate_argv() {
+  local words tok want_target=0
+  words=$(gate_tokens "$1") || return 1
+  while IFS= read -r tok; do
+    # `gate_tokens` never emits an empty token (its pattern needs one character
+    # at least), so the single blank line a `printf` of empty output produces is
+    # the only thing this skips.
+    [ -n "$tok" ] || continue
+    if [ "$want_target" -eq 1 ]; then
+      # The spaced target of the redirection operator just seen (`> /dev/null`).
+      want_target=0
+      continue
+    fi
+    case "$tok" in
+      # A word STARTING with `#` opens a comment, and the shell discards the
+      # rest of the line. Quoting protects a real argument: the token still
+      # carries its quotes here, so `'#branch'` starts with `'` and survives.
+      '#'*) return 0 ;;
+      '&') continue ;;
+    esac
+    if [[ "$tok" =~ $GATE_REDIR_TOKEN ]]; then
+      # `2>&1` and `>/dev/null` carry their target GLUED; a bare `>` or `2>`
+      # takes the next word as its target.
+      [ -n "${BASH_REMATCH[3]}" ] || want_target=1
+      continue
+    fi
+    printf '%s\n' "$tok"
+  done <<EOF
+$words
+EOF
   return 0
 }
+
+
 
 # gate_verb_args <cmd> <verb-ere>
 #
