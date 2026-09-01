@@ -152,7 +152,17 @@ print(data.get("cwd") or "")
 # against `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`. Measured with a payload carrying no
 # `session_id`: a plain value gave `ctx, sys, sys` while a leading tab, an
 # embedded tab and an embedded newline each gave `ctx, ctx, ctx`.
-sid = data.get("session_id") or os.environ.get("ENV_SID") or "shared"
+# The TYPE is checked, not just the truthiness. `session_id` arrives from the
+# harness as JSON, so nothing stops it being a number or a list, and `.replace`
+# on one raises -- which killed this block before it printed line 3. The shell
+# below still reached the right answer (an empty line 3 falls back to `shared`),
+# so the verdict was never wrong; what it printed was a Python TRACEBACK on the
+# stderr of this hook, on EVERY turn. A Stop hook that spews a traceback each time the
+# turn ends is its own defect, whatever the verdict.
+sid = data.get("session_id")
+if not isinstance(sid, str):
+    sid = ""
+sid = sid or os.environ.get("ENV_SID") or "shared"
 sid = sid.replace("\t", " ").replace("\n", " ").replace("\r", " ")
 print(sid or "shared")
 ')

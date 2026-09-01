@@ -238,16 +238,40 @@ The hooks split into four classes:
   contexts (`closes #N` / `(#N)` / fenced code blocks / GitHub URLs
   / backtick code spans) pass through; bare `Must-fix #N` /
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
-  line-numbered offender output. When the named body file cannot be
-  READ, or exists but the same command REWRITES it, the gate extracts
-  the HEREDOC BODY the command is about to write there and scans that
-  (go-to-k/cdk-local#637). The hook runs BEFORE the command, so in the
-  one-call `heredoc -> file -> --body-file` publishing shape the path is
-  absent or still holds the PREVIOUS body; skipping was a silent pass,
-  and reading the stale file looked like a working gate while judging
-  text nobody was submitting — in both directions, since a stale file
-  can also BLOCK a clean submission over a line that will not exist,
-  which the author cannot clear.
+  line-numbered offender output.
+
+  What it scans is *the body the command is about to submit*, which is
+  not always the file on disk (go-to-k/cdk-local#637). The hook runs
+  BEFORE the command, so in the one-call `heredoc -> file ->
+  --body-file` publishing shape the path is absent or still holds the
+  PREVIOUS body; skipping was a silent pass, and reading the stale file
+  looked like a working gate while judging text nobody was submitting —
+  in both directions, since a stale file can also BLOCK a clean
+  submission over a line that will not exist, which the author cannot
+  clear. There are THREE write shapes and the gate now distinguishes
+  all three:
+
+  | the command… | scans the heredoc chunks | scans the file |
+  | --- | --- | --- |
+  | REWRITES the path (`>`, `tee` without `-a`) | yes | no — the disk copy is discarded |
+  | APPENDS to it (`>>`, `tee -a`) | yes | yes — the disk copy is the FIRST HALF of the body |
+  | does not write it | n/a | yes |
+
+  The append row is the one that regressed. A first version matched
+  `>>` / `tee -a` with the same predicate as `>` and then scanned the
+  heredoc INSTEAD of the file, which made the gate WEAKER than the code
+  it replaced: an append of a clean chunk onto a file already holding
+  `Must-fix #1` exited 0, where `origin/main` and the branch's own
+  first commit both exited 2.
+
+  Two further properties of the extraction, each pinned by a case.
+  EVERY heredoc writing the path is collected, in command order — the
+  loop used to stop after the first, so a body assembled from two
+  chunks was judged on chunk one alone. And "a heredoc with an EMPTY
+  body" is reported separately from "no heredoc at all" (found-ness
+  rides the exit status, not the emptiness of stdout): inferring one
+  from the other made an empty rewrite of an offending file exit 2,
+  which is the unclearable false block this fallback exists to end.
 
   It does NOT scan the whole command, and that is the one place this
   gate must diverge from the `issue-*-gate.sh` siblings' fallback even
@@ -272,16 +296,18 @@ The hooks split into four classes:
   Two edges worth knowing. The redirect terminator class is
   `[\s;&|)<]` rather than `\s`, because the narrow class missed
   `>f<<EOF` — the TIGHT spelling of the very shape the fallback exists
-  for — as well as `>f;` and `>f&&`. And a body written by something
-  other than a heredoc (`printf > f`, `python3 -c ... > f`) cannot be
-  extracted, so it falls back to whatever is on disk, and to nothing at
-  all when the path is absent; that limit is asserted in both
-  directions rather than left to be rediscovered.
+  for — as well as `>f;` and `>f&&`; all three arms now carry a case,
+  since narrowing the class back to `[\s<]` used to leave the suite
+  green. And a body written by something other than a heredoc
+  (`printf > f`, `python3 -c ... > f`) cannot be extracted, so it falls
+  back to whatever is on disk, and to nothing at all when the path is
+  absent; that limit is asserted in both directions rather than left to
+  be rediscovered.
 
   Note the SAME-repo qualified `go-to-k/cdk-local#N` form is NOT
   allow-listed in a body — `/work-issues` §10-c names a full URL as the
   only body spelling — so it is refused here on purpose. Covered by
-  `.claude/hooks/pr-body-item-number-gate.test.sh` (24 cases).
+  `.claude/hooks/pr-body-item-number-gate.test.sh` (33 cases).
 
 - **`issue-dup-check-gate.sh`** blocks `gh issue create` — and a
   `gh api repos/<owner>/<repo>/issues` that is actually a MINT (an
@@ -561,6 +587,30 @@ The hooks split into four classes:
   names the resolved target dir + the operation + the corrective
   `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`
   recipe.
+
+  The VERDICT is read per SEGMENT, from `gate_verb_args` — the same
+  constant that armed the gate — not from the whole command. It used to
+  be parsed by an awk walker that skipped to the FIRST `git` token and
+  read the subcommand there, so in a chained form that first `git` is a
+  DIFFERENT command: the walker read `sub=fetch`, fell to a fail-open
+  `*)` arm, and exited 0. Measured in the main checkout on `main`:
+
+  ```text
+  git switch -c wt-probe origin/main                       rc=2  BLOCKED
+  git fetch origin && git switch -c wt-probe origin/main    rc=0  PASS   <- bypass
+  git status && git checkout -b wt-probe                    rc=0  PASS   <- bypass
+  ```
+
+  `/work-issues` prints the chained spelling, so the bypass sat on the
+  mandated path. Every matching segment is judged now, not just one, so
+  `git switch main && git switch -c feat` blocks on its second half;
+  the main-tree test and the `.markgate.yml` opt-in are likewise
+  evaluated against the tree THAT segment resolves to, since a `-C` or
+  a preceding `cd` can put two segments of one command in two trees.
+  Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
+  main-tree block pins the chained blocks, the per-segment allowances,
+  the linked-worktree pass and the quoted-mention pair (135 cases in
+  that file overall).
 
 ## 3. Markgate-backed gates
 
@@ -1312,7 +1362,15 @@ checks, so the path skip was redundant AND the entire defect. Note the
 POLARITY — the same path is right as an IDENTIFIER of the session's own
 lane, which is how it is used now.
 
-Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 86 cases)
+The `session_id` the cadence keys on arrives as JSON, so the payload's
+value is checked for TYPE and not merely for truthiness before it is
+normalised. A number or a list raised in the Python block, killing it
+before it printed its third line; the shell then fell back to `shared`,
+so the VERDICT stayed right while a traceback went to the hook's stderr
+on every single turn. A case asserts stderr is empty for that payload —
+no case that reads stdout can see it.
+
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 88 cases)
 carries five fixture traps worth knowing before editing it, because each
 cost a case a wrong-reason pass:
 

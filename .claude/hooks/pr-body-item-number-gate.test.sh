@@ -18,11 +18,15 @@
 #           and the skill in direct contradiction
 #   - BLOCK for chained spellings, PASS for a command that merely QUOTES the verb
 #   - both halves of the go-to-k/cdk-local#637 window, below
-#   - the two FALSE-BLOCK controls that rule out a whole-command scan, and the
+#   - the three FALSE-BLOCK controls that rule out a whole-command scan, and the
 #     `printf > f` limit the heredoc extraction cannot reach
+#   - the third write shape, an APPEND, where the disk copy is the FIRST HALF of
+#     the submitted body and both halves must be scanned
+#   - every heredoc chunk writing the path, not merely the first, and an EMPTY
+#     heredoc body as distinct from no heredoc at all
 #
 # Measured rather than asserted (2026-08-31, bash 5.3): an always-`exit 0` stub
-# fails 10 of these and an always-`exit 2` stub fails 13, so neither direction
+# fails 16 of these and an always-`exit 2` stub fails 16, so neither direction
 # can pass vacuously. Keep these numbers current when cases are added -- a stale
 # count in a comment that exists to prove non-vacuity is itself the thing it
 # warns about.
@@ -221,6 +225,99 @@ PRINTF_OVER_STALE="printf 'Must-fix 4: clean now\\n' > $ITEMNUM
 gh pr create --body-file $ITEMNUM"
 run "KNOWN LIMIT: a printf-written body falls back to the stale file" "$PRINTF_OVER_STALE" 2
 
+
+# --- An APPEND is not a rewrite ---------------------------------------------
+# `>>` / `tee -a` leave the file in place: what gets submitted is the DISK COPY
+# FOLLOWED BY the new chunk. The first version of the fallback matched `>>` and
+# `tee -a` with the same predicate as `>` and then scanned the heredoc INSTEAD of
+# the file, which made this gate WEAKER than the code it replaced -- measured on
+# an append over an offending file: `origin/main` 2, this lane's first commit
+# (5ddab33) 2, the tip 0. Both halves are asserted, since a hook that scanned
+# only the file would satisfy the first case and a hook that scanned only the
+# heredoc would satisfy the second.
+APPENDED=$(write_file appended.md "# Title
+
+Must-fix #1: already on disk
+")
+APPEND_OVER_OFFENDER="cat >> $APPENDED <<'EOF'
+Must-fix 2: clean appended chunk
+EOF
+gh pr create --body-file $APPENDED"
+run "an APPEND still scans the file it appends to" "$APPEND_OVER_OFFENDER" 2
+APPEND_TEE="tee -a $APPENDED <<'EOF'
+Must-fix 2: clean appended chunk
+EOF
+gh pr create --body-file $APPENDED"
+run "...and 'tee -a' is an append too" "$APPEND_TEE" 2
+APPEND_BAD_CHUNK="cat >> $CLEAN <<'EOF'
+Must-fix #8: the appended chunk offends
+EOF
+gh pr create --body-file $CLEAN"
+run "an APPEND also scans the chunk being appended" "$APPEND_BAD_CHUNK" 2
+# The false-BLOCK control for the append path, carrying a `#N` OUTSIDE the body
+# for the same reason the two controls above do: a clean append to a clean file
+# must pass even when the command text around it mentions an issue number.
+APPEND_CLEAN="git commit -m 'address review #3' && cat >> $CLEAN <<'EOF'
+Must-fix 2: clean appended chunk
+EOF
+gh pr create --body-file $CLEAN"
+run "a clean APPEND to a clean file passes" "$APPEND_CLEAN" 0
+
+# --- EVERY heredoc writing the path, not just the first ---------------------
+# The extractor ended its loop with `last;`, so a body assembled from two chunks
+# was judged on the first alone. Measured on the tip: the command below exited 0.
+TWO_CHUNKS="cat > $TMPROOT/two-chunks.md <<'A'
+Must-fix 1: first chunk is clean
+A
+cat >> $TMPROOT/two-chunks.md <<'B'
+Must-fix #9: the offender is in the SECOND chunk
+B
+gh pr create --body-file $TMPROOT/two-chunks.md"
+run "the SECOND heredoc chunk writing the path is scanned too" "$TWO_CHUNKS" 2
+# The control: two clean chunks REWRITING an offending file still pass, so the
+# case above is not passing merely because two heredocs block. It also pins that
+# a multi-chunk rewrite still discards the disk copy.
+TWO_CHUNKS_CLEAN="cat > $ITEMNUM <<'A'
+Must-fix 1: first chunk is clean
+A
+cat >> $ITEMNUM <<'B'
+Must-fix 2: second chunk is clean
+B
+gh pr create --body-file $ITEMNUM"
+run "...while two CLEAN chunks rewriting an offending file pass" "$TWO_CHUNKS_CLEAN" 0
+
+# --- An EMPTY heredoc body is not "no heredoc" ------------------------------
+# The extractor printed only `if @body`, so an empty body was indistinguishable
+# from no heredoc at all and the caller fell back to the STALE file: an empty
+# rewrite of an offending file exited 2. That is the unclearable false block this
+# whole fallback exists to end -- the author cannot edit a line they are not
+# submitting. Found-ness now rides the exit status.
+EMPTY_REWRITE="cat > $ITEMNUM <<'EOF'
+EOF
+gh pr create --body-file $ITEMNUM"
+run "an EMPTY heredoc rewrite does not fall back to the stale file" "$EMPTY_REWRITE" 0
+# Its control is `KNOWN LIMIT: a printf-written body falls back to the stale
+# file` above: with NO heredoc the fallback must still happen, so the case above
+# cannot be satisfied by simply never reading the file.
+
+# --- The other two widened terminator arms ----------------------------------
+# `>f<<EOF` has a case above; `>f;` and `>f&&` did not, so narrowing the class
+# back to `[\s<]` left the suite green. Both put the redirect at the END of its
+# line, which is exactly where the old `(?:\s|$)` looked correct and was not.
+SEMI_TERM="cat <<'EOF' >$CLEAN;
+# Title
+
+Must-fix #5: semicolon terminator
+EOF
+gh pr create --body-file $CLEAN"
+run "the '>f;' terminator is still scanned" "$SEMI_TERM" 2
+AMP_TERM="cat <<'EOF' >$CLEAN&&
+# Title
+
+Must-fix #6: and-and terminator
+EOF
+gh pr create --body-file $CLEAN"
+run "the '>f&&' terminator is still scanned" "$AMP_TERM" 2
 
 # --- Registration -----------------------------------------------------------
 # A gate nothing invokes is a gate that does not fire, which no behavioural case

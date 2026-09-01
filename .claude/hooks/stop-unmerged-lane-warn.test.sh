@@ -59,6 +59,16 @@ run_hook_sid() {
   printf '%s' "$?" > "$RC_FILE"
 }
 
+# The same call capturing STDERR alone. Every other helper here discards it, so
+# a hook that prints a traceback on every turn reads as perfectly healthy: the
+# verdict on stdout is what they assert and the verdict can be right while the
+# hook is spewing.
+run_hook_stderr() {
+  local dir="$1" hook="$2" stdin="$3"
+  clear_nudge_records
+  printf '%s' "$stdin" | (cd "$dir" && bash "$hook" 2>&1 >/dev/null)
+}
+
 # The same call WITHOUT the reset -- for the cadence cases, which are precisely
 # about what a second invocation does.
 run_hook_keep() {
@@ -657,6 +667,21 @@ check "a LEADING TAB in the env session id still bounds it" "ctx,sys" "$(sid_cad
 check "an EMBEDDED TAB in the env session id still bounds it" "ctx,sys" "$(sid_cadence "$(printf 'a\tb')")"
 check "an EMBEDDED NEWLINE in the env session id still bounds it" "ctx,sys" "$(sid_cadence "$(printf 'a\nb')")"
 check "an UNSET env session id still bounds it" "ctx,sys" "$(sid_cadence '')"
+
+# `session_id` arrives as JSON, so nothing stops the harness sending a number or
+# a list where a string is expected. `.replace` on one RAISES, and the block
+# died before printing its third line -- the shell fell back to `shared`, so the
+# VERDICT stayed right while a Python traceback went to this hook stderr on
+# every single turn. Asserted on stderr, because no case that reads stdout can
+# see it: the two below both pass against the unguarded hook.
+NONSTR_SID="{\"cwd\": \"$REPO/wt-cad-b\", \"session_id\": 12345}"
+check "a NON-STRING session id prints nothing on stderr" "" \
+  "$(run_hook_stderr "$REPO" "$RUN" "$NONSTR_SID")"
+# ...and the control that keeps it honest: a hook that exited before doing
+# anything would also print nothing, so the same payload must still warn.
+clear_nudge_records
+out=$(run_hook_keep "$REPO" "$RUN" "$NONSTR_SID")
+check "...and still warns about the lane" "ctx" "$(channel_of "$out")"
 
 # --- The two channels carry DIFFERENT TEXT. A downgrade changes the READER
 # from the agent to a person, so sending the model's wording ("you are not done:

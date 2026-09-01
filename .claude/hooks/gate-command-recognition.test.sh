@@ -91,6 +91,21 @@ run_case() {
   fi
 }
 
+# The same call from a DIFFERENT cwd -- the linked-worktree half of the
+# main-tree cases below, which are precisely about which TREE the resolved
+# segment lands in.
+run_case_cwd() {
+  local name="$1" want="$2" hook="$3" cwd="$4" cmd="$5" got out payload
+  payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$cwd" "$cmd")
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 \
+    "$HOOKS/$hook" 2>&1); got=$?
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(exit $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n  out: %s\n' "$name" "$want" "$got" "$out"
+  fi
+}
+
 # check-gate guards `git commit` — and ONLY that verb.
 run_case "check-gate: bare commit"            2 check-gate.sh 'git commit -m x'
 run_case "check-gate: add -A && commit"       2 check-gate.sh 'git add -A && git commit -m x'
@@ -125,6 +140,40 @@ run_case "branch-gate: chained commit"        2 branch-gate.sh 'vp run check && 
 run_case "branch-gate: status on main"        0 branch-gate.sh 'git status'
 git -C "$repo" checkout -q feature
 run_case "branch-gate: commit on a feature branch" 0 branch-gate.sh 'git commit -m x'
+
+# main-tree-branch-gate blocks feature-branch creation in the MAIN worktree, and
+# the CHAINED spelling is the one that matters: the gate used to parse its
+# verdict with an awk walker over the whole command, which skipped to the FIRST
+# `git` token, read `sub=fetch`, and fell to a fail-open `*)` arm. Measured
+# against the real hook in the real main checkout on `main`, before the fix:
+# `git switch -c wt-probe origin/main` exited 2 while
+# `git fetch origin && git switch -c wt-probe origin/main` exited 0, and
+# `git status && git checkout -b wt-probe` exited 0 too. `/work-issues` prints
+# the chained spelling, so the bypass was on the mandated path.
+MT_WT="$TMPDIR/wt-lane"
+git -C "$repo" worktree add -q -b wt-lane "$MT_WT" 2>/dev/null
+run_case "main-tree-branch: bare switch -c"        2 main-tree-branch-gate.sh 'git switch -c feat/x origin/main'
+run_case "main-tree-branch: CHAINED switch -c"     2 main-tree-branch-gate.sh 'git fetch origin && git switch -c feat/x origin/main'
+run_case "main-tree-branch: CHAINED checkout -b"   2 main-tree-branch-gate.sh 'git status && git checkout -b feat/x'
+# EVERY matching segment is judged, not just the first: an allowed target in the
+# first half must not license the second.
+run_case "main-tree-branch: allowed then blocked"  2 main-tree-branch-gate.sh 'git switch main && git switch -c feat/x'
+# The allowances, PER SEGMENT. Each is the false-BLOCK direction of the case
+# above it, so a gate that simply blocked every chained `git` would fail here.
+run_case "main-tree-branch: CHAINED switch main"   0 main-tree-branch-gate.sh 'git fetch origin && git switch main'
+run_case "main-tree-branch: CHAINED checkout --"   0 main-tree-branch-gate.sh 'git status && git checkout -- README.md'
+run_case "main-tree-branch: chained sha checkout"  0 main-tree-branch-gate.sh 'git fetch && git checkout 0123456789abcdef'
+run_case "main-tree-branch: worktree add passes"   0 main-tree-branch-gate.sh 'git worktree add .claude/worktrees/x -b x origin/main'
+# The mandated quoted-body false-positive pair. A matcher change is exactly
+# where these regress, and this gate now reads its ARGUMENTS through the matcher
+# too, so both halves are pinned here rather than only in the helper harness.
+run_case "main-tree-branch: double-quoted mention" 0 main-tree-branch-gate.sh 'echo \"next: git switch -c feat/x\"'
+run_case "main-tree-branch: single-quoted mention" 0 main-tree-branch-gate.sh "git commit -m 'then git switch -c feat/x'"
+# The same chained creation inside a LINKED worktree is the sanctioned shape.
+run_case_cwd "main-tree-branch: chained -c in a worktree" 0 main-tree-branch-gate.sh "$MT_WT" 'git fetch origin && git switch -c feat/x origin/main'
+# ...and a `-C` back at the main tree is blocked from anywhere, so the case
+# above is passing on the resolved TREE rather than on the command shape.
+run_case_cwd "main-tree-branch: -C main tree from a worktree" 2 main-tree-branch-gate.sh "$MT_WT" "git fetch && git -C $repo switch -c feat/x"
 
 # markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
 # exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook

@@ -181,49 +181,92 @@ MAX_REPORT=10
 # A file that EXISTS is treated the same way when the command REWRITES it,
 # because then what is on disk is the PREVIOUS body -- the other half of the same
 # window, and the one that reads as a working gate while judging text nobody
-# submitted.
-cmd_writes_path() {
+# submitted. An APPEND is the third case and is NOT the same: the disk copy
+# survives as the first half of the submitted body, so both halves are scanned.
+
+# `>` / `tee` (no `-a`) naming the path: the command REPLACES what is on disk, so
+# the previous body is not part of what gets submitted.
+#
+# The terminator class is not decoration. `(?:\s|$)` alone missed the TIGHT
+# spelling of the very shape this exists for -- `>f<<EOF` -- as well as `>f;` and
+# `>f&&`. Measured here before the widening: an EXISTING clean body file
+# rewritten by `cat >f<<EOF` carrying `Must-fix #1` exited 0. All three arms are
+# pinned by cases.
+#
+# `>` must NOT match the `>` inside `>>`, and `tee` must not match `tee -a`:
+# an APPEND leaves the previous body in place as the FIRST HALF of what is
+# submitted. Treating one as the other is what `cmd_writes_path` did, and it made
+# this gate WEAKER than the code it replaced -- `origin/main` and this lane's own
+# first commit both exited 2 on an append over an offending file where the tip
+# exited 0. Hence two predicates rather than one flag.
+cmd_rewrites_path() {
   local path="$1"
   CMD="$cmd" TARGET="$path" perl -0777 -e '
     my $cmd = $ENV{CMD};
     my $t   = quotemeta($ENV{TARGET});
-    # `>` / `>>` / `tee [-a]` naming the path, quoted or bare. A heredoc body is
-    # written through exactly this redirect (`cat > f <<EOF`), so matching the
-    # redirect covers the heredoc shape without parsing heredocs.
-    # The terminator class is not decoration. `(?:\s|$)` alone missed the TIGHT
-    # spelling of the very shape this exists for -- `>f<<EOF` -- as well as `>f;`
-    # and `>f&&`. Measured here before the widening: an EXISTING clean body file
-    # rewritten by `cat >f<<EOF` carrying `Must-fix #1` exited 0.
-    exit 0 if $cmd =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    # (?<!>) keeps `>>f` out of the `>f` arm while leaving `1>f` / `2>f` in it;
+    # the tee arm spells the flag-less form explicitly.
+    exit 0 if $cmd =~ /(?<!>)>\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 0 if $cmd =~ /\btee\b(?!\s+-a\b)(?:\s+-[^a\s-][^\s]*)*\s+(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
     exit 1;
   ' 2>/dev/null
 }
 
-# The body of the heredoc that writes a given path. Handles both orders
-# (`cat > f <<EOF` / `cat <<EOF > f`), quoted and unquoted delimiters, and
-# `<<-`'s tab-stripped terminator. Prints nothing when the command does not write
-# the path through a heredoc.
-heredoc_body_for() {
+# `>>` / `tee -a` naming the path: the command APPENDS, so the submitted body is
+# whatever is already on disk FOLLOWED BY the new text. Both halves have to be
+# scanned; scanning only the new half is the B1 regression above.
+cmd_appends_path() {
+  local path="$1"
+  CMD="$cmd" TARGET="$path" perl -0777 -e '
+    my $cmd = $ENV{CMD};
+    my $t   = quotemeta($ENV{TARGET});
+    exit 0 if $cmd =~ />>\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 0 if $cmd =~ /\btee\b(?:\s+-[^\s]*)*\s+-a\b(?:\s+-[^\s]*)*\s+(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+    exit 1;
+  ' 2>/dev/null
+}
+
+# EVERY heredoc body that writes a given path, in command order, joined by
+# newlines. Handles both orders (`cat > f <<EOF` / `cat <<EOF > f`), quoted and
+# unquoted delimiters, `<<-`'s tab-stripped terminator, and the append forms.
+#
+# Two things this must report separately, because collapsing them is a
+# false-BLOCK:
+#   - "no heredoc writes this path" -> the caller may fall back to the file
+#   - "a heredoc writes this path and its body is EMPTY" -> there is nothing to
+#     scan and the file must NOT be consulted, since an empty rewrite means the
+#     submitted body is empty. Inferring this from empty stdout (which
+#     `heredoc_body_for` did) made an empty heredoc over an offending file exit 2
+#     -- the unclearable block this whole fallback exists to end, since the
+#     author cannot edit a line they are not submitting.
+# So found-ness rides the EXIT STATUS and the body rides stdout.
+#
+# Only the FIRST chunk used to be collected (`last;` at the end of the loop), so
+# `cat >f <<A ... A; cat >>f <<B ... B` with the offender in B exited 0. Measured
+# on the tip before this change.
+heredoc_bodies_for() {
   CMD="$cmd" TARGET="$1" perl -0777 -e '
     my $c = $ENV{CMD};
     my $t = quotemeta($ENV{TARGET});
     my @lines = split /\n/, $c, -1;
+    my $found = 0;
+    my @out;
     for my $i (0 .. $#lines) {
       my $l = $lines[$i];
-      next unless $l =~ /(?:>>?|\btee\b(?:\s+-a)?)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
+      next unless $l =~ /(?:>>?|\btee\b(?:\s+-[^\s]*)*)\s*(["\x27]?)$t\1(?:[\s;&|)<]|$)/;
       next unless $l =~ /(<<-?)\s*(["\x27]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
       my $dash  = ($1 eq "<<-");
       my $delim = $3;
-      my @body;
+      $found = 1;
       for my $j ($i + 1 .. $#lines) {
         my $probe = $lines[$j];
         $probe =~ s/^\t+// if $dash;
         last if $probe eq $delim;
-        push @body, $lines[$j];
+        push @out, $lines[$j];
       }
-      print join("\n", @body), "\n" if @body;
-      last;
     }
+    print join("\n", @out), "\n" if @out;
+    exit($found ? 0 : 1);
   ' 2>/dev/null
 }
 
@@ -262,35 +305,58 @@ scan_text() {
 # scanning for exactly this reason; this repo has no such gate, so the evidence
 # here is the two controls above, pinned as cases.)
 #
+# What gets scanned, per body file:
+#   heredoc chunks -- whenever any heredoc writes the path, and ALL of them.
+#   the file       -- unless a heredoc REWRITE discards it. An append keeps it
+#                     (it is the first half of the submission), and so does a
+#                     command that does not write the path at all.
+# A rewrite the extractor cannot read (`printf > f`) leaves `found` false, so the
+# file is still consulted -- the known limit below, unchanged.
+#
 # Known miss, stated rather than hidden: a one-call body written by something
 # other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
 # extracted, so it falls back to whatever is on disk -- and to nothing at all
 # when the path does not exist yet. Both halves are pinned by cases.
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
-  body_text=""
-  if [[ ! -f "$f" ]] || cmd_writes_path "$f"; then
-    body_text=$(heredoc_body_for "$f")
+
+  heredoc_text=""
+  heredoc_found=0
+  if heredoc_text=$(heredoc_bodies_for "$f"); then
+    heredoc_found=1
   fi
-  if [[ -n "$body_text" ]]; then
-    scan_text "$f (heredoc, not yet written)" "$body_text"
+
+  scan_file=1
+  [[ -f "$f" ]] || scan_file=0
+  if [[ "$heredoc_found" -eq 1 ]] && cmd_rewrites_path "$f"; then
+    # The disk copy is discarded by the rewrite, so it is not part of the
+    # submission -- even when the same command also appends after it.
+    scan_file=0
+  fi
+
+  if [[ "$heredoc_found" -eq 1 && -n "$heredoc_text" ]]; then
+    if cmd_appends_path "$f" && [[ "$scan_file" -eq 1 ]]; then
+      scan_text "$f (heredoc, appended to the file below)" "$heredoc_text"
+    else
+      scan_text "$f (heredoc, not yet written)" "$heredoc_text"
+    fi
     if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
       break
     fi
-    continue
   fi
-  [[ -f "$f" ]] || continue
 
-  while IFS=$'\t' read -r ln content; do
-    [[ -z "$content" ]] && continue
-    hit=$(find_offender "$content")
-    if [[ -n "$hit" ]]; then
-      OFFENDERS+=("$f:$ln: $content")
-      if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
-        break
+  if [[ "$scan_file" -eq 1 ]]; then
+    while IFS=$'\t' read -r ln content; do
+      [[ -z "$content" ]] && continue
+      hit=$(find_offender "$content")
+      if [[ -n "$hit" ]]; then
+        OFFENDERS+=("$f:$ln: $content")
+        if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
+          break
+        fi
       fi
-    fi
-  done < <(strip_code_blocks < "$f")
+    done < <(strip_code_blocks < "$f")
+  fi
 
   if [[ "${#OFFENDERS[@]}" -ge "$MAX_REPORT" ]]; then
     break
