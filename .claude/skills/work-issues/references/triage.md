@@ -162,9 +162,14 @@ itself. `pwd -P` is load-bearing in BOTH directions — the main checkout answer
 right, and macOS spells `/tmp` as `/private/tmp`. Chosen over comparing against
 the first row of `git worktree list --porcelain` because it needs no listing
 order, no path parsing and no awareness of other worktrees. Run it INSIDE the
-repo: outside one both substitutions are empty and `cd ""` returns 0, so it
-prints MAIN-CHECKOUT — a wrong verdict, saved only by the next git command
-failing loudly.
+repo. Outside one, `git rev-parse` fails and both substitutions collapse to the
+empty string, so the test compares `""` with `""`
+and prints MAIN-CHECKOUT — a wrong verdict. Measured 2026-08-31, and the
+mechanism differs by shell without changing the answer: bash REFUSES `cd ""`
+(rc=1, `cd: null directory`) so the `&& pwd -P` never runs, while zsh accepts it
+(rc=0) and `pwd -P` then prints the same cwd twice. Nothing downstream reliably
+catches it, either: the next git command runs in whatever tree the shell is
+actually in, and that tree may well be a real repo.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd` into `.claude/worktrees/<x>`), so it has
@@ -182,6 +187,14 @@ removed and no branch deleted (§9, §10-d), and `main` is pulled through
 stray `cd` into a peer's live lane looks exactly like an empty workspace:
 
 ```bash
+# The FIRST line is the anchor, and it is why none of the rest needs a `-C`:
+# every probe under it describes THIS shell's tree, so a cwd that has silently
+# reset to the main checkout (appendix, "Bash cwd silent reset") shows up IN THE
+# OUTPUT instead of being invisible. Without it the block answers "clean, no
+# claim, no PR" about a tree nobody asked about, and READS as a description of
+# this lane. Anchoring a READ this way is enough -- noticing afterwards costs
+# nothing; a WRITE is a different problem (§5's branch recipe).
+git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
 git status --porcelain          # non-empty = someone's uncommitted work; STOP
 git branch --show-current       # the branch you would be committing to
 git log --oneline -3            # whose commits are these
@@ -190,9 +203,10 @@ gh pr list --state all --head "$(git branch --show-current)"
 
 This repo keeps no worktree-owner sentinel (the sibling cdkd's
 `session-owner` file has no counterpart here), so those probes plus the §4 claim
-comments on the issue thread are the whole ownership record — and §9's rule
-applies unchanged: read every probe as evidence of LIFE only, never of absence.
-If the tree is not yours, stop and report; do not nest a worktree inside it.
+comments on the issue thread are the whole ownership record — which makes the
+anchor line matter more here than in either sibling, not less. §9's rule applies
+unchanged: read every probe as evidence of LIFE only, never of absence. If the
+tree is not yours, stop and report; do not nest a worktree inside it.
 
 Everything below is the MAIN-CHECKOUT case.
 
