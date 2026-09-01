@@ -24,7 +24,39 @@ git init -q -b feature "$repo"
 git -C "$repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 : > "$repo/.markgate.yml"   # opt in to the markgate convention
 
+# --- BASH INTERPRETER FENCE ---
+# Every case launches its hook through `env PATH="$SHIM:/usr/bin:/bin"`, and the
+# hooks' `#!/usr/bin/env bash` resolves `bash` off THAT path -- so until now the
+# interpreter was whatever `/bin/bash` happens to be, which on macOS is 3.2 and
+# on most Linux distros is 5.x. That is the right DEFAULT (the shipped hook has
+# to survive the bash a user actually has) but it made the other tally
+# untakeable: there was no way to re-run the same 149 cases under the OTHER
+# major version without editing this file.
+#
+# So the interpreter is now an explicit symlink at the FRONT of that PATH.
+# Default `/bin/bash` -- byte-identical behaviour to before -- and
+# `HOOK_BASH=/opt/homebrew/bin/bash bash .claude/hooks/gate-command-recognition.test.sh`
+# takes the 5.x tally. An explicitly set HOOK_BASH that is not executable is
+# FATAL rather than a silent fall-back: a typo'd override that quietly ran the
+# default would report the version it did not run.
+if [ -n "${HOOK_BASH:-}" ]; then
+  if [ ! -x "$HOOK_BASH" ]; then
+    printf 'FATAL - HOOK_BASH is not an executable: %s\n' "$HOOK_BASH" >&2
+    exit 1
+  fi
+else
+  HOOK_BASH=/bin/bash
+  [ -x "$HOOK_BASH" ] || HOOK_BASH="$(command -v bash)"
+  [ -n "$HOOK_BASH" ] && [ -x "$HOOK_BASH" ] || {
+    printf 'FATAL - no usable bash found for the hooks\n' >&2
+    exit 1
+  }
+fi
+
 SHIM="$TMPDIR/bin"; mkdir -p "$SHIM"
+ln -sf "$HOOK_BASH" "$SHIM/bash"
+printf 'hook interpreter: %s (bash %s)\n' "$HOOK_BASH" \
+  "$("$HOOK_BASH" -c 'echo "$BASH_VERSION"')"
 # Both stubs LOG THEIR $PWD when asked to. A gate `cd`s into the directory it
 # resolved before asking markgate, so that log is a direct read of
 # gate_target_dir's answer through the real hook -- which is the only way to
@@ -60,11 +92,29 @@ GIT
 # A `gh` shim that LOGS its argv. Without it the gh-calling gates fail open and
 # every pair below is satisfied vacuously at 0 -- which is exactly how three live
 # bypasses were certified green (see run_sel).
+# The stub DRAINS ITS STDIN, and that is the point rather than hygiene. A gate
+# calls `gh` from inside a `while IFS= read -r` loop whose stdin IS the
+# `gate_segments` process substitution, so a `gh` that reads stdin eats the
+# segments the walk has not judged yet -- and the real `gh` is free to. The
+# `</dev/null` redirections in post-merge-orphan-push-gate exist for exactly
+# that, and its own comment used to say no case could pin them. One can: this
+# line plus the two-push case below.
+#
+# `GH_FAIL` makes the stub answer NOTHING, which is how the gate's "gh pr list
+# failed or returned empty" arm is reached with a gh that exists.
 cat > "$SHIM/gh" <<'GH'
 #!/usr/bin/env bash
+cat >/dev/null
 [ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
+[ -n "${GH_FAIL:-}" ] && exit 0
 case "$*" in
   "auth status"*) exit 0 ;;
+  # post-merge-orphan-push-gate asks `gh pr list --head <branch> --state merged`.
+  # Exactly ONE branch answers with a merged PR, so a case that blocks proves the
+  # gate resolved THAT branch rather than merely reaching gh.
+  *"pr list"*"--head feat/merged"*)
+    echo '[{"number":7,"mergedAt":"2026-01-01T00:00:00Z","headRefName":"feat/merged","title":"merged lane"}]' ;;
+  *"pr list"*) echo '[]' ;;
   *"pr view --json number"*) echo 999 ;;   # the CURRENT BRANCH's PR, never the target
   *"pr view"*"body"*) echo 'Closes (#12)' ;;
   *"pr view"*) echo '{"additions":50,"deletions":10,"changedFiles":2,"files":[],"headRefOid":"abc","headRefName":"f"}' ;;
@@ -90,6 +140,98 @@ run_case() {
     fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n  out: %s\n' "$name" "$want" "$got" "$out"
   fi
 }
+
+# The same call from a DIFFERENT cwd -- the linked-worktree half of the
+# main-tree cases below, which are precisely about which TREE the resolved
+# segment lands in.
+run_case_cwd() {
+  local name="$1" want="$2" hook="$3" cwd="$4" cmd="$5" got out payload
+  payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$cwd" "$cmd")
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 \
+    "$HOOKS/$hook" 2>&1); got=$?
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(exit $got)"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (want %s, got %s)\n  out: %s\n' "$name" "$want" "$got" "$out"
+  fi
+}
+
+# The exit code alone cannot say WHICH segment a block is about, and the message
+# is the whole product of a block -- it names the branch the user must replay
+# somewhere else. `run_case` compares exit codes only, so a gate that blocks for
+# the right reason and then NAMES THE WRONG BRANCH is green there. Assert the
+# text: `have` must appear, `nothave` (when given) must not.
+#
+# run_case_msg <name> <expect_exit> <hook> <cmd> <have> [<nothave>]
+run_case_msg() {
+  local name="$1" want="$2" hook="$3" cmd="$4" have="$5" nothave="${6:-}" got out payload why=""
+  payload=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd")
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 \
+    "$HOOKS/$hook" 2>&1); got=$?
+  [ "$got" = "$want" ] || why="exit $got, want $want"
+  printf '%s' "$out" | grep -qF -- "$have" || why="${why:+$why; }message lacks [$have]"
+  if [ -n "$nothave" ] && printf '%s' "$out" | grep -qF -- "$nothave"; then
+    why="${why:+$why; }message wrongly contains [$nothave]"
+  fi
+  if [ -z "$why" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(exit $got, names [$have])"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (%s)\n  out: %s\n' "$name" "$why" "$out"
+  fi
+}
+
+# How many times a hook emits one line of stderr for ONE command. A note that
+# describes a per-COMMAND decision ("this machine has no gh, so nothing was
+# checked") must be stated once however many segments the walk judges.
+# PATH is a hermetic symlink farm rather than a subtraction from the real PATH:
+# `gh` lives in /usr/bin on some distros and in /opt/homebrew/bin here, so
+# "PATH minus the shim dir" is gh-free only by luck of the host.
+#
+# run_note_count <name> <hook> <cmd> <substring> <expected count>
+run_note_count() {
+  local name="$1" hook="$2" cmd="$3" needle="$4" want="$5" got out
+  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$NOGH" "$HOOKS/$hook" 2>&1)
+  got=$(printf '%s\n' "$out" | grep -cF -- "$needle" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(said it $got time(s))"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (said it %s time(s), expected %s)\n  out: %s\n' \
+      "$name" "$got" "$want" "$out"
+  fi
+}
+# The same count, over the SHIM farm (gh PRESENT) and with the stub answering
+# nothing, so the gate's OTHER note -- "gh pr list failed or returned empty" --
+# is the one measured. That note describes a per-COMMAND condition and was
+# printed once per gateable SEGMENT.
+#
+# run_note_count_shim <name> <hook> <cmd> <substring> <expected count>
+run_note_count_shim() {
+  local name="$1" hook="$2" cmd="$3" needle="$4" want="$5" got out
+  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" GH_FAIL=1 "$HOOKS/$hook" 2>&1)
+  got=$(printf '%s\n' "$out" | grep -cF -- "$needle" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(said it $got time(s))"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (said it %s time(s), expected %s)\n  out: %s\n' \
+      "$name" "$got" "$want" "$out"
+  fi
+}
+
+# The farm itself: everything the gate and the shared matcher shell out to, and
+# NOTHING else -- no `gh` exists anywhere on this PATH, on any host.
+NOGH="$TMPDIR/nogh"; mkdir -p "$NOGH"
+ln -sf "$HOOK_BASH" "$NOGH/bash"
+for _t in git jq cat dirname sed grep awk tr head; do
+  _p="$(command -v "$_t" 2>/dev/null || true)"
+  [ -n "$_p" ] && ln -sf "$_p" "$NOGH/$_t"
+done
+unset _t _p
+if [ -x "$NOGH/gh" ] || env PATH="$NOGH" command -v gh >/dev/null 2>&1; then
+  printf 'FATAL - the gh-free farm resolved a gh; run_note_count would be vacuous\n' >&2
+  exit 1
+fi
 
 # check-gate guards `git commit` — and ONLY that verb.
 run_case "check-gate: bare commit"            2 check-gate.sh 'git commit -m x'
@@ -125,6 +267,180 @@ run_case "branch-gate: chained commit"        2 branch-gate.sh 'vp run check && 
 run_case "branch-gate: status on main"        0 branch-gate.sh 'git status'
 git -C "$repo" checkout -q feature
 run_case "branch-gate: commit on a feature branch" 0 branch-gate.sh 'git commit -m x'
+
+# main-tree-branch-gate blocks feature-branch creation in the MAIN worktree, and
+# the CHAINED spelling is the one that matters: the gate used to parse its
+# verdict with an awk walker over the whole command, which skipped to the FIRST
+# `git` token, read `sub=fetch`, and fell to a fail-open `*)` arm. Measured
+# against the real hook in the real main checkout on `main`, before the fix:
+# `git switch -c wt-probe origin/main` exited 2 while
+# `git fetch origin && git switch -c wt-probe origin/main` exited 0, and
+# `git status && git checkout -b wt-probe` exited 0 too. `/work-issues` prints
+# the chained spelling, so the bypass was on the mandated path.
+MT_WT="$TMPDIR/wt-lane"
+git -C "$repo" worktree add -q -b wt-lane "$MT_WT" 2>/dev/null
+run_case "main-tree-branch: bare switch -c"        2 main-tree-branch-gate.sh 'git switch -c feat/x origin/main'
+run_case "main-tree-branch: CHAINED switch -c"     2 main-tree-branch-gate.sh 'git fetch origin && git switch -c feat/x origin/main'
+run_case "main-tree-branch: CHAINED checkout -b"   2 main-tree-branch-gate.sh 'git status && git checkout -b feat/x'
+# EVERY matching segment is judged, not just the first: an allowed target in the
+# first half must not license the second.
+run_case "main-tree-branch: allowed then blocked"  2 main-tree-branch-gate.sh 'git switch main && git switch -c feat/x'
+# The allowances, PER SEGMENT. Each is the false-BLOCK direction of the case
+# above it, so a gate that simply blocked every chained `git` would fail here.
+run_case "main-tree-branch: CHAINED switch main"   0 main-tree-branch-gate.sh 'git fetch origin && git switch main'
+run_case "main-tree-branch: CHAINED checkout --"   0 main-tree-branch-gate.sh 'git status && git checkout -- README.md'
+run_case "main-tree-branch: chained sha checkout"  0 main-tree-branch-gate.sh 'git fetch && git checkout 0123456789abcdef'
+run_case "main-tree-branch: worktree add passes"   0 main-tree-branch-gate.sh 'git worktree add .claude/worktrees/x -b x origin/main'
+# The mandated quoted-body false-positive pair. A matcher change is exactly
+# where these regress, and this gate now reads its ARGUMENTS through the matcher
+# too, so both halves are pinned here rather than only in the helper harness.
+run_case "main-tree-branch: double-quoted mention" 0 main-tree-branch-gate.sh 'echo \"next: git switch -c feat/x\"'
+run_case "main-tree-branch: single-quoted mention" 0 main-tree-branch-gate.sh "git commit -m 'then git switch -c feat/x'"
+# The same chained creation inside a LINKED worktree is the sanctioned shape.
+run_case_cwd "main-tree-branch: chained -c in a worktree" 0 main-tree-branch-gate.sh "$MT_WT" 'git fetch origin && git switch -c feat/x origin/main'
+# ...and a `-C` back at the main tree is blocked from anywhere, so the case
+# above is passing on the resolved TREE rather than on the command shape.
+run_case_cwd "main-tree-branch: -C main tree from a worktree" 2 main-tree-branch-gate.sh "$MT_WT" "git fetch && git -C $repo switch -c feat/x"
+
+# The BLOCKING arms of `verdict_for` had no case at all, which is a one-sided
+# fence in the dangerous direction: every pass arm was pinned and every block
+# arm was free. Measured before adding these -- deleting the plain-switch arm,
+# and deleting the `show-ref` local-branch arm, each left this suite green.
+run_case "main-tree-branch: plain switch to a feature branch" 2 main-tree-branch-gate.sh 'git switch feature'
+run_case "main-tree-branch: checkout of an existing local branch" 2 main-tree-branch-gate.sh 'git checkout feature'
+# ...and its discriminator: a name that is NOT a local branch is a pathspec/sha
+# and must pass, so the case above cannot be satisfied by blocking every name.
+run_case "main-tree-branch: checkout of a non-branch name passes" 0 main-tree-branch-gate.sh 'git checkout README.md'
+
+# PER-SEGMENT TREE RESOLUTION. `main_tree_of` said "called per matched segment"
+# while the tree was in fact resolved ONCE per verb candidate, outside the walk,
+# so segment 1 decided every segment. Both directions were live; measured
+# against the real main checkout and its real linked worktree, payload cwd = the
+# main tree:
+#
+#   git -C <wt> switch -c a && git switch -c b       rc=0, want 2  BYPASS
+#   git -C <wt> checkout -b a && git checkout -b b   rc=0, want 2  BYPASS
+#   git switch main && git -C <wt> switch -c a       rc=2, want 0  FALSE BLOCK
+run_case "main-tree-branch: worktree segment does not excuse a later main-tree switch" 2 \
+  main-tree-branch-gate.sh "git -C $MT_WT switch -c feat/a && git switch -c feat/b"
+run_case "main-tree-branch: worktree segment does not excuse a later main-tree checkout" 2 \
+  main-tree-branch-gate.sh "git -C $MT_WT checkout -b feat/a && git checkout -b feat/b"
+run_case "main-tree-branch: a main-tree segment does not condemn a later worktree one" 0 \
+  main-tree-branch-gate.sh "git switch main && git -C $MT_WT switch -c feat/a"
+# A `cd` PERSISTS into later segments while a `-C` binds only its own command --
+# the two halves of the per-segment resolution, each with its false direction.
+run_case "main-tree-branch: cd into a worktree carries into the next segment" 0 \
+  main-tree-branch-gate.sh "cd $MT_WT && git switch -c feat/a && git switch -c feat/b"
+run_case "main-tree-branch: a -C back at the main tree after that cd still blocks" 2 \
+  main-tree-branch-gate.sh "cd $MT_WT && git switch -c feat/a && git -C $repo switch -c feat/b"
+
+# The block MESSAGE names the branch, not the flag: the verdict for
+# `git switch --create feat/x` was already right, and the text called the
+# branch `--create` -- the name the message then tells you to replay elsewhere.
+run_case_msg "main-tree-branch: --create names the branch" 2 main-tree-branch-gate.sh \
+  'git switch --create feat/x' "feat/x" "'--create'"
+run_case_msg "main-tree-branch: --detach is not a branch name" 2 main-tree-branch-gate.sh \
+  'git switch --detach origin/main' "detaches HEAD" "feature branch '--detach'"
+
+# post-merge-orphan-push-gate blocks a push to a branch whose PR already merged.
+# Same defect as main-tree-branch-gate above and fixed the same way: it read the
+# remote/branch off the WHOLE COMMAND with a leftmost-longest `=~ [[:space:]]push
+# (.*)$`, then cut at the first `&&` / `;` / `|`. Run standalone, that parse gave:
+#
+#   git push origin feat/x                            -> args [origin feat/x]
+#   echo "remember to push origin main" && git push origin feat/x
+#                                                     -> args [origin main"...]
+#   git push origin main && git push origin feat/x    -> args [origin main...]
+#
+# so a quoted MENTION steers the branch to `main"` and a chain is judged on the
+# FIRST push. Either way `gh pr list --head <wrong branch>` finds nothing, the
+# gate exits 0, and the orphan push proceeds unjudged. The gh stub answers a
+# merged PR for `feat/merged` and an empty list for everything else, so a case
+# that blocks proves WHICH branch the gate resolved.
+run_case "orphan-push: bare push to a merged branch"  2 post-merge-orphan-push-gate.sh 'git push origin feat/merged'
+run_case "orphan-push: quoted push MENTION first"     2 post-merge-orphan-push-gate.sh 'echo \"remember to push origin main\" && git push origin feat/merged'
+run_case "orphan-push: chained, merged one is LAST"   2 post-merge-orphan-push-gate.sh 'git push origin main && git push origin feat/merged'
+# EVERY matching segment is judged, not the last: with the merged push FIRST, a
+# gate that only looked at the final segment would let it through.
+run_case "orphan-push: chained, merged one is FIRST"  2 post-merge-orphan-push-gate.sh 'git push origin feat/merged && git push origin main'
+run_case "orphan-push: cd prefix with a semicolon"    2 post-merge-orphan-push-gate.sh 'cd /tmp; git push origin feat/merged'
+run_case "orphan-push: flags around the positionals"  2 post-merge-orphan-push-gate.sh 'git push --force-with-lease origin feat/merged'
+# The allowances, unchanged. Each is the false-BLOCK direction of a case above.
+run_case "orphan-push: unmerged branch passes"        0 post-merge-orphan-push-gate.sh 'git push origin feat/live'
+run_case "orphan-push: deletion refspec passes"       0 post-merge-orphan-push-gate.sh 'git push origin :feat/merged'
+run_case "orphan-push: sha:branch refspec passes"     0 post-merge-orphan-push-gate.sh 'git push origin abc123:feat/merged'
+run_case "orphan-push: non-origin remote passes"      0 post-merge-orphan-push-gate.sh 'git push upstream feat/merged'
+# The mandated quoted-body false-positive pair. Both carry a WORD after the
+# branch so that dropping the verb ERE's start anchor yields a parsable
+# `origin feat/merged ...` -- without it the mention parses to a branch with a
+# stray quote, gh answers nothing, and the case would pass against the broken
+# gate for the wrong reason.
+run_case "orphan-push: double-quoted mention"         0 post-merge-orphan-push-gate.sh 'echo \"next: git push origin feat/merged then open a PR\"'
+run_case "orphan-push: single-quoted mention"         0 post-merge-orphan-push-gate.sh "git commit -m 'then git push origin feat/merged later'"
+# `-u` with no branch derives it from the resolved tree via `symbolic-ref`, so
+# both polarities are pinned: the sandbox repo is on `feature` (not merged), and
+# a worktree checked out on `feat/merged` must block.
+run_case "orphan-push: -u with no branch, on feature" 0 post-merge-orphan-push-gate.sh 'git push -u origin'
+MERGED_WT="$TMPDIR/wt-merged"
+git -C "$repo" worktree add -q -b feat/merged "$MERGED_WT" 2>/dev/null
+run_case_cwd "orphan-push: -u with no branch, on the merged branch" 2 post-merge-orphan-push-gate.sh "$MERGED_WT" 'git push -u origin'
+# ...and the same shape with a trailing REDIRECTION, which is what pins the
+# `args="${args%%>*}"` strip in parse_push_args. Deleting that strip leaves all
+# the cases above green, because every one of them fills `branch` from a real
+# positional before the `>` token is ever reached. Only a push that OMITS the
+# branch lets `>/tmp/log` BE the first free positional -- gh then answers an
+# empty list for a branch named `>/tmp/log` and the gate exits 0 on a push to a
+# merged branch. Measured: with the strip removed this case returns 0.
+run_case_cwd "orphan-push: -u, redirected, on the merged branch" 2 post-merge-orphan-push-gate.sh "$MERGED_WT" 'git push -u origin >/tmp/log'
+
+# A NON-GATEABLE push BEFORE the merged one. The two chain cases above both put
+# a push that IS judged (and passes) first, so they only pin the
+# judged-and-allowed arm of the walk; `parse_push_args … || continue` -- the arm
+# for a segment that is not gateable AT ALL -- had no case. Mutating that
+# `continue` to `break` leaves all 149 of them green while these two return 0:
+# the walk gives up at the first un-judgeable segment and never reaches the
+# merged push behind it. Both non-gateable shapes get a case, because they
+# return 1 from different places in the parse (the remote check and the refspec
+# check).
+run_case "orphan-push: non-origin push FIRST, merged one after" 2 post-merge-orphan-push-gate.sh 'git push upstream feat/x && git push origin feat/merged'
+run_case "orphan-push: deletion refspec FIRST, merged one after" 2 post-merge-orphan-push-gate.sh 'git push origin :feat/x && git push origin feat/merged'
+
+# The block MESSAGE names the segment that blocked, not the last one walked.
+# `blocked=1; break` is what makes that true, and deleting the `break` also
+# leaves 149 green -- the walk runs on, `branch` is overwritten by the trailing
+# `main`, and the refusal tells the user to replay a branch that is not the
+# problem. Exit codes cannot see that, so assert the text both ways.
+run_case_msg "orphan-push: refusal names the blocking segment" 2 post-merge-orphan-push-gate.sh \
+  'git push origin feat/merged && git push origin main' \
+  "branch 'feat/merged'" "branch 'main'"
+
+# The "gh not installed" note describes a per-COMMAND fact, so a chain of three
+# gateable pushes must state it ONCE. Memoising only the SUCCESS arm of
+# resolve_gh (`[ -n "$gh_bin" ] && return 0`, with nothing recording a failed
+# probe) prints it three times; no exit code moves, since the gate fails open
+# either way.
+run_note_count "orphan-push: the no-gh note is stated once" post-merge-orphan-push-gate.sh \
+  'git push origin a && git push origin b && git push origin c' \
+  'gh not installed' 1
+
+# The gh call's `</dev/null`, which the gate's own comment called unpinnable.
+# The stub above drains stdin, and the walk's stdin IS the segment stream: a
+# `gh` invoked without `</dev/null` eats every segment after the one that called
+# it, so the SECOND push -- the one to the merged branch -- is never judged and
+# the gate exits 0. The order matters: the live branch must come FIRST, so the
+# gate really does call gh and carry on.
+run_case "orphan-push: a gh call does not eat the segments after it" 2 \
+  post-merge-orphan-push-gate.sh 'git push origin feat/live && git push origin feat/merged'
+# The false-BLOCK control: two LIVE branches must still pass, so the case above
+# is not satisfied by a gate that blocks any two-push command.
+run_case "orphan-push: two live pushes still pass" 0 \
+  post-merge-orphan-push-gate.sh 'git push origin feat/live && git push origin feat/other'
+
+# The gh-FAILURE note is a per-COMMAND decision, like the missing-gh note above.
+run_note_count_shim "orphan-push: the gh-failure note is stated once" post-merge-orphan-push-gate.sh \
+  'git push origin a && git push origin b && git push origin c' \
+  'gh pr list failed or returned empty' 1
+
 
 # markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
 # exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook
@@ -437,5 +753,16 @@ for g in closes-paren-form-gate.sh non-english-text-gate.sh \
   selector_guard "$g"
 done
 
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=167
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

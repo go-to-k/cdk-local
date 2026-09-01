@@ -1,10 +1,11 @@
 # Hooks and Gates
 
-Reference for the `.claude/hooks/*.sh` PreToolUse safety + enforcement
-hooks shipped in cdk-local. Auto-loaded when working on
-`.claude/hooks/**` or `.markgate.yml`.
+Reference for the `.claude/hooks/*.sh` safety + enforcement hooks
+shipped in cdk-local — PreToolUse gates, plus the one `Stop` hook in
+section 4. Auto-loaded when working on `.claude/hooks/**` or
+`.markgate.yml`.
 
-The hooks split into three classes:
+The hooks split into four classes:
 
 1. **Universal-shape one-shot safety hooks** — block known foot-guns
    at the source. Each produces an actionable error with the exact
@@ -16,6 +17,9 @@ The hooks split into three classes:
    the corresponding skill (`/check`, `/check-docs`, `/run-integ`,
    `/review-pr`, `/verify-pr`, `/merge-pr`) to be re-run before the
    gated action can proceed.
+4. **Stop hooks** — fire when a turn is about to end rather than on a
+   tool call, and choose an OUTPUT CHANNEL that decides whether the turn
+   continues. Section 4 covers the channel table and the nudge cadence.
 
 ## 1. Universal-shape safety hooks
 
@@ -169,7 +173,7 @@ The hooks split into three classes:
   OPEN: the commit proceeds, and the only signal is an error on stderr
   that reads like noise from the hook rather than a refusal.
 
-  `.claude/hooks/control-char-gate.test.sh` (115 cases, run by
+  `.claude/hooks/control-char-gate.test.sh` (118 cases, run by
   `vp run test:hooks`) drives all of the above through the real hook
   against throwaway repositories, in BOTH directions. Two review rounds
   found live blockers behind 52 and then 93 green cases, both times in
@@ -235,6 +239,75 @@ The hooks split into three classes:
   / backtick code spans) pass through; bare `Must-fix #N` /
   `review-fix #N` / `step #N` / plain `#N` in prose are blocked with
   line-numbered offender output.
+
+  What it scans is *the body the command is about to submit*, which is
+  not always the file on disk (go-to-k/cdk-local#637). The hook runs
+  BEFORE the command, so in the one-call `heredoc -> file ->
+  --body-file` publishing shape the path is absent or still holds the
+  PREVIOUS body; skipping was a silent pass, and reading the stale file
+  looked like a working gate while judging text nobody was submitting —
+  in both directions, since a stale file can also BLOCK a clean
+  submission over a line that will not exist, which the author cannot
+  clear. There are THREE write shapes and the gate now distinguishes
+  all three:
+
+  | the command… | scans the heredoc chunks | scans the file |
+  | --- | --- | --- |
+  | REWRITES the path (`>`, `tee` without `-a`) | yes | no — the disk copy is discarded |
+  | APPENDS to it (`>>`, `tee -a`) | yes | yes — the disk copy is the FIRST HALF of the body |
+  | does not write it | n/a | yes |
+
+  The append row is the one that regressed. A first version matched
+  `>>` / `tee -a` with the same predicate as `>` and then scanned the
+  heredoc INSTEAD of the file, which made the gate WEAKER than the code
+  it replaced: an append of a clean chunk onto a file already holding
+  `Must-fix #1` exited 0, where `origin/main` and the branch's own
+  first commit both exited 2.
+
+  Two further properties of the extraction, each pinned by a case.
+  EVERY heredoc writing the path is collected, in command order — the
+  loop used to stop after the first, so a body assembled from two
+  chunks was judged on chunk one alone. And "a heredoc with an EMPTY
+  body" is reported separately from "no heredoc at all" (found-ness
+  rides the exit status, not the emptiness of stdout): inferring one
+  from the other made an empty rewrite of an offending file exit 2,
+  which is the unclearable false block this fallback exists to end.
+
+  It does NOT scan the whole command, and that is the one place this
+  gate must diverge from the `issue-*-gate.sh` siblings' fallback even
+  though the window is identical. The difference is what each looks
+  for: they need one anchored marker to be PRESENT, so extra text can
+  only make them pass, while this gate objects to content it FINDS, so
+  extra text makes it BLOCK. Two ordinary commands were measured going
+  0 -> 2 against the first, whole-command port — one whose ISSUE TITLE
+  cites an issue number and whose body file is absent, and one whose
+  COMMIT MESSAGE cites a review round ahead of a clean heredoc body:
+
+  ```sh
+  gh issue create --title 'follow-up to #2397 discussion' --body-file "$ABSENT"
+  git commit -m 'address review #3' && cat > "$BODY" <<'EOF'
+  ...clean body...
+  EOF
+  gh pr create --body-file "$BODY"
+  ```
+
+  Both are pinned as cases.
+
+  Two edges worth knowing. The redirect terminator class is
+  `[\s;&|)<]` rather than `\s`, because the narrow class missed
+  `>f<<EOF` — the TIGHT spelling of the very shape the fallback exists
+  for — as well as `>f;` and `>f&&`; all three arms now carry a case,
+  since narrowing the class back to `[\s<]` used to leave the suite
+  green. And a body written by something other than a heredoc
+  (`printf > f`, `python3 -c ... > f`) cannot be extracted, so it falls
+  back to whatever is on disk, and to nothing at all when the path is
+  absent; that limit is asserted in both directions rather than left to
+  be rediscovered.
+
+  Note the SAME-repo qualified `go-to-k/cdk-local#N` form is NOT
+  allow-listed in a body — `/work-issues` §10-c names a full URL as the
+  only body spelling — so it is refused here on purpose. Covered by
+  `.claude/hooks/pr-body-item-number-gate.test.sh` (33 cases).
 
 - **`issue-dup-check-gate.sh`** blocks `gh issue create` — and a
   `gh api repos/<owner>/<repo>/issues` that is actually a MINT (an
@@ -381,6 +454,98 @@ The hooks split into three classes:
   / etc. pass through). Fails open when `gh` is missing or
   unauthenticated.
 
+  The remote and branch are read per SEGMENT, from `gate_verb_args` —
+  the same constant that armed the gate. They used to be read off the
+  WHOLE COMMAND with a leftmost-longest
+  `[[ "$cmd" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]`, cut at the
+  first `&&` / `;` / `|`. Run standalone, that parse gave:
+
+  ```text
+  git push origin feat/x                              args [origin feat/x]
+  echo "remember to push origin main" && git push origin feat/x
+                                                      args [origin main"…]
+  git push origin main && git push origin feat/x      args [origin main…]
+  ```
+
+  A quoted MENTION of push steers the branch to `main"`, and a chained
+  push is judged on the FIRST one. In both cases
+  `gh pr list --head <wrong branch>` finds no merged PR, the gate exits
+  0, and the orphan push proceeds unjudged — the whole failure above.
+  The same defect was reproduced in the sibling repo's copy, which is
+  why it was fixed rather than filed.
+
+  EVERY matching segment is judged, not the last, so
+  `git push origin main && git push origin <merged>` blocks whichever
+  half is the merged one; the walk stops at the first segment that
+  blocks, so an ordinary single push still makes at most one `gh` call.
+  Three separate properties hide behind that one sentence, and each
+  needed its own case because each mutates independently:
+
+  - a segment the parse cannot gate at all (a non-`origin` remote, a
+    `:branch` deletion refspec) must be SKIPPED, not treated as the end
+    of the walk. Turning that `continue` into a `break` left every
+    other case green while `git push upstream feat/x && git push
+    origin <merged>` returned rc=0 — a live bypass, since putting any
+    un-gateable push first buys a free pass for everything behind it.
+  - the walk stops at the first segment that BLOCKS, and the refusal
+    therefore names THAT segment's branch. Deleting the `break` is
+    invisible to an exit-code comparison: the command still blocks, but
+    `git push origin <merged> && git push origin main` then tells the
+    user to replay `main`, which is not the branch in trouble. The case
+    asserts the message text in both directions.
+  - the "gh not installed" note describes a per-COMMAND decision, so a
+    chain of three gateable pushes states it once. `resolve_gh`
+    memoises the FAILED probe as well as the successful one; keying the
+    memo on the resolved path alone re-probed and re-printed per
+    segment.
+
+  The `|` / `;` / `&&` strips are gone from the argument parse — a
+  segment already ends at those, and a `push` after one is now its own
+  turn in the walk — while the REDIRECTION strip stays, since `>x` can
+  still sit inside a segment. That strip only discriminates on a push
+  that OMITS its branch (`git push -u origin >/tmp/log`), where the
+  redirection token would otherwise become the branch; with a branch
+  present it is already consumed. The case is written that way for
+  exactly that reason.
+
+  One limit, stated rather than hidden: `target_dir` is resolved ONCE
+  for the whole command, because `gate_target_dir` reports the **FIRST**
+  matching segment's tree — it `break`s at the first segment matching
+  the verb ERE — and the helper exposes no per-segment answer. Measured:
+  `gate_target_dir 'git -C /aaa push origin && git -C /bbb push origin'`
+  answers `/aaa`. The BOUND is the same either way, but the direction is
+  not a detail for a reader: the EARLIEST push's tree is in force for
+  every segment, so the LAST `-C` in a command is precisely the one that
+  is not consulted.
+
+  Rebuilding a per-segment prefix to ask again was rejected, but not for
+  the reason once recorded here. That reason — that re-splitting
+  already-segmented text would let a newline inside a quoted argument
+  surface as a `cd` segment — does not reproduce: `gate_segments`
+  flattens a quoted newline to a space, so
+  `gh pr create --body "line1<newline>cd /evil" && git push origin
+  feat/x` splits into two segments and re-splitting either returns it
+  unchanged. Re-splitting is idempotent. The obstacle that does exist is
+  the `break` above: handed a prefix ending at segment N,
+  `gate_target_dir` still answers for the first matching segment in that
+  prefix rather than for N, so the per-segment question cannot be asked
+  without changing the shared helper — a change to every gate that calls
+  it, not just this one.
+
+  The exposure is narrow either way: the positional branch comes from
+  the segment itself, so `target_dir` only decides the `symbolic-ref`
+  fallback for a push that OMITS its branch, and only when one command
+  pushes from two different trees.
+
+  `git push origin --delete <branch>` is **not** a pass-through, despite
+  reading like the `:branch` case. `--delete` is in the valueless-flag
+  list, so `<branch>` lands in the branch slot as an ordinary positional
+  and a merged branch blocks. Deliberate: re-deleting an
+  already-deleted branch is a no-op on GitHub, so the false block costs
+  nothing, whereas teaching the flag list to swallow its argument would
+  hand every `--delete` spelling the pass-through that the `:branch`
+  arm grants only after reading a refspec.
+
 - **`markgate-pipe-gate.sh`** blocks a Bash call in which
   `markgate verify <gate>`, `markgate set <gate>` or `markgate run
   <gate> -- <cmd>` feeds a `|` pipeline, because there `$?` is the LAST
@@ -514,6 +679,69 @@ The hooks split into three classes:
   names the resolved target dir + the operation + the corrective
   `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`
   recipe.
+
+  The VERDICT is read per SEGMENT, from `gate_verb_args` — the same
+  constant that armed the gate — not from the whole command. It used to
+  be parsed by an awk walker that skipped to the FIRST `git` token and
+  read the subcommand there, so in a chained form that first `git` is a
+  DIFFERENT command: the walker read `sub=fetch`, fell to a fail-open
+  `*)` arm, and exited 0. Measured in the main checkout on `main`:
+
+  ```text
+  git switch -c wt-probe origin/main                       rc=2  BLOCKED
+  git fetch origin && git switch -c wt-probe origin/main    rc=0  PASS   <- bypass
+  git status && git checkout -b wt-probe                    rc=0  PASS   <- bypass
+  ```
+
+  `/work-issues` prints the chained spelling, so the bypass sat on the
+  mandated path. Every matching segment is judged now, not just one, so
+  `git switch main && git switch -c feat` blocks on its second half.
+
+  The main-tree test and the `.markgate.yml` opt-in are ALSO evaluated
+  against the tree THAT segment resolves to — and this paragraph, and
+  `main_tree_of`'s own header, asserted that before it was true. The
+  tree was in fact resolved ONCE per verb candidate, outside the walk,
+  so segment 1 decided every segment. That is a bypass in one direction
+  and a false block in the other, both live. Measured against the real
+  main checkout and its real linked worktree, payload cwd = the main
+  tree:
+
+  ```text
+  git -C <wt> switch -c a && git switch -c b        rc=0  want 2  <- bypass
+  git -C <wt> checkout -b a && git checkout -b b    rc=0  want 2  <- bypass
+  git switch main && git -C <wt> switch -c a        rc=2  want 0  <- false block
+  ```
+
+  Fixed on 2026-09-01 by `gate_verb_args_dir` in
+  `.claude/hooks/_command-match.sh`, which emits `<dir>TAB<args>` per
+  matching segment out of ONE walk, so the tree and the arguments
+  cannot come from different segments. A `cd` persists into later
+  segments; a `-C` binds only its own command.
+
+  LIMIT, stated rather than hidden: `gate_segments` FLATTENS a subshell,
+  so a `cd` inside one leaks past the closing paren.
+  `(cd <wt> && git switch -c a) && git switch -c b` from the main tree
+  resolves segment 3 to `<wt>` and passes — measured rc=0, want 2, and
+  measured the same on the pre-fix hook, so it is a pre-existing bound
+  rather than one this change introduced. Closing it means teaching the
+  shared segmenter to report subshell depth, which is a change to every
+  gate that calls it.
+  Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
+  main-tree block pins the chained blocks, the per-segment allowances,
+  the linked-worktree pass and the quoted-mention pair (167 cases in
+  that file overall, alongside the `post-merge-orphan-push-gate` block
+  added for the same defect). The interpreter those cases run the hooks
+  under is now explicit: a `bash` symlink at the front of the pinned
+  PATH, defaulting to `/bin/bash` (3.2 on macOS) and overridable with
+  `HOOK_BASH=<path> bash .claude/hooks/gate-command-recognition.test.sh`
+  to take the 5.x tally. `pr-body-item-number-gate.test.sh` and
+  `stop-unmerged-lane-warn.test.sh` had NO such shim until
+  2026-09-01, so their hooks ran under whatever bash PATH gave (5.x
+  here) whichever interpreter started the suite; both now default the
+  same way and print the interpreter they measured on their first
+  line. Proved load-bearing rather than assumed: injecting a
+  bash-4-only `;;&` parse error into each hook reddens 16 of 33 and 87
+  of 102 under 3.2 and none of either under 5.3.9.
 
 ## 3. Markgate-backed gates
 
@@ -1115,3 +1343,188 @@ call `markgate set integ` directly from a shell.
   side worktree. The `/merge-pr` skill is the ONLY legitimate setter of
   the `merge-pr` marker — never `markgate set merge-pr` directly from a
   shell to bypass this gate.
+
+## 4. Stop hooks
+
+One hook fires on `Stop` rather than on a tool call:
+`.claude/hooks/stop-unmerged-lane-warn.sh`. It catches the quiet half of
+unfinished work — a linked worktree whose branch is COMMITTED but still
+ahead of `origin/main`, a lane that is finished as far as the editor is
+concerned and unfinished as far as the repo is. (The sibling cdkd repo
+pairs it with a `stop-warn.sh` covering the UNCOMMITTED half in the main
+tree; this repo has no such hook, so do not read the pair as coverage
+here.)
+
+On `Stop` the OUTPUT CHANNEL is the behaviour, not formatting:
+
+| channel | who reads it | the turn |
+| --- | --- | --- |
+| `hookSpecificOutput.additionalContext` | the MODEL | CONTINUES — it gets another turn to act |
+| `systemMessage` | the USER only | ends normally |
+| stdout / stderr at exit 0 | nobody (both are discarded on `Stop`) | ends normally |
+
+There is no fourth option that reaches the model WITHOUT continuing the
+turn, which is why the hook has to choose rather than simply emit.
+
+**A continuation is not free, and it is not merely slow.** Read from the
+installed Claude Code (2.1.251): a Stop hook's `additionalContext`
+travels in the SAME `blockingErrors` return value as a
+`decision: "block"`, and the main loop re-queries on either. Both count
+against one budget — `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`, default **8**
+consecutive blocks — after which the harness overrides the hook and ends
+the turn. So a hook that nudges on every turn-end spends a budget shared
+with every other Stop hook, and the one spending it is not necessarily
+the one with something urgent to say.
+
+**Channel by OWNERSHIP** (go-to-k/cdkd#2389 / go-to-k/cdkd#2392):
+
+- **this session's own worktree is a lane** → `additionalContext`,
+  subject to the cadence rule below. This is the failure the hook exists
+  for: ending the turn with your own branch committed and no PR.
+- **only OTHER worktrees are lanes** → `systemMessage`. The model cannot
+  act on another session's lane, so a continuation buys one extra reply
+  that can only say "not mine".
+- **`stop_hook_active` set** (the harness already continued once this
+  turn) → the ARM is suppressed, so one nudge never becomes a spin, but
+  the warning still leaves on `systemMessage`. Going fully silent was
+  the earlier behaviour and it was wrong: a lane can be COMMITTED
+  DURING the continuation, in which case that pass is the first time
+  the condition holds at all and the user would never be told. A bare
+  `systemMessage` does not continue a turn, so saying it cannot spin.
+  A resumed pass also writes NO record — recording a subject as seen
+  while the model was never told would spend the model's one nudge on a
+  turn it never heard about.
+
+**The cadence rule** (go-to-k/cdkd#2391, which asks for it in all three
+repos). `stop_hook_active` stops a nudge SPINNING inside one turn, and
+that is all it does. Across turns the condition persists, so an
+unconditional `additionalContext` fires at every turn-end for as long as
+the lane exists — including two states with nothing left to do: the PR
+is open and CI is running (the session is legitimately WAITING), and the
+lane was squash-merged with its worktree left behind, which reads as
+ahead FOREVER. So the model is nudged **at most once per distinct
+SUBJECT**, and a repeat of the same subject falls back to
+`systemMessage`: the user still sees it, the turn ends.
+
+The subject is `<own branch>:<pushed|unpushed>`, chosen so that ORDINARY
+WORK does not change it. Three choices are load-bearing, each arrived at
+by rejecting the obvious alternative:
+
+- NOT the commit COUNT, which changes every time the model commits —
+  re-arming on ordinary work bounds nothing.
+- Push state is NOT the CHANNEL discriminator, the shape go-to-k/cdkd#2391 proposed.
+  That goes quiet on a branch pushed with NO PR, a real failure and one
+  of the two this hook exists for. Push state earns its keep in the
+  SUBJECT (so `unpushed -> pushed` re-arms exactly once) and in the TEXT
+  (so the message names which half of the work is left).
+- The comparison against the stored subject is **DIRECTED**, not a plain
+  equality. `pushed -> unpushed` is what an ordinary COMMIT looks like,
+  so `prev != current` re-armed on every commit AND again on every push:
+  measured on one lane as `commit ctx, repeat sys, push ctx, repeat sys,
+  commit ctx, push ctx, ...` — two forced continuations per commit/push
+  cycle, forever, which is the per-commit cadence the design explicitly
+  rejects. It arms on a new session, a lane never seen, a DIFFERENT
+  branch, or `unpushed -> pushed` — and on nothing else.
+
+The record is ONE file in the PER-WORKTREE git dir
+(`<git dir>/stop-nudge-lane`) holding `<session id>TAB<subject>TABepoch`,
+written tmp-then-`mv`. Per-worktree because that is where markgate keeps
+its markers too, and because removing a worktree takes its record with
+it. One file rather than one per session, because a per-session file
+would accumulate with nobody to clean it up; a concurrent session in the
+same worktree can therefore clobber it, which costs an EXTRA nudge rather
+than a missed one — the safe direction, pinned by a case rather than left
+to be rediscovered as a bug.
+
+Three properties of the record are as load-bearing as its content:
+
+- It is written on **BOTH** arms — the nudged one and the downgraded one
+  — because it holds the last OBSERVED subject, not the last NUDGED one.
+  Writing only on the arm freezes `prev_push` at `pushed` and silences
+  the next genuine `unpushed -> pushed`.
+- A record that cannot be PERSISTED (an unresolvable or unwritable git
+  dir) downgrades to `systemMessage`. A nudge that cannot be recorded
+  cannot be bounded, and an unbounded nudge is the thing the cadence
+  exists to remove — so the failure costs the MODEL channel, never the
+  warning itself.
+- A MALFORMED record — not exactly three tab-separated fields, or a
+  non-numeric epoch — is treated as NO record and falls to ARM. That is
+  the same safe direction as the concurrent clobber: an extra nudge,
+  never a missed one.
+
+The session id that keys the record comes from the event payload's
+`session_id` OR from `CLAUDE_CODE_SESSION_ID`, and **both are resolved
+and normalised in one place**, inside the Python block. The fold that
+strips tabs and newlines used to apply only to the payload's copy, with
+the env fallback landing after it in shell — so a tab in the env value
+added a FIELD to the record and a newline ended its line early. Either
+way the read-back shifts, `prev_sid` never matches the value the hook
+itself just wrote, and the cadence stops bounding anything. Measured on
+a payload carrying no `session_id`: a plain value gave `ctx, sys, sys`
+across three turns while a leading tab, an embedded tab and an embedded
+newline each gave `ctx, ctx, ctx`. It survived because every suite
+payload named a `session_id`, leaving that line with zero coverage.
+
+**The downgrade changes the TEXT, not only the channel.** Three paths
+reach `systemMessage` on the session's own lane — a repeat subject, a
+resumed pass, and an unpersistable record — and on all three the reader
+is a human. Emitting the model's wording there ("you are not done:
+rebase, run the gates, open the PR") addresses a person as the agent,
+which is go-to-k/cdkd#2389's defect reappearing on three paths instead
+of one. So the own-lane case builds two messages: the imperative one for
+`additionalContext`, and a short status line for `systemMessage` naming
+the lane, its push state, and the fact that the agent has already been
+told. A case asserts the two differ, so collapsing them back into one
+string fails the suite.
+
+One false positive is expected and is named in the warning text itself:
+this repo squash-merges, so a merged branch never becomes an ancestor of
+`origin/main` and keeps reading as ahead until its worktree is removed.
+The remedy is `git worktree remove` plus `git branch -D`, not another PR
+— and when the tree is one you must NOT remove (an outer tool owns it, or
+you were launched inside it), `git switch --detach origin/main` clears
+the lane, because a worktree with no current branch is not a lane at all.
+
+It shipped INERT for its own primary case once (go-to-k/cdkd#2279): it
+derived its root from `BASH_SOURCE` and SKIPPED the worktree that
+matched, but in a linked worktree `BASH_SOURCE` IS the lane. The main
+tree is identified by BRANCH (`main` / `master`), which the loop already
+checks, so the path skip was redundant AND the entire defect. Note the
+POLARITY — the same path is right as an IDENTIFIER of the session's own
+lane, which is how it is used now.
+
+The `session_id` the cadence keys on arrives as JSON, so the payload's
+value is checked for TYPE and not merely for truthiness before it is
+normalised. A number or a list raised in the Python block, killing it
+before it printed its third line; the shell then fell back to `shared`,
+so the VERDICT stayed right while a traceback went to the hook's stderr
+on every single turn. A case asserts stderr is empty for that payload —
+no case that reads stdout can see it.
+
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 102 cases)
+carries five fixture traps worth knowing before editing it, because each
+cost a case a wrong-reason pass:
+
+- On macOS `mktemp -d` returns a `/var/folders/...` path whose real
+  location is `/private/var/...`, while the hook canonicalises its own
+  root — so the sandbox root must be `cd "$(mktemp -d)" && pwd -P` or any
+  case whose subject IS that equality passes regardless.
+- A push-state fixture needs `remote.origin.fetch` set to
+  `+refs/heads/*:refs/remotes/origin/*`, or `@{u}` fails with "not stored
+  as a remote-tracking branch" and the case measures nothing.
+- `run_hook` resets the nudge record and `run_hook_keep` does not. Without
+  the reset the pre-cadence cases pass or fail on their POSITION in the
+  file rather than on behaviour — measured on the port: six flip.
+- A hand-written record cannot express an EMPTY subject field. Bash's
+  `read` with `IFS=<tab>` treats tab as IFS *whitespace*, so a run of
+  tabs delimits as one and `sid<TAB><TAB>epoch` arrives as a TWO-field
+  record. The malformed-record cases are written as short / long /
+  non-numeric records for that reason; a case named "empty subject"
+  passes through the field-count guard while claiming to test a path it
+  never takes.
+- Every payload naming an explicit `session_id` leaves the
+  `CLAUDE_CODE_SESSION_ID` fallback with ZERO coverage. The cases that
+  drive it go through `run_hook_sid`, which sends a payload WITHOUT the
+  field and sets the env var — and each asserts that the SECOND turn
+  downgrades, since the defect there is that the nudge never stops
+  firing, not that the first one is missing.

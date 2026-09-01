@@ -637,6 +637,92 @@ gate_verb_args() {
   done < <(gate_segments "$cmd")
 }
 
+# gate_verb_args_dir <cmd> <fallback-dir> <verb-ere>
+#
+# `gate_verb_args` plus the working tree EACH matching segment runs in: one
+# "<dir><TAB><args-after-the-verb>" line per matching segment.
+#
+# WHY the tree has to come out of the SAME walk. `gate_target_dir` answers for
+# the WHOLE COMMAND -- its walk breaks at the first matching segment -- so a
+# gate that judges every segment judges them all against segment 1's tree.
+# Measured against this repo's real main checkout and its real linked worktree,
+# driving main-tree-branch-gate with a payload cwd of the MAIN tree:
+#
+#   git -C <worktree> switch -c a && git switch -c b     rc=0, want 2  BYPASS
+#   git -C <worktree> checkout -b a && git checkout -b b rc=0, want 2  BYPASS
+#   git switch main && git -C <worktree> switch -c a     rc=2, want 0  FALSE BLOCK
+#
+# The bypass is the `git fetch && git switch -c` one this branch already closed,
+# one operator further along: segment 1 resolves to a linked worktree, the gate
+# stands down for the whole command, and segment 2 -- running in the SHARED main
+# tree -- is never judged. The false block refuses a branch creation IN a linked
+# worktree, which is exactly what the worktree convention mandates. Both
+# directions were live at the head that shipped `main_tree_of`'s "called per
+# matched segment" comment; the comment described an intent the code did not
+# have.
+#
+# Callers split the line with `${line%%<TAB>*}` / `${line#*<TAB>}`, NOT with
+# `IFS=$'\t' read -r dir args`: tab is IFS whitespace, so that spelling folds a
+# TAB RUN inside the args and silently drops one.
+#
+# The `cd` / `-C` reading is a deliberate copy of gate_target_dir's rather than
+# a shared helper, because that function BREAKS at the verb -- the one thing
+# this walk must not do -- and it has other callers riding on that. The helper
+# harness pins the two against each other on the single-segment shape so the
+# copy cannot drift silently.
+gate_verb_args_dir() {
+  local cmd="$1" fallback="$2" re="$3"
+  local target="$fallback" segment cd_target c_target remaining verb_run tok seg_target
+  while IFS= read -r segment; do
+    if [[ "$segment" =~ ^cd[[:space:]]+$GATE_PATH_TOKEN ]]; then
+      cd_target=$(gate_unquote "${BASH_REMATCH[1]}")
+      # An UNEXPANDED path is not a path; skipping it falls back to the payload
+      # cwd, which fails CLOSED for this gate (go-to-k/cdkd#2130 review).
+      case "$cd_target" in *'$'*|*'`'*) continue ;; esac
+      [ -z "$cd_target" ] && continue
+      [[ "$cd_target" != /* ]] && cd_target="$target/$cd_target"
+      target="$cd_target"
+      continue
+    fi
+    [[ "$segment" =~ $re ]] || continue
+    # Saved BEFORE the token walk below: every `[[ =~ ]]` in it overwrites
+    # BASH_REMATCH.
+    verb_run="${BASH_REMATCH[0]}"
+    # A `cd` persists into the next segment; a `-C` binds only its own command.
+    # So the segment's dir starts from the running cd state and is overridden
+    # locally, never written back.
+    seg_target="$target"
+    c_target=""
+    remaining="$verb_run"
+    while [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
+      tok="${BASH_REMATCH[1]}"
+      remaining="${BASH_REMATCH[3]}"
+      [ -n "$tok" ] || break
+      case "$tok" in
+        -C=*) c_target="${tok#-C=}" ;;
+        -C)
+          if [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
+            c_target="${BASH_REMATCH[1]}"
+            remaining="${BASH_REMATCH[3]}"
+          fi
+          ;;
+        -C*) c_target="${tok#-C}" ;;
+        *) ;;
+      esac
+    done
+    if [ -n "$c_target" ]; then
+      c_target=$(gate_unquote "$c_target")
+      case "$c_target" in *'$'*|*'`'*) c_target="" ;; esac
+      if [ -n "$c_target" ]; then
+        [[ "$c_target" != /* ]] && c_target="$seg_target/$c_target"
+        seg_target="$c_target"
+      fi
+    fi
+    printf '%s\t%s\n' "$seg_target" "${segment#"$verb_run"}"
+  done < <(gate_segments "$cmd")
+  return 0
+}
+
 # gate_pr_selector <command> <verb-ere>
 #
 # Print the PR number the guarded command targets, or NOTHING when it carries no
