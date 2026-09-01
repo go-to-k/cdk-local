@@ -454,6 +454,46 @@ The hooks split into four classes:
   / etc. pass through). Fails open when `gh` is missing or
   unauthenticated.
 
+  The remote and branch are read per SEGMENT, from `gate_verb_args` —
+  the same constant that armed the gate. They used to be read off the
+  WHOLE COMMAND with a leftmost-longest
+  `[[ "$cmd" =~ [[:space:]]push([[:space:]]+(.*))?$ ]]`, cut at the
+  first `&&` / `;` / `|`. Run standalone, that parse gave:
+
+  ```text
+  git push origin feat/x                              args [origin feat/x]
+  echo "remember to push origin main" && git push origin feat/x
+                                                      args [origin main"…]
+  git push origin main && git push origin feat/x      args [origin main…]
+  ```
+
+  A quoted MENTION of push steers the branch to `main"`, and a chained
+  push is judged on the FIRST one. In both cases
+  `gh pr list --head <wrong branch>` finds no merged PR, the gate exits
+  0, and the orphan push proceeds unjudged — the whole failure above.
+  The same defect was reproduced in the sibling repo's copy, which is
+  why it was fixed rather than filed.
+
+  EVERY matching segment is judged, not the last, so
+  `git push origin main && git push origin <merged>` blocks whichever
+  half is the merged one; the walk stops at the first segment that
+  blocks, so an ordinary single push still makes at most one `gh` call.
+  The `|` / `;` / `&&` strips are gone from the argument parse — a
+  segment already ends at those, and a `push` after one is now its own
+  turn in the walk — while the REDIRECTION strip stays, since `>x` can
+  still sit inside a segment.
+
+  One limit, stated rather than hidden: `target_dir` is resolved ONCE
+  for the whole command, because `gate_target_dir` reports the LAST
+  matching segment's tree and the helper exposes no per-segment answer.
+  Rebuilding a per-segment prefix to ask again was rejected —
+  re-splitting already-segmented text would let a newline inside a
+  quoted argument surface as a `cd` segment, a worse hole than the one
+  it closes. The exposure is narrow: the positional branch comes from
+  the segment itself, so `target_dir` only decides the `symbolic-ref`
+  fallback for a push that OMITS its branch, and only when one command
+  pushes from two different trees.
+
 - **`markgate-pipe-gate.sh`** blocks a Bash call in which
   `markgate verify <gate>`, `markgate set <gate>` or `markgate run
   <gate> -- <cmd>` feeds a `|` pipeline, because there `$?` is the LAST
@@ -609,8 +649,9 @@ The hooks split into four classes:
   a preceding `cd` can put two segments of one command in two trees.
   Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
   main-tree block pins the chained blocks, the per-segment allowances,
-  the linked-worktree pass and the quoted-mention pair (135 cases in
-  that file overall).
+  the linked-worktree pass and the quoted-mention pair (149 cases in
+  that file overall, alongside the `post-merge-orphan-push-gate` block
+  added for the same defect).
 
 ## 3. Markgate-backed gates
 

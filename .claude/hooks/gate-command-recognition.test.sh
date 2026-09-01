@@ -65,6 +65,12 @@ cat > "$SHIM/gh" <<'GH'
 [ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
 case "$*" in
   "auth status"*) exit 0 ;;
+  # post-merge-orphan-push-gate asks `gh pr list --head <branch> --state merged`.
+  # Exactly ONE branch answers with a merged PR, so a case that blocks proves the
+  # gate resolved THAT branch rather than merely reaching gh.
+  *"pr list"*"--head feat/merged"*)
+    echo '[{"number":7,"mergedAt":"2026-01-01T00:00:00Z","headRefName":"feat/merged","title":"merged lane"}]' ;;
+  *"pr list"*) echo '[]' ;;
   *"pr view --json number"*) echo 999 ;;   # the CURRENT BRANCH's PR, never the target
   *"pr view"*"body"*) echo 'Closes (#12)' ;;
   *"pr view"*) echo '{"additions":50,"deletions":10,"changedFiles":2,"files":[],"headRefOid":"abc","headRefName":"f"}' ;;
@@ -174,6 +180,49 @@ run_case_cwd "main-tree-branch: chained -c in a worktree" 0 main-tree-branch-gat
 # ...and a `-C` back at the main tree is blocked from anywhere, so the case
 # above is passing on the resolved TREE rather than on the command shape.
 run_case_cwd "main-tree-branch: -C main tree from a worktree" 2 main-tree-branch-gate.sh "$MT_WT" "git fetch && git -C $repo switch -c feat/x"
+
+# post-merge-orphan-push-gate blocks a push to a branch whose PR already merged.
+# Same defect as main-tree-branch-gate above and fixed the same way: it read the
+# remote/branch off the WHOLE COMMAND with a leftmost-longest `=~ [[:space:]]push
+# (.*)$`, then cut at the first `&&` / `;` / `|`. Run standalone, that parse gave:
+#
+#   git push origin feat/x                            -> args [origin feat/x]
+#   echo "remember to push origin main" && git push origin feat/x
+#                                                     -> args [origin main"...]
+#   git push origin main && git push origin feat/x    -> args [origin main...]
+#
+# so a quoted MENTION steers the branch to `main"` and a chain is judged on the
+# FIRST push. Either way `gh pr list --head <wrong branch>` finds nothing, the
+# gate exits 0, and the orphan push proceeds unjudged. The gh stub answers a
+# merged PR for `feat/merged` and an empty list for everything else, so a case
+# that blocks proves WHICH branch the gate resolved.
+run_case "orphan-push: bare push to a merged branch"  2 post-merge-orphan-push-gate.sh 'git push origin feat/merged'
+run_case "orphan-push: quoted push MENTION first"     2 post-merge-orphan-push-gate.sh 'echo \"remember to push origin main\" && git push origin feat/merged'
+run_case "orphan-push: chained, merged one is LAST"   2 post-merge-orphan-push-gate.sh 'git push origin main && git push origin feat/merged'
+# EVERY matching segment is judged, not the last: with the merged push FIRST, a
+# gate that only looked at the final segment would let it through.
+run_case "orphan-push: chained, merged one is FIRST"  2 post-merge-orphan-push-gate.sh 'git push origin feat/merged && git push origin main'
+run_case "orphan-push: cd prefix with a semicolon"    2 post-merge-orphan-push-gate.sh 'cd /tmp; git push origin feat/merged'
+run_case "orphan-push: flags around the positionals"  2 post-merge-orphan-push-gate.sh 'git push --force-with-lease origin feat/merged'
+# The allowances, unchanged. Each is the false-BLOCK direction of a case above.
+run_case "orphan-push: unmerged branch passes"        0 post-merge-orphan-push-gate.sh 'git push origin feat/live'
+run_case "orphan-push: deletion refspec passes"       0 post-merge-orphan-push-gate.sh 'git push origin :feat/merged'
+run_case "orphan-push: sha:branch refspec passes"     0 post-merge-orphan-push-gate.sh 'git push origin abc123:feat/merged'
+run_case "orphan-push: non-origin remote passes"      0 post-merge-orphan-push-gate.sh 'git push upstream feat/merged'
+# The mandated quoted-body false-positive pair. Both carry a WORD after the
+# branch so that dropping the verb ERE's start anchor yields a parsable
+# `origin feat/merged ...` -- without it the mention parses to a branch with a
+# stray quote, gh answers nothing, and the case would pass against the broken
+# gate for the wrong reason.
+run_case "orphan-push: double-quoted mention"         0 post-merge-orphan-push-gate.sh 'echo \"next: git push origin feat/merged then open a PR\"'
+run_case "orphan-push: single-quoted mention"         0 post-merge-orphan-push-gate.sh "git commit -m 'then git push origin feat/merged later'"
+# `-u` with no branch derives it from the resolved tree via `symbolic-ref`, so
+# both polarities are pinned: the sandbox repo is on `feature` (not merged), and
+# a worktree checked out on `feat/merged` must block.
+run_case "orphan-push: -u with no branch, on feature" 0 post-merge-orphan-push-gate.sh 'git push -u origin'
+MERGED_WT="$TMPDIR/wt-merged"
+git -C "$repo" worktree add -q -b feat/merged "$MERGED_WT" 2>/dev/null
+run_case_cwd "orphan-push: -u with no branch, on the merged branch" 2 post-merge-orphan-push-gate.sh "$MERGED_WT" 'git push -u origin'
 
 # markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
 # exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook
