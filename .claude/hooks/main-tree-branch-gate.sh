@@ -54,8 +54,14 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
-  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
+if ! declare -F gate_matches >/dev/null 2>&1 \
+  || ! declare -F gate_verb_args_dir >/dev/null 2>&1; then
+  # `gate_verb_args_dir` is named too, not only `gate_matches`: it feeds the
+  # segment loop through a process substitution, so a library that predates it
+  # yields NO lines, the loop body never runs, and the gate exits 0 -- a silent
+  # bypass with no error anywhere. That is precisely what this fail-closed
+  # check exists to stop.
+  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches / gate_verb_args_dir is undefined (truncated or stale file?)." >&2
   exit 2
 fi
 
@@ -110,12 +116,29 @@ canonicalize() {
 # in to the worktree convention; prints nothing and returns 1 otherwise. Called
 # per matched segment, since `-C` / a preceding `cd` can put two segments of one
 # command in two different trees.
+#
+# LIMIT, stated rather than hidden. `gate_segments` FLATTENS a subshell, so a
+# `cd` inside one leaks past the closing paren and steers every later segment:
+#
+#   (cd <worktree> && git switch -c a) && git switch -c b
+#
+# resolves segment 3 to the worktree and PASSES. Measured from the real main
+# checkout, rc=0 where 2 is wanted -- and measured the same against the hook
+# BEFORE the per-segment change, so this is a pre-existing bound rather than one
+# that change introduced. Closing it means teaching the shared segmenter to
+# report subshell depth, which is a change to every gate that calls it, not to
+# this one. The exposure is narrow in the other direction too: the false-BLOCK
+# twin cannot happen, since a leaked `cd` can only ever make the gate quieter.
 main_tree_of() {
   local dir="$1" main_tree
   # `git rev-parse --show-toplevel` returns the CURRENT worktree's top, which
   # differs between the main tree and any `.claude/worktrees/<x>/`. Cheaper
   # heuristic: the main worktree is whatever `git worktree list` lists first.
-  main_tree=$(git -C "$dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+  # `substr($0, 10)` rather than `$2`: awk splits on whitespace, so a worktree
+  # path containing a SPACE was truncated at it and the compare below then
+  # never matched -- the gate stood down over a main tree it had mis-read. The
+  # sibling repo's copy already read the whole field.
+  main_tree=$(git -C "$dir" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10); exit}')
   # Not in a git repo / cannot resolve — pass through (we do not gate what we
   # cannot see).
   [ -n "$main_tree" ] || return 1
@@ -155,10 +178,22 @@ verdict_for() {
   case "$verb" in
     switch)
       # `git switch <name>` / `git switch -c <name>` / `git switch -C <name>`
-      # (force-create).
-      if [[ "$first_token" == "-c" || "$first_token" == "-C" ]]; then
+      # (force-create), and the LONG forms of both. Reading only `-c` / `-C` got
+      # the verdict right and the TEXT wrong: `git switch --create feat/x`
+      # blocked while naming the branch `--create`, which is the name the
+      # message then tells you to replay in a worktree.
+      if [[ "$first_token" == "-c" || "$first_token" == "-C" \
+         || "$first_token" == "--create" || "$first_token" == "--force-create" ]]; then
         target_branch="$second_token"
         block_reason="creates new feature branch '$target_branch'"
+        return 0
+      fi
+      # `--detach` moves the SHARED tree off `main` exactly as a branch switch
+      # does, so the verdict is unchanged; only the wording is, since there is
+      # no branch to name.
+      if [[ "$first_token" == "--detach" || "$first_token" == "-d" ]]; then
+        target_branch=""
+        block_reason="detaches HEAD in the main tree (\`git switch $first_token\`)"
         return 0
       fi
       target_branch="$first_token"
@@ -215,19 +250,36 @@ for gate_candidate in "$GATE_RE_GIT_SWITCH" "$GATE_RE_GIT_CHECKOUT"; do
   else
     verb="checkout"
   fi
-  # Where the gated command will actually run: a `-C <path>` inside the MATCHED
-  # segment wins, else the last `cd <path>` segment before it, else the hook
-  # payload's cwd (see gate_target_dir in _command-match.sh).
-  seg_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_candidate")
-  seg_main=$(main_tree_of "$seg_dir") || continue
-  while IFS= read -r seg_args; do
+  # Where each matching SEGMENT runs, resolved by the SAME walk that yields its
+  # arguments: a `-C <path>` inside THAT segment wins, else the `cd <path>`
+  # segments before it, else the hook payload's cwd.
+  #
+  # Resolving it once per COMMAND -- `gate_target_dir`, whose walk stops at the
+  # first matching segment -- made segment 1's tree decide every segment, and
+  # got BOTH directions wrong. Measured against the real main checkout and the
+  # real linked worktree, payload cwd = the main tree:
+  #
+  #   git -C <wt> switch -c a && git switch -c b       rc=0, want 2  BYPASS
+  #   git -C <wt> checkout -b a && git checkout -b b   rc=0, want 2  BYPASS
+  #   git switch main && git -C <wt> switch -c a       rc=2, want 0  FALSE BLOCK
+  #
+  # The first two are the `git fetch && git switch -c` bypass this branch closed
+  # one commit earlier, one operator further along; the third refuses a branch
+  # creation IN a linked worktree, which is what the convention mandates.
+  # `main_tree_of` already said "called per matched segment" here -- it was not.
+  while IFS= read -r seg_line; do
+    # Split on the FIRST tab only. `IFS=$'\t' read -r dir args` would fold a TAB
+    # RUN inside the args -- tab is IFS whitespace -- and drop one.
+    seg_dir="${seg_line%%$'\t'*}"
+    seg_args="${seg_line#*$'\t'}"
+    seg_main=$(main_tree_of "$seg_dir") || continue
     if verdict_for "$verb" "$seg_args" "$seg_dir"; then
       target_dir="$seg_dir"
       main_tree="$seg_main"
       blocked=1
       break
     fi
-  done < <(gate_verb_args "$cmd" "$gate_candidate")
+  done < <(gate_verb_args_dir "$cmd" "${hook_cwd:-$PWD}" "$gate_candidate")
   [ "$blocked" -eq 1 ] && break
 done
 

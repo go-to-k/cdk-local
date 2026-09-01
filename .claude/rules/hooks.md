@@ -173,7 +173,7 @@ The hooks split into four classes:
   OPEN: the commit proceeds, and the only signal is an error on stderr
   that reads like noise from the hook rather than a refusal.
 
-  `.claude/hooks/control-char-gate.test.sh` (115 cases, run by
+  `.claude/hooks/control-char-gate.test.sh` (118 cases, run by
   `vp run test:hooks`) drives all of the above through the real hook
   against throwaway repositories, in BOTH directions. Two review rounds
   found live blockers behind 52 and then 93 green cases, both times in
@@ -695,19 +695,53 @@ The hooks split into four classes:
 
   `/work-issues` prints the chained spelling, so the bypass sat on the
   mandated path. Every matching segment is judged now, not just one, so
-  `git switch main && git switch -c feat` blocks on its second half;
-  the main-tree test and the `.markgate.yml` opt-in are likewise
-  evaluated against the tree THAT segment resolves to, since a `-C` or
-  a preceding `cd` can put two segments of one command in two trees.
+  `git switch main && git switch -c feat` blocks on its second half.
+
+  The main-tree test and the `.markgate.yml` opt-in are ALSO evaluated
+  against the tree THAT segment resolves to — and this paragraph, and
+  `main_tree_of`'s own header, asserted that before it was true. The
+  tree was in fact resolved ONCE per verb candidate, outside the walk,
+  so segment 1 decided every segment. That is a bypass in one direction
+  and a false block in the other, both live. Measured against the real
+  main checkout and its real linked worktree, payload cwd = the main
+  tree:
+
+  ```text
+  git -C <wt> switch -c a && git switch -c b        rc=0  want 2  <- bypass
+  git -C <wt> checkout -b a && git checkout -b b    rc=0  want 2  <- bypass
+  git switch main && git -C <wt> switch -c a        rc=2  want 0  <- false block
+  ```
+
+  Fixed on 2026-09-01 by `gate_verb_args_dir` in
+  `.claude/hooks/_command-match.sh`, which emits `<dir>TAB<args>` per
+  matching segment out of ONE walk, so the tree and the arguments
+  cannot come from different segments. A `cd` persists into later
+  segments; a `-C` binds only its own command.
+
+  LIMIT, stated rather than hidden: `gate_segments` FLATTENS a subshell,
+  so a `cd` inside one leaks past the closing paren.
+  `(cd <wt> && git switch -c a) && git switch -c b` from the main tree
+  resolves segment 3 to `<wt>` and passes — measured rc=0, want 2, and
+  measured the same on the pre-fix hook, so it is a pre-existing bound
+  rather than one this change introduced. Closing it means teaching the
+  shared segmenter to report subshell depth, which is a change to every
+  gate that calls it.
   Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
   main-tree block pins the chained blocks, the per-segment allowances,
-  the linked-worktree pass and the quoted-mention pair (154 cases in
+  the linked-worktree pass and the quoted-mention pair (167 cases in
   that file overall, alongside the `post-merge-orphan-push-gate` block
   added for the same defect). The interpreter those cases run the hooks
   under is now explicit: a `bash` symlink at the front of the pinned
   PATH, defaulting to `/bin/bash` (3.2 on macOS) and overridable with
   `HOOK_BASH=<path> bash .claude/hooks/gate-command-recognition.test.sh`
-  to take the 5.x tally.
+  to take the 5.x tally. `pr-body-item-number-gate.test.sh` and
+  `stop-unmerged-lane-warn.test.sh` had NO such shim until
+  2026-09-01, so their hooks ran under whatever bash PATH gave (5.x
+  here) whichever interpreter started the suite; both now default the
+  same way and print the interpreter they measured on their first
+  line. Proved load-bearing rather than assumed: injecting a
+  bash-4-only `;;&` parse error into each hook reddens 16 of 33 and 87
+  of 102 under 3.2 and none of either under 5.3.9.
 
 ## 3. Markgate-backed gates
 
@@ -1467,7 +1501,7 @@ so the VERDICT stayed right while a traceback went to the hook's stderr
 on every single turn. A case asserts stderr is empty for that payload —
 no case that reads stdout can see it.
 
-Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 88 cases)
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 102 cases)
 carries five fixture traps worth knowing before editing it, because each
 cost a case a wrong-reason pass:
 

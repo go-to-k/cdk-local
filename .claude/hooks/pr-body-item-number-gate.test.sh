@@ -25,11 +25,11 @@
 #   - every heredoc chunk writing the path, not merely the first, and an EMPTY
 #     heredoc body as distinct from no heredoc at all
 #
-# Measured rather than asserted (2026-08-31, bash 5.3): an always-`exit 0` stub
-# fails 16 of these and an always-`exit 2` stub fails 16, so neither direction
-# can pass vacuously. Keep these numbers current when cases are added -- a stale
-# count in a comment that exists to prove non-vacuity is itself the thing it
-# warns about.
+# Measured rather than asserted, and RE-MEASURED 2026-09-01 at 33 cases under
+# BOTH interpreters: an always-`exit 0` stub fails 16 of these and an
+# always-`exit 2` stub fails 16, so neither direction can pass vacuously. Keep
+# these numbers current when cases are added -- a stale count in a comment that
+# exists to prove non-vacuity is itself the thing it warns about.
 
 set -u
 
@@ -38,6 +38,39 @@ PASS=0
 FAIL=0
 
 TMPROOT=$(mktemp -d)
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH` puts a `bash` shim first on PATH so the shebang, the explicit
+# `bash "$HOOK"` calls, and any `bash` the hook itself spawns all follow the
+# harness. Proved load-bearing rather than assumed: injecting a `;;&` (a bash
+# 4+ case terminator) into the hook reddens cases only WITH the shim in place.
+# DEFAULTED to `/bin/bash` (3.2 on macOS) rather than left opt-in, matching
+# `gate-command-recognition.test.sh` in this repo: nothing sets `HOOK_BASH` in
+# `vp run test:hooks`, so an opt-in fence measures 5.x in CI forever and the 3.2
+# tally is only ever taken by hand. Override with
+# `HOOK_BASH=/opt/homebrew/bin/bash bash <this file>` to take the 5.x one.
+HOOK_BASH="${HOOK_BASH:-/bin/bash}"
+[ -x "$HOOK_BASH" ] || HOOK_BASH="$(command -v bash)"
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first: `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would die on ELOOP -- a suite-wide red with a cause nowhere near
+  # the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$TMPROOT/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+# PRINTED, not merely honoured: a suite that does not say which interpreter it
+# measured cannot be read as evidence about either one.
+printf 'hook interpreter: %s (bash %s)\n' \
+  "$(command -v bash)" "$(bash -c 'echo "$BASH_VERSION"')"
+
 trap 'rm -rf "$TMPROOT"' EXIT
 
 # write_file <name> <content>  -> echoes the absolute path

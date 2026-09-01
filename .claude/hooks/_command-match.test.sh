@@ -839,5 +839,66 @@ want_match 1 "git stash is not git stage"    'git stash push -m x' "$A"
 want_args "-A"          "args after git stage"         'git stage -A' "$A"
 
 
+# --- gate_verb_args_dir: the tree AND the args, per segment, from one walk ----
+#
+# `want_dir` above measures `gate_target_dir`, which answers for the WHOLE
+# command. These measure the per-segment answer, and the FIRST of them is the
+# anti-drift fence: on a single-segment command the two functions must agree, so
+# the deliberate copy of the cd / `-C` reading inside `gate_verb_args_dir`
+# cannot drift from the original without a red case.
+want_lines() { # <expected, newline-joined> <label> <cmd> <fallback> <re>
+  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got
+  got=$(gate_verb_args_dir "$cmd" "$fallback" "$re")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$label" "$want" "$got"
+  fi
+}
+
+TAB=$(printf '\t')
+for _probe in 'git push origin main' 'cd /a/b && git push origin main' \
+              'git -C /w/t push origin main' 'cd /a/b && git -C /w/t push origin main' \
+              'cd /a/b && cd c && git push origin main'; do
+  _one=$(gate_target_dir "$_probe" /fallback "$P")
+  _each=$(gate_verb_args_dir "$_probe" /fallback "$P")
+  _each="${_each%%$TAB*}"
+  if [ "$_one" = "$_each" ]; then
+    pass=$((pass + 1)); printf 'OK   per-segment dir agrees with gate_target_dir :: %s\n' "$_probe"
+  else
+    fail=$((fail + 1)); printf 'FAIL per-segment dir disagrees :: %s\n  whole: %s\n  seg:   %s\n' "$_probe" "$_one" "$_each"
+  fi
+done
+unset _probe _one _each
+
+# ...and the part `gate_target_dir` CANNOT express: two segments, two trees.
+want_lines "/w/one${TAB}origin a
+/w/two${TAB}origin b" "two -C segments resolve independently" \
+  'git -C /w/one push origin a && git -C /w/two push origin b' /fallback "$P"
+# A `cd` PERSISTS into the next segment; a `-C` binds only its own command.
+want_lines "/a/b${TAB}origin a
+/a/b${TAB}origin b" "a cd carries into later segments" \
+  'cd /a/b && git push origin a && git push origin b' /fallback "$P"
+want_lines "/a/b${TAB}origin a
+/w/t${TAB}origin b
+/a/b${TAB}origin c" "a -C does not leak into the next segment" \
+  'cd /a/b && git push origin a && git -C /w/t push origin b && git push origin c' /fallback "$P"
+# An UNEXPANDED path is skipped, exactly as `gate_target_dir` skips it, so the
+# segment falls back to the running cd state rather than to a literal `$W`.
+want_lines "/fallback${TAB}origin a" "an unexpanded -C falls back, not to a literal" \
+  'git -C "$W" push origin a' /fallback "$P"
+
+
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=367
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -150,6 +150,8 @@ target_dir=$(gate_target_dir "$cmd" "${hook_cwd:-$PWD}" "$GATE_RE_GIT_PUSH")
 # could not check anything on this machine" -- so it is stated once per command.
 gh_bin=""
 gh_probed=0
+# Same one-note-per-command rule for the gh FAILURE note below.
+gh_failed_noted=0
 resolve_gh() {
   if [ "$gh_probed" -eq 1 ]; then
     [ -n "$gh_bin" ] && return 0
@@ -270,12 +272,20 @@ parse_push_args() {
   # through, contrary to what this comment used to claim: `--delete` sits in the
   # valueless-flag list above, so it is skipped and `branch` lands in `$branch`
   # as an ordinary positional, which then blocks like any content push. Left as
-  # is deliberately. Deleting the merged branch again is a no-op on GitHub (the
-  # merge already deleted it), so the false block costs nothing real, whereas
-  # teaching the flag list to swallow its argument would hand every `--delete`
-  # spelling a pass-through the `:branch` arm grants only after reading a
-  # refspec. If it ever needs to pass, the fix is a `--delete`-specific arm
-  # here, not a change to the flag list.
+  # is deliberately -- but the reason has to be narrower than the one that used
+  # to stand here. "Deleting the merged branch again is a no-op" holds only
+  # while the branch is GONE, and the one case where `git push origin --delete
+  # <merged>` is a REAL operation is exactly the case this gate warns about: an
+  # ORPHAN ref re-created after the merge deleted it. Deleting that is the right
+  # cleanup, and the block then prints a cherry-pick remedy that does not apply
+  # to it.
+  #
+  # It is still left as is, because the cost is a confusing message on a
+  # deliberate cleanup, against teaching the flag list to swallow its argument
+  # -- which would hand EVERY `--delete` spelling a pass-through the `:branch`
+  # arm grants only after reading a refspec. If it ever needs to pass, the fix
+  # is a `--delete`-specific arm here (which can then print the right remedy),
+  # not a change to the flag list.
   case "$branch" in
     :*|*:*) return 1 ;;
   esac
@@ -288,8 +298,15 @@ parse_push_args() {
     # the `gate_segments` process substitution, so a callee that reads stdin
     # would consume segments the walk has not judged yet. `symbolic-ref` does
     # not read stdin today; the fence is here so that stays a property of the
-    # CALL SITE rather than of the callee. No case can pin it -- the failure it
-    # forecloses does not exist yet -- which is why it is stated here.
+    # CALL SITE rather than of the callee.
+    #
+    # THIS half is genuinely unpinnable and the `gh` one below is NOT, which is
+    # a distinction an earlier version of this comment did not draw -- it
+    # claimed "no case can pin it" for both. `git` is the real binary in the
+    # smoke suite, so making it drain stdin would mean shipping a git stub; the
+    # `gh` call is already a suite-owned stub, so teaching that stub to read
+    # stdin plus one two-push case discriminates its `</dev/null` exactly. That
+    # case now exists in gate-command-recognition.test.sh.
     branch=$(git -C "$target_dir" symbolic-ref --short HEAD </dev/null 2>/dev/null || echo "")
   fi
 
@@ -327,7 +344,18 @@ judge_push() {
               --json number,mergedAt,headRefName,title </dev/null 2>/dev/null || true)
 
   if [ -z "$pr_json" ] || [ "$pr_json" = "null" ]; then
-    echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2
+    # ONCE PER COMMAND, like `resolve_gh`'s missing-gh note and for the same
+    # reason: it describes a per-command condition ("this machine's gh could
+    # not answer"), not a per-segment verdict. Unguarded it printed once per
+    # gateable segment, so `git push origin a && git push origin b && git push
+    # origin c` emitted it three times -- while `.claude/rules/hooks.md` states
+    # the note is stated once. The memo is a separate flag rather than a check
+    # on `pr_json`, because an empty answer is also a legitimate per-segment
+    # result.
+    if [ "$gh_failed_noted" -eq 0 ]; then
+      gh_failed_noted=1
+      echo "post-merge-orphan-push-gate: gh pr list failed or returned empty; skipping check." >&2
+    fi
     return 1
   fi
 

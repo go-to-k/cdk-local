@@ -92,9 +92,21 @@ GIT
 # A `gh` shim that LOGS its argv. Without it the gh-calling gates fail open and
 # every pair below is satisfied vacuously at 0 -- which is exactly how three live
 # bypasses were certified green (see run_sel).
+# The stub DRAINS ITS STDIN, and that is the point rather than hygiene. A gate
+# calls `gh` from inside a `while IFS= read -r` loop whose stdin IS the
+# `gate_segments` process substitution, so a `gh` that reads stdin eats the
+# segments the walk has not judged yet -- and the real `gh` is free to. The
+# `</dev/null` redirections in post-merge-orphan-push-gate exist for exactly
+# that, and its own comment used to say no case could pin them. One can: this
+# line plus the two-push case below.
+#
+# `GH_FAIL` makes the stub answer NOTHING, which is how the gate's "gh pr list
+# failed or returned empty" arm is reached with a gh that exists.
 cat > "$SHIM/gh" <<'GH'
 #!/usr/bin/env bash
+cat >/dev/null
 [ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
+[ -n "${GH_FAIL:-}" ] && exit 0
 case "$*" in
   "auth status"*) exit 0 ;;
   # post-merge-orphan-push-gate asks `gh pr list --head <branch> --state merged`.
@@ -188,6 +200,25 @@ run_note_count() {
       "$name" "$got" "$want" "$out"
   fi
 }
+# The same count, over the SHIM farm (gh PRESENT) and with the stub answering
+# nothing, so the gate's OTHER note -- "gh pr list failed or returned empty" --
+# is the one measured. That note describes a per-COMMAND condition and was
+# printed once per gateable SEGMENT.
+#
+# run_note_count_shim <name> <hook> <cmd> <substring> <expected count>
+run_note_count_shim() {
+  local name="$1" hook="$2" cmd="$3" needle="$4" want="$5" got out
+  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
+    | env PATH="$SHIM:/usr/bin:/bin" GH_FAIL=1 "$HOOKS/$hook" 2>&1)
+  got=$(printf '%s\n' "$out" | grep -cF -- "$needle" | tr -d ' ')
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(said it $got time(s))"
+  else
+    fail=$((fail + 1)); printf 'FAIL %s (said it %s time(s), expected %s)\n  out: %s\n' \
+      "$name" "$got" "$want" "$out"
+  fi
+}
+
 # The farm itself: everything the gate and the shared matcher shell out to, and
 # NOTHING else -- no `gh` exists anywhere on this PATH, on any host.
 NOGH="$TMPDIR/nogh"; mkdir -p "$NOGH"
@@ -271,6 +302,46 @@ run_case_cwd "main-tree-branch: chained -c in a worktree" 0 main-tree-branch-gat
 # above is passing on the resolved TREE rather than on the command shape.
 run_case_cwd "main-tree-branch: -C main tree from a worktree" 2 main-tree-branch-gate.sh "$MT_WT" "git fetch && git -C $repo switch -c feat/x"
 
+# The BLOCKING arms of `verdict_for` had no case at all, which is a one-sided
+# fence in the dangerous direction: every pass arm was pinned and every block
+# arm was free. Measured before adding these -- deleting the plain-switch arm,
+# and deleting the `show-ref` local-branch arm, each left this suite green.
+run_case "main-tree-branch: plain switch to a feature branch" 2 main-tree-branch-gate.sh 'git switch feature'
+run_case "main-tree-branch: checkout of an existing local branch" 2 main-tree-branch-gate.sh 'git checkout feature'
+# ...and its discriminator: a name that is NOT a local branch is a pathspec/sha
+# and must pass, so the case above cannot be satisfied by blocking every name.
+run_case "main-tree-branch: checkout of a non-branch name passes" 0 main-tree-branch-gate.sh 'git checkout README.md'
+
+# PER-SEGMENT TREE RESOLUTION. `main_tree_of` said "called per matched segment"
+# while the tree was in fact resolved ONCE per verb candidate, outside the walk,
+# so segment 1 decided every segment. Both directions were live; measured
+# against the real main checkout and its real linked worktree, payload cwd = the
+# main tree:
+#
+#   git -C <wt> switch -c a && git switch -c b       rc=0, want 2  BYPASS
+#   git -C <wt> checkout -b a && git checkout -b b   rc=0, want 2  BYPASS
+#   git switch main && git -C <wt> switch -c a       rc=2, want 0  FALSE BLOCK
+run_case "main-tree-branch: worktree segment does not excuse a later main-tree switch" 2 \
+  main-tree-branch-gate.sh "git -C $MT_WT switch -c feat/a && git switch -c feat/b"
+run_case "main-tree-branch: worktree segment does not excuse a later main-tree checkout" 2 \
+  main-tree-branch-gate.sh "git -C $MT_WT checkout -b feat/a && git checkout -b feat/b"
+run_case "main-tree-branch: a main-tree segment does not condemn a later worktree one" 0 \
+  main-tree-branch-gate.sh "git switch main && git -C $MT_WT switch -c feat/a"
+# A `cd` PERSISTS into later segments while a `-C` binds only its own command --
+# the two halves of the per-segment resolution, each with its false direction.
+run_case "main-tree-branch: cd into a worktree carries into the next segment" 0 \
+  main-tree-branch-gate.sh "cd $MT_WT && git switch -c feat/a && git switch -c feat/b"
+run_case "main-tree-branch: a -C back at the main tree after that cd still blocks" 2 \
+  main-tree-branch-gate.sh "cd $MT_WT && git switch -c feat/a && git -C $repo switch -c feat/b"
+
+# The block MESSAGE names the branch, not the flag: the verdict for
+# `git switch --create feat/x` was already right, and the text called the
+# branch `--create` -- the name the message then tells you to replay elsewhere.
+run_case_msg "main-tree-branch: --create names the branch" 2 main-tree-branch-gate.sh \
+  'git switch --create feat/x' "feat/x" "'--create'"
+run_case_msg "main-tree-branch: --detach is not a branch name" 2 main-tree-branch-gate.sh \
+  'git switch --detach origin/main' "detaches HEAD" "feature branch '--detach'"
+
 # post-merge-orphan-push-gate blocks a push to a branch whose PR already merged.
 # Same defect as main-tree-branch-gate above and fixed the same way: it read the
 # remote/branch off the WHOLE COMMAND with a leftmost-longest `=~ [[:space:]]push
@@ -351,6 +422,25 @@ run_case_msg "orphan-push: refusal names the blocking segment" 2 post-merge-orph
 run_note_count "orphan-push: the no-gh note is stated once" post-merge-orphan-push-gate.sh \
   'git push origin a && git push origin b && git push origin c' \
   'gh not installed' 1
+
+# The gh call's `</dev/null`, which the gate's own comment called unpinnable.
+# The stub above drains stdin, and the walk's stdin IS the segment stream: a
+# `gh` invoked without `</dev/null` eats every segment after the one that called
+# it, so the SECOND push -- the one to the merged branch -- is never judged and
+# the gate exits 0. The order matters: the live branch must come FIRST, so the
+# gate really does call gh and carry on.
+run_case "orphan-push: a gh call does not eat the segments after it" 2 \
+  post-merge-orphan-push-gate.sh 'git push origin feat/live && git push origin feat/merged'
+# The false-BLOCK control: two LIVE branches must still pass, so the case above
+# is not satisfied by a gate that blocks any two-push command.
+run_case "orphan-push: two live pushes still pass" 0 \
+  post-merge-orphan-push-gate.sh 'git push origin feat/live && git push origin feat/other'
+
+# The gh-FAILURE note is a per-COMMAND decision, like the missing-gh note above.
+run_note_count_shim "orphan-push: the gh-failure note is stated once" post-merge-orphan-push-gate.sh \
+  'git push origin a && git push origin b && git push origin c' \
+  'gh pr list failed or returned empty' 1
+
 
 # markgate-pipe-gate guards the two markgate VERDICT verbs, and only when their
 # exit status feeds a pipe (go-to-k/cdk-local#571). Driven through the real hook
@@ -663,5 +753,16 @@ for g in closes-paren-form-gate.sh non-english-text-gate.sh \
   selector_guard "$g"
 done
 
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=167
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

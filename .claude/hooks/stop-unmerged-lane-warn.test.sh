@@ -149,6 +149,39 @@ print("BOTH" if ctx and sysm else "ctx" if ctx else "sys" if sysm else "none")
 # defect it was written for (a skip keyed on the hook's own checkout) could be
 # reintroduced and the suite stayed 10/0.
 SANDBOX="$(cd "$(mktemp -d)" && pwd -P)"
+# bash 3.2 is NOT exercised on the HOOK by running THIS FILE under /bin/bash.
+# The hook's shebang is `#!/usr/bin/env bash`, which resolves through PATH and
+# finds whatever bash is first there -- Homebrew 5.x on a dev Mac -- so
+# `/bin/bash <suite>` measured the SUITE under 3.2 and the SUBJECT under 5.x.
+# `HOOK_BASH` puts a `bash` shim first on PATH so the shebang, the explicit
+# `bash "$HOOK"` calls, and any `bash` the hook itself spawns all follow the
+# harness. Proved load-bearing rather than assumed: injecting a `;;&` (a bash
+# 4+ case terminator) into the hook reddens cases only WITH the shim in place.
+# DEFAULTED to `/bin/bash` (3.2 on macOS) rather than left opt-in, matching
+# `gate-command-recognition.test.sh` in this repo: nothing sets `HOOK_BASH` in
+# `vp run test:hooks`, so an opt-in fence measures 5.x in CI forever and the 3.2
+# tally is only ever taken by hand. Override with
+# `HOOK_BASH=/opt/homebrew/bin/bash bash <this file>` to take the 5.x one.
+HOOK_BASH="${HOOK_BASH:-/bin/bash}"
+[ -x "$HOOK_BASH" ] || HOOK_BASH="$(command -v bash)"
+if [ -n "${HOOK_BASH:-}" ]; then
+  # Resolved to an ABSOLUTE path first: `HOOK_BASH=bash` would otherwise make
+  # `ln -sf bash <shim>/bash` a symlink pointing at ITSELF, and every hook
+  # invocation would die on ELOOP -- a suite-wide red with a cause nowhere near
+  # the hook.
+  HOOK_BASH_BIN="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")"
+  case "$HOOK_BASH_BIN" in /*) ;; *) HOOK_BASH_BIN="$PWD/$HOOK_BASH_BIN" ;; esac
+  HOOK_BASH_SHIM="$SANDBOX/bash32-shim"
+  mkdir -p "$HOOK_BASH_SHIM"
+  ln -sf "$HOOK_BASH_BIN" "$HOOK_BASH_SHIM/bash"
+  PATH="$HOOK_BASH_SHIM:$PATH"
+  export PATH
+fi
+# PRINTED, not merely honoured: a suite that does not say which interpreter it
+# measured cannot be read as evidence about either one.
+printf 'hook interpreter: %s (bash %s)\n' \
+  "$(command -v bash)" "$(bash -c 'echo "$BASH_VERSION"')"
+
 trap 'rm -rf "$SANDBOX"' EXIT
 
 RC_FILE="$SANDBOX/rc"
@@ -683,6 +716,127 @@ clear_nudge_records
 out=$(run_hook_keep "$REPO" "$RUN" "$NONSTR_SID")
 check "...and still warns about the lane" "ctx" "$(channel_of "$out")"
 
+# --- The record path is a DIRECTORY. `mv -f <file> <dir>` returns SUCCESS -- it
+# moves the tmp INSIDE the directory -- so the write was certified, the readback
+# next turn found nothing, and EVERY turn re-armed `additionalContext` against
+# `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` while the git dir grew one orphan tmp per
+# turn. That is the unbounded cadence this mechanism exists to remove, arriving
+# through the success check -- the one failure `mv`'s own exit code cannot
+# report, which is why the unwritable-git-dir case above does not cover it.
+# Measured with `mv` alone: `ctx ctx ctx`.
+CAD_A_REC="$(git -C "$REPO/wt-cad-a" rev-parse --absolute-git-dir)/stop-nudge-lane"
+clear_nudge_records
+rm -f "$CAD_A_REC"
+mkdir -p "$CAD_A_REC"
+dir_channels=""
+for _ in 1 2 3; do
+  out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+  dir_channels="${dir_channels}$(channel_of "$out") "
+done
+dir_orphans=$(find "$CAD_A_REC" -type f 2>/dev/null | wc -l | tr -d ' ')
+rm -f "$CAD_A_REC"/* 2>/dev/null || true
+rmdir "$CAD_A_REC" 2>/dev/null || true
+check "a record path that is a DIRECTORY never arms the model channel" "sys sys sys " "$dir_channels"
+check "...and leaves no orphan tmp behind in the git dir" "0" "$dir_orphans"
+
+# --- A failed record write must say nothing on the hook's REAL stderr. The
+# redirect is `2>/dev/null >"$tmp"`, in that order, and the order is the point:
+# redirections apply left to right, and the open that FAILS is the fd-1 open of
+# `$tmp`. Written `>"$tmp" 2>/dev/null` that open happens while fd 2 is still
+# the real stderr, so "Permission denied" is printed there from an ADVISORY
+# hook, on every turn. `run_hook_stderr` exists here for the non-string-sid case
+# and was never pointed at this one.
+clear_nudge_records
+chmod a-w "$CAD_A_GITDIR"
+stderr_on_ro=$(run_hook_stderr "$REPO" "$RUN" "$A1")
+chmod u+w "$CAD_A_GITDIR"
+check "an unwritable git dir prints nothing on the hook's real stderr" "" "$stderr_on_ro"
+
+# --- The env fallback's SOURCE, keyed on the record rather than on the reset.
+# `sid_cadence` clears the record before each value, so it fences the tab /
+# newline FOLD and not the `CLAUDE_CODE_SESSION_ID` line it names: with that
+# source removed every run reads `shared`, and a cleared record makes each
+# value's FIRST run arm regardless. Driving A, B, A through ONE record is what
+# separates them -- three distinct sessions each get their own nudge, while a
+# hook that cannot tell them apart swallows the second and the third.
+clear_nudge_records
+env_src=""
+for esid in 'src-a' 'src-b' 'src-a'; do
+  out=$(run_hook_sid "$esid" "$REPO" "$RUN" "$SID_PAYLOAD")
+  env_src="${env_src}$(channel_of "$out") "
+done
+check "each env-supplied session gets its own nudge" "ctx ctx ctx " "$env_src"
+
+# --- The user text's CLOSING CLAUSE is per downgrade path. "The agent has
+# already been told" is true on exactly ONE of the three: on the RESUMED path
+# this pass may be the first time the condition holds at all, and on the
+# UNPERSISTABLE-RECORD path `arm` is forced 0 every turn, so the agent is never
+# told and the user was assured otherwise forever. One string across all three
+# re-committed, in the user's own voice, the defect the channel split exists to
+# fix. The sibling `stop-cleanup-warn.sh` in the other repo omits the claim
+# entirely; this one states the truth per path instead.
+TOLD='already been told'
+# 1. repeat subject -- the one path where the claim is TRUE.
+clear_nudge_records
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+out=$(run_hook_keep "$REPO" "$RUN" "$A1")
+check "the repeat-subject downgrade DOES say the agent was told" "yes" \
+  "$(printf '%s' "$out" | grep -qF "$TOLD" && echo yes || echo no)"
+# 2. resumed pass -- the agent was not interrupted on this pass.
+clear_nudge_records
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-a\", \"session_id\": \"sess-voice-res\", \"stop_hook_active\": true}")
+check "the RESUMED downgrade does not claim the agent was told" "no" \
+  "$(printf '%s' "$out" | grep -qF "$TOLD" && echo yes || echo no)"
+check "...and says why it is on this channel instead" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'continued once' && echo yes || echo no)"
+# 3. unpersistable record -- the agent is NEVER told on this path.
+clear_nudge_records
+chmod a-w "$CAD_A_GITDIR"
+out=$(run_hook_keep "$REPO" "$RUN" "{\"cwd\": \"$REPO/wt-cad-a\", \"session_id\": \"sess-voice-nop\"}")
+chmod u+w "$CAD_A_GITDIR"
+check "the UNPERSISTABLE downgrade does not claim the agent was told" "no" \
+  "$(printf '%s' "$out" | grep -qF "$TOLD" && echo yes || echo no)"
+check "...and says the nudge could not be recorded" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'could not record' && echo yes || echo no)"
+
+
+# --- The cadence record must not OUTLIVE the condition. When no worktree is
+# ahead of `origin/main` any more, the stored subject is stale, and returning
+# to the same branch in the same push state reproduces it exactly -- so the
+# next genuine first-sighting is DOWNGRADED. That is a MISSED nudge, the unsafe
+# direction. Reachable through the very remedy this hook prints: nudge, repeat,
+# `git switch --detach origin/main`, re-attach, commit. Its sibling
+# `stop-warn.sh` has always dropped its record on the clean-tree exit.
+#
+# A SEPARATE sandbox repo, because the property is repo-GLOBAL ("no lane
+# anywhere is ahead") and the fixtures above leave other lanes standing.
+CLR_REPO="$SANDBOX/clear-repo"
+mkdir -p "$CLR_REPO/.claude/hooks"
+cp "$HOOK" "$CLR_REPO/.claude/hooks/"
+CLR_RUN="$CLR_REPO/.claude/hooks/$(basename "$HOOK")"
+git -C "$CLR_REPO" init -q .
+git -C "$CLR_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$CLR_REPO" update-ref refs/remotes/origin/main HEAD
+git -C "$CLR_REPO" worktree add -q "$CLR_REPO/wt-clr" -b feat/clr HEAD
+git -C "$CLR_REPO/wt-clr" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
+CLR_PAYLOAD="{\"cwd\": \"$CLR_REPO/wt-clr\", \"session_id\": \"sess-clr\"}"
+out=$(run_hook_keep "$CLR_REPO" "$CLR_RUN" "$CLR_PAYLOAD")
+check "the clearing fixture arms once" "ctx" "$(channel_of "$out")"
+out=$(run_hook_keep "$CLR_REPO" "$CLR_RUN" "$CLR_PAYLOAD")
+check "...and the repeat is downgraded" "sys" "$(channel_of "$out")"
+# The condition CLEARS: the lane is no longer ahead of origin/main.
+git -C "$CLR_REPO/wt-clr" reset -q --hard origin/main
+out=$(run_hook_keep "$CLR_REPO" "$CLR_RUN" "$CLR_PAYLOAD")
+check "...the hook is silent once nothing is ahead" "" "$out"
+check "...and the stale record is gone" "absent" \
+  "$([ -e "$(git -C "$CLR_REPO/wt-clr" rev-parse --absolute-git-dir)/stop-nudge-lane" ] && echo present || echo absent)"
+# ...and the same subject is a FIRST sighting again.
+git -C "$CLR_REPO/wt-clr" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'work again'
+out=$(run_hook_keep "$CLR_REPO" "$CLR_RUN" "$CLR_PAYLOAD")
+check "...so the SAME subject nudges the model again" "ctx" "$(channel_of "$out")"
+git -C "$CLR_REPO" worktree remove --force "$CLR_REPO/wt-clr"
+
+
 # --- The two channels carry DIFFERENT TEXT. A downgrade changes the READER
 # from the agent to a person, so sending the model's wording ("you are not done:
 # rebase, run the gates, open the PR") down `systemMessage` addresses a human as
@@ -714,6 +868,18 @@ git -C "$REPO" worktree remove --force "$REPO/wt-cad-a"
 git -C "$REPO" worktree remove --force "$REPO/wt-cad-b"
 clear_nudge_records
 
+
+# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
+# one -- or deleting a case -- removes assertions SILENTLY while the tally still
+# reads `fail: 0`. No suite in this repo had one, so the only thing standing
+# between a gutted loop and a green run was somebody noticing the number move.
+# Raise it when cases are added; never lower it to make a red run green.
+CASE_FLOOR=102
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
+  fail=$((fail + 1))
+  fail_log+="FAIL case floor: only $((pass + fail)) cases ran, expected at least 102\n"
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
+fi
 printf '\nPass: %d  Fail: %d\n' "$pass" "$fail"
 if [ "$fail" -gt 0 ]; then
   printf '%b' "$fail_log" >&2
