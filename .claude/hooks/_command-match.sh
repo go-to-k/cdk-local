@@ -615,6 +615,34 @@ gate_unquote() {
   printf '%s' "$p"
 }
 
+# gate_tokens <text>
+#
+# One shell token per line, with a QUOTED span kept WHOLE: `switch "my branch"`
+# yields two tokens, not three. Callers unquote with `gate_unquote` when they
+# want the bare value.
+#
+# It exists so a gate that must PARSE an argument list does not have to match
+# `GATE_EMBEDDING_TOKEN` itself. Matching it in a hook is the go-to-k/cdkd#2200
+# coupling: the hook reads a positional `${BASH_REMATCH[N]}` out of a pattern
+# built from a SHARED constant, so widening that constant shifts the index and
+# silently re-opens the gate. `unresolved-target-class.test.sh` fence 4 refuses
+# that shape by name; the sanctioned answer is to pass the pattern to a helper,
+# which is this. `gate_verb_rest` gives the same guarantee for the verb prefix.
+#
+# No `set -f` dance around the loop, unlike `gate_pr_selector`'s: that function
+# feeds its tokens to `set --`, which word-splits and globs. This one only ever
+# prints `"${BASH_REMATCH[1]}"`, and `[[ =~ ]]` does not glob, so a stray `*` in
+# the text has nothing to expand against.
+gate_tokens() {
+  local rest="$1"
+  while [[ "$rest" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN([[:space:]]+(.*))?$ ]]; do
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[4]}"
+    [ -n "$rest" ] || break
+  done
+  return 0
+}
+
 # gate_verb_args <cmd> <verb-ere>
 #
 # Print, one line per matching segment, the text that FOLLOWS the matched verb

@@ -890,12 +890,41 @@ want_lines "/fallback${TAB}origin a" "an unexpanded -C falls back, not to a lite
 
 
 
+# --- gate_tokens ---------------------------------------------------------------
+#
+# The argument-list splitter main-tree-branch-gate parses options with. It lives
+# HERE rather than in the gate because matching `GATE_EMBEDDING_TOKEN` inside a
+# hook and then reading a positional `${BASH_REMATCH[N]}` out of it is the
+# go-to-k/cdkd#2200 coupling: widening the shared constant shifts the index and
+# silently re-opens the gate. Pinned here so the gate can rely on it.
+tok_case() { # name, text, expected newline-joined tokens
+  local name="$1" text="$2" want="$3" got
+  got=$(gate_tokens "$text")
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1)); printf 'OK   gate_tokens: %s\n' "$name"
+  else
+    fail=$((fail + 1))
+    printf 'FAIL gate_tokens: %s\n  text: [%s]\n  want: [%s]\n  got : [%s]\n' "$name" "$text" "$want" "$got"
+  fi
+}
+tok_case "plain words" " -b feat" "$(printf -- '-b\nfeat')"
+tok_case "leading and trailing space" "   feat   " "feat"
+tok_case "empty text yields nothing" "" ""
+tok_case "only whitespace yields nothing" "    " ""
+tok_case "a double-quoted span stays ONE token" ' -c "wt feat new"' "$(printf -- '-c\n"wt feat new"')"
+tok_case "a single-quoted span stays ONE token" " -c 'wt feat new'" "$(printf -- "-c\n'wt feat new'")"
+tok_case "a glued flag value is not split" " --orphan=feat" "--orphan=feat"
+tok_case "a bare -- survives as its own token" " some-feature -- README.md" "$(printf -- 'some-feature\n--\nREADME.md')"
+tok_case "an unquoted glob is not expanded" " *" "*"
+tok_case "runs of spaces collapse" " a     b" "$(printf -- 'a\nb')"
+
+
 # A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
 # one -- or deleting a case -- removes assertions SILENTLY while the tally still
 # reads `fail: 0`. No suite in this repo had one, so the only thing standing
 # between a gutted loop and a green run was somebody noticing the number move.
 # Raise it when cases are added; never lower it to make a red run green.
-CASE_FLOOR=367
+CASE_FLOOR=377
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
