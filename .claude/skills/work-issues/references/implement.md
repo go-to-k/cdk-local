@@ -142,9 +142,14 @@ lines stay exactly as written, and the same two values ride the command as
 
 ```bash
 # A LITERAL path, and no shell variable anywhere in this command. Substitute
-# `<issue-slug>` with something lane-specific (the root cause plus your branch)
-# -- parallel lanes share /tmp, and that uniqueness is the only thing `mktemp`
-# was buying here.
+# `<issue-slug>` per FINDING, not per lane -- the root cause plus your branch.
+# Two reasons, and the second is the one that bites: parallel lanes share /tmp,
+# AND the gate prefers a READABLE file at that path over the heredoc below it.
+# Measured: with a file already there carrying `Dup-check:`, a command whose
+# heredoc omits that line exits 0 and then overwrites it, filing the
+# marker-less body. Reusing one slug for a second finding is exactly how that
+# happens. (The reverse cannot: a blocked call runs nothing, so a marker-less
+# file can only exist if a marked command wrote it.)
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
@@ -300,7 +305,7 @@ the one the gate missed. This session's hooks lane makes the gate match in
 COMMAND POSITION and judge the matched SEGMENT; driven against that copy the
 chained form is refused (rc=2) and the allowance for `git fetch origin &&
 git switch main` still passes (rc=0). The protection is that FIXED gate. Until
-the hooks lane merges to `main`, re-run `git rev-parse --show-toplevel`
+`fix/body-file-gate-fallback` (go-to-k/cdk-local#637) merges to `main` -- check with `git log origin/main --oneline -1 -- .claude/hooks/main-tree-branch-gate.sh` --, re-run `git rev-parse --show-toplevel`
 immediately before the switch and confirm it is this lane's tree.
 
 **Build BEFORE the first test run, and read a fresh worktree's failures with that

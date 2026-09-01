@@ -202,9 +202,10 @@ gh pr list --state all --head "$(git branch --show-current)"
 ```
 
 This repo keeps no worktree-owner sentinel (the sibling cdkd's
-`session-owner` file has no counterpart here), so those probes plus the §4 claim
-comments on the issue thread are the whole ownership record — which makes the
-anchor line matter more here than in either sibling, not less. §9's rule applies
+`session-owner` file has no counterpart here, and cdk-real-drift has none
+either), so those probes plus the §4 claim comments on the issue thread are the
+whole ownership record — which makes the anchor line matter more here than in
+cdkd, the one sibling that does have the sentinel. §9's rule applies
 unchanged: read every probe as evidence of LIFE only, never of absence. If the
 tree is not yours, stop and report; do not nest a worktree inside it.
 

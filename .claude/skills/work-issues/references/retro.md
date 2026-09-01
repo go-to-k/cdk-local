@@ -247,7 +247,7 @@ shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
 since this session's hooks change — §5 measured both copies, and the version
 then on `main` passed the chained `git fetch origin && git switch -c ...`
 form below (rc=0) while refusing a bare `git switch -c` (rc=2). Do not read
-the backstop as one that always held, and until the hooks lane merges to
+the backstop as one that always held, and until `fix/body-file-gate-fallback` (go-to-k/cdk-local#637) merges to
 `main`, confirm `git rev-parse --show-toplevel` is this lane's tree immediately
 before running the block.
 
