@@ -2,8 +2,10 @@
 
 ## 10. Fold what the run taught you back into this skill
 
-Trigger: after §9's last lane is merged and its worktree removed, BEFORE the wrap
-report — the evidence exists only while this session's context is alive.
+Trigger: after §9's last lane is merged and every worktree THIS run added is
+removed — an IN-PLACE run added none, so for it the trigger is the last merge —
+BEFORE the wrap report; the evidence exists only while this session's context is
+alive.
 
 `/verify-pr` step 11's retrospective was per LANE; this one covers **the flow
 itself** (this skill's docs + the skills it drives) across the WHOLE run —
@@ -221,6 +223,8 @@ After `/merge-pr` you are back on `main` (`branch-gate` blocks commits;
 `main-tree-branch-gate` blocks branching there), so the retro gets its own
 worktree:
 
+MAIN-CHECKOUT (§3's launch-mode probe) — run THIS block, and not the next one:
+
 ```bash
 # Suffix the branch with the LESSON, not just the date: a merged branch is
 # deleted (re-pushing that name is refused by post-merge-orphan-push-gate), and
@@ -232,6 +236,31 @@ git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
 cd ".claude/worktrees/${B##*/}"
 mise trust && mise install    # untrusted .mise.toml: vp / markgate will not resolve
 pnpm install                  # worktrees have no node_modules
+```
+
+IN-PLACE — run THIS block INSTEAD of the one above, never both: there is no
+worktree to add, and `git worktree add` from inside this tree NESTS the very
+worktree this mode exists to prevent. There is also no `main` to be back on;
+the lane's own tree is still here with its deps installed, so take the retro
+branch IN IT. `B` is re-assigned because a separate fenced block is a separate
+shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
+(re-pushing it is refused by post-merge-orphan-push-gate).
+`main-tree-branch-gate` does back this switch up against a cwd reset, but only
+since this session's hooks change — §5 measured both copies, and the version
+then on `main` passed the chained `git fetch origin && git switch -c ...`
+form below (rc=0) while refusing a bare `git switch -c` (rc=2). Do not read
+the backstop as one that always held, and until `fix/body-file-gate-fallback`
+(go-to-k/cdk-local#639) merges to `main`, confirm `git rev-parse
+--show-toplevel` is this lane's tree immediately before running the branch
+block below. Ask whether the fix has landed by CONTENT, not by the file's last
+commit subject (which names an earlier hooks change and reads like this one):
+`git show origin/main:.claude/hooks/main-tree-branch-gate.sh` piped to
+`grep -c gate_verb_args` prints `0` while the fix is absent and non-zero once
+it lands.
+
+```bash
+B=chore/work-issues-retro-<lesson-slug>
+git fetch origin && git switch -c "$B" origin/main
 ```
 
 - `chore:` prefix — agent tooling, not `src/**`; a `fix:` / `feat:` prefix
@@ -250,7 +279,10 @@ pnpm install                  # worktrees have no node_modules
   tier; a wrong rule here propagates into every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes
   the worktree — §9's closing check is "every worktree THIS run added is
-  gone". `Session-fit: now`: deferring leaves main self-inconsistent (the
+  gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9)
+  and leaves the tree standing on the retro branch for whoever owns the
+  workspace (the appendix has what the Stop hook will say about that).
+  `Session-fit: now`: deferring leaves main self-inconsistent (the
   skill keeps prescribing what this run proved wrong), the evidence dies with
   the session, and the open PR is NOT CLOSEABLE.
 

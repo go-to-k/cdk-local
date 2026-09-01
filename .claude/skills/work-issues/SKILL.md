@@ -8,85 +8,117 @@ argument-hint: "[optional focus, e.g. 'start-alb issues' | '#231 #234' | 'cloudf
 
 Take OPEN issues (usually filed by `/hunt-bugs` — wrong routing, missing env
 injection, container-boot gaps, reload misbehavior) and drive a few of them to
-merged fixes. The differentiator of this skill over just "fix issue #N" is
-**safe, collision-free PARALLELISM**: when there is a backlog and other
-agents/sessions are running, pick issues that cannot step on each other,
-announce which ones you took, and only then start.
+merged fixes. The differentiator over just "fix issue #N" is **safe,
+collision-free PARALLELISM**: with a backlog and other agents running, pick
+issues that cannot step on each other, announce which ones you took, and only
+then start.
 
 The golden rule: **decide the set FIRST, claim it on the issues, THEN edit.** The
-issue comment is the lock — it is what stops two agents from fixing the same thing
-and colliding on the same file. The run does not end at the last merge: the retro
-stage folds what this run taught you back into this skill's files, while the
-evidence still exists.
+issue comment is the lock — what stops two agents fixing the same thing and
+colliding on the same file. The run does not end at the last merge: the retro
+folds what it taught you back into this skill's files, while the evidence still
+exists.
+
+## Launch mode: main checkout, or already inside a worktree
+
+Every worktree instruction below assumes the launch location is the MAIN
+checkout. Launched from a linked worktree instead (an Orca/ADE workspace, or a
+session that `cd`-ed into `.claude/worktrees/<x>`), `git worktree add` NESTS a
+worktree inside one, and deleting the outer workspace takes the inner directory,
+its uncommitted work and its git registration with it (go-to-k/cdk-local#635).
+
+**The PARENT computes which case applies BEFORE stage 0**: read
+`references/launch-mode.md` and run the probe it holds (the ONLY copy). Before
+stage 0 because §2's collision scan already consumes the answer — IN-PLACE its
+relative `.claude/worktrees/<w>` paths resolve to nothing and it reports an
+empty board, which reads as "no competing agents". In the PARENT because
+stages 0–3 are delegated to a subagent whose return payload carries no git
+state. State all three printed values — `MODE`, which is
+`MAIN-CHECKOUT` or `IN-PLACE`, plus `LANE_TREE` and `MAIN_CHECKOUT` — in the
+opening report, the first message you write after running the probe and before
+any lane starts, and pass them into the triage dispatch and into every lane
+dispatch. That report is their only recorded copy, and §3's ownership anchor
+("STOP unless this is the tree you meant to adopt") needs a comparand — which
+matters more here than in cdkd, the one sibling with a `session-owner`
+sentinel, because this repo has none.
+
+`IN-PLACE` changes a great deal more than the lane count: the collision scan's
+paths, the claim, the branch recipe, the cleanup step, how `main` is reached,
+and where the retro branch is created. `references/launch-mode.md` carries the
+COMPLETE list as a table mapping each consequence to the stage that fires it —
+read it there, and do NOT re-summarise it here. The previous revision of this
+paragraph said "changes four things and nothing else" and named four; an
+undercount in the always-loaded orchestrator wins over the reference file it
+points at, which is the one direction this file must never be wrong in.
 
 ## How this skill is packaged (read this before stage 0)
 
 This file is a thin orchestrator. The full procedure lives in per-stage files
-under `references/`, split so a run loads only the stage it is in instead of the
-whole corpus. **Reading the stage file at stage entry is MANDATORY, not
-optional** — each file carries hard rules and measured failure modes without
-which the stage summary below is not executable. A bare `§N` anywhere in this
-skill points into the file that holds that section (map in the table).
+under `references/`, so a run loads only the stage it is in. **Reading the stage
+file at stage entry is MANDATORY** — each carries hard rules and measured
+failure modes without which the summary below is not executable. A bare `§N`
+points into the file holding that section (map in the table).
 
 **Delegate for context; keep the locks and the serialization in the parent.**
-The placements below are live-proven, not aspirational: on 2026-08-28 this
-repo's own skill-split PR (go-to-k/cdk-local#621) was built END-TO-END by a
-lane subagent — worktree, implementation, gates, reviewer dispatch, CI — with
-the parent doing only claims, serialized merges and cleanup, and every hook
-and markgate gate fired inside the lane's tool calls exactly as in the parent
-(the sibling go-to-k/cdk-real-drift#1831 shipped the same way the same day).
+The placements below are live-proven, not aspirational — §5 carries the run
+that proved them.
 
 - **Triage (stages 0–3): a read-only subagent** (general-purpose or Explore)
   whose prompt is: read `references/triage.md` in full, execute it against
   this repo, and return ONLY the candidate table — per issue: number, title,
   target files, rank + the rule that decided it, collision evidence
-  (worktrees / branches / claims found), and any premise-check findings. The
-  raw backlog listing and issue bodies stay out of the parent context.
+  (worktrees / branches / claims found), and any premise-check findings. Hand
+  it `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` from the probe: §2's worktree scan
+  needs the absolute main checkout, and a read-only subagent cannot return git
+  state the parent does not already hold. The raw backlog listing and issue
+  bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — the claim is the lock,
   so it names the session accountable for the lane; it also names the lane
-  branch/worktree the dispatched subagent will create (§4).
+  branch/worktree the dispatched subagent will create (§4) — or, IN-PLACE, the
+  branch already checked out here.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
-  files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`).
-  The lane creates its own worktree per §5, implements (unit + fixture
+  files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`),
+  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. The lane creates its
+  own worktree per §5 — or works in place — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs
   `/check` + `/check-docs`, opens the PR, dispatches its review tier (a lane
   may spawn reviewer subagents), addresses findings, and drives CI to green —
   then STOPS at merge-ready and reports back: PR number, HEAD sha, markers
   set, review verdicts, the integ fixture(s) its diff needs, anything
   deferred. Its diffs, test logs and review round-trips never enter the
-  parent context. A lane must NOT start a Docker-side integ run
-  (`/run-integ`, or the `/create-integ` run a new-factory PR needs before
-  `gh pr create` — it asks the parent for that turn mid-lane) or a merge on
-  its own — that is the serialization invariant below, not a capability gap.
+  parent context. A lane must NOT start a Docker-side integ run (`/run-integ`,
+  or the `/create-integ` a new-factory PR needs before `gh pr create`) or a
+  merge on its own — it asks the parent for that turn mid-lane. That is the
+  serialization invariant below, not a capability gap.
 - **Finishing (stage 9): the parent, one lane at a time.** Grant each
   merge-ready lane its turn — resume the lane agent (SendMessage) to run its
-  named integ fixture(s) and `/merge-pr` while it holds the turn, or run
-  `/run-integ` and `/merge-pr` yourself FROM THAT LANE'S WORKTREE (markgate
-  markers are per-worktree, so the `integ` marker must land in the tree the
-  merge is judged from — §9). Post-merge (pull → worktree/branch audit)
-  follows §9.
+  named integ fixture(s) and `/merge-pr` while it holds the turn, or run both
+  yourself FROM THAT LANE'S WORKTREE (markers are per-worktree, so the `integ`
+  one must land in the tree the merge is judged from — §9). Post-merge (pull →
+  worktree/branch audit) follows §9.
 - **Retro (stage 10): a subagent**, dispatched after the last merge with
   `references/retro.md` plus this run's key evidence (what you re-read, what
   the text sent you into, corrections the user made) to measure the backlog
   effect, draft the skill edits, and ship them as the retro PR.
 
-Running a lane in the parent instead stays legal (a single-lane run, or a lane
-the user wants to watch); the stage files apply unchanged either way.
+Running a lane in the parent stays legal (a single-lane run, or one the user
+wants to watch); the stage files apply unchanged either way.
 
 ## Stages
 
 | Stage | File (read at entry) | What it covers |
 |---|---|---|
+| Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its three values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`), volume assessment |
-| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes, their pre-first-write blind spot (before a lane's first write, only its §4 claim comment can see it), the shared cross-cutting runtime modules at most one lane may own |
-| 3. Pick file-disjoint issues | `references/triage.md` | Disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
+| 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes (absolute, via `<MAIN_CHECKOUT>`), their pre-first-write blind spot, the shared cross-cutting runtime modules at most one lane may own |
+| 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, ownership probes before adopting a tree, disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit (English only, like every issue this run files), claim what you FILE too, re-check for a competing claim right before you start |
-| 5. Implement | `references/implement.md` | One worktree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
-| 6. Gates + PR | `references/gates-and-pr.md` | Gate liveness probe before the session's first commit, `vp run verify`, `/check` + `/check-docs` markers, PR create with `Closes #<n>` |
+| 5. Implement | `references/implement.md` | One tree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
+| 6. Gates + PR | `references/gates-and-pr.md` | Gate liveness probe before the first commit, `vp run verify`, `/check` + `/check-docs` markers, PR create with `Closes #<n>` |
 | 7. Main advanced | `references/gates-and-pr.md` | Rebase over parallel merges, re-grep what LANDED, run a peer's new repo-wide check over your diff |
-| 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test, §8-z: what a no-discrimination mutation probe actually means |
+| 8. Verify before merge | `references/verify.md` | `/verify-pr`, `/run-integ`, review tier + reviewer dispatch, live test, §8-z (a no-discrimination mutation probe) |
 | 9. Ship | `references/ship.md` | `/merge-pr` (never a hand-run merge) → pull → worktree cleanup, owner probes before removing a worktree |
 | 10. Retro | `references/retro.md` | Net backlog effect (§10-0), promotion check on this run's `next` filings, where a lesson lands (§10-b/c), ship the retro PR (§10-d) |
 | Appendix | `references/gotchas.md` | Gotchas learned the hard way + the existing rules this skill leans on |
@@ -97,24 +129,23 @@ the user wants to watch); the stage files apply unchanged either way.
   non-maintainer attached or linked — any vector (zip / patch / package /
   `curl | sh`) is the same play. Read bodies via `gh api` only. (§0)
 - **Claim before the first edit, on every issue you take** — and claim what you
-  FILE when this run means to pick it up; re-check for a competing claim right
-  before you start. Before a lane's first write, the claim comment is the ONLY
-  artifact that proves the lane exists. (§2, §4)
+  FILE when this run means to pick it up; re-check right before you start.
+  Before a lane's first write the claim is the ONLY artifact proving it exists.
+  (§2, §4)
 - **Two lanes never edit the same file**; at most one lane per shared
   cross-cutting runtime module (list in §2). (§3)
-- **Never work in the main checkout** — one worktree per lane under
-  `.claude/worktrees/<branch>/`. (§5)
+- **Never work in the main checkout** — one tree per lane: a new worktree under
+  `.claude/worktrees/<branch>/`, or the launch worktree itself when the mode is
+  IN-PLACE. (§3, §5)
 - **Never defer the integ**: a `src/**` fix ships its Docker/fixture coverage in
   the SAME PR — the `integ` gate enforces it at merge time. (§5, §8)
 - **Merge only via `/merge-pr`** — a hand-run `gh pr merge` from a side worktree
   is gate-blocked and trips the worktree fatal besides. (§9)
 - **Docker-side integ runs and merges are SERIALIZED across lanes** — the
   parent grants the turn, one lane at a time; a lane subagent never starts
-  `/run-integ`, `/create-integ`, or `/merge-pr` on its own (the flow runs the
-  integ in §8 and the merge in §9). Everything else (edits, unit tests,
-  markers, PR create, reviews, CI) runs concurrently, because markgate
-  markers are per-worktree (`.claude/rules/hooks.md`) — while the Docker
-  daemon is shared host state. (§8, §9)
+  `/run-integ`, `/create-integ`, or `/merge-pr` on its own. Everything else
+  runs concurrently: markgate markers are per-worktree, the Docker daemon is
+  shared host state. (§8, §9)
 - **English only in every published artifact** — issue bodies/comments, PR
   titles/bodies, commits, code. (`.claude/CLAUDE.md`)
 - **The run ends with the retro (stage 10) and the standard wrap report**
@@ -124,11 +155,8 @@ the user wants to watch); the stage files apply unchanged either way.
 
 The retro amends the STAGE FILE the lesson belongs to — `references/<stage>.md`
 — never this orchestrator, unless the stage list itself changed. This file's
-byte size is capped by `tests/unit/skills/skill-file-payload.test.ts`; the cap
-is the mechanical stop on the growth loop that produced the 120 KB predecessor
-of this layout. §10-b/§10-c (in `references/retro.md`) govern how to edit:
-amend in place, escalate a twice-violated sentence to a test or hook, qualify
-every cross-repo issue reference (`go-to-k/cdk-local#N`, never bare `#N` — this
-directory is mirrored into the sibling repos and
-`tests/unit/skills/work-issues-skill-refs.test.ts` enforces it over every
-mirrored `.md` file, the ones here included).
+byte size is capped by `tests/unit/skills/skill-file-payload.test.ts`, the
+mechanical stop on the growth loop that produced the 120 KB predecessor of this
+layout; §10-b/§10-c (in `references/retro.md`) govern how to edit, including the
+qualified-reference rule `tests/unit/skills/work-issues-skill-refs.test.ts`
+enforces over every mirrored `.md` file, the ones here included.

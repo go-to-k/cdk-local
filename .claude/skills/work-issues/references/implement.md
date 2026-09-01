@@ -1,6 +1,6 @@
 <!-- Part of the /work-issues skill. Stage files: triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL when your run enters this stage. -->
 
-## 5. One worktree per lane, then implement
+## 5. One tree per lane, then implement
 
 This stage (and stages 6–8) normally runs INSIDE a lane subagent the
 orchestrator dispatched — one general-purpose agent per claimed issue, so the
@@ -13,6 +13,14 @@ lane's to start: a Docker-side integ run (`/run-integ` — and the
 parent for that turn mid-lane) and the merge (`/merge-pr`) — the
 orchestrator's serialization invariant; §9. A lane stops at merge-ready and
 reports.
+
+That placement is live-proven, not aspirational, and SKILL.md points here for
+the evidence: on 2026-08-28 this repo's own skill-split PR
+(go-to-k/cdk-local#621) was built END-TO-END by a lane subagent — worktree,
+implementation, gates, reviewer dispatch, CI — with the parent doing only
+claims, serialized merges and cleanup, and every hook and markgate gate fired
+inside the lane's tool calls exactly as in the parent (the sibling
+go-to-k/cdk-real-drift#1831 shipped the same way the same day).
 
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does, sweep
 them in THIS lane rather than filing them.** Most defects here are a CLASS, not an
@@ -141,9 +149,61 @@ lines stay exactly as written, and the same two values ride the command as
 `--label severity:<high|medium|low> --label effort:<small|medium|large>`:
 
 ```bash
-gh issue create -t 'fix(local): ...' --body-file "$B" \
+# A LITERAL path, and no shell variable anywhere in this command. Substitute
+# `<issue-slug>` per FINDING, not per lane -- the root cause plus your branch.
+# Two reasons, and the second is the one that bites: parallel lanes share /tmp,
+# AND the gate prefers a READABLE file at that path over the heredoc below it.
+# Measured: with a file already there carrying `Dup-check:`, a command whose
+# heredoc omits that line exits 0 and then overwrites it, filing the
+# marker-less body. Reusing one slug for a second finding is exactly how that
+# happens. The REVERSE is reachable too, and it costs a FALSE BLOCK: run that
+# same slug a THIRD time with a properly marked heredoc and the gate returns
+# rc=2, because it reads the STALE marker-less file on disk in preference to
+# the heredoc about to replace it -- the refusal is about a stale READABLE
+# file, not a missing marker (measured 2026-09-01, here and in cdkd). Nor does
+# a marker-less file need a gated writer: a plain
+# `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
+cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
+<one paragraph: the root cause, and where the evidence for it is>
+
+Dup-check: searched open issues for <terms> -- none covers this root cause
+Session-fit: next (not this session) -- <reason>
+Severity: high -- <what stays broken while it is undone>
+Effort: large (L) -- <which verification cycle it drags>
+Estimate: ~3 h+ -- <what eats the time>
+BODY
+gh issue create -t 'fix(local): ...' \
+  --body-file /tmp/wi-issue-body-<issue-slug>.md \
   --label severity:high --label effort:large
 ```
+
+**The path is LITERAL because a `$VAR` one cannot be filed at all.**
+`issue-dup-check-gate.sh` reads the command TEXT at PreToolUse time, before any
+of it has run, and refuses a `--body-file` path containing `$` or a backtick
+outright: it cannot open such a file to look for the `Dup-check:` line, and it
+fails closed rather than guessing. Measured 2026-08-31 by driving the hook with
+each payload: the `B=$(mktemp)` + `--body-file "$B"` spelling this section used
+to print returns **rc=2 in all three repos** (cdk-local, cdkd, cdk-real-drift),
+so the body it so carefully writes is never filed; the literal-path form above
+returns **rc=0** from both gates that see it here (`issue-dup-check-gate.sh` and
+`issue-classification-label-gate.sh`). Deleting just the `Dup-check:` line from
+the literal form returns rc=2 again, so that rc=0 is the gate passing a good
+command, not the gate failing to look.
+
+**The FOLD recipe above keeps `mktemp`, and that asymmetry is the gate set, not
+taste.** Folding runs `gh issue edit`, which `issue-dup-check-gate.sh` does not
+match at all, and the classification gate falls back to reading the command text
+when a path is unresolvable — measured rc=0 from both, same day, same driver.
+Folding also NEEDS a unique file it reads back; minting only needs a name no
+concurrent lane will reuse, which the substituted slug gives.
+
+The `cat` is load-bearing, not filler: an empty file pointed at by
+`--body-file` files an issue with NO body — no `Dup-check:` line, no
+classification — and that spelling is refused for the reason you would expect
+("carries no `Dup-check:` line") rather than for the path. Write the body; do
+not treat the gate as the thing that will notice. `heredoc -> file ->
+--body-file` in one call is the mandated shape here, with the delimiter QUOTED
+so backticks and `$` in the body stay literal instead of running.
 
 Prose is invisible to `gh issue list`, so ranking by `Severity` costs one
 `gh issue view` per candidate without labels. Only these two get labels:
@@ -217,9 +277,16 @@ query), the deferral is sound — put the line in the issue body beside
 `Session-fit`.
 
 Never edit in the main checkout (`main-tree-branch-gate.sh` blocks branch creation
-there). Per lane:
+there — with the coverage limit measured below). Per lane:
 
 ```bash
+# MAIN-CHECKOUT mode only (§3's launch-mode probe). An IN-PLACE run skips these
+# two lines, keeps the tree and branch it was launched in, and creates nothing:
+# a nested worktree dies with the outer workspace, taking its uncommitted work
+# (go-to-k/cdk-local#635). If that branch is detached or its PR already merged,
+# take a fresh one IN THIS TREE instead -- the recipe and what does and does not
+# protect it are below this block.
+# The setup lines below still apply: an adopted workspace may be missing them.
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
 cd .claude/worktrees/<name>
 # A fresh worktree's .mise.toml is untrusted, so vp / markgate do not resolve
@@ -229,6 +296,44 @@ mise trust && mise install
 pnpm install    # worktrees have no node_modules -- and neither may the MAIN checkout
 vp run build    # ...and no dist/ — see below
 ```
+
+**IN-PLACE: if the branch here is detached, or its PR has already merged, take a
+fresh one WITHOUT leaving the tree** — and know what is and is not protecting you
+while you do:
+
+```bash
+git fetch origin && git switch -c <branch> origin/main
+```
+
+The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
+`origin/main`. **`main-tree-branch-gate.sh` is the backstop for running that line
+after a cwd reset — but it did NOT cover this spelling until this session's
+hooks change, so do not read the claim as one that always held.** Measured on
+both copies of the hook, 2026-08-31: the version then on `main` skipped to the
+FIRST `git` token, read `git fetch origin && git switch -c ...` as `sub=fetch`,
+fell to a fail-open arm and exited 0 — a BARE `git switch -c <b> origin/main`
+was refused (rc=2) while the chained form THIS FILE PRINTS was not (rc=0), in
+this repo and in cdkd alike, so the spelling the skill prescribes was exactly
+the one the gate missed. This session's hooks lane makes the gate match in
+COMMAND POSITION and judge the matched SEGMENT; driven against that copy the
+chained form is refused (rc=2) and the allowance for `git fetch origin &&
+git switch main` still passes (rc=0). The protection is that FIXED gate. Until
+`fix/body-file-gate-fallback` (go-to-k/cdk-local#639) merges to `main`, re-run
+`git rev-parse --show-toplevel` immediately before the switch and confirm it is
+this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
+commit subject on the file. That subject today opens
+`fix(hooks): see a gated verb behind if/while/sudo/xargs/case ...`, which reads
+like exactly this command-position fix while that same `main` copy still passes
+the chained form -- believe it and you retire the anchor early:
+
+```bash
+git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_args
+```
+
+`0` means the fix is NOT on `main` and the anchor still stands (measured
+2026-09-01); non-zero means it landed and the anchor can be retired.
+`gate_verb_args` strips the verb off the MATCHED segment, so it exists only in
+the fixed copy -- the same grep against go-to-k/cdk-local#639's head prints 2.
 
 **Build BEFORE the first test run, and read a fresh worktree's failures with that
 in mind.** A worktree starts with no `dist/`; any test spawning the built CLI
@@ -240,7 +345,7 @@ reproduced them with its edit stashed, and had begun writing up "a peer merge
 broke main" — one `vp run build` turned them green. **A fresh worktree failing
 where the main checkout passes is evidence about the WORKTREE first.**
 
-Do the fix in the worktree (match the existing module/pattern exactly; ESM
+Do the fix in the lane's tree (match the existing module/pattern exactly; ESM
 relative imports need the `.js` extension even in TS source). **Always add a test
 that fails without the fix and passes with it** — usually a unit test:
 `tests/unit/**` mirrors `src/**`, external boundaries (toolkit-lib, docker CLI,

@@ -125,6 +125,18 @@ it, `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, 
 `node_modules`) → `vp run build` (the CLI runs from `dist/` — `node dist/cli.js`,
 or the `cdkl` bin).
 
+**Unless this hunt was LAUNCHED from a linked worktree, in which case create
+none and work on the branch already checked out there** — `git worktree add` run
+from inside a worktree nests one, and deleting the outer workspace takes the
+inner directory, its uncommitted work and its git registration with it
+(go-to-k/cdk-local#635). Compute the mode with the one-line probe in
+`.claude/skills/work-issues/references/launch-mode.md`, the file that holds the
+ONLY copy of it; `/work-issues` `references/triage.md` section 3 carries the
+ownership check to run before adopting a tree you did not create. A hunt takes
+one fix at a time, so nothing else about this flow changes — except step 8's
+cleanup. The `mise trust` / `pnpm install` / `vp run build` lines still apply:
+an adopted workspace may be missing any of them.
+
 ### 2. Scaffold the fixture
 
 Add a fixture under `tests/integration/<name>/` — mirror an existing one
@@ -271,7 +283,7 @@ Sweep every container / network (and any `--from-cfn-stack` stack) — see below
 then set the `/check` + `/check-docs` markers, commit, push, `/run-integ` (the
 `integ` marker), `/verify-pr`, `gh pr create`.
 
-### 8. Merge (via /merge-pr) + remove the worktree
+### 8. Merge (via /merge-pr) + remove the worktree YOU added
 
 Take it all the way to merged — do not leave a green PR hanging:
 
@@ -280,6 +292,11 @@ Take it all the way to merged — do not leave a green PR hanging:
    fatal) and cleans the worktree + local + remote branch in one pass. Do NOT
    hand-run `gh pr merge --squash --delete-branch` from a side worktree — it's
    gate-blocked (`gh-pr-merge-worktree-gate.sh`).
+   **Launched IN-PLACE (step 1): stop `/merge-pr` after its step 4** (confirm
+   `state=MERGED`) and skip its step 5 — `git worktree remove "$WT" --force`
+   would delete the cwd this hunt is running in, and `git branch -D "$BR"` the
+   branch it is standing on. Cleanup of a workspace this run did not create
+   belongs to whoever did; say so in the report instead of doing it.
 2. **Confirm the worktree YOU added is gone** — `/merge-pr` removes it; a
    left-behind worktree is the silent residue of this flow. Check `git worktree
    list` for yours specifically, NOT for a list with only the main checkout in it:
@@ -288,7 +305,9 @@ Take it all the way to merged — do not leave a green PR hanging:
    live peer lane. Confirm it is finished (`git log --oneline -1 <branch>`, then
    `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
    leave it alone when in doubt. `git worktree prune` drops entries whose directory
-   is already gone.
+   is already gone. An IN-PLACE hunt added no worktree, so it removes none: its
+   closing check is that the launch tree and its branch are exactly as it found
+   them.
 
 ### 9. Record what you learned
 
