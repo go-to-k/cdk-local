@@ -14,6 +14,14 @@ parent for that turn mid-lane) and the merge (`/merge-pr`) — the
 orchestrator's serialization invariant; §9. A lane stops at merge-ready and
 reports.
 
+That placement is live-proven, not aspirational, and SKILL.md points here for
+the evidence: on 2026-08-28 this repo's own skill-split PR
+(go-to-k/cdk-local#621) was built END-TO-END by a lane subagent — worktree,
+implementation, gates, reviewer dispatch, CI — with the parent doing only
+claims, serialized merges and cleanup, and every hook and markgate gate fired
+inside the lane's tool calls exactly as in the parent (the sibling
+go-to-k/cdk-real-drift#1831 shipped the same way the same day).
+
 **Before fixing, ask whether the defect has SIBLING SITES — and if it does, sweep
 them in THIS lane rather than filing them.** Most defects here are a CLASS, not an
 instance: once the root cause is named, grep for the same shape across `src/`.

@@ -105,9 +105,16 @@ gh pr list --state open --json number,title,headRefName   # their PRs
 For each active worktree, find what it ACTUALLY edits (not the stale-base noise):
 
 ```bash
-git -C .claude/worktrees/<w> log --oneline -1     # its tip — `origin/main`'s until it commits
-git -C .claude/worktrees/<w> show --stat HEAD     # the files that commit HAS FINISHED
-git -C .claude/worktrees/<w> status --porcelain   # what it is editing RIGHT NOW
+# <MAIN_CHECKOUT> is the ABSOLUTE path the launch-mode probe printed
+# (references/launch-mode.md). A relative `.claude/worktrees/<w>` is correct
+# only from the main checkout: run IN-PLACE the cwd is a lane tree, the path
+# does not exist, git errors, and this scan reports NOTHING -- which reads as
+# "no competing agents", the exact failure this stage exists to prevent, and it
+# fails QUIETLY. Substitute the recorded path; never `$MAIN_CHECKOUT`, which is
+# empty in this shell and makes `-C` re-target the cwd instead of failing.
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" log --oneline -1     # its tip — `origin/main`'s until it commits
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" show --stat HEAD     # the files that commit HAS FINISHED
+git -C "<MAIN_CHECKOUT>/.claude/worktrees/<w>" status --porcelain   # what it is editing RIGHT NOW
 ```
 
 **A file another agent is editing is OFF-LIMITS** — and the third probe is the
@@ -147,29 +154,13 @@ rest; a fix living entirely in one is naturally disjoint.
 
 ## 3. Pick a FEW FILE-DISJOINT issues
 
-**How many lanes you may pick is decided by the LAUNCH MODE, so compute that
-first — it is one command and it is not guessable from the prompt:**
-
-```bash
-[ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" \
- = "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo MAIN-CHECKOUT || echo IN-PLACE
-```
-
-Equal only in the main checkout: a linked worktree's `--git-dir` is
-`<common-dir>/worktrees/<name>`, while the main checkout's is the common dir
-itself. `pwd -P` is load-bearing in BOTH directions — the main checkout answers
-`.git` RELATIVELY for both, so an unnormalised compare is only accidentally
-right, and macOS spells `/tmp` as `/private/tmp`. Chosen over comparing against
-the first row of `git worktree list --porcelain` because it needs no listing
-order, no path parsing and no awareness of other worktrees. Run it INSIDE the
-repo. Outside one, `git rev-parse` fails and both substitutions collapse to the
-empty string, so the test compares `""` with `""`
-and prints MAIN-CHECKOUT — a wrong verdict. Measured 2026-08-31, and the
-mechanism differs by shell without changing the answer: bash REFUSES `cd ""`
-(rc=1, `cd: null directory`) so the `&& pwd -P` never runs, while zsh accepts it
-(rc=0) and `pwd -P` then prints the same cwd twice. Nothing downstream reliably
-catches it, either: the next git command runs in whatever tree the shell is
-actually in, and that tree may well be a real repo.
+**How many lanes you may pick is decided by the LAUNCH MODE, and the parent
+already settled it before stage 0** — `references/launch-mode.md` holds the
+probe (the ONLY copy) and the reading of its edge cases, and the dispatch that
+started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. If the
+dispatch did not, STOP and ask for them rather than re-running the probe here:
+a triage subagent's answer is not the parent's, and the parent is the party
+that later runs `git worktree add` or does not.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd` into `.claude/worktrees/<x>`), so it has
@@ -178,10 +169,7 @@ need a worktree nested inside this one, and deleting the outer workspace then
 takes the inner directory with it — uncommitted work gone, the git registration
 orphaned until a `prune`, plus the same-branch double-checkout collision
 (go-to-k/cdk-local#635). Rank as usual, claim the top candidate, and leave the
-rest for the next run. The other consequences live where they fire: the claim
-names the tree you are STANDING IN (§4), no worktree is created (§5), none is
-removed and no branch deleted (§9, §10-d), and `main` is pulled through
-`git -C` because it is checked out in the main checkout (§9).
+rest for the next run.
 
 **Adopting a tree you did not create needs an ownership check FIRST**, because a
 stray `cd` into a peer's live lane looks exactly like an empty workspace:
@@ -189,7 +177,7 @@ stray `cd` into a peer's live lane looks exactly like an empty workspace:
 ```bash
 # The FIRST line is the anchor, and it is why none of the rest needs a `-C`:
 # every probe under it describes THIS shell's tree, so a cwd that has silently
-# reset to the main checkout (appendix, "Bash cwd silent reset") shows up IN THE
+# reset to the main checkout (appendix, the `cd <lane tree> &&` rule) shows up IN THE
 # OUTPUT instead of being invisible. Without it the block answers "clean, no
 # claim, no PR" about a tree nobody asked about, and READS as a description of
 # this lane. Anchoring a READ this way is enough -- noticing afterwards costs
@@ -209,7 +197,13 @@ cdkd, the one sibling that does have the sentinel. §9's rule applies
 unchanged: read every probe as evidence of LIFE only, never of absence. If the
 tree is not yours, stop and report; do not nest a worktree inside it.
 
-Everything below is the MAIN-CHECKOUT case.
+**The MAIN-CHECKOUT case is the DISJOINTNESS PARAGRAPH below and nothing
+wider.** An earlier revision said "everything below is the MAIN-CHECKOUT case",
+which told an IN-PLACE run to skip the security-first ranking, the `Severity`
+ranking, the premise-check-against-`origin/main` rule and §3-a's 60-minute
+freshness gate — all mode-independent, and the last a HARD gate. The rest of
+what IN-PLACE changes lives in `references/launch-mode.md`'s table, mapped to
+§2, §4, §5, §9 and §10-d.
 
 The parallel-integration constraint (same as the worktree rule): **two lanes
 must edit DISJOINT files** — two issues landing in the same file (e.g.

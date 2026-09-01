@@ -130,7 +130,8 @@ none and work on the branch already checked out there** — `git worktree add` r
 from inside a worktree nests one, and deleting the outer workspace takes the
 inner directory, its uncommitted work and its git registration with it
 (go-to-k/cdk-local#635). Compute the mode with the one-line probe in
-`/work-issues` `references/triage.md` section 3, which also carries the
+`.claude/skills/work-issues/references/launch-mode.md`, the file that holds the
+ONLY copy of it; `/work-issues` `references/triage.md` section 3 carries the
 ownership check to run before adopting a tree you did not create. A hunt takes
 one fix at a time, so nothing else about this flow changes — except step 8's
 cleanup. The `mise trust` / `pnpm install` / `vp run build` lines still apply:

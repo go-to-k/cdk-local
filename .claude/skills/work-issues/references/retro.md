@@ -2,8 +2,10 @@
 
 ## 10. Fold what the run taught you back into this skill
 
-Trigger: after §9's last lane is merged and its worktree removed, BEFORE the wrap
-report — the evidence exists only while this session's context is alive.
+Trigger: after §9's last lane is merged and every worktree THIS run added is
+removed — an IN-PLACE run added none, so for it the trigger is the last merge —
+BEFORE the wrap report; the evidence exists only while this session's context is
+alive.
 
 `/verify-pr` step 11's retrospective was per LANE; this one covers **the flow
 itself** (this skill's docs + the skills it drives) across the WHOLE run —

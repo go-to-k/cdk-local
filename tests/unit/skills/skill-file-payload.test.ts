@@ -39,13 +39,16 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
 const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill measured 26,092 B (hunt-bugs, 2026-08-31)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~7 KB at the 2026-08-28 split; re-measured 11,306 B on 2026-09-01, review round 4 (694 B of margin)
-// The re-measurement is the point, not trivia: the orchestrator grew to within
-// 934 B of its cap while this comment still quoted the at-split figure, so nobody
-// adding a paragraph could see how little room was left. Re-measure it whenever
-// the orchestrator is edited -- a cap with an unmeasured margin is one nobody can
-// plan against.
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 33,572 B (implement.md, 2026-09-01, review round 4)
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~7 KB at the 2026-08-28 split; re-measured 11,575 B on 2026-09-01, review round 6 (425 B of margin)
+// The re-measurement is the point, not trivia: the orchestrator has repeatedly
+// grown to within a few hundred bytes of its cap while this comment still quoted
+// the at-split figure, so nobody adding a paragraph could see how little room was
+// left. Round 6 added the parent-runs-the-probe design and paid for most of it by
+// moving the probe and its edge-case reading into references/launch-mode.md
+// (8,141 B, read once before stage 0) and leaving a pointer here -- the direction
+// this cap exists to force. Re-measure it whenever the orchestrator is edited --
+// a cap with an unmeasured margin is one nobody can plan against.
+const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 34,073 B (implement.md, 2026-09-01, review round 6)
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -55,11 +58,19 @@ const MIN_REFERENCE_FILES = 6;
 // The floor has a SECOND job beyond "the files still exist": it must sit above
 // `corpus - largest file`, so DELETING the biggest stage file cannot pass. That
 // property decays as the OTHER files grow (it is invariant when the largest one
-// is compressed, since both terms drop together), and it had already decayed:
-// at corpus 101,869 B with implement.md at 27,241 B, 72,000 no longer had it
-// (101,869 - 27,241 = 74,628 > 72,000). Re-measure both numbers whenever a
-// stage file changes size materially -- the property is silent when it lapses.
-const MIN_REFERENCE_CORPUS_BYTES = 90_000; // re-derived 2026-09-01 (review round 4) at the final tree: corpus 120,739 B, largest implement.md 33,572 B, so the property needs a floor above 120,739 - 33,572 = 87,167. 90,000 clears that by 2,833 B and is left UNCHANGED -- it was raised from 88,000 one round earlier, when 78,000 and then 86,000 had lapsed silently on 2026-08-31, and it still holds. ~31 KB (120,739 - 90,000 = 30,739 B) of narrative compression headroom remains below the floor. Re-measure BOTH numbers whenever a stage file changes size materially; a lapsed floor is not a weaker guard but a SILENT one
+// is compressed, since both terms drop together), and it had already decayed
+// twice inside one week (78,000 then 86,000 on 2026-08-31). It is now ASSERTED
+// at the bottom of this file rather than only described here, so the next lapse
+// is a red test at the commit that causes it instead of a silent hole.
+//
+// What this floor does NOT catch, stated plainly: gutting a NON-largest stage
+// file. A byte floor cannot see that, and raising it until it could would forbid
+// legitimate compression. The per-file guards are elsewhere and are about
+// CONTENT rather than size -- work-issues-skill-refs.test.ts pins the document
+// count, and work-issues-launch-mode.test.ts pins that each arm-bearing stage
+// file still names the mode it branches on and that the probe exists exactly
+// once.
+const MIN_REFERENCE_CORPUS_BYTES = 100_000; // re-derived 2026-09-01 (review round 6) at the final tree: 9 stage files, corpus 130,349 B, largest implement.md 34,073 B, so the property needs a floor above 130,349 - 34,073 = 96,276, which the 90,000 held here no longer provided. 100,000 restores it with 3,724 B of margin and is strictly TIGHTER (no upper bound touched). Sized against `corpus - largest` rather than the either-largest case, because the top two are 13,694 B apart (implement.md 34,073, triage.md 20,379) -- a flip is not near; cdkd sizes against the flip because its top two are 3,242 B apart. ~30 KB (130,349 - 100,000 = 30,349 B) of narrative compression headroom remains below the floor
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -157,6 +168,25 @@ describe('skill file payload budget', () => {
           `wholesale deletion as an improvement; this floor is what notices content ` +
           `being DROPPED rather than moved or compressed.`
       ).toBeGreaterThanOrEqual(MIN_REFERENCE_CORPUS_BYTES);
+
+      // The floor's OWN invariant, asserted rather than described. Everything
+      // above only says "the corpus is big enough"; what the floor is FOR is
+      // that deleting the single largest stage file cannot pass, which holds
+      // only while the floor sits above `corpus - largest`. That property
+      // decays silently as the other files grow -- the comment beside the
+      // constant records it lapsing twice (78,000 then 86,000) inside one week,
+      // each time found by a human re-deriving it by hand. Asserting it makes
+      // the next lapse a red test at the commit that causes it, and the failure
+      // message carries the number to raise the floor to.
+      const largest = Math.max(...refs.map((f) => statSync(f).size));
+      expect(
+        MIN_REFERENCE_CORPUS_BYTES,
+        `MIN_REFERENCE_CORPUS_BYTES (${MIN_REFERENCE_CORPUS_BYTES}) has lapsed: the ` +
+          `${name} corpus is ${total} B and its largest stage file is ${largest} B, so ` +
+          `deleting that one file would leave ${total - largest} B and still pass. Raise ` +
+          `the floor above ${total - largest} (and re-derive the comment beside it), or ` +
+          `re-derive it DOWNWARD in the same commit as a genuine compression pass.`
+      ).toBeGreaterThan(total - largest);
     });
   }
 });

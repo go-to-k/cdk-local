@@ -85,15 +85,17 @@ git checkout main && git pull origin main    # bring the merges local
 
 IN-PLACE — run THIS block INSTEAD, never both: `main` is checked out in the main
 tree, so a `checkout main` HERE dies with `'main' is already used by worktree at
-...`. Never leave your own tree; pull the main checkout through `-C`. `MAIN` is
-derived HERE rather than borrowed from a neighbouring block — each fenced block
-is its own Bash call and its own shell, so a variable assigned in another one is
-empty here:
+...`. Never leave your own tree; pull the main checkout through `-C`, using the
+path the launch-mode probe already recorded rather than re-deriving it from a
+`git worktree list` row (the old spelling depended on the main checkout being
+row 1, which is true today and is not a documented guarantee):
 
 ```bash
-# The main checkout is always the FIRST row of `git worktree list`.
-MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
-git -C "$MAIN" pull origin main
+# <MAIN_CHECKOUT> is the ABSOLUTE path the launch-mode probe printed
+# (references/launch-mode.md) -- substituted here, never carried as a shell
+# variable, because each fenced block is its own Bash call and an empty `-C`
+# does not fail, it re-targets the cwd.
+git -C "<MAIN_CHECKOUT>" pull origin main
 ```
 
 (There is no post-release rebuild step to relocate: this repo's flow ends at the
@@ -140,8 +142,14 @@ squash-merges: a merged tip is never an ancestor of `main`, so `-d` refuses it a
 unmerged work — but only after confirming the PR is MERGED. The closing check is
 that **every worktree AND every local branch THIS run added is gone** — never that
 only the main checkout remains. **An IN-PLACE run ADDED none, so it removes
-none**: its closing check is that it left the launch tree and its branch exactly
-as it found them, and the wrap SAYS whose cleanup that is instead of doing it.
+none**: its closing check is "added no worktree, so removed none; deleted no
+branch", and the wrap SAYS whose cleanup that is instead of doing it. It is NOT
+"left the launch tree and its branch exactly as it found them" — §10-d has the
+run end standing on a RETRO branch this tree created, so that check could never
+pass and would read as a failure at the end of every correct IN-PLACE run.
+(The same sentence in `hunt-bugs/SKILL.md` is CORRECT there: that skill never
+branches in place.)
+
 `git worktree remove` on its own never deletes a branch, so a crashed or
 interrupted `/merge-pr` leaves the local ref behind
 (cdkd's section 9 claimed otherwise and accumulated a dozen stale merged
