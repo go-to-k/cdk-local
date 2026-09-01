@@ -270,6 +270,30 @@ in `src/cli/commands/local-start-api.ts` / `src/local/container-pool.ts`), so
 an amd64 host runs it natively, never reaching the emulated path — silent about
 the fault. Review caught the misclassification; nothing in this flow did.
 
+**Then ask what the next session will have to RE-DERIVE.** The question above
+names the verification; this one names the cost of the gap between now and it.
+If you can point at something that exists only in THIS session — a table you
+measured, a probe you built, a shape you just proved correct in a sibling repo —
+the deferral is not free and the answer is `now`. Understanding survives in an
+issue body; a measurement does not, and neither does a fix whose correctness you
+established once and would have to establish again.
+
+**And "it needs its own PR" is NOT a `next` reason.** It is a `now` item that
+gets its own PR. The bar is the SESSION, not the diff — a separate review
+surface, a new file, a hook plus its suite plus its registration are all good
+reasons to split the PR and none of them is a reason to end the session.
+Writing "independent review surface" on a `Session-fit` line is the
+classify-by-MEANS error this section already forbids, arriving through the PR
+boundary instead of through the work's category.
+
+(2026-09-01: a hook missing from one sibling was filed `next` on exactly that
+wording — minutes after the same hook's two-directional defect had been
+measured and fixed in the other two repos. The probe, the corrected shape and
+the rc table were all in hand, and a later session would have re-derived all
+three. Re-classified `now` in the same session on the maintainer's challenge,
+and shipped; the port then found four more defects in the shape it was copying,
+none of which a fresh session would have known to look for.)
+
 **The converse is the honest use of `next`, and it costs one line.** When you CAN
 name the verification and a fresh session plainly has it (an existing `local-*`
 fixture needing only Docker, a `vp test run <path>` assertion, an ordinary `gh`
