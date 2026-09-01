@@ -48,6 +48,13 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+// Loaded at MODULE scope, not per-case (issue #615's sibling shape): an
+// `await import` inside a test body charges the module graph's first load --
+// vitest transform included -- to that case's 5000ms budget, the mechanism
+// behind the 1-in-27 cfn-local-state-provider-load timeout. The `vi.mock`
+// registrations above are hoisted, so import position does not affect them.
+const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
+
 beforeEach(() => {
   mockBuildDockerImage.mockReset();
   mockRunDocker.mockReset();
@@ -58,7 +65,6 @@ describe('docker-image-builder: executable source re-tag', () => {
   it('re-tags the executable-built image to the deterministic local tag', async () => {
     // Executable mode: script returned its own tag on stdout.
     mockBuildDockerImage.mockResolvedValueOnce('user-script-image:v1');
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
     const tag = await buildContainerImage(
       { source: { executable: ['./build.sh'] } },
       '/cdk.out',
@@ -76,7 +82,6 @@ describe('docker-image-builder: executable source re-tag', () => {
   it('skips the re-tag when actualTag matches the requested tag (directory mode)', async () => {
     // The build returns the input tag verbatim — re-tag is a no-op.
     mockBuildDockerImage.mockImplementationOnce(async (_asset, _ctx, opts) => opts.tag!);
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
     await buildContainerImage({ source: { directory: 'asset.x' } }, '/cdk.out', {
       architecture: 'x86_64',
     });
@@ -95,7 +100,6 @@ describe('docker-image-builder: executable source re-tag', () => {
       }
       return { stdout: '', stderr: '' };
     });
-    const { buildContainerImage } = await import('../../../src/local/docker-image-builder.js');
     await expect(
       buildContainerImage({ source: { executable: ['./build.sh'] } }, '/cdk.out', {
         architecture: 'x86_64',
