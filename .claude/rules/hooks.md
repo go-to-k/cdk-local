@@ -790,6 +790,35 @@ The hooks split into four classes:
   checkout's pathspec separator and switch's end-of-options** — `git
   checkout <b> --` switches (no operand follows), and `git switch -- main`
   prints "Already on 'main'" while `git switch -- <feature>` switches.
+  (5) **A WORD THE SHELL OWNS MAY NOT RELAX EITHER** — cause 2 is stated
+  for git's OPTIONS, and `gate_argv` did the opposite for the shell's
+  WORDS: it ENUMERATED the forms it recognised and passed everything else
+  through as an argument, so three rounds of fixes each added a spelling
+  and the next round found the one still missing (`$EMPTY` and
+  `${EMPTY}`, whose expansion VANISHES, and `{fd}>/dev/null`, bash's
+  fd-variable redirection — all four measured rc=0 where 2 is wanted, on
+  commands that move HEAD). The default is now INVERTED rather than the
+  list extended: `gate_word_is_literal` admits a word only when every one
+  of its characters is on a closed list of characters the shell does not
+  act on, and a word that fails sets `parse_certain=0`. A shape nobody
+  has thought of lands on BLOCK because every shell construct is SPELLED,
+  and one outside the list necessarily carries a character the list does
+  not hold — the audit surface is the LIST, with a reason per member, not
+  a catalogue of shell forms. The cost is over-strictness (`git checkout
+  main -- "$f"` is a restore and now blocks); measured over all three
+  repos' committed invocations, 32 of 206 texts newly block and 30 of
+  those are documentation metasyntax rather than commands, while the
+  count on lines that actually EXECUTE is zero.
+
+  **Three options git ACCEPTS were blocked by cause 2's arm**, which had
+  been documented as firing "only on commands git itself refuses":
+  `--end-of-options main`, `--end-of-options -- <path>` and
+  `--git-completion-helper` all run with rc=0 (measured, git 2.53.0).
+  They and `--git-completion-helper-all` / `--help-all` are
+  `parse-options` built-ins, absent from `-h` where the tables came from,
+  and are in the tables now at arity 0. `--end-of-options` sets
+  `end_opts` but NOT the pathspec flag, because `git checkout
+  --end-of-options <branch>` really SWITCHES.
 
   **The DWIM list is the CONFIGURED remotes, stripped per remote**, which
   is what git does and what cdk-real-drift's copy already did. A remote
@@ -808,7 +837,18 @@ The hooks split into four classes:
   quote cannot be split into words, and `gate_tokens` returned the prefix
   it managed silently — `-b agent's-branch` yielded just `-b`, read as a
   bare `git checkout`, and PASSED. It now REPORTS the truncation and the
-  gate blocks naming the cause.
+  gate blocks naming the cause. **The justification recorded for that
+  ordering was false and is retired**: it read "the text is a shell
+  syntax error in the first place, so nothing legitimate is lost", but
+  the splittability rc came from tokenizing the WHOLE text while the `#`
+  comment was dropped later inside the walk, so an apostrophe INSIDE a
+  comment was weighed as a quote. `bash -n "git checkout main # don't
+  switch lanes"` reports VALID syntax and git answers "Already on 'main'"
+  with HEAD unmoved — and the gate blocked it. `gate_argv` now cuts the
+  comment BEFORE splitting (`gate_strip_comment`, with
+  `gate_segments_raw`'s `ignore_q` second pass for a quote that never
+  closes), so the refusal covers only text bash itself will not run;
+  `-b agent's-branch` still refuses, having no comment to cut.
 
   Two shapes are ALLOWED for measured reasons that look like gaps and are
   not. `git checkout HEAD` creates nothing ("Your branch is up to date",
