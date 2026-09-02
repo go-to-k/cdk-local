@@ -191,20 +191,28 @@ are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
 `git switch ""` is not the failure you want):
 
 ```bash
-[ -z "$(git status --porcelain)" ] || exit 1   # FIRST -- switching carries dirt across
-       # `git switch` takes uncommitted changes WITH you, so the same check
-       # AFTER the switch reports a tree that only LOOKS clean: the dirt moved,
-       # onto the outer tool's branch, and the `-D` below then removes the
-       # branches that were holding this run's commits. And `&&` cannot carry
-       # the verdict either way -- `git status --porcelain` exits 0 dirty or
-       # clean -- so the emptiness is TESTED here rather than eyeballed.
 git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
-git switch --no-guess <LAUNCH_BRANCH> \
+       # FIRST, because this is the gate that CHOOSES between this block and the
+       # fallback below. `--quiet` plus the explicit `|| echo` makes it
+       # self-describing: it PRINTS the arm it selects, instead of leaving that
+       # to be read off a `fatal:` line on stderr.
+[ -z "$(git status --porcelain)" ] \
+  && git switch --no-guess <LAUNCH_BRANCH> \
   && git branch -D <every branch THIS run created>
-       # CHAINED: an unchained `-D` after a FAILED switch still deletes the
-       # branches that are not checked out, leaving the tree on the lane branch
-       # with its siblings gone. `-D`, not `-d` (squash) -- see above; §10-d's
-       # retro branch is one of them.
+       # ONE chain, and the dirty-tree test is its FIRST LINK. Testing AFTER the
+       # switch is too late: `git switch` carries uncommitted changes ACROSS, so
+       # the check then reports a tree that only LOOKS clean -- the dirt moved
+       # with you, onto the outer tool's branch -- and the `-D` deletes the
+       # branches that were holding this run's commits. Nor can the test be a
+       # bare `git status --porcelain`: that exits 0 dirty OR clean, so there is
+       # no verdict for `&&` to act on. And it is CHAINED rather than left
+       # standing alone with an `exit`, because a reader copies a LINE, not its
+       # intent -- the same rule this block's fence applies to everything else
+       # in it.
+       # CHAINED onward for the rest of the same reason: an unchained `-D` after
+       # a FAILED switch still deletes the branches that are not checked out,
+       # leaving the tree on the lane branch with its siblings gone. `-D`, not
+       # `-d` (squash) -- see above; §10-d's retro branch is one of them.
        # `--no-guess` is load-bearing, and its absence fails in the worst
        # direction: with the branch gone LOCALLY but still on `origin`, a plain
        # `git switch` DWIMs and CREATES it from the remote -- exit 0, tracking
@@ -214,8 +222,7 @@ git switch --no-guess <LAUNCH_BRANCH> \
        # git prints its own advice on that switch, suggesting a `pull` to
        # update the local branch. Do not: that is the fast-forward the AS-IS
        # rule withdraws. (Spelled without the verb because the fence below
-       # bans every branch-moving command inside this block, comments and all
-       # -- a reader copies a line, not its intent.)
+       # bans every branch-moving command inside this block, comments and all.)
 git branch --show-current                 # must print <LAUNCH_BRANCH>
 git rev-list --count origin/main..<LAUNCH_BRANCH>
        # 0 for a freshly created workspace, which is what silences the Stop hook.

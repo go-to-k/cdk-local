@@ -85,18 +85,27 @@ const MIN_REFERENCE_FILES = 6;
 // file, which a reviewer measured vacuous in 4 of 7 files).
 //
 // Re-derived 2026-09-02 (go-to-k/cdk-local#653) at the FINAL tree of the
-// LAUNCH_BRANCH lane. The inputs it is derived FROM are in MEASURED below and
-// asserted, so only the REASONING lives here: the floor must clear
-// `corpus - largest`, which it still does. It is left UNCHANGED rather than
-// raised, and the honest reading of that is worth stating: the margin was sized
-// to absorb roughly one PR's growth, and this PR alone grew ship.md by ~6.9 KB,
-// so the binding margin is now BELOW that -- the next stage-file addition should
-// expect to re-derive this line. MEASURED prints the current margin in its
-// failure message, so that arrives as a number rather than as a surprise. Sized
-// against `corpus - largest` rather than against the either-largest case because
-// the top two stage files are ~15 KB apart, so a flip is not near; the sibling
-// cdkd sizes against the flip because ITS top two are ~2 KB apart.
-const MIN_REFERENCE_CORPUS_BYTES = 112_000;
+// LAUNCH_BRANCH lane, AFTER rebasing onto go-to-k/cdk-local#670 (re-derive after
+// the rebase, not before, or every number is the pre-merge one). The inputs are
+// in MEASURED below and ASSERTED, so only the REASONING lives here.
+//
+// WHAT CONSUMES THE MARGIN, measured rather than assumed: growth in the
+// NON-largest files ONLY. When the LARGEST file grows, corpus and largest rise
+// together and `corpus - largest` does not move at all. So the figure to watch
+// is the sum of every stage file EXCEPT the biggest -- which is also why this
+// lane ate the margin so fast: it grew ship.md by ~7.4 KB and retro.md and
+// gotchas.md besides, none of them the leader.
+//
+// The 112,000 this replaces was left over ~4.5 KB of margin when it was set and
+// came out of the rebase with 91 B -- a margin nobody can plan against, the same
+// failure the MAX_ORCHESTRATOR_BYTES comment above was re-measured for. This
+// value restores ~4.6 KB and is strictly TIGHTER than what it replaces (no upper
+// bound moves). MEASURED prints the current margin in its failure message, so
+// the next erosion arrives as a number rather than as a surprise. Sized against
+// `corpus - largest` rather than against the either-largest case because the top
+// two stage files are ~14.5 KB apart, so a flip is not near; the sibling cdkd
+// sizes against the flip because ITS top two are ~2 KB apart.
+const MIN_REFERENCE_CORPUS_BYTES = 116_500;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -128,9 +137,9 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 145_119,
-    largest: { file: 'implement.md', bytes: 36_815 },
-    runnerUp: { file: 'verify.md', bytes: 21_841 },
+    corpusBytes: 150_126,
+    largest: { file: 'implement.md', bytes: 38_217 },
+    runnerUp: { file: 'verify.md', bytes: 23_706 },
   },
 };
 
@@ -142,7 +151,7 @@ const MEASURED: Record<
  */
 const MEASURED_LARGEST_NON_SPLIT: { file: string; bytes: number } = {
   file: 'hunt-bugs',
-  bytes: 27_501,
+  bytes: 27_851,
 };
 
 function skillNames(): string[] {

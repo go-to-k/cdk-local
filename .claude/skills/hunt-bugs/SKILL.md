@@ -313,15 +313,21 @@ Take it all the way to merged — do not leave a green PR hanging:
    `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
    leave it alone when in doubt. `git worktree prune` drops entries whose directory
    is already gone. An IN-PLACE hunt added no worktree, so it removes none — but
-   it DOES owe the branch it made: `git switch --no-guess <LAUNCH_BRANCH> &&
-   git branch -D <the branch this hunt created>` — **as-is**, no pull, no
-   rebase, no fast-forward, the branch being the outer tool's artifact, CHAINED
-   so a failed switch cannot leave the `-D` to run anyway, and `--no-guess`
-   because a plain `git switch` RE-CREATES a locally-missing branch from
-   `origin` instead of failing through to the detach arm. Detach
+   it DOES owe the branch it made — `/work-issues` `references/ship.md` §9's
+   two lines verbatim:
+   `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'`
+   and then
+   `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`
+   — **as-is**, no pull, no rebase, no fast-forward, the branch being the outer
+   tool's artifact; the dirty-tree test FIRST, because a switch carries
+   uncommitted changes ACROSS onto that branch and the `-D` then takes the one
+   holding your commits; CHAINED so a failed switch cannot leave the `-D` to run
+   anyway; and `--no-guess` because a plain `git switch` RE-CREATES a
+   locally-missing branch from `origin` instead of failing through to the detach
+   arm. Detach
    (`git fetch origin && git switch --detach origin/main && git branch -D ...`)
-   only when `LAUNCH_BRANCH` was empty at probe time, or
-   `git show-ref --verify refs/heads/<LAUNCH_BRANCH>` finds nothing.
+   only when `LAUNCH_BRANCH` was empty at probe time, or the `show-ref` gate
+   above printed `gone`.
    Its closing check is that the launch TREE is exactly as it found it — on
    `LAUNCH_BRANCH`, or detached if that arm fired — with every branch this hunt
    created deleted

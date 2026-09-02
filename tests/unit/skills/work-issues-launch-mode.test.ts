@@ -277,8 +277,8 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
   {
     doc: WI_SHIP,
     contract: 'as-is-restore',
-    arm: 'the dirty-tree TEST runs FIRST, because switching carries dirt across',
-    pattern: phrase('FIRST -- switching carries dirt across'),
+    arm: "the dirty-tree TEST is the chain's FIRST LINK",
+    pattern: phrase('the dirty-tree test is its FIRST LINK'),
   },
   {
     doc: WI_SHIP,
@@ -307,7 +307,7 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     // Stays within ONE physical line: this pin lives inside a fenced block
     // whose wrapped continuation re-opens with `# `, which `phrase()` cannot
     // bridge because a comment marker is not whitespace.
-    pattern: phrase('CHAINED: an unchained `-D` after a FAILED switch still deletes'),
+    pattern: phrase('CHAINED onward for the rest of the same reason'),
   },
   {
     doc: WI_SHIP,
@@ -327,13 +327,15 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     // regex silently misses it -- the reason `phrase()` exists.
     contract: 'as-is-restore',
     arm: 'section 10-d states section 9\'s restore command',
-    pattern: phrase('`git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`'),
+    pattern: phrase(
+      '`[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`'
+    ),
   },
   {
     doc: WI_RETRO,
     contract: 'as-is-restore',
     arm: 'and states it is as-is: no pull, no rebase, no fast-forward',
-    pattern: phrase('— as-is (no pull, no rebase, no fast-forward)'),
+    pattern: phrase('as-is (no pull, no rebase, no fast-forward)'),
   },
   {
     doc: WI_RETRO,
@@ -375,7 +377,9 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     doc: HUNT_BUGS,
     contract: 'as-is-restore',
     arm: 'step 8-2 restores the branch and deletes only the one the hunt made',
-    pattern: phrase('`git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`'),
+    pattern: phrase(
+      '`[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`'
+    ),
   },
   {
     doc: HUNT_BUGS,
@@ -388,7 +392,7 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     contract: 'fallback-gate',
     arm: 'the detach arm is gated on empty-at-probe-time or a failing show-ref',
     pattern: phrase(
-      'only when `LAUNCH_BRANCH` was empty at probe time, or `git show-ref --verify refs/heads/<LAUNCH_BRANCH>` finds nothing.'
+      'only when `LAUNCH_BRANCH` was empty at probe time, or the `show-ref` gate above printed `gone`.'
     ),
   },
   {
@@ -403,9 +407,16 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
  * How many rows each behaviour must keep, and across how many DOCUMENTS. The
  * document floor is the load-bearing half: rows concentrated in one file are one
  * deletion away from unfenced, which is how `fallback-gate` and `runs-last` came
- * to have no fence at all. Floors sit BELOW the counts at the time of writing so
- * a legitimate compression can retire one site; re-derive rather than raise to
- * the current count.
+ * to have no fence at all.
+ *
+ * MOST floors sit below the count at the time of writing, so a legitimate
+ * compression can retire one site without a test change. `runs-last` and
+ * `chained` do NOT: they are AT their counts, in rows and (for `chained`) in
+ * documents too, because those two behaviours are stated at the fewest sites and
+ * there is nothing spare to give. That is deliberate rather than an oversight --
+ * retiring a site there has to be a decision someone makes and re-derives this
+ * floor for, in the same commit -- but it does mean a reword that drops one of
+ * those sites turns this red, and the fix is to re-derive, not to delete the row.
  */
 const CONTRACT_FLOOR: Record<Contract, { rows: number; docs: number }> = {
   probe: { rows: 5, docs: 3 },
@@ -504,6 +515,47 @@ function wrappedWindow(lines: string[], i: number): string {
 }
 
 /**
+ * `git`, plus any GLOBAL options in front of the sub-command: `-C <path>`,
+ * `-c k=v`, and the `--long` forms. EVERY scan in this file is built from this
+ * one string, and that is the point rather than tidiness.
+ *
+ * Round 2 widened the moving-verb scan for `-C` after a `-C`-prefixed command
+ * walked past a bare `\bgit\s+pull`. Round 3 then added two NEW scans that
+ * spelled `git switch` and `git branch` literally, re-opening the same hole one
+ * commit later -- measured green on
+ * `git -C "<LANE_TREE>" switch <LAUNCH_BRANCH> && git branch -D x` and
+ * `git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>` injected into gotchas.md.
+ * `git -C "<LANE_TREE>"` is this skill's OWN spelling (gates-and-pr.md uses it
+ * throughout), so it is the likeliest shape a real regression takes. One
+ * constant is what stops the fix being re-applied per regex, always one regex
+ * behind.
+ *
+ * The `-C` value alternation accepts a quoted path, because the skill quotes
+ * its placeholders and a bare `\S+` misses `-C "a path"`.
+ */
+const GIT = String.raw`\bgit(?:\s+-[cC]\s+(?:"[^"]*"|'[^']*'|\S+)|\s+--[\w-]+(?:=\S+)?)*\s+`;
+
+/**
+ * The window looking FORWARD from line i, and the one looking BACK to i-1. A
+ * forward-only window reads a hazard written after a mention and misses the
+ * identical one written before it -- measured: `git pull --ff-only origin main`
+ * placed on the line ABOVE a LAUNCH_BRANCH mention survived.
+ */
+function wrappedWindows(lines: string[], i: number): string[] {
+  const out = [wrappedWindow(lines, i)];
+  if (i > 0) {
+    const back = wrappedWindow(lines, i - 1);
+    // Only when the join actually HAPPENED. A join suppressed by a blank line
+    // or a table-row boundary collapses to line i-1 alone, which no longer
+    // contains the mention -- and judging that line as if it did is a false
+    // positive, not a wider net (launch-mode.md's consequence table pairs a
+    // `git pull` row with the LAUNCH_BRANCH row directly beneath it).
+    if (back !== lines[i - 1]) out.push(back);
+  }
+  return out;
+}
+
+/**
  * A CONCESSIVE clause -- "ALWAYS, even if the tree arrived detached" -- states
  * that the rule holds DESPITE the condition, i.e. it is the unconditional rule
  * written out. `STILL_CONDITIONAL` matched it anyway, because "even if ...
@@ -525,9 +577,41 @@ const CONCESSIVE = /\b(even (if|when|though)|regardless of (whether|if)|no matte
  */
 const STILL_CONDITIONAL = /\b(if|when|unless|only)\b[^.]*\b(detached|already merged|PR has merged)\b/i;
 
-/** True when the window GATES the in-place rule, concessive clauses aside. */
+/**
+ * Markers that state the rule holds in every case. A line carrying one is
+ * stating the rule UNCONDITIONALLY, whatever else it says about the conditions
+ * the rule used to have.
+ */
+const UNCONDITIONAL_MARKER = /\b(ALWAYS|unconditionals?|unconditionally)\b/;
+
+/**
+ * True when the window GATES the in-place rule.
+ *
+ * Two carve-outs, both measured as FALSE POSITIVES that would have refused a
+ * correct edit:
+ *
+ *   - a CONCESSIVE clause ("ALWAYS -- even if the tree arrived detached")
+ *     states the rule DESPITE the condition, so its marker is neutralised
+ *     before the test rather than the clause being deleted, leaving the rest of
+ *     the sentence scanned: "even if X, branch only when its PR has merged"
+ *     must still fail on its SECOND limb;
+ *   - a line carrying an UNCONDITIONAL marker is not gating anything. Without
+ *     this, `[^.]*` reaches across a whole sentence and any correct line that
+ *     also NAMES the withdrawn condition -- to say it was withdrawn, to say the
+ *     rule holds anyway, to explain what a detached tree does not change -- is
+ *     rejected. Six of seven plausible rewordings were, which is a fence that
+ *     forces contorted prose and then gets deleted.
+ *
+ * What the scan therefore asserts is the property actually wanted: every line
+ * whose subject is the in-place rule states it unconditionally -- either by
+ * carrying the marker, or by carrying no condition at all. The verbatim
+ * sentence pins (UNCONDITIONAL_RULE / OUTSIDE_UNCONDITIONAL_RULE) are what hold
+ * the primary statement; this is the SECOND-site detector beside them.
+ */
 function statesACondition(window: string): boolean {
-  return STILL_CONDITIONAL.test(window.replace(CONCESSIVE, 'CONCESSIVE-CLAUSE'));
+  const neutralised = window.replace(CONCESSIVE, 'CONCESSIVE-CLAUSE');
+  if (UNCONDITIONAL_MARKER.test(neutralised)) return false;
+  return STILL_CONDITIONAL.test(neutralised);
 }
 
 /**
@@ -548,6 +632,20 @@ const STILL_CONDITIONAL_ALLOWS = [
   'IN-PLACE: take a fresh branch here, ALWAYS — even if the tree arrived detached',
   'branch IN PLACE off `origin/main` — ALWAYS, regardless of whether its PR has merged',
   'branch IN PLACE off `origin/main` — ALWAYS, no matter whether the tree arrived detached',
+  // Correct rewordings that the pre-carve-out scan REJECTED, each of which a
+  // future author might reasonably write. They differ only in how they mention
+  // the withdrawn condition, which is exactly what a rule this often
+  // re-litigated has to be able to talk about.
+  'IN-PLACE: take a fresh branch here, ALWAYS. The rule used to fire only when the tree arrived detached; that condition is withdrawn.',
+  'branch IN PLACE off `origin/main` — ALWAYS, whether or not its PR has merged',
+  'IN-PLACE: branch here ALWAYS; when the tree arrived detached this is the same rule, not an exception',
+  'IN-PLACE: take a fresh branch here, ALWAYS — the only tree you have is this one, and it may have arrived detached',
+  'branch IN PLACE off `origin/main`, unconditionally: a tree that arrived detached changes nothing',
+  // The one case the UNCONDITIONAL-marker rule does NOT cover, and therefore
+  // the only fixture that keeps the concessive strip alive: a concessive
+  // statement of the rule that never says ALWAYS. Without the strip this reads
+  // as "if ... detached" and is rejected.
+  'IN-PLACE: branch here even if the tree arrived detached',
 ];
 
 /**
@@ -564,12 +662,11 @@ const STILL_CONDITIONAL_ALLOWS = [
  * correct edit may well want -- matched `\bgit\s+merge\b`, because a hyphen is a
  * word boundary. The verb alternation is now followed by `(?![-\w])`.
  */
-const GIT_VERB = String.raw`\bgit(?:\s+-[cC]\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+`;
 const BRANCH_MOVING = new RegExp(
   [
-    `${GIT_VERB}(?:pull|rebase|merge|reset|push|update-ref)(?![-\\w])`,
-    `${GIT_VERB}branch\\s+(?:-f|--force|-M|-m|--move)\\b`,
-    `${GIT_VERB}(?:switch|checkout)\\s+(?:-[CB]|--force-create)\\b`,
+    `${GIT}(?:pull|rebase|merge|reset|push|update-ref)(?![-\\w])`,
+    `${GIT}branch\\s+(?:-f|--force|-M|-m|--move)\\b`,
+    `${GIT}(?:switch|checkout)\\s+(?:-[CB]|--force-create)\\b`,
   ].join('|')
 );
 
@@ -594,6 +691,8 @@ const BRANCH_MOVING_MATCHES = [
   'git checkout -B x origin/main',
   'git -C "<LANE_TREE>" pull --ff-only origin main',
   'git -C . merge --ff-only origin/main',
+  'git -C "<MAIN_CHECKOUT>" reset --hard origin/main',
+  'git -c core.editor=true rebase origin/main',
 ];
 const BRANCH_MOVING_ALLOWS = [
   'git switch --no-guess <LAUNCH_BRANCH>',
@@ -601,7 +700,8 @@ const BRANCH_MOVING_ALLOWS = [
   'git branch -D <every branch THIS run created>',
   'git branch --show-current',
   'git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>',
-  '[ -z "$(git status --porcelain)" ] || exit 1',
+  '[ -z "$(git status --porcelain)" ]',
+  'git -C "<MAIN_CHECKOUT>" branch --show-current',
   'git rev-list --count origin/main..<LAUNCH_BRANCH>',
   'git merge-base --is-ancestor origin/main <LAUNCH_BRANCH>',
   'git fetch origin',
@@ -619,13 +719,91 @@ const BRANCH_MOVING_ALLOWS = [
 const RESTORE_SWITCH = 'git switch --no-guess <LAUNCH_BRANCH>';
 
 /** A `git switch` onto the placeholder that has dropped `--no-guess`. */
-const GUESSING_SWITCH = /git switch\s+(?!--no-guess\b)[^\n]*<LAUNCH_BRANCH>/;
+const GUESSING_SWITCH = new RegExp(`${GIT}switch\\s+(?!--no-guess\\b)[^\\n]*<LAUNCH_BRANCH>`);
 
 /** A `git branch -d/-D` whose ARGUMENT is the outer tool's own branch. */
-const DELETES_LAUNCH_BRANCH = /\bgit\s+branch\s+(-[dD]|--delete)\b[^\n]*LAUNCH_BRANCH/;
+const DELETES_LAUNCH_BRANCH = new RegExp(`${GIT}branch\\s+(?:-[dD]|--delete)\\b[^\\n]*LAUNCH_BRANCH`);
+
+/**
+ * True when the line SWITCHES onto the outer tool's branch without `--no-guess`.
+ *
+ * A line that MENTIONS `--no-guess` anywhere is either using it or discussing
+ * it, and neither is the defect. Without that carve-out the scan rejects prose
+ * that CITES the hazard -- "never write `git switch <LAUNCH_BRANCH>` without
+ * `--no-guess`" -- which is the most natural way to warn about it, and both
+ * ship.md and hunt-bugs had to contort around the ban. It also rejected
+ * `git switch  --no-guess <LAUNCH_BRANCH>` (two spaces) while claiming the flag
+ * had been dropped, because the lookahead sits after a greedy `\s+` that can
+ * give one space back.
+ */
+function guessesTheBranch(line: string): boolean {
+  if (line.includes('--no-guess')) return false;
+  return GUESSING_SWITCH.test(line);
+}
+
+/**
+ * Both scans get fixtures, for the same reason their siblings do: neither
+ * matches anything in a healthy corpus, so a typo in either makes it inert and
+ * green -- indistinguishable from a corpus with nothing to report.
+ */
+const GUESSING_SWITCH_MATCHES = [
+  'git switch <LAUNCH_BRANCH>',
+  'git switch <LAUNCH_BRANCH> && git branch -D x',
+  'git -C "<LANE_TREE>" switch <LAUNCH_BRANCH> && git branch -D x',
+  'git -C <LANE_TREE> switch <LAUNCH_BRANCH>',
+];
+const GUESSING_SWITCH_ALLOWS = [
+  'git switch --no-guess <LAUNCH_BRANCH>',
+  'git switch  --no-guess <LAUNCH_BRANCH>',
+  'git -C "<LANE_TREE>" switch --no-guess <LAUNCH_BRANCH>',
+  'never write `git switch <LAUNCH_BRANCH>` without `--no-guess`',
+  'git switch --detach origin/main',
+  'git branch --show-current',
+];
+const DELETES_LAUNCH_BRANCH_MATCHES = [
+  'git branch -D <LAUNCH_BRANCH>',
+  'git branch -d <LAUNCH_BRANCH>',
+  'git branch --delete <LAUNCH_BRANCH>',
+  'git -C "<LANE_TREE>" branch -D <LAUNCH_BRANCH>',
+];
+const DELETES_LAUNCH_BRANCH_ALLOWS = [
+  'git branch -D <every branch THIS run created>',
+  'git branch -D <the branch this hunt created>',
+  'git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>',
+  'git branch --show-current',
+  'git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>',
+];
+
+/**
+ * The ELEMENTS of the restore recipe, and the three documents that state it.
+ *
+ * `--no-guess` was propagated to all three sites in one round while the
+ * dirty-tree test and `--quiet` were propagated to one, leaving three sites
+ * stating three different recipes -- and the chain scan, which only checks that
+ * a delete is chained to a switch, passed all three. Parity is a property of its
+ * own and needs its own fence.
+ *
+ * Element-wise rather than a triple literal on purpose: the three sites wrap
+ * differently, hunt-bugs' delete takes a SINGULAR placeholder (a hunt makes one
+ * branch), and a fence that forces three byte-identical paragraphs is one that
+ * gets relaxed the first time a reword is legitimate. Adding a fifth element
+ * here automatically requires all three sites to gain it.
+ */
+const RESTORE_ELEMENTS: Array<{ name: string; pattern: RegExp }> = [
+  {
+    name: 'the show-ref gate that CHOOSES the arm',
+    pattern: /git show-ref --verify --quiet refs\/heads\/<LAUNCH_BRANCH> \|\| echo 'gone -> use the fallback'/,
+  },
+  { name: 'the dirty-tree TEST', pattern: /\[ -z "\$\(git status --porcelain\)" \]/ },
+  { name: 'the --no-guess switch', pattern: /git switch --no-guess <LAUNCH_BRANCH>/ },
+  {
+    name: "the delete of THIS run's branches",
+    pattern: /git branch -D <(?:every branch THIS run|the branch this hunt) created>/,
+  },
+];
 
 /** Every fenced ```bash block of a markdown file, in order. */
-export function bashBlocks(markdown: string): string[] {
+function bashBlocks(markdown: string): string[] {
   const lines = markdown.split('\n');
   const out: string[] = [];
   let start = -1;
@@ -649,14 +827,19 @@ export function bashBlocks(markdown: string): string[] {
  * MUTILATED text as an unrecognised command -- a confusing failure for an edit
  * that was fine.
  */
-export function commandLines(block: string): string[] {
+function commandLines(block: string): string[] {
   const stripComment = (line: string): string => {
     let quote: string | null = null;
     for (let i = 0; i < line.length; i++) {
       const c = line[i]!;
       if (quote) {
         if (c === quote) quote = null;
-      } else if (c === '"' || c === "'") {
+      } else if ((c === '"' || c === "'") && (i === 0 || /[\s=(|&;[{]/.test(line[i - 1]!))) {
+        // A quote only OPENS at a token boundary. Treating every apostrophe as
+        // an opener means one inside a word -- `the tool's branch` -- leaves
+        // the scanner "inside a string" for the rest of the line, so the
+        // trailing `# ...` is never stripped: the same swallowed-comment
+        // failure this helper exists to prevent, arriving from the other side.
         quote = c;
       } else if (c === '#' && i > 0 && /\s/.test(line[i - 1]!)) {
         return line.slice(0, i);
@@ -671,7 +854,7 @@ export function commandLines(block: string): string[] {
 }
 
 /** The first fenced ```bash block of a markdown file. */
-export function firstBashBlock(markdown: string): string | null {
+function firstBashBlock(markdown: string): string | null {
   return bashBlocks(markdown)[0] ?? null;
 }
 
@@ -769,23 +952,27 @@ describe('work-issues launch-mode probe', () => {
      * recipe this small and this dangerous: anything not written here fails.
      */
     const PRESCRIBED_RESTORE = [
-      // The dirty-tree check is a TEST, and it runs FIRST. Both halves are
-      // load-bearing and neither is obvious: `git switch` carries uncommitted
-      // changes ACROSS, so the same check AFTER the switch reports a
-      // clean-looking tree only because the dirt landed on the outer tool's
-      // branch; and `git status --porcelain` exits 0 dirty OR clean, so a bare
-      // command -- or one chained with `&&` -- carries no verdict at all.
-      '[ -z "$(git status --porcelain)" ] || exit 1',
+      // The dirty-tree check is a TEST and it is the chain's FIRST LINK.
+      // Three separate things are load-bearing there and none is obvious.
+      // FIRST: `git switch` carries uncommitted changes ACROSS, so the same
+      // check after the switch reports a clean-looking tree only because the
+      // dirt landed on the outer tool's branch. A TEST: `git status
+      // --porcelain` exits 0 dirty OR clean, so a bare command carries no
+      // verdict for `&&` to act on. And CHAINED rather than standing alone
+      // with an `exit`: a reader copies a LINE, not its intent, which is the
+      // rule the block's own fence applies to everything else in it.
       // `--quiet` plus an explicit `|| echo` makes the gate self-describing:
       // it PRINTS the arm it selects, rather than leaving it to be inferred
-      // from a `fatal:` line on stderr.
+      // from a `fatal:` line on stderr. It runs FIRST because it is what
+      // CHOOSES between this block and the fallback.
       "git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'",
+      '[ -z "$(git status --porcelain)" ] \\',
       // `--no-guess` is not decoration. With the branch gone LOCALLY but still
       // on `origin`, a plain `git switch <name>` DWIMs: it CREATES the branch
       // from the remote, exits 0 and sets tracking -- re-making the outer
       // tool's branch at ORIGIN's tip, which is an ADJUST, on exactly the path
       // that should have fallen through to the detach fallback.
-      'git switch --no-guess <LAUNCH_BRANCH> \\',
+      '&& git switch --no-guess <LAUNCH_BRANCH> \\',
       '&& git branch -D <every branch THIS run created>',
       'git branch --show-current',
       'git rev-list --count origin/main..<LAUNCH_BRANCH>',
@@ -814,11 +1001,14 @@ describe('work-issues launch-mode probe', () => {
         commandLines(restore[0]!),
         `references/ship.md's IN-PLACE restore block no longer matches the prescribed ` +
           `sequence. Each line is load-bearing and so is the ORDER: the ` +
-          `\`show-ref --verify\` gate is what CHOOSES between this block and the detach ` +
-          `fallback, the delete is PLURAL because §10-d takes a retro branch in this same ` +
-          `tree, and the closing \`--show-current\` / \`--porcelain\` / \`rev-list --count\` ` +
-          `checks are what prove the tree was left as it was found. The switch and the ` +
-          `delete must stay \`&&\`-CHAINED: unchained, a FAILED switch still runs the -D, ` +
+          `\`show-ref --verify --quiet\` gate runs FIRST because it is what CHOOSES ` +
+          `between this block and the detach fallback; the dirty-tree TEST is the CHAIN'S ` +
+          `FIRST LINK, because a switch carries uncommitted changes across onto the outer ` +
+          `tool's branch and \`git status --porcelain\` exits 0 either way so it has to be ` +
+          `TESTED; the delete is PLURAL because §10-d takes a retro branch in this same ` +
+          `tree; and the closing \`--show-current\` / \`rev-list --count\` checks are what ` +
+          `prove the tree was left as it was found. The test, the switch and the delete ` +
+          `must stay \`&&\`-CHAINED: unchained, a FAILED switch still runs the -D, ` +
           `and git refuses that only for the CHECKED-OUT branch -- so every other branch ` +
           `this run created, the retro branch included, is deleted while the tree stays on ` +
           `the lane branch it was supposed to leave. Anything that MOVES LAUNCH_BRANCH ` +
@@ -856,6 +1046,12 @@ describe('work-issues launch-mode probe', () => {
               `outer tool's own branch, and the single most damaging thing this contract ` +
               `exists to prevent. The \`-D\` takes <every branch THIS run created>.`
           ).not.toMatch(DELETES_LAUNCH_BRANCH);
+          expect(
+            guessesTheBranch(line),
+            `references/ship.md's ${name} block line \`${line}\` switches onto LAUNCH_BRANCH ` +
+              `without \`--no-guess\`, so a branch that is gone locally but still on ` +
+              `\`origin\` is RE-CREATED at origin's tip instead of falling through here.`
+          ).toBe(false);
         }
       }
     });
@@ -928,42 +1124,81 @@ describe('work-issues launch-mode probe', () => {
     });
   });
 
-  it('no site anywhere in .claude/** names LAUNCH_BRANCH beside a branch-moving verb', () => {
-    // The block scan above reaches the two fenced recipes. retro.md,
-    // gotchas.md and hunt-bugs/SKILL.md each carry a PROSE copy it cannot see,
-    // and launch-mode.md's table states the rule one line per row.
-    const scanned = launchBranchBearingFiles();
+  it('no site anywhere in .claude/** mis-states the restore command', () => {
+    // SCOPE is half of a scan, and it fails silently in a way the PATTERN does
+    // not: the set of files that MENTION the recipe is wider than the set that
+    // DEFINES it, and a wrong mention misleads a reader just as effectively.
+    // cdkd's copy scanned only the three definers, so an injected
+    // `git -C ... branch -D <LAUNCH_BRANCH>` in gotchas.md -- which merely
+    // states the restore -- passed green. So this runs over EVERY tracked
+    // `.claude/**` doc, not just the LAUNCH_BRANCH-bearing ones and not just
+    // the definers: the deletion and no-guess scans are self-anchored on the
+    // placeholder, so a wider population costs nothing and removes the
+    // reasoning step where the mistake lives.
+    const scanned = claudeFiles().map(
+      (rel) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]
+    );
     expect(
       scanned.length,
-      `only ${scanned.length} .claude/** file(s) mention LAUNCH_BRANCH; the derived scan ` +
-        `population has collapsed and would report clean over anything.`
+      `only ${scanned.length} tracked .claude/** docs were scanned; the population has ` +
+        `collapsed and would report clean over anything.`
+    ).toBeGreaterThanOrEqual(20);
+    expect(
+      launchBranchBearingFiles().length,
+      `only ${launchBranchBearingFiles().length} of them mention LAUNCH_BRANCH; the contract ` +
+        `has been deleted from nearly every site it is stated at.`
     ).toBeGreaterThanOrEqual(9);
     for (const [name, text] of scanned) {
       const lines = text.split('\n');
       for (const [i, line] of lines.entries()) {
-        if (!line.includes('LAUNCH_BRANCH')) continue;
-        // The wrapped window, not the bare line: a fast-forward written on the
-        // line AFTER the mention is the withdrawn draft's own shape.
-        expect(
-          wrappedWindow(lines, i),
-          `${name}:${i + 1} names LAUNCH_BRANCH beside a branch-moving verb.`
-        ).not.toMatch(BRANCH_MOVING);
-      }
-      for (const [i, line] of lines.entries()) {
+        if (line.includes('LAUNCH_BRANCH')) {
+          // BOTH windows, not just the forward one: the withdrawn draft's own
+          // shape is the switch on one line and the fast-forward on the next,
+          // but nothing stops the fast-forward being written ABOVE the mention
+          // instead -- measured, and it survived a forward-only window.
+          for (const window of wrappedWindows(lines, i)) {
+            expect(
+              window,
+              `${name}:${i + 1} names LAUNCH_BRANCH beside a branch-moving verb.`
+            ).not.toMatch(BRANCH_MOVING);
+          }
+        }
         expect(
           line,
           `${name}:${i + 1} passes LAUNCH_BRANCH to \`git branch -d/-D\`. That deletes the ` +
             `OUTER TOOL's branch; the delete takes the branches THIS run created.`
         ).not.toMatch(DELETES_LAUNCH_BRANCH);
         expect(
-          line,
+          guessesTheBranch(line),
           `${name}:${i + 1} switches onto LAUNCH_BRANCH WITHOUT \`--no-guess\`. When the ` +
             `branch is gone locally but still on \`origin\` -- which is precisely when the ` +
             `detach fallback is supposed to fire -- a plain \`git switch\` CREATES it from ` +
             `the remote and exits 0, re-making the outer tool's branch at origin's tip. The ` +
             `AS-IS rule forbids that, and it happens silently.`
-        ).not.toMatch(GUESSING_SWITCH);
+        ).toBe(false);
       }
+    }
+  });
+
+  it('the no-guess and delete scans still fire, and neither over-reaches', () => {
+    for (const cmd of GUESSING_SWITCH_MATCHES) {
+      expect(guessesTheBranch(cmd), `the no-guess scan no longer flags \`${cmd}\`.`).toBe(true);
+    }
+    for (const cmd of GUESSING_SWITCH_ALLOWS) {
+      expect(
+        guessesTheBranch(cmd),
+        `the no-guess scan flags \`${cmd}\`, which is correct text. A fence that refuses a ` +
+          `correct edit -- here, prose that CITES the hazard -- is one the next author deletes.`
+      ).toBe(false);
+    }
+    for (const cmd of DELETES_LAUNCH_BRANCH_MATCHES) {
+      expect(cmd, `DELETES_LAUNCH_BRANCH no longer flags \`${cmd}\`.`).toMatch(DELETES_LAUNCH_BRANCH);
+    }
+    for (const cmd of DELETES_LAUNCH_BRANCH_ALLOWS) {
+      expect(
+        cmd,
+        `DELETES_LAUNCH_BRANCH flags \`${cmd}\`, which the recipes legitimately run.`
+      ).not.toMatch(DELETES_LAUNCH_BRANCH);
     }
   });
 
@@ -1141,6 +1376,53 @@ describe('work-issues launch-mode probe', () => {
       `references/verify.md lost section 8's rule that reviewer subagents spawned BY A LANE ` +
         `report to the MAIN session, not to the lane.`
     ).toContain('not to the\n  lane that spawned them');
+  });
+
+  it('all three sites that STATE the restore agree, element by element', () => {
+    for (const doc of [WI_SHIP, WI_RETRO, HUNT_BUGS]) {
+      const text = rootRead(doc);
+      const missing = RESTORE_ELEMENTS.filter((e) => !e.pattern.test(text)).map((e) => e.name);
+      expect(
+        missing,
+        `${doc} states the restore WITHOUT ${missing.join(' / ')}. All three sites print the ` +
+          `same two lines, and a reader copies whichever one they are looking at -- a site ` +
+          `that is one element short teaches a recipe that loses uncommitted work ` +
+          `(no dirty-tree test), re-creates the outer tool's branch at origin's tip ` +
+          `(no --no-guess), or cannot tell which arm to take (no show-ref gate). If an ` +
+          `element legitimately changed, change it at ALL THREE and update ` +
+          `RESTORE_ELEMENTS in the same commit.`
+      ).toEqual([]);
+    }
+  });
+
+  describe('commandLines strips a trailing comment without mutilating the command', () => {
+    // The quote-awareness this helper's JSDoc claims had no test, so both of
+    // its branches were unexercised -- and one of them was WRONG: an
+    // apostrophe inside a word left the scanner "inside a string" for the rest
+    // of the line, swallowing the very comment the helper exists to strip.
+    it('keeps a `#` that sits inside a quoted argument', () => {
+      expect(commandLines('git commit -m "closes #651"')).toEqual(['git commit -m "closes #651"']);
+      expect(commandLines("echo 'a # b'")).toEqual(["echo 'a # b'"]);
+    });
+
+    it('still strips the comment after an apostrophe used as punctuation', () => {
+      expect(commandLines("git branch -D <the tool's branch>   # not LAUNCH_BRANCH")).toEqual([
+        "git branch -D <the tool's branch>",
+      ]);
+    });
+
+    it('drops blank and whole-line comments, and trims the rest', () => {
+      expect(commandLines('# a heading\n\n  git status --porcelain  # note\n')).toEqual([
+        'git status --porcelain',
+      ]);
+    });
+
+    it('keeps a line-continuation backslash, which the chain check reads', () => {
+      expect(commandLines('[ -z "$(git status --porcelain)" ] \\\n  && git branch -D x')).toEqual([
+        '[ -z "$(git status --porcelain)" ] \\',
+        '&& git branch -D x',
+      ]);
+    });
   });
 
   describe('the probe, executed', () => {
