@@ -130,8 +130,10 @@ const FORBIDDEN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
  *
  * Written as bytes because `scan` reads latin1 (see its comment): under that
  * decode a BOM arrives as `ï` `»` `¿`, so a `\uFEFF` character class here would
- * match NOTHING and this fence would be silently vacuous -- the exact shape the
- * mutation probe below exists to refute.
+ * match NOTHING and this fence would be silently vacuous. That spelling is
+ * load-bearing and is asserted below ("the BOM spelling matches a latin1 read"),
+ * because no tracked file carries a BOM -- so respelling this constant is
+ * invisible to every other assertion in the file.
  *
  * SCOPE: U+FEFF only. U+00A0 (NBSP) is the same class of defect but a different
  * decision -- it is an ordinary paste accident in markdown prose, and this
@@ -327,6 +329,24 @@ describe('committed text carries no C0 control bytes', () => {
     for (const prefix of ['src/', 'tests/', '.claude/']) {
       expect(files.some((f) => f.startsWith(prefix))).toBe(true);
     }
+  });
+
+  it('the BOM spelling matches a latin1 read, so the arm is not vacuous', () => {
+    // `scan` reads latin1, so BOM_UTF8 must be the three UTF-8 BYTES and not
+    // the code point. Nothing else can see a mistake here: the repo carries no
+    // BOM, so respelling the constant `'\uFEFF'` leaves every other assertion
+    // in this file green and the arm silently matches nothing. Asserted against
+    // the real encoder rather than against a hand-written literal, so it stays
+    // true by construction.
+    const asRead = Buffer.from('a\uFEFFb', 'utf8').toString('latin1');
+    expect(
+      asRead.includes(BOM_UTF8),
+      `BOM_UTF8 does not appear in a latin1 read of a UTF-8 BOM, so the scan arm ` +
+        `matches nothing. It must be the BYTES (0xEF 0xBB 0xBF), not '\\uFEFF'.`
+    ).toBe(true);
+    // ...and the code-point spelling really is the wrong one, so the assertion
+    // above is discriminating rather than trivially true.
+    expect(asRead.includes('\uFEFF')).toBe(false);
   });
 
   it('finds no control byte in any tracked text file', () => {

@@ -38,6 +38,18 @@
   main-tree EDIT gate to catch the stray write, so the receipt matters more
   here. After any timeout or refusal, run `pwd` and re-verify what the aborted
   call was supposed to create, before the next relative-path command.
+  **And the reset can land you in a DIFFERENT REPOSITORY, where every check you
+  would reach for agrees with you.** The three sibling repos share the skill
+  layout and the suite FILENAMES, so `git status` reads clean, the suite runs
+  green and the tree "matches HEAD" -- all true, all about the wrong repo.
+  Measured 2026-09-03 on this lane: the shell surfaced in `../cdk-real-drift`,
+  a hook suite that is 107 cases here answered `Pass: 126`, and the tell was a
+  case NAME in the output naming a predicate the file under edit does not have.
+  Nothing was damaged only because the edit ran through `python3` with
+  `assert <anchor> in s` and threw before writing -- §8-z's advice paying off in
+  a direction it was not written for. A COUNT that moves with no diff is the
+  cheap signal; confirm with `git rev-parse --show-toplevel`, never with
+  `git status`.
 - **A hook's `if` takes ONE pattern — ` or ` matches nothing and disables the
   gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen
   gates here were written as
@@ -120,17 +132,19 @@
   and still finished its lane. Stand down any QUEUED lane the run will not reach
   at the moment that verdict is known, not at the wrap (§4).
 - **Any writer that NORMALISES an escape puts invisible non-C0 characters
-  straight into a commit, and every fence here is C0-only.** A heredoc is one
+  straight into a commit, and the fences do not all cover them.** A heredoc is one
   such writer; an EDITING TOOL is another, and that one surprises people —
   writing this very bullet, an `Edit` call substituted a literal U+FEFF for the
   `\uFEFF` it was given (it reports doing so: "Edit also tried swapping
   \uXXXX escapes and their characters"), so the sentence warning about the byte
   shipped carrying it. Write such a character through `python3` / `printf`
-  rather than an editor, then re-scan. `control-char-gate.sh` and
-  `tests/unit/no-control-bytes.test.ts` both scan for C0 bytes, so U+00A0 (NBSP)
-  and U+FEFF (BOM) pass both — into source, into a test, and into a commit
-  MESSAGE, which nothing scans at all. `main` carried a live instance until this
-  retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a
+  rather than an editor, then re-scan. `control-char-gate.sh` is C0-only, so both
+  U+00A0 (NBSP) and U+FEFF (BOM) walk past it — including into a commit MESSAGE,
+  which nothing scans at all, and which is how this bullet's own commit acquired
+  a fourth instance. `tests/unit/no-control-bytes.test.ts` was C0-only too until
+  this retro; it now catches U+FEFF in tracked FILE CONTENT, so the gap that
+  remains is NBSP everywhere plus either byte in a commit message
+  (go-to-k/cdk-local#677). `main` carried a live instance until this retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a
   LITERAL character inside a regex (`ef bb bf` on the wire), invisible in every
   reading of that line. Spell such a character as a `\u`-escape, the same rule
   `.claude/rules/hooks.md` states for C0 bytes, and when a heredoc's subject IS

@@ -590,6 +590,18 @@ check "...and the model text names verify-pr-gate" "yes" \
   "$(printf '%s' "$out" | grep -qF 'verify-pr-gate' && echo yes || echo no)"
 check "...and tells the model a running verification is WAITING, not stopped" "yes" \
   "$(printf '%s' "$out" | grep -qF 'you are WAITING' && echo yes || echo no)"
+# NEGATIVE, and only a negative can hold this one. The text may name the MANDATE
+# -- verify-pr-gate has no diff-scope short-circuit, so every lane meets it --
+# but must NOT name the INTEG, which is conditional on a `src/**` /
+# `tests/integration/**` diff this hook never computes: it makes no `git diff`
+# call at all. (The sibling cdk-real-drift's copy DOES compute one, which is why
+# its text may say more; do not port that wording back without porting the
+# predicate.) The first correction of this shipped unfenced, so reverting to the
+# old "takes the integ run and the live test" clause was 0 red across 107 cases.
+# `integ` occurs nowhere else in the emitted payload (measured: 0), so the
+# substring is a sound proxy for the claim.
+check "...and does NOT promise an integ the hook cannot know is owed" "absent" \
+  "$(printf '%s' "$out" | grep -qiF 'integ' && echo present || echo absent)"
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "...and a pushed lane stops nagging again after that one" "sys" "$(channel_of "$out")"
 # The USER arm of the same rewrite. It is a SEPARATE string from the model one
