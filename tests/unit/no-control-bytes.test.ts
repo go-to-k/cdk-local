@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -331,6 +331,32 @@ describe('committed text carries no C0 control bytes', () => {
     }
   });
 
+  it('scan() actually REPORTS a BOM, not just holds the right constant', () => {
+    // The case below fences the CONSTANT; this one fences the WIRING, and they
+    // are separate failures. Deleting the BOM loop out of `scan()` entirely and
+    // leaving `void BOM_UTF8;` behind was 0 red of 8 -- the constant stayed
+    // correct, nothing referenced it, and the file still claimed the arm worked.
+    // That is the same vacuity the arm was added to close, one level up.
+    //
+    // Drives the real `scan()` over a real file rather than re-implementing the
+    // search here: a fixture that a helper interprets would pass on a helper
+    // that agrees with it. The file is untracked, and the scanned population
+    // comes from `git ls-files`, so it is invisible to every other assertion.
+    const rel = '.tmp-bom-wiring-probe.txt';
+    const abs = path.join(REPO_ROOT, rel);
+    try {
+      writeFileSync(abs, Buffer.from('alpha\uFEFFbeta\n', 'utf8'));
+      const hits = scan(rel);
+      expect(
+        hits.map((h) => `${h.line}:${h.column} ${h.byte}`),
+        'scan() did not report a BOM in a file that plainly contains one -- the ' +
+          'BOM pass in scan() is missing or unreachable'
+      ).toEqual(['1:6 0xEF 0xBB 0xBF (U+FEFF, a BOM -- spell it \\uFEFF)']);
+    } finally {
+      rmSync(abs, { force: true });
+    }
+  });
+
   it('the BOM spelling matches a latin1 read, so the arm is not vacuous', () => {
     // `scan` reads latin1, so BOM_UTF8 must be the three UTF-8 BYTES and not
     // the code point. Nothing else can see a mistake here: the repo carries no
@@ -344,8 +370,13 @@ describe('committed text carries no C0 control bytes', () => {
       `BOM_UTF8 does not appear in a latin1 read of a UTF-8 BOM, so the scan arm ` +
         `matches nothing. It must be the BYTES (0xEF 0xBB 0xBF), not '\\uFEFF'.`
     ).toBe(true);
-    // ...and the code-point spelling really is the wrong one, so the assertion
-    // above is discriminating rather than trivially true.
+    // ...and the two spellings are genuinely not interchangeable: a latin1 read
+    // contains the bytes and NOT the code point. This line names no constant, so
+    // no mutation of BOM_UTF8 can red it -- it pins the ENCODING FACT the line
+    // above rests on, which is a different job from discriminating on the
+    // constant. (Over-match is the residue neither line catches: a truncated
+    // `'\u00ef'` or `'\u00ef\u00bb'` still passes both. Low stakes -- it widens
+    // what the scan reports, it does not blind it.)
     expect(asRead.includes('\uFEFF')).toBe(false);
   });
 

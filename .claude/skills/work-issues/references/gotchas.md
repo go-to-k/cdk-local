@@ -43,8 +43,11 @@
   layout and the suite FILENAMES, so `git status` reads clean, the suite runs
   green and the tree "matches HEAD" -- all true, all about the wrong repo.
   Measured 2026-09-03 on this lane: the shell surfaced in `../cdk-real-drift`,
-  a hook suite that is 107 cases here answered `Pass: 126`, and the tell was a
-  case NAME in the output naming a predicate the file under edit does not have.
+  where the sibling's copy of the same-named hook suite answered a TALLY this
+  repo's copy does not have, and the tell was a case NAME in the output naming a
+  predicate the file under edit does not carry. (No count is quoted here on
+  purpose: a bare one went stale three times inside this single PR, twice
+  falsified by the very commit that wrote it.)
   Nothing was damaged only because the edit ran through `python3` with
   `assert <anchor> in s` and threw before writing -- §8-z's advice paying off in
   a direction it was not written for. A COUNT that moves with no diff is the
@@ -140,8 +143,8 @@
   shipped carrying it. Write such a character through `python3` / `printf`
   rather than an editor, then re-scan. `control-char-gate.sh` is C0-only, so both
   U+00A0 (NBSP) and U+FEFF (BOM) walk past it — including into a commit MESSAGE,
-  which nothing scans at all, and which is how this bullet's own commit acquired
-  a fourth instance. `tests/unit/no-control-bytes.test.ts` was C0-only too until
+  which nothing scans at all -- which is how this bullet's own commit acquired an
+  instance, caught on re-read and amended away before it reached anyone. `tests/unit/no-control-bytes.test.ts` was C0-only too until
   this retro; it now catches U+FEFF in tracked FILE CONTENT, so the gap that
   remains is NBSP everywhere plus either byte in a commit message
   (go-to-k/cdk-local#677). `main` carried a live instance until this retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a

@@ -99,14 +99,14 @@ const MIN_REFERENCE_FILES = 6;
 // eats the margin fast: its lessons land in whichever stage file each one fires
 // in, and `implement.md` (the leader) is rarely one of them. The
 // go-to-k/cdk-local#650 lane grew
-// verify.md +4464, gotchas.md +4450, launch-mode.md +2666, retro.md +1323,
+// verify.md +4464, gotchas.md +4700, launch-mode.md +2666, retro.md +1323,
 // triage.md +1168 and claim.md +1096, and NOT ONE of them was the leader -- so
-// `corpus - largest` moved the whole ~15.2 KB and the 116,500 that preceded this
+// `corpus - largest` moved the whole ~15.4 KB and the 116,500 that preceded this
 // value LAPSED. The assertion at the bottom of this file is what said so, at the
 // commit that caused it, which is the whole point of asserting the invariant
 // rather than describing it.
 //
-// This value is derived from that failure message: it sits ~3.7 KB above the
+// This value is derived from that failure message: it sits ~3.5 KB above the
 // current `corpus - largest`, the same order of margin its two predecessors were
 // given (112,000 was set with ~4.5 KB and came out of a rebase with 91 B; the
 // 116,500 that replaced it restored ~3.4 KB and survived one retro). No upper
@@ -148,7 +148,7 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 166_477,
+    corpusBytes: 166_727,
     largest: { file: 'implement.md', bytes: 38_217 },
     runnerUp: { file: 'verify.md', bytes: 28_170 },
   },
