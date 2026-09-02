@@ -64,7 +64,10 @@ IN-PLACE they differ, and that difference is the whole point.
 tree was handed to this run ON, which IN-PLACE means the branch the OUTER TOOL
 created. An EMPTY value is a legitimate answer, not a probe failure: it says the
 run was launched detached, and §9's restore keeps a detach fallback for exactly
-that case. It is the one value that becomes UNRECOVERABLE if not recorded now —
+that case. It is unguarded on purpose, unlike the four values above: inside a
+work tree — which line 1 has already established — `git branch --show-current`
+exits 0 and prints nothing only when HEAD is detached, so there is no failing
+spelling for an empty value to be confused with. It is the one value that becomes UNRECOVERABLE if not recorded now —
 §5 switches the tree onto the lane's own branch, so every later
 `git branch --show-current` answers with the LANE's branch and the thing this
 value exists to name (what to put back) is gone. MAIN-CHECKOUT records it and
@@ -134,7 +137,7 @@ tree:
 | 1 | Take ONE issue and finish it — a second lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635) | §3 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
 | 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
-| 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH` | §5 |
+| 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS, not only when the tree is detached or its PR has merged — and never commit onto `LAUNCH_BRANCH`. **This row is the normative statement**: `implement.md` still carries the older conditional wording and is held by open go-to-k/cdk-local#643, which is why SKILL.md sends an IN-PLACE lane HERE as well | §5 |
 | 5 | `/merge-pr` stops once the merge is CONFIRMED: its local-cleanup step (the `git worktree remove` + `git branch -D` one) must not run at all, because a lane that removes the tree it runs in deletes its own cwd. Cleanup of the TREE belongs to whoever created it | §9, §10-d |
 | 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
 | 7 | `main` is checked out in the main checkout, so `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |

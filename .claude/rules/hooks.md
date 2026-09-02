@@ -1714,9 +1714,9 @@ this repo squash-merges, so a merged branch never becomes an ancestor of
 The remedy is `git worktree remove` plus `git branch -D`, not another PR
 — and when the tree is one you must NOT remove (an outer tool owns it, or
 you were launched inside it), switching BACK to the branch the tool handed
-the tree over on clears the lane just as well: that branch sits at 0 commits
-ahead of `origin/main`, so the loop skips it. `/work-issues` records it as
-`LAUNCH_BRANCH` and puts it back as its last step
+the tree over on clears the lane just as well whenever that branch is itself
+not ahead of `origin/main` — the ordinary case for a freshly created workspace.
+`/work-issues` records it as `LAUNCH_BRANCH` and puts it back as its last step
 (`.claude/skills/work-issues/references/ship.md` section 9). Detaching with
 `git switch --detach origin/main` also clears the lane — a worktree with no
 current branch is not a lane at all — but it is visible-surprising in the

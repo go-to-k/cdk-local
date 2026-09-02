@@ -69,18 +69,20 @@ that proved them.
   this repo, and return ONLY the candidate table — per issue: number, title,
   target files, rank + the rule that decided it, collision evidence
   (worktrees / branches / claims found), and any premise-check findings. Hand
-  it `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` from the probe: §2's worktree scan
+  it `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH` from the probe: §2's worktree scan
   needs the absolute main checkout, and a read-only subagent cannot return git
   state the parent does not already hold. The raw backlog listing and issue
   bodies stay out of the parent context.
 - **Claim (stage 4): the PARENT, never a subagent** — the claim is the lock,
   so it names the session accountable for the lane; it also names the lane
-  branch/worktree the dispatched subagent will create (§4) — or, IN-PLACE, the
-  branch already checked out here.
+  branch/worktree the dispatched subagent will create (§4) — IN-PLACE too:
+  §5 creates it in the tree already here. Never `LAUNCH_BRANCH`.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
-  files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`),
-  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
+  files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`,
+  plus `references/launch-mode.md` IN-PLACE — its table, not implement.md,
+  holds §5's IN-PLACE rules), and the probe's
+  `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
   lane creates its own worktree per §5 — or works in place — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs
   `/check` + `/check-docs`, opens the PR, dispatches its review tier (a lane

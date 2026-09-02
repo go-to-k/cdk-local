@@ -125,13 +125,18 @@ it, `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, 
 `node_modules`) → `vp run build` (the CLI runs from `dist/` — `node dist/cli.js`,
 or the `cdkl` bin).
 
-**Unless this hunt was LAUNCHED from a linked worktree, in which case create
-none and work on the branch already checked out there** — `git worktree add` run
-from inside a worktree nests one, and deleting the outer workspace takes the
-inner directory, its uncommitted work and its git registration with it
+**Unless this hunt was LAUNCHED from a linked worktree, in which case create no
+WORKTREE and take the fix's branch IN PLACE, off `origin/main`** — `git worktree
+add` run from inside a worktree nests one, and deleting the outer workspace takes
+the inner directory, its uncommitted work and its git registration with it
 (go-to-k/cdk-local#635). Compute the mode with the one-line probe in
 `.claude/skills/work-issues/references/launch-mode.md`, the file that holds the
-ONLY copy of it; `/work-issues` `references/triage.md` section 3 carries the
+ONLY copy of it, and RECORD its `LAUNCH_BRANCH`: that is the branch the outer
+tool handed the tree over on, and step 8 puts it back. **Never commit onto it.**
+This repo has `delete_branch_on_merge`, so a hunt that opened its PR from
+`LAUNCH_BRANCH` would delete the outer tool's remote branch on the way out — a
+far heavier interference than the worktree nesting this rule already avoids.
+`/work-issues` `references/triage.md` section 3 carries the
 ownership check to run before adopting a tree you did not create. A hunt takes
 one fix at a time, so nothing else about this flow changes — except step 8's
 cleanup. The `mise trust` / `pnpm install` / `vp run build` lines still apply:
@@ -305,9 +310,15 @@ Take it all the way to merged — do not leave a green PR hanging:
    live peer lane. Confirm it is finished (`git log --oneline -1 <branch>`, then
    `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
    leave it alone when in doubt. `git worktree prune` drops entries whose directory
-   is already gone. An IN-PLACE hunt added no worktree, so it removes none: its
-   closing check is that the launch tree and its branch are exactly as it found
-   them.
+   is already gone. An IN-PLACE hunt added no worktree, so it removes none — but
+   it DOES owe the branch it made: `git switch <LAUNCH_BRANCH>` **as-is** (no
+   pull, no rebase, no fast-forward — the branch is the outer tool's artifact),
+   then `git branch -D <the branch this hunt created>`. Detach
+   (`git fetch origin && git switch --detach origin/main`) only when
+   `LAUNCH_BRANCH` was empty at probe time or is now gone. Its closing check is
+   that the launch TREE is exactly as it found it, standing on `LAUNCH_BRANCH`,
+   with every branch this hunt created deleted
+   (`/work-issues` `references/ship.md` section 9 carries the reasoning).
 
 ### 9. Record what you learned
 

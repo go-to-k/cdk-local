@@ -34,7 +34,8 @@ import { dirname, join } from 'node:path';
  *      nothing.
  */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const skillDir = join(repoRoot, '.claude', 'skills', 'work-issues');
+const skillsDir = join(repoRoot, '.claude', 'skills');
+const skillDir = join(skillsDir, 'work-issues');
 const LAUNCH_MODE_DOC = join('references', 'launch-mode.md');
 
 /** Every markdown file of the skill, orchestrator first. */
@@ -84,32 +85,65 @@ const ARM_BEARING: Record<string, string[]> = {
  * puts it back AS-IS at the very end. Separate from ARM_BEARING because the mode
  * words survive deleting the restore -- a file can still say IN-PLACE everywhere
  * while the one step that makes the mode leave no trace is gone, which is what
- * the byte floors also cannot see. gotchas.md is in the list because its Stop-hook
- * entry names the restore as the remedy; before this change it named detaching and
- * called the choice the outer tool's, which is the contradiction that would return
- * if the arm were dropped there alone.
+ * the byte floors also cannot see. gotchas.md is here because its Stop-hook entry
+ * names the restore as the remedy; before this change it named detaching and
+ * called the choice the outer tool's, which is the contradiction that would
+ * return if the arm were dropped there alone. hunt-bugs is here because it is a
+ * SECOND skill that runs IN-PLACE and merges through /merge-pr, so the
+ * commit-onto-LAUNCH_BRANCH hazard is identical there.
+ *
+ * The value is an occurrence FLOOR, not a boolean. A presence check passes on a
+ * file that kept one mention and lost every paragraph around it -- measured
+ * during review: ship.md's fallback block, its "runs LAST" note and both new
+ * table rows in launch-mode.md could all go while `toContain` stayed green. Each
+ * floor sits at roughly half the count at the time of writing, so narrative
+ * COMPRESSION is still legal and gutting is not. Re-derive rather than raise to
+ * the current count: a floor equal to the count fails on the next reword.
  */
-const LAUNCH_BRANCH_BEARING = [
-  'SKILL.md',
-  LAUNCH_MODE_DOC,
-  join('references', 'claim.md'),
-  join('references', 'ship.md'),
-  join('references', 'retro.md'),
-  join('references', 'gotchas.md'),
-];
+const LAUNCH_BRANCH_BEARING: Record<string, number> = {
+  // Counts at the time of writing: SKILL.md 4, launch-mode.md 11, claim.md 1,
+  // ship.md 10, retro.md 1, gotchas.md 2.
+  'SKILL.md': 2,
+  [LAUNCH_MODE_DOC]: 6,
+  [join('references', 'claim.md')]: 1,
+  [join('references', 'ship.md')]: 6,
+  [join('references', 'retro.md')]: 1,
+  [join('references', 'gotchas.md')]: 1,
+};
 
-/** The first fenced ```bash block of a markdown file. */
-export function firstBashBlock(markdown: string): string | null {
+/** Skills OTHER than work-issues that must carry the same contract. */
+const LAUNCH_BRANCH_SIBLING_SKILLS: Record<string, number> = {
+  'hunt-bugs': 3,
+};
+
+/**
+ * Verbs that MOVE a branch. Section 9's restore is AS-IS, so none of these may
+ * appear in the restore recipe or on a line that names LAUNCH_BRANCH. The first
+ * draft of that step fast-forwarded the branch to origin/main, and the shape it
+ * would come back in is `git switch <LAUNCH_BRANCH>` on one line and the
+ * fast-forward on the NEXT -- which an argument-position regex cannot see.
+ */
+const BRANCH_MOVING = /\bgit\s+(pull|rebase|merge|reset|push)\b|\bgit\s+branch\s+-f\b/;
+
+/** Every fenced ```bash block of a markdown file, in order. */
+export function bashBlocks(markdown: string): string[] {
   const lines = markdown.split('\n');
+  const out: string[] = [];
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     if (start === -1) {
       if (/^```bash\s*$/.test(lines[i]!)) start = i + 1;
     } else if (/^```\s*$/.test(lines[i]!)) {
-      return lines.slice(start, i).join('\n');
+      out.push(lines.slice(start, i).join('\n'));
+      start = -1;
     }
   }
-  return null;
+  return out;
+}
+
+/** The first fenced ```bash block of a markdown file. */
+export function firstBashBlock(markdown: string): string | null {
+  return bashBlocks(markdown)[0] ?? null;
 }
 
 describe('work-issues launch-mode probe', () => {
@@ -147,32 +181,95 @@ describe('work-issues launch-mode probe', () => {
     });
   }
 
-  for (const doc of LAUNCH_BRANCH_BEARING) {
-    it(`${doc} still carries its LAUNCH_BRANCH arm`, () => {
+  for (const [doc, floor] of Object.entries(LAUNCH_BRANCH_BEARING)) {
+    it(`${doc} still carries its LAUNCH_BRANCH arm (>= ${floor} mentions)`, () => {
+      const found = read(doc).split('LAUNCH_BRANCH').length - 1;
       expect(
-        read(doc),
-        `${doc} no longer mentions LAUNCH_BRANCH. Its arm of the restore contract was ` +
-          `deleted or moved: without it an IN-PLACE run ends on a squash-merged lane ` +
-          `branch (the Stop hook warns every turn) or detached (visible-surprising in the ` +
-          `outer tool's UI) instead of on the branch the tool created. If the arm MOVED, ` +
-          `update LAUNCH_BRANCH_BEARING so the assertion keeps tracking it.`
-      ).toContain('LAUNCH_BRANCH');
+        found,
+        `${doc} mentions LAUNCH_BRANCH ${found} times, below its floor of ${floor}. Its arm ` +
+          `of the restore contract was gutted or moved: without it an IN-PLACE run ends on a ` +
+          `squash-merged lane branch (the Stop hook warns every turn) or detached ` +
+          `(visible-surprising in the outer tool's UI) instead of on the branch the tool ` +
+          `created. If the arm MOVED, update LAUNCH_BRANCH_BEARING so the assertion keeps ` +
+          `tracking it; if it was legitimately COMPRESSED below the floor, re-derive the floor ` +
+          `in the same commit.`
+      ).toBeGreaterThanOrEqual(floor);
+    });
+  }
+
+  for (const [skill, floor] of Object.entries(LAUNCH_BRANCH_SIBLING_SKILLS)) {
+    it(`${skill}/SKILL.md carries the same LAUNCH_BRANCH contract (>= ${floor} mentions)`, () => {
+      // A second skill that runs IN-PLACE and merges through /merge-pr inherits
+      // the hazard verbatim: this repo has `delete_branch_on_merge`, so a run
+      // that opened its PR from LAUNCH_BRANCH deletes the outer tool's remote
+      // branch. work-issues' own fences cannot see that file at all.
+      const text = readFileSync(join(skillsDir, skill, 'SKILL.md'), 'utf8');
+      const found = text.split('LAUNCH_BRANCH').length - 1;
+      expect(
+        found,
+        `.claude/skills/${skill}/SKILL.md mentions LAUNCH_BRANCH ${found} times, below its ` +
+          `floor of ${floor}. That skill also runs IN-PLACE and merges through /merge-pr, so ` +
+          `dropping the contract there re-opens the exact hazard work-issues closed.`
+      ).toBeGreaterThanOrEqual(floor);
     });
   }
 
   it('section 9 restores LAUNCH_BRANCH as-is rather than fast-forwarding it', () => {
     // The spec was CORRECTED mid-filing: an early draft fast-forwarded the branch
     // to origin/main first. Restoring is the point -- the branch is the outer
-    // tool's artifact -- so a re-introduced `git pull`/`git merge`/`git rebase`
-    // ON that branch is the regression this pins. The withdrawal is discussed in
-    // prose, so the assertion reads the COMMAND, not the surrounding narrative.
+    // tool's artifact -- so a re-introduced move of that branch is the regression
+    // this pins. The withdrawal is discussed in prose, so the assertion reads the
+    // COMMANDS, not the surrounding narrative.
+    //
+    // Scoped to the RECIPE BLOCK rather than matched as the verb's argument: the
+    // draft's actual shape was `git switch <LAUNCH_BRANCH>` on one line and the
+    // fast-forward on the NEXT, which never names the placeholder at all. An
+    // argument-position regex missed five of six candidate rewrites when it was
+    // measured during review; a whole-block ban misses none of them.
     const ship = read(join('references', 'ship.md'));
-    expect(ship).toMatch(/git switch <LAUNCH_BRANCH>/);
+    const restore = bashBlocks(ship).filter((b) => b.includes('git switch <LAUNCH_BRANCH>'));
     expect(
-      ship,
-      `references/ship.md pipes LAUNCH_BRANCH into a command that MOVES it. The ` +
-        `restore is AS-IS: no pull, no rebase, no fast-forward, no merge.`
-    ).not.toMatch(/git (pull|rebase|merge|fetch)[^\n]*<LAUNCH_BRANCH>/);
+      restore.length,
+      `references/ship.md has ${restore.length} fenced blocks containing ` +
+        `\`git switch <LAUNCH_BRANCH>\`; expected exactly the one section 9 restore recipe.`
+    ).toBe(1);
+    for (const line of restore[0]!.split('\n')) {
+      expect(
+        line,
+        `section 9's restore recipe runs a command that MOVES a branch. The restore is ` +
+          `AS-IS: no pull, no rebase, no merge, no reset, no \`branch -f\`.`
+      ).not.toMatch(BRANCH_MOVING);
+    }
+    // ...and nowhere in either doc may a moving verb share a line with the value.
+    // retro.md carries a SECOND copy of the recipe in prose, which the block scan
+    // above cannot reach.
+    for (const doc of [join('references', 'ship.md'), join('references', 'retro.md')]) {
+      for (const [i, line] of read(doc).split('\n').entries()) {
+        if (!line.includes('LAUNCH_BRANCH')) continue;
+        expect(
+          line,
+          `${doc}:${i + 1} names LAUNCH_BRANCH on the same line as a branch-moving verb.`
+        ).not.toMatch(BRANCH_MOVING);
+      }
+    }
+  });
+
+  it('both mirrored flow lessons are still in the stage file that fires them', () => {
+    // Neither lesson has an executable arm -- they are rules about how the
+    // orchestrator dispatches -- so the only available fence is that the
+    // distinguishing token survives. Weak, and better than nothing: both were
+    // added by go-to-k/cdk-local#651 and every other assertion here would stay
+    // green if a compression pass deleted them.
+    expect(
+      read(join('references', 'ship.md')),
+      `references/ship.md lost section 9's queued-versus-Resuming rule: a SendMessage ` +
+        `answering "queued" is not a granted turn.`
+    ).toContain('Resuming agent');
+    expect(
+      read(join('references', 'verify.md')),
+      `references/verify.md lost section 8's rule that reviewer subagents spawned BY A LANE ` +
+        `report to the MAIN session.`
+    ).toContain('report to the MAIN session');
   });
 
   describe('the probe, executed', () => {
@@ -192,35 +289,43 @@ describe('work-issues launch-mode probe', () => {
       expect(block!).toContain('LAUNCH_BRANCH');
     });
 
-    it('answers MAIN-CHECKOUT in a main checkout and IN-PLACE in a linked worktree', () => {
+    /**
+     * A throwaway repo plus a linked worktree of it, and a runner for the doc's
+     * own probe. Each case builds its own so an early failure in one cannot mask
+     * a later one -- the detached arm used to be appended to the case below.
+     */
+    function fixture() {
       const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'wi-launch-mode-')));
+      const main = join(tmp, 'main');
+      const lane = join(tmp, 'lane');
+      const script = join(tmp, 'probe.sh');
+      writeFileSync(script, `${block}\n`);
+      // Hermetic: a user's global config (hooksPath, templates, signing) must
+      // not decide whether this test passes.
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+      const git = (args: string[], cwd = tmp) =>
+        execFileSync('git', args, { cwd, env, encoding: 'utf8' });
+      // Explicit initial branch: the LAUNCH_BRANCH assertions must not depend on
+      // whichever default this git build compiles in.
+      git(['init', '-q', '-b', 'probe-main', main]);
+      git(['-C', main, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      git(['-C', main, 'worktree', 'add', '-q', lane, '-b', 'lane-branch']);
+      const run = (cwd: string) =>
+        Object.fromEntries(
+          execFileSync('bash', [script], { cwd, env, encoding: 'utf8' })
+            .trim()
+            .split('\n')
+            .map((l) => {
+              const at = l.indexOf('=');
+              return [l.slice(0, at), l.slice(at + 1)] as const;
+            })
+        );
+      return { tmp, main, lane, git, run };
+    }
+
+    it('answers MAIN-CHECKOUT in a main checkout and IN-PLACE in a linked worktree', () => {
+      const { tmp, main, lane, run } = fixture();
       try {
-        const main = join(tmp, 'main');
-        const lane = join(tmp, 'lane');
-        const script = join(tmp, 'probe.sh');
-        writeFileSync(script, `${block}\n`);
-        // Hermetic: a user's global config (hooksPath, templates, signing) must
-        // not decide whether this test passes.
-        const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
-        const git = (args: string[], cwd = tmp) =>
-          execFileSync('git', args, { cwd, env, encoding: 'utf8' });
-        // Explicit initial branch: the LAUNCH_BRANCH assertions below must not
-        // depend on whichever default this git build compiles in.
-        git(['init', '-q', '-b', 'probe-main', main]);
-        git(['-C', main, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
-        git(['-C', main, 'worktree', 'add', '-q', lane, '-b', 'lane-branch']);
-
-        const run = (cwd: string) =>
-          Object.fromEntries(
-            execFileSync('bash', [script], { cwd, env, encoding: 'utf8' })
-              .trim()
-              .split('\n')
-              .map((l) => {
-                const at = l.indexOf('=');
-                return [l.slice(0, at), l.slice(at + 1)] as const;
-              })
-          );
-
         const fromMain = run(main);
         expect(fromMain.MODE).toBe('MAIN-CHECKOUT');
         expect(fromMain.LANE_TREE).toBe(main);
@@ -229,24 +334,48 @@ describe('work-issues launch-mode probe', () => {
 
         const fromLane = run(lane);
         expect(fromLane.MODE).toBe('IN-PLACE');
-        // The value section 9 puts back. Read at probe time and NEVER re-derived:
-        // section 5 switches this tree onto the lane's own branch, after which
-        // `git branch --show-current` answers with that one instead.
+        // The value section 9 puts back, read at probe time.
         expect(fromLane.LAUNCH_BRANCH).toBe('lane-branch');
         // The two values differing IS the mode, and MAIN_CHECKOUT must point at
         // the OTHER tree -- that is the value section 2's collision scan needs
         // and the one a `pwd`- or `--show-toplevel`-derived probe gets wrong.
         expect(fromLane.LANE_TREE).toBe(lane);
         expect(fromLane.MAIN_CHECKOUT).toBe(main);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
 
-        // Launched DETACHED: LAUNCH_BRANCH is empty, and that is an ANSWER, not a
-        // failure -- it is what selects section 9's detach fallback over the
-        // restore. The mode verdict must be unaffected, since a detached worktree
-        // is still a worktree.
+    it('answers with the LANE branch once section 5 has switched the tree', () => {
+      // The executable form of launch-mode.md's "UNRECOVERABLE if not recorded
+      // now": after section 5 takes the lane's own branch in this same tree, the
+      // probe can no longer name what section 9 has to put back. A run that
+      // re-derives the value here restores the LANE branch onto itself.
+      const { tmp, lane, git, run } = fixture();
+      try {
+        expect(run(lane).LAUNCH_BRANCH).toBe('lane-branch');
+        git(['-C', lane, 'switch', '-q', '-c', 'chore/section-5-branch']);
+        expect(
+          run(lane).LAUNCH_BRANCH,
+          `the probe re-run after section 5 still answers with the LAUNCH value, so the ` +
+            `doc's "record it now, never re-derive it" rule would be unnecessary.`
+        ).toBe('chore/section-5-branch');
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('answers with an EMPTY LAUNCH_BRANCH in a worktree handed over detached', () => {
+      // Empty is an ANSWER, not a failure -- it is what selects section 9's
+      // detach fallback over the restore. The mode verdict must be unaffected,
+      // since a detached worktree is still a worktree.
+      const { tmp, main, lane, git, run } = fixture();
+      try {
         git(['-C', lane, 'switch', '--detach', 'HEAD']);
         const fromDetachedLane = run(lane);
         expect(fromDetachedLane.MODE).toBe('IN-PLACE');
         expect(fromDetachedLane.LANE_TREE).toBe(lane);
+        expect(fromDetachedLane.MAIN_CHECKOUT).toBe(main);
         expect(fromDetachedLane.LAUNCH_BRANCH).toBe('');
       } finally {
         rmSync(tmp, { recursive: true, force: true });
@@ -265,7 +394,7 @@ describe('work-issues launch-mode probe', () => {
         const script = join(tmp, 'probe.sh');
         writeFileSync(script, `${block}\n`);
         const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
-        execFileSync('git', ['init', '-q', main], { cwd: tmp, env, encoding: 'utf8' });
+        execFileSync('git', ['init', '-q', '-b', 'probe-main', main], { cwd: tmp, env, encoding: 'utf8' });
 
         for (const cwd of [tmp, join(main, '.git')]) {
           let failed = false;

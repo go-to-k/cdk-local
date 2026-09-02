@@ -280,7 +280,7 @@ git fetch origin && git switch -c "$B" origin/main
   gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9),
   and instead this is where it runs §9's IN-PLACE cleanup arm — **the LAST
   step of the whole run**: `git switch <LAUNCH_BRANCH>` as-is (no pull, no
-  rebase, no fast-forward) and `git branch -D` every branch this run created,
+  rebase, no fast-forward) and `git branch -D <every branch THIS run created>`,
   the retro branch included. §9 deliberately does NOT do that per-lane,
   because THIS section branches in the same tree and would undo it. Leaving
   the tree standing on the retro branch — the previous instruction here —
