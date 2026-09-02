@@ -289,6 +289,41 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(origin.acceptEncodings[0]).toContain('gzip');
   });
 
+  it('a LOOPBACK target under an unspeakable proxy is silent — the loopback check must run FIRST', async () => {
+    // The ORDER of the two arms in `proxyAwareFetch`'s short-circuit is
+    // load-bearing, and nothing fenced it: swapping them to
+    // `resolveProxyForTarget(...) === '' || isLoopbackHost(...)` leaves every
+    // other case in this file green, because the RESPONSE is identical either
+    // way. What changes is that `resolveProxyForTarget` runs for a target it
+    // was never going to proxy, and warns.
+    //
+    // The cost is not cosmetic. A developer with `ALL_PROXY=socks5://...`
+    // exported gets a default-level warning on EVERY loopback read — studio's
+    // own traffic, a local IdP's JWKS on each verification — telling them a
+    // request went direct when going direct was the correct and intended
+    // behaviour for that target all along. Log noise on a CORRECT config, and
+    // on the one path where a real proxy warning matters.
+    //
+    // The agent half fences the same property with its NO_PROXY-exempt case;
+    // this is the fetch half's.
+    const origin = track(await startOrigin(() => ({ body: 'loopback-body' })));
+    process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger(stubLogger(previous, warn) as never);
+    try {
+      expect(await (await proxyAwareFetch(`${origin.url}/jwks.json`)).text()).toBe(
+        'loopback-body'
+      );
+    } finally {
+      setLogger(previous);
+    }
+    // Guard-the-guard: the request really happened, so "zero warns" is not
+    // the vacuous silence of a call that never ran.
+    expect(origin.requests).toEqual(['GET /jwks.json']);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([]);
+  });
+
   // Every spelling `URL.hostname` can produce for this machine. The IPv6
   // arms are the ones that mattered: `URL` KEEPS an IPv6 literal's brackets
   // and canonicalises the address inside them, so an earlier revision

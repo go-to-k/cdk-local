@@ -158,7 +158,12 @@ function isSpeakableProxy(proxyUrl: string): boolean {
 function warnUnspeakableProxy(proxyUrl: string): void {
   const scheme = proxySchemeOf(proxyUrl);
   if (warnedProxySchemes.has(scheme)) return;
-  warnedProxySchemes.add(scheme);
+  // The memo is written AFTER the line is emitted, not before. A throwing
+  // `logger.warn` — a host CLI's injected logger, a closed stream — would
+  // otherwise record the scheme as warned and never print it, turning the
+  // one-time warn into a zero-time one. That warn is the entire argument for
+  // choosing fallback over refusal, so losing it silently is the failure this
+  // whole seam is arranged to prevent.
   getLogger()
     .child('aws-proxy')
     .warn(
@@ -167,6 +172,7 @@ function warnUnspeakableProxy(proxyUrl: string): void {
         'HTTPS_PROXY / HTTP_PROXY / ALL_PROXY to an http:// or https:// proxy URL. ' +
         '(The proxy URL is withheld here: it can carry credentials.)'
     );
+  warnedProxySchemes.add(scheme);
 }
 
 /**
@@ -228,6 +234,18 @@ function resolveProxyForTarget(targetHref: string): string {
   // throws" would be false for three of the four characters — pre-existing
   // behaviour this does not change, and named here so the next reader does
   // not infer a guarantee that was never there.
+  //
+  // And the direction that actually carries risk, stated because the
+  // enumeration above would otherwise read as complete: this trim is the ONE
+  // change in this seam that moves a request from DIRECT to PROXIED.
+  // `HTTPS_PROXY=" http://proxy"` used to reach `proxyAwareFetch`'s
+  // not-proxied branch and go straight out; it now tunnels. On the JWKS /
+  // OIDC discovery path that matters more than elsewhere — a proxy with no
+  // route to an internal IdP turns a read that WAS succeeding into a failure,
+  // and `cognito-jwt` fails OPEN for the failure TTL. Intended (the value
+  // names a proxy, so honouring it is what the user asked for) and
+  // `NO_PROXY` is the remedy, but it is the one effect here that can degrade
+  // a working setup rather than repair a broken one.
   const proxyUrl = getProxyForUrl(targetHref).trim();
   if (proxyUrl === '') return '';
   if (isSpeakableProxy(proxyUrl)) return proxyUrl;
