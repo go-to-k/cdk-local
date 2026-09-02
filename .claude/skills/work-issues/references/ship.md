@@ -188,7 +188,7 @@ are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
 `git switch ""` is not the failure you want):
 
 ```bash
-git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>   # gone? -> fallback
+git show-ref --verify refs/heads/<LAUNCH_BRANCH>   # no output? gone -> fallback
 git switch <LAUNCH_BRANCH> \
   && git branch -D <every branch THIS run created>
        # CHAINED: an unchained `-D` after a FAILED switch still deletes the
@@ -209,12 +209,16 @@ git rev-list --count origin/main..<LAUNCH_BRANCH>
 ```
 
 Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was
-launched detached) or the `show-ref --verify` above says the branch is gone —
-never as the default:
+launched detached) or the `show-ref --verify` above found nothing — never as the
+default. CHAINED for the same reason as the primary block: a failed `fetch`
+followed by an unchained `switch` detaches at a stale `origin/main`, and a failed
+`switch` followed by an unchained `-D` deletes the branches that are not checked
+out:
 
 ```bash
-git fetch origin && git switch --detach origin/main
-git branch -D <every branch THIS run created>
+git fetch origin \
+  && git switch --detach origin/main \
+  && git branch -D <every branch THIS run created>
 ```
 
 **Three end states, and only one of them is quiet.** Staying on the lane branch

@@ -107,7 +107,7 @@ const LAUNCH_BRANCH_BEARING: Record<string, number> = {
   // check this comment disparages -- there is nothing else available at that
   // count. What covers them instead is UNCONDITIONAL_RULE below, which pins the
   // whole instruction rather than the token.
-  'SKILL.md': 2,
+  'SKILL.md': 3,
   [LAUNCH_MODE_DOC]: 8,
   [join('references', 'claim.md')]: 1,
   // implement.md is section 5's own file and the ONE a lane actually opens at
@@ -119,11 +119,33 @@ const LAUNCH_BRANCH_BEARING: Record<string, number> = {
   [join('references', 'implement.md')]: 1,
   [join('references', 'ship.md')]: 6,
   [join('references', 'retro.md')]: 1,
-  [join('references', 'gotchas.md')]: 1,
+  [join('references', 'gotchas.md')]: 2,
 };
 
-/** The same set as a list, for the scans that read every bearing doc. */
-const LAUNCH_BRANCH_BEARING_DOCS = Object.keys(LAUNCH_BRANCH_BEARING);
+/**
+ * The population the two content scans below run over, DERIVED from the repo
+ * rather than listed. The list version of this was itself the recurring defect:
+ * three review rounds each found a site stating the old rule, and the third
+ * found two more that this very PR had edited (`references/triage.md` and
+ * `.claude/rules/hooks.md`) and that the list did not name. A hand-list of
+ * "everywhere the rule is stated" goes stale exactly when a change adds a site,
+ * which is the moment the scan is needed.
+ *
+ * `git ls-files` reads the INDEX, so an untracked draft is invisible until
+ * `git add` -- the same property `work-issues-skill-refs.test.ts` relies on.
+ */
+function claudeFiles(): string[] {
+  return execFileSync('git', ['ls-files', '.claude'], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\n')
+    .filter((p) => p.endsWith('.md') || p.endsWith('.sh'));
+}
+
+/** Every tracked `.claude/**` file naming the value, with its text. */
+function launchBranchBearingFiles(): Array<[string, string]> {
+  return claudeFiles()
+    .map((rel) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string])
+    .filter(([, text]) => text.includes('LAUNCH_BRANCH'));
+}
 
 /**
  * The UNCONDITIONAL rule, pinned as a SENTENCE rather than as a token on a line.
@@ -169,7 +191,31 @@ const OUTSIDE_UNCONDITIONAL_RULE: Array<[string, string]> = [
 // "take a branch IN PLACE". The predicate is the SUBJECT of the line, not its
 // grammar.
 const IN_PLACE_RULE_LINE = /IN-PLACE:|branch IN PLACE\b/i;
-const STILL_CONDITIONAL = /\b(if|when|unless|only)\b[^.]*\bdetached\b/i;
+
+/**
+ * A line plus its continuation, for a scan over hard-wrapped prose: a rule whose
+ * subject and object land on different lines is the natural way to write it, and
+ * a line-scoped test misses it. The join STOPS at a blank line (paragraph
+ * boundary) and at a markdown table row (`|` starts its own record) -- without
+ * that, `launch-mode.md`'s consequence table joined row 6 to row 7 and read the
+ * MAIN-CHECKOUT pull recipe as if it acted on LAUNCH_BRANCH.
+ */
+function wrappedWindow(lines: string[], i: number): string {
+  const line = lines[i]!;
+  const next = lines[i + 1] ?? '';
+  if (next.trim() === '' || line.trimStart().startsWith('|') || next.trimStart().startsWith('|')) {
+    return line;
+  }
+  return `${line} ${next}`;
+}
+/**
+ * BOTH limbs of the withdrawn condition: it read "only when the tree is
+ * DETACHED **or its PR has MERGED**", and a version naming only `detached` let a
+ * probe re-condition on the second limb straight through. Matched across a
+ * two-line window, because this prose is hard-wrapped and a condition whose
+ * subject and object land on different lines is the natural way to write it.
+ */
+const STILL_CONDITIONAL = /\b(if|when|unless|only)\b[^.]*\b(detached|already merged|PR has merged)\b/i;
 
 /** Skills OTHER than work-issues that must carry the same contract. */
 const LAUNCH_BRANCH_SIBLING_SKILLS: Record<string, number> = {
@@ -201,6 +247,32 @@ export function bashBlocks(markdown: string): string[] {
   }
   return out;
 }
+
+/**
+ * The moving-verb set is only as good as its arms, and the two added in review
+ * (`update-ref`, `switch|checkout -[CB]`) match NOTHING in the corpus today --
+ * so deleting them again would be inert and green. These fixtures make the
+ * widening itself a fenced property.
+ */
+const BRANCH_MOVING_MATCHES = [
+  'git pull --ff-only origin main',
+  'git rebase origin/main',
+  'git merge --ff-only origin/main',
+  'git reset --hard origin/main',
+  'git push --force origin HEAD',
+  'git update-ref refs/heads/x origin/main',
+  'git branch -f x origin/main',
+  'git switch -C x origin/main',
+  'git checkout -B x origin/main',
+];
+const BRANCH_MOVING_ALLOWS = [
+  'git switch <LAUNCH_BRANCH>',
+  'git switch --detach origin/main',
+  'git branch -D <every branch THIS run created>',
+  'git show-ref --verify refs/heads/<LAUNCH_BRANCH>',
+  'git rev-list --count origin/main..<LAUNCH_BRANCH>',
+  'git fetch origin',
+];
 
 /** The first fenced ```bash block of a markdown file. */
 export function firstBashBlock(markdown: string): string | null {
@@ -308,16 +380,22 @@ describe('work-issues launch-mode probe', () => {
     // value. retro.md and hunt-bugs/SKILL.md each carry a second, prose copy of
     // the recipe that the block scan above cannot reach, and launch-mode.md's
     // table rows state the rule in one line apiece.
-    const scanned: Array<[string, string]> = [
-      ...LAUNCH_BRANCH_BEARING_DOCS.map((d) => [d, read(d)] as [string, string]),
-      ...OUTSIDE_UNCONDITIONAL_RULE.map(([rel]) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]),
-    ];
+    const scanned = launchBranchBearingFiles();
+    expect(
+      scanned.length,
+      `no .claude/** file mentions LAUNCH_BRANCH; the derived scan population is empty and ` +
+        `would report clean over anything.`
+    ).toBeGreaterThanOrEqual(8);
     for (const [name, text] of scanned) {
-      for (const [i, line] of text.split('\n').entries()) {
+      const lines = text.split('\n');
+      for (const [i, line] of lines.entries()) {
         if (!line.includes('LAUNCH_BRANCH')) continue;
+        // The wrapped window, not the bare line: a fast-forward written on the
+        // line AFTER the mention is the withdrawn draft's own shape, and the
+        // block ban above reaches it only inside a fenced recipe.
         expect(
-          line,
-          `${name}:${i + 1} names LAUNCH_BRANCH on the same line as a branch-moving verb.`
+          wrappedWindow(lines, i),
+          `${name}:${i + 1} names LAUNCH_BRANCH beside a branch-moving verb.`
         ).not.toMatch(BRANCH_MOVING);
       }
     }
@@ -355,7 +433,9 @@ describe('work-issues launch-mode probe', () => {
         readFileSync(join(repoRoot, rel), 'utf8'),
         `${rel} no longer carries: "${sentence}". A conditional rule there sends a run ` +
           `onto LAUNCH_BRANCH, which the merge then deletes on the outer tool's behalf ` +
-          `(this repo has delete_branch_on_merge).`
+          `(this repo has delete_branch_on_merge). If the wording legitimately changed -- ` +
+          `note the dash styles differ between these files, so a normalising pass will trip ` +
+          `this -- update OUTSIDE_UNCONDITIONAL_RULE in the same commit.`
       ).toContain(sentence);
     });
   }
@@ -365,20 +445,84 @@ describe('work-issues launch-mode probe', () => {
     // second site has not put the old one back beside it. Scoped to lines whose
     // subject IS the instruction, so the paragraphs that discuss the withdrawn
     // condition as history are untouched.
-    const files: Array<[string, string]> = [
-      ...LAUNCH_BRANCH_BEARING_DOCS.map((d) => [d, read(d)] as [string, string]),
-      ...OUTSIDE_UNCONDITIONAL_RULE.map(([rel]) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]),
-    ];
-    for (const [name, text] of files) {
-      for (const [i, line] of text.split('\n').entries()) {
+    const scanned = claudeFiles().map(
+      (rel) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]
+    );
+    let sites = 0;
+    for (const [name, text] of scanned) {
+      const lines = text.split('\n');
+      for (const [i, line] of lines.entries()) {
         if (!IN_PLACE_RULE_LINE.test(line)) continue;
+        sites++;
         expect(
-          line,
-          `${name}:${i + 1} states the in-place branch rule and gates it on the tree being ` +
-            `detached. go-to-k/cdkd#2417 made that rule unconditional.`
+          wrappedWindow(lines, i),
+          `${name}:${i + 1} states the in-place branch rule and gates it on the tree's ` +
+            `state (detached, or its PR already merged). go-to-k/cdkd#2417 made that rule ` +
+            `unconditional.`
         ).not.toMatch(STILL_CONDITIONAL);
       }
     }
+    expect(
+      sites,
+      `the in-place rule was found at ${sites} sites across .claude/**; the scan has stopped ` +
+        `matching and would report clean over anything.`
+    ).toBeGreaterThanOrEqual(4);
+  });
+
+  it('the branch-moving verb set still recognises what it was widened for', () => {
+    for (const cmd of BRANCH_MOVING_MATCHES) {
+      expect(cmd, `BRANCH_MOVING no longer matches \`${cmd}\`.`).toMatch(BRANCH_MOVING);
+    }
+    for (const cmd of BRANCH_MOVING_ALLOWS) {
+      expect(
+        cmd,
+        `BRANCH_MOVING now matches \`${cmd}\`, which the recipes legitimately run.`
+      ).not.toMatch(BRANCH_MOVING);
+    }
+  });
+
+  it('the restore recipe is CHAINED wherever it is stated', () => {
+    // An unchained `-D` after a FAILED switch deletes the branches that are not
+    // checked out and leaves the tree on the lane branch -- verified rc=1 with
+    // partial deletion. Stated in four places; all four must chain.
+    const sites: Array<[string, string]> = [
+      [join('references', 'ship.md'), read(join('references', 'ship.md'))],
+      [join('references', 'retro.md'), read(join('references', 'retro.md'))],
+      ['.claude/skills/hunt-bugs/SKILL.md', readFileSync(join(skillsDir, 'hunt-bugs', 'SKILL.md'), 'utf8')],
+    ];
+    for (const [name, text] of sites) {
+      const lines = text.split('\n');
+      for (const [i, line] of lines.entries()) {
+        if (!/git switch <LAUNCH_BRANCH>/.test(line)) continue;
+        expect(
+          wrappedWindow(lines, i),
+          `${name}:${i + 1} states the restore without chaining the branch delete to it. ` +
+            `A failed switch must not leave \`git branch -D\` to run anyway.`
+        ).toMatch(/git switch <LAUNCH_BRANCH>[^\n]*&&[^\n]*git branch -D/);
+      }
+    }
+  });
+
+  it("the restore's owner and the lane's reviewer shape are still stated", () => {
+    // Two rules this change added that nothing else would notice losing: the
+    // PARENT owns the end-of-run restore even though section 10-d is where it
+    // fires, and a lane's reviewers run synchronously (a lane's subagents report
+    // to the MAIN session, so a lane awaiting them waits for nothing).
+    expect(
+      read(join('references', 'ship.md')),
+      `references/ship.md no longer says the PARENT owns the end-of-run restore. Section ` +
+        `10 may be dispatched to a subagent, and two agents must not both switch one tree.`
+    ).toContain('in the PARENT');
+    expect(
+      read(join('references', 'retro.md')),
+      `references/retro.md no longer says the PARENT runs the restore in section 10-d.`
+    ).toContain('the PARENT runs');
+    expect(
+      read('SKILL.md'),
+      `SKILL.md no longer tells a lane to run its reviewers SYNCHRONOUSLY. Its subagents ` +
+        `report to the main session, so a lane awaiting them waits for something that ` +
+        `cannot arrive (references/verify.md section 8).`
+    ).toContain('SYNCHRONOUSLY');
   });
 
   it('both mirrored flow lessons are still in the stage file that fires them', () => {
@@ -387,16 +531,21 @@ describe('work-issues launch-mode probe', () => {
     // distinguishing token survives. Weak, and better than nothing: both were
     // added by go-to-k/cdk-local#651 and every other assertion here would stay
     // green if a compression pass deleted them.
+    // Pinned on the DIRECTIONAL half of each rule rather than on the API
+    // literal it quotes: `Resuming agent` and `report to the MAIN session`
+    // both survive a paragraph that says the opposite ("...report to the MAIN
+    // session only once the lane has exited"), which is the revert worth
+    // catching.
     expect(
       read(join('references', 'ship.md')),
       `references/ship.md lost section 9's queued-versus-Resuming rule: a SendMessage ` +
         `answering "queued" is not a granted turn.`
-    ).toContain('Resuming agent');
+    ).toContain('A queued message is\nnever a granted turn');
     expect(
       read(join('references', 'verify.md')),
       `references/verify.md lost section 8's rule that reviewer subagents spawned BY A LANE ` +
-        `report to the MAIN session.`
-    ).toContain('report to the MAIN session');
+        `report to the MAIN session, not to the lane.`
+    ).toContain('not to the\n  lane that spawned them');
   });
 
   describe('the probe, executed', () => {

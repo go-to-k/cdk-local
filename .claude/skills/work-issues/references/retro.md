@@ -280,9 +280,11 @@ git fetch origin && git switch -c "$B" origin/main
   gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9),
   and instead this is where the PARENT runs §9's IN-PLACE cleanup arm — **the
   LAST step of the whole run**, and the parent's even when §10 was dispatched to
-  a subagent, because two agents must not both be switching one tree: `git switch <LAUNCH_BRANCH>` as-is (no pull, no
-  rebase, no fast-forward) and `git branch -D <every branch THIS run created>`,
-  the retro branch included. §9 deliberately does NOT do that per-lane,
+  a subagent, because two agents must not both be switching one tree:
+  `git switch <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`
+  — as-is (no pull, no rebase, no fast-forward), CHAINED so a failed switch
+  cannot leave the `-D` to run anyway, and the retro branch is one of those
+  branches. §9 deliberately does NOT do that per-lane,
   because THIS section branches in the same tree and would undo it. Leaving
   the tree standing on the retro branch — the previous instruction here —
   makes the unmerged-lane Stop hook warn every turn (the appendix has the

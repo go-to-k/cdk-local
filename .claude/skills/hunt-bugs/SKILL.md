@@ -313,12 +313,13 @@ Take it all the way to merged — do not leave a green PR hanging:
    `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
    leave it alone when in doubt. `git worktree prune` drops entries whose directory
    is already gone. An IN-PLACE hunt added no worktree, so it removes none — but
-   it DOES owe the branch it made: `git switch <LAUNCH_BRANCH>` **as-is** (no
-   pull, no rebase, no fast-forward — the branch is the outer tool's artifact),
-   then `git branch -D <the branch this hunt created>`. Detach
-   (`git fetch origin && git switch --detach origin/main`) only when
-   `LAUNCH_BRANCH` was empty at probe time, or
-   `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>` says it is gone.
+   it DOES owe the branch it made: `git switch <LAUNCH_BRANCH> && git branch -D
+   <the branch this hunt created>` — **as-is**, no pull, no rebase, no
+   fast-forward, the branch being the outer tool's artifact, and CHAINED so a
+   failed switch cannot leave the `-D` to run anyway. Detach
+   (`git fetch origin && git switch --detach origin/main && git branch -D ...`)
+   only when `LAUNCH_BRANCH` was empty at probe time, or
+   `git show-ref --verify refs/heads/<LAUNCH_BRANCH>` finds nothing.
    Its closing check is that the launch TREE is exactly as it found it — on
    `LAUNCH_BRANCH`, or detached if that arm fired — with every branch this hunt
    created deleted
