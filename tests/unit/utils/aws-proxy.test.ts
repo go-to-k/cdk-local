@@ -202,6 +202,64 @@ describe('aws-proxy (issue #634)', () => {
       agent.destroy();
     });
 
+    it('a leading ASTERISK is a suffix match too: *.example.com exempts api.example.com but NOT the apex', () => {
+      // The doc comment on `EnvRoutingProxyAgent` promises `.`-OR-`*`; only
+      // the dot form was covered (issue go-to-k/cdk-local#648). The asterisk
+      // is STRIPPED and the remainder is an `endsWith` test, so `example.com`
+      // — which does not end in `.example.com` — is still proxied. That
+      // asymmetry is the part worth pinning: a user writing `*.example.com`
+      // to mean "the whole domain" does not get the apex.
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      process.env['NO_PROXY'] = '*.example.com';
+      const agent = new EnvRoutingProxyAgent();
+      expect(agent.connect(REQ, httpsOpts('api.example.com'))).not.toBeInstanceOf(HttpsProxyAgent);
+      expect(agent.connect(REQ, httpsOpts('example.com'))).toBeInstanceOf(HttpsProxyAgent);
+      agent.destroy();
+    });
+
+    it('honors the lowercase no_proxy spelling', () => {
+      // The uppercase spelling was covered; the lowercase one — which
+      // `getProxyForUrl` prefers when both are set — was not
+      // (issue go-to-k/cdk-local#648). The second assertion is the
+      // guard-the-guard: it must exempt THE ENTRY, not proxying at large.
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      process.env['no_proxy'] = 'example.com';
+      const agent = new EnvRoutingProxyAgent();
+      expect(agent.connect(REQ, httpsOpts('example.com'))).not.toBeInstanceOf(HttpsProxyAgent);
+      expect(agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toBeInstanceOf(
+        HttpsProxyAgent
+      );
+      agent.destroy();
+    });
+
+    it('routes an IPv6 target through the proxy — the authority it builds is BRACKETED, and a bare `host:port` does not parse', () => {
+      // `connect()` receives the host BARE (`2001:db8::1`), so composing the
+      // probe URL as `${host}:${port}` yields `https://2001:db8::1:443`,
+      // which `getProxyForUrl` cannot parse and answers `''` for — i.e. a
+      // DIRECT connection, silently unproxied, for every IPv6 endpoint.
+      // `formatAuthority` is what prevents that (issue
+      // go-to-k/cdk-local#599's composition rule).
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      expect(agent.connect(REQ, httpsOpts('2001:db8::1'))).toBeInstanceOf(HttpsProxyAgent);
+      agent.destroy();
+    });
+
+    it('a NO_PROXY entry exempts an IPv6 target in its BRACKETED spelling', () => {
+      // `getProxyForUrl` compares against `URL.host` MINUS the port, and that
+      // keeps an IPv6 literal's brackets — so `NO_PROXY=2001:db8::1` does
+      // NOT exempt this target and `NO_PROXY=[2001:db8::1]` does. Surprising
+      // enough to pin. The second assertion keeps the case honest: with the
+      // bracketing removed both hosts go direct, which would satisfy the
+      // first assertion for the wrong reason.
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      process.env['NO_PROXY'] = '[2001:db8::1]';
+      const agent = new EnvRoutingProxyAgent();
+      expect(agent.connect(REQ, httpsOpts('2001:db8::1'))).not.toBeInstanceOf(HttpsProxyAgent);
+      expect(agent.connect(REQ, httpsOpts('2001:db8::2'))).toBeInstanceOf(HttpsProxyAgent);
+      agent.destroy();
+    });
+
     it('a NO_PROXY :port entry applies only to that port', () => {
       process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
       process.env['NO_PROXY'] = 'example.com:8443';
@@ -243,13 +301,20 @@ describe('aws-proxy (issue #634)', () => {
     });
 
     it('sets keepAlive + maxSockets explicitly — the SDK applies its defaults only to plain option bags, never to external Agent instances', () => {
+      // NO_PROXY is set BEFORE the exempt host is connected. An earlier
+      // revision connected it first and named the result `direct`, so it was
+      // the cached HttpsProxyAgent and the loop asserted the proxied agent
+      // twice while its name claimed to cover both (issue
+      // go-to-k/cdk-local#648). The two instanceof lines below are the
+      // guard-the-guard that keeps the pair distinct.
       process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      process.env['NO_PROXY'] = 'proxy-exempt.internal';
       const agent = new EnvRoutingProxyAgent();
       const proxied = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com')) as HttpAgent;
       const direct = agent.connect(REQ, httpsOpts('proxy-exempt.internal')) as HttpAgent;
-      process.env['NO_PROXY'] = 'proxy-exempt.internal';
-      const directPicked = agent.connect(REQ, httpsOpts('proxy-exempt.internal')) as HttpAgent;
-      for (const a of [proxied, direct, directPicked]) {
+      expect(proxied).toBeInstanceOf(HttpsProxyAgent);
+      expect(direct).not.toBeInstanceOf(HttpsProxyAgent);
+      for (const a of [proxied, direct]) {
         // Instance properties, not `.options`: HttpsProxyAgent overwrites
         // `this.options` after `super(opts)`, but `keepAlive` / `maxSockets`
         // are captured onto the instance by the base constructors first.
@@ -266,6 +331,68 @@ describe('aws-proxy (issue #634)', () => {
       const destroySpy = vi.spyOn(proxied as HttpAgent, 'destroy');
       agent.destroy();
       expect(destroySpy).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * How the value of the proxy variable itself is read (issue
+   * go-to-k/cdk-local#648). Both shapes below are ordinary things a user
+   * types, and neither had a test: the first is silently reinterpreted, the
+   * second fails at a point far from where it was configured.
+   */
+  describe('EnvRoutingProxyAgent — proxy URL spellings', () => {
+    it('a SCHEME-LESS value takes the REQUEST scheme: `HTTPS_PROXY=proxy.internal:3128` means TLS to the PROXY', () => {
+      // The common spelling, and it does not mean what it looks like.
+      // `proxy-from-env` prepends the scheme of the URL BEING REQUESTED, not
+      // `http:` — so an https target speaks TLS to the proxy itself, which a
+      // plain HTTP forward proxy will not answer. Writing
+      // `HTTPS_PROXY=http://proxy.internal:3128` is what gets a CONNECT
+      // tunnel over plain HTTP.
+      process.env['HTTPS_PROXY'] = 'proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      expect(picked).toBeInstanceOf(HttpsProxyAgent);
+      expect((picked as HttpsProxyAgent<string>).proxy.href).toBe('https://proxy.internal:3128/');
+      agent.destroy();
+    });
+
+    it('the same scheme-less value stays plain HTTP for an http target', () => {
+      process.env['HTTP_PROXY'] = 'proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const picked = agent.connect(REQ, httpOpts('example.com'));
+      expect(picked).toBeInstanceOf(HttpProxyAgent);
+      expect((picked as HttpProxyAgent<string>).proxy.href).toBe('http://proxy.internal:3128/');
+      agent.destroy();
+    });
+
+    it('an UNPARSABLE value throws at connect time rather than silently connecting DIRECT', () => {
+      // The failure direction matters more than the exception type. A
+      // machine with a proxy configured has no direct egress — falling back
+      // to a direct connection would turn a typo in the variable into a hang
+      // or a self-signed-certificate error at some unrelated AWS call, with
+      // nothing pointing back at the proxy variable. Throwing keeps the
+      // cause attached to the request.
+      process.env['HTTPS_PROXY'] = 'http://[';
+      const agent = new EnvRoutingProxyAgent();
+      expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(TypeError);
+      agent.destroy();
+    });
+
+    it('an unparsable value on the http side throws the same way', () => {
+      process.env['HTTP_PROXY'] = '%%%';
+      const agent = new EnvRoutingProxyAgent();
+      expect(() => agent.connect(REQ, httpOpts('example.com'))).toThrow(TypeError);
+      agent.destroy();
+    });
+
+    it('a NO_PROXY-exempt target is unaffected by an unparsable proxy value — the URL is never built', () => {
+      // Guard-the-guard for the pair above: they must fail on the PROXY
+      // value, not on merely having a proxy variable set.
+      process.env['HTTPS_PROXY'] = 'http://[';
+      process.env['NO_PROXY'] = 'exempt.internal';
+      const agent = new EnvRoutingProxyAgent();
+      expect(agent.connect(REQ, httpsOpts('exempt.internal'))).not.toBeInstanceOf(HttpsProxyAgent);
+      agent.destroy();
     });
   });
 });

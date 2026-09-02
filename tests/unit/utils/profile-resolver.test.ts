@@ -19,6 +19,18 @@ vi.mock('@aws-sdk/client-sts', () => ({
   }),
 }));
 
+// Reached only through the proxy fragment's `credentials` provider (issue
+// go-to-k/cdk-local#648), which the proxy describe below invokes; nothing
+// else in this file resolves a credential chain.
+const { defaultProviderMock, chainMock } = vi.hoisted(() => {
+  const chainMock = vi.fn();
+  return { chainMock, defaultProviderMock: vi.fn(() => chainMock) };
+});
+
+vi.mock('@aws-sdk/credential-provider-node', () => ({
+  defaultProvider: defaultProviderMock,
+}));
+
 import {
   resolveProfileCredentials,
   buildStsClientConfig,
@@ -145,6 +157,8 @@ describe('buildStsClientConfig — proxy environment threading (issue #634)', ()
       saved.set(key, process.env[key]);
       delete process.env[key];
     }
+    defaultProviderMock.mockClear();
+    chainMock.mockReset();
   });
 
   afterEach(() => {
@@ -162,6 +176,29 @@ describe('buildStsClientConfig — proxy environment threading (issue #634)', ()
     expect(config.profile).toBe('dev');
     expect(config.requestHandler).toBeDefined();
     expect(typeof config.credentials).toBe('function');
+  });
+
+  it('threads the profile INTO the fragment, so the chain resolves the named profile (issue #648)', async () => {
+    // The `profile` key asserted above is INERT under a proxy: the fragment
+    // supplies explicit `credentials`, and explicit credentials beat a
+    // profile key in the AWS SDK. So `buildStsClientConfig({ profile })`
+    // silently authenticating as the DEFAULT account is a shape the
+    // key-shaped assertion cannot see — every STS site in cdk-local goes
+    // through this helper, so it is the single widest instance of it.
+    process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+    chainMock.mockResolvedValue({ accessKeyId: 'AKIA', secretAccessKey: 's' });
+    const config = buildStsClientConfig({ region: 'us-east-1', profile: 'dev' });
+    await config.credentials!();
+    expect(defaultProviderMock).toHaveBeenCalledTimes(1);
+    expect(defaultProviderMock.mock.calls[0]![0]).toMatchObject({ profile: 'dev' });
+  });
+
+  it('leaves the chain profile-less when no profile is given', async () => {
+    process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+    chainMock.mockResolvedValue({ accessKeyId: 'AKIA', secretAccessKey: 's' });
+    const config = buildStsClientConfig({ region: 'us-east-1' });
+    await config.credentials!();
+    expect(defaultProviderMock.mock.calls[0]![0]).not.toHaveProperty('profile');
   });
 
   it('stays the plain { region, profile } shape when no proxy variable is set', () => {

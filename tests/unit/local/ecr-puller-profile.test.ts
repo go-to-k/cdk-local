@@ -1,12 +1,25 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { stsCtorArgs, ecrCtorArgs, stsSend, ecrSend, runFg, runStream } = vi.hoisted(() => ({
-  stsCtorArgs: [] as Array<Record<string, unknown>>,
-  ecrCtorArgs: [] as Array<Record<string, unknown>>,
-  stsSend: vi.fn(),
-  ecrSend: vi.fn(),
-  runFg: vi.fn(),
-  runStream: vi.fn(),
+const { stsCtorArgs, ecrCtorArgs, stsSend, ecrSend, runFg, runStream, defaultProviderMock, chainMock } =
+  vi.hoisted(() => {
+    const chainMock = vi.fn();
+    return {
+      stsCtorArgs: [] as Array<Record<string, unknown>>,
+      ecrCtorArgs: [] as Array<Record<string, unknown>>,
+      stsSend: vi.fn(),
+      ecrSend: vi.fn(),
+      runFg: vi.fn(),
+      runStream: vi.fn(),
+      chainMock,
+      defaultProviderMock: vi.fn(() => chainMock),
+    };
+  });
+
+// Only reached through the proxy fragment's `credentials` provider, which is
+// what the issue go-to-k/cdk-local#648 cases below invoke; the rest of the
+// file never resolves credentials at all.
+vi.mock('@aws-sdk/credential-provider-node', () => ({
+  defaultProvider: defaultProviderMock,
 }));
 
 vi.mock('@aws-sdk/client-sts', () => ({
@@ -117,5 +130,77 @@ describe('pullEcrImage — --profile threading', () => {
     // The ECR client authenticates with the assumed creds, not the profile.
     expect(ecrCtorArgs[0]!['credentials']).toMatchObject({ accessKeyId: 'AKIA' });
     expect(ecrCtorArgs[0]!).not.toHaveProperty('profile');
+  });
+
+  /**
+   * Issue go-to-k/cdk-local#648. Both failures below exist ONLY when a proxy
+   * variable is set: with a clean environment `buildProxyClientConfig()`
+   * returns `{}`, so neither the profile it carries nor its position in the
+   * config object can change anything — which is exactly why the cases above
+   * stayed green through both mutations (measured on origin/main: the full
+   * 4497-test suite passed with the profile dropped at all nine fragment call
+   * sites, and again with this site's spread moved last).
+   */
+  describe('under a proxy (issue #648)', () => {
+    const PROXY_KEYS = ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY'] as const;
+    const saved = new Map<string, string | undefined>();
+
+    beforeEach(() => {
+      for (const key of PROXY_KEYS) {
+        saved.set(key, process.env[key]);
+        delete process.env[key];
+      }
+      defaultProviderMock.mockClear();
+      chainMock.mockReset();
+      chainMock.mockResolvedValue({ accessKeyId: 'AKIA-CHAIN', secretAccessKey: 'chain' });
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+    });
+
+    afterEach(() => {
+      for (const key of PROXY_KEYS) {
+        const value = saved.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it('threads --profile INTO the proxy fragment, so the chain resolves the NAMED profile and not the default account', async () => {
+      await pullEcrImage(IMAGE, {
+        skipPull: false,
+        region: 'ap-northeast-1',
+        profile: 'mates_dev',
+      });
+
+      const cfg = ecrCtorArgs[0]!;
+      expect(cfg['requestHandler']).toBeDefined();
+      // The site ALSO passes `profile`, but under a proxy that key is inert:
+      // the fragment supplies explicit `credentials`, and explicit
+      // credentials beat a profile key in the AWS SDK. So the profile only
+      // takes effect if it reached the credential chain — assert that, not
+      // the decorative key.
+      expect(cfg['profile']).toBe('mates_dev');
+      expect(typeof cfg['credentials']).toBe('function');
+      await (cfg['credentials'] as () => Promise<unknown>)();
+      expect(defaultProviderMock).toHaveBeenCalledTimes(1);
+      expect(defaultProviderMock.mock.calls[0]![0]).toMatchObject({ profile: 'mates_dev' });
+    });
+
+    it('keeps the site’s assumed-role credentials — the fragment is spread FIRST, so it never replaces them', async () => {
+      await pullEcrImage(IMAGE, {
+        skipPull: false,
+        region: 'ap-northeast-1',
+        profile: 'mates_dev',
+        ecrRoleArn: 'arn:aws:iam::583942117338:role/EcrPull',
+      });
+
+      const cfg = ecrCtorArgs[0]!;
+      // Spread LAST and this is the fragment's default-chain PROVIDER
+      // (a function), silently authenticating as whoever the chain resolves
+      // instead of as the assumed role.
+      expect(typeof cfg['credentials']).toBe('object');
+      expect(cfg['credentials']).toMatchObject({ accessKeyId: 'AKIA' });
+      // ...while the proxy plumbing itself still survives the override.
+      expect(cfg['requestHandler']).toBeDefined();
+    });
   });
 });
