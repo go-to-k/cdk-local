@@ -4,6 +4,7 @@ import { getLogger } from '../utils/logger.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
 import type { CognitoUserPoolAuthorizer, JwtAuthorizer } from './authorizer-resolver.js';
 import { buildIdentityHash } from './authorizer-resolver.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
 
 /**
  * Cognito User Pool / JWT authorizer support for `cdkl start-api`
@@ -186,8 +187,17 @@ export function createJwksCache(
         map.set(jwksUrl, entry);
         return entry;
       } catch (err) {
+        // Flattened + capped since issue #647: the read goes through
+        // `proxyAwareFetch`, so this `catch` sees `node:net` / OpenSSL /
+        // proxy-agent text of arbitrary shape where it used to see undici's
+        // fixed `fetch failed`. This line is default-level and `cdkl studio`
+        // mirrors it into a log ring it serves over HTTP, so it has to be ONE
+        // bounded line. Nothing here needs withholding — no credential chain
+        // is resolved for a JWKS GET.
         logger.warn(
-          `JWKS unreachable at ${jwksUrl}: ${err instanceof Error ? err.message : String(err)}. ` +
+          `JWKS unreachable at ${jwksUrl}: ${sanitizeServiceExceptionMessage(
+            err instanceof Error ? err.message : String(err)
+          )}. ` +
             `JWT validation will allow all tokens — local dev fallback. Configure network access to the JWKS URL ` +
             `to enable real signature verification.`
         );
@@ -473,9 +483,10 @@ export async function verifyJwtViaDiscovery(
       getLogger()
         .child('cognito-jwt')
         .warn(
-          `OIDC discovery unreachable at ${authorizer.discoveryUrl}: ${
+          // One bounded line, for the same reason as the JWKS warn above.
+          `OIDC discovery unreachable at ${authorizer.discoveryUrl}: ${sanitizeServiceExceptionMessage(
             err instanceof Error ? err.message : String(err)
-          }. Token accepted without verification — local dev fallback.`
+          )}. Token accepted without verification — local dev fallback.`
         );
     }
     const identityHash = buildIdentityHash([token]);

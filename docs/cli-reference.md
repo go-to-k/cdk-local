@@ -1537,8 +1537,10 @@ glitches / VPN drops / proxy outages — the same trade-off `cdkl start-api`
 makes for unreachable Cognito JWKS. Note that this read honors
 `HTTPS_PROXY` / `HTTP_PROXY` with `NO_PROXY` exemptions like every other
 AWS-bound request cdk-local makes (see the README's "Corporate proxy"
-section), so a machine whose only egress is a forward proxy does not land
-here by construction. The fallback emits a `warn` line
+section), so on a machine whose only egress is a forward proxy, setting
+those variables is what keeps the read out of this fallback -- a proxy that
+is itself down, or one terminating TLS without `NODE_EXTRA_CA_CERTS`, still
+lands here. The fallback emits a `warn` line
 naming the unreachable URL and re-emits it every 5 minutes per URL (#247).
 A long-running `cdkl start-alb --watch` session therefore keeps surfacing
 the degraded-auth state every 5 minutes rather than silently accepting

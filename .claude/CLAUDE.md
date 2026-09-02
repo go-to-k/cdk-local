@@ -1224,20 +1224,37 @@ compute-locally category for Lambda + API Gateway).
   tunneled. It IS `globalThis.fetch` when no proxy variable is set, and
   otherwise GETs through the same `EnvRoutingProxyAgent` — the same
   per-request `NO_PROXY` decision — following redirects, decoding a
-  `Content-Encoding` body `node:http` would otherwise leave compressed, and
-  naming no URL in any error it raises (a presigned URL carries
-  `X-Amz-Signature` in its query string). GET-only by construction. A FRESH
-  agent per redirect hop, because `http-proxy-agent` rewrites the request
-  line to absolute form inside `connect()`, which a keep-alive agent skips
-  when it reuses a pooled socket.
+  `Content-Encoding` body `node:http` would otherwise leave compressed,
+  bounding the request (`node:http` has NO default timeout, so an
+  unresponsive proxy would otherwise hang `cdkl` forever), and naming no URL
+  in any error it raises (a presigned URL carries `X-Amz-Signature` in its
+  query string). GET-only by construction. A FRESH agent per redirect hop,
+  because `http-proxy-agent` rewrites the request line to absolute form
+  inside `connect()`, which a keep-alive agent skips when it reuses a pooled
+  socket. A target the proxy environment does NOT cover — a `NO_PROXY` match,
+  or any LOOPBACK host — is handed back to `globalThis.fetch` rather than run
+  through the hand-rolled path, so every direct request keeps undici's
+  semantics unchanged. The loopback rule is unconditional and is the one
+  place this seam deliberately diverges from `EnvRoutingProxyAgent`: a
+  forward proxy has no route to the caller's own loopback, and cdk-local's
+  loopback reads include a JWT authorizer's local-IdP JWKS, whose
+  unreachability does not deny requests but degrades the verifier to accept
+  EVERY token. Private / RFC 1918 ranges are NOT exempted — a corporate proxy
+  plausibly reaches those, so that stays `NO_PROXY`'s call.
   `tests/unit/utils/aws-proxy-fetch-audit.test.ts` fences it repo-wide and
-  FAILS CLOSED: every use of the global fetch under `src/**` is either
-  proxy-aware or carries a `// proxy-audit: ignore: <reason>` line. The
-  reasoned exemptions are the loopback container clients
-  (`agentcore-client`, `rie-client`) and the emulated data path
-  (`rest-v1-integrations`' `HTTP` / `HTTP_PROXY` integration forwarding to
-  the user's own backend), neither of which the deployed service would send
-  through a developer's proxy. NOT re-exported from `src/internal.ts` — no
+  FAILS CLOSED on the two spellings it scans for — a bare `fetch(` call and
+  a `globalThis.fetch` reference — each of which must be proxy-aware or
+  carry a `// proxy-audit: ignore: <reason>` line. The reasoned exemptions
+  are the loopback container clients (`agentcore-client`, `rie-client`), the
+  emulated data path (`rest-v1-integrations`' `HTTP` / `HTTP_PROXY`
+  integration forwarding to the user's own backend) — neither of which the
+  deployed service would send through a developer's proxy — and
+  `proxyAwareFetch`'s own no-proxy branch. Its BOUNDS are stated in the
+  test's docstring rather than left implicit, and the load-bearing one is
+  that an ALIASED binding (`options.fetchImpl ?? fetch`, the shape
+  `agentcore-a2a-client` / `agentcore-mcp-client` / `studio-request-relay`
+  use) is NOT in the population; all three target loopback, so the gap costs
+  nothing today, but a remote-host caller written that way would escape. NOT re-exported from `src/internal.ts` — no
   host-side use case has come up, and `buildProxyClientConfig` covers the
   SDK surface a host CLI actually constructs).
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,

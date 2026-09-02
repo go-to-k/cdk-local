@@ -160,6 +160,8 @@ cdk-local routes its own AWS-bound traffic through the standard proxy environmen
 
 Against a TLS-terminating (interception) proxy, routing alone is not enough — the proxy re-signs the traffic with its own CA, so also point `NODE_EXTRA_CA_CERTS` at that CA bundle.
 
+A **loopback target is never proxied**, whatever `NO_PROXY` says — a forward proxy has no route back to your own machine, so a JWT authorizer whose issuer is a local IdP keeps working without a `NO_PROXY` entry. Private / RFC 1918 addresses are NOT exempted: a corporate proxy plausibly does reach those, so `NO_PROXY` stays the control there.
+
 Three boundaries: the Docker daemon pulls images through its own egress (configure the daemon's proxy separately); your handler / task code running inside containers reads whatever proxy variables you pass it (e.g. via `--env-vars`) — cdk-local does not inject them; and requests cdk-local makes *as* the emulated service go direct, matching where the deployed service would send them — a REST API `HTTP` / `HTTP_PROXY` integration forwarding to your own backend, and cdk-local's own traffic to the containers on this host.
 
 ## Environment variables — `--env-vars`

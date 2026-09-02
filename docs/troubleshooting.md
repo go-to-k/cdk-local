@@ -124,6 +124,8 @@ When STS itself answers — `ExpiredTokenException`, `AccessDenied` — the mess
 - **A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`** pointing at its CA bundle — routing fixes the path, not the certificate chain.
 - **Traffic cdk-local sends *as* the emulated service is deliberately not routed** — a REST API `HTTP` / `HTTP_PROXY` integration forwards to your backend directly, as the deployed API Gateway would, and so does cdk-local's own traffic to the containers on this host. If your backend is only reachable through the proxy, point the integration at a reachable URL instead.
 
+A related failure worth naming, because it is silent: a JWT authorizer whose issuer is on a **private, non-loopback** address (an internal IdP) is proxied like any other host, and a proxy that cannot reach it makes the JWKS read fail — which does not deny requests, it degrades the verifier to accept every token with a warn (see "JWKS / OIDC discovery unreachable" in the CLI reference). Add the issuer's host to `NO_PROXY`. Loopback issuers need no entry: they are never proxied.
+
 The Docker daemon's own pulls are separate egress — see the "Behind a corporate proxy" note under Docker above. Full semantics: the "Corporate proxy" section in the README.
 
 ### `--env-vars <file>` not applying overrides

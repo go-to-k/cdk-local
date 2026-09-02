@@ -47,7 +47,7 @@ cd "$(dirname "$0")"
 CDKL="node ../../../dist/cli.js"
 IMAGE="public.ecr.aws/lambda/nodejs:20"
 PORT=3740
-PROXY_PHASE_PORT=3741
+PROXY_PHASE_PORT=3742
 SIDECAR_PORT=19001
 SIDECAR_ISSUER="http://127.0.0.1:${SIDECAR_PORT}"
 SIDECAR_AUDIENCE="cdkl-integ-g3-aud"
@@ -142,8 +142,15 @@ if ! curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null
 fi
 echo "    [sidecar JWKS reachable] OK"
 
+# The ambient proxy environment is CLEARED for this boot. The JWKS read is
+# proxy-aware as of issue #647, so a developer's own HTTP_PROXY (or a
+# NO_PROXY that exempts the sidecar) would change what phases 1-2 measure.
+# Phase 3 sets exactly one variable, from the same cleared baseline.
+NO_PROXY_ENV=(env -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy \
+  -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy)
+
 echo "==> Booting cdkl start-api on ${BASE_URL}"
-${CDKL} start-api \
+"${NO_PROXY_ENV[@]}" ${CDKL} start-api \
   --port "${PORT}" \
   --container-host "${CONTAINER_HOST}" \
   >"${LOG_FILE}" 2>&1 &
@@ -253,6 +260,13 @@ node forward-proxy.mjs "${PROXY_LOG}" > "${PROXY_PORT_FILE}" &
 PROXY_PID=$!
 for _ in $(seq 1 50); do
   [[ -s "${PROXY_PORT_FILE}" ]] && break
+  # Liveness, like the two boot loops above: without it a proxy that exits
+  # immediately costs the full 10 s and then reports "did not report a port"
+  # instead of the reason it died.
+  if ! kill -0 "${PROXY_PID}" 2>/dev/null; then
+    echo "FAIL: forward proxy exited before reporting a port"
+    exit 1
+  fi
   sleep 0.2
 done
 PROXY_PORT="$(cat "${PROXY_PORT_FILE}")"
@@ -263,7 +277,11 @@ fi
 echo "    forward proxy on http://127.0.0.1:${PROXY_PORT}"
 
 PROXIED_BASE_URL="http://${CONTAINER_HOST}:${PROXY_PHASE_PORT}"
-env HTTP_PROXY="http://127.0.0.1:${PROXY_PORT}" \
+# Cleared baseline + exactly one variable. Without the `-u NO_PROXY`, a
+# corporate machine -- the very user this feature is for -- almost always
+# exports `NO_PROXY=localhost,127.0.0.1`, which exempts the fixture's own
+# `127.0.0.1:19001` issuer and would fail this phase spuriously.
+"${NO_PROXY_ENV[@]}" env HTTP_PROXY="http://127.0.0.1:${PROXY_PORT}" \
   ${CDKL} start-api \
   --port "${PROXY_PHASE_PORT}" \
   --container-host "${CONTAINER_HOST}" \

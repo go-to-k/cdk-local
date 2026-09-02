@@ -8,7 +8,11 @@ import { buildProxyClientConfig, proxyAwareFetch } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  sanitizeServiceExceptionMessage,
+} from './credential-error.js';
 import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
 
 /**
@@ -215,8 +219,14 @@ export async function materializeLayerFromArn(
   try {
     zipBytes = await downloadPresignedZip(presignedUrl, options);
   } catch (err) {
+    // `sanitizeServiceExceptionMessage`, not bare `errMsg`: since issue #647
+    // this `catch` also sees whatever `proxyAwareFetch` raises — `node:net` /
+    // OpenSSL / proxy-agent text, none of it credential-bearing but none of it
+    // one bounded line either. Nothing to WITHHOLD, everything to FLATTEN.
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: failed to download layer ZIP from the presigned URL: ${errMsg(err)}.`
+      `Layer ${layer.arn}: failed to download layer ZIP from the presigned URL: ${sanitizeServiceExceptionMessage(
+        errMsg(err)
+      )}.`
     );
   }
 
@@ -562,9 +572,16 @@ async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
  * The download `catch` DOES see wire-derived text — `downloadPresignedZip`
  * raises `HTTP <status> <statusText> ...`, and the reason phrase is whatever
  * the presigned host sent. Nothing there needs WITHHOLDING (no credential
- * chain, no secret), but it does need FLATTENING, which is applied at that
- * throw rather than here, because `errMsg` is also used by the unzip `catch`
- * whose input is a local `fflate` error.
+ * chain, no secret), but it does need FLATTENING.
+ *
+ * CORRECTED AGAIN in issue #647: that flattening used to be applied at the
+ * `HTTP <status>` throw alone, which was sufficient only while `fetch` was the
+ * transport and its every failure was the fixed string `fetch failed`. The
+ * download now goes through `proxyAwareFetch`, so the same `catch` also sees
+ * `node:net` / OpenSSL / proxy-agent messages of arbitrary shape and length.
+ * The download SITE therefore applies `sanitizeServiceExceptionMessage` to
+ * whatever `errMsg` returns; `errMsg` itself stays bare because its other
+ * caller is the unzip `catch`, whose input is a local `fflate` error.
  */
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

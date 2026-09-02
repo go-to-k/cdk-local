@@ -51,9 +51,21 @@ const server = http.createServer((req, res) => {
     }
   );
   upstream.on('error', (err) => {
+    // Headers may already be on the wire from the success path above, in
+    // which case `writeHead` throws ERR_HTTP_HEADERS_SENT *inside the
+    // handler* and kills this process -- wedging phase 3 with a symptom that
+    // has nothing to do with what it is testing.
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     res.writeHead(502, { 'content-type': 'text/plain' });
     res.end(`upstream error: ${err.message}`);
   });
+  // A client that aborts mid-pipe emits `error` on both of these; unhandled,
+  // either one is a fatal throw for the same reason.
+  req.on('error', () => upstream.destroy());
+  res.on('error', () => upstream.destroy());
   req.pipe(upstream);
 });
 

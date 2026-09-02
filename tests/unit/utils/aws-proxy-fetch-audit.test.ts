@@ -43,6 +43,22 @@ import {
  *     loopback serve, which is exactly what must NOT be proxied — so the
  *     gap costs nothing today. A remote-host caller written that way would
  *     escape this audit; the client audit carries the same alias bound.
+ *     The same bound covers every other INDIRECTION on the global:
+ *     `globalThis['fetch']`, `const { fetch } = globalThis`,
+ *     `globalThis?.fetch`, `(0, fetch)(url)`. They are enumerated here
+ *     rather than patterned for, because chasing spellings is how a fence
+ *     ends up with four patterns and a fifth hole — the honest statement is
+ *     that this scans the two spellings anyone actually writes and names
+ *     the rest as out of population.
+ *   - It fences `fetch` only, NOT a direct `node:http(s).request` egress.
+ *     Derived rather than assumed —
+ *     `grep -rn "from 'node:http\(s\)\?'" src/` returns servers plus two
+ *     outbound sites: `proxyAwareFetch` here, and `studio-proxy`, whose
+ *     upstream is bounded to LOOPBACK by `normalizeLocalUpstream`
+ *     (go-to-k/cdk-local#578). `ecs-service-runner`'s raw `node:net`
+ *     `createConnection` is a loopback TCP probe. So no remote-host raw
+ *     request exists today, and the population is complete in practice
+ *     rather than by construction.
  *   - `src/local/studio-ui.ts`'s browser JS lives inside a template
  *     literal, so `blankLiterals` removes it before the scan. Its `fetch`
  *     calls run in the browser against studio's own origin and are not

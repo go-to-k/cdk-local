@@ -191,23 +191,26 @@ export function buildProxyClientConfig(
 ): AwsProxyClientConfig {
   if (!isProxyEnvConfigured()) return {};
   const profile = opts.profile;
-  let chain: AwsCredentialIdentityProvider | undefined;
+  // The PROMISE is memoized, not the resolved provider: two overlapping
+  // `credentials()` calls both pass a `if (!chain)` guard before either
+  // assigns, so a resolved-value memo builds (and orphans) a second
+  // NodeHttpHandler with its agents.
+  let chain: Promise<AwsCredentialIdentityProvider> | undefined;
   const credentials: AwsCredentialIdentityProvider = async (identityProperties) => {
-    if (!chain) {
-      // Lazy so the credential-provider tree loads only when a proxied
-      // client actually resolves credentials (keeps the CLI's deferred
-      // SDK loading intact for the dynamic-import call sites). The chain's
-      // handler is built HERE rather than beside the service client's, so a
-      // site that overrides `credentials` (this provider is then discarded)
-      // does not pay for a NodeHttpHandler and its agents it will never use
-      // — issue #647.
+    // Lazy so the credential-provider tree loads only when a proxied client
+    // actually resolves credentials (keeps the CLI's deferred SDK loading
+    // intact for the dynamic-import call sites). The chain's handler is built
+    // HERE rather than beside the service client's, so a site that overrides
+    // `credentials` — discarding this provider — does not pay for a
+    // NodeHttpHandler and its agents it will never use (issue #647).
+    chain ??= (async () => {
       const { defaultProvider } = await import('@aws-sdk/credential-provider-node');
-      chain = defaultProvider({
+      return defaultProvider({
         ...(profile ? { profile } : {}),
         clientConfig: { requestHandler: buildProxyRequestHandler() },
       });
-    }
-    return chain(identityProperties);
+    })();
+    return (await chain)(identityProperties);
   };
   return {
     requestHandler: buildProxyRequestHandler(),
@@ -225,6 +228,22 @@ const MAX_FETCH_REDIRECTS = 20;
 /** Statuses whose response carries a null body per the fetch spec. */
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
+/**
+ * Socket-inactivity bound for a proxied request, matching undici's
+ * `headersTimeout` / `bodyTimeout` defaults — because `node:http` has NO
+ * default timeout at all, and without one a proxy that accepts the
+ * connection and never answers hangs `cdkl` forever. That is strictly worse
+ * than the pre-#647 direct connection it replaced, and it would hang exactly
+ * the fallback (`docs/cli-reference.md`, "JWKS / OIDC discovery
+ * unreachable") that exists to keep local dev moving.
+ *
+ * Undici's separate 10 s CONNECT timeout is not reproduced: a black-holed
+ * proxy fails here in 300 s rather than 10. Bounded is the property that
+ * matters; the exempt path keeps undici's own timers (see the short-circuit
+ * in {@link proxyAwareFetch}).
+ */
+const REQUEST_INACTIVITY_TIMEOUT_MS = 300_000;
+
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
@@ -234,6 +253,38 @@ interface RawHttpResponse {
   statusText: string;
   headers: IncomingMessage['headers'];
   body: Buffer;
+}
+
+/**
+ * Whether `hostname` names THIS machine. `proxy-from-env` implements the
+ * standard `NO_PROXY` semantics faithfully, and the standard exempts nothing
+ * by default — so with `HTTP_PROXY` exported and no matching `NO_PROXY`
+ * entry, a request to `127.0.0.1` is sent to the corporate proxy, which
+ * cannot reach the caller's own loopback and refuses it.
+ *
+ * For an AWS SDK client that is unreachable in practice (every endpoint is a
+ * public AWS host), which is why {@link EnvRoutingProxyAgent} does not carry
+ * this rule. For `proxyAwareFetch` it is not: a JWT authorizer's issuer is
+ * routinely a loopback IdP in local dev — this repo's own
+ * `local-start-api-cognito-jwt` fixture is exactly that shape — and an
+ * unreachable JWKS does not fail the request, it degrades the verifier to
+ * ACCEPT EVERY TOKEN with a warn. So proxying loopback here converts a
+ * working local setup into a silent auth downgrade, and it cannot buy
+ * anything in exchange: a forward proxy has no route to the client's
+ * loopback. Every other loopback request in cdk-local (the RIE and AgentCore
+ * container clients) is unproxied for the same reason.
+ *
+ * Deliberately NOT extended to RFC 1918 / private ranges: a corporate proxy
+ * plausibly does reach those, so exempting them would be a guess rather
+ * than an impossibility. `NO_PROXY` remains the control for that case.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  // `URL.hostname` keeps an IPv6 literal's brackets off, lowercases the host,
+  // and leaves no port, so these comparisons need no further normalization.
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  if (hostname === '::1' || hostname === '0:0:0:0:0:0:0:1') return true;
+  // The whole 127.0.0.0/8 block, not just 127.0.0.1.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
 }
 
 /**
@@ -257,27 +308,51 @@ function parseHttpUrl(href: string): URL {
  * with the body anyway: `text()` for JWKS / discovery, `arrayBuffer()` for
  * the layer ZIP).
  */
-function getThroughAgent(url: URL, agent: HttpAgent): Promise<RawHttpResponse> {
+function getThroughAgent(
+  url: URL,
+  agent: HttpAgent,
+  timeoutMs = REQUEST_INACTIVITY_TIMEOUT_MS
+): Promise<RawHttpResponse> {
   return new Promise((resolve, reject) => {
     const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
-    const req = send(url, { agent: agent as unknown as HttpsAgent }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('error', reject);
-      res.on('end', () => {
-        if (res.statusCode === undefined) {
-          reject(new Error('Malformed HTTP response: no status code'));
-          return;
-        }
-        resolve({
-          status: res.statusCode,
-          statusText: res.statusMessage ?? '',
-          headers: res.headers,
-          body: Buffer.concat(chunks),
+    const req = send(
+      url,
+      {
+        agent: agent as unknown as HttpsAgent,
+        // `node:http` sends neither by itself, so without these a picky
+        // origin can answer the proxied branch differently from the direct
+        // one. `identity` rather than undici's `gzip, deflate` because there
+        // is nothing to gain from transfer compression here — the decoder
+        // stays for a body S3 replays with a STORED `Content-Encoding`,
+        // which no request header suppresses.
+        headers: { accept: '*/*', 'accept-encoding': 'identity' },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('error', reject);
+        res.on('end', () => {
+          if (res.statusCode === undefined) {
+            reject(new Error('Malformed HTTP response: no status code'));
+            return;
+          }
+          resolve({
+            status: res.statusCode,
+            statusText: res.statusMessage ?? '',
+            headers: res.headers,
+            body: Buffer.concat(chunks),
+          });
         });
-      });
-    });
+      }
+    );
     req.on('error', reject);
+    // Inactivity, not total duration: it also covers the connect phase,
+    // during which no data flows. `destroy(err)` makes the request emit
+    // `error` with this reason, so the rejection is the timeout's and not a
+    // bare `socket hang up`. No URL in the message — see `parseHttpUrl`.
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Proxied request timed out after ${timeoutMs} ms with no response`));
+    });
     req.end();
   });
 }
@@ -310,6 +385,14 @@ function decodeContentEncoding(raw: RawHttpResponse): { body: Buffer; decoded: b
 }
 
 function toWebResponse(raw: RawHttpResponse): Response {
+  // `llhttp` accepts any three-digit status; `Response` accepts 200-599 and
+  // throws a bare `RangeError` outside it. Same hostile-origin class the
+  // `statusText` sanitisation below defends against, and it matters for the
+  // same reason: on the JWKS path an exception is not a failed read, it is
+  // the pass-through fallback that accepts every token. Refuse it by name.
+  if (raw.status < 200 || raw.status > 599) {
+    throw new Error(`Unsupported HTTP status in response: ${raw.status}`);
+  }
   const { body, decoded } = decodeContentEncoding(raw);
   const headers = new Headers();
   for (const [name, value] of Object.entries(raw.headers)) {
@@ -346,9 +429,17 @@ function toWebResponse(raw: RawHttpResponse): Response {
  * set this IS `globalThis.fetch` (zero behavior change), and with one set
  * the request goes through {@link EnvRoutingProxyAgent} — the same
  * `NO_PROXY` decision, evaluated per request against the target host, that
- * the SDK clients get. A fresh agent per request, destroyed the moment that
- * request's body is in hand — see the loop below for why that is a
- * correctness requirement and not only tidiness.
+ * the SDK clients get. A target that `NO_PROXY` exempts is ALSO handed back
+ * to `globalThis.fetch`, so the hand-rolled path is entered only when it
+ * has something to add, and every direct request keeps undici's semantics
+ * (its timers included) exactly as before. A fresh agent per proxied
+ * request, destroyed the moment that request's body is in hand — see the
+ * loop below for why that is a correctness requirement and not only
+ * tidiness.
+ *
+ * `opts.timeoutMs` is a TEST SEAM only — production callers pass one
+ * argument and get {@link REQUEST_INACTIVITY_TIMEOUT_MS}, which no test can
+ * afford to wait out.
  *
  * GET-only by construction: both call sites are GETs, and a method with a
  * request body needs redirect-replay semantics this deliberately does not
@@ -356,12 +447,26 @@ function toWebResponse(raw: RawHttpResponse): Response {
  * falling back to a bare `fetch` —
  * `tests/unit/utils/aws-proxy-fetch-audit.test.ts` refuses the fallback.
  */
-export async function proxyAwareFetch(url: string): Promise<Response> {
+export async function proxyAwareFetch(
+  url: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<Response> {
   // proxy-audit: ignore: the unproxied branch is this seam's own no-proxy
   // contract — with no proxy variable set, nothing should change at all.
   if (!isProxyEnvConfigured()) return globalThis.fetch(url);
   let target = parseHttpUrl(url);
   for (let hop = 0; ; hop++) {
+    // Re-asked PER HOP, since a redirect can cross the NO_PROXY boundary in
+    // either direction. When this target is not proxied there is nothing for
+    // the hand-rolled path to add, so hand it back to the platform `fetch`,
+    // which keeps its own timers and follows the rest of the chain itself.
+    // Same `getProxyForUrl` call `EnvRoutingProxyAgent.connect` makes, so
+    // the two cannot disagree about what NO_PROXY means.
+    if (isLoopbackHost(target.hostname) || !getProxyForUrl(target.href)) {
+      // proxy-audit: ignore: the NOT-proxied branch of this seam; routing it
+      // through the agent would be a no-op with worse timeout behavior.
+      return globalThis.fetch(target.href);
+    }
     // A FRESH agent per hop, destroyed the moment its body is in hand.
     // `http-proxy-agent` rewrites the request line to ABSOLUTE form
     // (`GET http://host/path`) inside `connect()`, and a keep-alive agent
@@ -372,7 +477,7 @@ export async function proxyAwareFetch(url: string): Promise<Response> {
     const agent = new EnvRoutingProxyAgent();
     let raw: RawHttpResponse;
     try {
-      raw = await getThroughAgent(target, agent);
+      raw = await getThroughAgent(target, agent, opts.timeoutMs);
     } finally {
       agent.destroy();
     }
