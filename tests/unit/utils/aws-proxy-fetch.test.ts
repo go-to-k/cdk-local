@@ -1,6 +1,10 @@
 import { createServer as createHttpServer, type Server } from 'node:http';
-import { createServer as createTcpServer, type Server as TcpServer } from 'node:net';
-import { gzipSync } from 'node:zlib';
+import {
+  createServer as createTcpServer,
+  type Server as TcpServer,
+  type Socket as NetSocket,
+} from 'node:net';
+import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import { proxyAwareFetch } from '../../../src/utils/aws-proxy.js';
 
@@ -46,13 +50,22 @@ interface Origin {
   url: string;
   port: number;
   requests: string[];
+  /**
+   * `accept-encoding` per request — the observable that tells the two
+   * transports apart. undici sends `gzip, deflate…`; the hand-rolled path
+   * sends exactly `identity`. Without it, "went direct" and "went through
+   * the hand-rolled agent, which then chose direct" look identical.
+   */
+  acceptEncodings: string[];
   close: () => Promise<void>;
 }
 
 async function startOrigin(handler: (path: string) => OriginHandlerResult): Promise<Origin> {
   const requests: string[] = [];
+  const acceptEncodings: string[] = [];
   const server: Server = createHttpServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
+    acceptEncodings.push(String(req.headers['accept-encoding'] ?? ''));
     const out = handler(req.url ?? '/');
     res.writeHead(out.status ?? 200, out.statusText, {
       'content-type': 'text/plain',
@@ -66,7 +79,16 @@ async function startOrigin(handler: (path: string) => OriginHandlerResult): Prom
     url: `http://127.0.0.1:${port}`,
     port,
     requests,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    acceptEncodings,
+    close: () =>
+      new Promise<void>((resolve) => {
+        // `close()` alone waits for every open connection, and a keep-alive
+        // socket is open until the agent decides otherwise — so without this
+        // the afterEach hangs to its 10 s timeout and reports the failure
+        // against whichever test happened to run last.
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }
 
@@ -89,7 +111,9 @@ interface ConnectRecorder {
 /** Records the first request line of every connection, then answers 502. */
 async function startConnectRecorder(): Promise<ConnectRecorder> {
   const lines: string[] = [];
+  const sockets: NetSocket[] = [];
   const server: TcpServer = createTcpServer((sock) => {
+    sockets.push(sock);
     sock.once('data', (buf: Buffer) => {
       lines.push(buf.toString('utf-8').split('\r\n')[0] ?? '');
       sock.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
@@ -101,7 +125,13 @@ async function startConnectRecorder(): Promise<ConnectRecorder> {
   return {
     url: `http://127.0.0.1:${port}`,
     lines,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        // The stalled-CONNECT case deliberately leaves a socket open, and
+        // nothing else will close it — see the http helper above.
+        for (const sock of sockets) sock.destroy();
+        server.close(() => resolve());
+      }),
   };
 }
 
@@ -119,7 +149,9 @@ interface RawProxy {
  */
 async function startRawProxy(reply: string | null): Promise<RawProxy> {
   const lines: string[] = [];
+  const sockets: NetSocket[] = [];
   const server: TcpServer = createTcpServer((sock) => {
+    sockets.push(sock);
     sock.once('data', (buf: Buffer) => {
       lines.push(buf.toString('utf-8').split('\r\n')[0] ?? '');
       if (reply !== null) sock.end(reply);
@@ -131,7 +163,13 @@ async function startRawProxy(reply: string | null): Promise<RawProxy> {
   return {
     url: `http://127.0.0.1:${port}`,
     lines,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        // The stalled-CONNECT case deliberately leaves a socket open, and
+        // nothing else will close it — see the http helper above.
+        for (const sock of sockets) sock.destroy();
+        server.close(() => resolve());
+      }),
   };
 }
 
@@ -170,6 +208,7 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(await response.text()).toBe('direct-body');
     expect(origin.requests).toEqual(['GET /jwks.json']);
     expect(proxy.requests).toEqual([]);
+    expect(origin.acceptEncodings[0]).toContain('gzip');
   });
 
   // A NON-loopback target, because loopback is exempt by construction (see
@@ -214,19 +253,64 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(await (await proxyAwareFetch(`${origin.url}/jwks.json`)).text()).toBe('direct-body');
     expect(origin.requests).toEqual(['GET /jwks.json']);
     expect(proxy.requests).toEqual([]);
+    // Handed back to the platform fetch, not merely routed direct by the
+    // agent — see the NO_PROXY case below for why the distinction needs its
+    // own observable.
+    expect(origin.acceptEncodings[0]).toContain('gzip');
   });
 
-  it.each(['127.0.0.1', '127.4.5.6', 'localhost', 'sub.localhost'])(
-    'treats %s as loopback',
+  // Every spelling `URL.hostname` can produce for this machine. The IPv6
+  // arms are the ones that mattered: `URL` KEEPS an IPv6 literal's brackets
+  // and canonicalises the address inside them, so an earlier revision
+  // comparing against a bare `'::1'` matched nothing and an IPv6-loopback
+  // issuer was proxied — the silent accept-all downgrade the rule exists to
+  // prevent. Bracketed / expanded / IPv4-mapped / trailing-dot forms all
+  // reach `isLoopbackHost` looking different from what a reader expects.
+  it.each([
+    '127.0.0.1',
+    '127.4.5.6',
+    'localhost',
+    'sub.localhost',
+    'localhost.',
+    '[::1]',
+    '[0:0:0:0:0:0:0:1]',
+    '[::ffff:127.0.0.1]',
+  ])('treats %s as loopback', async (host) => {
+    const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
+    process.env['HTTP_PROXY'] = proxy.url;
+    // Nothing listens, so it fails — but it must fail DIRECTLY, which is
+    // what an empty proxy log shows.
+    await expect(proxyAwareFetch(`http://${host}:1/x`)).rejects.toThrow();
+    expect(proxy.requests).toEqual([]);
+  });
+
+  it.each(['example.com', '[::2]', '0.0.0.0'])(
+    'does NOT treat %s as loopback — it is proxied like any other host',
     async (host) => {
       const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
       process.env['HTTP_PROXY'] = proxy.url;
-      // Nothing listens, so it fails — but it must fail DIRECTLY, which is
-      // what an empty proxy log shows.
-      await expect(proxyAwareFetch(`http://${host}:1/x`)).rejects.toThrow();
-      expect(proxy.requests).toEqual([]);
+      expect(await (await proxyAwareFetch(`http://${host}/x`)).text()).toBe('proxy-body');
+      expect(proxy.requests).toHaveLength(1);
     }
   );
+
+  it('bounds a proxy that accepts TCP and never answers CONNECT — req.setTimeout does not arm until the tunnel exists', async () => {
+    // The PRODUCTION shape: an https target tunnels, and `https-proxy-agent`
+    // assigns the request its socket only after CONNECT completes. A
+    // socket-level timeout is therefore never armed here, which is how one
+    // looks correct on the plain-http path while leaving the real case
+    // unbounded. Measured before the fix: still hanging at 5000 ms.
+    const stalling = track(await startRawProxy(null));
+    process.env['HTTPS_PROXY'] = stalling.url;
+
+    const started = Date.now();
+    await expect(
+      proxyAwareFetch('https://cognito-idp.us-east-1.amazonaws.com/pool/.well-known/jwks.json', {
+        timeoutMs: 300,
+      })
+    ).rejects.toThrow('Proxied request timed out after 300 ms with no response');
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
 
   it('tunnels a TLS target with CONNECT — the shape a JWKS / presigned-S3 read takes', async () => {
     const recorder = track(await startConnectRecorder());
@@ -347,6 +431,56 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(response.body).toBeNull();
   });
 
+  it.each([
+    ['deflate', (b: Buffer) => deflateSync(b)],
+    ['x-deflate', (b: Buffer) => deflateSync(b)],
+    ['br', (b: Buffer) => brotliCompressSync(b)],
+  ])('decodes a %s body', async (encoding, compress) => {
+    const payload = 'b'.repeat(200);
+    const proxy = track(
+      await startHttpProxy(() => ({
+        headers: { 'content-encoding': encoding },
+        body: compress(Buffer.from(payload, 'utf-8')),
+      }))
+    );
+    process.env['HTTP_PROXY'] = proxy.url;
+
+    const response = await proxyAwareFetch('http://origin.invalid/x');
+    expect(await response.text()).toBe(payload);
+    expect(response.headers.get('content-encoding')).toBeNull();
+  });
+
+  it.each([301, 302, 303, 307, 308])(
+    'follows a %i redirect — S3 and CloudFront emit 307 / 308',
+    async (status) => {
+      const proxy = track(
+        await startHttpProxy((target) =>
+          target.endsWith('/final')
+            ? { body: 'final-body' }
+            : { status, headers: { location: '/final' }, body: '' }
+        )
+      );
+      process.env['HTTP_PROXY'] = proxy.url;
+
+      expect(await (await proxyAwareFetch('http://origin.invalid/start')).text()).toBe(
+        'final-body'
+      );
+      expect(proxy.requests).toHaveLength(2);
+    }
+  );
+
+  it('refuses a status outside 200-599 by name — `Response` would throw a bare RangeError', async () => {
+    // On the JWKS path an exception is not a failed read, it is the
+    // pass-through fallback that accepts every token, so a hostile origin
+    // must not be able to reach it through an unnamed error.
+    const proxy = track(await startRawProxy('HTTP/1.1 700 Weird\r\nContent-Length: 2\r\n\r\nhi'));
+    process.env['HTTP_PROXY'] = proxy.url;
+
+    await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(
+      'Unsupported HTTP status in response: 700'
+    );
+  });
+
   it('refuses a non-http(s) URL naming the PROTOCOL and not the URL', async () => {
     process.env['HTTP_PROXY'] = 'http://127.0.0.1:1';
     await expect(proxyAwareFetch('file:///etc/passwd?X-Amz-Signature=leak')).rejects.toThrow(
@@ -429,21 +563,26 @@ describe('proxyAwareFetch (issue #647)', () => {
     ).rejects.toThrow(/^(?!.*X-Amz-Signature).*$/s);
   });
 
-  it('hands a NO_PROXY-exempt target back to the platform fetch, keeping its semantics', async () => {
-    // Not merely "goes direct": the exempt path must not enter the
-    // hand-rolled request at all, or it would inherit its weaker timers. The
-    // observable is that the origin sees an ordinary origin-form request
-    // while the proxy sees nothing.
-    const origin = track(await startOrigin(() => ({ body: 'direct-body' })));
+  it('hands a NO_PROXY-exempt NON-loopback target back to the platform fetch', async () => {
+    // The target must be NON-loopback, or `isLoopbackHost` decides first and
+    // the NO_PROXY arm is never the one under test — which is how an earlier
+    // version of this case stayed green with the short-circuit deleted.
+    //
+    // Nothing resolves `origin.invalid`, so both paths FAIL; the discriminator
+    // is WHOSE failure it is. undici raises `TypeError: fetch failed` (the
+    // real cause on `.cause`); `node:http` raises a plain `Error:
+    // getaddrinfo ENOTFOUND …`. An empty proxy log cannot tell them apart,
+    // because `EnvRoutingProxyAgent.connect` consults `getProxyForUrl` too
+    // and would also route this direct.
     const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
     process.env['HTTP_PROXY'] = proxy.url;
-    // Not the loopback rule: this origin would be exempt either way, so the
-    // env entry is what makes the case about NO_PROXY.
-    process.env['NO_PROXY'] = '127.0.0.1';
+    process.env['NO_PROXY'] = 'origin.invalid';
 
-    const response = await proxyAwareFetch(`${origin.url}/exempt`);
-    expect(await response.text()).toBe('direct-body');
-    expect(origin.requests).toEqual(['GET /exempt']);
+    const err = await proxyAwareFetch('http://origin.invalid/exempt').catch(
+      (e: unknown) => e as Error
+    );
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe('fetch failed');
     expect(proxy.requests).toEqual([]);
   });
 

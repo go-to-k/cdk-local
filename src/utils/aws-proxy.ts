@@ -240,7 +240,9 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
  * Undici's separate 10 s CONNECT timeout is not reproduced: a black-holed
  * proxy fails here in 300 s rather than 10. Bounded is the property that
  * matters; the exempt path keeps undici's own timers (see the short-circuit
- * in {@link proxyAwareFetch}).
+ * in {@link proxyAwareFetch}). Enforced as a wall-clock timer around the
+ * whole attempt — see `getThroughAgent` for why a socket-level one cannot
+ * bound the CONNECT tunnel.
  */
 const REQUEST_INACTIVITY_TIMEOUT_MS = 300_000;
 
@@ -279,12 +281,37 @@ interface RawHttpResponse {
  * than an impossibility. `NO_PROXY` remains the control for that case.
  */
 function isLoopbackHost(hostname: string): boolean {
-  // `URL.hostname` keeps an IPv6 literal's brackets off, lowercases the host,
-  // and leaves no port, so these comparisons need no further normalization.
-  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
-  if (hostname === '::1' || hostname === '0:0:0:0:0:0:0:1') return true;
+  // `URL.hostname` lowercases the host and strips the port, but it KEEPS an
+  // IPv6 literal's brackets and canonicalises the address inside them.
+  // Measured on Node 24:
+  //
+  //   http://[::1]/              -> "[::1]"
+  //   http://[0:0:0:0:0:0:0:1]/  -> "[::1]"
+  //   http://[::ffff:127.0.0.1]/ -> "[::ffff:7f00:1]"
+  //   http://localhost./         -> "localhost."
+  //
+  // An earlier revision compared against a bare `'::1'` and the expanded
+  // form, so BOTH arms were dead code and an IPv6-loopback issuer was
+  // PROXIED — precisely the silent accept-all downgrade this function exists
+  // to prevent. Normalise first, then compare.
+  const host = hostname
+    .replace(/^\[|\]$/g, '')
+    // A single trailing dot is the fully-qualified spelling of the same name.
+    .replace(/\.$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  // `::1` and every all-zero-groups-then-1 spelling of it.
+  if (host === '::1' || /^(0:){1,7}:?1$/.test(host)) return true;
   // The whole 127.0.0.0/8 block, not just 127.0.0.1.
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv4-mapped IPv6, in the dotted spelling a user writes AND the hex one
+  // `URL` canonicalises it to (`::ffff:7f00:1` is 127.0.0.1).
+  const mapped = /^::ffff:(.+)$/.exec(host);
+  if (mapped) {
+    const inner = mapped[1]!;
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(inner)) return true;
+    if (/^7f[0-9a-f]{0,2}:[0-9a-f]{1,4}$/.test(inner)) return true;
+  }
+  return false;
 }
 
 /**
@@ -314,6 +341,23 @@ function getThroughAgent(
   timeoutMs = REQUEST_INACTIVITY_TIMEOUT_MS
 ): Promise<RawHttpResponse> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // One settle, and the timer cleared on every exit: without the guard a
+    // late `error` after a delivered body is an unhandled rejection.
+    const succeed = (value: RawHttpResponse): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    };
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(err);
+    };
+
     const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
     const req = send(
       url,
@@ -330,13 +374,13 @@ function getThroughAgent(
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('error', reject);
+        res.on('error', fail);
         res.on('end', () => {
           if (res.statusCode === undefined) {
-            reject(new Error('Malformed HTTP response: no status code'));
+            fail(new Error('Malformed HTTP response: no status code'));
             return;
           }
-          resolve({
+          succeed({
             status: res.statusCode,
             statusText: res.statusMessage ?? '',
             headers: res.headers,
@@ -345,14 +389,30 @@ function getThroughAgent(
         });
       }
     );
-    req.on('error', reject);
-    // Inactivity, not total duration: it also covers the connect phase,
-    // during which no data flows. `destroy(err)` makes the request emit
-    // `error` with this reason, so the rejection is the timeout's and not a
-    // bare `socket hang up`. No URL in the message — see `parseHttpUrl`.
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Proxied request timed out after ${timeoutMs} ms with no response`));
-    });
+    req.on('error', fail);
+    // WALL CLOCK, and the rejection raised DIRECTLY — not `req.setTimeout`,
+    // and not left for `req.destroy(err)` to surface. Two measured reasons:
+    //
+    //   - `req.setTimeout` arms only once a socket is ASSIGNED to the
+    //     request, and `https-proxy-agent` assigns one only after the CONNECT
+    //     tunnel is established. Against a proxy that accepts TCP and never
+    //     answers CONNECT, `req.setTimeout(1500)` never fired and the request
+    //     was still hanging at 5000 ms.
+    //   - with no socket yet assigned, `destroy(err)` stores the error
+    //     against a socket that never arrives and no `error` event is emitted
+    //     at all, so a destroy-only timer hung past 15 s.
+    //
+    // That is the PRODUCTION shape (an https JWKS endpoint, an https
+    // presigned URL); the plain-http path the tests drive is the one where
+    // the socket-level timer does work, which is exactly how it looked
+    // correct while leaving the real case unbounded.
+    // No URL in the message — see `parseHttpUrl`.
+    timer = setTimeout(() => {
+      req.destroy();
+      fail(new Error(`Proxied request timed out after ${timeoutMs} ms with no response`));
+    }, timeoutMs);
+    // The 300 s default must not by itself hold a one-shot `cdkl invoke` open.
+    timer.unref?.();
     req.end();
   });
 }
@@ -376,7 +436,9 @@ function decodeContentEncoding(raw: RawHttpResponse): { body: Buffer; decoded: b
     if (encoding === 'gzip' || encoding === 'x-gzip') {
       return { body: gunzipSync(raw.body), decoded: true };
     }
-    if (encoding === 'deflate') return { body: inflateSync(raw.body), decoded: true };
+    if (encoding === 'deflate' || encoding === 'x-deflate') {
+      return { body: inflateSync(raw.body), decoded: true };
+    }
     if (encoding === 'br') return { body: brotliDecompressSync(raw.body), decoded: true };
   } catch {
     return { body: raw.body, decoded: false };

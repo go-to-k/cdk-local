@@ -1231,7 +1231,18 @@ compute-locally category for Lambda + API Gateway).
   query string). GET-only by construction. A FRESH agent per redirect hop,
   because `http-proxy-agent` rewrites the request line to absolute form
   inside `connect()`, which a keep-alive agent skips when it reuses a pooled
-  socket. A target the proxy environment does NOT cover — a `NO_PROXY` match,
+  socket. The request bound is a WALL-CLOCK timer that rejects DIRECTLY, not
+  `req.setTimeout` and not `req.destroy(err)`: the socket timer arms only
+  once a socket is assigned, and `https-proxy-agent` assigns one only after
+  the CONNECT tunnel is up, so a proxy accepting TCP and never answering
+  CONNECT — the production shape for an https JWKS or presigned URL — went
+  unbounded, while `destroy(err)` with no socket assigned emits no `error` at
+  all. The plain-http path is the one where the socket timer DOES work, which
+  is how it looked correct while leaving the real case open. `isLoopbackHost`
+  normalises before comparing for the same class of reason: `URL.hostname`
+  KEEPS an IPv6 literal's brackets (`http://[::1]/` -> `"[::1]"`), so bare
+  `'::1'` comparisons were dead code and an IPv6-loopback issuer was proxied.
+  A target the proxy environment does NOT cover — a `NO_PROXY` match,
   or any LOOPBACK host — is handed back to `globalThis.fetch` rather than run
   through the hand-rolled path, so every direct request keeps undici's
   semantics unchanged. The loopback rule is unconditional and is the one

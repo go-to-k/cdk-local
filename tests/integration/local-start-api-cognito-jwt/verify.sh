@@ -394,9 +394,12 @@ BODY=$(cat "${RESP_FILE}")
 rm -f "${RESP_FILE}"
 if [[ "${STATUS}" != "200" ]]; then
   echo "FAIL: expected 200 on the LOOPBACK-issuer route with HTTP_PROXY set; got ${STATUS}"
-  echo "  (the forward proxy has no route back to this machine, so a proxied"
-  echo "   loopback JWKS read fails -- and a failed read does not deny, it"
-  echo "   degrades the verifier to accept every token)"
+  echo "  (in the REAL topology a forward proxy has no route back to the"
+  echo "   caller's own machine, so a proxied loopback JWKS read fails -- and"
+  echo "   a failed read does not deny, it degrades the verifier to accept"
+  echo "   every token. This fixture's proxy IS on loopback and would forward"
+  echo "   the read successfully, so the grep below is what discriminates;"
+  echo "   this 200 only checks the route did not break.)"
   echo "----- response body -----"; echo "${BODY}"; echo "-------------------------"
   echo "----- proxy log -----"; cat "${PROXY_LOG}"; echo "---------------------"
   exit 1

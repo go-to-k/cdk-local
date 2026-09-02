@@ -43,9 +43,11 @@ import {
  *     loopback serve, which is exactly what must NOT be proxied — so the
  *     gap costs nothing today. A remote-host caller written that way would
  *     escape this audit; the client audit carries the same alias bound.
- *     The same bound covers every other INDIRECTION on the global:
- *     `globalThis['fetch']`, `const { fetch } = globalThis`,
- *     `globalThis?.fetch`, `(0, fetch)(url)`. They are enumerated here
+ *     The same bound covers every other INDIRECTION on the global, and the
+ *     other GLOBAL OBJECTS that alias it: `global.fetch(url)`,
+ *     `self.fetch(url)`, `globalThis['fetch']`,
+ *     `const { fetch } = globalThis`, `globalThis?.fetch`, `(0, fetch)(url)`.
+ *     They are enumerated here
  *     rather than patterned for, because chasing spellings is how a fence
  *     ends up with four patterns and a fifth hole — the honest statement is
  *     that this scans the two spellings anyone actually writes and names

@@ -64,6 +64,13 @@ const SIDECAR_AUDIENCE = 'cdkl-integ-g3-aud';
  * the corporate topology the feature exists for, rather than a simulation of
  * it. `verify.sh` starts its proxy with a mapping from this host to the local
  * sidecar, so the proxy is the only path to the key material.
+ *
+ * Side effect worth knowing before debugging a slow boot: `start-api`
+ * prewarms every authorizer's JWKS before it listens, so EVERY boot of this
+ * fixture -- phases 1-2 included, where no proxy is configured -- now pays a
+ * failed DNS lookup for this host and logs one `JWKS unreachable` warn. That
+ * is expected, costs a fast NXDOMAIN, and cannot affect the other route: the
+ * JWKS cache is keyed by URL, so the loopback issuer's entry is independent.
  */
 const REMOTE_ISSUER = 'http://idp.cdkl-integ.test';
 

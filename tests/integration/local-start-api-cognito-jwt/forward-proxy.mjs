@@ -75,6 +75,11 @@ const server = http.createServer((req, res) => {
     },
     (up) => {
       res.writeHead(up.statusCode ?? 502, up.headers);
+      // `pipe` does NOT forward source errors, and the `res` error handler
+      // below destroys the upstream request mid-response -- which makes Node
+      // emit `error` on `up`. Unhandled, that is a fatal throw that kills the
+      // proxy and wedges phase 3 with a symptom unrelated to what it tests.
+      up.on('error', () => res.destroy());
       up.pipe(res);
     }
   );
