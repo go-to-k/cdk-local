@@ -5,8 +5,9 @@ import {
   type Socket as NetSocket,
 } from 'node:net';
 import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { proxyAwareFetch } from '../../../src/utils/aws-proxy.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { proxyAwareFetch, resetProxySchemeWarnings } from '../../../src/utils/aws-proxy.js';
+import { getLogger, setLogger } from '../../../src/utils/logger.js';
 
 /**
  * Issue go-to-k/cdk-local#647 — `proxyAwareFetch` driven against REAL
@@ -551,6 +552,29 @@ describe('proxyAwareFetch (issue #647)', () => {
     // `proxy-aware-fetch-bindings.test.ts`.
     process.env['HTTP_PROXY'] = 'http://127.0.0.1:1';
     await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it('WARNS once, naming the scheme, when it falls back past a SOCKS proxy', async () => {
+    // The fallback used to be silent on this half (issue
+    // go-to-k/cdk-local#663 folded both halves onto one
+    // `resolveProxyForTarget`, which warns). Silence is what made
+    // "refuse loudly" arguable: a user whose direct egress is blocked
+    // otherwise gets a transport error pointing at nothing.
+    resetProxySchemeWarnings();
+    process.env['ALL_PROXY'] = 'socks5://user:s3cr3t@127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    try {
+      await proxyAwareFetch('http://origin.invalid/x').catch(() => undefined);
+      await proxyAwareFetch('http://origin.invalid/y').catch(() => undefined);
+    } finally {
+      setLogger(previous);
+    }
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('socks5');
+    expect(lines[0]).not.toContain('s3cr3t');
   });
 
   it('falls back to a DIRECT request when the proxy is SOCKS — these agents speak only HTTP CONNECT', async () => {

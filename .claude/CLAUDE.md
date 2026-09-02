@@ -1229,10 +1229,23 @@ compute-locally category for Lambda + API Gateway).
   EVERY AWS SDK client construction in `src/**` spreads this fragment —
   directly, or via `buildStsClientConfig`, which spreads it internally. It
   is `{}` when no proxy variable is set (zero behavior change); when one is
-  set it carries a per-request NO_PROXY-routing `requestHandler` plus a
+  set it carries a per-request-routing `requestHandler` plus a
   default-chain `credentials` provider whose `clientConfig` threads the
   handler into the SSO / SSOOIDC hops the service client's own handler
-  never reaches. `tests/unit/utils/aws-proxy-client-audit.test.ts` fences
+  never reaches. That routing is `resolveProxyForTarget`, which answers TWO
+  questions per request: `NO_PROXY`, and the proxy's SCHEME — an `http(s):`
+  proxy is tunneled through, and any other (a SOCKS `ALL_PROXY`, an ordinary
+  spelling `getProxyForUrl` honours) falls back to a DIRECT connection with
+  a one-time warn naming ONLY the scheme, since a proxy URL routinely
+  carries `user:password@`. ONE site owns it because two did not: issue #663
+  was `proxyAwareFetch` having the scheme guard while this seam built an
+  HTTP agent pointed at the SOCKS port, from the same environment. Falling
+  back beats REFUSING because before either seam existed every one of these
+  requests went direct, so refusing keeps an `ALL_PROXY=socks5://` user who
+  has working direct egress broken with nothing left to configure — and the
+  warn removes refusing's only argument, that a fallback is silent. An
+  UNPARSABLE proxy value still throws: a typo has no working setup behind
+  it. `tests/unit/utils/aws-proxy-client-audit.test.ts` fences
   the sweep repo-wide; both helpers are re-exported from `src/internal.ts`.
   Issue #647 added the SECOND seam, `proxyAwareFetch(url)`: not every
   AWS-bound request is an SDK call, and the global `fetch` (undici) reads no
@@ -1266,9 +1279,12 @@ compute-locally category for Lambda + API Gateway).
   (`http://[::1]/` -> `"[::1]"`), so bare `'::1'` comparisons were dead code
   and an IPv6-loopback issuer was proxied; it also treats the WILDCARD address
   (`0.0.0.0` / `::`) as this machine, matching `studio-proxy`'s
-  `isWildcardHostname`, and a proxy URL whose scheme is not `http(s):` (a
-  SOCKS `ALL_PROXY`) falls back to a direct request rather than being spoken
-  HTTP at. `tests/unit/utils/loopback-predicate-agreement.test.ts` fences this
+  `isWildcardHostname`. The proxy-SCHEME rule that once lived only on this
+  seam — a proxy URL whose scheme is not `http(s):` (a SOCKS `ALL_PROXY`)
+  falls back to a direct request rather than being spoken HTTP at — is now
+  SHARED with `EnvRoutingProxyAgent` through `resolveProxyForTarget`, and
+  warns once per scheme instead of falling over in silence (issue #663).
+  `tests/unit/utils/loopback-predicate-agreement.test.ts` fences this
   predicate against `studio-proxy`'s, which cannot share a module with it.
   A target the proxy environment does NOT cover — a `NO_PROXY` match,
   or any LOOPBACK host — is handed back to `globalThis.fetch` rather than run

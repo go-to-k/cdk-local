@@ -163,7 +163,7 @@ echo "${RESULT_6}" | grep -q '"greeting":"from-zip-asset"' || {
 # AssumeRole fail; `cdkl invoke` warns and falls back to the shell
 # credentials (dummy env creds here, resolved locally — no network), so the
 # invoke itself still completes and proves the fallback stays graceful.
-echo "==> [7/8] HTTPS_PROXY routes the STS AssumeRole call through the proxy"
+echo "==> [7/9] HTTPS_PROXY routes the STS AssumeRole call through the proxy"
 PROXY_LOG=$(mktemp)
 PROXY_PORT_FILE=$(mktemp)
 node proxy-recorder.mjs "${PROXY_LOG}" > "${PROXY_PORT_FILE}" &
@@ -199,7 +199,7 @@ echo "${RESULT_7}" | grep -q '"greeting":"hello"' || {
 # AssumeRole then goes DIRECT to real AWS with the dummy creds (a fast
 # unauthenticated failure — needs outbound network, which this suite already
 # requires for the docker pull), warns, and falls back the same way.
-echo "==> [8/8] NO_PROXY='*' keeps the same call OFF the proxy"
+echo "==> [8/9] NO_PROXY='*' keeps the same call OFF the proxy"
 : > "${PROXY_LOG}"
 RESULT_8=$(capture env \
   HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}" NO_PROXY='*' \
@@ -217,5 +217,48 @@ echo "${RESULT_8}" | grep -q '"greeting":"hello"' || {
   exit 1
 }
 
+# Test 9 -- a proxy scheme these agents cannot SPEAK (issue
+# go-to-k/cdk-local#663). `ALL_PROXY=socks5://...` is an ordinary spelling
+# `proxy-from-env` honours, and until this fix `EnvRoutingProxyAgent.connect`
+# handed that URL to `HttpsProxyAgent`, which speaks HTTP CONNECT -- so a
+# SOCKS URL aimed at the SAME recorder above produced a real
+# `CONNECT sts.us-east-1.amazonaws.com:443` sent at a SOCKS port, three times,
+# which the SDK then surfaced as `Unknown` (measured on origin/main through
+# the shipped dist). It now falls back to a DIRECT connection and says so
+# once.
+#
+# BOTH halves are asserted. An empty recorder log alone would also pass if the
+# CLI never made the call at all -- so the warn is what proves the request
+# happened and chose direct DELIBERATELY, and its count is what proves the
+# per-request decision does not print a line per AWS call.
+echo "==> [9/9] a SOCKS ALL_PROXY connects DIRECT and warns once"
+: > "${PROXY_LOG}"
+RESULT_9=$(capture env \
+  ALL_PROXY="socks5://127.0.0.1:${PROXY_PORT}" \
+  AWS_ACCESS_KEY_ID=cdkl-integ-dummy AWS_SECRET_ACCESS_KEY=cdkl-integ-dummy AWS_REGION=us-east-1 \
+  ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler \
+  --assume-role arn:aws:iam::123456789012:role/cdkl-proxy-integ --no-pull)
+echo "    response: ${RESULT_9}"
+if [ -s "${PROXY_LOG}" ]; then
+  echo "FAIL: a SOCKS ALL_PROXY must never be spoken HTTP at, but the recorder logged:"
+  cat "${PROXY_LOG}"
+  exit 1
+fi
+grep -q 'Unsupported proxy scheme "socks5"' "${CDKL_STDERR}" || {
+  echo "FAIL: expected the unsupported-scheme warn on stderr; captured stderr:"
+  cat "${CDKL_STDERR}"
+  exit 1
+}
+WARN_COUNT_9=$(grep -c 'Unsupported proxy scheme' "${CDKL_STDERR}" || true)
+[ "${WARN_COUNT_9}" = "1" ] || {
+  echo "FAIL: the unsupported-scheme warn must be emitted ONCE per run, got ${WARN_COUNT_9}:"
+  grep -n 'Unsupported proxy scheme' "${CDKL_STDERR}" || true
+  exit 1
+}
+echo "${RESULT_9}" | grep -q '"greeting":"hello"' || {
+  echo "FAIL: expected the invoke to complete via the graceful shell-creds fallback, got: ${RESULT_9}"
+  exit 1
+}
+
 echo ""
-echo "==> All 8 local-invoke tests passed"
+echo "==> All 9 local-invoke tests passed"

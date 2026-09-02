@@ -9,6 +9,7 @@ import type { AgentConnectOpts } from 'agent-base';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { getProxyForUrl } from 'proxy-from-env';
+import { getLogger } from './logger.js';
 import { formatAuthority } from './url-authority.js';
 
 /**
@@ -35,6 +36,12 @@ import { formatAuthority } from './url-authority.js';
  * so `proxyAwareFetch()` is the second seam: same `NO_PROXY` decision, same
  * "empty when unconfigured" contract, fenced by
  * `tests/unit/utils/aws-proxy-fetch-audit.test.ts`.
+ *
+ * Both seams route through ONE routing decision,
+ * {@link resolveProxyForTarget} (issue go-to-k/cdk-local#663) -- which is
+ * also where a proxy scheme these agents cannot speak is turned into a
+ * warned DIRECT connection rather than into an HTTP agent pointed at, for
+ * example, a SOCKS port.
  */
 
 /**
@@ -63,6 +70,117 @@ export function isProxyEnvConfigured(): boolean {
     env['all_proxy'] ||
     env['ALL_PROXY']
   );
+}
+
+/**
+ * Proxy SCHEMES already warned about, so a decision taken per REQUEST does
+ * not print a line per AWS call. Keyed by scheme rather than by URL because
+ * the message names only the scheme — two SOCKS proxies would otherwise
+ * print the same sentence twice.
+ */
+const warnedProxySchemes = new Set<string>();
+
+/**
+ * Clear the warn-once memo. TEST SEAM only: production never calls it, and
+ * it is deliberately NOT re-exported from `src/internal.ts`. Without it a
+ * case asserting "warns ONCE" would pass or fail on whether an earlier case
+ * in the file happened to warn about the same scheme first — an assertion
+ * whose premise has evaporated, which no mutation probe can see.
+ */
+export function resetProxySchemeWarnings(): void {
+  warnedProxySchemes.clear();
+}
+
+/**
+ * The scheme of a proxy URL, lowercased and without its colon.
+ *
+ * `getProxyForUrl` prepends the REQUEST's scheme to any value that does not
+ * already contain `://`, so the URL it returns normally carries one — even
+ * `HTTPS_PROXY=proxy.internal:3128`, which becomes `https://proxy.internal:3128`
+ * (TLS to the PROXY, not a CONNECT tunnel). A value containing `://`
+ * somewhere OTHER than the start is returned verbatim and has no leading
+ * scheme; pathological, but reachable, so it gets a name rather than an
+ * empty string that would read as a missing message.
+ */
+function proxySchemeOf(proxyUrl: string): string {
+  const match = /^([a-z][a-z0-9+.-]*):/i.exec(proxyUrl);
+  return match ? match[1]!.toLowerCase() : '(unrecognized)';
+}
+
+/**
+ * Whether `proxyUrl` names a proxy these agents can actually SPEAK to.
+ *
+ * `getProxyForUrl` honours `ALL_PROXY`, and `ALL_PROXY=socks5://...` is an
+ * ordinary spelling — but `http-proxy-agent` / `https-proxy-agent` speak HTTP
+ * `CONNECT`, not SOCKS. Measured: `new HttpsProxyAgent('socks5://127.0.0.1:1080')`
+ * constructs happily and reports `proxy.protocol === 'socks5:'`, then talks
+ * HTTP at a SOCKS port, so every request through it fails.
+ */
+function isSpeakableProxy(proxyUrl: string): boolean {
+  return /^https?:\/\//i.test(proxyUrl);
+}
+
+/**
+ * Say ONCE per scheme that a proxy variable is being ignored.
+ *
+ * The URL is withheld and only the SCHEME is named: a proxy URL routinely
+ * carries `user:password@`, and this line is emitted at DEFAULT level
+ * somewhere a third party reads it — `cdkl studio` mirrors a serve child's
+ * output into the log panel it serves over HTTP. Same rule `parseHttpUrl`'s
+ * rejection follows, for the same reason.
+ */
+function warnUnspeakableProxy(proxyUrl: string): void {
+  const scheme = proxySchemeOf(proxyUrl);
+  if (warnedProxySchemes.has(scheme)) return;
+  warnedProxySchemes.add(scheme);
+  getLogger()
+    .child('aws-proxy')
+    .warn(
+      `Unsupported proxy scheme "${scheme}" — cdk-local speaks HTTP CONNECT proxies ` +
+        'only, so this request went DIRECT instead of through the proxy. Set ' +
+        'HTTPS_PROXY / HTTP_PROXY / ALL_PROXY to an http:// or https:// proxy URL. ' +
+        '(The proxy URL is withheld here: it can carry credentials.)'
+    );
+}
+
+/**
+ * The proxy to route `targetHref` through, or `''` for a DIRECT connection.
+ *
+ * ONE site owns the question, so the SDK-client half
+ * ({@link EnvRoutingProxyAgent}) and the fetch half ({@link proxyAwareFetch})
+ * cannot answer it differently for the same environment — they did until
+ * issue go-to-k/cdk-local#663: PR 656 taught the fetch half to fall back on
+ * an unspeakable proxy, while the agent PR 646 built kept constructing an
+ * HTTP agent pointed at a SOCKS port.
+ *
+ * Falling back to DIRECT rather than REFUSING is the deliberate call, and it
+ * is now the same call on both halves:
+ *
+ * - Before either seam existed every one of these requests went direct, so a
+ *   developer who exports `ALL_PROXY=socks5://...` for an unrelated tunnel
+ *   AND has working direct egress had cdk-local working; PR 646 broke that.
+ *   Refusing keeps them broken with no configuration to reach — cdk-local
+ *   speaks no SOCKS, so the only remedy would be unsetting the variable.
+ * - On the JWKS / OIDC discovery path a FAILED read does not deny: the
+ *   verifier caches pass-through and accepts every bearer token for the
+ *   failure TTL (`docs/cli-reference.md`, "JWKS / OIDC discovery
+ *   unreachable"). Attempting and failing there is strictly worse than going
+ *   direct.
+ * - The one argument for refusing was that a fallback is SILENT, and
+ *   {@link warnUnspeakableProxy} removes it: a user whose direct egress is
+ *   blocked still gets a line naming the cause, instead of an `ETIMEDOUT`
+ *   that points at nothing.
+ *
+ * An UNPARSABLE proxy value is a DIFFERENT question and still throws (from
+ * the agent constructor, as before): a typo has no working setup behind it,
+ * so going direct would hide it rather than restore anything.
+ */
+function resolveProxyForTarget(targetHref: string): string {
+  const proxyUrl = getProxyForUrl(targetHref);
+  if (proxyUrl === '') return '';
+  if (isSpeakableProxy(proxyUrl)) return proxyUrl;
+  warnUnspeakableProxy(proxyUrl);
+  return '';
 }
 
 /**
@@ -101,7 +219,7 @@ export class EnvRoutingProxyAgent extends Agent {
     // Port included so a `NO_PROXY=host:port` entry can match;
     // `formatAuthority` brackets an IPv6 literal so the URL parses
     // (issue #599's composition rule).
-    const proxyUrl = getProxyForUrl(
+    const proxyUrl = resolveProxyForTarget(
       `${secure ? 'https' : 'http'}://${formatAuthority(host, port)}`
     );
     if (!proxyUrl) {
@@ -289,31 +407,6 @@ interface RawHttpResponse {
  * plausibly does reach those, so exempting them would be a guess rather
  * than an impossibility. `NO_PROXY` remains the control for that case.
  */
-/**
- * Whether `proxyUrl` names a proxy these agents can actually SPEAK to.
- *
- * `getProxyForUrl` honours `ALL_PROXY`, and `ALL_PROXY=socks5://...` is an
- * ordinary spelling — but `http-proxy-agent` / `https-proxy-agent` speak HTTP
- * `CONNECT`, not SOCKS. Measured: `new HttpsProxyAgent('socks5://127.0.0.1:1080')`
- * constructs happily and then talks HTTP at a SOCKS port, so every request
- * through it fails.
- *
- * Falling back to a DIRECT request is the right answer rather than a
- * best-effort attempt, for a reason specific to this seam: before issue #647
- * these reads went direct through undici and WORKED for a SOCKS user, and an
- * unreachable JWKS does not deny requests — it caches `passThrough` and
- * accepts every token for the failure TTL. Trying and failing would turn a
- * working setup into a silent auth downgrade, which is the outcome the
- * loopback rule below exists to prevent.
- *
- * The SDK-client half of this — `EnvRoutingProxyAgent`, which PR 646 built
- * with the same blind spot, and whose failures are at least loud — is tracked
- * in https://github.com/go-to-k/cdk-local/issues/663.
- */
-function isSpeakableProxy(proxyUrl: string): boolean {
-  return /^https?:\/\//i.test(proxyUrl);
-}
-
 export function isLoopbackHost(hostname: string): boolean {
   // `URL.hostname` lowercases the host and strips the port, but it KEEPS an
   // IPv6 literal's brackets and canonicalises the address inside them.
@@ -585,9 +678,10 @@ export async function proxyAwareFetch(
     // either direction. When this target is not proxied there is nothing for
     // the hand-rolled path to add, so hand it back to the platform `fetch`,
     // which keeps its own timers and follows the rest of the chain itself.
-    // Same `getProxyForUrl` call `EnvRoutingProxyAgent.connect` makes, so
-    // the two cannot disagree about what NO_PROXY means.
-    if (isLoopbackHost(target.hostname) || !isSpeakableProxy(getProxyForUrl(target.href))) {
+    // The same `resolveProxyForTarget` call `EnvRoutingProxyAgent.connect`
+    // makes, so the two cannot disagree about what NO_PROXY means, nor about
+    // a proxy scheme neither can speak.
+    if (isLoopbackHost(target.hostname) || resolveProxyForTarget(target.href) === '') {
       // proxy-audit: ignore: the NOT-proxied branch of this seam; routing it
       // through the agent would be a no-op with worse timeout behavior.
       return globalThis.fetch(target.href);
