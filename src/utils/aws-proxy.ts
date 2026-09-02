@@ -209,7 +209,13 @@ export function buildProxyClientConfig(
         ...(profile ? { profile } : {}),
         clientConfig: { requestHandler: buildProxyRequestHandler() },
       });
-    })();
+    })().catch((err: unknown) => {
+      // Do NOT memoize a rejection: a transient dynamic-import failure would
+      // otherwise be replayed for the life of the process, so every later
+      // resolution keeps failing with an error that has stopped being true.
+      chain = undefined;
+      throw err;
+    });
     return (await chain)(identityProperties);
   };
   return {
@@ -283,6 +289,31 @@ interface RawHttpResponse {
  * plausibly does reach those, so exempting them would be a guess rather
  * than an impossibility. `NO_PROXY` remains the control for that case.
  */
+/**
+ * Whether `proxyUrl` names a proxy these agents can actually SPEAK to.
+ *
+ * `getProxyForUrl` honours `ALL_PROXY`, and `ALL_PROXY=socks5://...` is an
+ * ordinary spelling — but `http-proxy-agent` / `https-proxy-agent` speak HTTP
+ * `CONNECT`, not SOCKS. Measured: `new HttpsProxyAgent('socks5://127.0.0.1:1080')`
+ * constructs happily and then talks HTTP at a SOCKS port, so every request
+ * through it fails.
+ *
+ * Falling back to a DIRECT request is the right answer rather than a
+ * best-effort attempt, for a reason specific to this seam: before issue #647
+ * these reads went direct through undici and WORKED for a SOCKS user, and an
+ * unreachable JWKS does not deny requests — it caches `passThrough` and
+ * accepts every token for the failure TTL. Trying and failing would turn a
+ * working setup into a silent auth downgrade, which is the outcome the
+ * loopback rule below exists to prevent.
+ *
+ * The SDK-client half of this — `EnvRoutingProxyAgent`, which PR 646 built
+ * with the same blind spot, and whose failures are at least loud — is tracked
+ * in https://github.com/go-to-k/cdk-local/issues/663.
+ */
+function isSpeakableProxy(proxyUrl: string): boolean {
+  return /^https?:\/\//i.test(proxyUrl);
+}
+
 export function isLoopbackHost(hostname: string): boolean {
   // `URL.hostname` lowercases the host and strips the port, but it KEEPS an
   // IPv6 literal's brackets and canonicalises the address inside them.
@@ -413,8 +444,9 @@ function getThroughAgent(
       }
     );
     req.on('error', fail);
-    // WALL CLOCK, and the rejection raised DIRECTLY — not `req.setTimeout`,
-    // and not left for `req.destroy(err)` to surface. Two measured reasons:
+    // The stall bound armed above, with the rejection raised DIRECTLY — not
+    // `req.setTimeout`, and not left for `req.destroy(err)` to surface. Two
+    // measured reasons:
     //
     //   - `req.setTimeout` arms only once a socket is ASSIGNED to the
     //     request, and `https-proxy-agent` assigns one only after the CONNECT
@@ -431,6 +463,9 @@ function getThroughAgent(
     // correct while leaving the real case unbounded.
     // No URL in the message — see `parseHttpUrl`.
     rearm = () => {
+      // A `data` event can be queued behind the settle that the timeout
+      // itself triggered; re-arming then leaves a timer nothing clears.
+      if (settled) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         req.destroy();
@@ -552,7 +587,7 @@ export async function proxyAwareFetch(
     // which keeps its own timers and follows the rest of the chain itself.
     // Same `getProxyForUrl` call `EnvRoutingProxyAgent.connect` makes, so
     // the two cannot disagree about what NO_PROXY means.
-    if (isLoopbackHost(target.hostname) || !getProxyForUrl(target.href)) {
+    if (isLoopbackHost(target.hostname) || !isSpeakableProxy(getProxyForUrl(target.href))) {
       // proxy-audit: ignore: the NOT-proxied branch of this seam; routing it
       // through the agent would be a no-op with worse timeout behavior.
       return globalThis.fetch(target.href);

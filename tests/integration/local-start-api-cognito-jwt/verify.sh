@@ -67,6 +67,15 @@ SIDECAR_ISSUER="http://127.0.0.1:${SIDECAR_PORT}"
 # Must match REMOTE_ISSUER in lib/local-start-api-cognito-jwt-stack.ts.
 REMOTE_ISSUER_HOST="idp.cdkl-integ.test"
 REMOTE_ISSUER="http://${REMOTE_ISSUER_HOST}"
+
+# The ambient proxy environment is CLEARED for every child this script runs --
+# the CLI boots AND the curls. The JWKS read is proxy-aware as of issue #647,
+# so a developer's own HTTP_PROXY (or a NO_PROXY that exempts the sidecar)
+# would change what phases 1-2 measure; and a curl inheriting an ambient proxy
+# would route this fixture's own loopback requests through it, on exactly the
+# machine this feature targets. Phase 3 sets one variable from this baseline.
+NO_PROXY_ENV=(env -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy \
+  -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy)
 SIDECAR_AUDIENCE="cdkl-integ-g3-aud"
 CONTAINER_HOST="127.0.0.1"
 BASE_URL="http://${CONTAINER_HOST}:${PORT}"
@@ -142,7 +151,7 @@ echo "==> Starting JWKS sidecar on ${SIDECAR_ISSUER}"
 node jwks-sidecar.mjs "${SIDECAR_PORT}" >"${SIDECAR_LOG}" 2>&1 &
 SIDECAR_PID=$!
 for _ in $(seq 1 30); do
-  if curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1; then
+  if "${NO_PROXY_ENV[@]}" curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "${SIDECAR_PID}" 2>/dev/null; then
@@ -152,19 +161,12 @@ for _ in $(seq 1 30); do
   fi
   sleep 0.5
 done
-if ! curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1; then
+if ! "${NO_PROXY_ENV[@]}" curl -fsS --max-time 2 "${SIDECAR_ISSUER}/.well-known/jwks.json" >/dev/null 2>&1; then
   echo "FAIL: JWKS sidecar never became reachable at ${SIDECAR_ISSUER}"
   cat "${SIDECAR_LOG}"
   exit 1
 fi
 echo "    [sidecar JWKS reachable] OK"
-
-# The ambient proxy environment is CLEARED for this boot. The JWKS read is
-# proxy-aware as of issue #647, so a developer's own HTTP_PROXY (or a
-# NO_PROXY that exempts the sidecar) would change what phases 1-2 measure.
-# Phase 3 sets exactly one variable, from the same cleared baseline.
-NO_PROXY_ENV=(env -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy \
-  -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy)
 
 echo "==> Booting cdkl start-api on ${BASE_URL}"
 "${NO_PROXY_ENV[@]}" ${CDKL} start-api \
@@ -204,7 +206,7 @@ READY=0
 LAST_STATUS=""
 LAST_BODY=""
 for _ in $(seq 1 30); do
-  STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
+  STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o "${RESP_FILE}" -w '%{http_code}' \
     -H "Authorization: Bearer ${VALID_JWT}" \
     "${BASE_URL}/protected")
   LAST_STATUS="${STATUS}"
@@ -243,7 +245,7 @@ echo "==> Phase 2: expired JWT -> 401"
 EXPIRED_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
 
 RESP_FILE="$(mktemp)"
-STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
+STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o "${RESP_FILE}" -w '%{http_code}' \
   -H "Authorization: Bearer ${EXPIRED_JWT}" \
   "${BASE_URL}/protected")
 BODY=$(cat "${RESP_FILE}")
@@ -334,7 +336,7 @@ READY=0
 LAST_STATUS=""
 LAST_BODY=""
 for _ in $(seq 1 30); do
-  STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
+  STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o "${RESP_FILE}" -w '%{http_code}' \
     -H "Authorization: Bearer ${PROXIED_VALID_JWT}" \
     "${PROXIED_BASE_URL}/protected-remote")
   LAST_STATUS="${STATUS}"
@@ -375,7 +377,7 @@ echo "    [remote-issuer JWKS read recorded by the forward proxy] OK"
 # ...and verification is REAL through the proxy, not the unreachable-JWKS
 # pass-through mode (which accepts every token, expired ones included).
 PROXIED_EXPIRED_JWT=$(node sign-jwt.mjs --iss "${REMOTE_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
-STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${PROXIED_EXPIRED_JWT}" \
   "${PROXIED_BASE_URL}/protected-remote")
 if [[ "${STATUS}" != "401" ]]; then
@@ -392,7 +394,7 @@ echo ""
 echo "==> Phase 3b: the loopback issuer stays OFF the proxy in the same process"
 LOOPBACK_VALID_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset 300)
 RESP_FILE="$(mktemp)"
-STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
+STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o "${RESP_FILE}" -w '%{http_code}' \
   -H "Authorization: Bearer ${LOOPBACK_VALID_JWT}" \
   "${PROXIED_BASE_URL}/protected")
 BODY=$(cat "${RESP_FILE}")
@@ -419,7 +421,7 @@ echo "    [loopback JWKS read never reached the proxy, route still 200] OK"
 # And it is still REALLY verifying on that route too -- a 200 alone would
 # also be what pass-through mode produces.
 LOOPBACK_EXPIRED_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
-STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+STATUS=$("${NO_PROXY_ENV[@]}" curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${LOOPBACK_EXPIRED_JWT}" \
   "${PROXIED_BASE_URL}/protected")
 if [[ "${STATUS}" != "401" ]]; then

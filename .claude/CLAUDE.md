@@ -1231,17 +1231,27 @@ compute-locally category for Lambda + API Gateway).
   query string). GET-only by construction. A FRESH agent per redirect hop,
   because `http-proxy-agent` rewrites the request line to absolute form
   inside `connect()`, which a keep-alive agent skips when it reuses a pooled
-  socket. The request bound is a WALL-CLOCK timer that rejects DIRECTLY, not
-  `req.setTimeout` and not `req.destroy(err)`: the socket timer arms only
-  once a socket is assigned, and `https-proxy-agent` assigns one only after
-  the CONNECT tunnel is up, so a proxy accepting TCP and never answering
-  CONNECT — the production shape for an https JWKS or presigned URL — went
-  unbounded, while `destroy(err)` with no socket assigned emits no `error` at
-  all. The plain-http path is the one where the socket timer DOES work, which
-  is how it looked correct while leaving the real case open. `isLoopbackHost`
-  normalises before comparing for the same class of reason: `URL.hostname`
-  KEEPS an IPv6 literal's brackets (`http://[::1]/` -> `"[::1]"`), so bare
-  `'::1'` comparisons were dead code and an IPv6-loopback issuer was proxied.
+  socket. The request bound is a STALL timer — re-armed on the response
+  headers and on every body chunk, i.e. inactivity like undici's, not a
+  wall-clock total that would abort a slow-but-progressing 250 MB layer ZIP —
+  and it rejects DIRECTLY, not via `req.setTimeout` and not via
+  `req.destroy(err)`: the socket timer arms only once a socket is assigned,
+  and `https-proxy-agent` assigns one only after the CONNECT tunnel is up, so
+  a proxy accepting TCP and never answering CONNECT — the production shape for
+  an https JWKS or presigned URL — went unbounded, while `destroy(err)` with
+  no socket assigned emits no `error` at all. The plain-http path is the one
+  where the socket timer DOES work, which is how it looked correct while
+  leaving the real case open. The JWKS / discovery reads pass a SHORTER bound
+  than the 300 s default, because `agentcore-serve-auth` verifies per request
+  with no discovery cache. `isLoopbackHost` normalises before comparing for
+  the same class of reason: `URL.hostname` KEEPS an IPv6 literal's brackets
+  (`http://[::1]/` -> `"[::1]"`), so bare `'::1'` comparisons were dead code
+  and an IPv6-loopback issuer was proxied; it also treats the WILDCARD address
+  (`0.0.0.0` / `::`) as this machine, matching `studio-proxy`'s
+  `isWildcardHostname`, and a proxy URL whose scheme is not `http(s):` (a
+  SOCKS `ALL_PROXY`) falls back to a direct request rather than being spoken
+  HTTP at. `tests/unit/utils/loopback-predicate-agreement.test.ts` fences this
+  predicate against `studio-proxy`'s, which cannot share a module with it.
   A target the proxy environment does NOT cover — a `NO_PROXY` match,
   or any LOOPBACK host — is handed back to `globalThis.fetch` rather than run
   through the hand-rolled path, so every direct request keeps undici's

@@ -101,7 +101,10 @@ describe('proxy-aware fetch call-site bindings (issue #647)', () => {
 
     const entry = await createJwksCache().fetchAndCache(JWKS_URL);
 
-    expect(proxyAwareFetchMock).toHaveBeenCalledWith(JWKS_URL);
+    // The JWKS / discovery reads carry an explicit SHORT stall bound: one of
+    // them sits on a per-request auth path, where the 300 s default would
+    // hold a socket per inbound request behind a black-holed proxy.
+    expect(proxyAwareFetchMock).toHaveBeenCalledWith(JWKS_URL, { timeoutMs: 10_000 });
     // Not pass-through: the read reached the mock rather than failing into
     // the unreachable-JWKS fallback, which accepts every token.
     expect(entry.passThrough).toBe(false);
@@ -150,6 +153,49 @@ describe('proxy-aware fetch call-site bindings (issue #647)', () => {
     expect(line).toContain('forged');
   });
 
+  // The THIRD relay. Round 4 measured that deleting all three
+  // `sanitizeServiceExceptionMessage` calls reddened only two cases — this
+  // site was pinned by nothing, and `cognito-jwt.test.ts`'s discovery-warn
+  // case throws a single short line, so flattening is invisible there.
+  it('flattens a multi-line transport error out of the OIDC-discovery warn', async () => {
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    try {
+      proxyAwareFetchMock.mockRejectedValue(
+        new Error('tunneling socket could not be established\nWARN: forged\r\nline')
+      );
+      await verifyJwtViaDiscovery(
+        { kind: 'discovery', discoveryUrl: DISCOVERY_URL, allowedAudience: ['aud'] },
+        'Bearer not.a.jwt',
+        createJwksCache({ fetchImpl: async () => new Response('{"keys":[]}', { status: 200 }) })
+      );
+    } finally {
+      setLogger(previous);
+    }
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('OIDC discovery unreachable'));
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain('forged');
+  });
+
+  // The cap is the other half of "ONE BOUNDED line" — flattening alone still
+  // lets an unbounded relay onto a default-level line studio serves over HTTP.
+  it('caps an enormous transport error rather than relaying it whole', async () => {
+    proxyAwareFetchMock.mockRejectedValue(new Error('z'.repeat(5000)));
+
+    const err = await materializeLayerFromArn(layer, {
+      lambdaClientFactory: () => ({
+        send: async () => ({ Content: { Location: PRESIGNED_URL } }),
+      }),
+    }).catch((e: unknown) => e as Error);
+
+    expect(err.message.length).toBeLessThan(1000);
+    expect(err.message).toContain('truncated');
+  });
+
   it('OIDC discovery reads through proxyAwareFetch when no fetchImpl seam is supplied', async () => {
     proxyAwareFetchMock.mockResolvedValue(
       new Response(
@@ -171,6 +217,6 @@ describe('proxy-aware fetch call-site bindings (issue #647)', () => {
     );
 
     expect(proxyAwareFetchMock).toHaveBeenCalledTimes(1);
-    expect(proxyAwareFetchMock).toHaveBeenCalledWith(DISCOVERY_URL);
+    expect(proxyAwareFetchMock).toHaveBeenCalledWith(DISCOVERY_URL, { timeoutMs: 10_000 });
   });
 });

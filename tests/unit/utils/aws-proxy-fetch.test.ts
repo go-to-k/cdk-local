@@ -516,9 +516,11 @@ describe('proxyAwareFetch (issue #647)', () => {
 
   it('does NOT abort a slow-but-progressing transfer — the bound is inactivity, not total time', async () => {
     // A wall-clock TOTAL would kill a 250 MB layer ZIP crossing a corporate
-    // proxy that `fetch` would have completed. Six chunks at 120 ms each is
-    // 720 ms of transfer under a 300 ms bound: it survives only if the timer
-    // re-arms on every chunk.
+    // proxy that `fetch` would have completed. Six chunks at 60 ms each is
+    // 360 ms of transfer under a 400 ms bound: it survives only if the timer
+    // re-arms on every chunk. The per-chunk gap is deliberately well under the
+    // bound — an event-loop stall makes the interval and the timer due in the
+    // same timers phase, and a thin margin lets the timeout win.
     const server: TcpServer = createTcpServer((sock) => {
       sock.once('data', () => {
         sock.write('HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n');
@@ -529,7 +531,7 @@ describe('proxyAwareFetch (issue #647)', () => {
             clearInterval(tick);
             sock.end();
           }
-        }, 120);
+        }, 60);
       });
       sock.on('error', () => undefined);
     });
@@ -538,8 +540,67 @@ describe('proxyAwareFetch (issue #647)', () => {
     closers.push(() => new Promise<void>((r) => server.close(() => r())));
     process.env['HTTP_PROXY'] = `http://127.0.0.1:${port}`;
 
-    const response = await proxyAwareFetch('http://origin.invalid/layer.zip', { timeoutMs: 300 });
+    const response = await proxyAwareFetch('http://origin.invalid/layer.zip', { timeoutMs: 400 });
     expect(await response.text()).toBe('xxxxxx');
+  });
+
+  it('rejects when the proxy itself is DOWN — the commonest misconfiguration', async () => {
+    // Nothing listens on port 1, so the agent's connect fails and the request
+    // emits `error`. That path (`req.on('error', fail)`) was reachable by no
+    // other case, and it is the one that feeds the flattening assertions in
+    // `proxy-aware-fetch-bindings.test.ts`.
+    process.env['HTTP_PROXY'] = 'http://127.0.0.1:1';
+    await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it('falls back to a DIRECT request when the proxy is SOCKS — these agents speak only HTTP CONNECT', async () => {
+    // `getProxyForUrl` honours `ALL_PROXY=socks5://...`, but `https-proxy-agent`
+    // would construct happily and then talk HTTP at a SOCKS port. Before this
+    // seam existed the read went direct and WORKED, and an unreachable JWKS
+    // accepts every token — so falling back beats failing.
+    // A NON-loopback target, or `isLoopbackHost` decides first and the SOCKS
+    // arm is never reached. Both paths then FAIL, so the discriminator is
+    // WHOSE failure: undici's `TypeError: fetch failed` (fell back to direct,
+    // DNS fails) vs `node:http` connecting to the SOCKS port and getting
+    // `ECONNREFUSED` from an HTTP agent that should never have been built.
+    process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+
+    const err = await proxyAwareFetch('http://origin.invalid/x').catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe('fetch failed');
+  });
+
+  it('sends its own accept / accept-encoding on the PROXIED side too', async () => {
+    // These headers are this file's transport discriminator, and only the
+    // direct side asserted them — deleting the headers object left every
+    // case green.
+    const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
+    process.env['HTTP_PROXY'] = proxy.url;
+
+    await proxyAwareFetch(`${REMOTE}/x`);
+    expect(proxy.acceptEncodings).toEqual(['identity']);
+  });
+
+  it('decodes an x-gzip body', async () => {
+    const proxy = track(
+      await startHttpProxy(() => ({
+        headers: { 'content-encoding': 'x-gzip' },
+        body: gzipSync(Buffer.from('legacy-alias', 'utf-8')),
+      }))
+    );
+    process.env['HTTP_PROXY'] = proxy.url;
+    expect(await (await proxyAwareFetch('http://origin.invalid/x')).text()).toBe('legacy-alias');
+  });
+
+  it.each([205, 304])('treats %i as a null-body status', async (status) => {
+    // `Response` throws when a null-body status is given a body, so getting
+    // this wrong turns an ordinary response into an exception.
+    const proxy = track(await startRawProxy(`HTTP/1.1 ${status} X\r\nContent-Length: 0\r\n\r\n`));
+    process.env['HTTP_PROXY'] = proxy.url;
+
+    const response = await proxyAwareFetch('http://origin.invalid/x');
+    expect(response.status).toBe(status);
+    expect(response.body).toBeNull();
   });
 
   it('refuses a non-http(s) URL naming the PROTOCOL and not the URL', async () => {

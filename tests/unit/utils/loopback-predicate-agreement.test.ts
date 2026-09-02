@@ -23,8 +23,9 @@ import { isLoopbackHostname, isWildcardHostname } from '../../../src/local/studi
  * not deny requests, it degrades the verifier to accept EVERY token.
  *
  * So the duplication is fenced rather than trusted. Consolidating the two
- * into one `src/utils/**` predicate is tracked separately; until then this
- * test is what stops them drifting again.
+ * into one `src/utils/**` predicate is tracked in
+ * https://github.com/go-to-k/cdk-local/issues/666; until then this test is
+ * what stops them drifting again.
  */
 
 /** Every spelling `URL.hostname` can produce for this machine, and near-misses. */

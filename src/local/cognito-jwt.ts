@@ -125,6 +125,25 @@ const DEFAULT_JWKS_TTL_MS = 60 * 60 * 1000;
  */
 const FAILURE_JWKS_TTL_MS = 60 * 1000;
 
+/**
+ * Stall bound for the JWKS / discovery reads specifically, well under
+ * `proxyAwareFetch`'s 300 s default.
+ *
+ * Those reads are small documents, and — unlike the layer ZIP, which is up to
+ * 250 MB and wants the long default — one of them sits on a PER-REQUEST path:
+ * `agentcore-serve-auth`'s `buildAgentCoreServeAuthCheck` calls
+ * `verifyJwtViaDiscovery` for every inbound request, and that function holds
+ * no discovery cache. Behind a black-holed proxy each in-flight request would
+ * otherwise hold a socket for 300 s where the pre-#647 direct read gave up in
+ * about undici's 10 s connect timeout.
+ *
+ * Failing FAST is also the right bias here in a way it is not for a download:
+ * an unreachable JWKS lands in the documented pass-through fallback
+ * (`docs/cli-reference.md`), so a long hold buys nothing and costs a stuck
+ * request.
+ */
+const JWKS_FETCH_TIMEOUT_MS = 10_000;
+
 export function createJwksCache(
   opts: {
     fetchImpl?: (
@@ -140,7 +159,8 @@ export function createJwksCache(
   // host (`cognito-idp.<region>.amazonaws.com` for a user-pool authorizer),
   // and the global `fetch` reads no proxy variable — so behind proxy-only
   // egress this read went direct while every SDK call tunneled (issue #647).
-  const fetchImpl = opts.fetchImpl ?? proxyAwareFetch;
+  const fetchImpl =
+    opts.fetchImpl ?? ((url: string) => proxyAwareFetch(url, { timeoutMs: JWKS_FETCH_TIMEOUT_MS }));
   const now = opts.now ?? ((): number => Date.now());
   const ttlMs = opts.ttlMs ?? DEFAULT_JWKS_TTL_MS;
   const failureTtlMs = opts.failureTtlMs ?? FAILURE_JWKS_TTL_MS;
@@ -458,7 +478,8 @@ export async function verifyJwtViaDiscovery(
   // Proxy-aware for the same reason as the JWKS read above (issue #647):
   // the discovery document is fetched from the IdP over the network, which
   // behind proxy-only egress is reachable only through the proxy.
-  const fetchImpl = opts.fetchImpl ?? proxyAwareFetch;
+  const fetchImpl =
+    opts.fetchImpl ?? ((url: string) => proxyAwareFetch(url, { timeoutMs: JWKS_FETCH_TIMEOUT_MS }));
 
   let issuer: string;
   let jwksUri: string;
