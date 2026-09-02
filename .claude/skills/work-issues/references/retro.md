@@ -127,6 +127,25 @@ Walk the session and collect, each with its concrete instance:
 ("retrospective: no skill change — §2 / §4 / §8 held"). A skill grown from
 "this would be nice" stops being read to the bottom, where §9 and §10 live.
 
+**And evidence you were HANDED is not evidence you VERIFIED.** The observation
+usually survives the hand-off intact; the CAUSAL STORY attached to it does not,
+because a plausible mechanism is cheap to write and costs a command to check. So
+resolve the mechanism against the file before writing it up — the line, not the
+belief about the line. Measured 2026-09-03 in this run's own retro: an
+orchestrator handed a lane "a leaked `.markgate-pr-review-sha` would have merged
+a higher-tier PR on a review of a DIFFERENT, already-merged PR", which is
+fail-OPEN and alarming and wrong. What refuted it was opening
+`pr-review-gate.sh` and reading the condition its pass arm actually tests --
+§8 states that mechanism -- after which the leak plainly BLOCKS. Read the
+CONDITION, not a line number: the number was accurate the day this was written
+and is one edit from naming something else. The observation (markers leak
+between IN-PLACE lanes) was real; the consequence was invented, and it survived
+because everything around it was correct. Two properties make this the expensive
+kind of error: it arrives from the party a lane trusts most, and prose is the
+one artifact in the repo that no gate executes — which is why §10-d sends a
+skill-only PR through reviewers at whatever tier its SIZE gives, with no
+docs down-bias.
+
 ### 10-b. Where the fix belongs — pick ONE
 
 - **A hook** (`.claude/hooks/`) when the failure is mechanically detectable —

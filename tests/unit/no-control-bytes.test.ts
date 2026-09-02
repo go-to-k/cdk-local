@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -118,6 +118,30 @@ const BINARY_EXT =
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
 
+/**
+ * U+FEFF (BOM), as its THREE UTF-8 bytes rather than as the code point.
+ *
+ * It is not in C0, so `FORBIDDEN` never saw it -- and `main` really did carry
+ * one, spelled as a literal character inside a regex in
+ * `tests/unit/gates/markgate-include-globs.test.ts` (go-to-k/cdk-local#675). It
+ * is invisible on screen, so nothing but a byte scan finds it, and the repo's
+ * pre-commit hook `control-char-gate.sh` is C0-only for the same reason this
+ * was.
+ *
+ * Written as bytes because `scan` reads latin1 (see its comment): under that
+ * decode a BOM arrives as `ï` `»` `¿`, so a `\uFEFF` character class here would
+ * match NOTHING and this fence would be silently vacuous. That spelling is
+ * load-bearing and is asserted below ("the BOM spelling matches a latin1 read"),
+ * because no tracked file carries a BOM -- so respelling this constant is
+ * invisible to every other assertion in the file.
+ *
+ * SCOPE: U+FEFF only. U+00A0 (NBSP) is the same class of defect but a different
+ * decision -- it is an ordinary paste accident in markdown prose, and this
+ * suite's docblock argues a whole-tree scan stays proportionate only while its
+ * predicate is RARE. That policy call is go-to-k/cdk-local#677.
+ */
+const BOM_UTF8 = '\u00ef\u00bb\u00bf';
+
 function trackedTextFiles(): string[] {
   const out = execFileSync('git', ['ls-files', '-z'], {
     cwd: REPO_ROOT,
@@ -156,6 +180,16 @@ function scan(file: string): Offender[] {
           byte: `0x${ch.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`,
         });
       }
+    }
+    // Separate pass: a BOM is a three-byte SEQUENCE under the latin1 read, so
+    // the per-character loop above cannot express it.
+    for (let at = line.indexOf(BOM_UTF8); at !== -1; at = line.indexOf(BOM_UTF8, at + 1)) {
+      found.push({
+        file,
+        line: i + 1,
+        column: at + 1,
+        byte: '0xEF 0xBB 0xBF (U+FEFF, a BOM -- spell it \\uFEFF)',
+      });
     }
   }
   return found;
@@ -295,6 +329,55 @@ describe('committed text carries no C0 control bytes', () => {
     for (const prefix of ['src/', 'tests/', '.claude/']) {
       expect(files.some((f) => f.startsWith(prefix))).toBe(true);
     }
+  });
+
+  it('scan() actually REPORTS a BOM, not just holds the right constant', () => {
+    // The case below fences the CONSTANT; this one fences the WIRING, and they
+    // are separate failures. Deleting the BOM loop out of `scan()` entirely and
+    // leaving `void BOM_UTF8;` behind was 0 red of 8 -- the constant stayed
+    // correct, nothing referenced it, and the file still claimed the arm worked.
+    // That is the same vacuity the arm was added to close, one level up.
+    //
+    // Drives the real `scan()` over a real file rather than re-implementing the
+    // search here: a fixture that a helper interprets would pass on a helper
+    // that agrees with it. The file is untracked, and the scanned population
+    // comes from `git ls-files`, so it is invisible to every other assertion.
+    const rel = '.tmp-bom-wiring-probe.txt';
+    const abs = path.join(REPO_ROOT, rel);
+    try {
+      writeFileSync(abs, Buffer.from('alpha\uFEFFbeta\n', 'utf8'));
+      const hits = scan(rel);
+      expect(
+        hits.map((h) => `${h.line}:${h.column} ${h.byte}`),
+        'scan() did not report a BOM in a file that plainly contains one -- the ' +
+          'BOM pass in scan() is missing or unreachable'
+      ).toEqual(['1:6 0xEF 0xBB 0xBF (U+FEFF, a BOM -- spell it \\uFEFF)']);
+    } finally {
+      rmSync(abs, { force: true });
+    }
+  });
+
+  it('the BOM spelling matches a latin1 read, so the arm is not vacuous', () => {
+    // `scan` reads latin1, so BOM_UTF8 must be the three UTF-8 BYTES and not
+    // the code point. Nothing else can see a mistake here: the repo carries no
+    // BOM, so respelling the constant `'\uFEFF'` leaves every other assertion
+    // in this file green and the arm silently matches nothing. Asserted against
+    // the real encoder rather than against a hand-written literal, so it stays
+    // true by construction.
+    const asRead = Buffer.from('a\uFEFFb', 'utf8').toString('latin1');
+    expect(
+      asRead.includes(BOM_UTF8),
+      `BOM_UTF8 does not appear in a latin1 read of a UTF-8 BOM, so the scan arm ` +
+        `matches nothing. It must be the BYTES (0xEF 0xBB 0xBF), not '\\uFEFF'.`
+    ).toBe(true);
+    // ...and the two spellings are genuinely not interchangeable: a latin1 read
+    // contains the bytes and NOT the code point. This line names no constant, so
+    // no mutation of BOM_UTF8 can red it -- it pins the ENCODING FACT the line
+    // above rests on, which is a different job from discriminating on the
+    // constant. (Over-match is the residue neither line catches: a truncated
+    // `'\u00ef'` or `'\u00ef\u00bb'` still passes both. Low stakes -- it widens
+    // what the scan reports, it does not blind it.)
+    expect(asRead.includes('\uFEFF')).toBe(false);
   });
 
   it('finds no control byte in any tracked text file', () => {

@@ -1739,7 +1739,7 @@ so the VERDICT stayed right while a traceback went to the hook's stderr
 on every single turn. A case asserts stderr is empty for that payload —
 no case that reads stdout can see it.
 
-Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 102 cases)
+Its suite (`.claude/hooks/stop-unmerged-lane-warn.test.sh`, 107 cases)
 carries five fixture traps worth knowing before editing it, because each
 cost a case a wrong-reason pass:
 

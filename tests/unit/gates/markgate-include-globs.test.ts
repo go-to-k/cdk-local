@@ -147,7 +147,7 @@ function parseConfig(yaml: string): ParsedConfig {
   let key: string | null = null;
   const lines = yaml.split(/\r?\n/);
   for (let i = 0; i < lines.length; i += 1) {
-    const line = (lines[i] ?? '').replace(/﻿/g, '').replace(/\t/g, '  ');
+    const line = (lines[i] ?? '').replace(/\uFEFF/g, '').replace(/\t/g, '  ');
     const at = `.markgate.yml:${i + 1}`;
     if (/^gates:\s*$/.test(line)) {
       inGates = true;

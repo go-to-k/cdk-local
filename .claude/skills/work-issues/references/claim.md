@@ -24,7 +24,10 @@ of git with `git -C "<LANE_TREE>" branch --show-current`, and it does not exist
 yet: §5 creates it, after this stage. Write "the branch §5 will create in
 `<LANE_TREE>`" and post the claim on time. A claim delayed until the branch
 exists is a claim posted after the first edit, which is the one thing this stage
-forbids. Such a run claims ONE issue (§3), not a set.
+forbids. Such a run may still claim SEVERAL issues (§3) — it runs its lanes
+serially, not one issue per run — but every lane after the first is claimed
+`QUEUED`, and a QUEUED lane the run will not reach is stood down rather than
+left standing (below).
 
 For EACH issue you will start:
 
@@ -58,3 +61,16 @@ open that lane. An issue you are handing off to a later session gets NO claim at
 filing time — that would park a released issue under a session that has decided
 not to do it — but the LATER run that takes it claims it normally, per the
 mandatory rule above.
+
+**Stand a QUEUED lane down the moment the verdict is known, not at the wrap.** A
+claim is a lock, and one held by a session that has already decided it will not
+reach the issue is worse than none: peers skip that issue for as long as it
+stands, and the wrap can be hours away. So the stand-down comment goes out when
+the DECISION lands (a deadline, a cost directive, a re-scope), not when the
+report is written. Carry the four classification fields, and say what did NOT
+happen so the next agent can trust it — no branch created, no file touched, and,
+since the claim named a branch §5 would create, that the named branch does not
+exist. Measured on the overnight run of 2026-09-02 (go-to-k/cdk-local#650):
+go-to-k/cdk-local#589 and go-to-k/cdk-local#583 were claimed at run start for a
+session that never reached them, and standing them down mid-run unblocked peers
+hours before the wrap.

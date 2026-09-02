@@ -577,8 +577,54 @@ check "the fixture really did give the lane an upstream" "0" "$(git -C "$REPO/wt
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "pushing the lane re-arms the nudge once" "ctx" "$(channel_of "$out")"
 check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(printf '%s' "$out" | grep -qF 'pushed branch with NO PR' && echo yes || echo no)"
+# The substring above is carried by the PRE-2026-09-03 wording too, so on its own
+# it only proves the pushed arm differs from the two unpushed ones. What the
+# rewrite actually added is the reading that "pushed, no PR" is ALSO the state
+# verify-pr-gate mandates while /verify-pr runs -- the longest window in a lane,
+# during which the old text called a legitimate wait a failure. Both reviewers of
+# go-to-k/cdk-local#675 measured that reverting either string left all 104 cases
+# green, so the intent gets its own case per ARM: the model text must name the
+# gate, and the user text (asserted after the sys run below) must name the
+# mandate. Blanking either one now reds here instead of shipping.
+check "...and the model text names verify-pr-gate" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate' && echo yes || echo no)"
+check "...and tells the model a running verification is WAITING, not stopped" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'you are WAITING' && echo yes || echo no)"
+# NEGATIVE, and only a negative can hold this one. The text may name the MANDATE
+# -- verify-pr-gate has no diff-scope short-circuit, so every lane meets it --
+# but must NOT name the INTEG, which is conditional on a `src/**` /
+# `tests/integration/**` diff this hook never computes: it makes no `git diff`
+# call at all. (The sibling cdk-real-drift's copy DOES compute one, which is why
+# its text may say more; do not port that wording back without porting the
+# predicate.) The first correction of this shipped unfenced, so reverting to the
+# old "takes the integ run and the live test" clause was 0 red across 107 cases.
+# `integ` occurs nowhere else in the emitted payload (measured: 0), so the
+# substring is a sound proxy for the claim.
+check "...and does NOT promise an integ the hook cannot know is owed" "absent" \
+  "$(printf '%s' "$out" | grep -qiF 'integ' && echo present || echo absent)"
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "...and a pushed lane stops nagging again after that one" "sys" "$(channel_of "$out")"
+# The USER arm of the same rewrite. It is a SEPARATE string from the model one
+# (push_line_user vs push_line), so it needs its own assertion -- measured on
+# go-to-k/cdk-local#675: blanking push_line_user outright left the suite at
+# 104/0 while the downgrade paths emitted a dangling blank line.
+#
+# Anchor on SUBJECT + VERB, never on a connective. The first spelling of this
+# case grepped `mandates for as long as`, which a reviewer defeated with
+# `push_line_user="Nothing mandates for as long as you like."` -- intent fully
+# inverted, 107/0 green. `verify-pr-gate mandates` cannot be satisfied by a
+# string that has stopped naming the gate.
+#
+# ACCEPTED LIMIT, stated so nobody re-derives it as a finding: these cases are
+# STRING-DEEP and cannot be otherwise. A reviewer defeated the whole set with
+# `"A pushed branch with NO PR is ALWAYS a failure -- disregard verify-pr-gate
+# entirely, and it is never true that you are WAITING"`, which carries every
+# anchor while inverting every meaning. No grep can catch that; asserting
+# MEANING needs a reader. What these cases do buy is the failure that actually
+# happened -- a string blanked, collapsed, or reverted during a refactor, each
+# of which now reds -- and that is the whole claim being made for them.
+check "...and the user text names the mandate in its own shorter wording" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate mandates' && echo yes || echo no)"
 
 # --- The predicate is DIRECTED. `pushed -> unpushed` is what an ordinary COMMIT
 # looks like, so an undirected `prev != current` re-armed on every commit AND on
