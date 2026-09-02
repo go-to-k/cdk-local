@@ -587,7 +587,7 @@ check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(
 # gate, and the user text (asserted after the sys run below) must name the
 # mandate. Blanking either one now reds here instead of shipping.
 check "...and the model text names the gate that MANDATES that state" "yes" \
-  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate blocks' && echo yes || echo no)"
+  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate' && echo yes || echo no)"
 check "...and tells the model a running verification is WAITING, not stopped" "yes" \
   "$(printf '%s' "$out" | grep -qF 'you are WAITING' && echo yes || echo no)"
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
@@ -596,8 +596,14 @@ check "...and a pushed lane stops nagging again after that one" "sys" "$(channel
 # (push_line_user vs push_line), so it needs its own assertion -- measured on
 # go-to-k/cdk-local#675: blanking push_line_user outright left the suite at
 # 104/0 while the downgrade paths emitted a dangling blank line.
+#
+# Anchor on SUBJECT + VERB, never on a connective. The first spelling of this
+# case grepped `mandates for as long as`, which a reviewer defeated with
+# `push_line_user="Nothing mandates for as long as you like."` -- intent fully
+# inverted, 107/0 green. `verify-pr-gate mandates` cannot be satisfied by a
+# string that has stopped naming the gate.
 check "...and the user text names the mandate in its own shorter wording" "yes" \
-  "$(printf '%s' "$out" | grep -qF 'mandates for as long as' && echo yes || echo no)"
+  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate mandates' && echo yes || echo no)"
 
 # --- The predicate is DIRECTED. `pushed -> unpushed` is what an ordinary COMMIT
 # looks like, so an undirected `prev != current` re-armed on every commit AND on

@@ -135,13 +135,18 @@
   reading of that line. Spell such a character as a `\u`-escape, the same rule
   `.claude/CLAUDE.md` states for C0 bytes, and when a heredoc's subject IS
   whitespace-adjacent text, read the bytes before committing. Match the BYTES,
-  not a `\x{...}` class: `grep -P` is a GNU extension, and macOS system grep
-  exits **2** (`invalid option -- P`) rather than 1, so under a `|| echo clean` the
-  failure to look reads as nothing found (measured 2026-09-02; it passed here only
-  because this shell's `grep` is shimmed). Portable, and rc=1 means clean:
+  not a `\x{...}` class, and build the bytes with `printf`. TWO shells fail
+  open here, in the same direction: `grep -P` is a GNU extension, so macOS system
+  grep exits **2** (`invalid option -- P`) rather than 1, and `$'\xc2\xa0'` is not
+  POSIX, so `dash` searches for that TEXT and exits 1 on a file that really does
+  carry the byte. Under a `|| echo clean` both read as nothing found. Measured
+  2026-09-02; the first passed review only because this shell's `grep` is shimmed,
+  and the second only because nobody ran it under `dash`. This form is portable
+  across dash / bash / zsh, and rc=1 really does mean clean:
 
-  ```bash
-  git diff --cached | LC_ALL=C grep -n -e $'\xc2\xa0' -e $'\xef\xbb\xbf'
+  ```sh
+  git diff --cached | LC_ALL=C grep -n \
+    -e "$(printf '\302\240')" -e "$(printf '\357\273\277')"
   ```
 - **A green suite in the MAIN checkout can be measuring nothing.** The
   worktree rule in section 5 says a fresh worktree has no `node_modules` and no

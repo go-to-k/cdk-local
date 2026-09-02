@@ -98,9 +98,9 @@ const MIN_REFERENCE_FILES = 6;
 // is the sum of every stage file EXCEPT the biggest -- which is why a retro lane
 // eats the margin fast: its lessons land in whichever stage file each one fires
 // in, and `implement.md` (the leader) is rarely one of them. The #650 lane grew
-// verify.md +3947, launch-mode.md +2712, gotchas.md +2572, triage.md +1168,
-// retro.md +1108 and claim.md +1096, and NOT ONE of them was the leader -- so
-// `corpus - largest` moved the whole ~12.6 KB and the 116,500 that preceded this
+// verify.md +4464, gotchas.md +2904, launch-mode.md +2666, retro.md +1323,
+// triage.md +1168 and claim.md +1096, and NOT ONE of them was the leader -- so
+// `corpus - largest` moved the whole ~13.6 KB and the 116,500 that preceded this
 // value LAPSED. The assertion at the bottom of this file is what said so, at the
 // commit that caused it, which is the whole point of asserting the invariant
 // rather than describing it.
@@ -112,10 +112,10 @@ const MIN_REFERENCE_FILES = 6;
 // bound moves. MEASURED prints the current margin in its failure message, so the
 // next erosion arrives as a number rather than as a surprise. Still sized
 // against `corpus - largest` rather than against the either-largest case because
-// the top two stage files are ~10.6 KB apart, so a flip is not near -- that gap
+// the top two stage files are ~10.0 KB apart, so a flip is not near -- that gap
 // has narrowed from ~14.5 KB, so re-check it rather than assuming; the sibling
 // cdkd sizes against the flip because ITS top two are ~2 KB apart.
-const MIN_REFERENCE_CORPUS_BYTES = 130_000;
+const MIN_REFERENCE_CORPUS_BYTES = 131_000;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -147,9 +147,9 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 163_913,
+    corpusBytes: 164_931,
     largest: { file: 'implement.md', bytes: 38_217 },
-    runnerUp: { file: 'verify.md', bytes: 27_653 },
+    runnerUp: { file: 'verify.md', bytes: 28_170 },
   },
 };
 

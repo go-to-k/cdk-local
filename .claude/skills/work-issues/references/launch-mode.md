@@ -167,11 +167,10 @@ go-to-k/cdk-local#672's merged HEAD sha.
 
 **Neither inheritance is a way past a gate, and the first draft of this section
 said the `pr-review` one was** — the overclaim §10-a exists to stop, written
-into a lane's brief by the orchestrator and refuted only by reading the hook.
-§8 states the mechanism (the gate compares the recorded sentinel against the
-PR's current HEAD and refuses on a mismatch); applied here it settles the
-question, because a sentinel naming a MERGED PR cannot equal the new PR's
-`headRefOid`. So the leak BLOCKS — `Marker state: bound to <sha> (mismatch)` —
+into a lane's brief by the orchestrator and refuted only by reading the hook's
+pass condition. §8 states that mechanism and this file does not restate it;
+applied here it settles the question, because a sentinel naming a MERGED PR
+cannot equal the new PR's `headRefOid`. So the leak BLOCKS — `Marker state: bound to <sha> (mismatch)` —
 and is fail-CLOSED. What it costs is a confusing refusal naming an unrelated
 PR, and the cycle spent diagnosing it.
 

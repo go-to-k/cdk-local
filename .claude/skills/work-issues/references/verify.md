@@ -48,17 +48,15 @@ the message itself).
   exercises the real Docker path; keep or extend the covering fixture in the
   SAME PR.
 
-  **Granting the integ turn is not the end of the parent's job: POLL THE LOG,
-  because nothing in that stack has a timeout.** `/run-integ` step 5 holds the
-  recipe (background from the first attempt, tee to a log) and the measurement —
-  a `docker pull` frozen for 2 h 58 m across a host sleep. The parent's half is
-  that a completion notification is not a timer, so read the log's tail after a
-  few minutes rather than waiting on the notification. And make the poll measure
-  the thing itself: a watcher of this run polled `stat -f %z` on an agent's
-  `.output` path, which is a SYMLINK, so it read the 153-byte link length,
-  reported three transcripts "size-stable", and was believed — `stat -Lf` showed
-  them still growing. A probe that cannot move looks exactly like a job that has
-  stopped.
+  **Granting the integ turn is not the end of the parent's job: POLL, because
+  nothing in that stack has a timeout.** `/run-integ` step 5 holds the recipe and
+  the measurement behind it; the parent's half is simply that the poll has to
+  measure the RUNNING THING. A watcher of this run polled `stat -f %z` on an
+  agent's `.output` path, which is a SYMLINK, so it read the 153-byte link length
+  — constant forever — reported three transcripts "size-stable", and was
+  believed until `stat -Lf` showed them still growing. A probe that cannot move
+  is indistinguishable from a job that has stopped, and it fails in the
+  reassuring direction.
 
   **Live-test the CONSEQUENCE you WROTE DOWN, not only the code path.** A
   consequence derived by READING costs nothing to state and is durable: it lands
@@ -293,8 +291,16 @@ index and HEAD. Measured 2026-08-29 in the sibling cdkd, where a read-only code
 reviewer copied a lane's worktree, ran `git add -A` there, and staged three
 tracked DELETIONS in the live tree that the lane's next commit would have
 shipped — nothing announced it, because the reviewer believed it was on a copy.
-Two lines therefore belong in every read-only reviewer's brief: **run no
-WRITING git verb** (`add` / `commit` / `restore` / `checkout` / `stash` /
+**A PARALLEL round adds a second way to write to that tree, and it is not a
+git verb at all: the mutation probe §8-z asks for.** Reviewers dispatched
+together share one worktree, so one reviewer editing the subject under test
+corrupts every other reviewer's run — measured on go-to-k/cdk-local#675
+(2026-09-03), where a code reviewer's first two probes were invalidated by a
+peer live-mutating the hook they were both reading. The brief must therefore say
+to probe on a copy OUTSIDE the repository and restore from that copy, and the
+`git status --porcelain` pair below does NOT catch this: a probe that mutates
+and restores inside the window reports clean at both ends. Two lines therefore
+belong in every read-only reviewer's brief: **run no WRITING git verb** (`add` / `commit` / `restore` / `checkout` / `stash` /
 `clean`) anywhere, copy included — and if you must copy, copy OUTSIDE every
 repository, since deleting the `.git` file does not detach the copy, it only
 makes discovery walk UPWARD into whatever encloses it; and **report the TARGET
