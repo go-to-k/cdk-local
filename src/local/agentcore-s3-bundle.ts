@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize, sep } from 'node:path';
 import { unzipSync } from 'fflate';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { CdkLocalError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -138,6 +139,7 @@ function defaultFetchObject(
   return async (location) => {
     const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3');
     const client = new S3Client({
+      ...buildProxyClientConfig({ profile: options.profile }),
       ...(options.region && { region: options.region }),
       ...(options.profile && !options.credentials && { profile: options.profile }),
       ...(options.credentials && {

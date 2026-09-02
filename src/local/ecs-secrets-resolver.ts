@@ -1,5 +1,6 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailureForWarn } from './credential-error.js';
 
@@ -82,12 +83,14 @@ export async function resolveEcsSecrets(
   const secretsClient =
     options.secretsManagerClient ??
     new SecretsManagerClient({
+      ...buildProxyClientConfig({ profile: options.profile }),
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });
   const ssmClient =
     options.ssmClient ??
     new SSMClient({
+      ...buildProxyClientConfig({ profile: options.profile }),
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
     });

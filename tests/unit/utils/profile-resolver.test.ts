@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vite-plus/test';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vite-plus/test';
 
 // Issue #245: the shared profile resolver replaces the per-command copies.
 // These tests pin the cred-AND-region contract the resolver returns + the
@@ -129,5 +129,45 @@ describe('buildStsClientConfig', () => {
 
   it('returns an empty object when both args are absent', () => {
     expect(buildStsClientConfig({})).toEqual({});
+  });
+});
+
+describe('buildStsClientConfig — proxy environment threading (issue #634)', () => {
+  // The proxy-client audit (`tests/unit/utils/aws-proxy-client-audit.test.ts`)
+  // accepts `buildStsClientConfig(` in a construction's argument list AS the
+  // proxy seam, so this contract — the helper spreads
+  // `buildProxyClientConfig` — is what makes that acceptance sound.
+  const PROXY_KEYS = ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY'] as const;
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const key of PROXY_KEYS) {
+      saved.set(key, process.env[key]);
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of PROXY_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('adds requestHandler + credentials when HTTPS_PROXY is set, keeping region/profile', () => {
+    process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+    const config = buildStsClientConfig({ region: 'us-east-1', profile: 'dev' });
+    expect(config.region).toBe('us-east-1');
+    expect(config.profile).toBe('dev');
+    expect(config.requestHandler).toBeDefined();
+    expect(typeof config.credentials).toBe('function');
+  });
+
+  it('stays the plain { region, profile } shape when no proxy variable is set', () => {
+    expect(buildStsClientConfig({ region: 'us-east-1', profile: 'dev' })).toEqual({
+      region: 'us-east-1',
+      profile: 'dev',
+    });
   });
 });

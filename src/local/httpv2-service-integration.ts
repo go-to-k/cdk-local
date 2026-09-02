@@ -51,6 +51,7 @@ import type * as EventBridgeNs from '@aws-sdk/client-eventbridge';
 import type * as KinesisNs from '@aws-sdk/client-kinesis';
 import type * as SfnNs from '@aws-sdk/client-sfn';
 import type * as SqsNs from '@aws-sdk/client-sqs';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { stringifyValue } from '../utils/stringify.js';
 import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -141,32 +142,32 @@ async function getClient(service: string, region: string): Promise<unknown> {
   switch (service) {
     case 'sqs': {
       const mod = await import('@aws-sdk/client-sqs');
-      client = new mod.SQSClient({ region });
+      client = new mod.SQSClient({ ...buildProxyClientConfig(), region });
       break;
     }
     case 'sns': {
       const mod = await import('@aws-sdk/client-sns');
-      client = new mod.SNSClient({ region });
+      client = new mod.SNSClient({ ...buildProxyClientConfig(), region });
       break;
     }
     case 'eventbridge': {
       const mod = await import('@aws-sdk/client-eventbridge');
-      client = new mod.EventBridgeClient({ region });
+      client = new mod.EventBridgeClient({ ...buildProxyClientConfig(), region });
       break;
     }
     case 'kinesis': {
       const mod = await import('@aws-sdk/client-kinesis');
-      client = new mod.KinesisClient({ region });
+      client = new mod.KinesisClient({ ...buildProxyClientConfig(), region });
       break;
     }
     case 'sfn': {
       const mod = await import('@aws-sdk/client-sfn');
-      client = new mod.SFNClient({ region });
+      client = new mod.SFNClient({ ...buildProxyClientConfig(), region });
       break;
     }
     case 'ssm': {
       const mod = await import('@aws-sdk/client-ssm');
-      client = new mod.SSMClient({ region });
+      client = new mod.SSMClient({ ...buildProxyClientConfig(), region });
       break;
     }
     default:

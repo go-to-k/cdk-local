@@ -75,6 +75,7 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore-control';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { getLogger } from '../utils/logger.js';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
 import { describeRejectedRoleArn, isIamRoleArn } from '../utils/role-arn.js';
 import { collectSsmParameterRefs, resolveSsmParameters } from './ssm-parameter-resolver.js';
@@ -180,6 +181,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // credential resolution picks up the named profile from
       // `~/.aws/credentials` / `~/.aws/config`. Issue #628.
       this.client = new CloudFormationClient({
+        ...buildProxyClientConfig({ profile: this.clientOptions.profile }),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -193,6 +195,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     }
     if (!this.lambdaClient) {
       this.lambdaClient = new LambdaClient({
+        ...buildProxyClientConfig({ profile: this.clientOptions.profile }),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -206,6 +209,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
     }
     if (!this.agentCoreControlClient) {
       this.agentCoreControlClient = new BedrockAgentCoreControlClient({
+        ...buildProxyClientConfig({ profile: this.clientOptions.profile }),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });
@@ -224,6 +228,7 @@ export class CfnLocalStateProvider implements LocalStateProvider {
       // credential resolution path would risk reading SSM from the
       // default account while CFn read from the named profile's account.
       this.ssmClient = new SSMClient({
+        ...buildProxyClientConfig({ profile: this.clientOptions.profile }),
         region: this.region,
         ...(this.clientOptions.profile !== undefined && { profile: this.clientOptions.profile }),
       });

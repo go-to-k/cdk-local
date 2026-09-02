@@ -1,7 +1,14 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vite-plus/test';
+import {
+  argumentText,
+  blankLiterals,
+  collectTsFiles,
+  constructionAt,
+  hasOptOutMarker,
+} from '../../helpers/client-construction-scan.js';
 
 /**
  * Issue go-to-k/cdk-local#245: `--profile` has been only half-wired twice
@@ -38,20 +45,6 @@ const repoRoot = join(here, '..', '..', '..');
 // cheap read; a directory missing from the list costs the audit.
 const SCAN_ROOTS = [join(repoRoot, 'src')];
 
-/** Recursively collect every `*.ts` file under `dir`. */
-function collectTsFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const abs = join(dir, entry);
-    const s = statSync(abs);
-    if (s.isDirectory()) {
-      out.push(...collectTsFiles(abs));
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.d.ts')) {
-      out.push(abs);
-    }
-  }
-  return out;
-}
 
 /**
  * Every local binding in `source` that names the STS client class, so a
@@ -94,139 +87,8 @@ function stsBindings(source: string): string[] {
   return [...names];
 }
 
-/**
- * Blank the CONTENT of every string literal and comment, preserving length and
- * newlines, so paren balancing below cannot be thrown off by a bracket inside a
- * string. Without this, `new STSClient({ ua: '(' })` runs the argument scan to
- * EOF and any later `buildStsClientConfig(` in the file exempts it — the same
- * "a nearby mention satisfies the check" failure this audit exists to prevent.
- */
-function blankLiterals(source: string): string {
-  const out = source.split('');
-  let i = 0;
-  const blankUntil = (end: number) => {
-    for (let k = i; k < end && k < out.length; k++) if (out[k] !== '\n') out[k] = ' ';
-  };
-  while (i < source.length) {
-    const ch = source[i]!;
-    const next = source[i + 1];
-    if (ch === '/' && next === '/') {
-      const end = source.indexOf('\n', i);
-      blankUntil(end === -1 ? source.length : end);
-      i = end === -1 ? source.length : end;
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      const stop = end === -1 ? source.length : end + 2;
-      blankUntil(stop);
-      i = stop;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      let k = i + 1;
-      while (k < source.length) {
-        if (source[k] === '\\') k += 2;
-        else if (source[k] === ch) break;
-        else k++;
-      }
-      i += 1;
-      blankUntil(k);
-      i = Math.min(k + 1, source.length);
-      continue;
-    }
-    i++;
-  }
-  return out.join('');
-}
 
-/**
- * The balanced `(...)` argument text starting at `open` (an index of `(`), or
- * `null` when the parens never balance — an unbalanced construction is reported
- * as an offender rather than silently swallowing the rest of the file.
- */
-function argumentText(source: string, open: number): string | null {
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === '(') depth++;
-    else if (ch === ')') {
-      depth--;
-      if (depth === 0) return source.slice(open + 1, i);
-    }
-  }
-  return null;
-}
 
-/**
- * Report every STS client construction that does NOT thread `--profile`.
- * Accepted:
- *
- *   - `new STSClient(buildStsClientConfig(...))` — every ordinary site. The
- *     helper call must appear in the construction's OWN argument list; the
- *     first version looked in a fixed four-line window, which a later,
- *     unrelated call could satisfy.
- *   - `new STSClient({ profile })` — the canonical shape inside the shared
- *     resolver itself.
- *   - a construction whose immediately preceding comment line carries
- *     `sts-audit: ignore` — explicit, reasoned opt-out.
- */
-/**
- * Walk one `new …(` expression from the `new` keyword and report the class it
- * constructs plus the index of its argument `(`. Parsed rather than
- * regex-matched so every prefix spelling resolves to the same name: a plain
- * `new STSClient(`, a member `new sts.STSClient(`, and the parenthesised
- * `new (await import('@aws-sdk/client-sts')).STSClient(` — the last of which a
- * `(?:[\w$]+\.)*` prefix regex still let through (probed 2026-08-20).
- */
-function constructionAt(code: string, newIndex: number): { name: string; argOpen: number } | null {
-  let i = newIndex + 'new'.length;
-  let name = '';
-  const skipSpace = () => {
-    while (i < code.length && /\s/.test(code[i]!)) i++;
-  };
-  const skipBalanced = () => {
-    let depth = 0;
-    for (; i < code.length; i++) {
-      if (code[i] === '(') depth++;
-      else if (code[i] === ')') {
-        depth--;
-        if (depth === 0) {
-          i++;
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-  skipSpace();
-  while (i < code.length) {
-    if (code[i] === '(') {
-      // An argument list once a name has been read; otherwise a parenthesised
-      // constructor expression such as `(await import('...'))`.
-      if (name) return { name, argOpen: i };
-      if (!skipBalanced()) return null;
-      skipSpace();
-      continue;
-    }
-    if (/[\w$]/.test(code[i]!)) {
-      let j = i;
-      while (j < code.length && /[\w$]/.test(code[j]!)) j++;
-      name = code.slice(i, j);
-      i = j;
-      skipSpace();
-      continue;
-    }
-    if (code[i] === '.') {
-      i++;
-      name = '';
-      skipSpace();
-      continue;
-    }
-    return null;
-  }
-  return null;
-}
 
 /**
  * Report every STS client construction that does NOT thread `--profile`.
@@ -265,17 +127,7 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
     if (args.includes('buildStsClientConfig(')) continue;
     if (/^\s*\{\s*profile\s*,?\s*\}\s*$/s.test(args)) continue;
     // Opt-out marker on the contiguous comment block directly above.
-    let optOut = false;
-    for (let k = lineNo - 2; k >= 0 && k >= lineNo - 7; k--) {
-      const prev = (lines[k] ?? '').trim();
-      if (prev.length === 0) break;
-      if (!prev.startsWith('//')) break;
-      if (prev.includes('sts-audit: ignore')) {
-        optOut = true;
-        break;
-      }
-    }
-    if (optOut) continue;
+    if (hasOptOutMarker(lines, lineNo, 'sts-audit: ignore')) continue;
     offenders.push({ line: lineNo, text: trimmed });
   }
   return offenders;

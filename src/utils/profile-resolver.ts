@@ -1,4 +1,6 @@
 import { STSClient } from '@aws-sdk/client-sts';
+import { buildProxyClientConfig } from './aws-proxy.js';
+import type { AwsProxyClientConfig } from './aws-proxy.js';
 
 /**
  * Resolve `--profile <p>` to a concrete credential set AND the profile's
@@ -27,7 +29,7 @@ export async function resolveProfileCredentials(profile: string): Promise<{
   sessionToken?: string;
   region?: string;
 }> {
-  const sts = new STSClient({ profile });
+  const sts = new STSClient(buildStsClientConfig({ profile }));
   try {
     const credsProvider = sts.config.credentials;
     const creds = typeof credsProvider === 'function' ? await credsProvider() : credsProvider;
@@ -85,12 +87,17 @@ export async function resolveProfileCredentials(profile: string): Promise<{
  * Returns a fresh object each call so callers can spread additional
  * fields (custom `requestHandler`, `maxAttempts`, etc.) without
  * mutating a shared default.
+ *
+ * Also spreads {@link buildProxyClientConfig} (issue #634), so every STS
+ * site through this helper honors `HTTPS_PROXY` / `NO_PROXY` for free —
+ * a no-op (empty fragment) when no proxy environment variable is set.
  */
 export function buildStsClientConfig(args: {
   region?: string | undefined;
   profile?: string | undefined;
-}): { region?: string; profile?: string } {
+}): { region?: string; profile?: string } & AwsProxyClientConfig {
   return {
+    ...buildProxyClientConfig({ profile: args.profile }),
     ...(args.region && { region: args.region }),
     ...(args.profile && { profile: args.profile }),
   };

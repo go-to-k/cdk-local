@@ -116,6 +116,15 @@ When STS itself answers — `ExpiredTokenException`, `AccessDenied` — the mess
 
 **One caveat if you use `cdkl studio`.** The debug line goes to the same stdout studio mirrors into the log panel it serves over HTTP, so running a studio-spawned child with `--verbose` (or `CDKL_LOG_LEVEL=debug` in studio's environment) puts the withheld text into that panel. Prefer `--verbose` on a direct `cdkl invoke` / `cdkl start-api` run when the message might carry anything you would not put on a shared screen.
 
+### AWS calls fail behind a corporate proxy
+
+`self-signed certificate in certificate chain` (or `ETIMEDOUT` / `ECONNREFUSED` against `*.amazonaws.com`) on a machine whose only egress is a forward proxy means the AWS call went direct instead of through the proxy. cdk-local honors `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (lowercase spellings win) with `NO_PROXY` exemptions for every AWS SDK call it makes — set them in the shell that runs `cdkl`. Two things to check:
+
+- **`NO_PROXY` entries are exact-match** unless they start with `.` or `*` — `NO_PROXY=example.com` does not exempt `api.example.com`.
+- **A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`** pointing at its CA bundle — routing fixes the path, not the certificate chain.
+
+The Docker daemon's own pulls are separate egress — see the "Behind a corporate proxy" note under Docker above. Full semantics: the "Corporate proxy" section in the README.
+
 ### `--env-vars <file>` not applying overrides
 
 - **Wrong key format** — the file is a JSON object keyed by Lambda **logical ID** (the synthesized CloudFormation ID like `MyFn1234ABCD`). CDK display path keys are tracked as a future enhancement in [issue #27](https://github.com/go-to-k/cdk-local/issues/27).

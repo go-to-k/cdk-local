@@ -1,4 +1,5 @@
 import { STSClient } from '@aws-sdk/client-sts';
+import { buildStsClientConfig } from './profile-resolver.js';
 
 /**
  * Resolve the AWS region the SDK would pick for a named profile (the
@@ -27,7 +28,7 @@ export async function resolveProfileRegion(
   profile: string | undefined
 ): Promise<string | undefined> {
   if (profile === undefined || profile === '') return undefined;
-  const sts = new STSClient({ profile });
+  const sts = new STSClient(buildStsClientConfig({ profile }));
   try {
     const regionProvider = sts.config.region;
     const resolved = typeof regionProvider === 'function' ? await regionProvider() : regionProvider;

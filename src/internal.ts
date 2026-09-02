@@ -924,6 +924,24 @@ export {
  */
 export { resolveProfileCredentials, buildStsClientConfig } from './utils/profile-resolver.js';
 
+/**
+ * Proxy-aware AWS SDK client plumbing (issue #634). The AWS SDK v3 does not
+ * read `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` on its own, so every SDK
+ * client construction in cdk-local spreads `buildProxyClientConfig()`
+ * (directly, or via `buildStsClientConfig`). Host-side use case: a host CLI
+ * (e.g. cdkd) constructing its own SDK clients alongside cdk-local's spreads
+ * the same fragment so both honor the same proxy environment with the same
+ * `NO_PROXY` semantics — including the SSO / SSOOIDC credential-chain hops,
+ * which do not inherit a service client's `requestHandler` on their own.
+ * The fragment is empty when no proxy variable is set, so spreading it is
+ * always safe.
+ */
+export {
+  buildProxyClientConfig,
+  isProxyEnvConfigured,
+  type AwsProxyClientConfig,
+} from './utils/aws-proxy.js';
+
 export { addStudioSpecificOptions } from './cli/commands/local-studio.js';
 
 /**

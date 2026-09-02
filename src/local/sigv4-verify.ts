@@ -72,6 +72,7 @@
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { getLogger } from '../utils/logger.js';
+import { buildProxyClientConfig } from '../utils/aws-proxy.js';
 import {
   describeCredentialLoadFailure,
   flattenToOneLine,
@@ -116,7 +117,7 @@ export function defaultCredentialsLoader(): CredentialsLoader {
       // default credentials for ambient request signing. `--profile`
       // threading into this loader is a separate follow-up — the path is
       // host-side / pre-container and does not affect Lambda env injection.
-      const client = new STSClient({});
+      const client = new STSClient({ ...buildProxyClientConfig() });
       // STSClient typings (AWS SDK v3) expose `config.credentials` as a
       // memoized provider function; invoke it to resolve the dev's local
       // credentials via the default chain (env vars → ~/.aws/config →
