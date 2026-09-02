@@ -264,6 +264,16 @@ choosing.
   — a body's claims about SURROUNDING code get no compiler and no test (the
   same issue mis-cited a sibling doc that covered something else), so check
   them by hand and say in the PR body which of issue-vs-tree won.
+  **(3)** A premise that RESOLVES can still be false, because a LOCALIZATION
+  rests on a signal being UNIQUE and an existence check confirms it either way.
+  When a body says "the failure is here, since only these branches print that
+  line", it has handed you a COUNT — grep the signal and count the sites
+  yourself before acting on the site. go-to-k/cdk-local#608 (2026-09-02)
+  localized a fixture failure to two assertions on a delimiter that 27 branches
+  of the same `verify.sh` print; a whole session went to the wrong assertion and
+  the filed issue sent the next one there too. One `grep -c` separated them, and
+  nothing else would have: the symbol existed, the grep was non-empty, and every
+  check in (1) and (2) passed.
 - Same file, related class → **bundle** into a single lane/PR (e.g. two
   `front-door-server.ts` routing fixes → one PR).
 - Different files → separate parallel lanes.

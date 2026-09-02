@@ -31,6 +31,20 @@ SCOPED to the delta, whole round's findings at once, not trickled.
   (`vp run build` first — the CLI runs from `dist/`). `/run-integ <local-*>`
   exercises the real Docker path; keep or extend the covering fixture in the
   SAME PR.
+
+  **Live-test the CONSEQUENCE you WROTE DOWN, not only the code path.** A
+  consequence derived by READING costs nothing to state and is durable: it lands
+  in a code comment, `.claude/CLAUDE.md`, a commit message and an issue comment
+  before anything tests it, and outlives the session as an unearned fact
+  (implement.md's "a FACT you assert becomes a code comment" is the same decay
+  reached by narrow QUERYING; this is the same decay reached by narrow READING).
+  An A/B of the two configurations is usually one command. go-to-k/cdk-local#608
+  (2026-09-02): "those warns vanish from the log binding" was written into all
+  four artifacts and then REFUTED by one live run -- the warns are never lost,
+  since non-response stdout lines are emitted as log events -- while the real
+  defect was different and worse, the `agentcore` branch folding them INTO the
+  response, so an invoke returns `WARN: ...` where the agent's JSON belongs. The
+  run corrected the diagnosis; it did not merely confirm it.
 - **A fixture that establishes the fix's PRECONDITION on the happy path cannot
   test the arm where the FAILING path creates it.** Such a fix cleared unit
   tests, a real-AWS fixture and four reviewers; the fifth traced the EVIDENCE
@@ -290,10 +304,21 @@ working assertion:
    identically. Use ABSOLUTE paths and confirm by a property the wrong tree
    cannot fake (`ls -la` mtime).
 
-And one shape inside the fixture itself: **an expected value must be an
-INDEPENDENT variable from the one under test.** A stub keyed its content on a
-sha whose default was the same literal on the producing and consuming sides, so
-breaking the producing call still served the content and the case could not fail.
+And one shape inside the fixture itself: **a probe passes VACUOUSLY when its
+own PREMISE has evaporated, so make the premise ASSERTABLE rather than assumed.**
+The first form of it: an expected value must be an INDEPENDENT variable from the
+one under test -- a stub keyed its content on a sha whose default was the same
+literal on the producing and consuming sides, so breaking the producing call
+still served the content and the case could not fail. Four more of the same
+shape in one run (2026-09-02, the go-to-k/cdk-local#667 lane): an `undefined` env
+assignment that arrived as the STRING `"undefined"`, so the unset-variable branch
+never ran; a docker stub exiting 0 unconditionally, making the filter-failure
+branch unreachable; an after-set that was always a SUPERSET of the before-set, so
+`comm -13` and `comm -3` could not disagree; and already-sorted stub data, which
+hides a dropped `sort`. Note none of these is question 2 -- the edited line IS
+reached, and it is the assertion's INPUT that is degenerate. The fix is never a
+stronger assertion: GUARD the precondition (assert it holds before asserting the
+conclusion) or feed data that can only pass one way.
 
 Only after all four does "the fence is weak" remain. Deleting an assertion on
 the strength of an unexamined green is how a working guard gets removed. Ported

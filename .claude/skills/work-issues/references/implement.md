@@ -66,6 +66,35 @@ drifts. Two boundaries:
   are two issues; one wrong assumption at five call sites is one. Test: does a
   single sentence describe the fix at every site?
 
+**A mechanical sweep is not verified by a PARSE — RUN every site you converted.**
+`bash -n` and the typechecker see neither of the two ways a sweep dies at every
+site at once, and both were hit in the go-to-k/cdk-local#603 lane
+(go-to-k/cdk-local#667, 2026-09-02):
+
+- **Extracting a shared helper re-verifies the CALLERS, not the helper.**
+  Fixtures were converted to a sourced `tests/integration/_lib/` helper and
+  EVERY converted caller then died BEFORE its first assertion: the `source`
+  landed after the fixture's `cd "$(dirname "$0")"`, and `${BASH_SOURCE[0]}`
+  stops resolving once cwd changes. The helper's own suite was green throughout,
+  because the helper was never the broken part. In the shipped tree every caller
+  sources ABOVE its `cd`, which is the fix and is what to check when adding the
+  ninth: `grep -rl image-cleanup.sh tests/integration/*/verify.sh` lists the
+  callers, and the `source` line must precede the `cd` line in each.
+- **Order the rewrite BEFORE you introduce the construct it rewrites.** A
+  `s/echo "FAIL: /fail "/` sweep is correct applied before the `fail()` helper is
+  inserted, and rewrites the helper's own body into a call to ITSELF when applied
+  after — unbounded recursion that parses clean.
+
+Running all eight rather than one representative is also what surfaced two
+fixtures ALREADY RED on `main` (go-to-k/cdk-local#659 / go-to-k/cdk-local#660,
+both `severity:high`) — a worked instance of go-to-k/cdk-local#594: nothing runs
+these fixtures, so one stays red indefinitely. **A red fixture is not evidence
+about your lane until you have ATTRIBUTED it**: re-run it on a stashed / clean
+tree and compare the failure SIGNATURE, not the exit code. Identical both ways =
+pre-existing, so the lane says so in the PR body, files, and proceeds; different
+= yours, and the lane stops. Skipping the attribution costs a lane either way —
+blocked on someone else's red, or shipped on top of it.
+
 **A COUNT is a claim, and one RELAYED from a subagent is unearned.** Paste the
 deriving command beside every published number. The tell is grammatical: a number
 arriving as a WORD ("nine sites") was counted by a person or agent; command
@@ -342,34 +371,25 @@ git fetch origin && git switch -c <branch> origin/main
 ```
 
 The `&&` is deliberate: unchained, a failed `fetch` still branches, off a stale
-`origin/main`. **`main-tree-branch-gate.sh` is the backstop for running that line
-after a cwd reset — but it did NOT cover this spelling until this session's
-hooks change, so do not read the claim as one that always held.** Measured on
-both copies of the hook, 2026-08-31: the version then on `main` skipped to the
-FIRST `git` token, read `git fetch origin && git switch -c ...` as `sub=fetch`,
-fell to a fail-open arm and exited 0 — a BARE `git switch -c <b> origin/main`
-was refused (rc=2) while the chained form THIS FILE PRINTS was not (rc=0), in
-this repo and in cdkd alike, so the spelling the skill prescribes was exactly
-the one the gate missed. This session's hooks lane makes the gate match in
-COMMAND POSITION and judge the matched SEGMENT; driven against that copy the
-chained form is refused (rc=2) and the allowance for `git fetch origin &&
-git switch main` still passes (rc=0). The protection is that FIXED gate. Until
-`fix/body-file-gate-fallback` (go-to-k/cdk-local#639) merges to `main`, re-run
-`git rev-parse --show-toplevel` immediately before the switch and confirm it is
-this lane's tree. Ask whether the fix has LANDED by CONTENT, never by the last
-commit subject on the file. That subject today opens
-`fix(hooks): see a gated verb behind if/while/sudo/xargs/case ...`, which reads
-like exactly this command-position fix while that same `main` copy still passes
-the chained form -- believe it and you retire the anchor early:
+`origin/main`. `main-tree-branch-gate.sh` backstops running that line after a cwd
+reset: it matches in COMMAND POSITION and judges the MATCHED SEGMENT, so the
+CHAINED form this file prints is refused from the main checkout — driven with a
+synthesized payload on 2026-09-02, `git fetch origin && git switch -c <b>
+origin/main` and `git status && git checkout -b <b>` both rc=2, while
+`git fetch origin && git switch main` and the same chain from a LINKED worktree
+stay rc=0. That coverage is recent (go-to-k/cdk-local#641, merged 2026-09-02);
+before it the gate read the chain as `sub=fetch` and exited 0, so the spelling
+this file prescribes was the one it missed, and this block carried a
+re-run-`rev-parse`-first anchor until then. Ask whether the coverage is still on
+`main` by CONTENT, never by the last commit subject on the file:
 
 ```bash
 git show origin/main:.claude/hooks/main-tree-branch-gate.sh | grep -c gate_verb_args
 ```
 
-`0` means the fix is NOT on `main` and the anchor still stands (measured
-2026-09-01); non-zero means it landed and the anchor can be retired.
 `gate_verb_args` strips the verb off the MATCHED segment, so it exists only in
-the fixed copy -- the same grep against go-to-k/cdk-local#639's head prints 2.
+the fixed copy: non-zero means the coverage is there (5 on 2026-09-02), and `0`
+means it is gone and the manual anchor is owed again.
 
 **Build BEFORE the first test run, and read a fresh worktree's failures with that
 in mind.** A worktree starts with no `dist/`; any test spawning the built CLI
