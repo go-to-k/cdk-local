@@ -245,18 +245,10 @@ the lane's own tree is still here with its deps installed, so take the retro
 branch IN IT. `B` is re-assigned because a separate fenced block is a separate
 shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
 (re-pushing it is refused by post-merge-orphan-push-gate).
-`main-tree-branch-gate` does back this switch up against a cwd reset, but only
-since this session's hooks change — §5 measured both copies, and the version
-then on `main` passed the chained `git fetch origin && git switch -c ...`
-form below (rc=0) while refusing a bare `git switch -c` (rc=2). Do not read
-the backstop as one that always held, and until `fix/body-file-gate-fallback`
-(go-to-k/cdk-local#639) merges to `main`, confirm `git rev-parse
---show-toplevel` is this lane's tree immediately before running the branch
-block below. Ask whether the fix has landed by CONTENT, not by the file's last
-commit subject (which names an earlier hooks change and reads like this one):
-`git show origin/main:.claude/hooks/main-tree-branch-gate.sh` piped to
-`grep -c gate_verb_args` prints `0` while the fix is absent and non-zero once
-it lands.
+`main-tree-branch-gate` backs this switch up against a cwd reset, and since
+go-to-k/cdk-local#641 (merged 2026-09-02) that covers the CHAINED form below,
+not only a bare `git switch -c`. §5 carries the measurement and the one-line
+grep that says whether the coverage is still on `main`.
 
 ```bash
 B=chore/work-issues-retro-<lesson-slug>
