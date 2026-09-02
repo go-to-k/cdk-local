@@ -13,16 +13,41 @@
 // verifier into its unreachable-JWKS pass-through mode, where an expired
 // token is accepted and the assertion would be vacuous.
 //
-// Plain HTTP only. `CONNECT` is logged and refused: the fixture's issuer is
-// an `http://` loopback sidecar, and a TLS tunnel would need a CA the
-// fixture does not mint.
+// Plain HTTP only. `CONNECT` is logged and refused: the fixture's issuers are
+// `http://`, and a TLS tunnel would need a CA the fixture does not mint.
+//
+// Optional trailing `<host>=<host:port>` arguments MAP an upstream host to
+// somewhere this process can actually reach. That is not a shortcut around
+// the test -- it is the topology being reproduced. The fixture's remote
+// issuer (`idp.cdkl-integ.test`) is an RFC 2606 reserved name that never
+// resolves, so the CLI cannot reach it directly by construction; the proxy
+// can, exactly as a corporate proxy reaches an internal IdP its clients
+// cannot. Without the mapping the phase would prove only that the request was
+// attempted, not that the JWKS came back and verified.
 import http from 'node:http';
 import fs from 'node:fs';
 
 const logFile = process.argv[2];
 if (!logFile) {
-  console.error('usage: node forward-proxy.mjs <log-file>');
+  console.error('usage: node forward-proxy.mjs <log-file> [<host>=<host:port> ...]');
   process.exit(1);
+}
+
+/** `{ 'idp.cdkl-integ.test': { hostname: '127.0.0.1', port: '19001' } }` */
+const hostMap = new Map();
+for (const spec of process.argv.slice(3)) {
+  const eq = spec.indexOf('=');
+  if (eq < 0) {
+    console.error(`bad mapping '${spec}': expected <host>=<host:port>`);
+    process.exit(1);
+  }
+  const from = spec.slice(0, eq);
+  const [hostname, port] = spec.slice(eq + 1).split(':');
+  if (!from || !hostname || !port) {
+    console.error(`bad mapping '${spec}': expected <host>=<host:port>`);
+    process.exit(1);
+  }
+  hostMap.set(from, { hostname, port });
 }
 
 const server = http.createServer((req, res) => {
@@ -37,10 +62,13 @@ const server = http.createServer((req, res) => {
     res.end('not an absolute-form proxy request');
     return;
   }
+  // `host` header keeps the ORIGINAL authority even when the connection is
+  // redirected, so the upstream sees the request the client actually made.
+  const mapped = hostMap.get(target.host) ?? hostMap.get(target.hostname);
   const upstream = http.request(
     {
-      hostname: target.hostname,
-      port: target.port || 80,
+      hostname: mapped ? mapped.hostname : target.hostname,
+      port: mapped ? mapped.port : target.port || 80,
       path: `${target.pathname}${target.search}`,
       method: req.method,
       headers: { ...req.headers, host: target.host },

@@ -15,14 +15,28 @@
 #      Lambda's body (proving the authorizer admitted the request).
 #   2. Expired JWT (exp in the past) -> 401, no Lambda invocation.
 #   3. HTTP_PROXY (issue #647): a SECOND boot with a recording forward
-#      proxy in front of it. The JWKS read is a plain `fetch`, not an AWS
-#      SDK call, so before #647 it ignored the proxy environment entirely
-#      and connected direct. The phase asserts the read appears in the
-#      proxy log in ABSOLUTE form (`GET http://.../.well-known/jwks.json`
-#      — the request line only a proxied client sends) AND that
-#      verification still works through it (valid -> 200, expired -> 401),
-#      which is what rules out the unreachable-JWKS pass-through mode
-#      accepting everything.
+#      proxy in front of it, exercising BOTH halves of the rule.
+#
+#      3a. `GET /protected-remote` is gated by an authorizer whose issuer
+#          is `http://idp.cdkl-integ.test` — an RFC 2606 reserved name that
+#          never resolves, so the CLI cannot reach it directly and the
+#          proxy (which maps it to the local sidecar) is the only path.
+#          The JWKS read is a plain `fetch`, not an AWS SDK call, so before
+#          #647 it ignored the proxy environment and this route could not
+#          work at all. Asserts the read appears in the proxy log in
+#          ABSOLUTE form — the request line only a proxied client sends —
+#          AND that verification is REAL through it (valid -> 200,
+#          expired -> 401). The expired half is what rules out the
+#          unreachable-JWKS pass-through mode, which accepts everything and
+#          would make a 200 meaningless.
+#
+#      3b. `GET /protected` keeps the LOOPBACK issuer, and under the same
+#          HTTP_PROXY must still work while its JWKS read appears NOWHERE
+#          in the proxy log. A forward proxy has no route back to this
+#          machine, so proxying loopback would fail the read — and a failed
+#          JWKS read does not deny requests, it degrades the verifier to
+#          accept every token. That silent auth downgrade is the reason
+#          `proxyAwareFetch` exempts loopback unconditionally.
 #
 # HttpJwtAuthorizer (NOT HttpUserPoolAuthorizer) is used because
 # Cognito's User Pool authorizer hardcodes the JWKS URL to the real
@@ -50,6 +64,9 @@ PORT=3740
 PROXY_PHASE_PORT=3742
 SIDECAR_PORT=19001
 SIDECAR_ISSUER="http://127.0.0.1:${SIDECAR_PORT}"
+# Must match REMOTE_ISSUER in lib/local-start-api-cognito-jwt-stack.ts.
+REMOTE_ISSUER_HOST="idp.cdkl-integ.test"
+REMOTE_ISSUER="http://${REMOTE_ISSUER_HOST}"
 SIDECAR_AUDIENCE="cdkl-integ-g3-aud"
 CONTAINER_HOST="127.0.0.1"
 BASE_URL="http://${CONTAINER_HOST}:${PORT}"
@@ -244,19 +261,24 @@ echo "    [401 on expired JWT] OK"
 # PHASE 3 — HTTP_PROXY routes the JWKS read through the proxy (issue #647).
 #
 # The first server keeps running; this boots a SECOND `cdkl start-api` on
-# its own port with HTTP_PROXY pointing at a recording FORWARD proxy. The
-# JWKS URL is the sidecar's `http://127.0.0.1:19001/.well-known/jwks.json`,
-# so a proxied client addresses the proxy in absolute form — the request
-# line a direct client never sends, and the only observable that
-# distinguishes the two paths.
+# its own port with HTTP_PROXY pointing at a recording FORWARD proxy. A
+# proxied client addresses the proxy in ABSOLUTE form (`GET
+# http://host/path`), which is the request line a direct client never sends
+# and the only observable that distinguishes the two paths.
+#
+# The proxy is given a mapping for the remote issuer's host, because that
+# host is an RFC 2606 reserved name that never resolves: the CLI cannot
+# reach the IdP directly by construction, and only the proxy can. That is
+# the corporate topology rather than a simulation of it.
 #
 # Only HTTP_PROXY is set, never HTTPS_PROXY: `getProxyForUrl` does not apply
 # an http proxy to an https target, so every AWS-bound https call in the
 # same process keeps going direct and this phase changes exactly one thing.
 # -----------------------------------------------------------------------
 echo ""
-echo "==> Phase 3: HTTP_PROXY routes the JWKS read through the proxy"
-node forward-proxy.mjs "${PROXY_LOG}" > "${PROXY_PORT_FILE}" &
+echo "==> Phase 3a: HTTP_PROXY routes the REMOTE issuer's JWKS read through the proxy"
+node forward-proxy.mjs "${PROXY_LOG}" \
+  "${REMOTE_ISSUER_HOST}=127.0.0.1:${SIDECAR_PORT}" > "${PROXY_PORT_FILE}" &
 PROXY_PID=$!
 for _ in $(seq 1 50); do
   [[ -s "${PROXY_PORT_FILE}" ]] && break
@@ -305,7 +327,8 @@ if ! grep -q "Server listening" "${PROXIED_LOG_FILE}"; then
   exit 1
 fi
 
-PROXIED_VALID_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset 300)
+# --- 3a: the REMOTE issuer's JWKS read must go THROUGH the proxy ----------
+PROXIED_VALID_JWT=$(node sign-jwt.mjs --iss "${REMOTE_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset 300)
 RESP_FILE="$(mktemp)"
 READY=0
 LAST_STATUS=""
@@ -313,7 +336,7 @@ LAST_BODY=""
 for _ in $(seq 1 30); do
   STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
     -H "Authorization: Bearer ${PROXIED_VALID_JWT}" \
-    "${PROXIED_BASE_URL}/protected")
+    "${PROXIED_BASE_URL}/protected-remote")
   LAST_STATUS="${STATUS}"
   LAST_BODY=$(cat "${RESP_FILE}")
   if [[ "${STATUS}" == "200" ]]; then
@@ -327,39 +350,79 @@ for _ in $(seq 1 30); do
 done
 rm -f "${RESP_FILE}"
 if [[ "${READY}" -ne 1 ]]; then
-  echo "FAIL: expected 200 on a valid JWT with HTTP_PROXY set; got status=${LAST_STATUS}"
+  echo "FAIL: expected 200 on a valid JWT for the REMOTE issuer with HTTP_PROXY set; got status=${LAST_STATUS}"
   echo "----- response body -----"; echo "${LAST_BODY}"; echo "-------------------------"
   echo "----- proxy log -----"; cat "${PROXY_LOG}"; echo "---------------------"
   exit 1
 fi
 
-# The assertion the fix is about: the JWKS read reached the PROXY, in
-# absolute form. Pre-#647 this log stays empty — the read used the global
-# `fetch`, which reads no proxy variable.
-if ! grep -q "^GET ${SIDECAR_ISSUER}/.well-known/jwks.json\$" "${PROXY_LOG}"; then
-  echo "FAIL: expected a proxied 'GET ${SIDECAR_ISSUER}/.well-known/jwks.json'; proxy log:"
+# The assertion the fix is about: the read reached the PROXY, in absolute
+# form. Pre-#647 this log stays empty and the route cannot work at all --
+# `idp.cdkl-integ.test` does not resolve, so a direct read fails.
+if ! grep -q "^GET ${REMOTE_ISSUER}/.well-known/jwks.json\$" "${PROXY_LOG}"; then
+  echo "FAIL: expected a proxied 'GET ${REMOTE_ISSUER}/.well-known/jwks.json'; proxy log:"
   cat "${PROXY_LOG}"
   echo "----- proxied cdkl log -----"; cat "${PROXIED_LOG_FILE}"; echo "----------------------------"
   exit 1
 fi
-echo "    [JWKS read recorded by the forward proxy] OK"
+echo "    [remote-issuer JWKS read recorded by the forward proxy] OK"
 
 # ...and verification is REAL through the proxy, not the unreachable-JWKS
 # pass-through mode (which accepts every token, expired ones included).
-PROXIED_EXPIRED_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
+PROXIED_EXPIRED_JWT=$(node sign-jwt.mjs --iss "${REMOTE_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
 STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${PROXIED_EXPIRED_JWT}" \
-  "${PROXIED_BASE_URL}/protected")
+  "${PROXIED_BASE_URL}/protected-remote")
 if [[ "${STATUS}" != "401" ]]; then
   echo "FAIL: expected 401 on an expired JWT through the proxy; got ${STATUS}"
   echo "  (a 200 here means the JWKS never arrived and the verifier fell back"
-  echo "   to pass-through, which would make the phase-3 200 meaningless)"
+  echo "   to pass-through, which would make the 200 above meaningless)"
   echo "----- proxied cdkl log -----"; cat "${PROXIED_LOG_FILE}"; echo "----------------------------"
   exit 1
 fi
-echo "    [401 on expired JWT through the proxy — real verification] OK"
+echo "    [401 on expired JWT through the proxy -- real verification] OK"
+
+# --- 3b: the LOOPBACK issuer must NOT be proxied, under the same env ------
+echo ""
+echo "==> Phase 3b: the loopback issuer stays OFF the proxy in the same process"
+LOOPBACK_VALID_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset 300)
+RESP_FILE="$(mktemp)"
+STATUS=$(curl -sS -o "${RESP_FILE}" -w '%{http_code}' \
+  -H "Authorization: Bearer ${LOOPBACK_VALID_JWT}" \
+  "${PROXIED_BASE_URL}/protected")
+BODY=$(cat "${RESP_FILE}")
+rm -f "${RESP_FILE}"
+if [[ "${STATUS}" != "200" ]]; then
+  echo "FAIL: expected 200 on the LOOPBACK-issuer route with HTTP_PROXY set; got ${STATUS}"
+  echo "  (the forward proxy has no route back to this machine, so a proxied"
+  echo "   loopback JWKS read fails -- and a failed read does not deny, it"
+  echo "   degrades the verifier to accept every token)"
+  echo "----- response body -----"; echo "${BODY}"; echo "-------------------------"
+  echo "----- proxy log -----"; cat "${PROXY_LOG}"; echo "---------------------"
+  exit 1
+fi
+if grep -q "127\.0\.0\.1:${SIDECAR_PORT}" "${PROXY_LOG}"; then
+  echo "FAIL: the loopback JWKS read was sent to the proxy; proxy log:"
+  cat "${PROXY_LOG}"
+  exit 1
+fi
+echo "    [loopback JWKS read never reached the proxy, route still 200] OK"
+
+# And it is still REALLY verifying on that route too -- a 200 alone would
+# also be what pass-through mode produces.
+LOOPBACK_EXPIRED_JWT=$(node sign-jwt.mjs --iss "${SIDECAR_ISSUER}" --aud "${SIDECAR_AUDIENCE}" --exp-offset -60)
+STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${LOOPBACK_EXPIRED_JWT}" \
+  "${PROXIED_BASE_URL}/protected")
+if [[ "${STATUS}" != "401" ]]; then
+  echo "FAIL: expected 401 on an expired JWT for the loopback issuer; got ${STATUS}"
+  echo "----- proxied cdkl log -----"; cat "${PROXIED_LOG_FILE}"; echo "----------------------------"
+  exit 1
+fi
+echo "    [401 on expired JWT, loopback issuer -- real verification] OK"
 
 echo ""
 echo "==> local-start-api-cognito-jwt integ PASSED"
-echo "    (valid JWT -> 200; expired JWT -> 401; HTTP_PROXY-routed JWKS read"
-echo "     recorded by the forward proxy, verification still real)"
+echo "    (valid JWT -> 200; expired JWT -> 401; under HTTP_PROXY the REMOTE"
+echo "     issuer's JWKS read is recorded by the forward proxy and the LOOPBACK"
+echo "     one is not, both still verifying for real)"

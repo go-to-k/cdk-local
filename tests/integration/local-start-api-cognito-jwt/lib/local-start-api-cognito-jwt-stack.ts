@@ -49,6 +49,25 @@ const SIDECAR_ISSUER = 'http://127.0.0.1:19001';
 const SIDECAR_AUDIENCE = 'cdkl-integ-g3-aud';
 
 /**
+ * A second, deliberately NON-LOOPBACK issuer, for the HTTP_PROXY phase
+ * (issue #647).
+ *
+ * `proxyAwareFetch` never proxies a loopback target -- a forward proxy has no
+ * route back to the caller's own machine, and an unreachable JWKS does not
+ * deny requests, it degrades the verifier to accept EVERY token. So the
+ * loopback issuer above CANNOT demonstrate proxy routing: the read correctly
+ * bypasses the proxy, which is what the first cut of that phase asserted
+ * against and failed on.
+ *
+ * `.test` is reserved by RFC 2606 and never resolves, which is the point: the
+ * client cannot reach this IdP at all, and only the forward proxy can. That is
+ * the corporate topology the feature exists for, rather than a simulation of
+ * it. `verify.sh` starts its proxy with a mapping from this host to the local
+ * sidecar, so the proxy is the only path to the key material.
+ */
+const REMOTE_ISSUER = 'http://idp.cdkl-integ.test';
+
+/**
  * Run this fixture's Lambdas at the HOST's CPU architecture.
  *
  * A function that declares no `architecture` defaults to `X86_64`, so on an
@@ -99,6 +118,31 @@ export class LocalStartApiCognitoJwtStack extends cdk.Stack {
         protectedHandler
       ),
       authorizer: jwtAuthorizer,
+    });
+
+    // Same handler, second authorizer, remote issuer. Reachable ONLY through
+    // the forward proxy `verify.sh` starts for its HTTP_PROXY phase; the two
+    // routes together let one boot assert both halves of issue #647 -- a
+    // remote JWKS read that MUST be proxied, and a loopback one that must NOT
+    // be.
+    const remoteJwtAuthorizer = new apigwv2_authorizers.HttpJwtAuthorizer(
+      'RemoteJwtAuthorizer',
+      REMOTE_ISSUER,
+      {
+        jwtAudience: [SIDECAR_AUDIENCE],
+        authorizerName: 'IntegG3RemoteJwtAuth',
+        identitySource: ['$request.header.Authorization'],
+      }
+    );
+
+    httpApi.addRoutes({
+      path: '/protected-remote',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new apigwv2_integrations.HttpLambdaIntegration(
+        'ProtectedRemoteIntegration',
+        protectedHandler
+      ),
+      authorizer: remoteJwtAuthorizer,
     });
   }
 }
