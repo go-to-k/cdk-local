@@ -77,7 +77,7 @@ rm -f zip-lambda.zip
 
 
 # Test 1 — asset-backed Lambda echoes event + env var
-echo "==> [1/8] Invoking EchoHandler with default empty event"
+echo "==> [1/9] Invoking EchoHandler with default empty event"
 RESULT_1=$(capture ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -86,7 +86,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/8] Invoking EchoHandler with --event payload"
+echo "==> [2/9] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -98,7 +98,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override (Parameters)
-echo "==> [3/8] Invoking EchoHandler with --env-vars Parameters block"
+echo "==> [3/9] Invoking EchoHandler with --env-vars Parameters block"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
@@ -112,7 +112,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — --env-vars function-specific key by display path (issue #27)
-echo "==> [4/8] Invoking EchoHandler with --env-vars display-path key"
+echo "==> [4/9] Invoking EchoHandler with --env-vars display-path key"
 DP_ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
@@ -126,7 +126,7 @@ echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
 }
 
 # Test 5 — inline (Code.ZipFile) Lambda
-echo "==> [5/8] Invoking InlineHandler (Code.ZipFile)"
+echo "==> [5/9] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
@@ -140,7 +140,7 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
 # Test 6 — ZIP-FILE asset Lambda (Code.fromAsset of a .zip). `aws:asset:path`
 # points at `asset.<hash>.zip`, so cdkl must extract it before bind-mounting.
 # A successful echo with the zip-only env var proves the extracted code ran.
-echo "==> [6/8] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
+echo "==> [6/9] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
 ZIP_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${ZIP_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"zip":"asset"}' > "${ZIP_EVENT}"
@@ -163,7 +163,7 @@ echo "${RESULT_6}" | grep -q '"greeting":"from-zip-asset"' || {
 # AssumeRole fail; `cdkl invoke` warns and falls back to the shell
 # credentials (dummy env creds here, resolved locally — no network), so the
 # invoke itself still completes and proves the fallback stays graceful.
-echo "==> [7/8] HTTPS_PROXY routes the STS AssumeRole call through the proxy"
+echo "==> [7/9] HTTPS_PROXY routes the STS AssumeRole call through the proxy"
 PROXY_LOG=$(mktemp)
 PROXY_PORT_FILE=$(mktemp)
 node proxy-recorder.mjs "${PROXY_LOG}" > "${PROXY_PORT_FILE}" &
@@ -199,7 +199,7 @@ echo "${RESULT_7}" | grep -q '"greeting":"hello"' || {
 # AssumeRole then goes DIRECT to real AWS with the dummy creds (a fast
 # unauthenticated failure — needs outbound network, which this suite already
 # requires for the docker pull), warns, and falls back the same way.
-echo "==> [8/8] NO_PROXY='*' keeps the same call OFF the proxy"
+echo "==> [8/9] NO_PROXY='*' keeps the same call OFF the proxy"
 : > "${PROXY_LOG}"
 RESULT_8=$(capture env \
   HTTPS_PROXY="http://127.0.0.1:${PROXY_PORT}" NO_PROXY='*' \
@@ -217,5 +217,53 @@ echo "${RESULT_8}" | grep -q '"greeting":"hello"' || {
   exit 1
 }
 
+# Test 9 -- a proxy scheme these agents cannot SPEAK (issue
+# go-to-k/cdk-local#663). `ALL_PROXY=socks5://...` is an ordinary spelling
+# `proxy-from-env` honours, and until this fix `EnvRoutingProxyAgent.connect`
+# handed that URL to `HttpsProxyAgent`, which speaks HTTP CONNECT -- so a
+# SOCKS URL aimed at the SAME recorder above produced a real
+# `CONNECT sts.us-east-1.amazonaws.com:443` sent at a SOCKS port, three times,
+# which the SDK then surfaced as `Unknown` (measured on origin/main through
+# the shipped dist). It now falls back to a DIRECT connection and says so
+# once.
+#
+# BOTH halves are asserted. An empty recorder log alone would also pass if the
+# CLI never made the call at all -- so the warn is what proves the request
+# happened and chose direct DELIBERATELY, and its count is what proves the
+# per-request decision does not print a line per AWS call.
+echo "==> [9/9] a SOCKS ALL_PROXY connects DIRECT and warns once"
+: > "${PROXY_LOG}"
+RESULT_9=$(capture env \
+  ALL_PROXY="socks5://127.0.0.1:${PROXY_PORT}" \
+  AWS_ACCESS_KEY_ID=cdkl-integ-dummy AWS_SECRET_ACCESS_KEY=cdkl-integ-dummy AWS_REGION=us-east-1 \
+  ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler \
+  --assume-role arn:aws:iam::123456789012:role/cdkl-proxy-integ --no-pull)
+echo "    response: ${RESULT_9}"
+if [ -s "${PROXY_LOG}" ]; then
+  echo "FAIL: a SOCKS ALL_PROXY must never be spoken HTTP at, but the recorder logged:"
+  cat "${PROXY_LOG}"
+  exit 1
+fi
+# Read off STDERR because the compact logger sends warn there. A run under
+# `CDKL_LOG_STREAM=stdout` (what `cdkl studio` sets for its serve children)
+# would unify the streams and this grep would stop matching -- and NOT simply
+# by moving to RESULT_9, which is only the LAST stdout line; such a run would
+# need the command's stdout captured whole.
+grep -q 'Unsupported proxy scheme "socks5"' "${CDKL_STDERR}" || {
+  echo "FAIL: expected the unsupported-scheme warn on stderr; captured stderr:"
+  cat "${CDKL_STDERR}"
+  exit 1
+}
+WARN_COUNT_9=$(grep -c 'Unsupported proxy scheme' "${CDKL_STDERR}" || true)
+[ "${WARN_COUNT_9}" = "1" ] || {
+  echo "FAIL: the unsupported-scheme warn must be emitted ONCE per run, got ${WARN_COUNT_9}:"
+  grep -n 'Unsupported proxy scheme' "${CDKL_STDERR}" || true
+  exit 1
+}
+echo "${RESULT_9}" | grep -q '"greeting":"hello"' || {
+  echo "FAIL: expected the invoke to complete via the graceful shell-creds fallback, got: ${RESULT_9}"
+  exit 1
+}
+
 echo ""
-echo "==> All 8 local-invoke tests passed"
+echo "==> All 9 local-invoke tests passed"

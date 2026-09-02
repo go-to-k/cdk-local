@@ -5,8 +5,9 @@ import {
   type Socket as NetSocket,
 } from 'node:net';
 import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
-import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
-import { proxyAwareFetch } from '../../../src/utils/aws-proxy.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
+import { proxyAwareFetch, resetProxySchemeWarnings } from '../../../src/utils/aws-proxy.js';
+import { getLogger, setLogger } from '../../../src/utils/logger.js';
 
 /**
  * Issue go-to-k/cdk-local#647 — `proxyAwareFetch` driven against REAL
@@ -173,6 +174,24 @@ async function startRawProxy(reply: string | null): Promise<RawProxy> {
   };
 }
 
+/**
+ * A logger stand-in that keeps the real ConsoleLogger PROTOTYPE. Spreading the
+ * instance (`{ ...previous }`) copies only its own fields — `level` /
+ * `useColors` — and drops every prototype method, so a `getLogger().debug(...)`
+ * inside the captured window would fail as `debug is not a function` rather
+ * than as an assertion. Twin of the helper in `aws-proxy.test.ts`; ONE spelling
+ * per file, because a comment saying so did not stop a second one appearing.
+ */
+function stubLogger(previous: object, warn: unknown): Record<string, unknown> {
+  const stub = Object.assign(
+    Object.create(Object.getPrototypeOf(previous) as object) as Record<string, unknown>,
+    previous,
+    { warn }
+  );
+  stub['child'] = () => stub;
+  return stub;
+}
+
 describe('proxyAwareFetch (issue #647)', () => {
   const saved = new Map<string, string | undefined>();
   const closers: (() => Promise<void>)[] = [];
@@ -182,6 +201,11 @@ describe('proxyAwareFetch (issue #647)', () => {
       saved.set(key, process.env[key]);
       delete process.env[key];
     }
+    // Module-level memo in `aws-proxy.ts`. Reset HERE rather than inside the
+    // one case that asserts a warn count: an inline reset leaves the scheme
+    // memoized for every case BELOW it, so a warn-count case added later
+    // would silently measure zero.
+    resetProxySchemeWarnings();
   });
 
   afterEach(async () => {
@@ -263,6 +287,58 @@ describe('proxyAwareFetch (issue #647)', () => {
     // agent — see the NO_PROXY case below for why the distinction needs its
     // own observable.
     expect(origin.acceptEncodings[0]).toContain('gzip');
+  });
+
+  it('a LEADING SPACE in the proxy value still TUNNELS on this half too', async () => {
+    // The trim's comment says it moves `proxyAwareFetch` from its not-proxied
+    // branch to tunnelling, and until now only the AGENT half fenced it:
+    // deleting `.trim()` reddened three cases in `aws-proxy.test.ts` and ZERO
+    // here. Issue 663 was precisely a divergence between these two halves, so
+    // a claim about the fetch half belongs in the fetch half's suite.
+    //
+    // The discriminator is WHICH SOCKET serves the body: `origin.invalid`
+    // never resolves, so an untrimmed value going direct fails outright, while
+    // a trimmed one reaches the recorder.
+    const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
+    process.env['HTTP_PROXY'] = ` ${proxy.url}`;
+
+    expect(await (await proxyAwareFetch('http://origin.invalid/x')).text()).toBe('proxy-body');
+    expect(proxy.requests).toEqual(['GET http://origin.invalid/x']);
+  });
+
+  it('a LOOPBACK target under an unspeakable proxy is silent — the loopback check must run FIRST', async () => {
+    // The ORDER of the two arms in `proxyAwareFetch`'s short-circuit is
+    // load-bearing, and nothing fenced it: swapping them to
+    // `resolveProxyForTarget(...) === '' || isLoopbackHost(...)` leaves every
+    // other case in this file green, because the RESPONSE is identical either
+    // way. What changes is that `resolveProxyForTarget` runs for a target it
+    // was never going to proxy, and warns.
+    //
+    // The cost is not cosmetic. A developer with `ALL_PROXY=socks5://...`
+    // exported gets a default-level warning on EVERY loopback read — studio's
+    // own traffic, a local IdP's JWKS on each verification — telling them a
+    // request went direct when going direct was the correct and intended
+    // behaviour for that target all along. Log noise on a CORRECT config, and
+    // on the one path where a real proxy warning matters.
+    //
+    // The agent half fences the same property with its NO_PROXY-exempt case;
+    // this is the fetch half's.
+    const origin = track(await startOrigin(() => ({ body: 'loopback-body' })));
+    process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger(stubLogger(previous, warn) as never);
+    try {
+      expect(await (await proxyAwareFetch(`${origin.url}/jwks.json`)).text()).toBe(
+        'loopback-body'
+      );
+    } finally {
+      setLogger(previous);
+    }
+    // Guard-the-guard: the request really happened, so "zero warns" is not
+    // the vacuous silence of a call that never ran.
+    expect(origin.requests).toEqual(['GET /jwks.json']);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([]);
   });
 
   // Every spelling `URL.hostname` can produce for this machine. The IPv6
@@ -551,6 +627,62 @@ describe('proxyAwareFetch (issue #647)', () => {
     // `proxy-aware-fetch-bindings.test.ts`.
     process.env['HTTP_PROXY'] = 'http://127.0.0.1:1';
     await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it('re-evaluates the SCHEME per hop — a redirect can cross from a speakable proxy to one that is not', async () => {
+    // The scheme check sits inside the redirect loop for the same reason the
+    // NO_PROXY one does: `getProxyForUrl` picks by the TARGET's scheme, so an
+    // http -> https redirect can move from HTTP_PROXY to HTTPS_PROXY and land
+    // on a proxy these agents cannot speak. Hoisting the check out of the loop
+    // leaves every other redirect case green.
+    const proxy = track(
+      await startHttpProxy(() => ({
+        status: 302,
+        headers: { location: 'https://origin.invalid/moved' },
+        body: '',
+      }))
+    );
+    process.env['HTTP_PROXY'] = proxy.url;
+    process.env['HTTPS_PROXY'] = 'socks5://127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger(stubLogger(previous, warn) as never);
+    let err: unknown;
+    try {
+      err = await proxyAwareFetch('http://origin.invalid/start').catch((e: unknown) => e);
+    } finally {
+      setLogger(previous);
+    }
+    // Hop 1 went through the speakable proxy; hop 2's https target resolved to
+    // the SOCKS proxy, warned, and was handed to undici, whose DNS lookup of
+    // a `.invalid` host fails. Speaking HTTP at the SOCKS port instead would
+    // surface ECONNREFUSED from `node:http` and no warn at all.
+    expect(proxy.requests).toEqual(['GET http://origin.invalid/start']);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toHaveLength(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('socks5');
+  });
+
+  it('WARNS once, naming the scheme, when it falls back past a SOCKS proxy', async () => {
+    // The fallback used to be silent on this half (issue
+    // go-to-k/cdk-local#663 folded both halves onto one
+    // `resolveProxyForTarget`, which warns). Silence is what made
+    // "refuse loudly" arguable: a user whose direct egress is blocked
+    // otherwise gets a transport error pointing at nothing.
+    process.env['ALL_PROXY'] = 'socks5://user:s3cr3t@127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger(stubLogger(previous, warn) as never);
+    try {
+      await proxyAwareFetch('http://origin.invalid/x').catch(() => undefined);
+      await proxyAwareFetch('http://origin.invalid/y').catch(() => undefined);
+    } finally {
+      setLogger(previous);
+    }
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('socks5');
+    expect(lines[0]).not.toContain('s3cr3t');
   });
 
   it('falls back to a DIRECT request when the proxy is SOCKS — these agents speak only HTTP CONNECT', async () => {

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { ClientRequest } from 'node:http';
 import { Agent as HttpAgent } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
@@ -18,9 +19,13 @@ vi.mock('@aws-sdk/credential-provider-node', () => ({
   defaultProvider: defaultProviderMock,
 }));
 
-const { buildProxyClientConfig, isProxyEnvConfigured, EnvRoutingProxyAgent } = await import(
-  '../../../src/utils/aws-proxy.js'
-);
+const {
+  buildProxyClientConfig,
+  isProxyEnvConfigured,
+  EnvRoutingProxyAgent,
+  resetProxySchemeWarnings,
+} = await import('../../../src/utils/aws-proxy.js');
+const { getLogger, setLogger } = await import('../../../src/utils/logger.js');
 
 const PROXY_ENV_KEYS = [
   'https_proxy',
@@ -41,6 +46,47 @@ const httpsOpts = (host: string, port = 443) =>
 const httpOpts = (host: string, port = 80) =>
   ({ secureEndpoint: false, host, port }) as Parameters<EnvRoutingProxyAgent['connect']>[1];
 
+/**
+ * The warn lines `run` emits through the shared logger. `child()` is stubbed
+ * to the same spy because `warnUnspeakableProxy` logs through
+ * `getLogger().child('aws-proxy')` — spying on the parent alone captures
+ * nothing (the idiom `proxy-aware-fetch-bindings.test.ts` established).
+ */
+function stubLogger(
+  previous: object,
+  warn: unknown,
+  child?: unknown
+): Record<string, unknown> {
+  // `Object.create(prototype)` first, not a bare `{ ...previous }`: spreading
+  // a ConsoleLogger INSTANCE copies only its own fields (`level` /
+  // `useColors`) and drops every prototype method, so a future
+  // `getLogger().debug(...)` inside the captured window would fail as
+  // `debug is not a function` rather than as a clean assertion.
+  //
+  // ONE spelling, used by every site in this file. The first round of this
+  // change wrote the reasoning above and then added a fresh bare spread three
+  // cases below it — which is what a helper prevents and a comment does not.
+  const stub = Object.assign(
+    Object.create(Object.getPrototypeOf(previous) as object) as Record<string, unknown>,
+    previous,
+    { warn }
+  );
+  stub['child'] = child ?? (() => stub);
+  return stub;
+}
+
+function captureWarns(run: () => void): string[] {
+  const warn = vi.fn();
+  const previous = getLogger();
+  setLogger(stubLogger(previous, warn) as never);
+  try {
+    run();
+  } finally {
+    setLogger(previous);
+  }
+  return warn.mock.calls.map((c) => String(c[0]));
+}
+
 describe('aws-proxy (issue #634)', () => {
   const saved = new Map<string, string | undefined>();
 
@@ -51,6 +97,10 @@ describe('aws-proxy (issue #634)', () => {
     }
     defaultProviderMock.mockClear();
     chainMock.mockReset();
+    // Module-level memo: without this reset, a case asserting "warns ONCE"
+    // would pass or fail on whether an earlier case in the file warned about
+    // the same scheme first.
+    resetProxySchemeWarnings();
   });
 
   afterEach(() => {
@@ -347,10 +397,10 @@ describe('aws-proxy (issue #634)', () => {
     it('a SCHEME-LESS value takes the REQUEST scheme: `HTTPS_PROXY=proxy.internal:3128` means TLS to the PROXY', () => {
       // The common spelling, and it does not mean what it looks like.
       // `proxy-from-env` prepends the scheme of the URL BEING REQUESTED, not
-      // `http:` — so an https target speaks TLS to the proxy itself, which a
-      // plain HTTP forward proxy will not answer. Writing
-      // `HTTPS_PROXY=http://proxy.internal:3128` is what gets a CONNECT
-      // tunnel over plain HTTP.
+      // `http:` — so an https target makes the connection TO THE PROXY itself
+      // TLS, which a plain HTTP forward proxy will not answer. Both spellings
+      // still tunnel with CONNECT; `HTTPS_PROXY=http://proxy.internal:3128`
+      // is the one that reaches the proxy over plain HTTP first.
       process.env['HTTPS_PROXY'] = 'proxy.internal:3128';
       const agent = new EnvRoutingProxyAgent();
       const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
@@ -396,6 +446,501 @@ describe('aws-proxy (issue #634)', () => {
       const agent = new EnvRoutingProxyAgent();
       expect(agent.connect(REQ, httpsOpts('exempt.internal'))).not.toBeInstanceOf(HttpsProxyAgent);
       agent.destroy();
+    });
+  });
+
+  /**
+   * Issue go-to-k/cdk-local#663 — a proxy whose SCHEME these agents cannot
+   * speak.
+   *
+   * `getProxyForUrl` honours `ALL_PROXY`, and `ALL_PROXY=socks5://...` is an
+   * ordinary spelling (an `ssh -D` tunnel, a corporate SOCKS gateway). Before
+   * this, `connect()` handed that URL straight to `HttpsProxyAgent`, which
+   * constructs happily — measured, `proxy.protocol === 'socks5:'` — and then
+   * talks HTTP at a SOCKS port, so every AWS call failed. PR 656 had already
+   * taught the fetch half to fall back; this half kept building the agent.
+   *
+   * The choice between REFUSING loudly and falling back to DIRECT is settled
+   * in `resolveProxyForTarget`'s comment; the cases below pin the fallback
+   * AND the warn that keeps it from being silent, since "a fallback is
+   * silent" was the only argument for refusing.
+   */
+  describe('EnvRoutingProxyAgent — an unspeakable proxy scheme (issue go-to-k/cdk-local#663)', () => {
+    it('falls back to a DIRECT agent for an https target when ALL_PROXY is SOCKS', () => {
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      expect(picked).toBeInstanceOf(HttpsAgent);
+      expect(picked).not.toBeInstanceOf(HttpsProxyAgent);
+      agent.destroy();
+    });
+
+    it('falls back on the http side too', () => {
+      // `HttpProxyAgent` also extends `http.Agent`, so `toBeInstanceOf(HttpAgent)`
+      // cannot discriminate here — the negative assertion is the whole test.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const picked = agent.connect(REQ, httpOpts('example.com'));
+      expect(picked).toBeInstanceOf(HttpAgent);
+      expect(picked).not.toBeInstanceOf(HttpProxyAgent);
+      agent.destroy();
+    });
+
+    it('warns, naming the SCHEME and withholding the URL — a proxy URL carries credentials', () => {
+      process.env['ALL_PROXY'] = 'socks5://corp-user:s3cr3t@socks.internal:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('socks5');
+      // The withholding is the point: this line is default-level, and studio
+      // mirrors a serve child's output into the log panel it serves over HTTP.
+      expect(lines[0]).not.toContain('s3cr3t');
+      expect(lines[0]).not.toContain('corp-user');
+      expect(lines[0]).not.toContain('socks.internal');
+    });
+
+    it('warns ONCE per scheme, not once per request — connect() runs per AWS call', () => {
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'));
+        agent.connect(REQ, httpOpts('example.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+    });
+
+    it('a DIFFERENT unspeakable scheme warns again — the memo is per SCHEME, not "warned at all"', () => {
+      // Guard-the-guard for the case above: a memo keyed on "has warned"
+      // would swallow this second, differently-caused line.
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        process.env['ALL_PROXY'] = 'socks4://127.0.0.1:1080';
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('socks5');
+      expect(lines[1]).toContain('socks4');
+    });
+
+    it('an http:// proxy is still PROXIED and warns nothing — the fallback is about the SCHEME', () => {
+      // Guard-the-guard: without this, deleting `isSpeakableProxy` entirely
+      // (so nothing is ever unspeakable) is invisible to the cases above only
+      // in one direction, and deleting the SPEAKABLE branch is invisible in
+      // the other.
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        expect(agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toBeInstanceOf(
+          HttpsProxyAgent
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('is decided PER REQUEST: a speakable HTTPS_PROXY still tunnels while ALL_PROXY stays SOCKS', () => {
+      // The case a boot-time refusal would break. `getProxyForUrl` prefers
+      // the protocol-specific variable, so an https target tunnels through
+      // the HTTP proxy while an http target — for which only ALL_PROXY
+      // applies — falls back.
+      process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        expect(agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toBeInstanceOf(
+          HttpsProxyAgent
+        );
+        expect(agent.connect(REQ, httpOpts('example.com'))).not.toBeInstanceOf(HttpProxyAgent);
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+    });
+
+    it('a NO_PROXY-exempt target under a SOCKS proxy goes direct WITHOUT a warn', () => {
+      // Nothing is being ignored for this target — it was never going to be
+      // proxied — so a line here would be noise on a correct configuration.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      process.env['NO_PROXY'] = 'exempt.internal';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        expect(agent.connect(REQ, httpsOpts('exempt.internal'))).not.toBeInstanceOf(
+          HttpsProxyAgent
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('a value whose "://" is not at the start has no scheme to name', () => {
+      // `getProxyForUrl` prepends the request scheme only when the value
+      // contains no `://` at all, so this one is returned verbatim and has no
+      // leading scheme. Pathological, but it is the branch `proxySchemeOf`
+      // falls through to — without a case it is unreachable-looking code.
+      process.env['ALL_PROXY'] = '/typo://proxy.internal:1080';
+      const agent = new EnvRoutingProxyAgent();
+      let picked: unknown;
+      const lines = captureWarns(() => {
+        picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(picked).not.toBeInstanceOf(HttpsProxyAgent);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('(unrecognized)');
+    });
+
+    it('names the scheme in LOWERCASE, so the memo cannot warn twice for one proxy', () => {
+      // `SOCKS5://` is what a user who typed the scheme in caps gets, and
+      // `getProxyForUrl` returns a value containing "://" verbatim — case and
+      // all. Without the lowercasing the memo keys on `SOCKS5` and `socks5`
+      // separately, so switching spelling re-warns for the same proxy.
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        process.env['ALL_PROXY'] = 'SOCKS5://127.0.0.1:1080';
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+        agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"socks5"');
+    });
+
+    it('an UPPERCASE http scheme is still speakable — the predicate is case-insensitive', () => {
+      // `HTTP://proxy.internal:3128` contains "://" so `getProxyForUrl` hands
+      // it back unchanged. Dropping the `i` flag on `isSpeakableProxy` turns a
+      // WORKING proxy into a warned direct connection, which no other case
+      // would notice.
+      process.env['HTTPS_PROXY'] = 'HTTP://proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        expect(agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toBeInstanceOf(
+          HttpsProxyAgent
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('a value with credentials BEFORE the scheme names no username — the scheme match requires "://"', () => {
+      // The round-2 review blocker. `getProxyForUrl` returns any value
+      // containing "://" verbatim, so this arrives whole; a bare `token:`
+      // match would name `corp-user`, i.e. the proxy USERNAME, on a
+      // default-level line studio serves over HTTP.
+      process.env['HTTPS_PROXY'] = 'corp-user:s3cr3t@http://proxy.corp:3128';
+      const agent = new EnvRoutingProxyAgent();
+      let picked: unknown;
+      const lines = captureWarns(() => {
+        picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(picked).not.toBeInstanceOf(HttpsProxyAgent);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('(unrecognized)');
+      expect(lines[0]).not.toContain('corp-user');
+      expect(lines[0]).not.toContain('s3cr3t');
+      expect(lines[0]).not.toContain('proxy.corp');
+    });
+
+    it('an absurdly long scheme run is not printed — the warn line stays bounded', () => {
+      // Without the length bound the scheme is an unbounded run out of an
+      // environment variable, so the whole value lands on a default-level
+      // line. Over the bound it falls to the constant instead.
+      const long = 'a'.repeat(64);
+      process.env['ALL_PROXY'] = `${long}://proxy.internal:1080`;
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('(unrecognized)');
+      expect(lines[0]).not.toContain(long);
+    });
+
+    it('a LEADING SPACE in the proxy value still tunnels — it did before this guard existed', () => {
+      // `getProxyForUrl` returns a value containing "://" verbatim, space and
+      // all, and `isSpeakableProxy` is anchored. Untrimmed, this reads as
+      // unspeakable and silently goes direct — but the WHATWG URL parser
+      // inside the agent trims, so this configuration WORKED before the
+      // scheme guard was added. A regression fence, not a new feature.
+      process.env['HTTPS_PROXY'] = ' http://proxy.internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        expect(picked).toBeInstanceOf(HttpsProxyAgent);
+        expect((picked as HttpsProxyAgent<string>).proxy.href).toBe(
+          'http://proxy.internal:3128/'
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('the memo is shared across AGENT INSTANCES — one line per process, not per SDK client', () => {
+      // `buildProxyRequestHandler` builds a fresh agent per client (and
+      // `proxyAwareFetch` one per redirect hop), so a per-instance memo would
+      // warn once per client. This is what makes the module-level memo the
+      // right scope rather than merely a convenient one.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const first = new EnvRoutingProxyAgent();
+      const second = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        first.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        second.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      first.destroy();
+      second.destroy();
+      expect(lines).toHaveLength(1);
+    });
+
+    it('logs through the "aws-proxy" child prefix', () => {
+      // `captureWarns` routes parent and child to the SAME spy, which cannot
+      // tell whether `.child('aws-proxy')` is called at all — so this case
+      // stubs `child` itself.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const warn = vi.fn();
+      const previous = getLogger();
+      const child = vi.fn(() => stubLogger(previous, warn));
+      const agent = new EnvRoutingProxyAgent();
+      setLogger(stubLogger(previous, warn, child) as never);
+      try {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      } finally {
+        setLogger(previous);
+        agent.destroy();
+      }
+      expect(child).toHaveBeenCalledWith('aws-proxy');
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('buildProxyClientConfig still returns a NON-empty fragment under a SOCKS-only environment', () => {
+      // Deliberate and worth pinning: `isProxyEnvConfigured` asks whether a
+      // variable is SET, not whether it is usable, so the fragment is built
+      // and every request through it then routes direct. Narrowing that
+      // predicate instead would change which credential chain resolves,
+      // which is a bigger behaviour change than this issue asked for.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      expect(isProxyEnvConfigured()).toBe(true);
+      const config = buildProxyClientConfig();
+      expect(config.requestHandler).toBeDefined();
+      expect(typeof config.credentials).toBe('function');
+    });
+
+    it.each([
+      ['at the 32-character bound, the scheme is still named', 32, true],
+      ['one character past it, it is not', 33, false],
+    ])('%s', (_label, length, named) => {
+      // The BOUNDARY, not just a wildly-over-length value: with only a 64-char
+      // case, a `{0,30}` or `{0,32}` mutant stays green.
+      const scheme = `a${'b'.repeat(length - 1)}`;
+      expect(scheme).toHaveLength(length);
+      process.env['ALL_PROXY'] = `${scheme}://proxy.internal:1080`;
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(named ? `"${scheme}"` : '(unrecognized)');
+    });
+
+    it('trims the UNSPEAKABLE path too, so the scheme is named rather than "(unrecognized)"', () => {
+      // The trim runs before BOTH branches. Untrimmed, ` socks5://...` fails
+      // the anchored scheme match and the warn degrades to `(unrecognized)`,
+      // which is a worse message for a configuration cdk-local understands
+      // perfectly well. Only the speakable side of the trim had a case.
+      process.env['ALL_PROXY'] = ' socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"socks5"');
+      expect(lines[0]).not.toContain('(unrecognized)');
+    });
+
+    it('a leading NON-BREAKING SPACE now works where it used to throw', () => {
+      // Not a restoration but a genuine behaviour change, so it is pinned in
+      // the throw -> works direction as well. The WHATWG URL parser strips
+      // ASCII whitespace only; `String.prototype.trim` also strips U+00A0 and
+      // U+FEFF, which is how a proxy URL copied out of a wiki page arrives.
+      // Spelled as ESCAPES, never literal bytes: an invisible character in
+      // source is unreadable in a diff and unsearchable by grep, and the
+      // premise of this case IS which code points it carries.
+      const value = '\u00A0http://proxy.internal:3128\uFEFF';
+      expect(value.codePointAt(0)).toBe(0x00a0);
+      expect(value.codePointAt(value.length - 1)).toBe(0xfeff);
+      // The PREMISE, asserted rather than assumed: this value must be one the
+      // URL parser rejects, or the case silently degrades into a duplicate of
+      // the plain-ASCII-space case above and stops witnessing a throw -> works
+      // transition at all.
+      expect(() => new URL(value)).toThrow(TypeError);
+      process.env['HTTPS_PROXY'] = value;
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        expect(picked).toBeInstanceOf(HttpsProxyAgent);
+        expect((picked as HttpsProxyAgent<string>).proxy.href).toBe(
+          'http://proxy.internal:3128/'
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('INTERNAL whitespace still throws — a real typo stays loud', () => {
+      // Guard-the-guard for the two trim cases above: the trim must not be
+      // read as "whitespace is tolerated". This value is speakable by scheme,
+      // so it reaches the agent constructor and fails there, as before.
+      process.env['HTTPS_PROXY'] = 'http://proxy .internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(TypeError);
+      agent.destroy();
+    });
+
+    it('a value whose scheme merely LOOKS like a username is named as the scheme', () => {
+      // The stated bound of the `://` requirement, pinned so a reader finds a
+      // decision rather than an oversight. `alice://s3cr3t@proxy:3128` is a
+      // syntactically valid URL whose scheme IS `alice`; nothing here can know
+      // the author meant it as a username, and it is not a working proxy
+      // configuration either way. The BLOCKER shape — credentials followed by
+      // a real `scheme://` — is the case above, and still yields
+      // `(unrecognized)`.
+      //
+      // This case is a DECISION RECORD, not a fence: dropping the `://`
+      // requirement leaves it green, because `alice` matches a bare `token:`
+      // reading too. The case above is what fences that regression.
+      process.env['HTTPS_PROXY'] = 'alice://s3cr3t@proxy.corp:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"alice"');
+      expect(lines[0]).not.toContain('s3cr3t');
+    });
+
+    it('a throwing logger must not break ROUTING — the request still falls back to DIRECT', () => {
+      // The property that matters, and the one two earlier orderings each got
+      // wrong in opposite directions. With the memo written FIRST a throwing
+      // logger loses the line forever; with it written LAST and unguarded the
+      // throw escapes `resolveProxyForTarget` before it can return '', so
+      // EVERY proxied request fails permanently — strictly worse, and worst in
+      // the `ALL_PROXY=socks5://` + working-direct-egress setup this seam
+      // exists to rescue. The emit is guarded, so neither happens.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const warn = vi.fn((): void => {
+        throw new Error('logger down');
+      });
+      const previous = getLogger();
+      const agent = new EnvRoutingProxyAgent();
+      setLogger(stubLogger(previous, warn) as never);
+      try {
+        for (const host of ['sts.us-east-1.amazonaws.com', 's3.us-east-1.amazonaws.com']) {
+          const picked = agent.connect(REQ, httpsOpts(host));
+          expect(picked).toBeInstanceOf(HttpsAgent);
+          expect(picked).not.toBeInstanceOf(HttpsProxyAgent);
+        }
+      } finally {
+        setLogger(previous);
+        agent.destroy();
+      }
+      // Retried rather than memoised, which is what lets a TRANSIENT failure
+      // still produce its warn — see the next case.
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    it('a TRANSIENT logger failure still gets its warn on a later request', () => {
+      // The reason the failed emit must not memoise. Under the pre-guard
+      // ordering the first (throwing) attempt recorded the scheme and the line
+      // was never emitted at all, however healthy the logger became.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const lines: string[] = [];
+      let calls = 0;
+      const warn = vi.fn((message: unknown): void => {
+        calls += 1;
+        if (calls === 1) throw new Error('transient');
+        lines.push(String(message));
+      });
+      const previous = getLogger();
+      const agent = new EnvRoutingProxyAgent();
+      setLogger(stubLogger(previous, warn) as never);
+      try {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'));
+        // And once it HAS been emitted, the memo holds: no third line.
+        agent.connect(REQ, httpsOpts('lambda.us-east-1.amazonaws.com'));
+      } finally {
+        setLogger(previous);
+        agent.destroy();
+      }
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"socks5"');
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    it('an UNPARSABLE value still THROWS — a typo has no working setup behind it', () => {
+      // The deliberate asymmetry, asserted next to the fallback so a future
+      // reader does not "unify" the two. `http://[` IS speakable by scheme,
+      // so it reaches the agent constructor exactly as before.
+      process.env['HTTPS_PROXY'] = 'http://[';
+      const agent = new EnvRoutingProxyAgent();
+      expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(TypeError);
+      agent.destroy();
+    });
+  });
+
+  /**
+   * The SDK half and the fetch half answering the same question differently
+   * IS issue go-to-k/cdk-local#663. `resolveProxyForTarget` is the site that
+   * owns it, so a second `getProxyForUrl` call anywhere in the module would
+   * be a second spelling — the shape that regenerates this defect.
+   */
+  describe('one site owns the routing decision', () => {
+    it('src/utils/aws-proxy.ts calls getProxyForUrl exactly once, inside resolveProxyForTarget', () => {
+      const source = readFileSync(new URL('../../../src/utils/aws-proxy.ts', import.meta.url), {
+        encoding: 'utf-8',
+      });
+      // COMMENT SPANS are excluded, so the prose in that module can spell the
+      // call however reads best. Counting raw occurrences made the paren-less
+      // spelling load-bearing and unstated: a future JSDoc writing
+      // `getProxyForUrl(url)` would red this fence with no behaviour change at
+      // all, which is a false alarm the next author has no way to anticipate.
+      //
+      // SPANS rather than whole LINES: dropping any line that merely STARTS
+      // with a comment marker also drops the code after an inline block
+      // comment, so `/* ignore */ if (getProxyForUrl(x))` would hide a real
+      // second call site. Removing `/* ... */` and `// ...` spans keeps the
+      // code on such a line in the population, and a trailing `//` mention is
+      // still stripped — the safe direction on both counts.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+      expect(code.match(/getProxyForUrl\(/g) ?? []).toHaveLength(1);
+      const body = /function resolveProxyForTarget\([^)]*\): string \{([\s\S]*?)\n\}/.exec(code);
+      expect(body).not.toBeNull();
+      expect(body![1]).toContain('getProxyForUrl(');
+
+    });
+
+    it('resetProxySchemeWarnings is not on the host-facing surface', async () => {
+      // BEHAVIOURAL, not a substring scan of source text. The first version
+      // asserted `internal.ts` does not CONTAIN the name, which a
+      // `export * from './utils/aws-proxy.js'` defeats completely: the symbol
+      // is genuinely exported and the name never appears. Ask the module
+      // namespace instead, which cannot be fooled by the spelling.
+      const internal = await import('../../../src/internal.js');
+      expect(Object.keys(internal)).not.toContain('resetProxySchemeWarnings');
+      // Guard-the-guard: the import really resolved the module under test.
+      expect(Object.keys(internal)).toContain('buildProxyClientConfig');
     });
   });
 });
