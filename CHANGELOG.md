@@ -1,3 +1,10 @@
+## [0.148.2](https://github.com/go-to-k/cdk-local/compare/v0.148.1...v0.148.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **local:** route non-SDK AWS-bound fetches through HTTPS_PROXY ([#656](https://github.com/go-to-k/cdk-local/issues/656)) ([dce9064](https://github.com/go-to-k/cdk-local/commit/dce9064b0f139069328440adfc0edc3d3d6247b8))
+
 ## [0.148.1](https://github.com/go-to-k/cdk-local/compare/v0.148.0...v0.148.1) (2026-09-02)
 
 
