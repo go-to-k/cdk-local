@@ -345,12 +345,11 @@ Never edit in the main checkout (`main-tree-branch-gate.sh` blocks branch creati
 there — with the coverage limit measured below). Per lane:
 
 ```bash
-# MAIN-CHECKOUT mode only (§3's launch-mode probe). An IN-PLACE run skips these
-# two lines, keeps the tree and branch it was launched in, and creates nothing:
-# a nested worktree dies with the outer workspace, taking its uncommitted work
-# (go-to-k/cdk-local#635). If that branch is detached or its PR already merged,
-# take a fresh one IN THIS TREE instead -- the recipe and what does and does not
-# protect it are below this block.
+# MAIN-CHECKOUT mode only (`references/launch-mode.md` holds the probe, and
+# calls itself its ONLY copy). An IN-PLACE run skips these two lines and creates
+# no WORKTREE: a nested one dies with the outer workspace, taking its
+# uncommitted work (go-to-k/cdk-local#635). It DOES take a branch, in place --
+# ALWAYS, whatever state the tree arrived in -- by the recipe below this block.
 # The setup lines below still apply: an adopted workspace may be missing them.
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
 cd .claude/worktrees/<name>
@@ -362,9 +361,16 @@ pnpm install    # worktrees have no node_modules -- and neither may the MAIN che
 vp run build    # ...and no dist/ — see below
 ```
 
-**IN-PLACE: if the branch here is detached, or its PR has already merged, take a
-fresh one WITHOUT leaving the tree** — and know what is and is not protecting you
-while you do:
+**IN-PLACE: take a fresh branch here, ALWAYS, and WITHOUT leaving the tree** —
+and know what is and is not protecting you while you do. The rule used to be
+conditional (only for a tree that arrived detached, or whose PR had already
+merged); go-to-k/cdkd#2417 made it unconditional. The branch the tree arrived on
+is `LAUNCH_BRANCH` — the OUTER TOOL's, not this run's — and this repo has
+`delete_branch_on_merge`, so a lane that opened its PR from it would delete the
+outer tool's remote branch on the way out. Never commit onto it; §9 switches
+back to it untouched as the run's last step. `references/launch-mode.md`'s
+consequence table (row 4) is the normative statement, and it is the file an
+IN-PLACE lane is dispatched to read alongside this one.
 
 ```bash
 git fetch origin && git switch -c <branch> origin/main

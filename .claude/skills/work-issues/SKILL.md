@@ -80,8 +80,8 @@ that proved them.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
   files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`,
-  plus `references/launch-mode.md` IN-PLACE — its table, not implement.md,
-  holds §5's IN-PLACE rules), and the probe's
+  plus `references/launch-mode.md` IN-PLACE — its table maps every IN-PLACE
+  consequence to its stage), and the probe's
   `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
   lane creates its own worktree per §5 — or works in place — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs

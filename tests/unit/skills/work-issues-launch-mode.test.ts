@@ -102,10 +102,17 @@ const ARM_BEARING: Record<string, string[]> = {
  */
 const LAUNCH_BRANCH_BEARING: Record<string, number> = {
   // Counts at the time of writing: SKILL.md 4, launch-mode.md 11, claim.md 1,
-  // ship.md 10, retro.md 1, gotchas.md 2.
+  // implement.md 1, ship.md 10, retro.md 1, gotchas.md 2.
   'SKILL.md': 2,
   [LAUNCH_MODE_DOC]: 6,
   [join('references', 'claim.md')]: 1,
+  // implement.md is section 5's own file and the ONE a lane actually opens at
+  // that stage, so its arm is the one whose absence is dangerous rather than
+  // merely inconsistent: a lane reading only the older conditional wording
+  // commits onto LAUNCH_BRANCH, and the merge then deletes the outer tool's
+  // remote branch. It was out of scope while go-to-k/cdk-local#643 held the
+  // file and joined the list the moment that PR merged.
+  [join('references', 'implement.md')]: 1,
   [join('references', 'ship.md')]: 6,
   [join('references', 'retro.md')]: 1,
   [join('references', 'gotchas.md')]: 1,
@@ -252,6 +259,29 @@ describe('work-issues launch-mode probe', () => {
         ).not.toMatch(BRANCH_MOVING);
       }
     }
+  });
+
+  it('section 5 takes the lane branch IN PLACE unconditionally', () => {
+    // The occurrence floor above cannot see this: implement.md can keep its
+    // LAUNCH_BRANCH paragraph verbatim while the INSTRUCTION beside it reverts to
+    // "only when the tree is detached or its PR has merged" -- measured as a
+    // mutation probe, which the floor passed. That reversion is the dangerous
+    // one: section 5 is the file a lane actually opens at that stage, so a lane
+    // following it commits onto LAUNCH_BRANCH and the merge deletes the outer
+    // tool's remote branch (this repo has `delete_branch_on_merge`). So the
+    // unconditionality is pinned directly, in both directions.
+    const impl = read(join('references', 'implement.md'));
+    expect(
+      impl,
+      `references/implement.md's IN-PLACE branch instruction no longer states that the ` +
+        `lane branch is taken ALWAYS. A conditional rule there sends a lane onto ` +
+        `LAUNCH_BRANCH, which the merge then deletes on the outer tool's behalf.`
+    ).toMatch(/IN-PLACE:[^\n]*\b(ALWAYS|unconditional)/i);
+    expect(
+      impl,
+      `references/implement.md is back to gating the in-place branch on the tree being ` +
+        `detached or its PR merged. go-to-k/cdkd#2417 made that rule unconditional.`
+    ).not.toMatch(/\bif (the branch here is|that branch is) detached\b/i);
   });
 
   it('both mirrored flow lessons are still in the stage file that fires them', () => {
