@@ -667,18 +667,235 @@ The hooks split into four classes:
 
 - **`main-tree-branch-gate.sh`** blocks branch-switching commands in
   the MAIN worktree so concurrent agents don't race on the shared
-  `/Users/.../cdk-local` slot. Allowed in the main tree:
-  `git switch main` / `git switch master`,
-  `git checkout main|master`, `git checkout -- <pathspec>` (file
-  restore), `git checkout <sha>` (detached HEAD), `git worktree add
-  ...` (sanctioned escape). Blocked: `git switch -c <feat>`,
-  `git switch <existing-feat>`, `git checkout -b <feat>`,
-  `git checkout <local-branch-name>`, `git switch -`. Inside any
-  `.claude/worktrees/<x>/` subtree everything passes through —
-  feature-branch work is meant to live there. The error message
-  names the resolved target dir + the operation + the corrective
+  `/Users/.../cdk-local` slot. Inside any `.claude/worktrees/<x>/`
+  subtree everything passes through — feature-branch work is meant to
+  live there. The error message names the resolved target dir + the
+  operation + the corrective
   `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`
   recipe.
+
+  **Allowed** in the main tree: `git switch main|master`,
+  `git checkout main|master`, `git checkout [<tree-ish>] -- <pathspec>`
+  AND `git checkout <tree-ish> <pathspec>` (both are file restores that
+  leave HEAD alone), `git checkout -p|--patch|--ours|--theirs …`
+  (restore modes), `git checkout <sha>` (detached HEAD — see the
+  correction below), `git checkout HEAD`, `--help` under either verb,
+  and `git worktree add ...` (sanctioned escape).
+
+  **Blocked**: `git switch <not-main>`, the create pair under both
+  verbs in every spelling — `-c|-C|--create|--force-create <b>` for
+  switch, `-b|-B <b>` for checkout, `--orphan <b>` for both, plus the
+  GLUED forms `-c<b>` / `-C<b>` / `-b<b>` / `-B<b>` / `--create=<b>` /
+  `--force-create=<b>` / `--orphan=<b>` and short-flag BUNDLES like
+  `-qb<b>` — `-t|--track|--track=<mode> <remote-ref>` (git DWIMs it into
+  a create + switch), `git checkout <name>` when `<name>` is the only
+  positional and names either a LOCAL branch or a branch on some REMOTE,
+  `git switch --detach`, and `-` / `@{-1}` under BOTH verbs.
+
+  **The arguments are read by a real option parse**, not by "token 1 and
+  token 2", since 2026-09-01, over tokens from the shared `gate_tokens` in
+  `_command-match.sh`. The splitter lives in the LIBRARY rather than in the gate
+  because matching `GATE_EMBEDDING_TOKEN` inside a hook and then reading a
+  positional `${BASH_REMATCH[N]}` out of it couples the gate to a shared
+  constant's group count: widening the constant shifts the index and silently
+  re-opens the gate. (cdkd's `unresolved-target-class.test.sh` fence 4 refuses
+  that shape by name and caught the first draft of this parse; this repo has no
+  such fence, so the same shape is adopted here deliberately rather than under
+  compulsion.) Every wanted verdict was settled against
+  real git (2.53.0) with HEAD and the local branch list printed before
+  and after, and the option grammar comes from `git checkout -h` /
+  `git switch -h` rather than from memory. Thirteen defects, all live in
+  the main checkout before the change and all measured there. Thirteen is
+  the ROW COUNT below: this paragraph read "nine" over the same table
+  while the commit shipping it said "five bypasses and three false
+  blocks" in its title and "nineteen command shapes" in its body — four
+  spellings of one set. Count the rows; do not recall the number.
+
+  ```text
+  git checkout <branch> -- <paths>            rc=2  want 0  <- false block (restore)
+  git checkout <branch> <paths>               rc=2  want 0  <- false block (restore)
+  git switch --help                           rc=2  want 0  <- false block
+  git checkout -f <branch>                    rc=0  want 2  <- bypass
+  git checkout --orphan <branch>              rc=0  want 2  <- bypass
+  git checkout -bfeat / -Bfeat / -qbfeat      rc=0  want 2  <- bypass (glued)
+  git checkout --orphan=feat                  rc=0  want 2  <- bypass (glued)
+  git checkout --conflict merge <branch>      rc=0  want 2  <- bypass (count != parse)
+  git checkout --pathspec-from-file <f> <b>   rc=2  want 0  <- false block (restore)
+  git checkout --recurse-submodules <branch>  rc=0  want 2  <- bypass
+  git checkout <remote-only branch>           rc=0  want 2  <- bypass (DWIM)
+  git checkout -t origin/<b> / --track=direct rc=0  want 2  <- bypass (DWIM)
+  git checkout - / git checkout @{-1}         rc=0  want 2  <- bypass (previous branch)
+  ```
+
+  Three of those are load-bearing rather than tidiness. `git checkout -f
+  <branch>` is a LIVE BYPASS of the protection the whole worktree
+  discipline rests on — `-f` was read AS the branch name, `refs/heads/-f`
+  does not resolve, and the gate passed a switch that really happens.
+  `git checkout <branch> -- <paths>` is a documented integration step in
+  a sibling repo, so the false block refused a mandated flow. And
+  `git checkout <name>` for a branch that exists only on a remote is how
+  a lane's branch usually FIRST appears in a checkout, so a local-only
+  `show-ref` was blind to the commonest spelling of what the gate guards.
+
+  The `--pathspec-from-file` row is a CORRECTION rather than a find: the
+  first pass filed that flag with `--conflict` as merely value-taking,
+  wrote `want 2` here, and pinned rc=2 in a test. Backwards — the
+  pathspecs come FROM THE FILE, so the trailing token is the tree-ish and
+  the command is a RESTORE (measured: "Updated 1 path from <sha>", HEAD
+  stayed on `main`, for the spaced and the `=` spelling alike). A wrong
+  `want` in a table is worse than a missing row, because the test written
+  from it defends the defect.
+
+  **That parse then shipped a REGRESSION and five more holes, closed
+  2026-09-02.** Measured against a fixture main checkout with a
+  CONFIGURED `origin`, a SLASH-named remote, a ref under an unconfigured
+  remote and a real local branch; `OLD` is cdkd's `origin/main` copy of
+  the gate, so the first four rows read as regressions rather than as
+  plain failures:
+
+  ```text
+  command                                     OLD  NEW  now  want
+  git checkout <branch> 2>/dev/null             2    0    2     2
+  git checkout <branch> >/dev/null 2>&1         2    0    2     2
+  git checkout <branch> # switch lane           2    0    2     2
+  git checkout <branch> --                      2    0    2     2
+  git checkout -q <branch> 2>&1                 0    0    2     2
+  git checkout - 2>/dev/null                    0    0    2     2
+  git checkout --orph <b> / --or <b>            0    0    2     2
+  git checkout --trac origin/<b>                0    0    2     2
+  git checkout <b on a SLASH-named remote>      0    0    2     2
+  git switch -- main                            2    2    0     0
+  git checkout <ref under an UNCONFIGURED rem>  0    2    0     0
+  git checkout --no-guess <remote-only>         0    2    0     0
+  git checkout --pathspec-from-file <f> <b>     0    2    0     0
+  control: git checkout <branch>                2    2    2     2
+  ```
+
+  Four causes. (1) **The input is ARGV, not shell WORDS** — a
+  redirection, its spaced target, a trailing `&` and a `#` comment are
+  the SHELL's, and git never sees them; a new `gate_argv` in
+  `_command-match.sh` drops them, leaving `gate_tokens` for callers that
+  want the raw words. (2) **A positional COUNT relaxed a verdict on an
+  incomplete parse, twice** — first a flag's VALUE read as a positional,
+  then a shell WORD. The count cannot simply be removed: git's own
+  grammar makes `git checkout <b> <path>` a restore and `git checkout
+  <b>` a switch, so only the extra OPERAND tells them apart. The rule is
+  now that an INCOMPLETE parse may not ALLOW — an unresolvable or
+  ambiguous option sets `parse_certain=0` and the verdict is a
+  conservative block naming it. (3) **git accepts any unambiguous PREFIX
+  of a long name** (measured: `--orph newb`, `--or newb`, `--trac
+  origin/<b>` all move HEAD), which `-h` does not show — so each verb now
+  carries its COMPLETE long-option table with per-name arity, since a
+  prefix can only be resolved against the whole name set. (4) **`--` is
+  checkout's pathspec separator and switch's end-of-options** — `git
+  checkout <b> --` switches (no operand follows), and `git switch -- main`
+  prints "Already on 'main'" while `git switch -- <feature>` switches.
+  (5) **A WORD THE SHELL OWNS MAY NOT RELAX EITHER** — cause 2 is stated
+  for git's OPTIONS, and `gate_argv` did the opposite for the shell's
+  WORDS: it ENUMERATED the forms it recognised and passed everything else
+  through as an argument, so three rounds of fixes each added a spelling
+  and the next round found the one still missing (`$EMPTY` and
+  `${EMPTY}`, whose expansion VANISHES, and `{fd}>/dev/null`, bash's
+  fd-variable redirection — all four measured rc=0 where 2 is wanted, on
+  commands that move HEAD). The default is now INVERTED rather than the
+  list extended: `gate_word_is_literal` admits a word only when every one
+  of its characters is on a closed list of characters the shell does not
+  act on, and a word that fails sets `parse_certain=0`. A shape nobody
+  has thought of lands on BLOCK because every shell construct is SPELLED,
+  and one outside the list necessarily carries a character the list does
+  not hold — the audit surface is the LIST, with a reason per member, not
+  a catalogue of shell forms. The cost is over-strictness (`git checkout
+  main -- "$f"` is a restore and now blocks); measured over all three
+  repos' committed invocations, 32 of 206 texts newly block and 30 of
+  those are documentation metasyntax rather than commands, while the
+  count on lines that actually EXECUTE is zero.
+
+  **Three options git ACCEPTS were blocked by cause 2's arm**, which had
+  been documented as firing "only on commands git itself refuses":
+  `--end-of-options main`, `--end-of-options -- <path>` and
+  `--git-completion-helper` all run with rc=0 (measured, git 2.53.0).
+  They and `--git-completion-helper-all` / `--help-all` are
+  `parse-options` built-ins, absent from `-h` where the tables came from,
+  and are in the tables now at arity 0. `--end-of-options` sets
+  `end_opts` but NOT the pathspec flag, because `git checkout
+  --end-of-options <branch>` really SWITCHES.
+
+  **The DWIM list is the CONFIGURED remotes, stripped per remote**, which
+  is what git does and what cdk-real-drift's copy already did. A remote
+  NAME may contain a slash (`git remote add a/b <url>` is accepted), so a
+  fixed `lstrip=3` renders its `deep-only` as `b/deep-only` while git
+  DWIMs the bare name — a fail-open; and a ref under an UNCONFIGURED
+  remote is not DWIMed at all ("pathspec did not match", HEAD stays) — a
+  false block. Dropping SYMREFS replaces the old literal `HEAD`
+  exclusion and is the same rule stated properly. `--no-guess` turns the
+  DWIM off entirely and the arm is skipped for it. The list does NOT
+  check uniqueness: with one name on two remotes git refuses while the
+  gate blocks — the conservative direction, so the behaviour stays, but
+  no comment may claim the list holds only names one remote carries.
+
+  **A truncated argument list is refused, not parsed.** An unbalanced
+  quote cannot be split into words, and `gate_tokens` returned the prefix
+  it managed silently — `-b agent's-branch` yielded just `-b`, read as a
+  bare `git checkout`, and PASSED. It now REPORTS the truncation and the
+  gate blocks naming the cause. **The justification recorded for that
+  ordering was false and is retired**: it read "the text is a shell
+  syntax error in the first place, so nothing legitimate is lost", but
+  the splittability rc came from tokenizing the WHOLE text while the `#`
+  comment was dropped later inside the walk, so an apostrophe INSIDE a
+  comment was weighed as a quote. `bash -n "git checkout main # don't
+  switch lanes"` reports VALID syntax and git answers "Already on 'main'"
+  with HEAD unmoved — and the gate blocked it. `gate_argv` now cuts the
+  comment BEFORE splitting (`gate_strip_comment`, with
+  `gate_segments_raw`'s `ignore_q` second pass for a quote that never
+  closes), so the refusal covers only text bash itself will not run;
+  `-b agent's-branch` still refuses, having no comment to cut.
+
+  Two shapes are ALLOWED for measured reasons that look like gaps and are
+  not. `git checkout HEAD` creates nothing ("Your branch is up to date",
+  HEAD stays), and it is excluded by the SYMREF rule rather than by a
+  literal — a branch cannot be NAMED `HEAD` anyway. And `-p` / `--ours` /
+  `--theirs` / `--pathspec-from-file` leave HEAD alone, so blocking them
+  would be the same false block as the `<branch> -- <paths>` one.
+  `--pathspec-file-nul` is deliberately NOT in that restore set: git
+  refuses it without `--pathspec-from-file`, so it never appears in an
+  accepted command this arm would judge.
+
+  **A block must not name an operation git will not perform.**
+  `git checkout -d <branch>` / `--detach <branch>` really DETACHES
+  (measured: HEAD went to a raw sha) and the block announced it as
+  "switches to feature branch '<b>'". The verdict is unchanged; the
+  wording now matches.
+
+  **Known bound, in the message rather than the verdict**: `gate_segments`
+  truncates a segment at a `}`, so `git switch -c 'feat/{id}'` blocks
+  correctly while the message and its `git worktree add … -b feat/{id`
+  recipe name a TRUNCATED branch. The cause is in the shared splitter
+  every gate calls, so it is recorded rather than worked around here.
+
+  **This repo's `main_tree_of` has NO memo** and forks `git worktree
+  list` once per matching segment, while cdkd's carries a one-entry memo
+  plus an out-variable (a command substitution would put both memo
+  variables in a subshell). The divergence used to live only in a commit
+  message, so neither repo's reader could see it; the argument for this
+  gate is "one function with two homes", which makes the difference worth
+  stating in both.
+
+  **This repo keeps the gate's cases in `gate-command-recognition.test.sh`**
+  while cdkd and cdk-real-drift each keep a per-gate
+  `main-tree-branch-gate.test.sh`. The choice is deliberate, and the
+  consequence for a porter is that a case added in one repo has no
+  same-named home in the other — a port has to be told where to land.
+
+  **Correction to an older rationale.** `git checkout <sha>` was
+  justified here as "read-only inspection". That is false: it rewrites
+  the shared working tree and leaves a detached HEAD, and the detached
+  HEAD then disarms `branch-gate.sh`, which reads
+  `git -C <dir> symbolic-ref --short HEAD` — EMPTY while detached — and
+  falls through to `exit 0`. Measured in a throwaway repo carrying a
+  `.markgate.yml`, driving branch-gate with `git commit -m x`: rc=2 on
+  `main`, rc=0 once detached. The verdict is unchanged (blocking it would
+  refuse a legitimate inspection spelling across three repos and belongs
+  in its own PR), but the claim is retired.
 
   The VERDICT is read per SEGMENT, from `gate_verb_args` — the same
   constant that armed the gate — not from the whole command. It used to
@@ -728,9 +945,22 @@ The hooks split into four classes:
   gate that calls it.
   Covered by `.claude/hooks/gate-command-recognition.test.sh`, whose
   main-tree block pins the chained blocks, the per-segment allowances,
-  the linked-worktree pass and the quoted-mention pair (167 cases in
-  that file overall, alongside the `post-merge-orphan-push-gate` block
-  added for the same defect). The interpreter those cases run the hooks
+  the linked-worktree pass, the quoted-mention pair, and — since
+  2026-09-01 — every argument shape in the table above with its
+  false-block control beside it (213 cases in that file overall,
+  alongside the `post-merge-orphan-push-gate` block added for the same
+  defect). This gate has no suite of its own; its cases live here
+  because the per-segment tree-resolution cases they must be read
+  against are already here, and a second file would give one gate two
+  suites with no rule for which gets the next case. Where the exit code
+  cannot discriminate — a dropped create-flag still names the branch
+  correctly, it merely calls the creation a switch — the case asserts
+  the whole message PHRASE rather than the name. Every added assertion
+  was mutation-proven; the three that turned out to fence nothing when
+  first written were a `-C`-carrying CHECKOUT (dropping `${GATE_FLAGS}`
+  from `GATE_RE_GIT_CHECKOUT` left the suite green), the quoted branch
+  name (dropping `gate_unquote` left it green), and the
+  previous-branch MESSAGE under `switch`. The interpreter those cases run the hooks
   under is now explicit: a `bash` symlink at the front of the pinned
   PATH, defaulting to `/bin/bash` (3.2 on macOS) and overridable with
   `HOOK_BASH=<path> bash .claude/hooks/gate-command-recognition.test.sh`
