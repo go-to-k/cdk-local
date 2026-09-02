@@ -33,8 +33,9 @@ stage 0 because §2's collision scan already consumes the answer — IN-PLACE it
 relative `.claude/worktrees/<w>` paths resolve to nothing and it reports an
 empty board, which reads as "no competing agents". In the PARENT because
 stages 0–3 are delegated to a subagent whose return payload carries no git
-state. State all three printed values — `MODE`, which is
-`MAIN-CHECKOUT` or `IN-PLACE`, plus `LANE_TREE` and `MAIN_CHECKOUT` — in the
+state. State all four printed values — `MODE`, which is
+`MAIN-CHECKOUT` or `IN-PLACE`, plus `LANE_TREE`, `MAIN_CHECKOUT` and
+`LAUNCH_BRANCH` (the branch §9 puts back; empty if launched detached) — in the
 opening report, the first message you write after running the probe and before
 any lane starts, and pass them into the triage dispatch and into every lane
 dispatch. That report is their only recorded copy, and §3's ownership anchor
@@ -79,8 +80,8 @@ that proved them.
 - **Lanes (stages 5–8): one general-purpose subagent per claimed issue.**
   Dispatch each with the issue number(s), the posted claim, and the stage
   files to read at stage entry (`references/{implement,gates-and-pr,verify}.md`),
-  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. The lane creates its
-  own worktree per §5 — or works in place — implements (unit + fixture
+  and the probe's `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` / `LAUNCH_BRANCH`. The
+  lane creates its own worktree per §5 — or works in place — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs
   `/check` + `/check-docs`, opens the PR, dispatches its review tier (a lane
   may spawn reviewer subagents), addresses findings, and drives CI to green —
@@ -109,7 +110,7 @@ wants to watch); the stage files apply unchanged either way.
 
 | Stage | File (read at entry) | What it covers |
 |---|---|---|
-| Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its three values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
+| Before 0. Launch mode | `references/launch-mode.md` | The probe (the ONLY copy), reading its four values, why the parent runs it before stage 0, and the table mapping every IN-PLACE consequence to its stage |
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`), volume assessment |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes (absolute, via `<MAIN_CHECKOUT>`), their pre-first-write blind spot, the shared cross-cutting runtime modules at most one lane may own |

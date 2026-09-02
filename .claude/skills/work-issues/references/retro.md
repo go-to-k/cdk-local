@@ -277,9 +277,16 @@ git fetch origin && git switch -c "$B" origin/main
   tier; a wrong rule here propagates into every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes
   the worktree — §9's closing check is "every worktree THIS run added is
-  gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9)
-  and leaves the tree standing on the retro branch for whoever owns the
-  workspace (the appendix has what the Stop hook will say about that).
+  gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9),
+  and instead this is where it runs §9's IN-PLACE cleanup arm — **the LAST
+  step of the whole run**: `git switch <LAUNCH_BRANCH>` as-is (no pull, no
+  rebase, no fast-forward) and `git branch -D` every branch this run created,
+  the retro branch included. §9 deliberately does NOT do that per-lane,
+  because THIS section branches in the same tree and would undo it. Leaving
+  the tree standing on the retro branch — the previous instruction here —
+  makes the unmerged-lane Stop hook warn every turn (the appendix has the
+  wording), and detaching instead is visible-surprising in the outer tool's
+  UI; restoring what the tool created is quiet on both counts.
   `Session-fit: now`: deferring leaves main self-inconsistent (the
   skill keeps prescribing what this run proved wrong), the evidence dies with
   the session, and the open PR is NOT CLOSEABLE.
