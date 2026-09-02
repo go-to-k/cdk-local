@@ -665,6 +665,39 @@ The hooks split into four classes:
   dir and the parsed command — create a feature branch in that dir
   (`git -C <target-dir> switch -c <branch>`) and retry.
 
+  **A DETACHED HEAD in the MAIN checkout blocks too**
+  (go-to-k/cdkd#2402). `symbolic-ref --short HEAD` is EMPTY while
+  detached, so the `case "$branch" in main|master)` matched neither arm
+  and fell to `exit 0` — while the comment above it asserted the empty
+  string meant "the dir doesn't exist or isn't inside a git repo", which
+  is the one reading that is harmless. A detached HEAD in a perfectly
+  valid repo produces the same empty string and means the opposite: the
+  tree has LEFT `main`. The two gates composed into a hole neither had
+  alone, because `main-tree-branch-gate.sh` passes `git checkout <sha>`
+  in the main checkout. Measured on a scratch opted-in repo, same
+  `git commit` payload: rc=2 on `main`, rc=0 once detached. The gate now
+  uses `$target_top` (`rev-parse --show-toplevel`, already non-empty by
+  the opt-in check above) as the discriminator, and blocks ONLY when
+  that toplevel IS the main checkout — the first `worktree ` line of
+  `git worktree list --porcelain`. A detached LINKED worktree keeps
+  passing: that is the lane-clearing state `stop-unmerged-lane-warn.sh`
+  prescribes (`git switch --detach origin/main`), so blocking it would
+  refuse a documented instruction. The compare reads TOPLEVELS, not the
+  raw resolved dir `main_tree_of` compares, which fixes two things at
+  once — a cwd one level down inside the main checkout, and a payload
+  cwd still carrying a symlink git has resolved out of
+  `--show-toplevel` (`/var` → `/private/var` on macOS).
+
+  **This gate now has its own harness**,
+  `.claude/hooks/branch-gate.test.sh` (24 cases) — the shape cdkd and
+  cdk-real-drift have carried for months, and its absence here was the
+  gap. `gate-command-recognition.test.sh` keeps its five branch-gate
+  rows: its subject is which COMMANDS reach a gate, and it has no
+  fixture for a main checkout that owns a linked worktree. The new
+  harness puts the interpreter on a `HOOK_BASH` shim, so running the
+  suite under bash 3.2 actually runs the HOOK under 3.2 — proven with a
+  bash-4-only parse error that scores 17/7 under 3.2 and 24/0 under 5.x.
+
 - **`main-tree-branch-gate.sh`** blocks branch-switching commands in
   the MAIN worktree so concurrent agents don't race on the shared
   `/Users/.../cdk-local` slot. Inside any `.claude/worktrees/<x>/`
@@ -893,9 +926,16 @@ The hooks split into four classes:
   `git -C <dir> symbolic-ref --short HEAD` — EMPTY while detached — and
   falls through to `exit 0`. Measured in a throwaway repo carrying a
   `.markgate.yml`, driving branch-gate with `git commit -m x`: rc=2 on
-  `main`, rc=0 once detached. The verdict is unchanged (blocking it would
-  refuse a legitimate inspection spelling across three repos and belongs
-  in its own PR), but the claim is retired.
+  `main`, rc=0 once detached. **This gate's verdict is still unchanged**
+  (blocking the sha spelling would refuse a legitimate inspection across
+  three repos and belongs in its own PR), but the CONSEQUENCE is gone:
+  go-to-k/cdkd#2402 taught `branch-gate.sh` to tell a detached HEAD apart
+  from "no repo to read" and block it in the MAIN checkout, while leaving
+  a detached LINKED worktree alone (the lane-clearing state
+  `stop-unmerged-lane-warn.sh` prescribes). Re-measured on the same
+  fixture: rc=2 detached in the main checkout, rc=0 detached in a linked
+  worktree. So `git checkout <sha>` still detaches the shared tree, and
+  the commit that used to follow it ungated no longer can.
 
   The VERDICT is read per SEGMENT, from `gate_verb_args` — the same
   constant that armed the gate — not from the whole command. It used to
