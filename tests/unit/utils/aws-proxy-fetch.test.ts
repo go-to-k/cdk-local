@@ -289,6 +289,23 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(origin.acceptEncodings[0]).toContain('gzip');
   });
 
+  it('a LEADING SPACE in the proxy value still TUNNELS on this half too', async () => {
+    // The trim's comment says it moves `proxyAwareFetch` from its not-proxied
+    // branch to tunnelling, and until now only the AGENT half fenced it:
+    // deleting `.trim()` reddened three cases in `aws-proxy.test.ts` and ZERO
+    // here. Issue 663 was precisely a divergence between these two halves, so
+    // a claim about the fetch half belongs in the fetch half's suite.
+    //
+    // The discriminator is WHICH SOCKET serves the body: `origin.invalid`
+    // never resolves, so an untrimmed value going direct fails outright, while
+    // a trimmed one reaches the recorder.
+    const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
+    process.env['HTTP_PROXY'] = ` ${proxy.url}`;
+
+    expect(await (await proxyAwareFetch('http://origin.invalid/x')).text()).toBe('proxy-body');
+    expect(proxy.requests).toEqual(['GET http://origin.invalid/x']);
+  });
+
   it('a LOOPBACK target under an unspeakable proxy is silent — the loopback check must run FIRST', async () => {
     // The ORDER of the two arms in `proxyAwareFetch`'s short-circuit is
     // load-bearing, and nothing fenced it: swapping them to

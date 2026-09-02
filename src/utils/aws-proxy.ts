@@ -158,20 +158,39 @@ function isSpeakableProxy(proxyUrl: string): boolean {
 function warnUnspeakableProxy(proxyUrl: string): void {
   const scheme = proxySchemeOf(proxyUrl);
   if (warnedProxySchemes.has(scheme)) return;
-  // The memo is written AFTER the line is emitted, not before. A throwing
-  // `logger.warn` — a host CLI's injected logger, a closed stream — would
-  // otherwise record the scheme as warned and never print it, turning the
-  // one-time warn into a zero-time one. That warn is the entire argument for
-  // choosing fallback over refusal, so losing it silently is the failure this
-  // whole seam is arranged to prevent.
-  getLogger()
-    .child('aws-proxy')
-    .warn(
-      `Unsupported proxy scheme "${scheme}" — cdk-local speaks HTTP CONNECT proxies ` +
-        'only, so this request went DIRECT instead of through the proxy. Set ' +
-        'HTTPS_PROXY / HTTP_PROXY / ALL_PROXY to an http:// or https:// proxy URL. ' +
-        '(The proxy URL is withheld here: it can carry credentials.)'
-    );
+  // The emit is GUARDED and the memo is written only on success, which
+  // dominates both of the orderings that came before it. With the `add`
+  // first, a throwing logger loses the line permanently — the warn is the
+  // entire argument for choosing fallback over refusal. With the `add` last
+  // and no guard, the throw escapes `resolveProxyForTarget` before it can
+  // `return ''`, so EVERY proxied request fails forever instead of falling
+  // back — strictly worse, and worst in exactly the
+  // `ALL_PROXY=socks5://` + working-direct-egress setup this seam exists to
+  // rescue. Catching keeps routing intact AND lets a TRANSIENT logger
+  // failure still get its warn on a later request.
+  //
+  // Reachability, stated honestly rather than dressed up: there is no such
+  // logger TODAY. `setLogger` is exported from neither `src/index.ts` nor
+  // `src/internal.ts` and is called nowhere in `src/**`, and
+  // `ConsoleLogger.emit` is `console.warn` / `console.log`, which does not
+  // throw synchronously. This is defensive against a path that does not
+  // exist yet — and nothing fences `setLogger` off the export surface, so it
+  // could. The cost of the guard is three lines; the cost of being wrong is
+  // every AWS call in the process.
+  try {
+    getLogger()
+      .child('aws-proxy')
+      .warn(
+        `Unsupported proxy scheme "${scheme}" — cdk-local speaks HTTP CONNECT proxies ` +
+          'only, so this request went DIRECT instead of through the proxy. Set ' +
+          'HTTPS_PROXY / HTTP_PROXY / ALL_PROXY to an http:// or https:// proxy URL. ' +
+          '(The proxy URL is withheld here: it can carry credentials.)'
+      );
+  } catch {
+    // Not memoised: the next request retries the emit, and routing continues
+    // to the DIRECT fallback either way.
+    return;
+  }
   warnedProxySchemes.add(scheme);
 }
 

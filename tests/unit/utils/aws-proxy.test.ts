@@ -830,16 +830,14 @@ describe('aws-proxy (issue #634)', () => {
       expect(lines[0]).not.toContain('s3cr3t');
     });
 
-    it('does not memoise the scheme when the warn itself THROWS', () => {
-      // The memo is written AFTER the emit, and nothing pinned that ordering
-      // until the parent review asked for it. Under the reverse order a
-      // logger that throws — a host CLI's injected one, a closed stream —
-      // records the scheme as warned and never prints it, so the one-time
-      // warn becomes a ZERO-time warn for the life of the process. That line
-      // is the entire argument for choosing fallback over refusal.
-      //
-      // The discriminator is the SECOND attempt: with the memo written first
-      // it is a silent no-op and `warn` is called once.
+    it('a throwing logger must not break ROUTING — the request still falls back to DIRECT', () => {
+      // The property that matters, and the one two earlier orderings each got
+      // wrong in opposite directions. With the memo written FIRST a throwing
+      // logger loses the line forever; with it written LAST and unguarded the
+      // throw escapes `resolveProxyForTarget` before it can return '', so
+      // EVERY proxied request fails permanently — strictly worse, and worst in
+      // the `ALL_PROXY=socks5://` + working-direct-egress setup this seam
+      // exists to rescue. The emit is guarded, so neither happens.
       process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
       const warn = vi.fn((): void => {
         throw new Error('logger down');
@@ -848,16 +846,46 @@ describe('aws-proxy (issue #634)', () => {
       const agent = new EnvRoutingProxyAgent();
       setLogger(stubLogger(previous, warn) as never);
       try {
-        expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(
-          'logger down'
-        );
-        expect(() => agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'))).toThrow(
-          'logger down'
-        );
+        for (const host of ['sts.us-east-1.amazonaws.com', 's3.us-east-1.amazonaws.com']) {
+          const picked = agent.connect(REQ, httpsOpts(host));
+          expect(picked).toBeInstanceOf(HttpsAgent);
+          expect(picked).not.toBeInstanceOf(HttpsProxyAgent);
+        }
       } finally {
         setLogger(previous);
         agent.destroy();
       }
+      // Retried rather than memoised, which is what lets a TRANSIENT failure
+      // still produce its warn — see the next case.
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
+    it('a TRANSIENT logger failure still gets its warn on a later request', () => {
+      // The reason the failed emit must not memoise. Under the pre-guard
+      // ordering the first (throwing) attempt recorded the scheme and the line
+      // was never emitted at all, however healthy the logger became.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const lines: string[] = [];
+      let calls = 0;
+      const warn = vi.fn((message: unknown): void => {
+        calls += 1;
+        if (calls === 1) throw new Error('transient');
+        lines.push(String(message));
+      });
+      const previous = getLogger();
+      const agent = new EnvRoutingProxyAgent();
+      setLogger(stubLogger(previous, warn) as never);
+      try {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'));
+        // And once it HAS been emitted, the memo holds: no third line.
+        agent.connect(REQ, httpsOpts('lambda.us-east-1.amazonaws.com'));
+      } finally {
+        setLogger(previous);
+        agent.destroy();
+      }
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"socks5"');
       expect(warn).toHaveBeenCalledTimes(2);
     });
 
@@ -883,28 +911,36 @@ describe('aws-proxy (issue #634)', () => {
       const source = readFileSync(new URL('../../../src/utils/aws-proxy.ts', import.meta.url), {
         encoding: 'utf-8',
       });
-      // COMMENT LINES ARE EXCLUDED, so the prose in that module can spell the
+      // COMMENT SPANS are excluded, so the prose in that module can spell the
       // call however reads best. Counting raw occurrences made the paren-less
       // spelling load-bearing and unstated: a future JSDoc writing
       // `getProxyForUrl(url)` would red this fence with no behaviour change at
       // all, which is a false alarm the next author has no way to anticipate.
-      const code = source
-        .split('\n')
-        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
-        .join('\n');
+      //
+      // SPANS rather than whole LINES: dropping any line that merely STARTS
+      // with a comment marker also drops the code after an inline block
+      // comment, so `/* ignore */ if (getProxyForUrl(x))` would hide a real
+      // second call site. Removing `/* ... */` and `// ...` spans keeps the
+      // code on such a line in the population, and a trailing `//` mention is
+      // still stripped — the safe direction on both counts.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
       expect(code.match(/getProxyForUrl\(/g) ?? []).toHaveLength(1);
       const body = /function resolveProxyForTarget\([^)]*\): string \{([\s\S]*?)\n\}/.exec(code);
       expect(body).not.toBeNull();
       expect(body![1]).toContain('getProxyForUrl(');
 
-      // `resetProxySchemeWarnings` is a TEST SEAM, and the module's own JSDoc
-      // says it is deliberately not part of the host-facing surface. Nothing
-      // enforced that, unlike the neighbouring client / call-site audits, so
-      // the claim could quietly stop being true.
-      const internal = readFileSync(new URL('../../../src/internal.ts', import.meta.url), {
-        encoding: 'utf-8',
-      });
-      expect(internal).not.toContain('resetProxySchemeWarnings');
+    });
+
+    it('resetProxySchemeWarnings is not on the host-facing surface', async () => {
+      // BEHAVIOURAL, not a substring scan of source text. The first version
+      // asserted `internal.ts` does not CONTAIN the name, which a
+      // `export * from './utils/aws-proxy.js'` defeats completely: the symbol
+      // is genuinely exported and the name never appears. Ask the module
+      // namespace instead, which cannot be fooled by the spelling.
+      const internal = await import('../../../src/internal.js');
+      expect(Object.keys(internal)).not.toContain('resetProxySchemeWarnings');
+      // Guard-the-guard: the import really resolved the module under test.
+      expect(Object.keys(internal)).toContain('buildProxyClientConfig');
     });
   });
 });
