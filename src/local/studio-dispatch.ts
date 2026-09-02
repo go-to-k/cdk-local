@@ -331,9 +331,42 @@ function runChild(
       // status) so the studio LOGS panel shows only the Lambda container's
       // runtime logs (which stream straight from `docker logs`, unaffected by
       // this level) plus the response. See `resolveConfiguredLogLevel`.
+      //
+      // `CDKL_LOG_STREAM` is PINNED rather than inherited (issue #608). The
+      // spawn spreads `process.env`, so an operator who exported
+      // `CDKL_LOG_STREAM=stdout` in their own shell would hand it to the
+      // child, and `emit()` in `utils/logger.ts` then routes EVERY level --
+      // cdk-local's own warns included -- to stdout.
+      //
+      // On this path stdout is the RESPONSE channel, and for the `agentcore`
+      // kind `extractResponse` treats the WHOLE of stdout as the response
+      // (an agent streams its entire output there, so there are no non-response
+      // stdout lines to separate). Warns landing on stdout are therefore folded
+      // into the response itself. Measured live against the local-studio
+      // fixture, invoking an AgentCore runtime under `--from-cfn-stack` /
+      // `--assume-role` with the variable exported:
+      //
+      //   without the pin: response is a STRING beginning
+      //                    "WARN: --from-cfn-stack: STS GetCallerIdentity
+      //                    failed: ..." -- the agent's JSON never parses
+      //   with the pin:    response is the agent's parsed object
+      //
+      // Note what is NOT the reason: the warns do not vanish from the bus. For
+      // a `lambda` invoke, `extractResponse` returns the non-response stdout
+      // lines and they are emitted as `log` events below, so binding survives
+      // either way (verified live -- the fixture's bound-log assertions pass
+      // with and without the pin). The defect is corruption of the agentcore
+      // response, plus the loss of live streaming: stderr reaches the bus line
+      // by line as it arrives, whereas stdout is only replayed after close.
+      //
+      // This is the opposite of `studio-serve-manager`, which sets `stdout` ON
+      // PURPOSE (issue #403) to unify a serve child's two pipes into one
+      // ordered stream. A serve child has no response channel, so that is safe
+      // there and unsafe here -- which is why this one is pinned instead of
+      // left to the environment.
       child = spawnFn(nodeBin, argv, {
         cwd,
-        env: { ...process.env, CDKL_LOG_LEVEL: 'warn' },
+        env: { ...process.env, CDKL_LOG_LEVEL: 'warn', CDKL_LOG_STREAM: 'stderr' },
       });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));

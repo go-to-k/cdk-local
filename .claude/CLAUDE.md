@@ -1051,7 +1051,25 @@ compute-locally category for Lambda + API Gateway).
   `resolveConfiguredLogLevel` in `utils/logger.ts` + `CdklIoHost`) is
   silenced in the child; the studio LOGS panel then shows only the
   Lambda container's runtime logs, which stream straight from
-  `docker logs` and are unaffected by the level, plus the response),
+  `docker logs` and are unaffected by the level, plus the response.
+  `CDKL_LOG_STREAM` is PINNED to `stderr` on that spawn rather than
+  inherited (issue #608): the spawn spreads `process.env`, so an
+  operator who exported `CDKL_LOG_STREAM=stdout` in their own shell
+  would otherwise hand it to the child, and `emit()` then routes EVERY
+  level — cdk-local's own warns included — to stdout, which on this
+  path is the RESPONSE channel. For the `agentcore` kind
+  `extractResponse` treats the WHOLE of stdout as the response, so
+  those warns are folded INTO the response: measured live, an
+  AgentCore invoke under `--from-cfn-stack` / `--assume-role` with the
+  variable exported returns a string starting `WARN: --from-cfn-stack:
+  STS GetCallerIdentity failed: ...` instead of the agent's parsed
+  JSON. What it does NOT do is lose the lines: a `lambda` invoke's
+  non-response stdout lines are emitted as `log` events, so binding
+  survives either way — only live streaming is lost, since stderr
+  reaches the bus line by line while stdout is replayed after close.
+  This is the OPPOSITE of `studio-serve-manager`, which sets `stdout`
+  deliberately (issue #403) to unify a serve child's two pipes — safe
+  there because a serve child has no response channel),
   studio-child-args (issue #301 slice 1 — `buildSharedChildArgs`, the
   single place that turns studio's session-global config (`--app` /
   `--profile` / `--region` / `-c` / `--from-cfn-stack` / `--assume-role`)
