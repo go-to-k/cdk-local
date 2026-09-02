@@ -185,11 +185,17 @@ describe('proxyAwareFetch (issue #647)', () => {
   });
 
   afterEach(async () => {
-    for (const close of closers.splice(0)) await close();
-    for (const key of PROXY_ENV_KEYS) {
-      const value = saved.get(key);
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+    // `try/finally`: a closer that rejects must not skip the remaining
+    // closers OR the env restore, or one failure leaks proxy variables into
+    // every later case in this file.
+    try {
+      for (const close of closers.splice(0)) await close().catch(() => undefined);
+    } finally {
+      for (const key of PROXY_ENV_KEYS) {
+        const value = saved.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
@@ -275,6 +281,11 @@ describe('proxyAwareFetch (issue #647)', () => {
     '[::1]',
     '[0:0:0:0:0:0:0:1]',
     '[::ffff:127.0.0.1]',
+    // A WILDCARD is a bind address, not a destination: connecting to it
+    // reaches this machine, and `http://0.0.0.0:8080/realms/x` is an ordinary
+    // local-IdP issuer spelling. An earlier revision proxied it.
+    '0.0.0.0',
+    '[::]',
   ])('treats %s as loopback', async (host) => {
     const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
     process.env['HTTP_PROXY'] = proxy.url;
@@ -284,7 +295,7 @@ describe('proxyAwareFetch (issue #647)', () => {
     expect(proxy.requests).toEqual([]);
   });
 
-  it.each(['example.com', '[::2]', '0.0.0.0'])(
+  it.each(['example.com', '[::2]', '192.168.0.5', '169.254.169.254'])(
     'does NOT treat %s as loopback — it is proxied like any other host',
     async (host) => {
       const proxy = track(await startHttpProxy(() => ({ body: 'proxy-body' })));
@@ -308,7 +319,7 @@ describe('proxyAwareFetch (issue #647)', () => {
       proxyAwareFetch('https://cognito-idp.us-east-1.amazonaws.com/pool/.well-known/jwks.json', {
         timeoutMs: 300,
       })
-    ).rejects.toThrow('Proxied request timed out after 300 ms with no response');
+    ).rejects.toThrow('Proxied request stalled for 300 ms with no progress');
     expect(Date.now() - started).toBeLessThan(5000);
   });
 
@@ -408,6 +419,28 @@ describe('proxyAwareFetch (issue #647)', () => {
     ]);
   });
 
+  it('re-evaluates routing PER HOP — a redirect onto a loopback target leaves the proxy', async () => {
+    // The check lives inside the redirect loop precisely so a chain can cross
+    // the NO_PROXY / loopback boundary. Hoisting it out leaves every other
+    // redirect case green, because they never cross one.
+    const origin = track(await startOrigin(() => ({ body: 'origin-direct' })));
+    const proxy = track(
+      await startHttpProxy(() => ({
+        status: 302,
+        headers: { location: `${origin.url}/moved` },
+        body: '',
+      }))
+    );
+    process.env['HTTP_PROXY'] = proxy.url;
+
+    const response = await proxyAwareFetch('http://origin.invalid/start');
+
+    expect(await response.text()).toBe('origin-direct');
+    // Hop 1 was proxied; hop 2 landed on loopback and went DIRECT.
+    expect(proxy.requests).toEqual(['GET http://origin.invalid/start']);
+    expect(origin.requests).toEqual(['GET /moved']);
+  });
+
   it('gives up on a redirect loop instead of spinning, and names no URL in the message', async () => {
     const proxy = track(
       await startHttpProxy(() => ({ status: 302, headers: { location: '/loop' }, body: '' }))
@@ -479,6 +512,34 @@ describe('proxyAwareFetch (issue #647)', () => {
     await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(
       'Unsupported HTTP status in response: 700'
     );
+  });
+
+  it('does NOT abort a slow-but-progressing transfer — the bound is inactivity, not total time', async () => {
+    // A wall-clock TOTAL would kill a 250 MB layer ZIP crossing a corporate
+    // proxy that `fetch` would have completed. Six chunks at 120 ms each is
+    // 720 ms of transfer under a 300 ms bound: it survives only if the timer
+    // re-arms on every chunk.
+    const server: TcpServer = createTcpServer((sock) => {
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n');
+        let sent = 0;
+        const tick = setInterval(() => {
+          sock.write('x');
+          if (++sent === 6) {
+            clearInterval(tick);
+            sock.end();
+          }
+        }, 120);
+      });
+      sock.on('error', () => undefined);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    closers.push(() => new Promise<void>((r) => server.close(() => r())));
+    process.env['HTTP_PROXY'] = `http://127.0.0.1:${port}`;
+
+    const response = await proxyAwareFetch('http://origin.invalid/layer.zip', { timeoutMs: 300 });
+    expect(await response.text()).toBe('xxxxxx');
   });
 
   it('refuses a non-http(s) URL naming the PROTOCOL and not the URL', async () => {
@@ -556,7 +617,7 @@ describe('proxyAwareFetch (issue #647)', () => {
 
     await expect(
       proxyAwareFetch('http://origin.invalid/x?X-Amz-Signature=leak', { timeoutMs: 150 })
-    ).rejects.toThrow('Proxied request timed out after 150 ms with no response');
+    ).rejects.toThrow('Proxied request stalled for 150 ms with no progress');
     // Still no URL in the message.
     await expect(
       proxyAwareFetch('http://origin.invalid/x?X-Amz-Signature=leak', { timeoutMs: 150 })

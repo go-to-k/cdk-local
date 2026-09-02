@@ -240,11 +240,14 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
  * Undici's separate 10 s CONNECT timeout is not reproduced: a black-holed
  * proxy fails here in 300 s rather than 10. Bounded is the property that
  * matters; the exempt path keeps undici's own timers (see the short-circuit
- * in {@link proxyAwareFetch}). Enforced as a wall-clock timer around the
- * whole attempt — see `getThroughAgent` for why a socket-level one cannot
- * bound the CONNECT tunnel.
+ * in {@link proxyAwareFetch}). Enforced by a timer `getThroughAgent` re-arms
+ * on every byte — INACTIVITY, like undici's, not a wall-clock TOTAL, which
+ * would abort a slow-but-progressing transfer that `fetch` would have
+ * completed (a Lambda layer ZIP is up to 250 MB, and the whole point is that
+ * it is crossing a corporate proxy). See `getThroughAgent` for why a
+ * socket-level timer cannot bound the CONNECT tunnel.
  */
-const REQUEST_INACTIVITY_TIMEOUT_MS = 300_000;
+const REQUEST_STALL_TIMEOUT_MS = 300_000;
 
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
@@ -280,7 +283,7 @@ interface RawHttpResponse {
  * plausibly does reach those, so exempting them would be a guess rather
  * than an impossibility. `NO_PROXY` remains the control for that case.
  */
-function isLoopbackHost(hostname: string): boolean {
+export function isLoopbackHost(hostname: string): boolean {
   // `URL.hostname` lowercases the host and strips the port, but it KEEPS an
   // IPv6 literal's brackets and canonicalises the address inside them.
   // Measured on Node 24:
@@ -292,26 +295,39 @@ function isLoopbackHost(hostname: string): boolean {
   //
   // An earlier revision compared against a bare `'::1'` and the expanded
   // form, so BOTH arms were dead code and an IPv6-loopback issuer was
-  // PROXIED — precisely the silent accept-all downgrade this function exists
-  // to prevent. Normalise first, then compare.
+  // PROXIED — precisely the silent accept-all downgrade this exists to
+  // prevent. Normalise first, then compare.
   const host = hostname
+    .trim()
     .replace(/^\[|\]$/g, '')
     // A single trailing dot is the fully-qualified spelling of the same name.
-    .replace(/\.$/, '');
+    .replace(/\.$/, '')
+    .toLowerCase();
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
-  // `::1` and every all-zero-groups-then-1 spelling of it.
-  if (host === '::1' || /^(0:){1,7}:?1$/.test(host)) return true;
-  // The whole 127.0.0.0/8 block, not just 127.0.0.1.
-  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  // IPv4-mapped IPv6, in the dotted spelling a user writes AND the hex one
-  // `URL` canonicalises it to (`::ffff:7f00:1` is 127.0.0.1).
-  const mapped = /^::ffff:(.+)$/.exec(host);
-  if (mapped) {
-    const inner = mapped[1]!;
-    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(inner)) return true;
-    if (/^7f[0-9a-f]{0,2}:[0-9a-f]{1,4}$/.test(inner)) return true;
+  if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+  // The WILDCARD address is a bind address, not a destination: connecting to
+  // it reaches this machine, and `http://0.0.0.0:8080/realms/x` is an
+  // ordinary local-IdP issuer spelling. `studio-proxy`'s `isWildcardHostname`
+  // takes the same position for the same reason (issue #578).
+  if (
+    host === '0.0.0.0' ||
+    host === '::' ||
+    host === '0:0:0:0:0:0:0:0' ||
+    host === '::ffff:0.0.0.0' ||
+    host === '::ffff:0:0'
+  ) {
+    return true;
   }
-  return false;
+  // IPv4-mapped IPv6 in hex form (`::ffff:7f00:1`): the high hextet's top
+  // byte is the first IPv4 octet. Arithmetic rather than a `7f…` pattern,
+  // which admits a SHORT hextet — `::ffff:7f:1` is 0.127.0.1, not loopback.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (mapped) return parseInt(mapped[1]!, 16) >> 8 === 127;
+  const dotted = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!dotted) return false;
+  const octets = dotted.slice(1).map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  return octets[0] === 127;
 }
 
 /**
@@ -338,11 +354,13 @@ function parseHttpUrl(href: string): URL {
 function getThroughAgent(
   url: URL,
   agent: HttpAgent,
-  timeoutMs = REQUEST_INACTIVITY_TIMEOUT_MS
+  timeoutMs = REQUEST_STALL_TIMEOUT_MS
 ): Promise<RawHttpResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Re-arms the stall timer; assigned below, once `req` exists.
+    let rearm: () => void = () => undefined;
     // One settle, and the timer cleared on every exit: without the guard a
     // late `error` after a delivered body is an unhandled rejection.
     const succeed = (value: RawHttpResponse): void => {
@@ -372,8 +390,13 @@ function getThroughAgent(
         headers: { accept: '*/*', 'accept-encoding': 'identity' },
       },
       (res) => {
+        // Headers arriving is progress, and so is every body chunk.
+        rearm();
         const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('data', (chunk: Buffer) => {
+          rearm();
+          chunks.push(chunk);
+        });
         res.on('error', fail);
         res.on('end', () => {
           if (res.statusCode === undefined) {
@@ -407,12 +430,17 @@ function getThroughAgent(
     // the socket-level timer does work, which is exactly how it looked
     // correct while leaving the real case unbounded.
     // No URL in the message — see `parseHttpUrl`.
-    timer = setTimeout(() => {
-      req.destroy();
-      fail(new Error(`Proxied request timed out after ${timeoutMs} ms with no response`));
-    }, timeoutMs);
-    // The 300 s default must not by itself hold a one-shot `cdkl invoke` open.
-    timer.unref?.();
+    rearm = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        req.destroy();
+        fail(new Error(`Proxied request stalled for ${timeoutMs} ms with no progress`));
+      }, timeoutMs);
+      // The 300 s default must not by itself hold a one-shot `cdkl invoke`
+      // open.
+      timer.unref?.();
+    };
+    rearm();
     req.end();
   });
 }
@@ -500,7 +528,7 @@ function toWebResponse(raw: RawHttpResponse): Response {
  * tidiness.
  *
  * `opts.timeoutMs` is a TEST SEAM only — production callers pass one
- * argument and get {@link REQUEST_INACTIVITY_TIMEOUT_MS}, which no test can
+ * argument and get {@link REQUEST_STALL_TIMEOUT_MS}, which no test can
  * afford to wait out.
  *
  * GET-only by construction: both call sites are GETs, and a method with a

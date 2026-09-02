@@ -43,6 +43,7 @@ const { materializeLayerFromArn } = await import('../../../src/local/layer-arn-m
 const { createJwksCache, verifyJwtViaDiscovery } = await import(
   '../../../src/local/cognito-jwt.js'
 );
+const { getLogger, setLogger } = await import('../../../src/utils/logger.js');
 
 /**
  * The smallest legal ZIP: an End of Central Directory record declaring zero
@@ -104,6 +105,49 @@ describe('proxy-aware fetch call-site bindings (issue #647)', () => {
     // Not pass-through: the read reached the mock rather than failing into
     // the unreachable-JWKS fallback, which accepts every token.
     expect(entry.passThrough).toBe(false);
+  });
+
+  // The #579 property this PR invokes: since the transport changed, these
+  // `catch`es see `node:net` / OpenSSL / proxy-agent text of arbitrary shape
+  // where they used to see undici's fixed `fetch failed`. Both lines are
+  // default-level and `cdkl studio` mirrors them into a log ring it serves
+  // over HTTP, and `studio-serve-manager` matches its ready lines PER LINE —
+  // so an embedded newline is not cosmetic. Deleting the
+  // `sanitizeServiceExceptionMessage` calls used to be green.
+  it('flattens a multi-line transport error out of the layer-download failure', async () => {
+    proxyAwareFetchMock.mockRejectedValue(
+      new Error('connect ECONNREFUSED 10.0.0.1:3128\nWARN: forged second line\r\nthird')
+    );
+
+    const err = await materializeLayerFromArn(layer, {
+      lambdaClientFactory: () => ({
+        send: async () => ({ Content: { Location: PRESIGNED_URL } }),
+      }),
+    }).catch((e: unknown) => e as Error);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain('failed to download layer ZIP');
+    expect(err.message).not.toMatch(/[\r\n]/);
+    expect(err.message).toContain('forged second line');
+  });
+
+  it('flattens a multi-line transport error out of the JWKS-unreachable warn', async () => {
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    try {
+      proxyAwareFetchMock.mockRejectedValue(
+        new Error('self-signed certificate\nWARN: forged\nline')
+      );
+      const entry = await createJwksCache().fetchAndCache(JWKS_URL);
+      expect(entry.passThrough).toBe(true);
+    } finally {
+      setLogger(previous);
+    }
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('JWKS unreachable'));
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).toContain('forged');
   });
 
   it('OIDC discovery reads through proxyAwareFetch when no fetchImpl seam is supplied', async () => {

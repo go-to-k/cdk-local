@@ -45,9 +45,11 @@ import {
  *     escape this audit; the client audit carries the same alias bound.
  *     The same bound covers every other INDIRECTION on the global, and the
  *     other GLOBAL OBJECTS that alias it: `global.fetch(url)`,
- *     `self.fetch(url)`, `globalThis['fetch']`,
- *     `const { fetch } = globalThis`, `globalThis?.fetch`, `(0, fetch)(url)`.
- *     They are enumerated here
+ *     `self.fetch(url)`, `globalThis['fetch']`, `globalThis?.fetch`,
+ *     `(0, fetch)(url)`. (`const { fetch } = globalThis` is NOT among them —
+ *     the destructure itself is missed, but the resulting `fetch(url)` CALL
+ *     is caught, so that spelling is covered in practice.) They are
+ *     enumerated here
  *     rather than patterned for, because chasing spellings is how a fence
  *     ends up with four patterns and a fifth hole — the honest statement is
  *     that this scans the two spellings anyone actually writes and names
@@ -64,7 +66,10 @@ import {
  *   - `src/local/studio-ui.ts`'s browser JS lives inside a template
  *     literal, so `blankLiterals` removes it before the scan. Its `fetch`
  *     calls run in the browser against studio's own origin and are not
- *     Node egress at all.
+ *     Node egress at all. That blanking cuts BOTH ways and is a real bound,
+ *     not only a convenience: it also blanks `${...}` substitutions, so a
+ *     genuine Node-side `fetch(` written inside a template-literal
+ *     interpolation would be invisible to this scan.
  */
 
 const here = fileURLToPath(new URL('.', import.meta.url));

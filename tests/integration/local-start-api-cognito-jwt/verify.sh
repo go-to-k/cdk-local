@@ -339,7 +339,12 @@ for _ in $(seq 1 30); do
     "${PROXIED_BASE_URL}/protected-remote")
   LAST_STATUS="${STATUS}"
   LAST_BODY=$(cat "${RESP_FILE}")
-  if [[ "${STATUS}" == "200" ]]; then
+  # Readiness is "the read reached the PROXY", not "the route said 200":
+  # the unreachable-JWKS pass-through mode ALSO answers 200, so gating on the
+  # status alone would exit this loop satisfied in exactly the failure the
+  # phase exists to detect, and the grep below would then fail with a
+  # misleading message about the proxy log.
+  if [[ "${STATUS}" == "200" ]] && grep -q "^GET ${REMOTE_ISSUER}/" "${PROXY_LOG}"; then
     READY=1
     break
   fi
