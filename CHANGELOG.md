@@ -1,3 +1,10 @@
+# [0.148.0](https://github.com/go-to-k/cdk-local/compare/v0.147.22...v0.148.0) (2026-09-02)
+
+
+### Features
+
+* honor HTTPS_PROXY / NO_PROXY for AWS SDK calls ([#646](https://github.com/go-to-k/cdk-local/issues/646)) ([c3a18a2](https://github.com/go-to-k/cdk-local/commit/c3a18a2b1f410e604de8503b6b2199e2a728a0b7))
+
 ## [0.147.22](https://github.com/go-to-k/cdk-local/compare/v0.147.21...v0.147.22) (2026-09-01)
 
 
