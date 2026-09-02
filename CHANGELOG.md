@@ -1,3 +1,10 @@
+## [0.148.3](https://github.com/go-to-k/cdk-local/compare/v0.148.2...v0.148.3) (2026-09-02)
+
+
+### Bug Fixes
+
+* **integ:** remove the Docker images eight fixtures build, instead of leaking a tag per run ([#667](https://github.com/go-to-k/cdk-local/issues/667)) ([c32cdba](https://github.com/go-to-k/cdk-local/commit/c32cdbad86514a63c337511c423066fe7ff0018a))
+
 ## [0.148.2](https://github.com/go-to-k/cdk-local/compare/v0.148.1...v0.148.2) (2026-09-02)
 
 
