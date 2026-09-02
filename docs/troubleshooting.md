@@ -118,10 +118,11 @@ When STS itself answers — `ExpiredTokenException`, `AccessDenied` — the mess
 
 ### AWS calls fail behind a corporate proxy
 
-`self-signed certificate in certificate chain` (or `ETIMEDOUT` / `ECONNREFUSED` against `*.amazonaws.com`) on a machine whose only egress is a forward proxy means the AWS call went direct instead of through the proxy. cdk-local honors `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (lowercase spellings win) with `NO_PROXY` exemptions for every AWS SDK call it makes — set them in the shell that runs `cdkl`. Two things to check:
+`self-signed certificate in certificate chain` (or `ETIMEDOUT` / `ECONNREFUSED` against `*.amazonaws.com`) on a machine whose only egress is a forward proxy means the AWS call went direct instead of through the proxy. cdk-local honors `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (lowercase spellings win) with `NO_PROXY` exemptions for every AWS-bound request it makes — the SDK calls and the non-SDK reads alike (a `fromLayerVersionArn` layer's ZIP download from its presigned URL, and the JWKS / OIDC discovery documents a JWT authorizer verifies against). Set them in the shell that runs `cdkl`. Three things to check:
 
 - **`NO_PROXY` entries are exact-match** unless they start with `.` or `*` — `NO_PROXY=example.com` does not exempt `api.example.com`.
 - **A TLS-terminating proxy still needs `NODE_EXTRA_CA_CERTS`** pointing at its CA bundle — routing fixes the path, not the certificate chain.
+- **Traffic cdk-local sends *as* the emulated service is deliberately not routed** — a REST API `HTTP` / `HTTP_PROXY` integration forwards to your backend directly, as the deployed API Gateway would, and so does cdk-local's own traffic to the containers on this host. If your backend is only reachable through the proxy, point the integration at a reachable URL instead.
 
 The Docker daemon's own pulls are separate egress — see the "Behind a corporate proxy" note under Docker above. Full semantics: the "Corporate proxy" section in the README.
 

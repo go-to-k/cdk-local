@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { buildProxyClientConfig, proxyAwareFetch } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
@@ -25,8 +25,10 @@ import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
  *   2. `lambda:GetLayerVersion` against the layer's region (parsed from
  *      the ARN by `parseLayerVersionArn` — NOT the dev's profile
  *      region) to recover the presigned S3 URL in `Content.Location`.
- *   3. Download the ZIP from the presigned URL via `fetch(...)` (no AWS
- *      credentials needed on the GET — the presign carries them).
+ *   3. Download the ZIP from the presigned URL via `proxyAwareFetch(...)`
+ *      (no AWS credentials needed on the GET — the presign carries them;
+ *      the proxy-aware form is what keeps step 3 reachable on a machine
+ *      whose only egress is a forward proxy, issue #647).
  *   4. Unzip into a fresh tmpdir under `os.tmpdir()` using `node:zlib`
  *      + the documented ZIP-file format. AWS layer ZIPs use the
  *      DEFLATE compression method.
@@ -67,8 +69,9 @@ export interface MaterializeLayerOptions {
   stsClientFactory?: (region: string) => StsSendClient;
   /**
    * Test seam: override the presigned-URL ZIP fetch. The production
-   * call uses Node's built-in `fetch()`. Returns a `Uint8Array` (the
-   * ZIP body) so the test can inject a fixture-built ZIP.
+   * call goes through `proxyAwareFetch()` (`src/utils/aws-proxy.ts`), which
+   * is `globalThis.fetch` with no proxy variable set. Returns a
+   * `Uint8Array` (the ZIP body) so the test can inject a fixture-built ZIP.
    */
   fetchZip?: (presignedUrl: string) => Promise<Uint8Array>;
 }
@@ -406,7 +409,11 @@ async function downloadPresignedZip(
   options: MaterializeLayerOptions
 ): Promise<Uint8Array> {
   if (options.fetchZip) return options.fetchZip(presignedUrl);
-  const response = await fetch(presignedUrl);
+  // `proxyAwareFetch`, not the global `fetch`: step 2's `GetLayerVersion`
+  // goes through the proxy-aware SDK client above, so behind proxy-only
+  // egress it SUCCEEDS and this download — the very next step — used to fail
+  // direct against the presigned S3 host (issue #647).
+  const response = await proxyAwareFetch(presignedUrl);
   if (!response.ok) {
     throw new Error(
       // Issue #579 review round 2 — `statusText` is the HTTP REASON PHRASE, i.e.

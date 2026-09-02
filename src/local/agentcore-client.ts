@@ -102,6 +102,8 @@ async function pingProbe(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // proxy-audit: ignore: a loopback Docker container on this host — routing it
+    // through the developer's forward proxy would break the local run, not fix it.
     const response = await fetch(`http://${formatAuthority(host, port)}${PING_PATH}`, {
       method: 'GET',
       signal: controller.signal,
@@ -145,6 +147,8 @@ export async function waitForAgentCoreHttpReady(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 1000);
     try {
+      // proxy-audit: ignore: a loopback Docker container on this host — routing it
+      // through the developer's forward proxy would break the local run, not fix it.
       const response = await fetch(`http://${formatAuthority(host, port)}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -239,6 +243,8 @@ export async function invokeAgentCore(
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
 
   try {
+    // proxy-audit: ignore: a loopback Docker container on this host — routing it
+    // through the developer's forward proxy would break the local run, not fix it.
     const response = await fetch(url, {
       method: 'POST',
       headers: {

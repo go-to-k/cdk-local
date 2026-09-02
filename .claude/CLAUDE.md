@@ -1215,7 +1215,31 @@ compute-locally category for Lambda + API Gateway).
   default-chain `credentials` provider whose `clientConfig` threads the
   handler into the SSO / SSOOIDC hops the service client's own handler
   never reaches. `tests/unit/utils/aws-proxy-client-audit.test.ts` fences
-  the sweep repo-wide; both helpers are re-exported from `src/internal.ts`).
+  the sweep repo-wide; both helpers are re-exported from `src/internal.ts`.
+  Issue #647 added the SECOND seam, `proxyAwareFetch(url)`: not every
+  AWS-bound request is an SDK call, and the global `fetch` (undici) reads no
+  proxy variable either, so the layer ZIP download from its presigned
+  `Content.Location` (`layer-arn-materializer`) and the Cognito JWKS / OIDC
+  discovery reads (`cognito-jwt`) connected DIRECT while every SDK call
+  tunneled. It IS `globalThis.fetch` when no proxy variable is set, and
+  otherwise GETs through the same `EnvRoutingProxyAgent` — the same
+  per-request `NO_PROXY` decision — following redirects, decoding a
+  `Content-Encoding` body `node:http` would otherwise leave compressed, and
+  naming no URL in any error it raises (a presigned URL carries
+  `X-Amz-Signature` in its query string). GET-only by construction. A FRESH
+  agent per redirect hop, because `http-proxy-agent` rewrites the request
+  line to absolute form inside `connect()`, which a keep-alive agent skips
+  when it reuses a pooled socket.
+  `tests/unit/utils/aws-proxy-fetch-audit.test.ts` fences it repo-wide and
+  FAILS CLOSED: every use of the global fetch under `src/**` is either
+  proxy-aware or carries a `// proxy-audit: ignore: <reason>` line. The
+  reasoned exemptions are the loopback container clients
+  (`agentcore-client`, `rie-client`) and the emulated data path
+  (`rest-v1-integrations`' `HTTP` / `HTTP_PROXY` integration forwarding to
+  the user's own backend), neither of which the deployed service would send
+  through a developer's proxy. NOT re-exported from `src/internal.ts` — no
+  host-side use case has come up, and `buildProxyClientConfig` covers the
+  SDK surface a host CLI actually constructs).
 - `src/types/` — shared interfaces (`StackState`, `ResourceState`,
   `CloudFormationTemplate`) — shaped as a strict subset of cdkd's state
   schema so host-side state can flow into cdk-local unchanged.

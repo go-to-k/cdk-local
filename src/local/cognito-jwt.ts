@@ -1,4 +1,5 @@
 import { createPublicKey, createVerify } from 'node:crypto';
+import { proxyAwareFetch } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
 import type { CognitoUserPoolAuthorizer, JwtAuthorizer } from './authorizer-resolver.js';
@@ -134,7 +135,11 @@ export function createJwksCache(
     failureTtlMs?: number;
   } = {}
 ): JwksCache {
-  const fetchImpl = opts.fetchImpl ?? (async (url) => globalThis.fetch(url));
+  // `proxyAwareFetch`, not the global: the JWKS endpoint is a REMOTE AWS
+  // host (`cognito-idp.<region>.amazonaws.com` for a user-pool authorizer),
+  // and the global `fetch` reads no proxy variable — so behind proxy-only
+  // egress this read went direct while every SDK call tunneled (issue #647).
+  const fetchImpl = opts.fetchImpl ?? proxyAwareFetch;
   const now = opts.now ?? ((): number => Date.now());
   const ttlMs = opts.ttlMs ?? DEFAULT_JWKS_TTL_MS;
   const failureTtlMs = opts.failureTtlMs ?? FAILURE_JWKS_TTL_MS;
@@ -440,8 +445,10 @@ export async function verifyJwtViaDiscovery(
   if (!token) {
     return { allow: false, identityHash: undefined, ttlSeconds: 0 };
   }
-  const fetchImpl =
-    opts.fetchImpl ?? (async (url): ReturnType<typeof globalThis.fetch> => globalThis.fetch(url));
+  // Proxy-aware for the same reason as the JWKS read above (issue #647):
+  // the discovery document is fetched from the IdP over the network, which
+  // behind proxy-only egress is reachable only through the proxy.
+  const fetchImpl = opts.fetchImpl ?? proxyAwareFetch;
 
   let issuer: string;
   let jwksUri: string;
