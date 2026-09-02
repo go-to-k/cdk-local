@@ -92,18 +92,31 @@ export function resetProxySchemeWarnings(): void {
 }
 
 /**
- * The scheme of a proxy URL, lowercased and without its colon.
+ * The scheme of a proxy URL, lowercased and without its `://`.
  *
  * `getProxyForUrl` prepends the REQUEST's scheme to any value that does not
  * already contain `://`, so the URL it returns normally carries one — even
  * `HTTPS_PROXY=proxy.internal:3128`, which becomes `https://proxy.internal:3128`
  * (TLS to the PROXY, not a CONNECT tunnel). A value containing `://`
  * somewhere OTHER than the start is returned verbatim and has no leading
- * scheme; pathological, but reachable, so it gets a name rather than an
- * empty string that would read as a missing message.
+ * scheme; pathological, but reachable, so it gets a NAME rather than an empty
+ * string that would read as a missing message.
+ *
+ * The `:\/\/` is load-bearing and NOT decoration. Matching a bare `token:`
+ * would name whatever precedes the first colon, and in a verbatim value that
+ * is routinely the PROXY USERNAME. Measured:
+ * `HTTPS_PROXY=corp-user:s3cr3t@http://proxy.corp:3128` contains `://`, so it
+ * comes back untouched — and a `^([a-z][a-z0-9+.-]*):` reading of it yields
+ * `corp-user`, which {@link warnUnspeakableProxy} would then print at default
+ * level into a log panel `cdkl studio` serves over HTTP. Requiring `://`
+ * sends every such value to `(unrecognized)` instead.
+ *
+ * The length bound is the other half: without it the scheme run is
+ * unbounded, so a proxy value of 100 kB of `a` followed by `://` becomes a
+ * 100 kB default-level warn. 32 is far past every real scheme.
  */
 function proxySchemeOf(proxyUrl: string): string {
-  const match = /^([a-z][a-z0-9+.-]*):/i.exec(proxyUrl);
+  const match = /^([a-z][a-z0-9+.-]{0,31}):\/\//i.exec(proxyUrl);
   return match ? match[1]!.toLowerCase() : '(unrecognized)';
 }
 
@@ -171,12 +184,24 @@ function warnUnspeakableProxy(proxyUrl: string): void {
  *   blocked still gets a line naming the cause, instead of an `ETIMEDOUT`
  *   that points at nothing.
  *
- * An UNPARSABLE proxy value is a DIFFERENT question and still throws (from
- * the agent constructor, as before): a typo has no working setup behind it,
- * so going direct would hide it rather than restore anything.
+ * An unparsable proxy value whose scheme IS `http(s):` is a DIFFERENT
+ * question and still throws from the agent constructor, as before
+ * (`HTTPS_PROXY=http://[`): a typo has no working setup behind it, so going
+ * direct would hide it rather than restore anything. A value whose scheme is
+ * NEITHER — garbage that merely contains `://` — is refused here first and
+ * gets the warn instead of the throw. That is the same trade either way: the
+ * cause stays attached to the request, which is the property the throw
+ * existed for.
  */
 function resolveProxyForTarget(targetHref: string): string {
-  const proxyUrl = getProxyForUrl(targetHref);
+  // TRIMMED before anything reads it. `getProxyForUrl` returns a value
+  // containing `://` VERBATIM, so `HTTPS_PROXY=" http://proxy.corp:3128"`
+  // arrives with its leading space — and `isSpeakableProxy` is anchored, so
+  // untrimmed it reads as unspeakable and goes DIRECT. That configuration
+  // WORKED before this change: the WHATWG `URL` parser inside the agent trims
+  // leading whitespace, so the agent was built correctly. Measured both ways;
+  // trimming keeps it working AND hands the agent the clean value.
+  const proxyUrl = getProxyForUrl(targetHref).trim();
   if (proxyUrl === '') return '';
   if (isSpeakableProxy(proxyUrl)) return proxyUrl;
   warnUnspeakableProxy(proxyUrl);

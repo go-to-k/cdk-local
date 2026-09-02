@@ -77,7 +77,7 @@ rm -f zip-lambda.zip
 
 
 # Test 1 — asset-backed Lambda echoes event + env var
-echo "==> [1/8] Invoking EchoHandler with default empty event"
+echo "==> [1/9] Invoking EchoHandler with default empty event"
 RESULT_1=$(capture ${CDKL} invoke CdkLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
 echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
@@ -86,7 +86,7 @@ echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
 }
 
 # Test 2 — event payload via --event
-echo "==> [2/8] Invoking EchoHandler with --event payload"
+echo "==> [2/9] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
@@ -98,7 +98,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 }
 
 # Test 3 — --env-vars override (Parameters)
-echo "==> [3/8] Invoking EchoHandler with --env-vars Parameters block"
+echo "==> [3/9] Invoking EchoHandler with --env-vars Parameters block"
 ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # Use a wildcard `Parameters` block so the test doesn't break if the
@@ -112,7 +112,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 }
 
 # Test 4 — --env-vars function-specific key by display path (issue #27)
-echo "==> [4/8] Invoking EchoHandler with --env-vars display-path key"
+echo "==> [4/9] Invoking EchoHandler with --env-vars display-path key"
 DP_ENV_FILE=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${CDKL_STDERR}"' EXIT
 # The display-path key matches `Metadata['aws:cdk:path']` — i.e. the
@@ -126,7 +126,7 @@ echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
 }
 
 # Test 5 — inline (Code.ZipFile) Lambda
-echo "==> [5/8] Invoking InlineHandler (Code.ZipFile)"
+echo "==> [5/9] Invoking InlineHandler (Code.ZipFile)"
 INLINE_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
@@ -140,7 +140,7 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
 # Test 6 — ZIP-FILE asset Lambda (Code.fromAsset of a .zip). `aws:asset:path`
 # points at `asset.<hash>.zip`, so cdkl must extract it before bind-mounting.
 # A successful echo with the zip-only env var proves the extracted code ran.
-echo "==> [6/8] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
+echo "==> [6/9] Invoking ZipAssetHandler (Code.fromAsset of a .zip file)"
 ZIP_EVENT=$(mktemp)
 trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${DP_ENV_FILE}" "${INLINE_EVENT}" "${ZIP_EVENT}" "${CDKL_STDERR}"' EXIT
 echo '{"zip":"asset"}' > "${ZIP_EVENT}"
@@ -244,6 +244,9 @@ if [ -s "${PROXY_LOG}" ]; then
   cat "${PROXY_LOG}"
   exit 1
 fi
+# Read off STDERR because the compact logger sends warn there. A run under
+# `CDKL_LOG_STREAM=stdout` (what `cdkl studio` sets for its serve children)
+# would unify the streams and this grep would have to move to RESULT_9.
 grep -q 'Unsupported proxy scheme "socks5"' "${CDKL_STDERR}" || {
   echo "FAIL: expected the unsupported-scheme warn on stderr; captured stderr:"
   cat "${CDKL_STDERR}"

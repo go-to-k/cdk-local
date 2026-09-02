@@ -1234,10 +1234,13 @@ compute-locally category for Lambda + API Gateway).
   handler into the SSO / SSOOIDC hops the service client's own handler
   never reaches. That routing is `resolveProxyForTarget`, which answers TWO
   questions per request: `NO_PROXY`, and the proxy's SCHEME — an `http(s):`
-  proxy is tunneled through, and any other (a SOCKS `ALL_PROXY`, an ordinary
+  proxy is used (a `CONNECT` tunnel for an https target, an absolute-form
+  request line for an http one), and any other (a SOCKS `ALL_PROXY`, an ordinary
   spelling `getProxyForUrl` honours) falls back to a DIRECT connection with
-  a one-time warn naming ONLY the scheme, since a proxy URL routinely
-  carries `user:password@`. ONE site owns it because two did not: issue #663
+  a one-time warn naming ONLY the scheme — or `(unrecognized)` when the value
+  carries no `scheme://` at all — since a proxy URL routinely carries
+  `user:password@`, and a scheme match that did not require `://` would name
+  the USERNAME of exactly such a value. ONE site owns it because two did not: issue #663
   was `proxyAwareFetch` having the scheme guard while this seam built an
   HTTP agent pointed at the SOCKS port, from the same environment. Falling
   back beats REFUSING because before either seam existed every one of these
@@ -1283,7 +1286,7 @@ compute-locally category for Lambda + API Gateway).
   seam — a proxy URL whose scheme is not `http(s):` (a SOCKS `ALL_PROXY`)
   falls back to a direct request rather than being spoken HTTP at — is now
   SHARED with `EnvRoutingProxyAgent` through `resolveProxyForTarget`, and
-  warns once per scheme instead of falling over in silence (issue #663).
+  warns once per scheme instead of falling back in silence (issue #663).
   `tests/unit/utils/loopback-predicate-agreement.test.ts` fences this
   predicate against `studio-proxy`'s, which cannot share a module with it.
   A target the proxy environment does NOT cover — a `NO_PROXY` match,

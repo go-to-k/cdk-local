@@ -183,6 +183,11 @@ describe('proxyAwareFetch (issue #647)', () => {
       saved.set(key, process.env[key]);
       delete process.env[key];
     }
+    // Module-level memo in `aws-proxy.ts`. Reset HERE rather than inside the
+    // one case that asserts a warn count: an inline reset leaves the scheme
+    // memoized for every case BELOW it, so a warn-count case added later
+    // would silently measure zero.
+    resetProxySchemeWarnings();
   });
 
   afterEach(async () => {
@@ -554,13 +559,46 @@ describe('proxyAwareFetch (issue #647)', () => {
     await expect(proxyAwareFetch('http://origin.invalid/x')).rejects.toThrow(/ECONNREFUSED/);
   });
 
+  it('re-evaluates the SCHEME per hop — a redirect can cross from a speakable proxy to one that is not', async () => {
+    // The scheme check sits inside the redirect loop for the same reason the
+    // NO_PROXY one does: `getProxyForUrl` picks by the TARGET's scheme, so an
+    // http -> https redirect can move from HTTP_PROXY to HTTPS_PROXY and land
+    // on a proxy these agents cannot speak. Hoisting the check out of the loop
+    // leaves every other redirect case green.
+    const proxy = track(
+      await startHttpProxy(() => ({
+        status: 302,
+        headers: { location: 'https://origin.invalid/moved' },
+        body: '',
+      }))
+    );
+    process.env['HTTP_PROXY'] = proxy.url;
+    process.env['HTTPS_PROXY'] = 'socks5://127.0.0.1:1080';
+    const warn = vi.fn();
+    const previous = getLogger();
+    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    let err: unknown;
+    try {
+      err = await proxyAwareFetch('http://origin.invalid/start').catch((e: unknown) => e);
+    } finally {
+      setLogger(previous);
+    }
+    // Hop 1 went through the speakable proxy; hop 2's https target resolved to
+    // the SOCKS proxy, warned, and was handed to undici, whose DNS lookup of
+    // a `.invalid` host fails. Speaking HTTP at the SOCKS port instead would
+    // surface ECONNREFUSED from `node:http` and no warn at all.
+    expect(proxy.requests).toEqual(['GET http://origin.invalid/start']);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toHaveLength(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('socks5');
+  });
+
   it('WARNS once, naming the scheme, when it falls back past a SOCKS proxy', async () => {
     // The fallback used to be silent on this half (issue
     // go-to-k/cdk-local#663 folded both halves onto one
     // `resolveProxyForTarget`, which warns). Silence is what made
     // "refuse loudly" arguable: a user whose direct egress is blocked
     // otherwise gets a transport error pointing at nothing.
-    resetProxySchemeWarnings();
     process.env['ALL_PROXY'] = 'socks5://user:s3cr3t@127.0.0.1:1080';
     const warn = vi.fn();
     const previous = getLogger();
