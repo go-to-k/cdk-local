@@ -21,6 +21,16 @@
 
 set -euo pipefail
 
+# --- built-image cleanup (issue #603) ---------------------------------------
+# Namespace: this fixture `docker build`s a `cdkl-invoke-<hash>` image.
+# Sourced BEFORE the `cd` below, matching the idiom the other _lib consumers
+# use: `${BASH_SOURCE[0]}` holds the path this script was INVOKED with, so it
+# stops resolving the moment the cwd changes.
+# The snapshot/delta primitive is shared because it DELETES images on a daemon
+# other lanes share; see tests/integration/_lib/image-cleanup.sh for why it is
+# not copied per fixture and what it deliberately fails closed on.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/image-cleanup.sh"
+
 cd "$(dirname "$0")"
 
 CDKL="node ../../../dist/cli.js"
@@ -31,6 +41,8 @@ CONTAINER_HOST="127.0.0.1"
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
 
+integ_image_cleanup_init 'cdkl-invoke-*'
+
 echo "==> Pulling ${BASE_IMAGE} (one-time, ~600MB)"
 docker pull "${BASE_IMAGE}"
 
@@ -38,42 +50,6 @@ echo "==> Installing fixture deps"
 if [[ ! -d node_modules ]]; then
   vp install --prefer-offline
 fi
-
-
-
-# --- built-image cleanup (issue #587) --------------------------------------
-# This fixture's DockerImageFunction makes cdkl `docker build` a
-# `cdkl-invoke-<hash>:latest` image of ~421 MB. Nothing removed it, so every
-# run leaked one -- and because the tag is a fingerprint of the asset (the
-# platform included), a change to the Dockerfile, the handler or the
-# architecture mints a NEW tag that no later run will ever reuse or reclaim.
-#
-# Only the tag(s) THIS run creates are removed: the set of `cdkl-invoke-*`
-# tags present now is snapshotted, and cleanup deletes only what appeared
-# since. A blanket `docker rmi` of every `cdkl-invoke-*` tag is deliberately
-# NOT used -- parallel integ lanes share one Docker daemon on a dev host, so
-# a blanket sweep deletes images other lanes are mid-run on, and it would
-# also destroy the local cache other container fixtures rely on.
-IMAGES_BEFORE="$(mktemp)"
-docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
-  | sort > "${IMAGES_BEFORE}"
-
-remove_run_images() {
-  [ -f "${IMAGES_BEFORE:-}" ] || return 0
-  local new
-  new="$(docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
-    | sort | comm -13 "${IMAGES_BEFORE}" -)"
-  if [ -n "${new}" ]; then
-    echo "==> Removing image(s) built by this run:"
-    echo "${new}" | sed 's/^/      /'
-    # Unforced: `docker image rm` refuses an image while a container still holds
-    # it, so a lane whose container is UP survives. It does NOT cover a lane
-    # between `docker build` and `docker run` -- the delta scoping is what keeps
-    # this run away from another lane's tag in that window.
-    echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
-  fi
-  rm -f "${IMAGES_BEFORE}"
-}
 
 LOG_FILE="$(mktemp)"
 SERVER_PID=""
@@ -100,7 +76,7 @@ cleanup() {
     echo "${ORPHANS}" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
   rm -f "${LOG_FILE}"
-  remove_run_images
+  integ_image_cleanup_run
 }
 trap cleanup EXIT INT TERM
 

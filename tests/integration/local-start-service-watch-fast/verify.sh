@@ -30,6 +30,16 @@
 
 set -euo pipefail
 
+# --- built-image cleanup (issue #603) ---------------------------------------
+# Sourced BEFORE the `cd` below, matching the idiom the other _lib consumers
+# use: `${BASH_SOURCE[0]}` holds the path this script was INVOKED with, so it
+# stops resolving the moment the cwd changes.
+# Namespace(s) for this fixture: the replicas run a `ContainerImage.fromAsset` image; only the Dockerfile-edit phase rebuilds (the source edit is the soft-reload path, which builds nothing).
+# The snapshot/delta primitive is shared because it DELETES images on a daemon
+# other lanes share; see tests/integration/_lib/image-cleanup.sh for why it is
+# not copied per fixture and what it deliberately fails closed on.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/image-cleanup.sh"
+
 cd "$(dirname "$0")"
 
 CDKL="node ../../../dist/cli.js"
@@ -83,6 +93,9 @@ cleanup() {
   docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
     | xargs -r docker network rm >/dev/null 2>&1 || true
   rm -f "${LOG_FILE}"
+  # LAST: `docker image rm` is unforced, so it must run after the container
+  # sweep above has released the tags.
+  integ_image_cleanup_run
 }
 trap cleanup EXIT INT TERM
 
@@ -95,6 +108,17 @@ docker network ls --filter "name=cdkl-" --format '{{.ID}}' \
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
+
+# Snapshot AFTER the daemon check, so a docker-down run fails at the friendly
+# step above and the `[ -f ]` guard makes the cleanup a no-op.
+#
+# The `docker pull`s below run AFTER this snapshot, which looks unsafe and is
+# not: they pull `amazon/...` and `public.ecr.aws/...` base images, none of
+# which can match this fixture's `cdkl-*` reference filter, so they cannot
+# enter the delta. If you ever widen the filter or add a pull INTO the
+# namespace, move it above this line -- otherwise the cleanup would delete a
+# shared base image that other fixtures and other lanes depend on.
+integ_image_cleanup_init 'cdkl-run-task-*'
 
 echo "==> Pulling fixture images"
 docker pull "${SIDECAR_IMAGE}"

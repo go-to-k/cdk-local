@@ -29,6 +29,19 @@
 
 set -euo pipefail
 
+# --- built-image cleanup (issue #603) ---------------------------------------
+# Sourced BEFORE the `cd` below, matching the idiom the other _lib consumers
+# use: `${BASH_SOURCE[0]}` holds the path this script was INVOKED with, so it
+# stops resolving the moment the cwd changes.
+# BOTH namespaces: the container-artifact agents build `cdkl-invoke-*`, the two
+# `fromCodeAsset` runtimes build `cdkl-agentcore-code-*`. One filter would leave
+# the code images behind -- which is also why the issue's own "5 -> 8" count,
+# taken over `cdkl-invoke-*` alone, under-reports this fixture.
+# The snapshot/delta primitive is shared because it DELETES images on a daemon
+# other lanes share; see tests/integration/_lib/image-cleanup.sh for why it is
+# not copied per fixture and what it deliberately fails closed on.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/image-cleanup.sh"
+
 cd "$(dirname "$0")"
 
 CDKL="node ../../../dist/cli.js"
@@ -86,14 +99,26 @@ capture_all() {
   fi
   printf '%s\n' "${out}"
 }
+
 # Registered immediately: the first capture happens before the fixture's own
 # first `trap 'rm -f ...' EXIT`, which would otherwise leave this file behind
 # when a run fails on the very first step. Later traps replace this handler
 # and already list "${CDKL_STDERR}" themselves.
-trap 'rm -f "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
+
+# Snapshot AFTER the daemon check, so a docker-down run fails at the friendly
+# step above and the `[ -f ]` guard makes the cleanup a no-op.
+#
+# The `docker pull`s below run AFTER this snapshot, which looks unsafe and is
+# not: they pull `amazon/...` and `public.ecr.aws/...` base images, none of
+# which can match this fixture's `cdkl-*` reference filter, so they cannot
+# enter the delta. If you ever widen the filter or add a pull INTO the
+# namespace, move it above this line -- otherwise the cleanup would delete a
+# shared base image that other fixtures and other lanes depend on.
+integ_image_cleanup_init 'cdkl-invoke-*' 'cdkl-agentcore-code-*'
 
 echo "==> Pulling base images (one-time)"
 docker pull --platform linux/arm64 "${BASE_IMAGE}" >/dev/null
@@ -121,7 +146,7 @@ echo "${RESULT_1}" | grep -Eq '"sessionId":"[0-9a-fA-F-]{8,}' || {
 # Test 2 — event payload via --event echoes through /invocations.
 echo "==> [2/20] Invoking EchoAgent with --event payload"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKL} invoke-agentcore "${TARGET}" --event "${EVENT_FILE}")
 echo "    response: ${RESULT_2}"
@@ -133,7 +158,7 @@ echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
 # Test 3 — --env-vars override wins over the template env.
 echo "==> [3/20] Invoking EchoAgent with --env-vars override"
 ENV_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKL} invoke-agentcore "${TARGET}" --env-vars "${ENV_FILE}")
 echo "    response: ${RESULT_3}"
@@ -200,7 +225,7 @@ echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
 # line — so we capture all output, not just tail -1).
 echo "==> [8/20] EchoAgent streams a text/event-stream response to stdout"
 STREAM_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"stream":true}' > "${STREAM_EVENT}"
 RESULT_8=$(capture_all ${CDKL} invoke-agentcore "${TARGET}" --event "${STREAM_EVENT}")
 echo "    response: ${RESULT_8}"
@@ -229,7 +254,7 @@ echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
 # Test 10 — an MCP tools/call via --event returns the tool result.
 echo "==> [10/20] McpAgent with --event runs tools/call"
 CALL_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"method":"tools/call","params":{"name":"add_numbers","arguments":{"a":2,"b":3}}}' > "${CALL_EVENT}"
 RESULT_10=$(capture_all ${CDKL} invoke-agentcore "${MCP}" --event "${CALL_EVENT}")
 echo "    response: ${RESULT_10}"
@@ -256,7 +281,7 @@ echo "${RESULT_11}" | grep -q '"greeting":"hello-from-code"' || {
 # Test 12 — a --event payload echoes through the from-source agent.
 echo "==> [12/20] CodeAgent with --event echoes the payload"
 CODE_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"prompt":"hello code"}' > "${CODE_EVENT}"
 RESULT_12=$(capture ${CDKL} invoke-agentcore "${CODE}" --event "${CODE_EVENT}")
 echo "    response: ${RESULT_12}"
@@ -271,7 +296,7 @@ echo "${RESULT_12}" | grep -q '"prompt":"hello code"' || {
 # Authorization + GREETING) then a second text frame, then closes.
 echo "==> [13/20] EchoAgent over the /ws WebSocket (--ws)"
 WS_EVENT=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"prompt":"hello ws"}' > "${WS_EVENT}"
 RESULT_13=$(capture_all ${CDKL} invoke-agentcore "${TARGET}" --ws --event "${WS_EVENT}")
 echo "    response: ${RESULT_13}"
@@ -412,7 +437,7 @@ echo "${RESULT_19}" | grep -q '"name": "fixture-a2a-agent"' || {
 # Test 19 — A2A with --event runs the tasks/send method.
 echo "==> [18/20] A2aAgent with --event runs tasks/send"
 A2A_EVENT=$(mktemp -t cdkl-a2a-event-XXXX.json)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${A2A_EVENT}" "${CDKL_STDERR}"' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${CODE_EVENT}" "${WS_EVENT}" "${A2A_EVENT}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"method":"tasks/send","params":{"id":"task-1","message":{"text":"hello a2a"}}}' > "${A2A_EVENT}"
 RESULT_19B=$(capture_all ${CDKL} invoke-agentcore "${A2A}" --event "${A2A_EVENT}")
 echo "    response: ${RESULT_19B}"
