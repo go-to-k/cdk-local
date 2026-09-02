@@ -830,6 +830,37 @@ describe('aws-proxy (issue #634)', () => {
       expect(lines[0]).not.toContain('s3cr3t');
     });
 
+    it('does not memoise the scheme when the warn itself THROWS', () => {
+      // The memo is written AFTER the emit, and nothing pinned that ordering
+      // until the parent review asked for it. Under the reverse order a
+      // logger that throws — a host CLI's injected one, a closed stream —
+      // records the scheme as warned and never prints it, so the one-time
+      // warn becomes a ZERO-time warn for the life of the process. That line
+      // is the entire argument for choosing fallback over refusal.
+      //
+      // The discriminator is the SECOND attempt: with the memo written first
+      // it is a silent no-op and `warn` is called once.
+      process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
+      const warn = vi.fn((): void => {
+        throw new Error('logger down');
+      });
+      const previous = getLogger();
+      const agent = new EnvRoutingProxyAgent();
+      setLogger(stubLogger(previous, warn) as never);
+      try {
+        expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(
+          'logger down'
+        );
+        expect(() => agent.connect(REQ, httpsOpts('s3.us-east-1.amazonaws.com'))).toThrow(
+          'logger down'
+        );
+      } finally {
+        setLogger(previous);
+        agent.destroy();
+      }
+      expect(warn).toHaveBeenCalledTimes(2);
+    });
+
     it('an UNPARSABLE value still THROWS — a typo has no working setup behind it', () => {
       // The deliberate asymmetry, asserted next to the fallback so a future
       // reader does not "unify" the two. `http://[` IS speakable by scheme,
