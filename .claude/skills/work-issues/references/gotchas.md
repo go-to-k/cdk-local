@@ -119,8 +119,14 @@
   2026-09-02 (go-to-k/cdk-local#650), which crossed two resets and a host sleep
   and still finished its lane. Stand down any QUEUED lane the run will not reach
   at the moment that verdict is known, not at the wrap (§4).
-- **A heredoc carries invisible non-C0 characters straight into a commit, and
-  every fence here is C0-only.** `control-char-gate.sh` and
+- **Any writer that NORMALISES an escape puts invisible non-C0 characters
+  straight into a commit, and every fence here is C0-only.** A heredoc is one
+  such writer; an EDITING TOOL is another, and that one surprises people —
+  writing this very bullet, an `Edit` call substituted a literal U+FEFF for the
+  `\uFEFF` it was given (it reports doing so: "Edit also tried swapping
+  \uXXXX escapes and their characters"), so the sentence warning about the byte
+  shipped carrying it. Write such a character through `python3` / `printf`
+  rather than an editor, then re-scan. `control-char-gate.sh` and
   `tests/unit/no-control-bytes.test.ts` both scan for C0 bytes, so U+00A0 (NBSP)
   and U+FEFF (BOM) pass both — into source, into a test, and into a commit
   MESSAGE, which nothing scans at all. `main` carried a live instance until this
@@ -128,8 +134,15 @@
   LITERAL character inside a regex (`ef bb bf` on the wire), invisible in every
   reading of that line. Spell such a character as a `\u`-escape, the same rule
   `.claude/CLAUDE.md` states for C0 bytes, and when a heredoc's subject IS
-  whitespace-adjacent text, read the bytes before committing:
-  `git diff --cached | grep -nP '\x{00A0}|\x{FEFF}'`.
+  whitespace-adjacent text, read the bytes before committing. Match the BYTES,
+  not a `\x{...}` class: `grep -P` is a GNU extension, and macOS system grep
+  exits **2** (`invalid option -- P`) rather than 1, so under a `|| echo clean` the
+  failure to look reads as nothing found (measured 2026-09-02; it passed here only
+  because this shell's `grep` is shimmed). Portable, and rc=1 means clean:
+
+  ```bash
+  git diff --cached | LC_ALL=C grep -n -e $'\xc2\xa0' -e $'\xef\xbb\xbf'
+  ```
 - **A green suite in the MAIN checkout can be measuring nothing.** The
   worktree rule in section 5 says a fresh worktree has no `node_modules` and no
   `dist/`; the main checkout can be the one missing them, because the lanes have

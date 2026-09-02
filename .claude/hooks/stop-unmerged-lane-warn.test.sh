@@ -577,8 +577,27 @@ check "the fixture really did give the lane an upstream" "0" "$(git -C "$REPO/wt
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "pushing the lane re-arms the nudge once" "ctx" "$(channel_of "$out")"
 check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(printf '%s' "$out" | grep -qF 'pushed branch with NO PR' && echo yes || echo no)"
+# The substring above is carried by the PRE-2026-09-03 wording too, so on its own
+# it only proves the pushed arm differs from the two unpushed ones. What the
+# rewrite actually added is the reading that "pushed, no PR" is ALSO the state
+# verify-pr-gate mandates while /verify-pr runs -- the longest window in a lane,
+# during which the old text called a legitimate wait a failure. Both reviewers of
+# go-to-k/cdk-local#675 measured that reverting either string left all 104 cases
+# green, so the intent gets its own case per ARM: the model text must name the
+# gate, and the user text (asserted after the sys run below) must name the
+# mandate. Blanking either one now reds here instead of shipping.
+check "...and the model text names the gate that MANDATES that state" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'verify-pr-gate blocks' && echo yes || echo no)"
+check "...and tells the model a running verification is WAITING, not stopped" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'you are WAITING' && echo yes || echo no)"
 out=$(run_hook_keep "$REPO" "$RUN" "$A1")
 check "...and a pushed lane stops nagging again after that one" "sys" "$(channel_of "$out")"
+# The USER arm of the same rewrite. It is a SEPARATE string from the model one
+# (push_line_user vs push_line), so it needs its own assertion -- measured on
+# go-to-k/cdk-local#675: blanking push_line_user outright left the suite at
+# 104/0 while the downgrade paths emitted a dangling blank line.
+check "...and the user text names the mandate in its own shorter wording" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'mandates for as long as' && echo yes || echo no)"
 
 # --- The predicate is DIRECTED. `pushed -> unpushed` is what an ordinary COMMIT
 # looks like, so an undirected `prev != current` re-armed on every commit AND on

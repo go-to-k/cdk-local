@@ -59,8 +59,11 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues' orchestrator was ~7 KB at
 // five clauses here saying so, sending its rules to
 // references/{launch-mode,claim,ship,retro}.md -- which is why a change touching
 // thirteen files cost the always-loaded file so little. The remaining margin is
-// under one wrapped line: the next orchestrator addition has to buy its space by
-// moving something out.
+// ~163 B -- two wrapped lines at 80 columns, not the "under one wrapped line"
+// this said until go-to-k/cdk-local#675 re-derived it. The next orchestrator
+// addition still has to buy its space by moving something out, and MEASURED
+// asserts the live figure, so read its failure message rather than this
+// sentence.
 const MAX_REFERENCE_FILE_BYTES = 64_000; // the largest stage file's size is ASSERTED below (MEASURED), never quoted here
 
 // The split skill's stage files must still exist and still carry the moved
@@ -95,24 +98,24 @@ const MIN_REFERENCE_FILES = 6;
 // is the sum of every stage file EXCEPT the biggest -- which is why a retro lane
 // eats the margin fast: its lessons land in whichever stage file each one fires
 // in, and `implement.md` (the leader) is rarely one of them. The #650 lane grew
-// verify.md +3116, launch-mode.md +2620, gotchas.md +1736, triage.md +1168,
+// verify.md +3947, launch-mode.md +2712, gotchas.md +2572, triage.md +1168,
 // retro.md +1108 and claim.md +1096, and NOT ONE of them was the leader -- so
-// `corpus - largest` moved the whole ~10.8 KB and the 116,500 that preceded this
+// `corpus - largest` moved the whole ~12.6 KB and the 116,500 that preceded this
 // value LAPSED. The assertion at the bottom of this file is what said so, at the
 // commit that caused it, which is the whole point of asserting the invariant
 // rather than describing it.
 //
-// This value is derived from that failure message: it sits ~4.1 KB above the
+// This value is derived from that failure message: it sits ~4.3 KB above the
 // current `corpus - largest`, the same order of margin its two predecessors were
 // given (112,000 was set with ~4.5 KB and came out of a rebase with 91 B; the
 // 116,500 that replaced it restored ~3.4 KB and survived one retro). No upper
 // bound moves. MEASURED prints the current margin in its failure message, so the
 // next erosion arrives as a number rather than as a surprise. Still sized
 // against `corpus - largest` rather than against the either-largest case because
-// the top two stage files are ~11.4 KB apart, so a flip is not near -- that gap
+// the top two stage files are ~10.6 KB apart, so a flip is not near -- that gap
 // has narrowed from ~14.5 KB, so re-check it rather than assuming; the sibling
 // cdkd sizes against the flip because ITS top two are ~2 KB apart.
-const MIN_REFERENCE_CORPUS_BYTES = 128_000;
+const MIN_REFERENCE_CORPUS_BYTES = 130_000;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -144,9 +147,9 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 162_154,
+    corpusBytes: 163_913,
     largest: { file: 'implement.md', bytes: 38_217 },
-    runnerUp: { file: 'verify.md', bytes: 26_822 },
+    runnerUp: { file: 'verify.md', bytes: 27_653 },
   },
 };
 

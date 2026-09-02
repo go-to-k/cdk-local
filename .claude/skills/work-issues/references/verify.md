@@ -30,8 +30,9 @@ FINAL, no second pass — otherwise it hands back per finding. Reviewer-side:
 dispatch a round SCOPED to the delta, whole round's findings at once, not
 trickled — the delta is where a fix-introduced blocker lives, which is the class
 the paragraph below is about (go-to-k/cdk-local#672's fifth round, 2026-09-02,
-read only the delta and found three defects in artifacts EARLIER rounds had
-added) — **and paste the delta's COMMIT MESSAGE into the brief.** All three
+read only the delta and returned FIVE findings, three of them defects in fences
+EARLIER rounds had added) — **and paste the delta's COMMIT MESSAGE into the
+brief.** All three
 reviewer agents read `gh pr diff` / `gh pr view --json files`
 (`.claude/agents/pr-{code,spec,test}-reviewer.md`) and none reads `git log`, so
 a false claim written into a commit message is invisible to the whole tier
@@ -46,6 +47,18 @@ the message itself).
   (`vp run build` first — the CLI runs from `dist/`). `/run-integ <local-*>`
   exercises the real Docker path; keep or extend the covering fixture in the
   SAME PR.
+
+  **Granting the integ turn is not the end of the parent's job: POLL THE LOG,
+  because nothing in that stack has a timeout.** `/run-integ` step 5 holds the
+  recipe (background from the first attempt, tee to a log) and the measurement —
+  a `docker pull` frozen for 2 h 58 m across a host sleep. The parent's half is
+  that a completion notification is not a timer, so read the log's tail after a
+  few minutes rather than waiting on the notification. And make the poll measure
+  the thing itself: a watcher of this run polled `stat -f %z` on an agent's
+  `.output` path, which is a SYMLINK, so it read the 153-byte link length,
+  reported three transcripts "size-stable", and was believed — `stat -Lf` showed
+  them still growing. A probe that cannot move looks exactly like a job that has
+  stopped.
 
   **Live-test the CONSEQUENCE you WROTE DOWN, not only the code path.** A
   consequence derived by READING costs nothing to state and is durable: it lands

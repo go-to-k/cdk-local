@@ -181,7 +181,7 @@ only the top candidate is also fine — the point is that the QUEUED ones are
 visibly spoken for rather than silently abandoned. Ported from the sibling cdkd,
 which measured that shape on 2026-09-02 (go-to-k/cdkd#2417: three lanes claimed,
 one merged, the two unstarted ones left in a state the next session could pick
-up without re-deriving anything); measured again here 2026-09-03, where one
+up without re-deriving anything); measured again here 2026-09-02, where one
 IN-PLACE run carried FOUR issues through this tree in sequence
 (go-to-k/cdk-local#647, go-to-k/cdk-local#648, go-to-k/cdk-local#663,
 go-to-k/cdk-local#669) with no collision. Stop when the budget or the maintainer

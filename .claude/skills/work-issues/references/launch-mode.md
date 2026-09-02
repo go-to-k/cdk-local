@@ -134,7 +134,7 @@ tree:
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run ends first, which leaves every issue claimable (go-to-k/cdkd#2417, 2026-09-02; four issues one tree here, 2026-09-03) | §3 |
+| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run ends first, which leaves every issue claimable (go-to-k/cdkd#2417, 2026-09-02; four issues one tree here, 2026-09-02) | §3 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
 | 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
 | 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS — and never commit onto `LAUNCH_BRANCH`. §5 defines the rule and holds the recipe; this row is the one-line version an orchestrator sees without opening that file | §5 |
@@ -167,13 +167,13 @@ go-to-k/cdk-local#672's merged HEAD sha.
 
 **Neither inheritance is a way past a gate, and the first draft of this section
 said the `pr-review` one was** — the overclaim §10-a exists to stop, written
-into a lane's brief by the orchestrator and refuted only by reading
-`pr-review-gate.sh:344`, which passes solely when
-`recorded_sha = head_sha`. A sentinel naming a MERGED PR cannot equal the new
-PR's `headRefOid`, so the leak BLOCKS, rendering
-`Marker state: bound to <sha> (mismatch)`. Fail-CLOSED. What it actually costs
-is a confusing refusal naming an unrelated PR, and the gate cycle spent
-diagnosing it.
+into a lane's brief by the orchestrator and refuted only by reading the hook.
+§8 states the mechanism (the gate compares the recorded sentinel against the
+PR's current HEAD and refuses on a mismatch); applied here it settles the
+question, because a sentinel naming a MERGED PR cannot equal the new PR's
+`headRefOid`. So the leak BLOCKS — `Marker state: bound to <sha> (mismatch)` —
+and is fail-CLOSED. What it costs is a confusing refusal naming an unrelated
+PR, and the cycle spent diagnosing it.
 
 The `docs` inheritance costs one STEP rather than a bypass, and the hole it
 shortens is not this mode's: `verify-pr` is declared `requires: [check, docs]`

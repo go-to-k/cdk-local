@@ -134,8 +134,8 @@ resolve the mechanism against the file before writing it up — the line, not th
 belief about the line. Measured 2026-09-03 in this run's own retro: an
 orchestrator handed a lane "a leaked `.markgate-pr-review-sha` would have merged
 a higher-tier PR on a review of a DIFFERENT, already-merged PR", which is
-fail-OPEN and alarming and wrong. `pr-review-gate.sh:344` passes only when
-`recorded_sha = head_sha`, so the leak BLOCKS. The observation (markers leak
+fail-OPEN and alarming and wrong: the gate's sentinel-vs-HEAD comparison (§8)
+refuses on a mismatch, so the leak BLOCKS. The observation (markers leak
 between IN-PLACE lanes) was real; the consequence was invented, and it survived
 because everything around it was correct. Two properties make this the expensive
 kind of error: it arrives from the party a lane trusts most, and prose is the
