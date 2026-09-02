@@ -543,6 +543,45 @@ async function resolveZipImagePlan(
   };
 }
 
+/**
+ * Render an STS AssumeRole failure into the one line a warn may print.
+ *
+ * The single home for the policy that used to be copy-pasted as a ternary at
+ * four relay sites (one here, three in `local-invoke-agentcore.ts`). Both
+ * branches matter and neither is the obvious one:
+ *
+ * - `AssumeRoleFailure` carries a detail `assumeRoleCredentials` ALREADY
+ *   rendered through the policy, so it is taken verbatim. Re-rendering it here
+ *   would hand `describeAwsFailureForWarn` a plain `Error` -- cdk-local's own,
+ *   so no `$fault` -- and WITHHOLD text that was already sanitized, which is
+ *   how `ExpiredTokenException: ...` briefly became
+ *   `Error; 138-character message withheld` (issue #579 review round 4).
+ * - Anything else is a raw SDK error and goes through
+ *   `describeAwsFailureForWarn`, which keeps a modeled service exception's
+ *   message and withholds everything else -- credential-chain failures above
+ *   all, which can carry a `credential_process` command line.
+ *
+ * `op` is the label `describeAwsFailureForWarn` puts on the `debug` line it
+ * emits when it withholds a message -- NOT on the returned string, which is the
+ * clamped class plus a character count and carries no operation. Callers pass
+ * `'STS AssumeRole'` or a qualified variant such as
+ * `'STS AssumeRole (--sigv4 signing)'`, and that qualification is the whole
+ * reason the label is a parameter rather than a constant in here.
+ *
+ * This is deliberately a ONE-EXPRESSION function, and that is a hard
+ * constraint rather than a style preference:
+ * `tests/unit/cli/sts-error-relay-source-fence.test.ts` only accepts a NAMED
+ * RENDERER whose body carries the full policy shape, does not `warn` itself,
+ * and closes within `RENDERER_BODY_MAX_LINES`. A longer body, or one that
+ * warned, would stop being collected and every site delegating to it would be
+ * reported as an unguarded relay. Before issue #644 the fence could not model
+ * indirection at all, so these four sites had to stay inline; it can now, and
+ * this is the refactor that was waiting on it.
+ */
+export function assumeRoleDetail(err: unknown, op: string): string {
+  return err instanceof AssumeRoleFailure ? err.detail : describeAwsFailureForWarn(err, op);
+}
+
 export async function materializeLambdaLayersIncludingArns(
   layers: ResolvedLambdaLayer[],
   options: LocalInvokeOptions
@@ -1076,19 +1115,9 @@ export async function resolveLambdaContainerEnv(
       // the very line the helper beside it just made forge-proof. On a real
       // ARN the call is a no-op, so the integ grep is unaffected.
       //
-      // Issue #579 review round 4: `assumeRoleCredentials` now renders the
-      // failure ITSELF, because three of its four call paths are unguarded all
-      // the way to `formatError`. Re-rendering its output here would hand
-      // `describeAwsFailureForWarn` a plain `Error` -- cdk-local's own, so no
-      // `$fault` -- and WITHHOLD text the policy had already sanitized, which
-      // is how `ExpiredTokenException: ...` briefly became
-      // `Error; 138-character message withheld`. Take the pre-rendered
-      // `detail` when it is there; the `debug` line was emitted at render
-      // time, so the withheld/at-debug pairing still holds exactly once.
-      const reason =
-        err instanceof AssumeRoleFailure
-          ? err.detail
-          : describeAwsFailureForWarn(err, 'STS AssumeRole');
+      // The pre-rendered / raw split, and why re-rendering a pre-rendered
+      // detail is wrong, now live once in `assumeRoleDetail` above.
+      const reason = assumeRoleDetail(err, 'STS AssumeRole');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(resolvedAssumeRoleArn)}) failed: ${reason}. ` +
           "Falling back to the developer's shell credentials."
