@@ -112,6 +112,7 @@ import { resolveProfileCredentials } from './local-start-api.js';
 import { buildStsClientConfig } from '../../utils/profile-resolver.js';
 import {
   applyProfileCredentialsOverlay,
+  assumeRoleDetail,
   resolveExecutionRoleArnFromState,
 } from './local-invoke.js';
 import {
@@ -897,14 +898,14 @@ export async function resolveHostCredentialsForSigV4(
       // Issue #579: `assumeAgentCoreExecutionRole` renders its own
       // no-usable-credentials sentence, so re-rendering it here would WITHHOLD
       // cdk-local's own text (a non-service error is the withheld branch by
-      // design). Inlined rather than factored into a helper: the source fence
-      // in `tests/unit/cli/sts-error-relay-source-fence.test.ts` requires a
-      // visible `describeAwsFailureForWarn` CALL in the window around the
-      // announcing line, and one level of indirection defeats that check.
-      const sigv4Detail =
-        err instanceof AssumeRoleFailure
-          ? err.detail
-          : describeAwsFailureForWarn(err, 'STS AssumeRole (--sigv4 signing)');
+      // design). That split now lives once in `assumeRoleDetail`.
+      //
+      // This used to say the site was inlined BECAUSE one level of indirection
+      // defeated the source fence. True when written, and no longer: issue
+      // #644 taught `sts-error-relay-source-fence.test.ts` to collect a named
+      // renderer defined in `src/cli/commands/*.ts` and accept a site that
+      // delegates to it, which is what made this refactor possible.
+      const sigv4Detail = assumeRoleDetail(err, 'STS AssumeRole (--sigv4 signing)');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for --sigv4 signing: ` +
           `${sigv4Detail}. ` +
@@ -1144,11 +1145,8 @@ export async function resolveAgentCoreCodeImageFromS3(
       // see `describeAwsFailureForWarn` in `src/local/credential-error.ts`.
       // `assumeRoleArn` keeps printing for the reason recorded at the
       // `applyAgentCoreCredentialEnv` site below.
-      // Same inline shape and the same reason as the `--sigv4` site above.
-      const bundleDetail =
-        err instanceof AssumeRoleFailure
-          ? err.detail
-          : describeAwsFailureForWarn(err, 'STS AssumeRole (fromS3 bundle download)');
+      // Same shape and the same reason as the `--sigv4` site above.
+      const bundleDetail = assumeRoleDetail(err, 'STS AssumeRole (fromS3 bundle download)');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(assumeRoleArn)}) failed for the fromS3 bundle download: ` +
           `${bundleDetail}. ` +
@@ -1475,11 +1473,8 @@ export async function applyAgentCoreCredentialEnv(
       // the ARN from a live `GetAgentRuntime` response, so it is wire-derived
       // text on the line the helper beside it just made forge-proof. On a real
       // ARN the call is a no-op, so the integ grep is unaffected.
-      // Same inline shape and the same reason as the two sites above.
-      const assumeDetail =
-        err instanceof AssumeRoleFailure
-          ? err.detail
-          : describeAwsFailureForWarn(err, 'STS AssumeRole');
+      // Same shape and the same reason as the two sites above.
+      const assumeDetail = assumeRoleDetail(err, 'STS AssumeRole');
       logger.warn(
         `--assume-role: STS AssumeRole(${flattenToOneLine(args.assumeRoleArn)}) failed: ${assumeDetail}. ` +
           "Falling back to the developer's shell credentials."
@@ -1736,8 +1731,9 @@ async function assumeAgentCoreExecutionRole(
   // `utils/role-arn.ts` so all three word the refusal identically. Refuses
   // BEFORE the SDK is even imported, so nothing is loaded, built or logged.
   //
-  // Throws `AssumeRoleFailure`, NOT a bare error: all three callers re-render
-  // with `describeAwsFailureForWarn` unless the error is an
+  // Throws `AssumeRoleFailure`, NOT a bare error: all three callers render
+  // through `assumeRoleDetail`, which falls back to
+  // `describeAwsFailureForWarn` unless the error is an
   // `AssumeRoleFailure`, and a non-service error is that policy's WITHHELD
   // branch — so a `CdkLocalError` here would come out as
   // `CdkLocalError; 213-character message withheld`, the exact double-withhold

@@ -173,21 +173,33 @@ const OWN_THROW_DETAIL = /\.detail\b/;
  * How many source lines around the announcing line count as part of the site.
  *
  * Measured, not guessed: seven sites render inline on the announcing line or
- * the one after it, and one (`local-invoke.ts`'s `--assume-role` site) hoists
- * the render into a `const reason = ...` two lines above. A one-sided window
- * reported that one as unguarded. The numbers are the measured need and no
- * more — a wider window lets one site's helper call vouch for an unguarded
- * neighbour.
+ * the one after it, and the sites that hoist the render into a
+ * `const <name> = ...` put it two lines above. A one-sided window reported
+ * those as unguarded. The numbers are the measured need and no more — a wider
+ * window lets one site's helper call vouch for an unguarded neighbour.
+ *
+ * Since issue #645 ALL FOUR AssumeRole sites hoist, because they delegate to
+ * the one-line `assumeRoleDetail(err, op)` call; the "one site" this used to
+ * name was the pre-refactor shape.
  */
 const LINES_BEFORE = 2;
 const LINES_AFTER = 1;
 
 /**
- * The own-throw check reads a WIDER window. Measured like the numbers above:
- * at all four sites the layout is `const <name> =` / `err instanceof
- * AssumeRoleFailure` / `? err.detail` / `: describeAwsFailureForWarn(...)` /
- * `logger.warn(` / the announcing line -- the `instanceof` sits exactly four
- * lines above the announcement, two above the helper-call window's reach.
+ * The own-throw check reads a WIDER window, and since issue #645 it is wider
+ * than the TREE needs -- deliberately. It was measured against the INLINE
+ * layout: `const <name> =` / `err instanceof AssumeRoleFailure` /
+ * `? err.detail` / `: describeAwsFailureForWarn(...)` / `logger.warn(` / the
+ * announcing line, putting the `instanceof` exactly four lines above the
+ * announcement. All four sites now DELEGATE to `assumeRoleDetail` on one line,
+ * so measured on today's tree the distance is 2 at every one of them, and the
+ * extra two lines vouch for nothing that exists.
+ *
+ * The window stays at 4 anyway, because the inline shape is still a LEGAL way
+ * to write a new site -- the renderer is an option, not a mandate -- and
+ * synthetic case (h) below pins exactly that shape. Narrowing to 2 would
+ * reject a site written the way every site in this tree was written until
+ * issue #645, which is a false "unguarded" finding rather than a tightening.
  * The vouching concern that keeps `LINES_BEFORE` at 2 applies here too, but
  * asymmetrically: this check is a REQUIREMENT on the site, not permission to
  * relay, so a neighbour's branch leaking into the window can only excuse a
@@ -442,13 +454,19 @@ describe('#570 — a tenth STS relay site cannot be added unguarded', () => {
     ]);
   });
 
-  it('recognizes no named renderer in the tree today', () => {
+  it('recognizes exactly the named renderers the tree deliberately defines', () => {
     // Pins the collector against silent over-collection: a name in this list
     // is a name `isHelperGuarded` accepts as vouching for a site, so an entry
-    // must arrive DELIBERATELY (the issue #613 refactor would land an
-    // `assumeRoleDetail` here by name), never as a side effect of an
-    // unrelated function happening to match the shape.
-    expect(renderers).toEqual([]);
+    // must arrive DELIBERATELY, never as a side effect of an unrelated
+    // function happening to match the shape.
+    //
+    // `assumeRoleDetail` (issue #645) is the first entry, and it arrived by
+    // exactly the route this pin anticipated: issue #644 taught the fence to
+    // model indirection, and the four duplicated ternaries it had been forcing
+    // inline were then factored into that one renderer. The list is asserted
+    // WHOLE rather than by `toContain`, so a second name cannot appear
+    // unnoticed.
+    expect(renderers.map((r) => r.name)).toEqual(['assumeRoleDetail']);
   });
 
   it('routes every one of them through a describeAwsFailureForWarn CALL or a named renderer', () => {

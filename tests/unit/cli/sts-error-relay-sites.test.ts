@@ -655,3 +655,60 @@ describe("#579 — cdk-local's own no-credentials sentence survives every relay"
   });
 });
 
+/**
+ * Issue #645 — the RENDERER the four sites above now delegate to.
+ *
+ * The site-level cases in this file prove each `catch` still emits its own
+ * literal; these prove the shared policy those sites hand their error to. Both
+ * are needed and neither implies the other: a renderer with the branches
+ * swapped would keep every site's WORDING intact while inverting which errors
+ * get withheld, and the site tests would stay green.
+ */
+describe('#645 — assumeRoleDetail renders both branches of the relay policy', () => {
+  it('takes a pre-rendered AssumeRoleFailure detail VERBATIM, without re-withholding it', async () => {
+    const { assumeRoleDetail } = await import('../../../src/cli/commands/local-invoke.js');
+    const { AssumeRoleFailure } = await import('../../../src/utils/role-arn.js');
+    // `assumeRoleCredentials` has already rendered this through the policy.
+    // Re-rendering would hand `describeAwsFailureForWarn` a plain Error --
+    // cdk-local's own, so no `$fault` -- and WITHHOLD text that was already
+    // sanitized: the `ExpiredTokenException: ... -> Error; N-character message
+    // withheld` double-withhold of issue #579 review round 4.
+    const detail = 'ExpiredTokenException: The security token included in the request is expired';
+    const rendered = assumeRoleDetail(new AssumeRoleFailure('outer message', detail), 'STS AssumeRole');
+    expect(rendered).toBe(detail);
+    expect(rendered).not.toContain('withheld');
+  });
+
+  it('routes any OTHER error through describeAwsFailureForWarn, so a raw message is withheld', async () => {
+    const { assumeRoleDetail } = await import('../../../src/cli/commands/local-invoke.js');
+    // A credential-chain failure is the population the policy exists for: its
+    // message can carry a `credential_process` command line, so the class name
+    // survives and the text does not.
+    const secret = 'could not run credential_process: /usr/local/bin/get-creds --secret hunter2';
+    const rendered = assumeRoleDetail(new Error(secret), 'STS AssumeRole');
+    expect(rendered).not.toContain('hunter2');
+    expect(rendered).not.toContain('credential_process');
+    expect(rendered).toContain('withheld');
+  });
+
+  it('threads the caller op label through to the debug line, not a hard-coded one', async () => {
+    const { assumeRoleDetail } = await import('../../../src/cli/commands/local-invoke.js');
+    // The three agentcore sites QUALIFY the label ('STS AssumeRole (--sigv4
+    // signing)' and so on), so the label has to reach the helper rather than be
+    // hard-coded inside the renderer. Asserting on the RETURN value cannot show
+    // that -- `describeAwsFailureForWarn` puts the operation in the DEBUG line
+    // and returns only the clamped class + character count -- so assert on the
+    // debug line, which is the one place the label is observable.
+    const debugSpy = vi.spyOn(getLogger(), 'debug').mockImplementation(() => {});
+    try {
+      assumeRoleDetail(new Error('boom'), 'STS AssumeRole (--sigv4 signing)');
+      const logged = debugSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('STS AssumeRole (--sigv4 signing)');
+      // ...and it is the CALLER's label, not the bare default the other two
+      // sites pass -- otherwise a renderer ignoring `op` would pass too.
+      expect(logged).not.toMatch(/STS AssumeRole:/);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+});
