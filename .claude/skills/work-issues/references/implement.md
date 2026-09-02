@@ -71,11 +71,15 @@ drifts. Two boundaries:
 site at once, and both were hit in the go-to-k/cdk-local#603 lane
 (go-to-k/cdk-local#667, 2026-09-02):
 
-- **Extracting a shared helper re-verifies the CALLERS, not the helper.** Six
-  fixtures were converted to a sourced `tests/integration/_lib/` helper and all
-  six then died BEFORE their first assertion: the `source` landed after each
-  fixture's `cd "$(dirname "$0")"`, and `${BASH_SOURCE[0]}` stops resolving once
-  cwd changes. The helper's own suite was green throughout.
+- **Extracting a shared helper re-verifies the CALLERS, not the helper.**
+  Fixtures were converted to a sourced `tests/integration/_lib/` helper and
+  EVERY converted caller then died BEFORE its first assertion: the `source`
+  landed after the fixture's `cd "$(dirname "$0")"`, and `${BASH_SOURCE[0]}`
+  stops resolving once cwd changes. The helper's own suite was green throughout,
+  because the helper was never the broken part. In the shipped tree every caller
+  sources ABOVE its `cd`, which is the fix and is what to check when adding the
+  ninth: `grep -rl image-cleanup.sh tests/integration/*/verify.sh` lists the
+  callers, and the `source` line must precede the `cd` line in each.
 - **Order the rewrite BEFORE you introduce the construct it rewrites.** A
   `s/echo "FAIL: /fail "/` sweep is correct applied before the `fail()` helper is
   inserted, and rewrites the helper's own body into a call to ITSELF when applied

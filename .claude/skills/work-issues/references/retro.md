@@ -74,6 +74,12 @@ findings.
 
 **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
 citation from a target (one hit named four files, three cited as precedent).
+A SHARED BASENAME makes it worse than uninformative: the suffix match is what
+lets a body name a file by basename, so `verify.sh` (or `package.json`,
+`index.ts`) matches every sibling directory at once — measured 2026-09-02, three
+deferrals produced 27 hits naming nine fixtures, and the count discriminated
+nothing. Read such a hit as a DIRECTORY question ("which of the sites this issue
+lists did the run open?"), never as a file one.
 Do the item now while the context is loaded, or re-classify it in the issue
 body with the reason.
 
