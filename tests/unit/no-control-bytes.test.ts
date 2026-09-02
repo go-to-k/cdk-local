@@ -118,6 +118,28 @@ const BINARY_EXT =
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
 
+/**
+ * U+FEFF (BOM), as its THREE UTF-8 bytes rather than as the code point.
+ *
+ * It is not in C0, so `FORBIDDEN` never saw it -- and `main` really did carry
+ * one, spelled as a literal character inside a regex in
+ * `tests/unit/gates/markgate-include-globs.test.ts` (go-to-k/cdk-local#675). It
+ * is invisible on screen, so nothing but a byte scan finds it, and the repo's
+ * pre-commit hook `control-char-gate.sh` is C0-only for the same reason this
+ * was.
+ *
+ * Written as bytes because `scan` reads latin1 (see its comment): under that
+ * decode a BOM arrives as `ï` `»` `¿`, so a `\uFEFF` character class here would
+ * match NOTHING and this fence would be silently vacuous -- the exact shape the
+ * mutation probe below exists to refute.
+ *
+ * SCOPE: U+FEFF only. U+00A0 (NBSP) is the same class of defect but a different
+ * decision -- it is an ordinary paste accident in markdown prose, and this
+ * suite's docblock argues a whole-tree scan stays proportionate only while its
+ * predicate is RARE. That policy call is go-to-k/cdk-local#677.
+ */
+const BOM_UTF8 = '\u00ef\u00bb\u00bf';
+
 function trackedTextFiles(): string[] {
   const out = execFileSync('git', ['ls-files', '-z'], {
     cwd: REPO_ROOT,
@@ -156,6 +178,16 @@ function scan(file: string): Offender[] {
           byte: `0x${ch.charCodeAt(0).toString(16).padStart(2, '0').toUpperCase()}`,
         });
       }
+    }
+    // Separate pass: a BOM is a three-byte SEQUENCE under the latin1 read, so
+    // the per-character loop above cannot express it.
+    for (let at = line.indexOf(BOM_UTF8); at !== -1; at = line.indexOf(BOM_UTF8, at + 1)) {
+      found.push({
+        file,
+        line: i + 1,
+        column: at + 1,
+        byte: '0xEF 0xBB 0xBF (U+FEFF, a BOM -- spell it \\uFEFF)',
+      });
     }
   }
   return found;

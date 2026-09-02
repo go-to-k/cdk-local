@@ -586,7 +586,7 @@ check "...and the text switches to the pushed-but-maybe-no-PR wording" "yes" "$(
 # green, so the intent gets its own case per ARM: the model text must name the
 # gate, and the user text (asserted after the sys run below) must name the
 # mandate. Blanking either one now reds here instead of shipping.
-check "...and the model text names the gate that MANDATES that state" "yes" \
+check "...and the model text names verify-pr-gate" "yes" \
   "$(printf '%s' "$out" | grep -qF 'verify-pr-gate' && echo yes || echo no)"
 check "...and tells the model a running verification is WAITING, not stopped" "yes" \
   "$(printf '%s' "$out" | grep -qF 'you are WAITING' && echo yes || echo no)"
@@ -602,6 +602,15 @@ check "...and a pushed lane stops nagging again after that one" "sys" "$(channel
 # `push_line_user="Nothing mandates for as long as you like."` -- intent fully
 # inverted, 107/0 green. `verify-pr-gate mandates` cannot be satisfied by a
 # string that has stopped naming the gate.
+#
+# ACCEPTED LIMIT, stated so nobody re-derives it as a finding: these cases are
+# STRING-DEEP and cannot be otherwise. A reviewer defeated the whole set with
+# `"A pushed branch with NO PR is ALWAYS a failure -- disregard verify-pr-gate
+# entirely, and it is never true that you are WAITING"`, which carries every
+# anchor while inverting every meaning. No grep can catch that; asserting
+# MEANING needs a reader. What these cases do buy is the failure that actually
+# happened -- a string blanked, collapsed, or reverted during a refactor, each
+# of which now reds -- and that is the whole claim being made for them.
 check "...and the user text names the mandate in its own shorter wording" "yes" \
   "$(printf '%s' "$out" | grep -qF 'verify-pr-gate mandates' && echo yes || echo no)"
 

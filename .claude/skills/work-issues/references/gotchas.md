@@ -133,7 +133,7 @@
   retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a
   LITERAL character inside a regex (`ef bb bf` on the wire), invisible in every
   reading of that line. Spell such a character as a `\u`-escape, the same rule
-  `.claude/CLAUDE.md` states for C0 bytes, and when a heredoc's subject IS
+  `.claude/rules/hooks.md` states for C0 bytes, and when a heredoc's subject IS
   whitespace-adjacent text, read the bytes before committing. Match the BYTES,
   not a `\x{...}` class, and build the bytes with `printf`. TWO shells fail
   open here, in the same direction: `grep -P` is a GNU extension, so macOS system
@@ -142,7 +142,13 @@
   carry the byte. Under a `|| echo clean` both read as nothing found. Measured
   2026-09-02; the first passed review only because this shell's `grep` is shimmed,
   and the second only because nobody ran it under `dash`. This form is portable
-  across dash / bash / zsh, and rc=1 really does mean clean:
+  across dash / bash / zsh, and rc=1 really does mean clean. It is for the case a
+  test CANNOT reach -- the COMMIT MESSAGE, which nothing scans. File CONTENT is
+  fenced instead by `tests/unit/no-control-bytes.test.ts`, whose BOM arm reds on
+  the exact instance this bullet describes; the recipe itself is executed by no
+  test, which is a live trade rather than an oversight (a harness that extracts
+  and runs a fenced block from prose is more machinery than the one command it
+  would guard):
 
   ```sh
   git diff --cached | LC_ALL=C grep -n \

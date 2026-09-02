@@ -274,16 +274,22 @@ if [ -n "$self_branch" ]; then
   # unpushed, which is what it is.
   #
   # The pushed arm's text does NOT call that state a failure on its own, and
-  # the reason is a MECHANISM rather than a local quirk: wherever a gate blocks
-  # `gh pr create` until a marker requiring the integ run and the live test is
-  # fresh -- verify-pr-gate here, and the same shape in the sibling cdkd -- every
-  # lane touching src/** necessarily passes THROUGH "pushed, no PR" on its way to
-  # opening one. That is the mandated path, so a nudge that reads it as a failure
-  # is wrong for the whole window in which the verification is running, which is
-  # the longest window in the lane. Measured 2026-09-03: it fired three times in
-  # one run on exactly that state. The arm still fires -- the state IS worth one
-  # nudge -- but it names both readings and lets the model tell WAITING from
-  # STOPPED, which is the distinction the message below is built around.
+  # the reason is a MECHANISM rather than a local quirk: verify-pr-gate blocks
+  # `gh pr create` until the verify-pr marker is fresh, and it has NO diff-scope
+  # short-circuit, so EVERY lane -- not only one touching src/** -- passes
+  # THROUGH "pushed, no PR" on its way to opening a PR. That is the mandated
+  # path, so a nudge reading it as a failure is wrong for the whole window in
+  # which the verification runs, which is the longest window in the lane.
+  # Measured 2026-09-03: it fired three times in one run on exactly that state.
+  #
+  # The text says "a full /verify-pr walk" and deliberately does NOT name the
+  # integ, because THAT half is conditional and this hook computes no predicate:
+  # it makes no `git diff` call, so the same string is emitted for a docs-only
+  # lane where integ-gate short-circuits and no integ is owed. Naming an
+  # unconditional cost in a message that fires unconditionally is the
+  # comment/code split this repo keeps re-learning. The arm still fires -- the
+  # state IS worth one nudge -- but it names both readings and lets the model
+  # tell WAITING from STOPPED, which is what the message is built around.
   unpushed=$(git -C "$session_root" rev-list --count '@{u}..' 2>/dev/null || echo "")
   if [ -z "$unpushed" ]; then
     push_state="unpushed"
@@ -295,7 +301,7 @@ if [ -n "$self_branch" ]; then
     push_line_user="It has ${unpushed} commit(s) not yet pushed."
   else
     push_state="pushed"
-    push_line="It is fully pushed, so a PR may already be in flight. A pushed branch with NO PR is one of the two failures this catches -- but it is ALSO the mandated waiting room here, because verify-pr-gate blocks 'gh pr create' until the verify-pr marker is fresh and earning that marker takes the integ run and the live test. So: if that verification is still running you are WAITING, which is a legitimate turn end; if it has finished, open the PR."
+    push_line="It is fully pushed, so a PR may already be in flight. A pushed branch with NO PR is one of the two failures this catches -- but it is ALSO the mandated waiting room here, because verify-pr-gate blocks 'gh pr create' until the verify-pr marker is fresh, and only a full /verify-pr walk sets it. So: if that verification is still running you are WAITING, which is a legitimate turn end; if it has finished, open the PR."
     push_line_user="It is fully pushed, so a PR may already be in flight. A pushed branch with NO PR is one of the two failures this catches, and also the state verify-pr-gate mandates for as long as /verify-pr is still running."
   fi
   msg="WARNING: YOUR OWN lane is unmerged -- a NOT-CLOSEABLE verdict is a TO-DO LIST, not a stopping point.
