@@ -1158,7 +1158,7 @@ construction.
     `vite.config.ts`, `.mise.toml`, `.node-version`, `.markgate.yml`,
     `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
-    `.claude/rules/**`, `.claude/settings.json`,
+    `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
     `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in

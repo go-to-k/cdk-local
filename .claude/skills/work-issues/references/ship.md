@@ -170,10 +170,12 @@ git worktree prune     # drops entries whose directory a peer already removed
 git branch --list      # local branches THIS run created are gone too
 ```
 
-IN-PLACE — run THIS block INSTEAD, never both, and **run it LAST, not per-lane**:
-§10-d takes its retro branch in this same tree, so restoring here and branching
-again there would only undo itself. Do the merge in §9 and come back for the
-block below once the retro PR has merged.
+IN-PLACE — run THIS block INSTEAD, never both, and **run it LAST, not per-lane,
+in the PARENT**: §10-d takes its retro branch in this same tree, so restoring
+here and branching again there would only undo itself. Do the merge in §9 and
+come back for the block below once the retro PR has merged. The parent owns it
+even though §10-d is where it fires, because §10 may be dispatched to a subagent
+and two agents must not both be switching one tree.
 
 **The run ADDED no worktree, so it removes none**: `/merge-pr`'s local-cleanup
 step never ran (above), and removing the tree it is standing in would delete its
@@ -186,10 +188,18 @@ are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
 `git switch ""` is not the failure you want):
 
 ```bash
-git rev-parse --verify <LAUNCH_BRANCH>    # gone? -> take the fallback instead
-git switch <LAUNCH_BRANCH>                # AS-IS: no pull, no rebase, no fast-forward
-git branch -D <every branch THIS run created>   # -D, not -d (squash) - see above;
-                                          # §10-d's retro branch is one of them
+git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>   # gone? -> fallback
+git switch <LAUNCH_BRANCH> \
+  && git branch -D <every branch THIS run created>
+       # CHAINED: an unchained `-D` after a FAILED switch still deletes the
+       # branches that are not checked out, leaving the tree on the lane branch
+       # with its siblings gone. `-D`, not `-d` (squash) -- see above; §10-d's
+       # retro branch is one of them.
+       # git prints its own advice on that switch, suggesting a `pull` to
+       # update the local branch. Do not: that is the fast-forward the AS-IS
+       # rule withdraws. (Spelled without the verb because the fence below
+       # bans every branch-moving command inside this block, comments and all
+       # -- a reader copies a line, not its intent.)
 git branch --show-current                 # must print <LAUNCH_BRANCH>
 git status --porcelain                    # must be empty: the tree is as you found it
 git rev-list --count origin/main..<LAUNCH_BRANCH>
@@ -199,7 +209,7 @@ git rev-list --count origin/main..<LAUNCH_BRANCH>
 ```
 
 Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was
-launched detached) or the `rev-parse --verify` above says the branch is gone —
+launched detached) or the `show-ref --verify` above says the branch is gone —
 never as the default:
 
 ```bash
@@ -230,10 +240,12 @@ a run that is on its way out, and "it was only a fast-forward" is precisely the
 reasoning that produced the detached HEAD this rule replaces. If the branch is
 behind, that is the tool's business.
 
-`/merge-pr` still deletes each REMOTE branch on merge, which is fine and
-independent of any of this. So the IN-PLACE closing check is "added no worktree,
-so removed none; the tree is on `LAUNCH_BRANCH` as it was found, and every branch
-this run created is deleted".
+The REMOTE branches still go on merge — by the repo's own
+`delete_branch_on_merge`, not by `/merge-pr`, which deliberately omits
+`--delete-branch` — which is fine and independent of any of this. So the
+IN-PLACE closing check is "added no worktree, so removed none; the tree is on
+`LAUNCH_BRANCH` as it was found (or detached, if that arm fired), and every
+branch this run created is deleted".
 
 `git worktree list` cannot tell you whose a worktree is: a finished lane and a
 session working right now look identical, an already-on-`main` branch tip

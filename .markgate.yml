@@ -88,6 +88,13 @@ gates:
       - ".claude/skills/**"
       - ".claude/agents/**"
       - ".claude/rules/**"
+      # `.claude/CLAUDE.md` joined the checker inputs in
+      # go-to-k/cdk-local#651: work-issues-launch-mode.test.ts pins the
+      # repo-global IN-PLACE branch rule stated there, because that file is
+      # always loaded and sits in no skill directory, so nothing else could see
+      # a revert. It is also in the `docs` gate -- the same overlap
+      # `.claude/rules/**` already carries, for the same two reasons.
+      - ".claude/CLAUDE.md"
       - ".claude/settings.json"
       - ".github/workflows/pr-inherit-issue-labels.yml"
       # `ci.yml` became a checker INPUT in #630: markgate-include-globs.test.ts

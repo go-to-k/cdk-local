@@ -102,9 +102,13 @@ const ARM_BEARING: Record<string, string[]> = {
  */
 const LAUNCH_BRANCH_BEARING: Record<string, number> = {
   // Counts at the time of writing: SKILL.md 4, launch-mode.md 11, claim.md 1,
-  // implement.md 1, ship.md 10, retro.md 1, gotchas.md 2.
+  // implement.md 1, ship.md 10, retro.md 1, gotchas.md 2; hunt-bugs 7.
+  // The three files whose count is 1 get a floor of 1, which IS the presence
+  // check this comment disparages -- there is nothing else available at that
+  // count. What covers them instead is UNCONDITIONAL_RULE below, which pins the
+  // whole instruction rather than the token.
   'SKILL.md': 2,
-  [LAUNCH_MODE_DOC]: 6,
+  [LAUNCH_MODE_DOC]: 8,
   [join('references', 'claim.md')]: 1,
   // implement.md is section 5's own file and the ONE a lane actually opens at
   // that stage, so its arm is the one whose absence is dangerous rather than
@@ -118,9 +122,58 @@ const LAUNCH_BRANCH_BEARING: Record<string, number> = {
   [join('references', 'gotchas.md')]: 1,
 };
 
+/** The same set as a list, for the scans that read every bearing doc. */
+const LAUNCH_BRANCH_BEARING_DOCS = Object.keys(LAUNCH_BRANCH_BEARING);
+
+/**
+ * The UNCONDITIONAL rule, pinned as a SENTENCE rather than as a token on a line.
+ * A count floor cannot see it (measured: implement.md kept its LAUNCH_BRANCH
+ * paragraph verbatim while the instruction beside it went back to "only if the
+ * tree is detached", and the floor stayed green), and neither can a positive
+ * `/IN-PLACE:[^\n]*ALWAYS/` -- an earlier draft passed on
+ * "IN-PLACE: ALWAYS confirm the tree is yours first; then, if it arrived
+ * detached ... take a fresh branch here", which is the reverted rule wearing the
+ * word. Pinning the whole instruction leaves nowhere for the condition to hide.
+ *
+ * Section 5 (implement.md) is the file a lane actually opens at that stage, so
+ * its entry is the one whose absence is dangerous rather than merely
+ * inconsistent: a lane following a conditional rule commits onto LAUNCH_BRANCH,
+ * and the merge then deletes the outer tool's remote branch.
+ */
+const UNCONDITIONAL_RULE: Array<[string, string]> = [
+  [join('references', 'implement.md'), 'take a fresh branch here, ALWAYS'],
+  [LAUNCH_MODE_DOC, 'branch IN PLACE off `origin/main` — ALWAYS'],
+];
+
+/**
+ * The same rule in files outside `skillDir`, read from the repo root. The sibling
+ * SKILL runs IN-PLACE and merges through /merge-pr, so the hazard is identical;
+ * `.claude/CLAUDE.md` is the repo-global instruction file, always loaded, and it
+ * stated the pre-change rule until go-to-k/cdk-local#651 -- with nothing fencing
+ * it, since it is in no skill directory.
+ */
+const OUTSIDE_UNCONDITIONAL_RULE: Array<[string, string]> = [
+  [join('.claude', 'skills', 'hunt-bugs', 'SKILL.md'), "take the fix's branch IN PLACE off `origin/main` — ALWAYS"],
+  [join('.claude', 'CLAUDE.md'), 'branch IN PLACE off `origin/main` -- ALWAYS'],
+];
+
+/**
+ * Lines whose subject IS the in-place branch instruction. Every one of them has
+ * to carry the unconditionality, so a SECOND site cannot re-introduce the
+ * condition beside a correct first one -- which is how the bash comment in
+ * implement.md could revert while its heading stayed right.
+ */
+// Deliberately loose on what follows "branch IN PLACE": a probe that
+// re-conditioned only the bash comment slipped a phrase-list version of this,
+// because it wrote "takes a branch IN PLACE only when..." and the list held
+// "take a branch IN PLACE". The predicate is the SUBJECT of the line, not its
+// grammar.
+const IN_PLACE_RULE_LINE = /IN-PLACE:|branch IN PLACE\b/i;
+const STILL_CONDITIONAL = /\b(if|when|unless|only)\b[^.]*\bdetached\b/i;
+
 /** Skills OTHER than work-issues that must carry the same contract. */
 const LAUNCH_BRANCH_SIBLING_SKILLS: Record<string, number> = {
-  'hunt-bugs': 3,
+  'hunt-bugs': 4,
 };
 
 /**
@@ -130,7 +183,8 @@ const LAUNCH_BRANCH_SIBLING_SKILLS: Record<string, number> = {
  * would come back in is `git switch <LAUNCH_BRANCH>` on one line and the
  * fast-forward on the NEXT -- which an argument-position regex cannot see.
  */
-const BRANCH_MOVING = /\bgit\s+(pull|rebase|merge|reset|push)\b|\bgit\s+branch\s+-f\b/;
+const BRANCH_MOVING =
+  /\bgit\s+(pull|rebase|merge|reset|push|update-ref)\b|\bgit\s+branch\s+-f\b|\bgit\s+(switch|checkout)\s+-[CB]\b/;
 
 /** Every fenced ```bash block of a markdown file, in order. */
 export function bashBlocks(markdown: string): string[] {
@@ -250,38 +304,81 @@ describe('work-issues launch-mode probe', () => {
     // ...and nowhere in either doc may a moving verb share a line with the value.
     // retro.md carries a SECOND copy of the recipe in prose, which the block scan
     // above cannot reach.
-    for (const doc of [join('references', 'ship.md'), join('references', 'retro.md')]) {
-      for (const [i, line] of read(doc).split('\n').entries()) {
+    // ...and nowhere in ANY bearing doc may a moving verb share a line with the
+    // value. retro.md and hunt-bugs/SKILL.md each carry a second, prose copy of
+    // the recipe that the block scan above cannot reach, and launch-mode.md's
+    // table rows state the rule in one line apiece.
+    const scanned: Array<[string, string]> = [
+      ...LAUNCH_BRANCH_BEARING_DOCS.map((d) => [d, read(d)] as [string, string]),
+      ...OUTSIDE_UNCONDITIONAL_RULE.map(([rel]) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]),
+    ];
+    for (const [name, text] of scanned) {
+      for (const [i, line] of text.split('\n').entries()) {
         if (!line.includes('LAUNCH_BRANCH')) continue;
         expect(
           line,
-          `${doc}:${i + 1} names LAUNCH_BRANCH on the same line as a branch-moving verb.`
+          `${name}:${i + 1} names LAUNCH_BRANCH on the same line as a branch-moving verb.`
         ).not.toMatch(BRANCH_MOVING);
       }
     }
+
+    // The restore must be presented BEFORE the detach fallback: an agent reading
+    // top-down takes the first arm it meets, and detaching is the end state this
+    // change moved away from. The hook's own message is pinned the same way in
+    // `.claude/hooks/stop-unmerged-lane-warn.test.sh`.
+    const restoreAt = ship.indexOf('git switch <LAUNCH_BRANCH>');
+    const detachAt = ship.indexOf('git switch --detach origin/main');
+    expect(restoreAt, 'references/ship.md no longer shows the restore recipe').toBeGreaterThan(-1);
+    expect(detachAt, 'references/ship.md no longer shows the detach fallback').toBeGreaterThan(-1);
+    expect(
+      restoreAt,
+      `references/ship.md presents the detach FALLBACK before the LAUNCH_BRANCH restore. ` +
+        `A run reading top-down takes the first arm it meets.`
+    ).toBeLessThan(detachAt);
   });
 
-  it('section 5 takes the lane branch IN PLACE unconditionally', () => {
-    // The occurrence floor above cannot see this: implement.md can keep its
-    // LAUNCH_BRANCH paragraph verbatim while the INSTRUCTION beside it reverts to
-    // "only when the tree is detached or its PR has merged" -- measured as a
-    // mutation probe, which the floor passed. That reversion is the dangerous
-    // one: section 5 is the file a lane actually opens at that stage, so a lane
-    // following it commits onto LAUNCH_BRANCH and the merge deletes the outer
-    // tool's remote branch (this repo has `delete_branch_on_merge`). So the
-    // unconditionality is pinned directly, in both directions.
-    const impl = read(join('references', 'implement.md'));
-    expect(
-      impl,
-      `references/implement.md's IN-PLACE branch instruction no longer states that the ` +
-        `lane branch is taken ALWAYS. A conditional rule there sends a lane onto ` +
-        `LAUNCH_BRANCH, which the merge then deletes on the outer tool's behalf.`
-    ).toMatch(/IN-PLACE:[^\n]*\b(ALWAYS|unconditional)/i);
-    expect(
-      impl,
-      `references/implement.md is back to gating the in-place branch on the tree being ` +
-        `detached or its PR merged. go-to-k/cdkd#2417 made that rule unconditional.`
-    ).not.toMatch(/\bif (the branch here is|that branch is) detached\b/i);
+  for (const [doc, sentence] of UNCONDITIONAL_RULE) {
+    it(`${doc} states the in-place branch rule unconditionally`, () => {
+      expect(
+        read(doc),
+        `${doc} no longer carries the instruction verbatim: "${sentence}". A conditional ` +
+          `rule there sends a lane onto LAUNCH_BRANCH, which the merge then deletes on the ` +
+          `outer tool's behalf (this repo has delete_branch_on_merge). If the wording ` +
+          `legitimately changed, update UNCONDITIONAL_RULE in the same commit.`
+      ).toContain(sentence);
+    });
+  }
+
+  for (const [rel, sentence] of OUTSIDE_UNCONDITIONAL_RULE) {
+    it(`${rel} states the in-place branch rule unconditionally`, () => {
+      expect(
+        readFileSync(join(repoRoot, rel), 'utf8'),
+        `${rel} no longer carries: "${sentence}". A conditional rule there sends a run ` +
+          `onto LAUNCH_BRANCH, which the merge then deletes on the outer tool's behalf ` +
+          `(this repo has delete_branch_on_merge).`
+      ).toContain(sentence);
+    });
+  }
+
+  it('no site re-conditions the in-place branch rule on the tree being detached', () => {
+    // The sentence pins above prove the right rule is PRESENT; this proves a
+    // second site has not put the old one back beside it. Scoped to lines whose
+    // subject IS the instruction, so the paragraphs that discuss the withdrawn
+    // condition as history are untouched.
+    const files: Array<[string, string]> = [
+      ...LAUNCH_BRANCH_BEARING_DOCS.map((d) => [d, read(d)] as [string, string]),
+      ...OUTSIDE_UNCONDITIONAL_RULE.map(([rel]) => [rel, readFileSync(join(repoRoot, rel), 'utf8')] as [string, string]),
+    ];
+    for (const [name, text] of files) {
+      for (const [i, line] of text.split('\n').entries()) {
+        if (!IN_PLACE_RULE_LINE.test(line)) continue;
+        expect(
+          line,
+          `${name}:${i + 1} states the in-place branch rule and gates it on the tree being ` +
+            `detached. go-to-k/cdkd#2417 made that rule unconditional.`
+        ).not.toMatch(STILL_CONDITIONAL);
+      }
+    }
   });
 
   it('both mirrored flow lessons are still in the stage file that fires them', () => {
@@ -401,7 +498,7 @@ describe('work-issues launch-mode probe', () => {
       // since a detached worktree is still a worktree.
       const { tmp, main, lane, git, run } = fixture();
       try {
-        git(['-C', lane, 'switch', '--detach', 'HEAD']);
+        git(['-C', lane, 'switch', '-q', '--detach', 'HEAD']);
         const fromDetachedLane = run(lane);
         expect(fromDetachedLane.MODE).toBe('IN-PLACE');
         expect(fromDetachedLane.LANE_TREE).toBe(lane);

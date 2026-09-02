@@ -62,9 +62,11 @@
   defect: confirm the PR is MERGED (`gh pr view <n> --json state`) and say so in
   the wrap. The tree is only clearable from inside by LEAVING the branch, and
   §9's IN-PLACE cleanup arm is where that happens — as the run's LAST step:
-  switch back to `LAUNCH_BRANCH`, which sits 0 commits ahead of `origin/main`
-  and so silences the hook while leaving the workspace exactly as the outer tool
-  created it. Detaching (`git switch --detach origin/main`) silences it too —
+  switch back to `LAUNCH_BRANCH`, which for a freshly created workspace sits 0
+  commits ahead of `origin/main` and so silences the hook while leaving the
+  workspace exactly as the outer tool created it. (If the tool DID leave commits
+  on its own branch the hook keeps naming it — correctly: they are not this
+  run's to merge, and §9 forbids fast-forwarding them away.) Detaching (`git switch --detach origin/main`) silences it too —
   the hook skips a detached worktree, `git branch --show-current` being empty —
   but it is visible-surprising in the outer tool's UI, so §9 keeps it as the
   FALLBACK, taken only when `LAUNCH_BRANCH` was empty at probe time or is now

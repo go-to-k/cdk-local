@@ -86,7 +86,7 @@ that proved them.
   lane creates its own worktree per §5 — or works in place — implements (unit + fixture
   coverage in the SAME PR, per the never-defer-the-integ invariant), runs
   `/check` + `/check-docs`, opens the PR, dispatches its review tier (a lane
-  may spawn reviewer subagents), addresses findings, and drives CI to green —
+  may spawn reviewer subagents, SYNCHRONOUSLY — §8), addresses findings, and drives CI to green —
   then STOPS at merge-ready and reports back: PR number, HEAD sha, markers
   set, review verdicts, the integ fixture(s) its diff needs, anything
   deferred. Its diffs, test logs and review round-trips never enter the

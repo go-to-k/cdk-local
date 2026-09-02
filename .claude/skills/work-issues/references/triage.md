@@ -157,8 +157,9 @@ rest; a fix living entirely in one is naturally disjoint.
 **How many lanes you may pick is decided by the LAUNCH MODE, and the parent
 already settled it before stage 0** — `references/launch-mode.md` holds the
 probe (the ONLY copy) and the reading of its edge cases, and the dispatch that
-started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. If the
-dispatch did not, STOP and ask for them rather than re-running the probe here:
+started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` /
+`LAUNCH_BRANCH`. If the dispatch did not, STOP and ask for them rather than
+re-running the probe here:
 a triage subagent's answer is not the parent's, and the parent is the party
 that later runs `git worktree add` or does not.
 

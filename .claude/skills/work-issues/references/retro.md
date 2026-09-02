@@ -278,8 +278,9 @@ git fetch origin && git switch -c "$B" origin/main
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes
   the worktree — §9's closing check is "every worktree THIS run added is
   gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9),
-  and instead this is where it runs §9's IN-PLACE cleanup arm — **the LAST
-  step of the whole run**: `git switch <LAUNCH_BRANCH>` as-is (no pull, no
+  and instead this is where the PARENT runs §9's IN-PLACE cleanup arm — **the
+  LAST step of the whole run**, and the parent's even when §10 was dispatched to
+  a subagent, because two agents must not both be switching one tree: `git switch <LAUNCH_BRANCH>` as-is (no pull, no
   rebase, no fast-forward) and `git branch -D <every branch THIS run created>`,
   the retro branch included. §9 deliberately does NOT do that per-lane,
   because THIS section branches in the same tree and would undo it. Leaving

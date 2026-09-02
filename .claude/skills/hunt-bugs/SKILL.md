@@ -126,7 +126,7 @@ it, `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, 
 or the `cdkl` bin).
 
 **Unless this hunt was LAUNCHED from a linked worktree, in which case create no
-WORKTREE and take the fix's branch IN PLACE, off `origin/main`** — `git worktree
+WORKTREE and take the fix's branch IN PLACE off `origin/main` — ALWAYS** — `git worktree
 add` run from inside a worktree nests one, and deleting the outer workspace takes
 the inner directory, its uncommitted work and its git registration with it
 (go-to-k/cdk-local#635). Compute the mode with the one-line probe in
@@ -300,8 +300,10 @@ Take it all the way to merged — do not leave a green PR hanging:
    **Launched IN-PLACE (step 1): stop `/merge-pr` after its step 4** (confirm
    `state=MERGED`) and skip its step 5 — `git worktree remove "$WT" --force`
    would delete the cwd this hunt is running in, and `git branch -D "$BR"` the
-   branch it is standing on. Cleanup of a workspace this run did not create
-   belongs to whoever did; say so in the report instead of doing it.
+   branch it is standing on. Cleanup of the TREE belongs to whoever created
+   it; say so in the report instead of doing it. The BRANCHES are a different
+   matter — this hunt made them, and step 2 below deletes them and puts
+   `LAUNCH_BRANCH` back.
 2. **Confirm the worktree YOU added is gone** — `/merge-pr` removes it; a
    left-behind worktree is the silent residue of this flow. Check `git worktree
    list` for yours specifically, NOT for a list with only the main checkout in it:
@@ -315,9 +317,11 @@ Take it all the way to merged — do not leave a green PR hanging:
    pull, no rebase, no fast-forward — the branch is the outer tool's artifact),
    then `git branch -D <the branch this hunt created>`. Detach
    (`git fetch origin && git switch --detach origin/main`) only when
-   `LAUNCH_BRANCH` was empty at probe time or is now gone. Its closing check is
-   that the launch TREE is exactly as it found it, standing on `LAUNCH_BRANCH`,
-   with every branch this hunt created deleted
+   `LAUNCH_BRANCH` was empty at probe time, or
+   `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>` says it is gone.
+   Its closing check is that the launch TREE is exactly as it found it — on
+   `LAUNCH_BRANCH`, or detached if that arm fired — with every branch this hunt
+   created deleted
    (`/work-issues` `references/ship.md` section 9 carries the reasoning).
 
 ### 9. Record what you learned

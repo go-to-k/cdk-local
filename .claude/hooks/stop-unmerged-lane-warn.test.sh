@@ -872,12 +872,15 @@ check "the own-lane message names the detach escape" "yes" "$(printf '%s' "$out"
 check "...and names the restore that now precedes it" "yes" \
   "$(printf '%s' "$out" | grep -qF 'switch BACK to the' && echo yes || echo no)"
 # By CHARACTER offset, not line number: the hook answers with JSON, so the whole
-# message can arrive on one line and a line-numbered compare reports equal.
+# message can arrive on one line and a line-numbered compare reports equal. The
+# input is accumulated in the main block rather than slurped with `RS="\0"` --
+# on macOS BWK awk an empty-ish RS is PARAGRAPH mode, not read-everything, so
+# that spelling would silently split a future multi-paragraph message.
 check "...with the restore BEFORE the detach fallback" "yes" \
   "$(printf '%s' "$out" | awk '
-      BEGIN { RS = "\0" }
-            { r = index($0, "switch BACK to the"); d = index($0, "git switch --detach origin/main") }
-      END   { print (r > 0 && d > 0 && r < d) ? "yes" : "no" }')"
+            { buf = buf $0 "\n" }
+      END   { r = index(buf, "switch BACK to the"); d = index(buf, "git switch --detach origin/main")
+              print (r > 0 && d > 0 && r < d) ? "yes" : "no" }')"
 
 git -C "$REPO" worktree remove --force "$REPO/wt-cad-a"
 git -C "$REPO" worktree remove --force "$REPO/wt-cad-b"
