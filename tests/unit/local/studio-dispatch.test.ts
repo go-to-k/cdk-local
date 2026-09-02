@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { describe, it, expect, vi } from 'vite-plus/test';
+import { describe, it, expect, vi, afterEach } from 'vite-plus/test';
 import { StudioEventBus, type StudioInvocationEvent, type StudioLogEvent } from '../../../src/local/studio-events.js';
 import { createStudioDispatcher } from '../../../src/local/studio-dispatch.js';
+import { ConsoleLogger } from '../../../src/utils/logger.js';
 
 /** A minimal stand-in for a spawned child process. */
 function makeFakeChild(): EventEmitter & {
@@ -758,3 +759,111 @@ function countRunDirs(): number {
     return 0;
   }
 }
+
+describe('the dispatch child does not inherit CDKL_LOG_STREAM (issue #608)', () => {
+  const prevStream = process.env['CDKL_LOG_STREAM'];
+  afterEach(() => {
+    if (prevStream === undefined) delete process.env['CDKL_LOG_STREAM'];
+    else process.env['CDKL_LOG_STREAM'] = prevStream;
+  });
+
+  it('pins CDKL_LOG_STREAM so an operator export cannot reroute the child warns off stderr', async () => {
+    // An operator who exported CDKL_LOG_STREAM=stdout in their own shell.
+    // `runChild` spreads `process.env` into the spawn, so without the pin the
+    // child inherits it -- and `emit()` in utils/logger.ts then routes EVERY
+    // level, cdk-local's own warns included, to stdout, which on this path is
+    // the RESPONSE channel. For the `agentcore` kind `extractResponse` treats
+    // the WHOLE of stdout as the response, so those warns are folded INTO it:
+    // measured live, an AgentCore invoke with the variable exported returns a
+    // string beginning `WARN: --from-cfn-stack: STS GetCallerIdentity failed`
+    // instead of the agent's parsed JSON.
+    //
+    // NOT because the lines are lost. This case uses `kind: 'lambda'`, whose
+    // non-response stdout lines ARE emitted as `log` events by the caller, so
+    // the binding survives either way -- verified live, the local-studio
+    // fixture's bound-log assertions pass with and without the pin. What the
+    // lambda path loses is live streaming: stderr reaches the bus line by line
+    // as it arrives, stdout only after the child closes.
+    process.env['CDKL_LOG_STREAM'] = 'stdout';
+
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    const dispatcher = createStudioDispatcher({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-stream',
+    });
+
+    const p = dispatcher.run({ targetId: 'Stack/Fn', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{"statusCode":200}');
+    child.emit('close', 0);
+    await p;
+
+    const [, , opts] = spawnFn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { cwd: string; env: NodeJS.ProcessEnv },
+    ];
+    expect(opts.env['CDKL_LOG_STREAM']).not.toBe('stdout');
+    expect(opts.env['CDKL_LOG_STREAM']).toBe('stderr');
+    // The level pin is unchanged and must stay alongside it.
+    expect(opts.env['CDKL_LOG_LEVEL']).toBe('warn');
+  });
+
+  it('pairs with the real logger: the pinned value keeps warn on stderr', async () => {
+    // The pair fence. studio-dispatch PINS the value and utils/logger CONSUMES
+    // it, so asserting the pinned string alone would survive a logger change
+    // that gave 'stderr' some other meaning. Drive the REAL logger with the
+    // value the dispatcher pins and assert warn still lands on the stderr-
+    // backed channel, which is the only stream `runChild` forwards to the bus.
+    const bus = new StudioEventBus();
+    const child = makeFakeChild();
+    const spawnFn = vi.fn(() => child as never);
+    // Held and awaited at the end: `run()` has a `finally { rmSync(dir) }` and
+    // no `catch`, so a floating promise would surface a temp-dir throw as an
+    // unhandled rejection settling after the test body returns -- the shape
+    // behind this file's issue #402 worker-teardown scar tissue.
+    const pending = createStudioDispatcher({
+      cliEntry: '/path/to/cli.js',
+      bus,
+      nodeBin: '/usr/bin/node',
+      spawnFn: spawnFn as never,
+      clock: fixedClock(),
+      idFactory: () => 'inv-pair',
+    }).run({ targetId: 'Stack/Fn', kind: 'lambda', event: {} });
+    child.stdout.emit('data', '{}');
+    child.emit('close', 0);
+    const [, , opts] = spawnFn.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { cwd: string; env: NodeJS.ProcessEnv },
+    ];
+
+    // Guard the premise before driving the logger with it. Without this the
+    // fence passes VACUOUSLY when the pin is removed: the spawn env then has
+    // no CDKL_LOG_STREAM, assigning `undefined` stores the string "undefined",
+    // which is not 'stdout', so warn lands on stderr and the assertions below
+    // hold while the thing being fenced is gone. Measured: dropping the pin
+    // reddened the sibling test above and left this one green.
+    const pinned = opts.env['CDKL_LOG_STREAM'];
+    expect(typeof pinned).toBe('string');
+    expect(pinned).not.toBe('');
+
+    process.env['CDKL_LOG_STREAM'] = pinned;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      new ConsoleLogger('warn', false).warn('a warning');
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+    await pending;
+  });
+});

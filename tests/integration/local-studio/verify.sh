@@ -59,6 +59,54 @@ SSE_FILE=$(mktemp)
 STUDIO_PID=""
 SSE_PID=""
 
+# --- self-localizing failures (issue #608) ----------------------------------
+# Every FAIL branch below dumps a log before exiting, and several dump the WHOLE
+# main studio log with `cat`. So when a run is truncated -- piped through
+# `tail -N`, or read as a CI tail -- the `FAIL:` line naming the assertion
+# scrolls away and what survives is a dump whose tail is IDENTICAL across sites:
+# 138 FAIL branches here; 72 end in a run-of-dashes delimiter, of which 27 use
+# the very same 22-dash `----------------------` (the 72 span 10 widths). Those
+# three numbers are reproducible rather than asserted -- a reviewer measured
+# 56 / 24 by hand and was wrong, so derive them, do not eyeball them:
+#   grep -c 'echo "FAIL: ' verify.sh                      # 138 (on origin/main)
+#   grep -cE 'echo "-{10,}"' verify.sh                    # 72
+#   grep -oE 'echo "-{10,}"' verify.sh | sed 's/echo "//;s/"//' \
+#     | awk '{print length($0)}' | sort -n | uniq -c      # 10 widths, 27 at 22
+# And every branch dumping "${LOG_FILE}" ends in the same four
+# `--from-cfn-stack binding changed; re-classifying targets...` lines, because
+# nothing is appended to that log after the config PATCHes (child and serve
+# output goes to the event bus, not to studio's stdout).
+#
+# That is not hypothetical: issue #608 was filed against the WRONG assertion for
+# exactly this reason. A surviving `tail -25` was read as the flag-threading
+# block at the end of this file, which dumps a FRESH studio's log that provably
+# cannot contain those lines; the failure was in one of the branches dumping the
+# main log, hundreds of lines earlier. A session was spent on the wrong site.
+#
+# `fail` records the message so the EXIT trap can re-print it LAST, after every
+# dump, which makes any truncated tail name its own site.
+FAIL_MSG=""
+fail() {
+  FAIL_MSG="$1"
+  printf 'FAIL: %s\n' "$1"
+}
+
+# The explicit `fail` branches are only HALF the exits. Under `set -e` a bare
+# command can abort the run with no message at all -- 36 statements are a bare
+# `curl -fsS` (`grep -cE '^[[:space:]]*curl -fsS' verify.sh`; the narrower
+# "top-level only" reading gives fewer, but an indented one outside a condition
+# context aborts just the same) -- and those aborts have exactly the truncated-tail
+# problem this block exists to fix, with not even a `FAIL:` line to lose. The
+# ERR trap records what died so the EXIT banner can name it. No `set -E`: that
+# would arm the trap inside functions too, including the ones the EXIT path
+# itself runs, and every abort this needs to catch is at top level.
+ABORT_LINE=""
+ABORT_CMD=""
+# Declared here so `remove_run_override_images` can read it under `set -u`
+# even when the EXIT trap fires BEFORE the snapshot below assigns it.
+IMAGES_BEFORE_OVERRIDE=""
+trap 'ABORT_LINE=$LINENO; ABORT_CMD=$BASH_COMMAND' ERR
+
 # --- built-image cleanup (issue #587) --------------------------------------
 # This used to force-remove EVERY `cdkl-override-*` tag. Parallel integ lanes
 # share one Docker daemon on a dev host, so that blanket sweep deletes override
@@ -67,8 +115,6 @@ SSE_PID=""
 # appeared since. A run can produce SEVERAL override tags
 # (`cdkl-override-<svc>-<hash>:local`, one per covered target), so the delta is
 # a set rather than a single tag.
-IMAGES_BEFORE_OVERRIDE="$(docker images --filter 'reference=cdkl-override-*' \
-  --format '{{.Repository}}:{{.Tag}}' | sort)"
 
 remove_run_override_images() {
   local new
@@ -84,6 +130,18 @@ remove_run_override_images() {
   echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
 }
 cleanup() {
+  # FIRST statement: this is the EXIT trap, so `$?` here is the run's exit
+  # status. Gating the banner on it is what stops an ERR-recorded abort that
+  # the run then recovered from turning into a banner on a GREEN run.
+  local rc=$?
+  # SECOND statement. The banner is deliberately the LAST thing in this
+  # function, which makes it the statement most exposed to an errexit abort
+  # inside the trap itself: any unguarded failure above would kill cleanup
+  # before the banner printed, and would also turn a GREEN run's exit 0 into
+  # a 1. Today's body is fully guarded, so this is latent -- but the whole
+  # point of the banner is to survive the failure paths, so it must not
+  # depend on every future line here staying guarded.
+  set +e
   if [[ -n "${SSE_PID}" ]] && kill -0 "${SSE_PID}" 2>/dev/null; then
     kill "${SSE_PID}" 2>/dev/null || true
   fi
@@ -96,8 +154,26 @@ cleanup() {
   # Drop the local-only image-override build(s) the ecs / alb / ecs-task picker
   # tests produced (tag prefix is the embed binary name: `cdkl-override-*:local`).
   remove_run_override_images
+  # LAST, after every dump above, so a truncated tail still names the site.
+  if [[ "${rc}" -ne 0 ]]; then
+    if [[ -z "${FAIL_MSG}" ]]; then
+      # A `set -e` abort rather than an explicit `fail` branch: no message was
+      # ever printed, so name the command the ERR trap caught.
+      FAIL_MSG="aborted (rc=${rc}) at line ${ABORT_LINE:-?}: ${ABORT_CMD:-unknown}"
+    fi
+    echo "########## local-studio verify.sh FAILED: ${FAIL_MSG} ##########"
+  fi
 }
+# Installed BEFORE the snapshot below, not after the whole prologue: an abort
+# in `docker images` (a stopped daemon is the obvious one) would otherwise
+# happen with no EXIT trap armed and print no banner at all, in a fixture whose
+# stated goal is that any truncated tail names its own site. `cleanup` is
+# resolved when the trap FIRES, not when it is installed, so defining it above
+# and arming it here is what lets the snapshot be covered.
 trap cleanup EXIT
+
+IMAGES_BEFORE_OVERRIDE="$(docker images --filter 'reference=cdkl-override-*' \
+  --format '{{.Repository}}:{{.Tag}}' | sort)"
 
 # ---------------------------------------------------------------------------
 # 1. The command must be registered on the user-facing command surface
@@ -108,7 +184,7 @@ echo "==> Asserting 'cdkl studio' is on the user-facing command surface"
 # the registered-command listing rather than on exit status: studio must be
 # present in `--help` unconditionally.
 if ! ${CDKL} --help 2>&1 | grep -qE '^\s*studio\b'; then
-  echo "FAIL: 'cdkl studio' is NOT listed on the command surface"
+  fail "'cdkl studio' is NOT listed on the command surface"
   exit 1
 fi
 echo "    OK: command is registered unconditionally"
@@ -126,7 +202,7 @@ FLT_PID=$!
 FLT_URL=""
 for _ in $(seq 1 60); do
   if ! kill -0 "${FLT_PID}" 2>/dev/null; then
-    echo "FAIL: filtered studio exited during boot"; cat "${FLT_LOG}"; rm -f "${FLT_LOG}"; exit 1
+    fail "filtered studio exited during boot"; cat "${FLT_LOG}"; rm -f "${FLT_LOG}"; exit 1
   fi
   FLT_URL=$(grep -oE "http://${HOST}:[0-9]+" "${FLT_LOG}" | head -1 || true)
   if [[ -n "${FLT_URL}" ]] && curl -fsS "${FLT_URL}/api/targets" -o /dev/null 2>/dev/null; then break; fi
@@ -134,11 +210,11 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "${FLT_URL}/api/targets" -o "${BODY_FILE}"
 if ! grep -qF 'LocalStudioFixture/MyHandler' "${BODY_FILE}"; then
-  echo "FAIL: --stack '*/MyHandler' hid the matching Lambda"; cat "${BODY_FILE}"
+  fail "--stack '*/MyHandler' hid the matching Lambda"; cat "${BODY_FILE}"
   kill "${FLT_PID}" 2>/dev/null || true; rm -f "${FLT_LOG}"; exit 1
 fi
 if grep -qF 'LocalStudioFixture/MyHttpApi' "${BODY_FILE}"; then
-  echo "FAIL: --stack '*/MyHandler' did NOT scope out the non-matching API"; cat "${BODY_FILE}"
+  fail "--stack '*/MyHandler' did NOT scope out the non-matching API"; cat "${BODY_FILE}"
   kill "${FLT_PID}" 2>/dev/null || true; rm -f "${FLT_LOG}"; exit 1
 fi
 kill "${FLT_PID}" 2>/dev/null || true; wait "${FLT_PID}" 2>/dev/null || true
@@ -157,7 +233,7 @@ INC_PID=$!
 INC_URL=""
 for _ in $(seq 1 60); do
   if ! kill -0 "${INC_PID}" 2>/dev/null; then
-    echo "FAIL: --include-custom-resources studio exited during boot"; cat "${INC_LOG}"; rm -f "${INC_LOG}"; exit 1
+    fail "--include-custom-resources studio exited during boot"; cat "${INC_LOG}"; rm -f "${INC_LOG}"; exit 1
   fi
   INC_URL=$(grep -oE "http://${HOST}:[0-9]+" "${INC_LOG}" | head -1 || true)
   if [[ -n "${INC_URL}" ]] && curl -fsS "${INC_URL}/api/targets" -o /dev/null 2>/dev/null; then break; fi
@@ -165,12 +241,12 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "${INC_URL}/api/targets" -o "${BODY_FILE}"
 if ! grep -qF 'framework-onEvent' "${BODY_FILE}"; then
-  echo "FAIL: --include-custom-resources did NOT surface the provider Lambda"; cat "${BODY_FILE}"
+  fail "--include-custom-resources did NOT surface the provider Lambda"; cat "${BODY_FILE}"
   kill "${INC_PID}" 2>/dev/null || true; rm -f "${INC_LOG}"; exit 1
 fi
 # Issue #359: the generic `Custom::`-path provider Lambda is also surfaced.
 if ! grep -qF 'Custom::AcmeWidgetProvider' "${BODY_FILE}"; then
-  echo "FAIL: --include-custom-resources did NOT surface the generic Custom:: provider Lambda"; cat "${BODY_FILE}"
+  fail "--include-custom-resources did NOT surface the generic Custom:: provider Lambda"; cat "${BODY_FILE}"
   kill "${INC_PID}" 2>/dev/null || true; rm -f "${INC_LOG}"; exit 1
 fi
 kill "${INC_PID}" 2>/dev/null || true; wait "${INC_PID}" 2>/dev/null || true
@@ -191,7 +267,7 @@ echo "==> --watch: serves started from the UI are spawned with --watch"
 WAT_LOG=$(mktemp)
 ${CDKL} studio --no-open --watch --studio-port "${PORT}" >"${WAT_LOG}" 2>&1 &
 WAT_PID=$!
-fail_watch() { echo "FAIL: $1"; echo "----- watch studio log -----"; cat "${WAT_LOG}"; echo "----------------------------"; kill "${WAT_PID}" 2>/dev/null || true; rm -f "${WAT_LOG}"; exit 1; }
+fail_watch() { fail "$1"; echo "----- watch studio log -----"; cat "${WAT_LOG}"; echo "----------------------------"; kill "${WAT_PID}" 2>/dev/null || true; rm -f "${WAT_LOG}"; exit 1; }
 WAT_URL=""
 for _ in $(seq 1 60); do
   if ! kill -0 "${WAT_PID}" 2>/dev/null; then fail_watch "watch studio exited during boot"; fi
@@ -243,7 +319,7 @@ STUDIO_PID=$!
 URL=""
 for _ in $(seq 1 60); do
   if ! kill -0 "${STUDIO_PID}" 2>/dev/null; then
-    echo "FAIL: studio process exited during boot"
+    fail "studio process exited during boot"
     echo "----- boot log -----"; cat "${LOG_FILE}"; echo "--------------------"
     exit 1
   fi
@@ -258,7 +334,7 @@ for _ in $(seq 1 60); do
 done
 
 if [[ -z "${URL}" ]]; then
-  echo "FAIL: could not parse studio URL from boot log"
+  fail "could not parse studio URL from boot log"
   echo "----- boot log -----"; cat "${LOG_FILE}"; echo "--------------------"
   exit 1
 fi
@@ -270,42 +346,42 @@ echo "    OK: studio is running at ${URL}"
 echo "==> GET / serves the studio UI"
 curl -fsS "${URL}/" -o "${BODY_FILE}"
 if ! grep -qF "CDK Local Studio" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not return the studio UI"
+  fail "GET / did not return the studio UI"
   cat "${BODY_FILE}"
   exit 1
 fi
 if ! grep -qF "LocalStudioFixture" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not surface the app/stack label"
+  fail "GET / did not surface the app/stack label"
   cat "${BODY_FILE}"
   exit 1
 fi
 # The "All options" section (issue #301): the auto-derived flag catalog is
 # serialized into the page, and the raw extra-args builder is present.
 if ! grep -qF "window.__FLAG_CATALOG__" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not embed the auto-derived flag catalog (All options)"
+  fail "GET / did not embed the auto-derived flag catalog (All options)"
   exit 1
 fi
 if ! grep -qF "buildAllOptions" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the All options / raw extra-args builder"
+  fail "GET / did not include the All options / raw extra-args builder"
   exit 1
 fi
 # The "All options" panel auto-renders a real control for every renderable
 # (non-curated, non-managed) flag (all-options-controls slice): the controls
 # container class + the collector are in the page.
 if ! grep -qF "flag-controls" "${BODY_FILE}" || ! grep -qF "collectCatalog" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the auto-rendered All options controls"
+  fail "GET / did not include the auto-rendered All options controls"
   exit 1
 fi
 # The pinned-service image-override Dockerfile picker (issue #301).
 if ! grep -qF "buildImageOverridePicker" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the image-override Dockerfile picker"
+  fail "GET / did not include the image-override Dockerfile picker"
   exit 1
 fi
 # Image-override picker legibility (issue #396): the readable construct-path
 # label class (io-label, unique to the picker row) + the attention caveat hint
 # class (io-hint). Both the CSS rule and the JS that applies it are in the page.
 if ! grep -qF 'io-label' "${BODY_FILE}" || ! grep -qF 'io-hint' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the legible image-override picker classes (issue #396)"
+  fail "GET / did not include the legible image-override picker classes (issue #396)"
   exit 1
 fi
 # Serve composer input preservation (issue #398): a stopped serve re-renders
@@ -313,17 +389,17 @@ fi
 # render path threads the applied options + rawArgs (+ catalogArgs) into
 # buildOptions.
 if ! grep -qF 'applied && applied.options' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the serve-composer input-preservation wiring (issue #398)"
+  fail "GET / did not include the serve-composer input-preservation wiring (issue #398)"
   exit 1
 fi
 # Target-pane UX (issue #301): collapsible/filterable groups + apply-on-change
 # Session bar (no Save button).
 if ! grep -qF 'id="target-search"' "${BODY_FILE}" || ! grep -qF "function applyTargetFilter" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the target filter / collapsible groups"
+  fail "GET / did not include the target filter / collapsible groups"
   exit 1
 fi
 if ! grep -qF "function applyConfig" "${BODY_FILE}" || grep -qF 'id="sess-save"' "${BODY_FILE}"; then
-  echo "FAIL: GET / Session bar is not apply-on-change (Save button still present?)"
+  fail "GET / Session bar is not apply-on-change (Save button still present?)"
   exit 1
 fi
 # In-workspace HTTP request composer (issue #322). The composer's inline result
@@ -331,11 +407,11 @@ fi
 # JSON-pretty-printed body (renderHttpExchangeSection + prettyBody must ship in
 # the embedded script).
 if ! grep -qF "function renderRequestComposer" "${BODY_FILE}" || ! grep -qF "fetch('/api/request'" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the in-workspace HTTP request composer"
+  fail "GET / did not include the in-workspace HTTP request composer"
   exit 1
 fi
 if ! grep -qF "function renderHttpExchangeSection" "${BODY_FILE}" || ! grep -qF "function prettyBody" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the Request/Response exchange renderer + JSON body pretty-printer"
+  fail "GET / did not include the Request/Response exchange renderer + JSON body pretty-printer"
   exit 1
 fi
 # The major output-section headings (Request / Response / serve LOGS + the
@@ -344,27 +420,27 @@ fi
 # are blue.
 if ! grep -qF ".section.detail-out h3 { color: #e3d18a; }" "${BODY_FILE}" \
   || ! grep -qF ".req-composer > .opt-label { color: #6cb6ff; }" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the emphasised heading + blue structural-label styles"
+  fail "GET / did not include the emphasised heading + blue structural-label styles"
   exit 1
 fi
 # The image-override block is the boxed amber prominence treatment (the most
 # consequential ECS knob, so it stands out from the ordinary blue option blocks).
 if ! grep -qF ".section.image-override { background:" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the image-override prominence (amber box) styles"
+  fail "GET / did not include the image-override prominence (amber box) styles"
   exit 1
 fi
 # Proxy-vs-child port clarity (issue #325): the Endpoints hint names the proxy
 # URLs as the capture target and the Logs note flags the child internal port.
 if ! grep -qF "the serve child internal port" "${BODY_FILE}" \
   || ! grep -qF "any 127.0.0.1 port below is the serve child internal port" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the proxy-vs-child port clarity hints (issue #325)"
+  fail "GET / did not include the proxy-vs-child port clarity hints (issue #325)"
   exit 1
 fi
 # Re-invoke wiring (issue #284): the composer posts to /api/reinvoke and rows
 # get the reinvoke marker.
 if ! grep -qF "url = '/api/reinvoke'" "${BODY_FILE}" \
   || ! grep -qF "row.classList.add('reinvoke')" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the re-invoke wiring (issue #284)"
+  fail "GET / did not include the re-invoke wiring (issue #284)"
   exit 1
 fi
 # Visual UX fixes: zebra shade (issue #333 — now a JS-applied .alt class, not
@@ -373,7 +449,7 @@ fi
 if ! grep -qF '.group-body .target.alt { background: #242424; }' "${BODY_FILE}" \
   || ! grep -qF 'min-width: 240px;' "${BODY_FILE}" \
   || ! grep -qF "el('button', 'log-clear', 'Clear')" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the visual UX fixes (issues #333 / #338 / #339)"
+  fail "GET / did not include the visual UX fixes (issues #333 / #338 / #339)"
   exit 1
 fi
 # Per-stack construct-path folding in the targets pane: each stack's '<stack>/'
@@ -383,7 +459,7 @@ fi
 if ! grep -qF 'function stackSections' "${BODY_FILE}" \
   || ! grep -qF '.stack-sub {' "${BODY_FILE}" \
   || ! grep -qF 'overscroll-behavior-x: contain' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the per-stack construct-path folding"
+  fail "GET / did not include the per-stack construct-path folding"
   exit 1
 fi
 echo "    OK: targets pane folds the per-stack construct-path prefix + scrollable path tail"
@@ -394,28 +470,28 @@ echo "    OK: targets pane folds the per-stack construct-path prefix + scrollabl
 if ! grep -qF 'fillLogPre(serveLogPre, arr)' "${BODY_FILE}" \
   || ! grep -qF "el('button', 'reinvoke-btn', 'New request')" "${BODY_FILE}" \
   || ! grep -qF "document.querySelectorAll('.row.sel').forEach((n) => n.classList.remove('sel'))" "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the composer send-flow fixes (issues #334 / #335 / #336)"
+  fail "GET / did not include the composer send-flow fixes (issues #334 / #335 / #336)"
   exit 1
 fi
 # Headers KV / JSON editor (issue #337): the request composer's Headers field
 # is the KV/JSON editor, not a one-per-line textarea.
 if ! grep -qF 'function buildHeaderEditor()' "${BODY_FILE}" \
   || ! grep -qF 'headers: headerEditor.collect()' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the headers KV/JSON editor (issue #337)"
+  fail "GET / did not include the headers KV/JSON editor (issue #337)"
   exit 1
 fi
 # Session-bar symmetry (issue #343): assume-role is checkbox-gated like
 # from-cfn-stack.
 if ! grep -qF 'id="sess-role-on"' "${BODY_FILE}" \
   || ! grep -qF 'assumeRole: roleOn.checked ?' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the assume-role checkbox (issue #343)"
+  fail "GET / did not include the assume-role checkbox (issue #343)"
   exit 1
 fi
 # Headers editor remembers its mode (issue #345): the editor opens in the
 # last-used mode and the re-invoke prefill seeds the JSON pane too.
 if ! grep -qF 'let lastHeaderMode' "${BODY_FILE}" \
   || ! grep -qF 'setMode(lastHeaderMode)' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the remembered Headers editor mode (issue #345)"
+  fail "GET / did not include the remembered Headers editor mode (issue #345)"
   exit 1
 fi
 # Stop/Start transient button states (issue #394): a Stop in flight shows
@@ -424,7 +500,7 @@ fi
 if ! grep -qF 'stoppingIds' "${BODY_FILE}" \
   || ! grep -qF 'Stopping…' "${BODY_FILE}" \
   || ! grep -qF 'Starting…' "${BODY_FILE}"; then
-  echo "FAIL: GET / did not include the Stop/Start transient button states (issue #394)"
+  fail "GET / did not include the Stop/Start transient button states (issue #394)"
   exit 1
 fi
 echo "    OK: UI HTML served with the All options catalog + image-override picker + target-pane UX + request composer + port-clarity hints + re-invoke wiring + visual UX fixes + send-flow fixes + headers KV/JSON editor + session-bar symmetry + remembered-header-mode + stop/start transients + serve-input preservation"
@@ -449,7 +525,7 @@ for needle in \
   'LocalStudioFixture/MyHandler'
 do
   if ! grep -qF "${needle}" "${BODY_FILE}"; then
-    echo "FAIL: /api/targets missing: ${needle}"
+    fail "/api/targets missing: ${needle}"
     cat "${BODY_FILE}"
     exit 1
   fi
@@ -460,14 +536,14 @@ done
 # Lambda (path `.../MyCustomResourceProvider/framework-onEvent`) is infra
 # plumbing, so the DEFAULT target list must NOT include it.
 if grep -qF 'framework-onEvent' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets included the custom-resource provider Lambda by default"
+  fail "/api/targets included the custom-resource provider Lambda by default"
   cat "${BODY_FILE}"; exit 1
 fi
 # Issue #359: the generic `Custom::`-path provider Lambda
 # (`.../Custom::AcmeWidgetProvider/Handler`, matched only by the `custom::`
 # catch-all) is likewise excluded by default.
 if grep -qF 'Custom::AcmeWidgetProvider' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets included the generic Custom:: provider Lambda by default"
+  fail "/api/targets included the generic Custom:: provider Lambda by default"
   cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: custom-resource provider Lambdas (framework-onEvent + generic Custom::) excluded from the default target list"
@@ -478,7 +554,7 @@ echo "    OK: custom-resource provider Lambdas (framework-onEvent + generic Cust
 echo "==> GET /api/events opens an SSE stream"
 SSE_HEADERS=$(curl -fsS -D - --max-time 2 "${URL}/api/events" -o /dev/null 2>/dev/null || true)
 if ! grep -qiF "content-type: text/event-stream" <<<"${SSE_HEADERS}"; then
-  echo "FAIL: /api/events did not return a text/event-stream content-type"
+  fail "/api/events did not return a text/event-stream content-type"
   echo "${SSE_HEADERS}"
   exit 1
 fi
@@ -504,7 +580,7 @@ HTTP_CODE=$(curl -s -o "${RUN_FILE}" -w '%{http_code}' --max-time 180 \
   -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' || true)
 
 if [[ "${HTTP_CODE}" != "200" ]]; then
-  echo "FAIL: POST /api/run returned HTTP ${HTTP_CODE}"
+  fail "POST /api/run returned HTTP ${HTTP_CODE}"
   echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   exit 1
@@ -513,7 +589,7 @@ fi
 # result wraps it as { ok: true, status: 200, response: {...} }.
 for needle in '"ok":true' '"status":200' '"statusCode":200'; do
   if ! grep -qF "${needle}" "${RUN_FILE}"; then
-    echo "FAIL: /api/run response missing: ${needle}"
+    fail "/api/run response missing: ${needle}"
     echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
     exit 1
   fi
@@ -527,7 +603,7 @@ done
 # response.)
 RESPONSE_FIELD=$(grep -oE '"response":\{[^}]*\}' "${RUN_FILE}" | head -1 || true)
 if echo "${RESPONSE_FIELD}" | grep -qF 'cdklResponseTrap'; then
-  echo "FAIL: /api/run picked the trailing console.log(JSON) as the response (issue #291 regression)"
+  fail "/api/run picked the trailing console.log(JSON) as the response (issue #291 regression)"
   echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
   exit 1
 fi
@@ -551,13 +627,13 @@ HTTP_RI=$(curl -s -o "${REINV_FILE}" -w '%{http_code}' --max-time 180 \
   -H 'content-type: application/json' \
   -d "{\"invocationId\":\"${LAMBDA_INV_ID}\",\"payload\":{\"echo\":\"reinvoke-edited\"}}" || true)
 if [[ "${HTTP_RI}" != "200" ]]; then
-  echo "FAIL: POST /api/reinvoke returned HTTP ${HTTP_RI}"
+  fail "POST /api/reinvoke returned HTTP ${HTTP_RI}"
   echo "----- reinvoke response -----"; cat "${REINV_FILE}"; echo "-----------------------------"
   rm -f "${REINV_FILE}"; exit 1
 fi
 # The edited payload reached the target: its response echoes the new value.
 if ! grep -qF '"echo":"reinvoke-edited"' "${REINV_FILE}"; then
-  echo "FAIL: re-invoke response did not echo the edited payload"
+  fail "re-invoke response did not echo the edited payload"
   echo "----- reinvoke response -----"; cat "${REINV_FILE}"; echo "-----------------------------"
   rm -f "${REINV_FILE}"; exit 1
 fi
@@ -568,7 +644,7 @@ rm -f "${REINV_FILE}"
 HIST_FILE=$(mktemp)
 curl -fsS "${URL}/api/history" -o "${HIST_FILE}"
 if ! grep -qF "\"reinvokeOf\":\"${LAMBDA_INV_ID}\"" "${HIST_FILE}"; then
-  echo "FAIL: history has no invocation linking back to the source (reinvokeOf=${LAMBDA_INV_ID})"
+  fail "history has no invocation linking back to the source (reinvokeOf=${LAMBDA_INV_ID})"
   echo "----- history -----"; cat "${HIST_FILE}"; echo "-------------------"
   rm -f "${HIST_FILE}"; exit 1
 fi
@@ -586,7 +662,7 @@ done
 kill "${SSE_PID}" 2>/dev/null || true
 SSE_PID=""
 if ! grep -qF 'event: invocation' "${SSE_FILE}" || ! grep -qF 'MyHandler' "${SSE_FILE}"; then
-  echo "FAIL: SSE stream did not carry the MyHandler invocation"
+  fail "SSE stream did not carry the MyHandler invocation"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -606,13 +682,13 @@ HTTP_OPT=$(curl -s -o "${OPT_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"options\":{\"--env-vars\":[{\"left\":\"STUDIO_ENV_PROBE\",\"right\":\"${PROBE}\"}]}}" || true)
 if [[ "${HTTP_OPT}" != "200" ]]; then
-  echo "FAIL: per-target option invoke returned HTTP ${HTTP_OPT}"
+  fail "per-target option invoke returned HTTP ${HTTP_OPT}"
   cat "${OPT_FILE}"; rm -f "${OPT_FILE}"; exit 1
 fi
 # The handler body is { ... "body": "<STUDIO_ENV_PROBE or 'ok'>" }; the env-var
 # option must have flipped it to the probe value.
 if ! grep -qF "${PROBE}" "${OPT_FILE}"; then
-  echo "FAIL: --env-vars option did not reach the container (probe value absent from response)"
+  fail "--env-vars option did not reach the container (probe value absent from response)"
   echo "----- run response -----"; cat "${OPT_FILE}"; echo "------------------------"
   rm -f "${OPT_FILE}"; exit 1
 fi
@@ -635,10 +711,10 @@ curl -s -o "${RAW_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type
   -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"rawArgs\":\"--from-cfn-stack ${RAW_STACK}\"}" >/dev/null || true
 RAW_INV=$(grep -oE '"invocationId":"[^"]+"' "${RAW_RUN}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 rm -f "${RAW_RUN}"
-if [[ -z "${RAW_INV}" ]]; then echo "FAIL: no invocationId after a rawArgs invoke"; exit 1; fi
+if [[ -z "${RAW_INV}" ]]; then fail "no invocationId after a rawArgs invoke"; exit 1; fi
 curl -fsS "${URL}/api/invocations/${RAW_INV}/logs" -o "${BODY_FILE}"
 if ! grep -qF "${RAW_STACK}" "${BODY_FILE}"; then
-  echo "FAIL: the rawArgs --from-cfn-stack did not reach the child (stack absent from logs)"
+  fail "the rawArgs --from-cfn-stack did not reach the child (stack absent from logs)"
   echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
   exit 1
 fi
@@ -662,7 +738,7 @@ curl -s -o "${CAT_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type
 # The rejected value is surfaced in the run result's error AND the bound logs;
 # the run-response body is the deterministic, binding-independent check.
 if ! grep -qF "${CAT_TOKEN}" "${CAT_RUN}"; then
-  echo "FAIL: the catalogArgs --debug-port value did not reach the child (token absent from run result)"
+  fail "the catalogArgs --debug-port value did not reach the child (token absent from run result)"
   echo "----- run response -----"; head -c 2000 "${CAT_RUN}"; echo; echo "------------------------"
   rm -f "${CAT_RUN}"; exit 1
 fi
@@ -681,7 +757,7 @@ HTTP_NEG=$(curl -s -o "${NEG_RUN}" -w '%{http_code}' --max-time 60 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"LocalStudioFixture/MyHandler\",\"kind\":\"lambda\",\"event\":{},\"catalogArgs\":{\"--event\":\"x\"}}" || true)
 if [[ "${HTTP_NEG}" == "200" ]]; then
-  echo "FAIL: a non-overridable catalogArgs flag (--event) was not rejected at the boundary (HTTP ${HTTP_NEG})"
+  fail "a non-overridable catalogArgs flag (--event) was not rejected at the boundary (HTTP ${HTTP_NEG})"
   cat "${NEG_RUN}"; rm -f "${NEG_RUN}"; exit 1
 fi
 rm -f "${NEG_RUN}"
@@ -697,7 +773,7 @@ echo "    OK: non-overridable catalogArgs flag rejected at the /api/run boundary
 echo "==> GET /api/config exposes the session config"
 curl -fsS "${URL}/api/config" -o "${BODY_FILE}"
 if ! grep -qF '"synth"' "${BODY_FILE}"; then
-  echo "FAIL: /api/config did not return a session config"; cat "${BODY_FILE}"; exit 1
+  fail "/api/config did not return a session config"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: /api/config served"
 
@@ -707,7 +783,7 @@ PATCH_FILE=$(mktemp)
 HTTP_PATCH=$(curl -s -o "${PATCH_FILE}" -w '%{http_code}' -X PATCH "${URL}/api/config" \
   -H 'content-type: application/json' -d "{\"fromCfnStack\":\"${CFG_STACK}\"}" || true)
 if [[ "${HTTP_PATCH}" != "200" ]] || ! grep -qF "${CFG_STACK}" "${PATCH_FILE}"; then
-  echo "FAIL: PATCH /api/config did not echo the updated binding (HTTP ${HTTP_PATCH})"
+  fail "PATCH /api/config did not echo the updated binding (HTTP ${HTTP_PATCH})"
   cat "${PATCH_FILE}"; rm -f "${PATCH_FILE}"; exit 1
 fi
 rm -f "${PATCH_FILE}"
@@ -716,10 +792,10 @@ curl -s -o "${CFG_RUN}" --max-time 180 -X POST "${URL}/api/run" -H 'content-type
   -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' >/dev/null || true
 CFG_INV=$(grep -oE '"invocationId":"[^"]+"' "${CFG_RUN}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 rm -f "${CFG_RUN}"
-if [[ -z "${CFG_INV}" ]]; then echo "FAIL: no invocationId after a config-bound invoke"; exit 1; fi
+if [[ -z "${CFG_INV}" ]]; then fail "no invocationId after a config-bound invoke"; exit 1; fi
 curl -fsS "${URL}/api/invocations/${CFG_INV}/logs" -o "${BODY_FILE}"
 if ! grep -qF "${CFG_STACK}" "${BODY_FILE}"; then
-  echo "FAIL: the PATCHed --from-cfn-stack binding did not reach the child (stack absent from logs)"
+  fail "the PATCHed --from-cfn-stack binding did not reach the child (stack absent from logs)"
   echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
   exit 1
 fi
@@ -748,12 +824,12 @@ RECLASS_PATCH=$(mktemp)
 HTTP_RC=$(curl -s -o "${RECLASS_PATCH}" -w '%{http_code}' -X PATCH "${URL}/api/config" \
   -H 'content-type: application/json' -d '{"fromCfnStack":"BOGUSRECLASS385"}' || true)
 if [[ "${HTTP_RC}" != "200" ]]; then
-  echo "FAIL: re-classify PATCH returned HTTP ${HTTP_RC}"; cat "${RECLASS_PATCH}"; rm -f "${RECLASS_PATCH}"; exit 1
+  fail "re-classify PATCH returned HTTP ${HTTP_RC}"; cat "${RECLASS_PATCH}"; rm -f "${RECLASS_PATCH}"; exit 1
 fi
 rm -f "${RECLASS_PATCH}"
 tail -n +"$((LOG_OFFSET + 1))" "${LOG_FILE}" > "${BODY_FILE}" || true
 if ! grep -qF 're-classifying targets' "${BODY_FILE}"; then
-  echo "FAIL: a --from-cfn-stack change did not re-run the target classification"
+  fail "a --from-cfn-stack change did not re-run the target classification"
   echo "----- studio log tail -----"; cat "${BODY_FILE}"; echo "---------------------------"
   exit 1
 fi
@@ -761,7 +837,7 @@ echo "    OK: the --from-cfn-stack change re-ran classification (banner observed
 # The swapped target list still serves the full set under the live socket.
 curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
 if ! grep -qF '"kind":"ecs"' "${BODY_FILE}" || ! grep -qF 'LocalStudioFixture/MyHandler' "${BODY_FILE}"; then
-  echo "FAIL: GET /api/targets did not re-serve the target list after the re-classify swap"
+  fail "GET /api/targets did not re-serve the target list after the re-classify swap"
   cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: GET /api/targets re-served the swapped target list"
@@ -785,7 +861,7 @@ HTTP_AC=$(curl -s -o "${AC_FILE}" -w '%{http_code}' --max-time 360 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d '{"targetId":"LocalStudioFixture/MyAgent","kind":"agentcore","event":{"hello":"studio"}}' || true)
 if [[ "${HTTP_AC}" != "200" ]]; then
-  echo "FAIL: AgentCore /api/run returned HTTP ${HTTP_AC}"
+  fail "AgentCore /api/run returned HTTP ${HTTP_AC}"
   echo "----- run response -----"; cat "${AC_FILE}"; echo "------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${AC_FILE}"; exit 1
@@ -794,7 +870,7 @@ fi
 # response: { echoed: { hello: "studio" }, greeting: "hello-from-studio-agent", ... } }.
 for needle in '"ok":true' '"status":200' '"echoed"' '"hello":"studio"' 'hello-from-studio-agent'; do
   if ! grep -qF "${needle}" "${AC_FILE}"; then
-    echo "FAIL: AgentCore /api/run response missing: ${needle}"
+    fail "AgentCore /api/run response missing: ${needle}"
     echo "----- run response -----"; cat "${AC_FILE}"; echo "------------------------"
     rm -f "${AC_FILE}"; exit 1
   fi
@@ -808,7 +884,7 @@ done
 # logsForInvocation end-to-end.
 AC_INV=$(grep -oE '"invocationId":"[^"]+"' "${AC_FILE}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 rm -f "${AC_FILE}"
-if [[ -z "${AC_INV}" ]]; then echo "FAIL: no invocationId from the AgentCore invoke"; exit 1; fi
+if [[ -z "${AC_INV}" ]]; then fail "no invocationId from the AgentCore invoke"; exit 1; fi
 AC_LOGS=$(curl -fsS "${URL}/api/invocations/${AC_INV}/logs" || true)
 # The endpoint returns { "logs": [ { containerId, target, line, ... } ] }. With
 # strict container-id binding the bound lines carry THIS invocation's id as
@@ -816,7 +892,7 @@ AC_LOGS=$(curl -fsS "${URL}/api/invocations/${AC_INV}/logs" || true)
 # present, proving the agentcore branch bound by container id, not a loose
 # time window.
 if ! echo "${AC_LOGS}" | grep -qF "\"containerId\":\"${AC_INV}\""; then
-  echo "FAIL: GET /api/invocations/<agentcore-id>/logs did not bind this invocation's container-id logs"
+  fail "GET /api/invocations/<agentcore-id>/logs did not bind this invocation's container-id logs"
   echo "----- body -----"; echo "${AC_LOGS}" | head -c 500; echo; echo "----------------"
   exit 1
 fi
@@ -840,13 +916,13 @@ HTTP_WS=$(curl -s -o "${WS_FILE}" -w '%{http_code}' --max-time 360 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d '{"targetId":"LocalStudioFixture/MyAgent","kind":"agentcore","event":{"hello":"ws"},"options":{"--ws":true}}' || true)
 if [[ "${HTTP_WS}" != "200" ]]; then
-  echo "FAIL: AgentCore --ws /api/run returned HTTP ${HTTP_WS}"
+  fail "AgentCore --ws /api/run returned HTTP ${HTTP_WS}"
   echo "----- run response -----"; cat "${WS_FILE}"; echo "------------------------"
   rm -f "${WS_FILE}"; exit 1
 fi
 for needle in '"ok":true' 'ws-frame-2' 'hello' 'hello-from-studio-agent'; do
   if ! grep -qF "${needle}" "${WS_FILE}"; then
-    echo "FAIL: AgentCore --ws response missing: ${needle}"
+    fail "AgentCore --ws response missing: ${needle}"
     echo "----- run response -----"; cat "${WS_FILE}"; echo "------------------------"
     rm -f "${WS_FILE}"; exit 1
   fi
@@ -877,7 +953,7 @@ HTTP_CODE=$(curl -s -o "${SERVE_FILE}" -w '%{http_code}' --max-time 120 \
   -d "{\"targetId\":\"${API_TARGET}\",\"kind\":\"api\"}" || true)
 
 if [[ "${HTTP_CODE}" != "200" ]]; then
-  echo "FAIL: POST /api/run (serve) returned HTTP ${HTTP_CODE}"
+  fail "POST /api/run (serve) returned HTTP ${HTTP_CODE}"
   echo "----- serve response -----"; cat "${SERVE_FILE}"; echo "--------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${SERVE_FILE}"
@@ -885,7 +961,7 @@ if [[ "${HTTP_CODE}" != "200" ]]; then
 fi
 for needle in '"status":"running"' '"kind":"api"'; do
   if ! grep -qF "${needle}" "${SERVE_FILE}"; then
-    echo "FAIL: serve response missing: ${needle}"
+    fail "serve response missing: ${needle}"
     echo "----- serve response -----"; cat "${SERVE_FILE}"; echo "--------------------------"
     rm -f "${SERVE_FILE}"
     exit 1
@@ -894,7 +970,7 @@ done
 SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${SERVE_FILE}" | head -1 || true)
 rm -f "${SERVE_FILE}"
 if [[ -z "${SERVED}" ]]; then
-  echo "FAIL: could not parse the served endpoint from the run response"
+  fail "could not parse the served endpoint from the run response"
   exit 1
 fi
 echo "    OK: serve started at ${SERVED}"
@@ -906,7 +982,7 @@ ROUTE_FILE=$(mktemp)
 # line (not a loose substring) so a stray `tokens` / `not ok` cannot pass.
 ROUTE_CODE=$(curl -s -o "${ROUTE_FILE}" -w '%{http_code}' --max-time 180 "${SERVED}/hello" || true)
 if [[ "${ROUTE_CODE}" != "200" ]] || ! grep -qx 'ok' "${ROUTE_FILE}"; then
-  echo "FAIL: served route did not return 200 ok (HTTP ${ROUTE_CODE})"
+  fail "served route did not return 200 ok (HTTP ${ROUTE_CODE})"
   echo "----- route body -----"; cat "${ROUTE_FILE}"; echo "----------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${ROUTE_FILE}"
@@ -927,12 +1003,12 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if ! grep -qF '"label":"GET /hello"' "${SSE_FILE}"; then
-  echo "FAIL: SSE stream did not carry the captured GET /hello request"
+  fail "SSE stream did not carry the captured GET /hello request"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
 if ! grep -qF '"status":200' "${SSE_FILE}"; then
-  echo "FAIL: captured request did not carry the 200 status"
+  fail "captured request did not carry the 200 status"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -941,7 +1017,7 @@ echo "    OK: GET /hello captured on the timeline with status 200"
 echo "==> GET /api/running reflects the running serve"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${API_TARGET}" "${BODY_FILE}" || ! grep -qF '"status":"running"' "${BODY_FILE}"; then
-  echo "FAIL: /api/running did not list the running serve"
+  fail "/api/running did not list the running serve"
   cat "${BODY_FILE}"
   exit 1
 fi
@@ -955,7 +1031,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if ! grep -qF 'event: serve' "${SSE_FILE}" || ! grep -qF '"status":"running"' "${SSE_FILE}"; then
-  echo "FAIL: SSE stream did not carry the serve running event"
+  fail "SSE stream did not carry the serve running event"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -967,7 +1043,7 @@ STOP_CODE=$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 30 \
   -H 'content-type: application/json' \
   -d "{\"targetId\":\"${API_TARGET}\"}" || true)
 if [[ "${STOP_CODE}" != "200" ]]; then
-  echo "FAIL: POST /api/stop returned HTTP ${STOP_CODE}"
+  fail "POST /api/stop returned HTTP ${STOP_CODE}"
   cat "${BODY_FILE}"
   exit 1
 fi
@@ -980,7 +1056,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if grep -qF "${API_TARGET}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running still lists ${API_TARGET} after stop"
+  fail "/api/running still lists ${API_TARGET} after stop"
   cat "${BODY_FILE}"
   exit 1
 fi
@@ -1002,7 +1078,7 @@ CF_CODE=$(curl -s -o "${CF_FILE}" -w '%{http_code}' --max-time 120 \
   -H 'content-type: application/json' \
   -d "{\"targetId\":\"${CF_TARGET}\",\"kind\":\"cloudfront\"}" || true)
 if [[ "${CF_CODE}" != "200" ]]; then
-  echo "FAIL: POST /api/run (cloudfront serve) returned HTTP ${CF_CODE}"
+  fail "POST /api/run (cloudfront serve) returned HTTP ${CF_CODE}"
   echo "----- serve response -----"; cat "${CF_FILE}"; echo "--------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${CF_FILE}"
@@ -1010,7 +1086,7 @@ if [[ "${CF_CODE}" != "200" ]]; then
 fi
 for needle in '"status":"running"' '"kind":"cloudfront"'; do
   if ! grep -qF "${needle}" "${CF_FILE}"; then
-    echo "FAIL: cloudfront serve response missing: ${needle}"
+    fail "cloudfront serve response missing: ${needle}"
     echo "----- serve response -----"; cat "${CF_FILE}"; echo "--------------------------"
     rm -f "${CF_FILE}"
     exit 1
@@ -1019,7 +1095,7 @@ done
 CF_SERVED=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${CF_FILE}" | head -1 || true)
 rm -f "${CF_FILE}"
 if [[ -z "${CF_SERVED}" ]]; then
-  echo "FAIL: could not parse the served cloudfront endpoint from the run response"
+  fail "could not parse the served cloudfront endpoint from the run response"
   exit 1
 fi
 echo "    OK: cloudfront serve started at ${CF_SERVED}"
@@ -1028,7 +1104,7 @@ echo "==> The served distribution returns the default root object + runs the rew
 CFROOT=$(mktemp)
 CFROOT_CODE=$(curl -s -o "${CFROOT}" -w '%{http_code}' --max-time 60 "${CF_SERVED}/" || true)
 if [[ "${CFROOT_CODE}" != "200" ]] || ! grep -qF 'studio cloudfront root' "${CFROOT}"; then
-  echo "FAIL: cloudfront / did not return the root index.html (HTTP ${CFROOT_CODE})"
+  fail "cloudfront / did not return the root index.html (HTTP ${CFROOT_CODE})"
   echo "----- body -----"; cat "${CFROOT}"; echo "----------------"
   rm -f "${CFROOT}"; exit 1
 fi
@@ -1047,7 +1123,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if ! grep -qF '"label":"GET /"' "${SSE_FILE}" || ! grep -qF '"status":200' "${SSE_FILE}"; then
-  echo "FAIL: SSE stream did not carry the captured cloudfront GET / (status 200)"
+  fail "SSE stream did not carry the captured cloudfront GET / (status 200)"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -1058,7 +1134,7 @@ CFSTOP=$(curl -s -o "${BODY_FILE}" -w '%{http_code}' --max-time 30 \
   -X POST "${URL}/api/stop" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${CF_TARGET}\"}" || true)
 if [[ "${CFSTOP}" != "200" ]]; then
-  echo "FAIL: POST /api/stop (cloudfront) returned HTTP ${CFSTOP}"; cat "${BODY_FILE}"; exit 1
+  fail "POST /api/stop (cloudfront) returned HTTP ${CFSTOP}"; cat "${BODY_FILE}"; exit 1
 fi
 kill "${SSE_PID}" 2>/dev/null || true
 SSE_PID=""
@@ -1068,7 +1144,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if grep -qF "${CF_TARGET}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running still lists ${CF_TARGET} after stop"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running still lists ${CF_TARGET} after stop"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: cloudfront serve stopped; /api/running is empty"
 
@@ -1090,18 +1166,18 @@ WHTTP=$(curl -s -o "${WSV_FILE}" -w '%{http_code}' --max-time 120 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${WS_TARGET}\",\"kind\":\"api\"}" || true)
 if [[ "${WHTTP}" != "200" ]]; then
-  echo "FAIL: WS-API serve start returned HTTP ${WHTTP}"; cat "${WSV_FILE}"; rm -f "${WSV_FILE}"; exit 1
+  fail "WS-API serve start returned HTTP ${WHTTP}"; cat "${WSV_FILE}"; rm -f "${WSV_FILE}"; exit 1
 fi
 WSV_URL=$(grep -oE 'ws://127\.0\.0\.1:[0-9]+/[A-Za-z0-9_]+' "${WSV_FILE}" | head -1 || true)
 rm -f "${WSV_FILE}"
 if [[ -z "${WSV_URL}" ]]; then
-  echo "FAIL: studio did not expose a ws:// endpoint for the WebSocket-API serve"; exit 1
+  fail "studio did not expose a ws:// endpoint for the WebSocket-API serve"; exit 1
 fi
 echo "    OK: WS-API serve running at ${WSV_URL}"
 # Confirm /api/running reports it (what the UI reads to render the console).
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${WSV_URL}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running did not list the ws:// endpoint"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running did not list the ws:// endpoint"; cat "${BODY_FILE}"; exit 1
 fi
 # Connect a client to the studio-served ws:// endpoint (Node 24 global WebSocket)
 # and assert the $default echo round-trips — the same thing the browser console
@@ -1123,7 +1199,7 @@ ws.addEventListener('close', () => got.includes('studio-ws-303') ? (console.log(
 setTimeout(() => done(1, 'timeout waiting for echo'), 30000);
 NODE
 if ! node "$(pwd)/.studio-ws-client.mjs" "${WSV_URL}"; then
-  echo "FAIL: WebSocket console round-trip through the studio-served endpoint"
+  fail "WebSocket console round-trip through the studio-served endpoint"
   curl -fsS "${URL}/api/running" -o "${BODY_FILE}" 2>/dev/null; cat "${BODY_FILE}"
   curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
   rm -f "$(pwd)/.studio-ws-client.mjs"; exit 1
@@ -1155,7 +1231,7 @@ AC_WS_TARGET="LocalStudioFixture/MyAgent"
 echo "==> GET /api/targets lists ${AC_WS_TARGET} under the agentcore-ws serve group"
 curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
 if ! grep -qF '"kind":"agentcore-ws"' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets has no agentcore-ws group"; head -c 2000 "${BODY_FILE}"; exit 1
+  fail "/api/targets has no agentcore-ws group"; head -c 2000 "${BODY_FILE}"; exit 1
 fi
 echo "    OK: agentcore-ws group present"
 
@@ -1165,17 +1241,17 @@ ACWS_HTTP=$(curl -s -o "${ACWS_FILE}" -w '%{http_code}' --max-time 300 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${AC_WS_TARGET}\",\"kind\":\"agentcore-ws\"}" || true)
 if [[ "${ACWS_HTTP}" != "200" ]]; then
-  echo "FAIL: agentcore-ws serve start returned HTTP ${ACWS_HTTP}"; cat "${ACWS_FILE}"; rm -f "${ACWS_FILE}"; exit 1
+  fail "agentcore-ws serve start returned HTTP ${ACWS_HTTP}"; cat "${ACWS_FILE}"; rm -f "${ACWS_FILE}"; exit 1
 fi
 ACWS_URL=$(grep -oE 'ws://127\.0\.0\.1:[0-9]+/ws' "${ACWS_FILE}" | head -1 || true)
 rm -f "${ACWS_FILE}"
 if [[ -z "${ACWS_URL}" ]]; then
-  echo "FAIL: studio did not expose a ws:// endpoint for the agentcore-ws serve"; exit 1
+  fail "studio did not expose a ws:// endpoint for the agentcore-ws serve"; exit 1
 fi
 echo "    OK: agentcore-ws serve running at ${ACWS_URL}"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${ACWS_URL}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running did not list the agentcore-ws ws:// endpoint"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running did not list the agentcore-ws ws:// endpoint"; cat "${BODY_FILE}"; exit 1
 fi
 
 # Issue #454: start-agentcore now keeps the container WARM and serves its HTTP
@@ -1186,7 +1262,7 @@ fi
 # echoes the request body; the bridge injects a session id.
 ACWS_HTTP_EP=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' "${BODY_FILE}" | head -1 || true)
 if [[ -z "${ACWS_HTTP_EP}" ]]; then
-  echo "FAIL: /api/running did not list the agentcore-ws http:// contract endpoint"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running did not list the agentcore-ws http:// contract endpoint"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: agentcore-ws http:// contract endpoint exposed at ${ACWS_HTTP_EP}"
 ACWS_REQ_FILE=$(mktemp)
@@ -1194,18 +1270,18 @@ ACWS_REQ_HTTP=$(curl -s -o "${ACWS_REQ_FILE}" -w '%{http_code}' --max-time 60 \
   -X POST "${URL}/api/request" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${AC_WS_TARGET}\",\"method\":\"POST\",\"path\":\"/invocations\",\"body\":\"{\\\"marker\\\":\\\"studio-454-http\\\"}\"}" || true)
 if [[ "${ACWS_REQ_HTTP}" != "200" ]]; then
-  echo "FAIL: /api/request to /invocations returned HTTP ${ACWS_REQ_HTTP}"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
+  fail "/api/request to /invocations returned HTTP ${ACWS_REQ_HTTP}"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
 fi
 # The relay response carries the agent's echo of the body + the injected session id.
 if ! grep -qF 'studio-454-http' "${ACWS_REQ_FILE}"; then
-  echo "FAIL: warm /invocations response did not echo the request body"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
+  fail "warm /invocations response did not echo the request body"; cat "${ACWS_REQ_FILE}"; rm -f "${ACWS_REQ_FILE}"; exit 1
 fi
 rm -f "${ACWS_REQ_FILE}"
 echo "    OK: warm POST /invocations through the studio capture proxy echoed the body"
 # It landed on the timeline (the capture proxy emitted invocation events).
 curl -fsS "${URL}/api/history" -o "${BODY_FILE}"
 if ! grep -qF '/invocations' "${BODY_FILE}"; then
-  echo "FAIL: the relayed /invocations request did not land on the timeline"; head -c 2000 "${BODY_FILE}"; exit 1
+  fail "the relayed /invocations request did not land on the timeline"; head -c 2000 "${BODY_FILE}"; exit 1
 fi
 echo "    OK: warm /invocations request captured on the timeline"
 # Header-less client (the browser path) drives the agent's /ws REPL through the
@@ -1231,7 +1307,7 @@ ws.addEventListener('error', () => done(1, 'client socket error'));
 setTimeout(() => done(1, 'timeout waiting for agentcore /ws round-trip'), 30000);
 NODE
 if ! node "$(pwd)/.studio-agentcore-ws-client.mjs" "${ACWS_URL}"; then
-  echo "FAIL: AgentCore WebSocket console round-trip through the studio-served bridge"
+  fail "AgentCore WebSocket console round-trip through the studio-served bridge"
   curl -fsS "${URL}/api/stop" -H 'content-type: application/json' -d "{\"targetId\":\"${AC_WS_TARGET}\"}" -o /dev/null 2>/dev/null || true
   rm -f "$(pwd)/.studio-agentcore-ws-client.mjs"; exit 1
 fi
@@ -1253,7 +1329,7 @@ echo "==> GET /api/history retains the session's invocations + logs"
 curl -fsS "${URL}/api/history" -o "${BODY_FILE}"
 # Both the Lambda invoke and the captured serve request must be retained.
 if ! grep -qF 'MyHandler' "${BODY_FILE}" || ! grep -qF 'GET /hello' "${BODY_FILE}"; then
-  echo "FAIL: /api/history did not retain the session's invocations"
+  fail "/api/history did not retain the session's invocations"
   echo "----- history -----"; head -c 2000 "${BODY_FILE}"; echo; echo "-------------------"
   exit 1
 fi
@@ -1264,7 +1340,7 @@ echo "==> GET /api/logs?q= full-text searches the retained logs"
 # onto the bus as a log event — search must find it.
 curl -fsS "${URL}/api/logs?q=Server%20listening" -o "${BODY_FILE}"
 if ! grep -qF 'Server listening on' "${BODY_FILE}"; then
-  echo "FAIL: /api/logs search did not find the serve listening line"
+  fail "/api/logs search did not find the serve listening line"
   echo "----- logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------"
   exit 1
 fi
@@ -1276,7 +1352,7 @@ if [[ -n "${LAMBDA_INV_ID}" ]]; then
   # The fixture handler runs in a RIE container that prints START/REPORT
   # lines; the strict per-invocation bind must return a non-empty list.
   if ! grep -qF '"line"' "${BODY_FILE}"; then
-    echo "FAIL: /api/invocations/<id>/logs returned no bound logs"
+    fail "/api/invocations/<id>/logs returned no bound logs"
     echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
     exit 1
   fi
@@ -1289,12 +1365,12 @@ if [[ -n "${LAMBDA_INV_ID}" ]]; then
   # per-invocation logs, and that a real RIE marker IS present.
   echo "==> The bound logs exclude cdk-local synth chatter, keep RIE logs"
   if grep -qiE 'Successfully synthesi|Synthesis time' "${BODY_FILE}"; then
-    echo "FAIL: cdk-local synth chatter leaked into the Lambda's bound logs"
+    fail "cdk-local synth chatter leaked into the Lambda's bound logs"
     echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
     exit 1
   fi
   if ! grep -qE 'RequestId|INVOKE|INIT START' "${BODY_FILE}"; then
-    echo "FAIL: bound logs do not contain the expected RIE runtime markers"
+    fail "bound logs do not contain the expected RIE runtime markers"
     echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
     exit 1
   fi
@@ -1304,7 +1380,7 @@ else
   # passed), so the invocationId MUST have parsed. An empty value here means
   # the response shape changed — hard-fail rather than silently disabling the
   # per-invocation bind + synth-chatter regression guards.
-  echo "FAIL: no invocationId parsed from a successful invoke — log-bind guards disabled"
+  fail "no invocationId parsed from a successful invoke — log-bind guards disabled"
   echo "----- run response -----"; cat "${RUN_FILE}"; echo "------------------------"
   exit 1
 fi
@@ -1317,7 +1393,7 @@ fi
 echo "==> /api/targets marks the ECS service servable, the task definition not"
 curl -fsS "${URL}/api/targets" -o "${BODY_FILE}"
 if ! grep -qF '"MyService"' "${BODY_FILE}" && ! grep -qF 'MyService' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets missing the ECS service"; cat "${BODY_FILE}"; exit 1
+  fail "/api/targets missing the ECS service"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: ecs service is listed (servable), task definition listed (not servable)"
 
@@ -1327,11 +1403,11 @@ echo "    OK: ecs service is listed (servable), task definition listed (not serv
 # fixture's ./Dockerfile.override) so the composer can offer the picker.
 echo "==> /api/targets marks the pinned ecs service + lists discovered Dockerfiles"
 if ! grep -qF '"pinned":true' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets did not mark the public-image ECS service as pinned"
+  fail "/api/targets did not mark the public-image ECS service as pinned"
   cat "${BODY_FILE}"; exit 1
 fi
 if ! grep -qF 'Dockerfile.override' "${BODY_FILE}"; then
-  echo "FAIL: /api/targets did not surface the discovered ./Dockerfile.override"
+  fail "/api/targets did not surface the discovered ./Dockerfile.override"
   cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: pinned ecs service flagged + Dockerfile.override discovered"
@@ -1349,7 +1425,7 @@ e = next((x for x in (g or {}).get("entries", []) if x["id"].endswith("/MyTask")
 sys.exit(0 if e and e.get("pinned") is True else 1)
 PY
 then
-  echo "FAIL: /api/targets did not mark the ecs-task MyTask as pinned"
+  fail "/api/targets did not mark the ecs-task MyTask as pinned"
   cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: ecs-task MyTask flagged pinned (the run-task image-override picker will offer)"
@@ -1367,7 +1443,7 @@ HTTP_CODE=$(curl -s -o "${ALB_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ALB_TARGET}\",\"kind\":\"alb\"}" || true)
 if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ALB_FILE}"; then
-  echo "FAIL: POST /api/run (alb) returned HTTP ${HTTP_CODE}"
+  fail "POST /api/run (alb) returned HTTP ${HTTP_CODE}"
   echo "----- alb response -----"; cat "${ALB_FILE}"; echo "------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${ALB_FILE}"; exit 1
@@ -1397,7 +1473,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 if [[ "${ORDER_OK}" != "1" ]]; then
-  echo "FAIL: pinned-image WARN did not precede 'Press ^C' in the studio LOG (issue #403)"
+  fail "pinned-image WARN did not precede 'Press ^C' in the studio LOG (issue #403)"
   echo "----- sse capture -----"; cat "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -1413,7 +1489,7 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 if [[ "${ALB_OK}" != "1" ]]; then
-  echo "FAIL: ALB front-door never returned 200 through the proxy"
+  fail "ALB front-door never returned 200 through the proxy"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   exit 1
 fi
@@ -1429,7 +1505,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if ! grep -qF '"label":"GET /"' "${SSE_FILE}" || ! grep -qF '"kind":"alb"' "${SSE_FILE}"; then
-  echo "FAIL: SSE stream did not carry the captured ALB request (invocation row)"
+  fail "SSE stream did not carry the captured ALB request (invocation row)"
   echo "----- sse capture -----"; tail -c 2000 "${SSE_FILE}"; echo "-----------------------"
   exit 1
 fi
@@ -1447,13 +1523,13 @@ HTTP_REQ=$(curl -s -o "${REQ_FILE}" -w '%{http_code}' --max-time 30 \
   -X POST "${URL}/api/request" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ALB_TARGET}\",\"method\":\"GET\",\"path\":\"/\"}" || true)
 if [[ "${HTTP_REQ}" != "200" ]]; then
-  echo "FAIL: POST /api/request returned HTTP ${HTTP_REQ}"
+  fail "POST /api/request returned HTTP ${HTTP_REQ}"
   cat "${REQ_FILE}"; rm -f "${REQ_FILE}"; exit 1
 fi
 # The relay result is { status, headers, body, ... }; the upstream GET / is a
 # 200 from the fixture replica.
 if ! grep -qF '"status":200' "${REQ_FILE}"; then
-  echo "FAIL: the relayed request did not report the upstream 200"
+  fail "the relayed request did not report the upstream 200"
   echo "----- relay result -----"; head -c 1000 "${REQ_FILE}"; echo; echo "------------------------"
   rm -f "${REQ_FILE}"; exit 1
 fi
@@ -1489,14 +1565,14 @@ HTTP_CODE=$(curl -s -o "${ECS_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${ECS_HOST_PORT}\"}],\"--env-vars\":[{\"left\":\"STUDIO_ECS_PROBE\",\"right\":\"${ECS_ENV_VALUE}\"}]}}" || true)
 if [[ "${HTTP_CODE}" != "200" ]] || ! grep -qF '"status":"running"' "${ECS_FILE}"; then
-  echo "FAIL: POST /api/run (ecs) returned HTTP ${HTTP_CODE}"
+  fail "POST /api/run (ecs) returned HTTP ${HTTP_CODE}"
   echo "----- ecs response -----"; cat "${ECS_FILE}"; echo "------------------------"
   echo "----- studio log -----"; cat "${LOG_FILE}"; echo "----------------------"
   rm -f "${ECS_FILE}"; exit 1
 fi
 # studio's ecs kind still reports NO host endpoint (no capture proxy) ...
 if ! grep -qF '"endpoints":[]' "${ECS_FILE}"; then
-  echo "FAIL: ecs serve unexpectedly reported a host endpoint"
+  fail "ecs serve unexpectedly reported a host endpoint"
   cat "${ECS_FILE}"; rm -f "${ECS_FILE}"; exit 1
 fi
 rm -f "${ECS_FILE}"
@@ -1510,7 +1586,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 if [[ -z "${ECS_REACH}" ]]; then
-  echo "FAIL: --host-port did not reach the child (host port ${ECS_HOST_PORT} not reachable)"
+  fail "--host-port did not reach the child (host port ${ECS_HOST_PORT} not reachable)"
   echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; echo "----------------------"
   exit 1
 fi
@@ -1530,7 +1606,7 @@ for c in $(docker ps --filter 'name=cdkl-' --format '{{.Names}}' | grep -v -- '-
   fi
 done
 if [[ -z "${ECS_ENV_HIT}" ]]; then
-  echo "FAIL: --env-vars override did NOT reach any replica task container env"
+  fail "--env-vars override did NOT reach any replica task container env"
   for c in $(docker ps --filter 'name=cdkl-' --format '{{.Names}}'); do
     echo "----- ${c} Config.Env -----"; docker inspect --format '{{json .Config.Env}}' "$c" 2>/dev/null
   done
@@ -1556,7 +1632,7 @@ HTTP_EREQ=$(curl -s -o "${ECS_REQ_FILE}" -w '%{http_code}' --max-time 30 \
   -X POST "${URL}/api/request" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TARGET}\",\"method\":\"GET\",\"path\":\"/\"}" || true)
 if [[ "${HTTP_EREQ}" != "200" ]] || ! grep -qF '"status":200' "${ECS_REQ_FILE}"; then
-  echo "FAIL: POST /api/request (ecs direct) did not report the upstream 200"
+  fail "POST /api/request (ecs direct) did not report the upstream 200"
   echo "----- relay result -----"; head -c 1000 "${ECS_REQ_FILE}"; echo; echo "------------------------"
   kill "${ECS_SSE_PID}" 2>/dev/null || true
   rm -f "${ECS_REQ_FILE}" "${ECS_SSE_FILE}"; exit 1
@@ -1569,7 +1645,7 @@ for _ in $(seq 1 20); do
   sleep 0.5
 done
 if ! grep -qF '"label":"GET /"' "${ECS_SSE_FILE}" || ! grep -qF '"kind":"ecs"' "${ECS_SSE_FILE}"; then
-  echo "FAIL: the ecs --host-port request was NOT captured on the timeline (invocation row)"
+  fail "the ecs --host-port request was NOT captured on the timeline (invocation row)"
   echo "----- sse capture -----"; tail -c 2000 "${ECS_SSE_FILE}"; echo "-----------------------"
   kill "${ECS_SSE_PID}" 2>/dev/null || true
   rm -f "${ECS_SSE_FILE}"; exit 1
@@ -1581,7 +1657,7 @@ echo "    OK: ecs direct relay captured on the timeline (GET / invocation, kind=
 echo "==> GET /api/running reflects the ECS service (no endpoint)"
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${ECS_TARGET}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running did not list the ECS service"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running did not list the ECS service"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: /api/running lists ${ECS_TARGET}"
 
@@ -1606,7 +1682,7 @@ HTTP_AP=$(curl -s -o "${AP_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"options\":{\"--max-tasks\":\"1\"}}" || true)
 if [[ "${HTTP_AP}" != "200" ]] || ! grep -qF '"status":"running"' "${AP_FILE}"; then
-  echo "FAIL: POST /api/run (ecs auto-publish) returned HTTP ${HTTP_AP}"
+  fail "POST /api/run (ecs auto-publish) returned HTTP ${HTTP_AP}"
   cat "${AP_FILE}"; echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; rm -f "${AP_FILE}"; exit 1
 fi
 rm -f "${AP_FILE}"
@@ -1626,7 +1702,7 @@ PY
   sleep 1
 done
 if [[ -z "${AP_HOSTURL}" ]]; then
-  echo "FAIL: ecs serve without --host-port did not surface an auto-published hostUrl"
+  fail "ecs serve without --host-port did not surface an auto-published hostUrl"
   echo "----- /api/running -----"; cat "${BODY_FILE}"
   echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; exit 1
 fi
@@ -1643,7 +1719,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 if [[ -z "${AP_OK}" ]]; then
-  echo "FAIL: POST /api/request did not relay to the auto-published replica"
+  fail "POST /api/request did not relay to the auto-published replica"
   head -c 1000 "${AP_REQ}"; echo; rm -f "${AP_REQ}"; exit 1
 fi
 rm -f "${AP_REQ}"
@@ -1671,7 +1747,7 @@ HTTP_TASK=$(curl -s -o "${TASK_FILE}" -w '%{http_code}' --max-time 180 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TASK_TARGET}\",\"kind\":\"ecs-task\"}" || true)
 if [[ "${HTTP_TASK}" != "200" ]] || ! grep -qF '"status":"running"' "${TASK_FILE}"; then
-  echo "FAIL: POST /api/run (ecs-task) returned HTTP ${HTTP_TASK}"
+  fail "POST /api/run (ecs-task) returned HTTP ${HTTP_TASK}"
   echo "----- response -----"; cat "${TASK_FILE}"; echo "--------------------"
   echo "----- studio log -----"; tail -c 2000 "${LOG_FILE}"; echo "----------------------"
   rm -f "${TASK_FILE}"; exit 1
@@ -1680,7 +1756,7 @@ rm -f "${TASK_FILE}"
 # /api/running reflects the task run.
 curl -fsS "${URL}/api/running" -o "${BODY_FILE}"
 if ! grep -qF "${ECS_TASK_TARGET}" "${BODY_FILE}"; then
-  echo "FAIL: /api/running did not list the running task"; cat "${BODY_FILE}"; exit 1
+  fail "/api/running did not list the running task"; cat "${BODY_FILE}"; exit 1
 fi
 echo "    OK: task definition running via run-task (Task running banner matched)"
 echo "==> POST /api/stop tears the task run down"
@@ -1708,7 +1784,7 @@ HTTP_TIO=$(curl -s -o "${TIO_FILE}" -w '%{http_code}' --max-time 300 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TASK_TARGET}\",\"kind\":\"ecs-task\",\"imageOverride\":\"./Dockerfile.override\",\"rawArgs\":\"--host-port 80=${TIO_HOST_PORT}\"}" || true)
 if [[ "${HTTP_TIO}" != "200" ]] || ! grep -qF '"status":"running"' "${TIO_FILE}"; then
-  echo "FAIL: POST /api/run (ecs-task image-override) returned HTTP ${HTTP_TIO}"
+  fail "POST /api/run (ecs-task image-override) returned HTTP ${HTTP_TIO}"
   echo "----- response -----"; cat "${TIO_FILE}"; echo "--------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   rm -f "${TIO_FILE}"; exit 1
@@ -1721,7 +1797,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 if ! echo "${TIO_BODY}" | grep -qF 'studio-image-override-301'; then
-  echo "FAIL: ecs-task image-override did not apply (sentinel absent from the published container)"
+  fail "ecs-task image-override did not apply (sentinel absent from the published container)"
   echo "----- served body -----"; echo "${TIO_BODY}" | head -c 1000; echo "-----------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   exit 1
@@ -1753,7 +1829,7 @@ HTTP_IO=$(curl -s -o "${IO_FILE}" -w '%{http_code}' --max-time 300 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ECS_TARGET}\",\"kind\":\"ecs\",\"imageOverride\":\"./Dockerfile.override\",\"options\":{\"--max-tasks\":\"1\",\"--host-port\":[{\"left\":\"80\",\"right\":\"${IO_HOST_PORT}\"}]}}" || true)
 if [[ "${HTTP_IO}" != "200" ]] || ! grep -qF '"status":"running"' "${IO_FILE}"; then
-  echo "FAIL: POST /api/run (image-override) returned HTTP ${HTTP_IO}"
+  fail "POST /api/run (image-override) returned HTTP ${HTTP_IO}"
   echo "----- response -----"; cat "${IO_FILE}"; echo "--------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   rm -f "${IO_FILE}"; exit 1
@@ -1768,7 +1844,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 if ! echo "${IO_BODY}" | grep -qF 'studio-image-override-301'; then
-  echo "FAIL: image-override did not apply (sentinel absent from the served replica)"
+  fail "image-override did not apply (sentinel absent from the served replica)"
   echo "----- served body -----"; echo "${IO_BODY}" | head -c 1000; echo "-----------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   exit 1
@@ -1809,7 +1885,7 @@ for g in d["groups"]:
                 print(bs[0]["id"])
 ' "${BODY_FILE}" "${ALB_TARGET}")
 if [[ -z "${ALB_SVC_KEY}" ]]; then
-  echo "FAIL: /api/targets did not expose backingPinnedServices for ${ALB_TARGET}"
+  fail "/api/targets did not expose backingPinnedServices for ${ALB_TARGET}"
   echo "----- targets -----"; cat "${BODY_FILE}"; echo "-------------------"
   exit 1
 fi
@@ -1821,7 +1897,7 @@ HTTP_AIO=$(curl -s -o "${AIO_FILE}" -w '%{http_code}' --max-time 300 \
   -X POST "${URL}/api/run" -H 'content-type: application/json' \
   -d "{\"targetId\":\"${ALB_TARGET}\",\"kind\":\"alb\",\"imageOverrides\":{\"${ALB_SVC_KEY}\":\"./Dockerfile.override\"}}" || true)
 if [[ "${HTTP_AIO}" != "200" ]] || ! grep -qF '"status":"running"' "${AIO_FILE}"; then
-  echo "FAIL: POST /api/run (alb image-override) returned HTTP ${HTTP_AIO}"
+  fail "POST /api/run (alb image-override) returned HTTP ${HTTP_AIO}"
   echo "----- response -----"; cat "${AIO_FILE}"; echo "--------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   rm -f "${AIO_FILE}"; exit 1
@@ -1836,7 +1912,7 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 if ! echo "${AIO_BODY}" | grep -qF 'studio-image-override-301'; then
-  echo "FAIL: alb image-override did not apply (sentinel absent behind the ALB front-door)"
+  fail "alb image-override did not apply (sentinel absent behind the ALB front-door)"
   echo "----- served body -----"; echo "${AIO_BODY}" | head -c 1000; echo "-----------------------"
   echo "----- studio log -----"; tail -c 3000 "${LOG_FILE}"; echo "----------------------"
   exit 1
@@ -1859,7 +1935,7 @@ for _ in $(seq 1 20); do
   sleep 0.25
 done
 if kill -0 "${STUDIO_PID}" 2>/dev/null; then
-  echo "FAIL: studio did not exit on SIGTERM"
+  fail "studio did not exit on SIGTERM"
   exit 1
 fi
 STUDIO_PID=""
@@ -1890,11 +1966,11 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 if [ -z "${PP_PORT}" ]; then
-  echo "FAIL: start-service did not auto-remap the privileged port (no WARN + published-port line)"
+  fail "start-service did not auto-remap the privileged port (no WARN + published-port line)"
   cat "${PP_LOG}"; kill -TERM "${PP_PID}" 2>/dev/null || true; wait "${PP_PID}" 2>/dev/null || true; rm -f "${PP_LOG}"; exit 1
 fi
 if [ "${PP_PORT}" -lt 1024 ]; then
-  echo "FAIL: auto-remapped to a still-privileged host port ${PP_PORT}"
+  fail "auto-remapped to a still-privileged host port ${PP_PORT}"
   cat "${PP_LOG}"; kill -TERM "${PP_PID}" 2>/dev/null || true; wait "${PP_PID}" 2>/dev/null || true; rm -f "${PP_LOG}"; exit 1
 fi
 PP_REACH=""
@@ -1906,7 +1982,7 @@ kill -TERM "${PP_PID}" 2>/dev/null || true
 wait "${PP_PID}" 2>/dev/null || true
 rm -f "${PP_LOG}"
 if [ -z "${PP_REACH}" ]; then
-  echo "FAIL: container not reachable on the auto-remapped host port ${PP_PORT}"; exit 1
+  fail "container not reachable on the auto-remapped host port ${PP_PORT}"; exit 1
 fi
 echo "    OK: privileged port 80 auto-remapped to high host port ${PP_PORT}; reachable + WARN logged"
 
@@ -1931,7 +2007,7 @@ STUDIO_PID=$!
 URL2=""
 for _ in $(seq 1 60); do
   if ! kill -0 "${STUDIO_PID}" 2>/dev/null; then
-    echo "FAIL: studio (flag-threading boot) exited during startup"
+    fail "studio (flag-threading boot) exited during startup"
     cat "${LOG_FILE2}"; rm -f "${LOG_FILE2}"; exit 1
   fi
   URL2=$(grep -oE "http://${HOST}:[0-9]+" "${LOG_FILE2}" | head -1 || true)
@@ -1941,7 +2017,7 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 if [[ -z "${URL2}" ]]; then
-  echo "FAIL: flag-threading studio never bound a URL"; cat "${LOG_FILE2}"; rm -f "${LOG_FILE2}"; exit 1
+  fail "flag-threading studio never bound a URL"; cat "${LOG_FILE2}"; rm -f "${LOG_FILE2}"; exit 1
 fi
 
 RUN_FILE2=$(mktemp)
@@ -1951,12 +2027,12 @@ HTTP_CODE2=$(curl -s -o "${RUN_FILE2}" -w '%{http_code}' --max-time 180 \
   -d '{"targetId":"LocalStudioFixture/MyHandler","kind":"lambda","event":{}}' || true)
 # Graceful fallback: the bogus binding must NOT break the invoke.
 if [[ "${HTTP_CODE2}" != "200" ]] || ! grep -qF '"ok":true' "${RUN_FILE2}"; then
-  echo "FAIL: invoke under bogus --from-cfn-stack did not gracefully succeed (HTTP ${HTTP_CODE2})"
+  fail "invoke under bogus --from-cfn-stack did not gracefully succeed (HTTP ${HTTP_CODE2})"
   cat "${RUN_FILE2}"; rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
 fi
 INV2=$(grep -oE '"invocationId":"[^"]+"' "${RUN_FILE2}" | head -1 | sed 's/.*"invocationId":"//;s/"//')
 if [[ -z "${INV2}" ]]; then
-  echo "FAIL: no invocationId from the flag-threading invoke"
+  fail "no invocationId from the flag-threading invoke"
   cat "${RUN_FILE2}"; rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
 fi
 # Both flags name themselves in the child's (warn-level, un-suppressed)
@@ -1966,13 +2042,13 @@ fi
 # Their presence proves BOTH flags threaded CLI -> child end-to-end.
 curl -fsS "${URL2}/api/invocations/${INV2}/logs" -o "${BODY_FILE}"
 if ! grep -qF "${BOGUS_STACK}" "${BODY_FILE}"; then
-  echo "FAIL: --from-cfn-stack did not reach the child (bogus stack name absent from bound logs)"
+  fail "--from-cfn-stack did not reach the child (bogus stack name absent from bound logs)"
   echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
   echo "----- studio log -----"; head -c 2000 "${LOG_FILE2}"; echo; echo "----------------------"
   rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
 fi
 if ! grep -qF "${BOGUS_ROLE}" "${BODY_FILE}"; then
-  echo "FAIL: --assume-role did not reach the child (bogus role ARN absent from bound logs)"
+  fail "--assume-role did not reach the child (bogus role ARN absent from bound logs)"
   echo "----- bound logs -----"; head -c 2000 "${BODY_FILE}"; echo; echo "----------------------"
   echo "----- studio log -----"; head -c 2000 "${LOG_FILE2}"; echo; echo "----------------------"
   rm -f "${LOG_FILE2}" "${RUN_FILE2}"; exit 1
