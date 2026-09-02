@@ -277,9 +277,29 @@ git fetch origin && git switch -c "$B" origin/main
   tier; a wrong rule here propagates into every future session.
 - **Merge it (via `/merge-pr`) before the wrap report**, which also removes
   the worktree — §9's closing check is "every worktree THIS run added is
-  gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9)
-  and leaves the tree standing on the retro branch for whoever owns the
-  workspace (the appendix has what the Stop hook will say about that).
+  gone". An IN-PLACE run added none: it stops `/merge-pr` after step 4 (§9),
+  and instead this is where the PARENT runs §9's IN-PLACE cleanup arm — **the
+  LAST step of the whole run**, and the parent's even when §10 was dispatched to
+  a subagent, because two agents must not both be switching one tree:
+  `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'`
+  and then
+  `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created> || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'`
+  — §9's two lines verbatim, and every part of them is load-bearing: the
+  `show-ref` gate is what sends you to §9's detach fallback instead; the
+  dirty-tree test comes FIRST, because a switch carries uncommitted changes
+  ACROSS onto the outer tool's branch and the `-D` then takes the branches that
+  were holding your commits; it is as-is (no pull, no rebase, no fast-forward);
+  CHAINED so a failed switch cannot leave the `-D` to run anyway; and
+  `--no-guess` so a branch that is gone locally but still on `origin` is an
+  ERROR rather than a silent re-creation at origin's tip; and the `|| echo` hangs
+  off the WHOLE CHAIN rather than the test, because `A || B && C` parses as
+  `(A || B) && C` and would run the switch on a dirty tree. The retro branch is
+  one of those branches. §9 deliberately does NOT do that per-lane,
+  because THIS section branches in the same tree and would undo it. Leaving
+  the tree standing on the retro branch — the previous instruction here —
+  makes the unmerged-lane Stop hook warn every turn (the appendix has the
+  wording), and detaching instead is visible-surprising in the outer tool's
+  UI; restoring what the tool created is quiet on both counts.
   `Session-fit: now`: deferring leaves main self-inconsistent (the
   skill keeps prescribing what this run proved wrong), the evidence dies with
   the session, and the open PR is NOT CLOSEABLE.

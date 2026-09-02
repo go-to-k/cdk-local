@@ -17,6 +17,20 @@ names, host ports, image tags, the post-run orphan sweep), so never two lanes'
 integ runs — nor two merges — concurrently; everything after the merge in this
 section (pull → worktree/branch audit) stays with the parent.
 
+**A `SendMessage` that answers "queued" has NOT been delivered — read the reply
+every time.** The tool returns one of two things: `Resuming agent ...`, meaning
+the agent was stopped and has been RESTARTED to receive it, or `Message queued
+for delivery at its next tool round`, which delivers only if something ELSE
+resumes the agent. A lane that ended its turn on "merge-ready" is stopped by
+definition, so the turn-grant it is waiting for lands in a queue nothing will
+drain — and both sides then look identical to a party waiting on the other.
+Measured 2026-09-02 (go-to-k/cdkd#2417): a lane sat idle about five minutes
+mid-pipeline that way, surfaced only by the maintainer asking why nothing was
+running, and an immediate re-send answered `Resuming agent` and unstuck it. So
+after any send: if the answer was "queued", either confirm the agent actually
+runs (its next completion notification) or re-send at once. A queued message is
+never a granted turn.
+
 Merge every verified PR with the `/merge-pr` skill — NOT a hand-run
 `gh pr merge --squash --delete-branch`:
 
@@ -29,12 +43,15 @@ CONFIRMED** — its step 4, the `state=MERGED` read. Everything up to there
 (resolve paths, set the `merge-pr` marker, `gh pr merge --squash`, confirm the
 merge) runs unchanged. **The LOCAL-CLEANUP step must not run at all**: that is
 the one doing `git worktree remove "$WT" --force` plus `git branch -D "$BR"`,
-numbered 5 today — name it by what it DOES, because `/merge-pr`'s own step 1
-still calls the removal "step 4" and the number is the one part of this that
-drifts. Skip it entirely, do the remote-branch confirmation (step 6) from this
-tree, and say in the report that the local tree and branch are still there ON
-PURPOSE. Cleanup of a workspace this run did not create belongs to whoever did
-— the outer tool, or the operator.
+numbered 5 today — name it by what it DOES rather than by its number, which is
+the one part of this that drifts: `/merge-pr`'s own step 1 called the removal
+"step 4" until go-to-k/cdk-local#653 corrected it, and a reader following a
+stale number skips the wrong step. Skip it entirely, do the remote-branch confirmation (step 6) from this
+tree, and say in the report that the local TREE is still there ON PURPOSE.
+Cleanup of a workspace this run did not create belongs to whoever did — the
+outer tool, or the operator. The local BRANCHES are a different matter: this run
+made them, so it owes them — the IN-PLACE cleanup block below deletes them and
+puts `LAUNCH_BRANCH` back, once, as the LAST step of the run rather than here.
 
 `/merge-pr`'s step 1 names one adjacent case (`WT` == `MAIN` — main worktree,
 nothing to detach). There are TWO it does not, and they are different from each
@@ -47,8 +64,10 @@ other:
   workspace, which is neither the main checkout nor a path the gate recognises.
   `gh-pr-merge-worktree-gate.sh` matches `*/.claude/worktrees/*` only, so from
   there it FAILS OPEN: a hand-run `gh pr merge` is not blocked, and nothing
-  forces the merge through `/merge-pr` at all. Step 1's sanity check ("`WT`
-  should be under `.claude/worktrees/`") has no arm for it either. Use
+  forces the merge through `/merge-pr` at all. Step 1's sanity check DOES name
+  this shape — a `WT` outside `.claude/worktrees/` is always an IN-PLACE caller,
+  and it sends you to step 5's stop rule — but that test is ONE-WAY, so the
+  bullet above stays invisible to it. Use
   `/merge-pr` anyway — its marker is harmless when the gate never consults it —
   and drop the local-cleanup step exactly as above. Treat a gate that stays
   silent here as a gate that did not run, never as a verdict that the merge was
@@ -139,27 +158,134 @@ mechanics, each learned from a false alarm or a vacuous pass:
 its step 5 runs `git branch -D`, and `-D` is load-bearing because this repo
 squash-merges: a merged tip is never an ancestor of `main`, so `-d` refuses it as
 "not fully merged". Read that refusal as the expected squash artifact, not as
-unmerged work — but only after confirming the PR is MERGED. The closing check is
-that **every worktree AND every local branch THIS run added is gone** — never that
-only the main checkout remains. **An IN-PLACE run ADDED none, so it removes
-none**: its closing check is "added no worktree, so removed none; deleted no
-branch", and the wrap SAYS whose cleanup that is instead of doing it. It is NOT
-"left the launch tree and its branch exactly as it found them" — §10-d has the
-run end standing on a RETRO branch this tree created, so that check could never
-pass and would read as a failure at the end of every correct IN-PLACE run.
-(The same sentence in `hunt-bugs/SKILL.md` is CORRECT there: that skill never
-branches in place.)
+unmerged work — but only after confirming the PR is MERGED.
 
-`git worktree remove` on its own never deletes a branch, so a crashed or
-interrupted `/merge-pr` leaves the local ref behind
-(cdkd's section 9 claimed otherwise and accumulated a dozen stale merged
-branches before go-to-k/cdkd#2015 corrected it):
+MAIN-CHECKOUT (§3's launch-mode probe) — run THIS block, and not the next one.
+The closing check is that **every worktree AND every local branch THIS run added
+is gone** — never that only the main checkout remains. `git worktree remove` on
+its own never deletes a branch, so a crashed or interrupted `/merge-pr` leaves
+the local ref behind (cdkd's section 9 claimed otherwise and accumulated a dozen
+stale merged branches before go-to-k/cdkd#2015 corrected it):
 
 ```bash
 git worktree list      # yours gone; one you did NOT add may be a LIVE peer lane
 git worktree prune     # drops entries whose directory a peer already removed
 git branch --list      # local branches THIS run created are gone too
 ```
+
+IN-PLACE — run THIS block INSTEAD, never both, and **run it LAST, not per-lane,
+in the PARENT**: §10-d takes its retro branch in this same tree, so restoring
+here and branching again there would only undo itself. Do the merge in §9 and
+come back for the block below once the retro PR has merged. The parent owns it
+even though §10-d is where it fires, because §10 may be dispatched to a subagent
+and two agents must not both be switching one tree.
+
+**The run ADDED no worktree, so it removes none**: `/merge-pr`'s local-cleanup
+step never ran (above), and removing the tree it is standing in would delete its
+own cwd. Cleanup of the TREE belongs to whoever created it — the outer tool or
+the operator — so the wrap SAYS that instead of doing it, and the run ends with
+the tree still there. What it DOES owe is the BRANCH: put back the one it found,
+delete every one it made. `<LAUNCH_BRANCH>` and `<every branch THIS run created>`
+are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
+(`references/launch-mode.md` — a fresh Bash call is a fresh shell, and an empty
+`git switch ""` is not the failure you want):
+
+```bash
+git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
+       # FIRST, because this is the gate that CHOOSES between this block and the
+       # fallback below. `--quiet` plus the explicit `|| echo` makes it
+       # self-describing: it PRINTS the arm it selects, instead of leaving that
+       # to be read off a `fatal:` line on stderr.
+[ -z "$(git status --porcelain)" ] \
+  && git switch --no-guess <LAUNCH_BRANCH> \
+  && git branch -D <every branch THIS run created> \
+  || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'
+       # The `|| echo` hangs off the WHOLE CHAIN, not off the test, and that is
+       # a correctness point rather than a style one: `A || B && C` parses as
+       # `(A || B) && C`, so `[ -z ... ] || echo '...' && git switch ...` runs
+       # the SWITCH on a dirty tree -- the echo succeeds and satisfies the
+       # `&&`. Verified in bash 2026-09-02. Hung off the chain it fires for any
+       # failed link, which is why it names both causes instead of guessing.
+       # ONE chain, and the dirty-tree test is its FIRST LINK. Testing AFTER the
+       # switch is too late: `git switch` carries uncommitted changes ACROSS, so
+       # the check then reports a tree that only LOOKS clean -- the dirt moved
+       # with you, onto the outer tool's branch -- and the `-D` deletes the
+       # branches that were holding this run's commits. Nor can the test be a
+       # bare `git status --porcelain`: that exits 0 dirty OR clean, so there is
+       # no verdict for `&&` to act on. And it is CHAINED rather than left
+       # standing alone with an `exit`, because a reader copies a LINE, not its
+       # intent -- the same rule this block's fence applies to everything else
+       # in it.
+       # CHAINED onward for the rest of the same reason: an unchained `-D` after
+       # a FAILED switch still deletes the branches that are not checked out,
+       # leaving the tree on the lane branch with its siblings gone. `-D`, not
+       # `-d` (squash) -- see above; §10-d's retro branch is one of them.
+       # `--no-guess` is load-bearing, and its absence fails in the worst
+       # direction: with the branch gone LOCALLY but still on `origin`, a plain
+       # `git switch` DWIMs and CREATES it from the remote -- exit 0, tracking
+       # set, "Switched to a new branch" -- re-making the outer tool's branch at
+       # ORIGIN's tip. That is an ADJUST, on precisely the path that was meant
+       # to fall through to the fallback below. `--no-guess` makes it an error.
+       # git prints its own advice on that switch, suggesting a `pull` to
+       # update the local branch. Do not: that is the fast-forward the AS-IS
+       # rule withdraws. (Spelled without the verb because the fence below
+       # bans every branch-moving command inside this block, comments and all.)
+git branch --show-current                 # must print <LAUNCH_BRANCH>
+git rev-list --count origin/main..<LAUNCH_BRANCH>
+       # 0 for a freshly created workspace, which is what silences the Stop hook.
+       # Non-zero means the outer tool left commits on its own branch: correct,
+       # not yours to merge and not yours to fast-forward away.
+```
+
+Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was
+launched detached) or the `show-ref` gate above printed `gone` — never as the
+default. CHAINED for the same reason as the primary block: a failed `fetch`
+followed by an unchained `switch` detaches at a stale `origin/main`, and a failed
+`switch` followed by an unchained `-D` deletes the branches that are not checked
+out. It needs no `--no-guess`: `--detach` takes a commit-ish, so there is no
+branch NAME left for git to guess at:
+
+```bash
+git fetch origin \
+  && git switch --detach origin/main \
+  && git branch -D <every branch THIS run created>
+```
+
+**Three end states, and only one of them is quiet.** Staying on the lane branch
+leaves a squash-merged tip that the unmerged-lane Stop hook warns about on EVERY
+turn (the appendix has its wording; its tip is never an ancestor of `main` — the
+same squash artifact that forces `-D` above). Detaching silences that, and was
+this step's recommendation until 2026-09-02 — but it is VISIBLE-SURPRISING in the
+outer tool's UI, which created the workspace ON a branch and displays the
+detached state prominently; the maintainer flagged it live.
+`LAUNCH_BRANCH` restored is both: it sits at whatever tip the outer tool left —
+0 commits ahead of `origin/main` for a freshly created workspace, which is the
+ordinary case — so the Stop hook stays silent AND the workspace looks untouched.
+If the tool DID leave commits on it the hook keeps naming it, and that is
+correct: those commits are not this run's to merge, and fast-forwarding them
+away is exactly the edit the next paragraph withdraws.
+
+**AS-IS is the whole rule: RESTORE, never ADJUST.** The first draft of this step
+fast-forwarded `LAUNCH_BRANCH` to `origin/main` on the way back, so it would not
+be left "stale"; that clause is WITHDRAWN. The tree and the branch are the outer
+tool's artifacts and this run's job is to leave them exactly as it found them —
+a fast-forward is an edit to somebody else's branch, made for the convenience of
+a run that is on its way out, and "it was only a fast-forward" is precisely the
+reasoning that produced the detached HEAD this rule replaces. If the branch is
+behind, that is the tool's business. Concretely, one prohibition per line so no
+re-wrap can separate a "never" from the command it governs:
+never `git pull` into `<LAUNCH_BRANCH>`,
+never `git merge --ff-only origin/main` onto `<LAUNCH_BRANCH>`,
+never `git rebase <LAUNCH_BRANCH>`,
+and never `git branch -D <LAUNCH_BRANCH>` -- the delete takes the branches THIS
+run created, and that one is the outer tool's.
+
+The REMOTE branches still go on merge — by the repo's own
+`delete_branch_on_merge`, not by `/merge-pr`, which deliberately omits
+`--delete-branch` — which is fine and independent of any of this. So the
+IN-PLACE closing check is "added no worktree, so removed none; the tree is on
+`LAUNCH_BRANCH` as it was found (or detached, if that arm fired), and every
+branch this run created is deleted".
 
 `git worktree list` cannot tell you whose a worktree is: a finished lane and a
 session working right now look identical, an already-on-`main` branch tip

@@ -1391,9 +1391,13 @@ vp run runtime:smoke
   inside a linked worktree -- an Orca/ADE workspace, or a stray `cd` into an
   existing lane -- `git worktree add` NESTS one worktree inside another, and
   deleting the outer workspace takes the inner directory, its uncommitted
-  work and its git registration with it. There, create nothing and remove
-  nothing: work on the branch already checked out, stop `/merge-pr` after
-  step 4, and leave the tree for whoever made it. `/work-issues` computes
+  work and its git registration with it. There, create NO WORKTREE and remove
+  none: branch IN PLACE off `origin/main` -- ALWAYS, and never committing onto
+  the branch the outer tool created, because the merge deletes the remote
+  branch the PR was opened from -- stop `/merge-pr` after step 4, then switch
+  that branch back AS-IS at the very end, delete only the branches this run
+  made, and leave the TREE for whoever made it.
+  `/work-issues` computes
   which case applies before its first stage and `/hunt-bugs` points at that
   probe; do not re-implement it here.
 

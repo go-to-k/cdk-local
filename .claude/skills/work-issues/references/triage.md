@@ -157,8 +157,9 @@ rest; a fix living entirely in one is naturally disjoint.
 **How many lanes you may pick is decided by the LAUNCH MODE, and the parent
 already settled it before stage 0** — `references/launch-mode.md` holds the
 probe (the ONLY copy) and the reading of its edge cases, and the dispatch that
-started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT`. If the
-dispatch did not, STOP and ask for them rather than re-running the probe here:
+started this stage carries its `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` /
+`LAUNCH_BRANCH`. If the dispatch did not, STOP and ask for them rather than
+re-running the probe here:
 a triage subagent's answer is not the parent's, and the parent is the party
 that later runs `git worktree add` or does not.
 
@@ -184,7 +185,7 @@ stray `cd` into a peer's live lane looks exactly like an empty workspace:
 # nothing; a WRITE is a different problem (§5's branch recipe).
 git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
 git status --porcelain          # non-empty = someone's uncommitted work; STOP
-git branch --show-current       # the branch you would be committing to
+git branch --show-current       # the outer tool's LAUNCH_BRANCH -- never committed onto
 git log --oneline -3            # whose commits are these
 gh pr list --state all --head "$(git branch --show-current)"
 ```

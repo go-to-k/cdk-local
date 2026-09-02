@@ -857,12 +857,30 @@ check "...and the user text does not" "no" \
 check "...while still naming the lane for the user" "yes" \
   "$(printf '%s' "$(msg_of "$sys_out")" | grep -qF 'feat/cad-b' && echo yes || echo no)"
 
-# The detach wording, which is the other half of the go-to-k/cdkd#2391 port: a
-# tree an outer tool owns must not be removed, and a worktree with no current
-# branch is not a lane, so `git switch --detach origin/main` clears it.
+# The escape wording for a tree an outer tool owns and this session must not
+# remove (the other half of the go-to-k/cdkd#2391 port). TWO remedies, in order:
+# switch BACK to the branch the tool handed the tree over on -- which is not
+# ahead of origin/main, so it is not a lane -- and, only when that branch is
+# unknown or gone, detach. go-to-k/cdk-local#651 demoted detach from THE remedy
+# to the fallback, and the ORDER is the part that matters: this hook's text is
+# what an agent reads at Stop time, so a message naming only the fallback sends
+# every IN-PLACE run to the visible-surprising end state the skill just stopped
+# prescribing. Both are pinned, and the restore is pinned to come FIRST.
 clear_nudge_records
 out=$(run_hook_keep "$REPO" "$RUN" "$B1")
 check "the own-lane message names the detach escape" "yes" "$(printf '%s' "$out" | grep -qF 'git switch --detach origin/main' && echo yes || echo no)"
+check "...and names the restore that now precedes it" "yes" \
+  "$(printf '%s' "$out" | grep -qF 'switch BACK to the' && echo yes || echo no)"
+# By CHARACTER offset, not line number: the hook answers with JSON, so the whole
+# message can arrive on one line and a line-numbered compare reports equal. The
+# input is accumulated in the main block rather than slurped with `RS="\0"` --
+# on macOS BWK awk an empty-ish RS is PARAGRAPH mode, not read-everything, so
+# that spelling would silently split a future multi-paragraph message.
+check "...with the restore BEFORE the detach fallback" "yes" \
+  "$(printf '%s' "$out" | awk '
+            { buf = buf $0 "\n" }
+      END   { r = index(buf, "switch BACK to the"); d = index(buf, "git switch --detach origin/main")
+              print (r > 0 && d > 0 && r < d) ? "yes" : "no" }')"
 
 git -C "$REPO" worktree remove --force "$REPO/wt-cad-a"
 git -C "$REPO" worktree remove --force "$REPO/wt-cad-b"

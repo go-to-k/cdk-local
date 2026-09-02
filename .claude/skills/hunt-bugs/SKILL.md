@@ -125,13 +125,18 @@ it, `mise trust && mise install` (a fresh worktree's `.mise.toml` is untrusted, 
 `node_modules`) → `vp run build` (the CLI runs from `dist/` — `node dist/cli.js`,
 or the `cdkl` bin).
 
-**Unless this hunt was LAUNCHED from a linked worktree, in which case create
-none and work on the branch already checked out there** — `git worktree add` run
-from inside a worktree nests one, and deleting the outer workspace takes the
-inner directory, its uncommitted work and its git registration with it
+**Unless this hunt was LAUNCHED from a linked worktree, in which case create no
+WORKTREE and take the fix's branch IN PLACE off `origin/main` — ALWAYS** — `git worktree
+add` run from inside a worktree nests one, and deleting the outer workspace takes
+the inner directory, its uncommitted work and its git registration with it
 (go-to-k/cdk-local#635). Compute the mode with the one-line probe in
 `.claude/skills/work-issues/references/launch-mode.md`, the file that holds the
-ONLY copy of it; `/work-issues` `references/triage.md` section 3 carries the
+ONLY copy of it, and RECORD its `LAUNCH_BRANCH`: that is the branch the outer
+tool handed the tree over on, and step 8 puts it back. **Never commit onto it.**
+This repo has `delete_branch_on_merge`, so a hunt that opened its PR from
+`LAUNCH_BRANCH` would delete the outer tool's remote branch on the way out — a
+far heavier interference than the worktree nesting this rule already avoids.
+`/work-issues` `references/triage.md` section 3 carries the
 ownership check to run before adopting a tree you did not create. A hunt takes
 one fix at a time, so nothing else about this flow changes — except step 8's
 cleanup. The `mise trust` / `pnpm install` / `vp run build` lines still apply:
@@ -295,8 +300,10 @@ Take it all the way to merged — do not leave a green PR hanging:
    **Launched IN-PLACE (step 1): stop `/merge-pr` after its step 4** (confirm
    `state=MERGED`) and skip its step 5 — `git worktree remove "$WT" --force`
    would delete the cwd this hunt is running in, and `git branch -D "$BR"` the
-   branch it is standing on. Cleanup of a workspace this run did not create
-   belongs to whoever did; say so in the report instead of doing it.
+   branch it is standing on. Cleanup of the TREE belongs to whoever created
+   it; say so in the report instead of doing it. The BRANCHES are a different
+   matter — this hunt made them, and step 2 below deletes them and puts
+   `LAUNCH_BRANCH` back.
 2. **Confirm the worktree YOU added is gone** — `/merge-pr` removes it; a
    left-behind worktree is the silent residue of this flow. Check `git worktree
    list` for yours specifically, NOT for a list with only the main checkout in it:
@@ -305,9 +312,28 @@ Take it all the way to merged — do not leave a green PR hanging:
    live peer lane. Confirm it is finished (`git log --oneline -1 <branch>`, then
    `gh pr list --state all --head <branch>` for an OPEN PR) before removing it, and
    leave it alone when in doubt. `git worktree prune` drops entries whose directory
-   is already gone. An IN-PLACE hunt added no worktree, so it removes none: its
-   closing check is that the launch tree and its branch are exactly as it found
-   them.
+   is already gone. An IN-PLACE hunt added no worktree, so it removes none — but
+   it DOES owe the branch it made — `/work-issues` `references/ship.md` §9's
+   two lines verbatim:
+   `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'`
+   and then
+   `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created> || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'`
+   — **as-is**, no pull, no rebase, no fast-forward, the branch being the outer
+   tool's artifact; the dirty-tree test FIRST, because a switch carries
+   uncommitted changes ACROSS onto that branch and the `-D` then takes the one
+   holding your commits; CHAINED so a failed switch cannot leave the `-D` to run
+   anyway; and `--no-guess` because a plain `git switch` RE-CREATES a
+   locally-missing branch from `origin` instead of failing through to the detach
+   arm; and the `|| echo` hangs off the WHOLE CHAIN rather than the test, because
+   `A || B && C` parses as `(A || B) && C` and would run the switch on a dirty
+   tree. Detach
+   (`git fetch origin && git switch --detach origin/main && git branch -D ...`)
+   only when `LAUNCH_BRANCH` was empty at probe time, or the `show-ref` gate
+   above printed `gone`.
+   Its closing check is that the launch TREE is exactly as it found it — on
+   `LAUNCH_BRANCH`, or detached if that arm fired — with every branch this hunt
+   created deleted
+   (`/work-issues` `references/ship.md` section 9 carries the reasoning).
 
 ### 9. Record what you learned
 

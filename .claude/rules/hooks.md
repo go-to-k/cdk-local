@@ -1158,7 +1158,7 @@ construction.
     `vite.config.ts`, `.mise.toml`, `.node-version`, `.markgate.yml`,
     `.claude/hooks/**`, plus the checker-INPUT files the unit suite
     reads — `.claude/skills/**`, `.claude/agents/**`,
-    `.claude/rules/**`, `.claude/settings.json`,
+    `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
     `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in
@@ -1713,8 +1713,15 @@ this repo squash-merges, so a merged branch never becomes an ancestor of
 `origin/main` and keeps reading as ahead until its worktree is removed.
 The remedy is `git worktree remove` plus `git branch -D`, not another PR
 — and when the tree is one you must NOT remove (an outer tool owns it, or
-you were launched inside it), `git switch --detach origin/main` clears
-the lane, because a worktree with no current branch is not a lane at all.
+you were launched inside it), switching BACK to the branch the tool handed
+the tree over on clears the lane just as well whenever that branch is itself
+not ahead of `origin/main` — the ordinary case for a freshly created workspace.
+`/work-issues` records it as `LAUNCH_BRANCH` and puts it back as its last step
+(`.claude/skills/work-issues/references/ship.md` section 9). Detaching with
+`git switch --detach origin/main` also clears the lane — a worktree with no
+current branch is not a lane at all — but it is visible-surprising in the
+outer tool's UI, so it is the FALLBACK, for a tree that was handed over
+detached or whose branch is gone.
 
 It shipped INERT for its own primary case once (go-to-k/cdkd#2279): it
 derived its root from `BASH_SOURCE` and SKIPPED the worktree that

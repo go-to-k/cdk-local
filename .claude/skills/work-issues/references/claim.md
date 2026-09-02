@@ -10,24 +10,21 @@ holds. Everything else in this section is unchanged, including the re-check for
 a competing claim/PR right before the lane starts.
 
 **An IN-PLACE run names the tree it is STANDING IN**
-(`references/launch-mode.md`): the `<ref>` is the branch already checked out
-here plus the `LANE_TREE` the probe recorded. Read the BRANCH out of git rather
-than composing a name; take the TREE from the opening report rather than
+(`references/launch-mode.md`): the `<ref>` is the branch §5 will create plus the
+`LANE_TREE` the probe recorded. Take the TREE from the opening report rather than
 re-deriving it with `git rev-parse --show-toplevel`, whose answer follows a cwd
-that may have silently reset to the main checkout —
+that may have silently reset to the main checkout. No WORKTREE will be created,
+and a claim pointing at a worktree that never appears is exactly what §9's owner
+probes misread.
 
-```bash
-git -C "<LANE_TREE>" branch --show-current   # the branch the claim must name
-```
-
-— because nothing new will be created, and a claim pointing at a worktree that
-never appears is exactly what §9's owner probes misread.
-
-**An empty branch name means the tree is DETACHED, not that the claim is
-blocked.** The branch is created in §5, after this stage — so write "the branch
-§5 will create in `<LANE_TREE>`" and post the claim on time. A claim delayed
-until a branch exists is a claim posted after the first edit, which is the one
-thing this stage forbids. Such a run claims ONE issue (§3), not a set.
+**Do NOT claim `LAUNCH_BRANCH` — the branch checked out here right now is the
+OUTER TOOL's, not this run's** (`references/launch-mode.md`: "a branch to PUT
+BACK, never one to commit to"). So the name is COMPOSED here rather than read out
+of git with `git -C "<LANE_TREE>" branch --show-current`, and it does not exist
+yet: §5 creates it, after this stage. Write "the branch §5 will create in
+`<LANE_TREE>`" and post the claim on time. A claim delayed until the branch
+exists is a claim posted after the first edit, which is the one thing this stage
+forbids. Such a run claims ONE issue (§3), not a set.
 
 For EACH issue you will start:
 

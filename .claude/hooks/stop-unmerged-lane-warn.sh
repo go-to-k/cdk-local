@@ -293,9 +293,11 @@ If you are ending the turn with nothing that will re-invoke you, the honest labe
 One false positive is expected and is cheap to clear: this repo SQUASH-merges, so a merged branch never
 becomes an ancestor of origin/main and keeps reading as ahead. If '$self_branch' is already merged, the
 remaining work is to remove its worktree and delete the branch -- not to open another PR. When this tree
-is one you must NOT remove (an outer tool owns it, or you were launched inside it), detach instead:
-'git switch --detach origin/main' clears the lane here, because a worktree with no current branch is not
-a lane at all.
+is one you must NOT remove (an outer tool owns it, or you were launched inside it), switch BACK to the
+branch the outer tool handed it over on and delete the merged one: a branch that is not ahead of
+origin/main is not a lane, and the workspace is left as its owner made it. Only when that branch is
+unknown or gone, detach instead: 'git switch --detach origin/main' clears the lane too, because a
+worktree with no current branch is not a lane at all.
 Every unmerged lane in this checkout:"
   # The DOWNGRADE text, and it is a different message rather than the same one
   # on a quieter channel. Three paths reach it -- a repeat subject, a resumed

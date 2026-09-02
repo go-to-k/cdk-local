@@ -129,6 +129,18 @@ SCOPED to the delta, whole round's findings at once, not trickled.
   reviewer called a blocker on the same lines, and the code's own comment
   settled it. Routine here, since `/review-pr` dispatches 1 or 3 reviewers:
   read the disputed lines, then say who was right and why.
+- **Reviewer subagents spawned BY A LANE report to the MAIN session, not to the
+  lane that spawned them.** Completion notifications go to the top-level
+  session, so a lane that dispatches reviewers and then waits on their reports
+  waits for something that cannot arrive, while the parent collects verdicts it
+  did not ask for and may not connect to a lane. Measured 2026-09-02
+  (go-to-k/cdkd#2417): a lane's two reviewers both delivered upward, the lane
+  blocked, and the parent relayed both verdicts by hand. Pick one shape and say
+  which in the dispatch: the lane runs its reviewers **synchronously** (holding
+  its own turn until they return), or the **parent owns the review dispatch**
+  and relays each verdict down — the latter under §9's queued-versus-`Resuming`
+  rule, because a lane waiting on a review is stopped at exactly the moment the
+  relay is sent.
 - **A diff with no `src/**` change** (docs, skills, rules, hooks, CI, config) is
   EXEMPT from the live-test, and from the integ unless it touches
   `tests/integration/**` — `integ-gate` short-circuits on `src/**` OR
