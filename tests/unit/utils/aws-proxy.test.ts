@@ -52,20 +52,33 @@ const httpOpts = (host: string, port = 80) =>
  * `getLogger().child('aws-proxy')` — spying on the parent alone captures
  * nothing (the idiom `proxy-aware-fetch-bindings.test.ts` established).
  */
-function captureWarns(run: () => void): string[] {
-  const warn = vi.fn();
-  const previous = getLogger();
+function stubLogger(
+  previous: object,
+  warn: unknown,
+  child?: unknown
+): Record<string, unknown> {
   // `Object.create(prototype)` first, not a bare `{ ...previous }`: spreading
-  // a ConsoleLogger INSTANCE copies its own fields and drops every prototype
-  // method, so a future `getLogger().debug(...)` inside the captured window
-  // would fail as `debug is not a function` rather than as a clean assertion.
+  // a ConsoleLogger INSTANCE copies only its own fields (`level` /
+  // `useColors`) and drops every prototype method, so a future
+  // `getLogger().debug(...)` inside the captured window would fail as
+  // `debug is not a function` rather than as a clean assertion.
+  //
+  // ONE spelling, used by every site in this file. The first round of this
+  // change wrote the reasoning above and then added a fresh bare spread three
+  // cases below it — which is what a helper prevents and a comment does not.
   const stub = Object.assign(
     Object.create(Object.getPrototypeOf(previous) as object) as Record<string, unknown>,
     previous,
     { warn }
   );
-  stub['child'] = () => stub;
-  setLogger(stub as never);
+  stub['child'] = child ?? (() => stub);
+  return stub;
+}
+
+function captureWarns(run: () => void): string[] {
+  const warn = vi.fn();
+  const previous = getLogger();
+  setLogger(stubLogger(previous, warn) as never);
   try {
     run();
   } finally {
@@ -384,10 +397,10 @@ describe('aws-proxy (issue #634)', () => {
     it('a SCHEME-LESS value takes the REQUEST scheme: `HTTPS_PROXY=proxy.internal:3128` means TLS to the PROXY', () => {
       // The common spelling, and it does not mean what it looks like.
       // `proxy-from-env` prepends the scheme of the URL BEING REQUESTED, not
-      // `http:` — so an https target speaks TLS to the proxy itself, which a
-      // plain HTTP forward proxy will not answer. Writing
-      // `HTTPS_PROXY=http://proxy.internal:3128` is what gets a CONNECT
-      // tunnel over plain HTTP.
+      // `http:` — so an https target makes the connection TO THE PROXY itself
+      // TLS, which a plain HTTP forward proxy will not answer. Both spellings
+      // still tunnel with CONNECT; `HTTPS_PROXY=http://proxy.internal:3128`
+      // is the one that reaches the proxy over plain HTTP first.
       process.env['HTTPS_PROXY'] = 'proxy.internal:3128';
       const agent = new EnvRoutingProxyAgent();
       const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
@@ -695,9 +708,9 @@ describe('aws-proxy (issue #634)', () => {
       process.env['ALL_PROXY'] = 'socks5://127.0.0.1:1080';
       const warn = vi.fn();
       const previous = getLogger();
-      const child = vi.fn(() => ({ ...previous, warn }));
+      const child = vi.fn(() => stubLogger(previous, warn));
       const agent = new EnvRoutingProxyAgent();
-      setLogger({ ...previous, warn, child } as never);
+      setLogger(stubLogger(previous, warn, child) as never);
       try {
         agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
       } finally {
@@ -719,6 +732,93 @@ describe('aws-proxy (issue #634)', () => {
       const config = buildProxyClientConfig();
       expect(config.requestHandler).toBeDefined();
       expect(typeof config.credentials).toBe('function');
+    });
+
+    it.each([
+      ['at the 32-character bound, the scheme is still named', 32, true],
+      ['one character past it, it is not', 33, false],
+    ])('%s', (_label, length, named) => {
+      // The BOUNDARY, not just a wildly-over-length value: with only a 64-char
+      // case, a `{0,30}` or `{0,32}` mutant stays green.
+      const scheme = `a${'b'.repeat(length - 1)}`;
+      expect(scheme).toHaveLength(length);
+      process.env['ALL_PROXY'] = `${scheme}://proxy.internal:1080`;
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(named ? `"${scheme}"` : '(unrecognized)');
+    });
+
+    it('trims the UNSPEAKABLE path too, so the scheme is named rather than "(unrecognized)"', () => {
+      // The trim runs before BOTH branches. Untrimmed, ` socks5://...` fails
+      // the anchored scheme match and the warn degrades to `(unrecognized)`,
+      // which is a worse message for a configuration cdk-local understands
+      // perfectly well. Only the speakable side of the trim had a case.
+      process.env['ALL_PROXY'] = ' socks5://127.0.0.1:1080';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"socks5"');
+      expect(lines[0]).not.toContain('(unrecognized)');
+    });
+
+    it('a leading NON-BREAKING SPACE now works where it used to throw', () => {
+      // Not a restoration but a genuine behaviour change, so it is pinned in
+      // the throw -> works direction as well. The WHATWG URL parser strips
+      // ASCII whitespace only; `String.prototype.trim` also strips U+00A0 and
+      // U+FEFF, which is how a proxy URL copied out of a wiki page arrives.
+      // Spelled as ESCAPES, never literal bytes: an invisible character in
+      // source is unreadable in a diff and unsearchable by grep, and the
+      // premise of this case IS which code points it carries.
+      const value = '\u00A0http://proxy.internal:3128\uFEFF';
+      expect(value.codePointAt(0)).toBe(0x00a0);
+      expect(value.codePointAt(value.length - 1)).toBe(0xfeff);
+      process.env['HTTPS_PROXY'] = value;
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        const picked = agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+        expect(picked).toBeInstanceOf(HttpsProxyAgent);
+        expect((picked as HttpsProxyAgent<string>).proxy.href).toBe(
+          'http://proxy.internal:3128/'
+        );
+      });
+      agent.destroy();
+      expect(lines).toEqual([]);
+    });
+
+    it('INTERNAL whitespace still throws — a real typo stays loud', () => {
+      // Guard-the-guard for the two trim cases above: the trim must not be
+      // read as "whitespace is tolerated". This value is speakable by scheme,
+      // so it reaches the agent constructor and fails there, as before.
+      process.env['HTTPS_PROXY'] = 'http://proxy .internal:3128';
+      const agent = new EnvRoutingProxyAgent();
+      expect(() => agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'))).toThrow(TypeError);
+      agent.destroy();
+    });
+
+    it('a value whose scheme merely LOOKS like a username is named as the scheme', () => {
+      // The stated bound of the `://` requirement, pinned so a reader finds a
+      // decision rather than an oversight. `alice://s3cr3t@proxy:3128` is a
+      // syntactically valid URL whose scheme IS `alice`; nothing here can know
+      // the author meant it as a username, and it is not a working proxy
+      // configuration either way. The BLOCKER shape — credentials followed by
+      // a real `scheme://` — is the case above, and still yields
+      // `(unrecognized)`.
+      process.env['HTTPS_PROXY'] = 'alice://s3cr3t@proxy.corp:3128';
+      const agent = new EnvRoutingProxyAgent();
+      const lines = captureWarns(() => {
+        agent.connect(REQ, httpsOpts('sts.us-east-1.amazonaws.com'));
+      });
+      agent.destroy();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('"alice"');
+      expect(lines[0]).not.toContain('s3cr3t');
     });
 
     it('an UNPARSABLE value still THROWS — a typo has no working setup behind it', () => {

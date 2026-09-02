@@ -1238,9 +1238,11 @@ compute-locally category for Lambda + API Gateway).
   request line for an http one), and any other (a SOCKS `ALL_PROXY`, an ordinary
   spelling `getProxyForUrl` honours) falls back to a DIRECT connection with
   a one-time warn naming ONLY the scheme — or `(unrecognized)` when the value
-  carries no `scheme://` at all — since a proxy URL routinely carries
+  carries no LEADING `scheme://` — since a proxy URL routinely carries
   `user:password@`, and a scheme match that did not require `://` would name
-  the USERNAME of exactly such a value. ONE site owns it because two did not: issue #663
+  the USERNAME of exactly such a value (`corp-user:s3cr3t@http://proxy:3128`
+  comes back from `getProxyForUrl` VERBATIM, `://` and all, so "contains
+  `://`" is not the test — "starts with `scheme://`" is). ONE site owns it because two did not: issue #663
   was `proxyAwareFetch` having the scheme guard while this seam built an
   HTTP agent pointed at the SOCKS port, from the same environment. Falling
   back beats REFUSING because before either seam existed every one of these

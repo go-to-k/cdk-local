@@ -97,10 +97,13 @@ export function resetProxySchemeWarnings(): void {
  * `getProxyForUrl` prepends the REQUEST's scheme to any value that does not
  * already contain `://`, so the URL it returns normally carries one — even
  * `HTTPS_PROXY=proxy.internal:3128`, which becomes `https://proxy.internal:3128`
- * (TLS to the PROXY, not a CONNECT tunnel). A value containing `://`
- * somewhere OTHER than the start is returned verbatim and has no leading
- * scheme; pathological, but reachable, so it gets a NAME rather than an empty
- * string that would read as a missing message.
+ * and therefore makes the connection TO THE PROXY ITSELF TLS. (Both spellings
+ * still tunnel with `CONNECT`; what changes is whether that tunnel is wrapped
+ * in TLS to the proxy. Read from `https-proxy-agent`: an `https:` proxy is
+ * reached with `tls.connect` and the `CONNECT` line is written over it.) A
+ * value containing `://` somewhere OTHER than the start is returned verbatim
+ * and has no leading scheme; pathological, but reachable, so it gets a NAME
+ * rather than an empty string that would read as a missing message.
  *
  * The `:\/\/` is load-bearing and NOT decoration. Matching a bare `token:`
  * would name whatever precedes the first colon, and in a verbatim value that
@@ -109,11 +112,21 @@ export function resetProxySchemeWarnings(): void {
  * comes back untouched — and a `^([a-z][a-z0-9+.-]*):` reading of it yields
  * `corp-user`, which {@link warnUnspeakableProxy} would then print at default
  * level into a log panel `cdkl studio` serves over HTTP. Requiring `://`
- * sends every such value to `(unrecognized)` instead.
+ * sends that shape to `(unrecognized)`.
+ *
+ * It does NOT make "a username can never be printed" true, and the bound is
+ * stated rather than left to be rediscovered: `alice://s3cr3t@proxy:3128` is
+ * a syntactically valid URL whose scheme IS `alice`, so `alice` is named.
+ * That is the URL grammar answering correctly — nothing here can know the
+ * author meant it as a username — and it is not a working proxy
+ * configuration in any case. Pinned by a case so a future reader finds a
+ * decision instead of an oversight.
  *
  * The length bound is the other half: without it the scheme run is
  * unbounded, so a proxy value of 100 kB of `a` followed by `://` becomes a
- * 100 kB default-level warn. 32 is far past every real scheme.
+ * 100 kB default-level warn. 32 is far past every real scheme, and it never
+ * affects ROUTING — {@link isSpeakableProxy} is a separate unbounded test, so
+ * a 40-character scheme is unspeakable either way.
  */
 function proxySchemeOf(proxyUrl: string): string {
   const match = /^([a-z][a-z0-9+.-]{0,31}):\/\//i.exec(proxyUrl);
@@ -199,8 +212,17 @@ function resolveProxyForTarget(targetHref: string): string {
   // arrives with its leading space — and `isSpeakableProxy` is anchored, so
   // untrimmed it reads as unspeakable and goes DIRECT. That configuration
   // WORKED before this change: the WHATWG `URL` parser inside the agent trims
-  // leading whitespace, so the agent was built correctly. Measured both ways;
-  // trimming keeps it working AND hands the agent the clean value.
+  // leading ASCII whitespace, so the agent was built correctly. Measured both
+  // ways; trimming keeps it working AND hands the agent the clean value.
+  //
+  // One case is NOT a restoration but a genuine change, so it is stated
+  // rather than buried: `String.prototype.trim` also strips U+00A0 and
+  // U+FEFF, which the URL parser does NOT, so a value carrying one of those
+  // (the usual way a proxy URL copied out of a wiki page arrives) goes from
+  // THROWING `Invalid URL` to working. Deliberate — the author's intent is
+  // unambiguous there — and pinned by a case so a revert is caught in that
+  // direction too. INTERNAL whitespace is untouched and still throws, which
+  // keeps a real typo loud.
   const proxyUrl = getProxyForUrl(targetHref).trim();
   if (proxyUrl === '') return '';
   if (isSpeakableProxy(proxyUrl)) return proxyUrl;

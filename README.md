@@ -155,7 +155,7 @@ cdk-local routes its own AWS-bound traffic through the standard proxy environmen
 
 The value of a proxy variable is read strictly:
 
-- A **scheme-less** value takes the scheme of the *request*, not `http:` — `HTTPS_PROXY=proxy.internal:3128` resolves to `https://proxy.internal:3128`, i.e. TLS *to the proxy*, which a plain HTTP forward proxy will not answer. Write `HTTPS_PROXY=http://proxy.internal:3128` for a `CONNECT` tunnel over plain HTTP.
+- A **scheme-less** value takes the scheme of the *request*, not `http:` — `HTTPS_PROXY=proxy.internal:3128` resolves to `https://proxy.internal:3128`, which makes the connection *to the proxy itself* TLS. Both spellings still tunnel with `CONNECT`; what changes is whether that tunnel is wrapped in TLS to the proxy, and a plain HTTP forward proxy cannot answer a TLS handshake. Write `HTTPS_PROXY=http://proxy.internal:3128` unless your proxy really does terminate TLS.
 - Only **`http://` and `https://` proxies** are supported. A `socks5://` / `socks4://` value — usually in `ALL_PROXY` — cannot be spoken, so cdk-local connects DIRECT for that request and warns once, naming the scheme. The decision is per request, so a speakable `HTTPS_PROXY` alongside a SOCKS `ALL_PROXY` still tunnels the HTTPS traffic.
 
 `NO_PROXY` matching is stricter than you may expect:

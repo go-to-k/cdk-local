@@ -246,7 +246,9 @@ if [ -s "${PROXY_LOG}" ]; then
 fi
 # Read off STDERR because the compact logger sends warn there. A run under
 # `CDKL_LOG_STREAM=stdout` (what `cdkl studio` sets for its serve children)
-# would unify the streams and this grep would have to move to RESULT_9.
+# would unify the streams and this grep would stop matching -- and NOT simply
+# by moving to RESULT_9, which is only the LAST stdout line; such a run would
+# need the command's stdout captured whole.
 grep -q 'Unsupported proxy scheme "socks5"' "${CDKL_STDERR}" || {
   echo "FAIL: expected the unsupported-scheme warn on stderr; captured stderr:"
   cat "${CDKL_STDERR}"

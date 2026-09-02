@@ -174,6 +174,24 @@ async function startRawProxy(reply: string | null): Promise<RawProxy> {
   };
 }
 
+/**
+ * A logger stand-in that keeps the real ConsoleLogger PROTOTYPE. Spreading the
+ * instance (`{ ...previous }`) copies only its own fields — `level` /
+ * `useColors` — and drops every prototype method, so a `getLogger().debug(...)`
+ * inside the captured window would fail as `debug is not a function` rather
+ * than as an assertion. Twin of the helper in `aws-proxy.test.ts`; ONE spelling
+ * per file, because a comment saying so did not stop a second one appearing.
+ */
+function stubLogger(previous: object, warn: unknown): Record<string, unknown> {
+  const stub = Object.assign(
+    Object.create(Object.getPrototypeOf(previous) as object) as Record<string, unknown>,
+    previous,
+    { warn }
+  );
+  stub['child'] = () => stub;
+  return stub;
+}
+
 describe('proxyAwareFetch (issue #647)', () => {
   const saved = new Map<string, string | undefined>();
   const closers: (() => Promise<void>)[] = [];
@@ -576,7 +594,7 @@ describe('proxyAwareFetch (issue #647)', () => {
     process.env['HTTPS_PROXY'] = 'socks5://127.0.0.1:1080';
     const warn = vi.fn();
     const previous = getLogger();
-    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    setLogger(stubLogger(previous, warn) as never);
     let err: unknown;
     try {
       err = await proxyAwareFetch('http://origin.invalid/start').catch((e: unknown) => e);
@@ -602,7 +620,7 @@ describe('proxyAwareFetch (issue #647)', () => {
     process.env['ALL_PROXY'] = 'socks5://user:s3cr3t@127.0.0.1:1080';
     const warn = vi.fn();
     const previous = getLogger();
-    setLogger({ ...previous, warn, child: () => ({ ...previous, warn }) } as never);
+    setLogger(stubLogger(previous, warn) as never);
     try {
       await proxyAwareFetch('http://origin.invalid/x').catch(() => undefined);
       await proxyAwareFetch('http://origin.invalid/y').catch(() => undefined);
