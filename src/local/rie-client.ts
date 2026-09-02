@@ -102,6 +102,8 @@ async function httpProbe(host: string, port: number, timeoutMs: number): Promise
     // invoke; some HTTP stacks have separate readiness for read-only vs
     // write methods. Body is a tiny empty JSON object so we don't pay
     // a content-length parse on the way through.
+    // proxy-audit: ignore: a loopback Docker container on this host — routing it
+    // through the developer's forward proxy would break the local run, not fix it.
     const response = await fetch(`http://${formatAuthority(host, port)}/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -211,6 +213,8 @@ async function fetchWithStartupRetry(
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      // proxy-audit: ignore: a loopback Docker container on this host — routing it
+      // through the developer's forward proxy would break the local run, not fix it.
       return await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...extraHeaders },

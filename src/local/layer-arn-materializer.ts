@@ -4,11 +4,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { buildProxyClientConfig } from '../utils/aws-proxy.js';
+import { buildProxyClientConfig, proxyAwareFetch } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { ResolvedArnLambdaLayer } from './lambda-resolver.js';
 import { getEmbedConfig } from './embed-config.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from './credential-error.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  sanitizeServiceExceptionMessage,
+} from './credential-error.js';
 import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
 
 /**
@@ -25,8 +29,10 @@ import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
  *   2. `lambda:GetLayerVersion` against the layer's region (parsed from
  *      the ARN by `parseLayerVersionArn` — NOT the dev's profile
  *      region) to recover the presigned S3 URL in `Content.Location`.
- *   3. Download the ZIP from the presigned URL via `fetch(...)` (no AWS
- *      credentials needed on the GET — the presign carries them).
+ *   3. Download the ZIP from the presigned URL via `proxyAwareFetch(...)`
+ *      (no AWS credentials needed on the GET — the presign carries them;
+ *      the proxy-aware form is what keeps step 3 reachable on a machine
+ *      whose only egress is a forward proxy, issue #647).
  *   4. Unzip into a fresh tmpdir under `os.tmpdir()` using `node:zlib`
  *      + the documented ZIP-file format. AWS layer ZIPs use the
  *      DEFLATE compression method.
@@ -67,8 +73,9 @@ export interface MaterializeLayerOptions {
   stsClientFactory?: (region: string) => StsSendClient;
   /**
    * Test seam: override the presigned-URL ZIP fetch. The production
-   * call uses Node's built-in `fetch()`. Returns a `Uint8Array` (the
-   * ZIP body) so the test can inject a fixture-built ZIP.
+   * call goes through `proxyAwareFetch()` (`src/utils/aws-proxy.ts`), which
+   * is `globalThis.fetch` with no proxy variable set. Returns a
+   * `Uint8Array` (the ZIP body) so the test can inject a fixture-built ZIP.
    */
   fetchZip?: (presignedUrl: string) => Promise<Uint8Array>;
 }
@@ -212,8 +219,14 @@ export async function materializeLayerFromArn(
   try {
     zipBytes = await downloadPresignedZip(presignedUrl, options);
   } catch (err) {
+    // `sanitizeServiceExceptionMessage`, not bare `errMsg`: since issue #647
+    // this `catch` also sees whatever `proxyAwareFetch` raises — `node:net` /
+    // OpenSSL / proxy-agent text, none of it credential-bearing but none of it
+    // one bounded line either. Nothing to WITHHOLD, everything to FLATTEN.
     throw new LayerMaterializationError(
-      `Layer ${layer.arn}: failed to download layer ZIP from the presigned URL: ${errMsg(err)}.`
+      `Layer ${layer.arn}: failed to download layer ZIP from the presigned URL: ${sanitizeServiceExceptionMessage(
+        errMsg(err)
+      )}.`
     );
   }
 
@@ -406,7 +419,11 @@ async function downloadPresignedZip(
   options: MaterializeLayerOptions
 ): Promise<Uint8Array> {
   if (options.fetchZip) return options.fetchZip(presignedUrl);
-  const response = await fetch(presignedUrl);
+  // `proxyAwareFetch`, not the global `fetch`: step 2's `GetLayerVersion`
+  // goes through the proxy-aware SDK client above, so behind proxy-only
+  // egress it SUCCEEDS and this download — the very next step — used to fail
+  // direct against the presigned S3 host (issue #647).
+  const response = await proxyAwareFetch(presignedUrl);
   if (!response.ok) {
     throw new Error(
       // Issue #579 review round 2 — `statusText` is the HTTP REASON PHRASE, i.e.
@@ -555,9 +572,16 @@ async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
  * The download `catch` DOES see wire-derived text — `downloadPresignedZip`
  * raises `HTTP <status> <statusText> ...`, and the reason phrase is whatever
  * the presigned host sent. Nothing there needs WITHHOLDING (no credential
- * chain, no secret), but it does need FLATTENING, which is applied at that
- * throw rather than here, because `errMsg` is also used by the unzip `catch`
- * whose input is a local `fflate` error.
+ * chain, no secret), but it does need FLATTENING.
+ *
+ * CORRECTED AGAIN in issue #647: that flattening used to be applied at the
+ * `HTTP <status>` throw alone, which was sufficient only while `fetch` was the
+ * transport and its every failure was the fixed string `fetch failed`. The
+ * download now goes through `proxyAwareFetch`, so the same `catch` also sees
+ * `node:net` / OpenSSL / proxy-agent messages of arbitrary shape and length.
+ * The download SITE therefore applies `sanitizeServiceExceptionMessage` to
+ * whatever `errMsg` returns; `errMsg` itself stays bare because its other
+ * caller is the unzip `catch`, whose input is a local `fflate` error.
  */
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

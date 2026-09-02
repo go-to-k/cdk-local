@@ -294,6 +294,10 @@ export async function dispatchHttpProxyIntegration(
   }
   applyRequestParameters(config.requestParameters, req, { headers: outHeaders });
 
+  // proxy-audit: ignore: the EMULATED data path, not cdk-local's own AWS
+  // egress — this stands in for API Gateway calling the user's backend, which
+  // in the cloud never traverses the developer's forward proxy, and which
+  // `warnSsrfRiskyUri` shows is commonly a private / loopback address here.
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
   // Forward the request body whenever the client sent one — DO NOT gate
@@ -415,6 +419,10 @@ export async function dispatchHttpIntegration(
   }
   applyRequestParameters(config.requestParameters, req, { headers: outHeaders });
 
+  // proxy-audit: ignore: the EMULATED data path, not cdk-local's own AWS
+  // egress — this stands in for API Gateway calling the user's backend, which
+  // in the cloud never traverses the developer's forward proxy, and which
+  // `warnSsrfRiskyUri` shows is commonly a private / loopback address here.
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const fetchInit: RequestInit = { method, headers: outHeaders };
   // Forward the (possibly VTL-rewritten) body whenever it is non-empty

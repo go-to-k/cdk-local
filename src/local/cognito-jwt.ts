@@ -1,8 +1,10 @@
 import { createPublicKey, createVerify } from 'node:crypto';
+import { proxyAwareFetch } from '../utils/aws-proxy.js';
 import { getLogger } from '../utils/logger.js';
 import type { CachedAuthorizerResult } from './authorizer-cache.js';
 import type { CognitoUserPoolAuthorizer, JwtAuthorizer } from './authorizer-resolver.js';
 import { buildIdentityHash } from './authorizer-resolver.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
 
 /**
  * Cognito User Pool / JWT authorizer support for `cdkl start-api`
@@ -123,6 +125,25 @@ const DEFAULT_JWKS_TTL_MS = 60 * 60 * 1000;
  */
 const FAILURE_JWKS_TTL_MS = 60 * 1000;
 
+/**
+ * Stall bound for the JWKS / discovery reads specifically, well under
+ * `proxyAwareFetch`'s 300 s default.
+ *
+ * Those reads are small documents, and — unlike the layer ZIP, which is up to
+ * 250 MB and wants the long default — one of them sits on a PER-REQUEST path:
+ * `agentcore-serve-auth`'s `buildAgentCoreServeAuthCheck` calls
+ * `verifyJwtViaDiscovery` for every inbound request, and that function holds
+ * no discovery cache. Behind a black-holed proxy each in-flight request would
+ * otherwise hold a socket for 300 s where the pre-#647 direct read gave up in
+ * about undici's 10 s connect timeout.
+ *
+ * Failing FAST is also the right bias here in a way it is not for a download:
+ * an unreachable JWKS lands in the documented pass-through fallback
+ * (`docs/cli-reference.md`), so a long hold buys nothing and costs a stuck
+ * request.
+ */
+const JWKS_FETCH_TIMEOUT_MS = 10_000;
+
 export function createJwksCache(
   opts: {
     fetchImpl?: (
@@ -134,7 +155,12 @@ export function createJwksCache(
     failureTtlMs?: number;
   } = {}
 ): JwksCache {
-  const fetchImpl = opts.fetchImpl ?? (async (url) => globalThis.fetch(url));
+  // `proxyAwareFetch`, not the global: the JWKS endpoint is a REMOTE AWS
+  // host (`cognito-idp.<region>.amazonaws.com` for a user-pool authorizer),
+  // and the global `fetch` reads no proxy variable — so behind proxy-only
+  // egress this read went direct while every SDK call tunneled (issue #647).
+  const fetchImpl =
+    opts.fetchImpl ?? ((url: string) => proxyAwareFetch(url, { timeoutMs: JWKS_FETCH_TIMEOUT_MS }));
   const now = opts.now ?? ((): number => Date.now());
   const ttlMs = opts.ttlMs ?? DEFAULT_JWKS_TTL_MS;
   const failureTtlMs = opts.failureTtlMs ?? FAILURE_JWKS_TTL_MS;
@@ -181,8 +207,17 @@ export function createJwksCache(
         map.set(jwksUrl, entry);
         return entry;
       } catch (err) {
+        // Flattened + capped since issue #647: the read goes through
+        // `proxyAwareFetch`, so this `catch` sees `node:net` / OpenSSL /
+        // proxy-agent text of arbitrary shape where it used to see undici's
+        // fixed `fetch failed`. This line is default-level and `cdkl studio`
+        // mirrors it into a log ring it serves over HTTP, so it has to be ONE
+        // bounded line. Nothing here needs withholding — no credential chain
+        // is resolved for a JWKS GET.
         logger.warn(
-          `JWKS unreachable at ${jwksUrl}: ${err instanceof Error ? err.message : String(err)}. ` +
+          `JWKS unreachable at ${jwksUrl}: ${sanitizeServiceExceptionMessage(
+            err instanceof Error ? err.message : String(err)
+          )}. ` +
             `JWT validation will allow all tokens — local dev fallback. Configure network access to the JWKS URL ` +
             `to enable real signature verification.`
         );
@@ -440,8 +475,11 @@ export async function verifyJwtViaDiscovery(
   if (!token) {
     return { allow: false, identityHash: undefined, ttlSeconds: 0 };
   }
+  // Proxy-aware for the same reason as the JWKS read above (issue #647):
+  // the discovery document is fetched from the IdP over the network, which
+  // behind proxy-only egress is reachable only through the proxy.
   const fetchImpl =
-    opts.fetchImpl ?? (async (url): ReturnType<typeof globalThis.fetch> => globalThis.fetch(url));
+    opts.fetchImpl ?? ((url: string) => proxyAwareFetch(url, { timeoutMs: JWKS_FETCH_TIMEOUT_MS }));
 
   let issuer: string;
   let jwksUri: string;
@@ -466,9 +504,10 @@ export async function verifyJwtViaDiscovery(
       getLogger()
         .child('cognito-jwt')
         .warn(
-          `OIDC discovery unreachable at ${authorizer.discoveryUrl}: ${
+          // One bounded line, for the same reason as the JWKS warn above.
+          `OIDC discovery unreachable at ${authorizer.discoveryUrl}: ${sanitizeServiceExceptionMessage(
             err instanceof Error ? err.message : String(err)
-          }. Token accepted without verification — local dev fallback.`
+          )}. Token accepted without verification — local dev fallback.`
         );
     }
     const identityHash = buildIdentityHash([token]);

@@ -148,7 +148,10 @@ Substitutes `Ref` / `Fn::ImportValue` / `Fn::GetStackOutput` in env vars with th
 
 ## Corporate proxy — `HTTPS_PROXY` / `NO_PROXY`
 
-cdk-local routes its own AWS SDK calls (`--from-cfn-stack` state reads, `--assume-role` STS, ECR auth, deployed-S3 origins, KeyValueStore reads, credential resolution — SSO included) through the standard proxy environment variables: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, with `NO_PROXY` exemptions. Lowercase spellings (`https_proxy`, `no_proxy`) are honored too and win over the uppercase ones. With none of them set, nothing changes.
+cdk-local routes its own AWS-bound traffic through the standard proxy environment variables: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, with `NO_PROXY` exemptions. Lowercase spellings (`https_proxy`, `no_proxy`) are honored too and win over the uppercase ones. With none of them set, nothing changes. Two kinds of request are covered:
+
+- **AWS SDK calls** — `--from-cfn-stack` state reads, `--assume-role` STS, ECR auth, deployed-S3 origins, KeyValueStore reads, credential resolution (SSO included).
+- **Plain HTTPS reads that are not SDK calls** — a `fromLayerVersionArn` layer's ZIP download from the presigned URL `GetLayerVersion` hands back, and the JWKS / OIDC discovery documents a JWT authorizer verifies tokens against.
 
 `NO_PROXY` matching is stricter than you may expect:
 
@@ -157,7 +160,9 @@ cdk-local routes its own AWS SDK calls (`--from-cfn-stack` state reads, `--assum
 
 Against a TLS-terminating (interception) proxy, routing alone is not enough — the proxy re-signs the traffic with its own CA, so also point `NODE_EXTRA_CA_CERTS` at that CA bundle.
 
-Two boundaries: the Docker daemon pulls images through its own egress (configure the daemon's proxy separately), and your handler / task code running inside containers reads whatever proxy variables you pass it (e.g. via `--env-vars`) — cdk-local does not inject them.
+A **loopback target is never proxied**, whatever `NO_PROXY` says — a forward proxy has no route back to your own machine, so a JWT authorizer whose issuer is a local IdP keeps working without a `NO_PROXY` entry. Private / RFC 1918 addresses are NOT exempted: a corporate proxy plausibly does reach those, so `NO_PROXY` stays the control there.
+
+Three boundaries: the Docker daemon pulls images through its own egress (configure the daemon's proxy separately); your handler / task code running inside containers reads whatever proxy variables you pass it (e.g. via `--env-vars`) — cdk-local does not inject them; and requests cdk-local makes *as* the emulated service go direct, matching where the deployed service would send them — a REST API `HTTP` / `HTTP_PROXY` integration forwarding to your own backend, and cdk-local's own traffic to the containers on this host.
 
 ## Environment variables — `--env-vars`
 

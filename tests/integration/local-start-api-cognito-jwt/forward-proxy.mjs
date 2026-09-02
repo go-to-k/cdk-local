@@ -1,0 +1,114 @@
+// Minimal RECORDING FORWARD PROXY for the HTTP_PROXY integ phase (issue
+// #647). Listens on an OS-ASSIGNED loopback port (never a hard-coded one —
+// issue #591's disease), prints that port on stdout, and appends
+// `<METHOD> <absolute-url>` for every proxied request to the log file given
+// as argv[2].
+//
+// Unlike `local-invoke`'s `proxy-recorder.mjs`, which records a CONNECT and
+// answers 502, this one actually FORWARDS. That is the point: the JWKS read
+// has to still succeed through the proxy, so the phase can assert BOTH that
+// the request was proxied (it appears in this log, in absolute form — the
+// request line a direct client never sends) AND that JWT verification kept
+// working (valid -> 200, expired -> 401). A 502-only recorder would push the
+// verifier into its unreachable-JWKS pass-through mode, where an expired
+// token is accepted and the assertion would be vacuous.
+//
+// Plain HTTP only. `CONNECT` is logged and refused: the fixture's issuers are
+// `http://`, and a TLS tunnel would need a CA the fixture does not mint.
+//
+// Optional trailing `<host>=<host:port>` arguments MAP an upstream host to
+// somewhere this process can actually reach. That is not a shortcut around
+// the test -- it is the topology being reproduced. The fixture's remote
+// issuer (`idp.cdkl-integ.test`) is an RFC 2606 reserved name that never
+// resolves, so the CLI cannot reach it directly by construction; the proxy
+// can, exactly as a corporate proxy reaches an internal IdP its clients
+// cannot. Without the mapping the phase would prove only that the request was
+// attempted, not that the JWKS came back and verified.
+import http from 'node:http';
+import fs from 'node:fs';
+
+const logFile = process.argv[2];
+if (!logFile) {
+  console.error('usage: node forward-proxy.mjs <log-file> [<host>=<host:port> ...]');
+  process.exit(1);
+}
+
+/** `{ 'idp.cdkl-integ.test': { hostname: '127.0.0.1', port: '19001' } }` */
+const hostMap = new Map();
+for (const spec of process.argv.slice(3)) {
+  const eq = spec.indexOf('=');
+  if (eq < 0) {
+    console.error(`bad mapping '${spec}': expected <host>=<host:port>`);
+    process.exit(1);
+  }
+  const from = spec.slice(0, eq);
+  const [hostname, port] = spec.slice(eq + 1).split(':');
+  if (!from || !hostname || !port) {
+    console.error(`bad mapping '${spec}': expected <host>=<host:port>`);
+    process.exit(1);
+  }
+  hostMap.set(from, { hostname, port });
+}
+
+const server = http.createServer((req, res) => {
+  fs.appendFileSync(logFile, `${req.method} ${req.url}\n`);
+  let target;
+  try {
+    // A proxied client sends the request line in ABSOLUTE form, so `req.url`
+    // parses as a full URL. Anything else was not addressed to a proxy.
+    target = new URL(req.url);
+  } catch {
+    res.writeHead(400, { 'content-type': 'text/plain' });
+    res.end('not an absolute-form proxy request');
+    return;
+  }
+  // `host` header keeps the ORIGINAL authority even when the connection is
+  // redirected, so the upstream sees the request the client actually made.
+  const mapped = hostMap.get(target.host) ?? hostMap.get(target.hostname);
+  const upstream = http.request(
+    {
+      hostname: mapped ? mapped.hostname : target.hostname,
+      port: mapped ? mapped.port : target.port || 80,
+      path: `${target.pathname}${target.search}`,
+      method: req.method,
+      headers: { ...req.headers, host: target.host },
+    },
+    (up) => {
+      res.writeHead(up.statusCode ?? 502, up.headers);
+      // `pipe` does NOT forward source errors, and the `res` error handler
+      // below destroys the upstream request mid-response -- which makes Node
+      // emit `error` on `up`. Unhandled, that is a fatal throw that kills the
+      // proxy and wedges phase 3 with a symptom unrelated to what it tests.
+      up.on('error', () => res.destroy());
+      up.pipe(res);
+    }
+  );
+  upstream.on('error', (err) => {
+    // Headers may already be on the wire from the success path above, in
+    // which case `writeHead` throws ERR_HTTP_HEADERS_SENT *inside the
+    // handler* and kills this process -- wedging phase 3 with a symptom that
+    // has nothing to do with what it is testing.
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    res.writeHead(502, { 'content-type': 'text/plain' });
+    res.end(`upstream error: ${err.message}`);
+  });
+  // A client that aborts mid-pipe emits `error` on both of these; unhandled,
+  // either one is a fatal throw for the same reason.
+  req.on('error', () => upstream.destroy());
+  res.on('error', () => upstream.destroy());
+  req.pipe(upstream);
+});
+
+server.on('connect', (req, socket) => {
+  fs.appendFileSync(logFile, `CONNECT ${req.url}\n`);
+  socket.end('HTTP/1.1 501 Not Implemented\r\n\r\n');
+});
+
+server.on('clientError', (_err, socket) => socket.destroy());
+
+server.listen(0, '127.0.0.1', () => {
+  console.log(String(server.address().port));
+});

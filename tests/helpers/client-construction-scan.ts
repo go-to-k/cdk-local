@@ -162,7 +162,10 @@ export function hasOptOutMarker(lines: string[], lineNo: number, marker: string)
     const prev = (lines[k] ?? '').trim();
     if (prev.length === 0) break;
     if (!prev.startsWith('//')) break;
-    if (prev.includes(marker)) return true;
+    // The marker must carry a REASON: the audits' error text mandates
+    // `// <marker>: <reason>`, and a bare marker is an unexplained exemption
+    // on a security surface, which is what the opt-out exists to prevent.
+    if (prev.includes(marker)) return new RegExp(`${marker}\\s*\\S`).test(prev);
   }
   return false;
 }

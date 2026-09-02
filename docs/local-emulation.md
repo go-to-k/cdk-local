@@ -851,7 +851,10 @@ auth is not being verified for the rest of the run.
 
 This is a deliberate dev-tool tradeoff: surprising deny is worse than
 warn+allow when the developer is iterating on a function and the JWKS
-URL is blocked by a corporate proxy. **Do NOT rely on this in any
+URL is unreachable. Note that the JWKS read itself honors `HTTPS_PROXY` /
+`HTTP_PROXY` with `NO_PROXY` exemptions (see the README's "Corporate
+proxy" section), so behind a forward proxy setting those variables is what
+keeps the read out of this fallback. **Do NOT rely on this in any
 shared environment** — the dev's machine accepts every token, including
 forged ones. The 5-minute re-emit makes the degraded state visible in
 the tail of the log so the dev knows whether the local server is
