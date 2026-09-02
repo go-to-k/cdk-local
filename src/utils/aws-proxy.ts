@@ -221,8 +221,13 @@ function resolveProxyForTarget(targetHref: string): string {
   // (the usual way a proxy URL copied out of a wiki page arrives) goes from
   // THROWING `Invalid URL` to working. Deliberate — the author's intent is
   // unambiguous there — and pinned by a case so a revert is caught in that
-  // direction too. INTERNAL whitespace is untouched and still throws, which
-  // keeps a real typo loud.
+  // direction too. An internal SPACE is untouched and still throws, which
+  // keeps that typo loud. Deliberately not stated more broadly: measured, the
+  // WHATWG parser silently strips an internal TAB / LF / CR from anywhere
+  // (`http://proxy\t.internal:3128` parses clean), so "internal whitespace
+  // throws" would be false for three of the four characters — pre-existing
+  // behaviour this does not change, and named here so the next reader does
+  // not infer a guarantee that was never there.
   const proxyUrl = getProxyForUrl(targetHref).trim();
   if (proxyUrl === '') return '';
   if (isSpeakableProxy(proxyUrl)) return proxyUrl;

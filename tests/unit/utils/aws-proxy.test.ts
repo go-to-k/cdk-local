@@ -779,6 +779,11 @@ describe('aws-proxy (issue #634)', () => {
       const value = '\u00A0http://proxy.internal:3128\uFEFF';
       expect(value.codePointAt(0)).toBe(0x00a0);
       expect(value.codePointAt(value.length - 1)).toBe(0xfeff);
+      // The PREMISE, asserted rather than assumed: this value must be one the
+      // URL parser rejects, or the case silently degrades into a duplicate of
+      // the plain-ASCII-space case above and stops witnessing a throw -> works
+      // transition at all.
+      expect(() => new URL(value)).toThrow(TypeError);
       process.env['HTTPS_PROXY'] = value;
       const agent = new EnvRoutingProxyAgent();
       const lines = captureWarns(() => {
@@ -810,6 +815,10 @@ describe('aws-proxy (issue #634)', () => {
       // configuration either way. The BLOCKER shape — credentials followed by
       // a real `scheme://` — is the case above, and still yields
       // `(unrecognized)`.
+      //
+      // This case is a DECISION RECORD, not a fence: dropping the `://`
+      // requirement leaves it green, because `alice` matches a bare `token:`
+      // reading too. The case above is what fences that regression.
       process.env['HTTPS_PROXY'] = 'alice://s3cr3t@proxy.corp:3128';
       const agent = new EnvRoutingProxyAgent();
       const lines = captureWarns(() => {
