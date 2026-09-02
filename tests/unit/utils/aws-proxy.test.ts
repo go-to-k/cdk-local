@@ -883,10 +883,28 @@ describe('aws-proxy (issue #634)', () => {
       const source = readFileSync(new URL('../../../src/utils/aws-proxy.ts', import.meta.url), {
         encoding: 'utf-8',
       });
-      expect(source.match(/getProxyForUrl\(/g) ?? []).toHaveLength(1);
-      const body = /function resolveProxyForTarget\([^)]*\): string \{([\s\S]*?)\n\}/.exec(source);
+      // COMMENT LINES ARE EXCLUDED, so the prose in that module can spell the
+      // call however reads best. Counting raw occurrences made the paren-less
+      // spelling load-bearing and unstated: a future JSDoc writing
+      // `getProxyForUrl(url)` would red this fence with no behaviour change at
+      // all, which is a false alarm the next author has no way to anticipate.
+      const code = source
+        .split('\n')
+        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+        .join('\n');
+      expect(code.match(/getProxyForUrl\(/g) ?? []).toHaveLength(1);
+      const body = /function resolveProxyForTarget\([^)]*\): string \{([\s\S]*?)\n\}/.exec(code);
       expect(body).not.toBeNull();
       expect(body![1]).toContain('getProxyForUrl(');
+
+      // `resetProxySchemeWarnings` is a TEST SEAM, and the module's own JSDoc
+      // says it is deliberately not part of the host-facing surface. Nothing
+      // enforced that, unlike the neighbouring client / call-site audits, so
+      // the claim could quietly stop being true.
+      const internal = readFileSync(new URL('../../../src/internal.ts', import.meta.url), {
+        encoding: 'utf-8',
+      });
+      expect(internal).not.toContain('resetProxySchemeWarnings');
     });
   });
 });
