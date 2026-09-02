@@ -43,9 +43,10 @@ CONFIRMED** — its step 4, the `state=MERGED` read. Everything up to there
 (resolve paths, set the `merge-pr` marker, `gh pr merge --squash`, confirm the
 merge) runs unchanged. **The LOCAL-CLEANUP step must not run at all**: that is
 the one doing `git worktree remove "$WT" --force` plus `git branch -D "$BR"`,
-numbered 5 today — name it by what it DOES, because `/merge-pr`'s own step 1
-still calls the removal "step 4" and the number is the one part of this that
-drifts. Skip it entirely, do the remote-branch confirmation (step 6) from this
+numbered 5 today — name it by what it DOES rather than by its number, which is
+the one part of this that drifts: `/merge-pr`'s own step 1 called the removal
+"step 4" until go-to-k/cdk-local#653 corrected it, and a reader following a
+stale number skips the wrong step. Skip it entirely, do the remote-branch confirmation (step 6) from this
 tree, and say in the report that the local TREE is still there ON PURPOSE.
 Cleanup of a workspace this run did not create belongs to whoever did — the
 outer tool, or the operator. The local BRANCHES are a different matter: this run
@@ -63,8 +64,10 @@ other:
   workspace, which is neither the main checkout nor a path the gate recognises.
   `gh-pr-merge-worktree-gate.sh` matches `*/.claude/worktrees/*` only, so from
   there it FAILS OPEN: a hand-run `gh pr merge` is not blocked, and nothing
-  forces the merge through `/merge-pr` at all. Step 1's sanity check ("`WT`
-  should be under `.claude/worktrees/`") has no arm for it either. Use
+  forces the merge through `/merge-pr` at all. Step 1's sanity check DOES name
+  this shape — a `WT` outside `.claude/worktrees/` is always an IN-PLACE caller,
+  and it sends you to step 5's stop rule — but that test is ONE-WAY, so the
+  bullet above stays invisible to it. Use
   `/merge-pr` anyway — its marker is harmless when the gate never consults it —
   and drop the local-cleanup step exactly as above. Treat a gate that stays
   silent here as a gate that did not run, never as a verdict that the merge was
@@ -188,7 +191,8 @@ are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
 `git switch ""` is not the failure you want):
 
 ```bash
-git show-ref --verify refs/heads/<LAUNCH_BRANCH>   # no output? gone -> fallback
+git show-ref --verify refs/heads/<LAUNCH_BRANCH>   # exit 0 + a sha = present;
+       # absent is rc=128 and a `fatal: ... not a valid ref` on STDERR, not silence
 git switch <LAUNCH_BRANCH> \
   && git branch -D <every branch THIS run created>
        # CHAINED: an unchained `-D` after a FAILED switch still deletes the
@@ -209,8 +213,8 @@ git rev-list --count origin/main..<LAUNCH_BRANCH>
 ```
 
 Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was
-launched detached) or the `show-ref --verify` above found nothing — never as the
-default. CHAINED for the same reason as the primary block: a failed `fetch`
+launched detached) or the `show-ref --verify` above FAILED (rc=128) — never as
+the default. CHAINED for the same reason as the primary block: a failed `fetch`
 followed by an unchained `switch` detaches at a stale `origin/main`, and a failed
 `switch` followed by an unchained `-D` deletes the branches that are not checked
 out:

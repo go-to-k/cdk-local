@@ -38,25 +38,30 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
-const MAX_SKILL_MD_BYTES = 36_000; // largest non-split skill re-measured 27,266 B (hunt-bugs, 2026-09-02, go-to-k/cdk-local#651)
-const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues orchestrator was ~7 KB at the 2026-08-28 split; re-measured 11,837 B on 2026-09-02, go-to-k/cdk-local#651 (163 B of margin)
-// The re-measurement is the point, not trivia: the orchestrator has repeatedly
-// grown to within a few hundred bytes of its cap while this comment still quoted
-// the at-split figure, so nobody adding a paragraph could see how little room was
-// left. Round 6 added the parent-runs-the-probe design and paid for most of it by
-// moving the probe and its edge-case reading into references/launch-mode.md
-// (10,224 B as of go-to-k/cdk-local#651, read once before stage 0) and leaving a
-// pointer here -- the direction this cap exists to force. Re-measure it whenever
-// the orchestrator is edited -- a cap with an unmeasured margin is one nobody can
-// plan against.
-// go-to-k/cdk-local#651 added a FOURTH probe value (LAUNCH_BRANCH) and spent
-// 262 B here saying so, taking the margin from 425 B to 163 B. Its rules -- what
-// the value is, why it is never re-derived, and the section 9 restore it drives
-// -- went to references/{launch-mode,claim,ship,retro}.md, which is why a change
-// touching thirteen files cost the always-loaded one five clauses. 163 B is under one
-// wrapped line: the next orchestrator addition has to buy its space by moving
-// something out, which is what this cap is for.
-const MAX_REFERENCE_FILE_BYTES = 64_000; // largest stage file re-measured 37,050 B (implement.md, 2026-09-02, go-to-k/cdk-local#651, after rebasing over go-to-k/cdk-local#643)
+const MAX_SKILL_MD_BYTES = 36_000; // the largest non-split skill's size is ASSERTED below (MEASURED_LARGEST_NON_SPLIT), never quoted here
+const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues' orchestrator was ~7 KB at the 2026-08-28 split; its CURRENT size and remaining margin are ASSERTED below (MEASURED), never quoted here
+// Quoting a margin in prose is both the point and the trap: the orchestrator has
+// repeatedly grown to within a few hundred bytes of this cap while the comment
+// beside it still cited the at-split figure, so nobody adding a paragraph could
+// see how little room was left. Inside go-to-k/cdk-local#651 alone every figure
+// in this file went stale TWICE -- once when a later commit grew a stage file,
+// once after a rebase -- and both times a reviewer, not the suite, caught it. So
+// the numbers now live in MEASURED, which asserts them against the tree and
+// PRINTS the current ones (plus both floor margins and the leader's remaining
+// cap headroom) in its failure message. Re-read that message rather than
+// re-deriving anything by hand.
+//
+// The design direction the caps exist to force, stated without numbers so it
+// cannot rot: round 6 added the parent-runs-the-probe design and paid for most
+// of it by moving the probe and its edge-case reading into
+// references/launch-mode.md, read once before stage 0, leaving a pointer here.
+// go-to-k/cdk-local#651 then added a FOURTH probe value (LAUNCH_BRANCH) and spent
+// five clauses here saying so, sending its rules to
+// references/{launch-mode,claim,ship,retro}.md -- which is why a change touching
+// thirteen files cost the always-loaded file so little. The remaining margin is
+// under one wrapped line: the next orchestrator addition has to buy its space by
+// moving something out.
+const MAX_REFERENCE_FILE_BYTES = 64_000; // the largest stage file's size is ASSERTED below (MEASURED), never quoted here
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -67,18 +72,78 @@ const MIN_REFERENCE_FILES = 6;
 // `corpus - largest file`, so DELETING the biggest stage file cannot pass. That
 // property decays as the OTHER files grow (it is invariant when the largest one
 // is compressed, since both terms drop together), and it had already decayed
-// twice inside one week (78,000 then 86,000 on 2026-08-31). It is now ASSERTED
-// at the bottom of this file rather than only described here, so the next lapse
-// is a red test at the commit that causes it instead of a silent hole.
+// twice inside one week (78,000 then 86,000 on 2026-08-31). It is ASSERTED at
+// the bottom of this file rather than only described here, so the next lapse is
+// a red test at the commit that causes it instead of a silent hole.
 //
 // What this floor does NOT catch, stated plainly: gutting a NON-largest stage
 // file. A byte floor cannot see that, and raising it until it could would forbid
 // legitimate compression. The per-file guards are elsewhere and are about
 // CONTENT rather than size -- work-issues-skill-refs.test.ts pins the document
-// count, and work-issues-launch-mode.test.ts pins that each arm-bearing stage
-// file still names the mode it branches on and that the probe exists exactly
-// once.
-const MIN_REFERENCE_CORPUS_BYTES = 112_000; // re-derived 2026-09-02 (go-to-k/cdk-local#651) at the final tree, AFTER rebasing over go-to-k/cdk-local#643: 9 stage files, corpus 143,564 B, largest implement.md 37,050 B, so the property needs a floor above 143,564 - 37,050 = 106,514, which the 100,000 held here no longer provided. 112,000 restores it with 5,486 B of margin and is strictly TIGHTER (no upper bound touched). The margin is deliberately wider than an exactly-sufficient floor would give: ship.md alone grew 4,623 B in this one PR, so a margin of one PR's growth means the next PR re-derives this again. Still sized against `corpus - largest` rather than the either-largest case, because the top two are 15,209 B apart (implement.md 37,050, verify.md 21,841 -- verify.md had already overtaken triage.md as runner-up, in go-to-k/cdk-local#652) -- a flip is not near; cdkd sizes against the flip because its top two are ~2 KB apart. ~31 KB (143,564 - 112,000 = 31,564 B) of narrative compression headroom remains below the floor
+// count, and work-issues-launch-mode.test.ts pins one ANCHORED pattern per ARM
+// of the launch-mode / LAUNCH_BRANCH contract (it used to pin a token COUNT per
+// file, which a reviewer measured vacuous in 4 of 7 files).
+//
+// Re-derived 2026-09-02 (go-to-k/cdk-local#653) at the FINAL tree of the
+// LAUNCH_BRANCH lane. The inputs it is derived FROM are in MEASURED below and
+// asserted, so only the REASONING lives here: the floor must clear
+// `corpus - largest`, which it still does. It is left UNCHANGED rather than
+// raised, and the honest reading of that is worth stating: the margin was sized
+// to absorb roughly one PR's growth, and this PR alone grew ship.md by ~5.6 KB,
+// so the binding margin is now BELOW that -- the next stage-file addition should
+// expect to re-derive this line. MEASURED prints the current margin in its
+// failure message, so that arrives as a number rather than as a surprise. Sized
+// against `corpus - largest` rather than against the either-largest case because
+// the top two stage files are ~15 KB apart, so a flip is not near; the sibling
+// cdkd sizes against the flip because ITS top two are ~2 KB apart.
+const MIN_REFERENCE_CORPUS_BYTES = 112_000;
+
+/**
+ * The measurements every comment in this file reasons from, ASSERTED against the
+ * tree rather than quoted in prose.
+ *
+ * WHY: each byte figure used to live only in a comment, and comments drift in
+ * the one direction that matters -- silently, while every assertion stays green.
+ * Inside go-to-k/cdk-local#651 the stated figures went stale twice and a reviewer
+ * caught both; the corpus floor already had a self-checking invariant, the
+ * per-file caps and the corpus figures did not, and that asymmetry is what this
+ * closes.
+ *
+ * It also surfaces the leader's remaining HEADROOM and both floor MARGINS in its
+ * failure message, so erosion is visible BEFORE a bound is breached -- an upper
+ * bound can only report a file that is already over.
+ */
+const MEASURED: Record<
+  string,
+  {
+    orchestratorBytes: number;
+    corpusBytes: number;
+    largest: { file: string; bytes: number };
+    runnerUp: { file: string; bytes: number };
+  }
+> = {
+  // Keyed by SKILL, not module-global: the assertion below is generated per
+  // entry of SPLIT_SKILLS, so a second split skill would otherwise be measured
+  // against work-issues' numbers -- permanently red, with a message naming the
+  // wrong file.
+  'work-issues': {
+    orchestratorBytes: 11_837,
+    corpusBytes: 143_998,
+    largest: { file: 'implement.md', bytes: 36_815 },
+    runnerUp: { file: 'verify.md', bytes: 21_841 },
+  },
+};
+
+/**
+ * The same, for the non-split cap. `MAX_SKILL_MD_BYTES` is sized against the
+ * largest UNSPLIT SKILL.md, and that figure was quoted in a comment and nowhere
+ * else -- so it drifted with every hunt-bugs edit and said nothing about how
+ * close the cap actually was.
+ */
+const MEASURED_LARGEST_NON_SPLIT: { file: string; bytes: number } = {
+  file: 'hunt-bugs',
+  bytes: 27_346,
+};
 
 function skillNames(): string[] {
   return readdirSync(skillsDir, { withFileTypes: true })
@@ -196,5 +261,77 @@ describe('skill file payload budget', () => {
           `re-derive it DOWNWARD in the same commit as a genuine compression pass.`
       ).toBeGreaterThan(total - largest);
     });
+
+    it(`${name}: the byte figures this file reasons from still match the tree`, () => {
+      const expected = MEASURED[name];
+      expect(
+        expected,
+        `SPLIT_SKILLS lists "${name}" but MEASURED has no entry for it. Add one (the ` +
+          `numbers are printed by the assertion below once the key exists), or this ` +
+          `skill's byte figures are unasserted.`
+      ).toBeDefined();
+      const sized = referenceFiles(name)
+        .map((f) => ({ file: f.split('/').pop()!, bytes: statSync(f).size }))
+        .sort((a, b) => b.bytes - a.bytes);
+      // A split skill has at least MIN_REFERENCE_FILES stage files (asserted
+      // above), but read defensively so a one-file skill fails with THIS
+      // message rather than a TypeError from `sized[1]`.
+      expect(sized.length, `${name} has too few stage files to have a runner-up`).toBeGreaterThan(1);
+      const actual = {
+        orchestratorBytes: statSync(join(skillsDir, name, 'SKILL.md')).size,
+        corpusBytes: sized.reduce((n, e) => n + e.bytes, 0),
+        largest: sized[0]!,
+        runnerUp: sized[1]!,
+      };
+      const capHeadroom = MAX_REFERENCE_FILE_BYTES - actual.largest.bytes;
+      const orchestratorHeadroom = MAX_ORCHESTRATOR_BYTES - actual.orchestratorBytes;
+      expect(
+        actual,
+        `The MEASURED record at the top of this file no longer matches the tree.\n` +
+          `  orchestrator  ${expected!.orchestratorBytes} -> ${actual.orchestratorBytes} ` +
+          `(${orchestratorHeadroom} B left under the ${MAX_ORCHESTRATOR_BYTES} B cap)\n` +
+          `  corpus        ${expected!.corpusBytes} -> ${actual.corpusBytes}\n` +
+          `  largest       ${expected!.largest.file} ${expected!.largest.bytes} -> ` +
+          `${actual.largest.file} ${actual.largest.bytes}\n` +
+          `  runner-up     ${expected!.runnerUp.file} ${expected!.runnerUp.bytes} -> ` +
+          `${actual.runnerUp.file} ${actual.runnerUp.bytes}\n` +
+          `  floor margins: ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.largest.bytes)} ` +
+          `(binding) / ${MIN_REFERENCE_CORPUS_BYTES - (actual.corpusBytes - actual.runnerUp.bytes)} ` +
+          `(either-largest)\n` +
+          `  ${actual.largest.file} has ${capHeadroom} B left under the ` +
+          `${MAX_REFERENCE_FILE_BYTES} B per-file cap.\n` +
+          `Update MEASURED and re-read the comments that cite it -- every byte claim in this ` +
+          `file is derived from these numbers, and a stale one silently misleads the next ` +
+          `author into planning against room that is not there. If the BINDING margin has ` +
+          `gone small or negative, raise MIN_REFERENCE_CORPUS_BYTES in the same commit; if ` +
+          `the top two have come within a PR's growth of each other, re-derive the floor ` +
+          `against the either-largest margin instead and say so beside it.`
+      ).toEqual({
+        orchestratorBytes: expected!.orchestratorBytes,
+        corpusBytes: expected!.corpusBytes,
+        largest: { file: expected!.largest.file, bytes: expected!.largest.bytes },
+        runnerUp: { file: expected!.runnerUp.file, bytes: expected!.runnerUp.bytes },
+      });
+    });
   }
+
+  it('the largest NON-split SKILL.md still matches what MAX_SKILL_MD_BYTES was sized against', () => {
+    // The un-split cap's calibration lived in a trailing comment and nowhere
+    // else, so it drifted with every hunt-bugs edit while saying nothing about
+    // how close the cap actually was. Same treatment as MEASURED: assert it, and
+    // print the headroom.
+    const sized = names
+      .filter((n) => referenceFiles(n).length === 0)
+      .map((n) => ({ file: n, bytes: statSync(join(skillsDir, n, 'SKILL.md')).size }))
+      .sort((a, b) => b.bytes - a.bytes);
+    expect(sized.length, 'no non-split skill found; the scan is vacuous').toBeGreaterThan(0);
+    const headroom = MAX_SKILL_MD_BYTES - sized[0]!.bytes;
+    expect(
+      sized[0],
+      `MEASURED_LARGEST_NON_SPLIT is stale: ${MEASURED_LARGEST_NON_SPLIT.file}/SKILL.md ` +
+        `${MEASURED_LARGEST_NON_SPLIT.bytes} -> ${sized[0]!.file}/SKILL.md ${sized[0]!.bytes} ` +
+        `(${headroom} B left under the ${MAX_SKILL_MD_BYTES} B cap). Update it; if the ` +
+        `headroom has gone small, the skill needs splitting rather than the cap raising.`
+    ).toEqual(MEASURED_LARGEST_NON_SPLIT);
+  });
 });

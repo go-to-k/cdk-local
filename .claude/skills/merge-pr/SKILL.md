@@ -60,8 +60,12 @@ up local artifacts by hand. The remote branch is auto-deleted by the repo's
    the repo root. If `WT` == `MAIN` you are already in the main worktree — skip
    the worktree-remove in step 5 (there is nothing to detach) but still delete
    the local branch. A `WT` that is a linked worktree NOT under
-   `.claude/worktrees/` is the IN-PLACE case: read step 5's stop rule before
-   running any of it.
+   `.claude/worktrees/` is ALWAYS an IN-PLACE caller — no run of this skill ever
+   creates a worktree there — so read step 5's stop rule before running any of
+   it. The converse does NOT hold: a `WT` UNDER `.claude/worktrees/` may be
+   IN-PLACE too (a session handed, or `cd`-ed into, a tree it did not add), and
+   `$WT` cannot tell that apart from a tree this flow created. Only the CALLER
+   knows; step 5 says so.
 
 2. **Authorize this merge through the worktree-merge gate** — in its OWN Bash
    call, BEFORE the merge call:

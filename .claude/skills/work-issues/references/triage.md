@@ -185,7 +185,7 @@ stray `cd` into a peer's live lane looks exactly like an empty workspace:
 # nothing; a WRITE is a different problem (§5's branch recipe).
 git rev-parse --show-toplevel   # STOP unless this is the tree you meant to adopt
 git status --porcelain          # non-empty = someone's uncommitted work; STOP
-git branch --show-current       # the branch you would be committing to
+git branch --show-current       # the outer tool's LAUNCH_BRANCH -- never committed onto
 git log --oneline -3            # whose commits are these
 gh pr list --state all --head "$(git branch --show-current)"
 ```
