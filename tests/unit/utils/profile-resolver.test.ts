@@ -198,6 +198,12 @@ describe('buildStsClientConfig — proxy environment threading (issue #634)', ()
     chainMock.mockResolvedValue({ accessKeyId: 'AKIA', secretAccessKey: 's' });
     const config = buildStsClientConfig({ region: 'us-east-1' });
     await config.credentials!();
+    // Without the call-count assertion this passes when `defaultProvider` was
+    // called with NO argument at all — `expect(undefined).not.toHaveProperty`
+    // is satisfied by the absence of the whole init bag, not by the absence
+    // of the key.
+    expect(defaultProviderMock).toHaveBeenCalledTimes(1);
+    expect(defaultProviderMock.mock.calls[0]![0]).toBeDefined();
     expect(defaultProviderMock.mock.calls[0]![0]).not.toHaveProperty('profile');
   });
 

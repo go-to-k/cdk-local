@@ -303,10 +303,13 @@ describe('aws-proxy (issue #634)', () => {
     it('sets keepAlive + maxSockets explicitly — the SDK applies its defaults only to plain option bags, never to external Agent instances', () => {
       // NO_PROXY is set BEFORE the exempt host is connected. An earlier
       // revision connected it first and named the result `direct`, so it was
-      // the cached HttpsProxyAgent and the loop asserted the proxied agent
-      // twice while its name claimed to cover both (issue
-      // go-to-k/cdk-local#648). The two instanceof lines below are the
-      // guard-the-guard that keeps the pair distinct.
+      // in fact the cached HttpsProxyAgent (issue go-to-k/cdk-local#648).
+      // That cost no COVERAGE — a third connect, after NO_PROXY was set, put
+      // a genuinely direct agent in the same loop — so what was wrong was the
+      // name, and a name that lies about which agent is under assertion is
+      // what makes the next edit here unsafe. The two instanceof lines below
+      // are the guard-the-guard that keeps the pair distinct without relying
+      // on the reader trusting the variable names.
       process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
       process.env['NO_PROXY'] = 'proxy-exempt.internal';
       const agent = new EnvRoutingProxyAgent();

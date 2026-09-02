@@ -30,10 +30,11 @@ import {
  *    `profile-resolver.test.ts`), or carries a
  *    `// proxy-audit: ignore: <reason>` comment directly above.
  *
- * 2. PROFILE — a construction that knows a `profile` must pass it INTO
- *    `buildProxyClientConfig({ profile })`, not only alongside it. Under a
- *    proxy the fragment carries a `credentials` provider, and in the AWS SDK
- *    explicit `credentials` beat a `profile` key — so a site spelling
+ * 2. PROFILE — a construction that knows a `profile` must pass it INTO the
+ *    seam (`buildProxyClientConfig({ profile })`, or `buildStsClientConfig`'s
+ *    own `profile` argument), not only alongside it. Under a proxy the
+ *    fragment carries a `credentials` provider, and in the AWS SDK explicit
+ *    `credentials` beat a `profile` key — so a site spelling
  *    `{ ...buildProxyClientConfig(), profile }` resolves the DEFAULT
  *    account's credentials while looking correct. That is the
  *    `--profile` half-wiring recurrence in its proxy-shaped form, and it is
@@ -46,6 +47,12 @@ import {
  *    readers' caller creds) must keep them; with the spread moved LAST the
  *    fragment's default-chain provider silently REPLACES them, again only
  *    under a proxy (issue go-to-k/cdk-local#648).
+ *
+ * A `// proxy-audit: ignore: <reason>` marker exempts a construction from
+ * ALL THREE policies, not only from policy 1. The marker's meaning is "this
+ * is not an AWS SDK client construction that reaches the network", and a
+ * thing outside the population has no profile to thread and no order to
+ * keep. Nothing in `src/**` carries one today.
  *
  * POPULATION is derived from the defect, not from a site list: a
  * construction is in scope when its class name ends in `Client` AND the
@@ -123,18 +130,31 @@ function findOffenders(filePath: string): { line: number; text: string }[] {
 }
 
 /**
- * Split an argument list at its `buildProxyClientConfig(...)` call: the
- * call's OWN arguments, and everything else with that span blanked out. The
- * split is what makes policy 2 answerable — `profile` inside the fragment is
- * the threading, `profile` outside it is the site's own key, and a plain
+ * Split an argument list at its FIRST seam call: the call's OWN arguments,
+ * and everything else with that span blanked out. The split is what makes
+ * policy 2 answerable — `profile` inside the fragment is the threading,
+ * `profile` outside it is the site's own key, and a plain
  * `includes('profile')` over the whole text cannot tell them apart.
+ *
+ * Both seams are split at, not just `buildProxyClientConfig`. Skipping the
+ * STS spelling outright is what an earlier revision did, and it left the
+ * exact defect this audit exists for unfenced:
+ * `new STSClient({ ...buildStsClientConfig({ region }), profile })` gives the
+ * helper no profile, so the fragment it builds resolves the DEFAULT account
+ * under a proxy. The plain `new STSClient(buildStsClientConfig({ profile }))`
+ * form every live site uses is unaffected — its whole argument list IS the
+ * call, so nothing is left in `rest` to spell `profile`.
  */
-function splitAtProxySeam(args: string): { fragment: string; rest: string } | null {
-  const at = args.indexOf(PROXY_SEAM);
-  if (at === -1) return null;
+function splitAtSeam(args: string): { fragment: string; rest: string } | null {
+  let best: { at: number; seam: string } | undefined;
+  for (const seam of [PROXY_SEAM, STS_SEAM]) {
+    const at = args.indexOf(seam);
+    if (at >= 0 && (best === undefined || at < best.at)) best = { at, seam };
+  }
+  if (best === undefined) return null;
   // `argumentText` takes the index of the `(` and returns the text BETWEEN
   // the parens, so the whole call spans `open` .. `open + fragment.length + 1`.
-  const open = at + PROXY_SEAM.length - 1;
+  const open = best.at + best.seam.length - 1;
   const fragment = argumentText(args, open);
   if (fragment === null) return null;
   return {
@@ -143,15 +163,28 @@ function splitAtProxySeam(args: string): { fragment: string; rest: string } | nu
   };
 }
 
-/** Policy 2: a site that knows a profile threads it INTO the fragment. */
+/**
+ * Policy 2: a site that knows a profile threads it INTO the seam.
+ *
+ * BOUNDS, stated so the next sweep finds a decision rather than an oversight:
+ *
+ * - it checks SHAPE, not value. `buildProxyClientConfig({ profile: undefined })`
+ *   and a profile read from the wrong variable both pass. The behavioural
+ *   fences (`tests/unit/local/ecr-puller-profile.test.ts`,
+ *   `tests/unit/utils/profile-resolver.test.ts`) are what check the value, by
+ *   invoking the resolved provider.
+ * - a site that KNOWS a profile without spelling `profile` in its own argument
+ *   list is invisible here. Every such site in the tree today passes explicit
+ *   `credentials` instead — which win over a profile key anyway — but that is
+ *   a property of the current tree, not something this policy proves.
+ * - an unbalanced (`args === null`) construction is skipped here and REPORTED
+ *   by policy 1, so it cannot hide by being unparseable.
+ */
 function findProfileOffenders(filePath: string): { line: number; text: string }[] {
   const offenders: { line: number; text: string }[] = [];
   for (const c of constructions(filePath)) {
     if (c.args === null || c.optedOut) continue;
-    // `buildStsClientConfig` takes the profile as its own argument and
-    // forwards it; `profile-resolver.test.ts` locks that forwarding.
-    if (c.args.includes(STS_SEAM)) continue;
-    const split = splitAtProxySeam(c.args);
+    const split = splitAtSeam(c.args);
     if (split === null) continue;
     if (!PROFILE_TOKEN.test(split.rest)) continue;
     if (PROFILE_TOKEN.test(split.fragment)) continue;
@@ -160,7 +193,21 @@ function findProfileOffenders(filePath: string): { line: number; text: string }[
   return offenders;
 }
 
-/** Policy 3: the proxy seam is spread before any `credentials`. */
+/**
+ * Policy 3: the proxy seam is spread before any `credentials`.
+ *
+ * BOUNDS: the scan is for the literal token `credentials`, so a site whose
+ * own credentials arrive through a spread that never spells it
+ * (`...credsFragment`) is invisible. All seven credential-carrying sites in
+ * the tree spell it literally. Two directions that are deliberately safe:
+ * matching a CONDITION (`options.credentials &&`) rather than the key only
+ * makes the rule STRICTER, since `indexOf` returns the FIRST occurrence and a
+ * seam earlier than it is earlier than every occurrence; and a false positive
+ * (a `credentialsProvider` key, a nested `clientConfig`) reports an
+ * actionable message rather than passing silently. The one direction that
+ * fails OPEN is a seam call NESTED inside an earlier argument, whose index
+ * would satisfy the comparison on behalf of an outer spread placed last.
+ */
 function findOrderOffenders(filePath: string): { line: number; text: string }[] {
   const offenders: { line: number; text: string }[] = [];
   for (const c of constructions(filePath)) {
@@ -207,14 +254,17 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
     ).toEqual([]);
   });
 
-  it('every construction that knows a profile threads it INTO buildProxyClientConfig (issue #648)', () => {
+  it('every construction that knows a profile threads it INTO the proxy seam (issue #648)', () => {
     expect(
       render(scanAll(findProfileOffenders)),
-      'A construction passes a `profile` alongside the proxy fragment but not INTO it. Under a ' +
+      'A construction passes a `profile` alongside the proxy seam but not INTO it. Under a ' +
         'proxy the fragment supplies a `credentials` provider, and explicit credentials beat a ' +
         '`profile` key in the AWS SDK — so this site resolves the DEFAULT account under ' +
         '`HTTPS_PROXY` while looking correct without one. Fix: ' +
-        '`...buildProxyClientConfig({ profile: <the same profile> })`.'
+        '`...buildProxyClientConfig({ profile: <the same profile> })`, or for an STS site ' +
+        '`buildStsClientConfig({ region, profile })`. If the construction is not an AWS SDK ' +
+        'client that reaches the network, a `// proxy-audit: ignore: <reason>` comment above it ' +
+        'exempts it from all three policies.'
     ).toEqual([]);
   });
 
@@ -223,8 +273,10 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
       render(scanAll(findOrderOffenders)),
       'A construction spreads the proxy fragment AFTER its own `credentials`, so the fragment’s ' +
         'default-chain provider silently replaces them whenever a proxy variable is set (and only ' +
-        'then, which is why no site test sees it). Fix: move `...buildProxyClientConfig(...)` to ' +
-        'the FIRST position in the config object.'
+        'then, which is why no site test sees it). Fix: move `...buildProxyClientConfig(...)` — ' +
+        'or `...buildStsClientConfig(...)` — to the FIRST position in the config object. If the ' +
+        'construction is not an AWS SDK client that reaches the network, a ' +
+        '`// proxy-audit: ignore: <reason>` comment above it exempts it from all three policies.'
     ).toEqual([]);
   });
 
@@ -301,7 +353,11 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
           `  ...(options.profile && { profile: options.profile }),\n` +
           `});\n`
       );
-      expect(findProfileOffenders(halfWired)).toHaveLength(1);
+      // The reported LINE, not just a count: a policy that reports the wrong
+      // construction satisfies `toHaveLength(1)` exactly as well.
+      expect(findProfileOffenders(halfWired)).toEqual([
+        { line: 3, text: 'export const c = new S3Client({' },
+      ]);
 
       const threaded = join(dir, 'threaded.ts');
       writeFileSync(
@@ -322,15 +378,46 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
       );
       expect(findProfileOffenders(noProfile)).toHaveLength(0);
 
-      // `buildStsClientConfig` takes the profile itself and forwards it.
+      // `buildStsClientConfig` takes the profile itself and forwards it, and
+      // in the form every live STS site uses the whole argument list IS the
+      // call — nothing is left outside it to spell `profile`.
+      const stsHeader =
+        `import { STSClient } from '@aws-sdk/client-sts';\n` +
+        `import { buildStsClientConfig } from '../utils/profile-resolver.js';\n`;
       const viaSts = join(dir, 'via-sts.ts');
       writeFileSync(
         viaSts,
-        `import { STSClient } from '@aws-sdk/client-sts';\n` +
-          `import { buildStsClientConfig } from '../utils/profile-resolver.js';\n` +
-          `export const c = new STSClient(buildStsClientConfig({ region, profile }));\n`
+        `${stsHeader}export const c = new STSClient(buildStsClientConfig({ region, profile }));\n`
       );
       expect(findProfileOffenders(viaSts)).toHaveLength(0);
+
+      // ...but the SPREAD form of the same helper can still be half-wired,
+      // and skipping every STS site outright — which an earlier revision did
+      // — left exactly this unfenced.
+      const stsHalfWired = join(dir, 'sts-half-wired.ts');
+      writeFileSync(
+        stsHalfWired,
+        `${stsHeader}export const c = new STSClient({\n` +
+          `  ...buildStsClientConfig({ region }),\n` +
+          `  profile: options.profile,\n` +
+          `});\n`
+      );
+      expect(findProfileOffenders(stsHalfWired)).toEqual([
+        { line: 3, text: 'export const c = new STSClient({' },
+      ]);
+
+      // An opt-out removes the construction from THIS policy too, not only
+      // from policy 1 — the marker means "not in the population at all".
+      const optedOut = join(dir, 'opted-out.ts');
+      writeFileSync(
+        optedOut,
+        `${header}// proxy-audit: ignore: a stub, never reaches the network\n` +
+          `export const c = new S3Client({\n` +
+          `  ...buildProxyClientConfig(),\n` +
+          `  ...(options.profile && { profile: options.profile }),\n` +
+          `});\n`
+      );
+      expect(findProfileOffenders(optedOut)).toHaveLength(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -354,7 +441,9 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
           `  ...buildProxyClientConfig({ profile: options.profile }),\n` +
           `});\n`
       );
-      expect(findOrderOffenders(spreadLast)).toHaveLength(1);
+      expect(findOrderOffenders(spreadLast)).toEqual([
+        { line: 3, text: 'export const c = new ECRClient({' },
+      ]);
 
       const spreadFirst = join(dir, 'spread-first.ts');
       writeFileSync(
@@ -375,6 +464,47 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
         `${header}export const c = new ECRClient({ region, ...buildProxyClientConfig() });\n`
       );
       expect(findOrderOffenders(noCredentials)).toHaveLength(0);
+
+      // The STS_SEAM arm of `seamIndexes`. No live site spreads
+      // `buildStsClientConfig` alongside its own credentials, so deleting
+      // that arm leaves BOTH the live scan and every other self-check green
+      // — this pair is the only thing holding it.
+      const stsHeader =
+        `import { STSClient } from '@aws-sdk/client-sts';\n` +
+        `import { buildStsClientConfig } from '../utils/profile-resolver.js';\n`;
+      const stsSpreadLast = join(dir, 'sts-spread-last.ts');
+      writeFileSync(
+        stsSpreadLast,
+        `${stsHeader}export const c = new STSClient({\n` +
+          `  ...(assumed && { credentials: assumed }),\n` +
+          `  ...buildStsClientConfig({ region, profile }),\n` +
+          `});\n`
+      );
+      expect(findOrderOffenders(stsSpreadLast)).toEqual([
+        { line: 3, text: 'export const c = new STSClient({' },
+      ]);
+
+      const stsSpreadFirst = join(dir, 'sts-spread-first.ts');
+      writeFileSync(
+        stsSpreadFirst,
+        `${stsHeader}export const c = new STSClient({\n` +
+          `  ...buildStsClientConfig({ region, profile }),\n` +
+          `  ...(assumed && { credentials: assumed }),\n` +
+          `});\n`
+      );
+      expect(findOrderOffenders(stsSpreadFirst)).toHaveLength(0);
+
+      // An opt-out removes the construction from THIS policy too.
+      const optedOut = join(dir, 'order-opted-out.ts');
+      writeFileSync(
+        optedOut,
+        `${header}// proxy-audit: ignore: a stub, never reaches the network\n` +
+          `export const c = new ECRClient({\n` +
+          `  ...(assumed ? { credentials: assumed } : {}),\n` +
+          `  ...buildProxyClientConfig(),\n` +
+          `});\n`
+      );
+      expect(findOrderOffenders(optedOut)).toHaveLength(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

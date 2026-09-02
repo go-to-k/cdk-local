@@ -1,19 +1,27 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { stsCtorArgs, ecrCtorArgs, stsSend, ecrSend, runFg, runStream, defaultProviderMock, chainMock } =
-  vi.hoisted(() => {
-    const chainMock = vi.fn();
-    return {
-      stsCtorArgs: [] as Array<Record<string, unknown>>,
-      ecrCtorArgs: [] as Array<Record<string, unknown>>,
-      stsSend: vi.fn(),
-      ecrSend: vi.fn(),
-      runFg: vi.fn(),
-      runStream: vi.fn(),
-      chainMock,
-      defaultProviderMock: vi.fn(() => chainMock),
-    };
-  });
+const {
+  stsCtorArgs,
+  ecrCtorArgs,
+  stsSend,
+  ecrSend,
+  runFg,
+  runStream,
+  defaultProviderMock,
+  chainMock,
+} = vi.hoisted(() => {
+  const chainMock = vi.fn();
+  return {
+    stsCtorArgs: [] as Array<Record<string, unknown>>,
+    ecrCtorArgs: [] as Array<Record<string, unknown>>,
+    stsSend: vi.fn(),
+    ecrSend: vi.fn(),
+    runFg: vi.fn(),
+    runStream: vi.fn(),
+    chainMock,
+    defaultProviderMock: vi.fn(() => chainMock),
+  };
+});
 
 // Only reached through the proxy fragment's `credentials` provider, which is
 // what the issue go-to-k/cdk-local#648 cases below invoke; the rest of the
@@ -157,6 +165,15 @@ describe('pullEcrImage — --profile threading', () => {
     });
 
     afterEach(() => {
+      // The SDK clients are mocked, so their `destroy()` is a stub and the
+      // real `NodeHttpHandler`s the fragment built would outlive the case.
+      // No socket is ever opened here, so nothing leaks today — this keeps
+      // the same discipline `aws-proxy.test.ts` follows, so a future case
+      // that does open one cannot strand it.
+      for (const cfg of [...stsCtorArgs, ...ecrCtorArgs]) {
+        const handler = cfg['requestHandler'] as { destroy?: () => void } | undefined;
+        handler?.destroy?.();
+      }
       for (const key of PROXY_KEYS) {
         const value = saved.get(key);
         if (value === undefined) delete process.env[key];
