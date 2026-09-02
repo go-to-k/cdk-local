@@ -99,7 +99,7 @@ const MIN_REFERENCE_FILES = 6;
 // The 112,000 this replaces was left over ~4.5 KB of margin when it was set and
 // came out of the rebase with 91 B -- a margin nobody can plan against, the same
 // failure the MAX_ORCHESTRATOR_BYTES comment above was re-measured for. This
-// value restores ~4.6 KB and is strictly TIGHTER than what it replaces (no upper
+// value restores ~3.4 KB and is strictly TIGHTER than what it replaces (no upper
 // bound moves). MEASURED prints the current margin in its failure message, so
 // the next erosion arrives as a number rather than as a surprise. Sized against
 // `corpus - largest` rather than against the either-largest case because the top
@@ -137,7 +137,7 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 151_178,
+    corpusBytes: 151_310,
     largest: { file: 'implement.md', bytes: 38_217 },
     runnerUp: { file: 'verify.md', bytes: 23_706 },
   },

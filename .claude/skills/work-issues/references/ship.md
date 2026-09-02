@@ -272,10 +272,13 @@ tool's artifacts and this run's job is to leave them exactly as it found them â€
 a fast-forward is an edit to somebody else's branch, made for the convenience of
 a run that is on its way out, and "it was only a fast-forward" is precisely the
 reasoning that produced the detached HEAD this rule replaces. If the branch is
-behind, that is the tool's business. Concretely: never `git pull` and never
-`git merge --ff-only origin/main` onto `<LAUNCH_BRANCH>` on the way out, and
-never `git branch -D <LAUNCH_BRANCH>` -- the delete takes the branches THIS run
-created, and that one is the outer tool's.
+behind, that is the tool's business. Concretely, one prohibition per line so no
+re-wrap can separate a "never" from the command it governs:
+never `git pull` into `<LAUNCH_BRANCH>`,
+never `git merge --ff-only origin/main` onto `<LAUNCH_BRANCH>`,
+never `git rebase <LAUNCH_BRANCH>`,
+and never `git branch -D <LAUNCH_BRANCH>` -- the delete takes the branches THIS
+run created, and that one is the outer tool's.
 
 The REMOTE branches still go on merge â€” by the repo's own
 `delete_branch_on_merge`, not by `/merge-pr`, which deliberately omits

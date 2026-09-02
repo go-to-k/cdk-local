@@ -620,7 +620,13 @@ function clauses(text: string): string[] {
  * contains a "not" elsewhere in the sentence.
  */
 const NEGATES_THE_COMMAND =
-  /\b(never|do not|don't|must not|cannot|refus\w+|forbid\w*|ban(?:s|ned|ning)?|without|instead of|rather than|withdrawn|no longer|used to)\b/i;
+  /\b(never|do not|don't|must not|refus\w+|forbid\w*|ban(?:s|ned|ning)?|withdrawn|no longer|used to)\b/i;
+// `cannot`, `without`, `instead of` and `rather than` were REMOVED. Measured:
+// they occur in PRESCRIPTIVE sentences at least as often as in warnings, and
+// eleven strings the pre-carve-out fence had flagged became exempt through
+// them -- including the composite mutant's own
+// `git branch --force <LAUNCH_BRANCH> origin/main` "instead of a switch". No
+// site in the corpus needs them; every surviving marker has a CITATION row.
 
 /**
  * True when the CLAUSE holding the match is warning about the command rather
@@ -628,8 +634,25 @@ const NEGATES_THE_COMMAND =
  * three clauses away is about something else.
  */
 function citesRatherThanPrescribes(window: string, match: RegExp): boolean {
-  return clauses(window).some((c) => match.test(c) && NEGATES_THE_COMMAND.test(c));
+  return clauses(window).some((c) => {
+    const hit = match.exec(c);
+    if (hit === null) return false;
+    // ADJACENCY. The prohibition must sit immediately IN FRONT of the match, as
+    // in ``never `git pull` ``. Anywhere-in-the-clause made this a one-word
+    // bypass: "Clean up with `git branch -D <LAUNCH_BRANCH>` -- you cannot
+    // leave it dangling" spent the exemption on a `cannot` negating something
+    // else, and the reviewer's other ten bypasses all put the marker AFTER the
+    // command. A word in the neighbourhood is not a prohibition; a word in
+    // front of the verb is.
+    return ADJACENT_NEGATION.test(c.slice(0, hit.index));
+  });
 }
+
+/** `NEGATES_THE_COMMAND`, anchored to the end of the text preceding a match. */
+const ADJACENT_NEGATION = new RegExp(
+  NEGATES_THE_COMMAND.source + String.raw`[^.\n]{0,28}$`,
+  'i'
+);
 
 /** Fixtures for the citation carve-out, in both directions. */
 const CITATION_ALLOWS = [
