@@ -198,7 +198,14 @@ git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use th
        # to be read off a `fatal:` line on stderr.
 [ -z "$(git status --porcelain)" ] \
   && git switch --no-guess <LAUNCH_BRANCH> \
-  && git branch -D <every branch THIS run created>
+  && git branch -D <every branch THIS run created> \
+  || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'
+       # The `|| echo` hangs off the WHOLE CHAIN, not off the test, and that is
+       # a correctness point rather than a style one: `A || B && C` parses as
+       # `(A || B) && C`, so `[ -z ... ] || echo '...' && git switch ...` runs
+       # the SWITCH on a dirty tree -- the echo succeeds and satisfies the
+       # `&&`. Verified in bash 2026-09-02. Hung off the chain it fires for any
+       # failed link, which is why it names both causes instead of guessing.
        # ONE chain, and the dirty-tree test is its FIRST LINK. Testing AFTER the
        # switch is too late: `git switch` carries uncommitted changes ACROSS, so
        # the check then reports a tree that only LOOKS clean -- the dirt moved
@@ -265,7 +272,10 @@ tool's artifacts and this run's job is to leave them exactly as it found them â€
 a fast-forward is an edit to somebody else's branch, made for the convenience of
 a run that is on its way out, and "it was only a fast-forward" is precisely the
 reasoning that produced the detached HEAD this rule replaces. If the branch is
-behind, that is the tool's business.
+behind, that is the tool's business. Concretely: never `git pull` and never
+`git merge --ff-only origin/main` onto `<LAUNCH_BRANCH>` on the way out, and
+never `git branch -D <LAUNCH_BRANCH>` -- the delete takes the branches THIS run
+created, and that one is the outer tool's.
 
 The REMOTE branches still go on merge â€” by the repo's own
 `delete_branch_on_merge`, not by `/merge-pr`, which deliberately omits

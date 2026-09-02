@@ -137,7 +137,7 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 150_126,
+    corpusBytes: 151_178,
     largest: { file: 'implement.md', bytes: 38_217 },
     runnerUp: { file: 'verify.md', bytes: 23_706 },
   },
@@ -151,7 +151,7 @@ const MEASURED: Record<
  */
 const MEASURED_LARGEST_NON_SPLIT: { file: string; bytes: number } = {
   file: 'hunt-bugs',
-  bytes: 27_851,
+  bytes: 28_103,
 };
 
 function skillNames(): string[] {

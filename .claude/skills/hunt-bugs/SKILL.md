@@ -317,14 +317,16 @@ Take it all the way to merged — do not leave a green PR hanging:
    two lines verbatim:
    `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'`
    and then
-   `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`
+   `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created> || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'`
    — **as-is**, no pull, no rebase, no fast-forward, the branch being the outer
    tool's artifact; the dirty-tree test FIRST, because a switch carries
    uncommitted changes ACROSS onto that branch and the `-D` then takes the one
    holding your commits; CHAINED so a failed switch cannot leave the `-D` to run
    anyway; and `--no-guess` because a plain `git switch` RE-CREATES a
    locally-missing branch from `origin` instead of failing through to the detach
-   arm. Detach
+   arm; and the `|| echo` hangs off the WHOLE CHAIN rather than the test, because
+   `A || B && C` parses as `(A || B) && C` and would run the switch on a dirty
+   tree. Detach
    (`git fetch origin && git switch --detach origin/main && git branch -D ...`)
    only when `LAUNCH_BRANCH` was empty at probe time, or the `show-ref` gate
    above printed `gone`.

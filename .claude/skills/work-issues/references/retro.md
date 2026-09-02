@@ -283,7 +283,7 @@ git fetch origin && git switch -c "$B" origin/main
   a subagent, because two agents must not both be switching one tree:
   `git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'`
   and then
-  `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`
+  `[ -z "$(git status --porcelain)" ] && git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created> || echo 'STOPPED: dirty tree (commit or stash first), or the switch failed -- read above'`
   — §9's two lines verbatim, and every part of them is load-bearing: the
   `show-ref` gate is what sends you to §9's detach fallback instead; the
   dirty-tree test comes FIRST, because a switch carries uncommitted changes
@@ -291,7 +291,9 @@ git fetch origin && git switch -c "$B" origin/main
   were holding your commits; it is as-is (no pull, no rebase, no fast-forward);
   CHAINED so a failed switch cannot leave the `-D` to run anyway; and
   `--no-guess` so a branch that is gone locally but still on `origin` is an
-  ERROR rather than a silent re-creation at origin's tip. The retro branch is
+  ERROR rather than a silent re-creation at origin's tip; and the `|| echo` hangs
+  off the WHOLE CHAIN rather than the test, because `A || B && C` parses as
+  `(A || B) && C` and would run the switch on a dirty tree. The retro branch is
   one of those branches. §9 deliberately does NOT do that per-lane,
   because THIS section branches in the same tree and would undo it. Leaving
   the tree standing on the retro branch — the previous instruction here —
