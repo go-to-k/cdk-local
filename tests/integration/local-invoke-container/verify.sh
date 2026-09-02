@@ -15,6 +15,16 @@
 
 set -euo pipefail
 
+# --- built-image cleanup (issue #603) ---------------------------------------
+# Namespace: this fixture `docker build`s a `cdkl-invoke-<hash>` image.
+# Sourced BEFORE the `cd` below, matching the idiom the other _lib consumers
+# use: `${BASH_SOURCE[0]}` holds the path this script was INVOKED with, so it
+# stops resolving the moment the cwd changes.
+# The snapshot/delta primitive is shared because it DELETES images on a daemon
+# other lanes share; see tests/integration/_lib/image-cleanup.sh for why it is
+# not copied per fixture and what it deliberately fails closed on.
+source "$(dirname "${BASH_SOURCE[0]}")/../_lib/image-cleanup.sh"
+
 cd "$(dirname "$0")"
 
 CDKL="node ../../../dist/cli.js"
@@ -49,48 +59,16 @@ capture() {
   fi
   printf '%s\n' "${out}" | tail -1
 }
-
-# --- built-image cleanup (issue #587) --------------------------------------
-# This fixture's DockerImageFunction makes cdkl `docker build` a
-# `cdkl-invoke-<hash>:latest` image of ~421 MB. Nothing removed it, so every
-# run leaked one -- and because the tag is a fingerprint of the asset (the
-# platform included), a change to the Dockerfile, the handler or the
-# architecture mints a NEW tag that no later run will ever reuse or reclaim.
-#
-# Only the tag(s) THIS run creates are removed: the set of `cdkl-invoke-*`
-# tags present now is snapshotted, and cleanup deletes only what appeared
-# since. A blanket `docker rmi` of every `cdkl-invoke-*` tag is deliberately
-# NOT used -- parallel integ lanes share one Docker daemon on a dev host, so
-# a blanket sweep deletes images other lanes are mid-run on, and it would
-# also destroy the local cache other container fixtures rely on.
-IMAGES_BEFORE="$(mktemp)"
-docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
-  | sort > "${IMAGES_BEFORE}"
-
-remove_run_images() {
-  [ -f "${IMAGES_BEFORE:-}" ] || return 0
-  local new
-  new="$(docker images --filter 'reference=cdkl-invoke-*' --format '{{.Repository}}:{{.Tag}}' \
-    | sort | comm -13 "${IMAGES_BEFORE}" -)"
-  if [ -n "${new}" ]; then
-    echo "==> Removing image(s) built by this run:"
-    echo "${new}" | sed 's/^/      /'
-    # Unforced: `docker image rm` refuses an image while a container still holds
-    # it, so a lane whose container is UP survives. It does NOT cover a lane
-    # between `docker build` and `docker run` -- the delta scoping is what keeps
-    # this run away from another lane's tag in that window.
-    echo "${new}" | xargs -r docker image rm >/dev/null 2>&1 || true
-  fi
-  rm -f "${IMAGES_BEFORE}"
-}
 # Installed BEFORE test 1, because test 1 is what triggers the `docker build`.
 # The later `trap 'rm -f ...' EXIT` lines REPLACE this handler rather than
-# adding to it, so each of them re-appends `remove_run_images`; without this
+# adding to it, so each of them re-appends `integ_image_cleanup_run`; without this
 # first registration a failure during test 1 would still leak the image.
-trap 'rm -f "${CDKL_STDERR}"; remove_run_images' EXIT
+trap 'rm -f "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 
 echo "==> Verifying Docker is available"
 docker version --format '{{.Server.Version}}' >/dev/null
+
+integ_image_cleanup_init 'cdkl-invoke-*'
 
 echo "==> Pulling ${BASE_IMAGE} (one-time, ~600MB)"
 docker pull "${BASE_IMAGE}"
@@ -121,7 +99,7 @@ echo "${RESULT_1}" | grep -q '"fromContainer":true' || {
 # Test 2 — event payload via --event
 echo "==> [2/4] Invoking EchoHandler with --event payload"
 EVENT_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; remove_run_images' EXIT
+trap 'rm -f "${EVENT_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
@@ -133,7 +111,7 @@ echo "${RESULT_2}" | grep -q '"key":"value"' || {
 # Test 3 — --env-vars override
 echo "==> [3/4] Invoking EchoHandler with --env-vars override"
 ENV_FILE=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; remove_run_images' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKL} invoke CdkLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
@@ -151,7 +129,7 @@ echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
 # greeting check.
 echo "==> [4/4] Invoking EchoHandler with --no-build (image must already be cached from steps 1-3)"
 COMBINED_4=$(mktemp)
-trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; remove_run_images' EXIT
+trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${COMBINED_4}" "${CDKL_STDERR}"; integ_image_cleanup_run' EXIT
 # A non-zero exit here used to abort the script (issue #577) BEFORE any of the
 # three FAIL branches below that `cat "${COMBINED_4}"` -- so the one test whose
 # whole point is inspecting the log lost the log. Capture the status instead.
@@ -179,7 +157,7 @@ if grep -q "Building container image" "${COMBINED_4}"; then
   exit 1
 fi
 
-remove_run_images
+integ_image_cleanup_run
 
 echo ""
 echo "==> All 4 local-invoke container-Lambda tests passed"
