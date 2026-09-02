@@ -276,6 +276,18 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
   },
   {
     doc: WI_SHIP,
+    contract: 'as-is-restore',
+    arm: 'the dirty-tree TEST runs FIRST, because switching carries dirt across',
+    pattern: phrase('FIRST -- switching carries dirt across'),
+  },
+  {
+    doc: WI_SHIP,
+    contract: 'as-is-restore',
+    arm: 'the --no-guess rationale: a plain switch RE-CREATES the branch from origin',
+    pattern: phrase('`git switch` DWIMs and CREATES it from the remote'),
+  },
+  {
+    doc: WI_SHIP,
     contract: 'runs-last',
     arm: 'the restore runs LAST, not per-lane, and in the PARENT',
     pattern: phrase('run it LAST, not per-lane, in the PARENT'),
@@ -285,7 +297,7 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     contract: 'fallback-gate',
     arm: 'the fallback fires ONLY on an empty or missing LAUNCH_BRANCH, never by default',
     pattern: phrase(
-      'Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was launched detached) or the `show-ref --verify` above FAILED (rc=128) — never as the default.'
+      'Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was launched detached) or the `show-ref` gate above printed `gone` — never as the default.'
     ),
   },
   {
@@ -315,7 +327,7 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     // regex silently misses it -- the reason `phrase()` exists.
     contract: 'as-is-restore',
     arm: 'section 10-d states section 9\'s restore command',
-    pattern: phrase('`git switch <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`'),
+    pattern: phrase('`git switch --no-guess <LAUNCH_BRANCH> && git branch -D <every branch THIS run created>`'),
   },
   {
     doc: WI_RETRO,
@@ -363,7 +375,7 @@ const LAUNCH_BRANCH_BEARING: Array<{ doc: string; contract: Contract; arm: strin
     doc: HUNT_BUGS,
     contract: 'as-is-restore',
     arm: 'step 8-2 restores the branch and deletes only the one the hunt made',
-    pattern: phrase('`git switch <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`'),
+    pattern: phrase('`git switch --no-guess <LAUNCH_BRANCH> && git branch -D <the branch this hunt created>`'),
   },
   {
     doc: HUNT_BUGS,
@@ -584,16 +596,30 @@ const BRANCH_MOVING_MATCHES = [
   'git -C . merge --ff-only origin/main',
 ];
 const BRANCH_MOVING_ALLOWS = [
-  'git switch <LAUNCH_BRANCH>',
+  'git switch --no-guess <LAUNCH_BRANCH>',
   'git switch --detach origin/main',
   'git branch -D <every branch THIS run created>',
   'git branch --show-current',
-  'git show-ref --verify refs/heads/<LAUNCH_BRANCH>',
+  'git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH>',
+  '[ -z "$(git status --porcelain)" ] || exit 1',
   'git rev-list --count origin/main..<LAUNCH_BRANCH>',
   'git merge-base --is-ancestor origin/main <LAUNCH_BRANCH>',
   'git fetch origin',
   'git status --porcelain',
 ];
+
+/**
+ * The ONE spelling every site must use to get back onto the outer tool's branch.
+ * `--no-guess` is what makes a locally-missing branch an ERROR: without it git
+ * DWIMs a matching `origin/<name>` into a NEW local branch -- exit 0, tracking
+ * set, "Switched to a new branch" -- silently re-creating the outer tool's
+ * branch at origin's tip, on the very path that was supposed to reach the
+ * detach fallback. Measured on go-to-k/cdkd#2417 round 4.
+ */
+const RESTORE_SWITCH = 'git switch --no-guess <LAUNCH_BRANCH>';
+
+/** A `git switch` onto the placeholder that has dropped `--no-guess`. */
+const GUESSING_SWITCH = /git switch\s+(?!--no-guess\b)[^\n]*<LAUNCH_BRANCH>/;
 
 /** A `git branch -d/-D` whose ARGUMENT is the outer tool's own branch. */
 const DELETES_LAUNCH_BRANCH = /\bgit\s+branch\s+(-[dD]|--delete)\b[^\n]*LAUNCH_BRANCH/;
@@ -725,7 +751,7 @@ describe('work-issues launch-mode probe', () => {
   describe('section 9 restores LAUNCH_BRANCH as-is rather than moving it', () => {
     const ship = rootRead(WI_SHIP);
     const shipBlocks = bashBlocks(ship);
-    const restore = shipBlocks.filter((b) => b.includes('git switch <LAUNCH_BRANCH>'));
+    const restore = shipBlocks.filter((b) => b.includes(RESTORE_SWITCH));
     const fallback = shipBlocks.filter((b) => b.includes('git switch --detach origin/main'));
 
     /**
@@ -743,11 +769,25 @@ describe('work-issues launch-mode probe', () => {
      * recipe this small and this dangerous: anything not written here fails.
      */
     const PRESCRIBED_RESTORE = [
-      'git show-ref --verify refs/heads/<LAUNCH_BRANCH>',
-      'git switch <LAUNCH_BRANCH> \\',
+      // The dirty-tree check is a TEST, and it runs FIRST. Both halves are
+      // load-bearing and neither is obvious: `git switch` carries uncommitted
+      // changes ACROSS, so the same check AFTER the switch reports a
+      // clean-looking tree only because the dirt landed on the outer tool's
+      // branch; and `git status --porcelain` exits 0 dirty OR clean, so a bare
+      // command -- or one chained with `&&` -- carries no verdict at all.
+      '[ -z "$(git status --porcelain)" ] || exit 1',
+      // `--quiet` plus an explicit `|| echo` makes the gate self-describing:
+      // it PRINTS the arm it selects, rather than leaving it to be inferred
+      // from a `fatal:` line on stderr.
+      "git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'",
+      // `--no-guess` is not decoration. With the branch gone LOCALLY but still
+      // on `origin`, a plain `git switch <name>` DWIMs: it CREATES the branch
+      // from the remote, exits 0 and sets tracking -- re-making the outer
+      // tool's branch at ORIGIN's tip, which is an ADJUST, on exactly the path
+      // that should have fallen through to the detach fallback.
+      'git switch --no-guess <LAUNCH_BRANCH> \\',
       '&& git branch -D <every branch THIS run created>',
       'git branch --show-current',
-      'git status --porcelain',
       'git rev-list --count origin/main..<LAUNCH_BRANCH>',
     ];
     const PRESCRIBED_FALLBACK = [
@@ -760,7 +800,7 @@ describe('work-issues launch-mode probe', () => {
       expect(
         restore.length,
         `references/ship.md has ${restore.length} fenced blocks containing ` +
-          `\`git switch <LAUNCH_BRANCH>\`; expected exactly the one section 9 restore recipe.`
+          `\`${RESTORE_SWITCH}\`; expected exactly the one section 9 restore recipe.`
       ).toBe(1);
       expect(
         fallback.length,
@@ -866,7 +906,7 @@ describe('work-issues launch-mode probe', () => {
       // An agent reading top-down takes the first arm it meets, and detaching is
       // the end state this change moved away from. The hook's own message is
       // pinned the same way in `.claude/hooks/stop-unmerged-lane-warn.test.sh`.
-      const restoreAt = ship.indexOf('git switch <LAUNCH_BRANCH>');
+      const restoreAt = ship.indexOf(RESTORE_SWITCH);
       const detachAt = ship.indexOf('git switch --detach origin/main');
       expect(restoreAt, 'references/ship.md no longer shows the restore recipe').toBeGreaterThan(-1);
       expect(detachAt, 'references/ship.md no longer shows the detach fallback').toBeGreaterThan(-1);
@@ -915,6 +955,14 @@ describe('work-issues launch-mode probe', () => {
           `${name}:${i + 1} passes LAUNCH_BRANCH to \`git branch -d/-D\`. That deletes the ` +
             `OUTER TOOL's branch; the delete takes the branches THIS run created.`
         ).not.toMatch(DELETES_LAUNCH_BRANCH);
+        expect(
+          line,
+          `${name}:${i + 1} switches onto LAUNCH_BRANCH WITHOUT \`--no-guess\`. When the ` +
+            `branch is gone locally but still on \`origin\` -- which is precisely when the ` +
+            `detach fallback is supposed to fire -- a plain \`git switch\` CREATES it from ` +
+            `the remote and exits 0, re-making the outer tool's branch at origin's tip. The ` +
+            `AS-IS rule forbids that, and it happens silently.`
+        ).not.toMatch(GUESSING_SWITCH);
       }
     }
   });
@@ -1020,13 +1068,13 @@ describe('work-issues launch-mode probe', () => {
       let sawDetach = 0;
       for (const [i, line] of lines.entries()) {
         const window = wrappedWindow(lines, i);
-        if (/git switch <LAUNCH_BRANCH>/.test(line)) {
+        if (line.includes(RESTORE_SWITCH)) {
           sawRestore++;
           expect(
             window,
             `${doc}:${i + 1} states the restore without chaining the branch delete to it. ` +
               `A failed switch must not leave \`git branch -D\` to run anyway.`
-          ).toMatch(/git switch <LAUNCH_BRANCH>[^\n]*(\\\s*)?&&[^\n]*git branch -D/);
+          ).toMatch(/git switch --no-guess <LAUNCH_BRANCH>[^\n]*(\\\s*)?&&[^\n]*git branch -D/);
         }
         if (/git switch --detach origin\/main/.test(line)) {
           sawDetach++;

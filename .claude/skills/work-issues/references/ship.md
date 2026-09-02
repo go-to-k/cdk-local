@@ -191,21 +191,32 @@ are SUBSTITUTION PLACEHOLDERS taken from the opening report, not shell variables
 `git switch ""` is not the failure you want):
 
 ```bash
-git show-ref --verify refs/heads/<LAUNCH_BRANCH>   # exit 0 + a sha = present;
-       # absent is rc=128 and a `fatal: ... not a valid ref` on STDERR, not silence
-git switch <LAUNCH_BRANCH> \
+[ -z "$(git status --porcelain)" ] || exit 1   # FIRST -- switching carries dirt across
+       # `git switch` takes uncommitted changes WITH you, so the same check
+       # AFTER the switch reports a tree that only LOOKS clean: the dirt moved,
+       # onto the outer tool's branch, and the `-D` below then removes the
+       # branches that were holding this run's commits. And `&&` cannot carry
+       # the verdict either way -- `git status --porcelain` exits 0 dirty or
+       # clean -- so the emptiness is TESTED here rather than eyeballed.
+git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
+git switch --no-guess <LAUNCH_BRANCH> \
   && git branch -D <every branch THIS run created>
        # CHAINED: an unchained `-D` after a FAILED switch still deletes the
        # branches that are not checked out, leaving the tree on the lane branch
        # with its siblings gone. `-D`, not `-d` (squash) -- see above; §10-d's
        # retro branch is one of them.
+       # `--no-guess` is load-bearing, and its absence fails in the worst
+       # direction: with the branch gone LOCALLY but still on `origin`, a plain
+       # `git switch` DWIMs and CREATES it from the remote -- exit 0, tracking
+       # set, "Switched to a new branch" -- re-making the outer tool's branch at
+       # ORIGIN's tip. That is an ADJUST, on precisely the path that was meant
+       # to fall through to the fallback below. `--no-guess` makes it an error.
        # git prints its own advice on that switch, suggesting a `pull` to
        # update the local branch. Do not: that is the fast-forward the AS-IS
        # rule withdraws. (Spelled without the verb because the fence below
        # bans every branch-moving command inside this block, comments and all
        # -- a reader copies a line, not its intent.)
 git branch --show-current                 # must print <LAUNCH_BRANCH>
-git status --porcelain                    # must be empty: the tree is as you found it
 git rev-list --count origin/main..<LAUNCH_BRANCH>
        # 0 for a freshly created workspace, which is what silences the Stop hook.
        # Non-zero means the outer tool left commits on its own branch: correct,
@@ -213,11 +224,12 @@ git rev-list --count origin/main..<LAUNCH_BRANCH>
 ```
 
 Fallback, and ONLY when `LAUNCH_BRANCH` was empty at probe time (the run was
-launched detached) or the `show-ref --verify` above FAILED (rc=128) — never as
-the default. CHAINED for the same reason as the primary block: a failed `fetch`
+launched detached) or the `show-ref` gate above printed `gone` — never as the
+default. CHAINED for the same reason as the primary block: a failed `fetch`
 followed by an unchained `switch` detaches at a stale `origin/main`, and a failed
 `switch` followed by an unchained `-D` deletes the branches that are not checked
-out:
+out. It needs no `--no-guess`: `--detach` takes a commit-ish, so there is no
+branch NAME left for git to guess at:
 
 ```bash
 git fetch origin \

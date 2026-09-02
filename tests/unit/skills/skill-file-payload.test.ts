@@ -89,7 +89,7 @@ const MIN_REFERENCE_FILES = 6;
 // asserted, so only the REASONING lives here: the floor must clear
 // `corpus - largest`, which it still does. It is left UNCHANGED rather than
 // raised, and the honest reading of that is worth stating: the margin was sized
-// to absorb roughly one PR's growth, and this PR alone grew ship.md by ~5.6 KB,
+// to absorb roughly one PR's growth, and this PR alone grew ship.md by ~6.9 KB,
 // so the binding margin is now BELOW that -- the next stage-file addition should
 // expect to re-derive this line. MEASURED prints the current margin in its
 // failure message, so that arrives as a number rather than as a surprise. Sized
@@ -128,7 +128,7 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 143_998,
+    corpusBytes: 145_119,
     largest: { file: 'implement.md', bytes: 36_815 },
     runnerUp: { file: 'verify.md', bytes: 21_841 },
   },
@@ -142,7 +142,7 @@ const MEASURED: Record<
  */
 const MEASURED_LARGEST_NON_SPLIT: { file: string; bytes: number } = {
   file: 'hunt-bugs',
-  bytes: 27_346,
+  bytes: 27_501,
 };
 
 function skillNames(): string[] {
