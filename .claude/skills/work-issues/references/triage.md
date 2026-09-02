@@ -165,12 +165,27 @@ that later runs `git worktree add` or does not.
 
 `IN-PLACE` means this run was launched inside a worktree someone else created
 (an Orca/ADE workspace, a stray `cd` into `.claude/worktrees/<x>`), so it has
-exactly ONE working tree: **take ONE issue and finish it.** A second lane would
-need a worktree nested inside this one, and deleting the outer workspace then
-takes the inner directory with it — uncommitted work gone, the git registration
+exactly ONE working tree: **run lanes SERIALLY.** The constraint is CONCURRENCY,
+not a count of issues — this said "take ONE issue and finish it" until
+2026-09-03, and every justification under it was about a second SIMULTANEOUS
+lane: that lane needs a worktree nested inside this one, which dies with the
+outer workspace and takes its uncommitted work, leaving the git registration
 orphaned until a `prune`, plus the same-branch double-checkout collision
-(go-to-k/cdk-local#635). Rank as usual, claim the top candidate, and leave the
-rest for the next run.
+(go-to-k/cdk-local#635) — and two lanes sharing the ONE tree instead is worse
+still, since either lane's `git switch` moves the branch under the other. Rank
+as usual. Taking SEVERAL issues is still fine when they share this one tree in
+SEQUENCE: claim them all up front (§4) with every lane after the first marked
+`QUEUED`, finish them one at a time, and if the run ends before reaching one,
+stand it down with a comment carrying the four classification fields. Claiming
+only the top candidate is also fine — the point is that the QUEUED ones are
+visibly spoken for rather than silently abandoned. Ported from the sibling cdkd,
+which measured that shape on 2026-09-02 (go-to-k/cdkd#2417: three lanes claimed,
+one merged, the two unstarted ones left in a state the next session could pick
+up without re-deriving anything); measured again here 2026-09-03, where one
+IN-PLACE run carried FOUR issues through this tree in sequence
+(go-to-k/cdk-local#647, go-to-k/cdk-local#648, go-to-k/cdk-local#663,
+go-to-k/cdk-local#669) with no collision. Stop when the budget or the maintainer
+says so, never because the mode says one.
 
 **Adopting a tree you did not create needs an ownership check FIRST**, because a
 stray `cd` into a peer's live lane looks exactly like an empty workspace:

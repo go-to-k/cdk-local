@@ -100,6 +100,16 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 
+   **Start it in the BACKGROUND on the FIRST attempt, not after a foreground run dies.** A foreground Bash call is capped at ten minutes, and "will this fixture finish inside that?" cannot be answered from the fixture's usual runtime: a first-ever run on a host with a cold Docker cache spends most of it in the one-time `public.ecr.aws/lambda/*` base-image pull (~600 MB). Measured on the overnight run of 2026-09-02 (go-to-k/cdk-local#650): the first `local-invoke` attempt was killed at the cap (exit 143) still inside that pull, left zero orphans because the fixture's traps held, and cost a full re-run. So run this step with the Bash tool's `run_in_background`, handing it the BARE command — no trailing `&` and no `nohup`, either of which double-backgrounds and reports the launcher's exit 0 while the real run is untracked — and tee the output to a log so it survives the call:
+
+   ```bash
+   bash tests/integration/<test-name>/verify.sh 2>&1 | tee /tmp/integ-<test-name>.log
+   ```
+
+   The verdict is the exit status the background task reports on completion, NOT `$?` read afterwards from another shell (and never the `tee`'s status, which is what a pipeline's `$?` gives you).
+
+   **Then POLL THE LOG for progress; a completion notification is not a timer.** `docker pull` has no timeout of its own, and neither does `verify.sh` or the background task, so from the outside a stalled pull is indistinguishable from a slow one — measured on that same run, a `docker pull` froze for 2 h 58 m across a machine-sleep window with the image ALREADY fully downloaded, and nothing anywhere fired. Read the log's tail after a few minutes; if it has not moved, walk the process tree (`pgrep -P` down to the `docker pull` pid), kill the tree, confirm 0 orphans via step 6, and re-run — with the cache then warm it completed in about a minute.
+
 6. **Verify Docker cleanup** (mandatory regardless of pass/fail):
 
    ```bash

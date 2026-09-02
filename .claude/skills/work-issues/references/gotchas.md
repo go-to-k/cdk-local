@@ -107,6 +107,29 @@
   the true size with `git status --porcelain | wc -l` plus
   `git diff --shortstat`, or accept that untracked files are missing from the
   stat and say so.
+- **A run interrupted by a rate-limit reset resumes cheaply, but only if it was
+  ARMED before the pause — and the salvage inventory is what makes it cheap.** A
+  one-shot cron at reset + 3 minutes re-enters the run; the +3 is not padding,
+  since a one-shot job scheduled on the hour can fire up to 90 s EARLY, i.e.
+  still rate-limited. What SURVIVES the pause: markgate markers (per-worktree,
+  on disk), the PR, its CI, and every reviewer verdict already posted to GitHub.
+  What does NOT: in-flight subagents. So the resuming session re-derives its
+  state from the markers plus `gh pr view` plus the review comments, and
+  re-dispatches only the reviewers that died. Measured on the overnight run of
+  2026-09-02 (go-to-k/cdk-local#650), which crossed two resets and a host sleep
+  and still finished its lane. Stand down any QUEUED lane the run will not reach
+  at the moment that verdict is known, not at the wrap (§4).
+- **A heredoc carries invisible non-C0 characters straight into a commit, and
+  every fence here is C0-only.** `control-char-gate.sh` and
+  `tests/unit/no-control-bytes.test.ts` both scan for C0 bytes, so U+00A0 (NBSP)
+  and U+FEFF (BOM) pass both — into source, into a test, and into a commit
+  MESSAGE, which nothing scans at all. `main` carried a live instance until this
+  retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a
+  LITERAL character inside a regex (`ef bb bf` on the wire), invisible in every
+  reading of that line. Spell such a character as a `\u`-escape, the same rule
+  `.claude/CLAUDE.md` states for C0 bytes, and when a heredoc's subject IS
+  whitespace-adjacent text, read the bytes before committing:
+  `git diff --cached | grep -nP '\x{00A0}|\x{FEFF}'`.
 - **A green suite in the MAIN checkout can be measuring nothing.** The
   worktree rule in section 5 says a fresh worktree has no `node_modules` and no
   `dist/`; the main checkout can be the one missing them, because the lanes have

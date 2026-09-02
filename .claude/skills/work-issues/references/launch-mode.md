@@ -134,7 +134,7 @@ tree:
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Take ONE issue and finish it — a second lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635) | §3 |
+| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run ends first, which leaves every issue claimable (go-to-k/cdkd#2417, 2026-09-02; four issues one tree here, 2026-09-03) | §3 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
 | 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
 | 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS — and never commit onto `LAUNCH_BRANCH`. §5 defines the rule and holds the recipe; this row is the one-line version an orchestrator sees without opening that file | §5 |
@@ -142,6 +142,7 @@ tree:
 | 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
 | 7 | `main` is checked out in the main checkout, so `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
 | 8 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not inside §9's per-lane cleanup | §10-d |
+| 9 | The markgate store and the `.markgate-pr-review-sha` sentinel are per-WORKTREE, and this mode has ONE — so a lane INHERITS the previous lane's markers instead of starting empty. Both inheritances fail CLOSED; what they cost is a confusing block and a step of verification a lane can skip without noticing (see below) | §8 |
 
 There is deliberately no rebuild row: this repo's ship stage ends at the pull,
 and users invoke `node dist/cli.js` from their own checkout rather than a
@@ -152,3 +153,37 @@ and has to relocate it; do not import it here.
 direction that matters: this file is not always loaded, SKILL.md is, so an
 undercount in the orchestrator wins over the reference files it points at.
 Count the rows before writing a number beside them.
+
+### Row 9: this mode's ONE tree means one markgate store, shared by every lane
+
+markgate's store lives in the worktree's own git dir
+(`<common-dir>/worktrees/<name>/markgate/`) and `.markgate-pr-review-sha` is a
+gitignored file in the tree, so MAIN-CHECKOUT hands each lane an EMPTY store
+along with its fresh worktree; IN-PLACE hands lane N whatever lane N-1 left.
+Measured at the start of this run's FOURTH lane, on a clean tree at
+`origin/main` with no edit yet made: `markgate verify docs` rc=0 and
+`markgate verify pr-review` rc=0, the sentinel still holding
+go-to-k/cdk-local#672's merged HEAD sha.
+
+**Neither inheritance is a way past a gate, and the first draft of this section
+said the `pr-review` one was** — the overclaim §10-a exists to stop, written
+into a lane's brief by the orchestrator and refuted only by reading
+`pr-review-gate.sh:344`, which passes solely when
+`recorded_sha = head_sha`. A sentinel naming a MERGED PR cannot equal the new
+PR's `headRefOid`, so the leak BLOCKS, rendering
+`Marker state: bound to <sha> (mismatch)`. Fail-CLOSED. What it actually costs
+is a confusing refusal naming an unrelated PR, and the gate cycle spent
+diagnosing it.
+
+The `docs` inheritance costs one STEP rather than a bypass, and the hole it
+shortens is not this mode's: `verify-pr` is declared `requires: [check, docs]`
+with no digest of its own, so refreshing both children re-freshens it at a sha
+`/verify-pr` never walked (go-to-k/cdk-local#661 — reproduced in this lane,
+where `markgate verify verify-pr` answered rc=0 having never been run).
+MAIN-CHECKOUT reaches that state by running `/check` and `/check-docs`;
+IN-PLACE reaches it on `/check` alone, because `docs` arrived free.
+
+So, at the top of every lane after the first: delete `.markgate-pr-review-sha`,
+and read every gate's rc before trusting one — an rc=0 at a lane's FIRST command
+is INHERITED, not earned, so run the skill that owns it for THIS lane whatever
+it reports.

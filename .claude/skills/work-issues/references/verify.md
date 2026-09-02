@@ -20,10 +20,25 @@ across review rounds — so DECLARE the tree final, in words, to whoever is stil
 editing it.** The `integ` gate is `hash: diff` vs `merge-base(origin/main, HEAD)`:
 even a comment-only change to an in-scope file stales the marker and costs a
 Docker fixture run (2026-08-26, cdkd: three real-AWS runs of one fixture, one for
-a zero-non-comment-line round). Tell the implementing agent, explicitly, to batch
-every remaining finding into ONE commit and report the tree FINAL, no second
-pass — otherwise it hands back per finding. Reviewer-side: dispatch a round
-SCOPED to the delta, whole round's findings at once, not trickled.
+a zero-non-comment-line round). Its COMPLEMENT is worth knowing at the same
+moment, because it turns deferrals into free fixes: the include is `src/**` plus
+`tests/integration/**` and nothing else, so a `tests/unit/**` follow-up after a
+green integ costs NOTHING (two findings this run was about to defer for "that
+would need another Docker run" were neither). Tell the implementing agent,
+explicitly, to batch every remaining finding into ONE commit and report the tree
+FINAL, no second pass — otherwise it hands back per finding. Reviewer-side:
+dispatch a round SCOPED to the delta, whole round's findings at once, not
+trickled — the delta is where a fix-introduced blocker lives, which is the class
+the paragraph below is about (go-to-k/cdk-local#672's fifth round, 2026-09-02,
+read only the delta and found three defects in artifacts EARLIER rounds had
+added) — **and paste the delta's COMMIT MESSAGE into the brief.** All three
+reviewer agents read `gh pr diff` / `gh pr view --json files`
+(`.claude/agents/pr-{code,spec,test}-reviewer.md`) and none reads `git log`, so
+a false claim written into a commit message is invisible to the whole tier
+however many reviewers you dispatch (ported from cdkd, measured there
+2026-08-29: a delta round's blocker was a commit message citing a function that
+has never existed in that repo, reachable only because the orchestrator re-read
+the message itself).
 
 - **A `src/**` runtime change** → drive the affected flow end-to-end against
   Docker / a fixture (invoke the Lambda, hit the served route, run the task),
@@ -292,10 +307,22 @@ commit. With a pre-probe commit the separator is just `git diff` — anything
 unstaged after a probe is the probe's (mirrored from
 go-to-k/cdk-real-drift#1853; go-to-k/cdk-local#649 is this repo's filing).
 
-**A probe that reports NO discrimination is a claim about the FENCE, and three
-other things produce the identical output.** Ask them in order before touching
-the fence — each was hit in one session (2026-08-25) and each nearly cost a
-working assertion:
+**And telling wreckage apart is the CHEAP half of the reason. The expensive
+half is that a RESTORE REVERTS ANYTHING COMMITTED NOWHERE.** A probe ends by
+putting the tree back, and a harness that does so from a SNAPSHOT puts back the
+snapshot's whole state: work written after the snapshot and committed nowhere is
+not "hard to attribute", it is gone, and `git status` reads clean afterwards
+because that is exactly what the wrong restore produces (the appendix states the
+same property for `git checkout -- <file>`). Measured 2026-09-02 in this run: a
+lane's harness restored a snapshot taken before the round's new tests existed
+and took 133 lines of them with it. Surviving the restore is what the pre-probe
+commit actually buys.
+
+**A probe that reports NO discrimination is a claim about the FENCE, and four
+other things produce the identical output** — three about the PROBE, then one
+each about the fixture's premise and the harness's reading. Ask the three in
+order before touching the fence; each was hit in one session (2026-08-25) and
+each nearly cost a working assertion:
 
 1. **Did the edit land?** `sed`/`perl` one-liners fail silently in ways that
    read as "no match": a `perl -0pi -e "s|^\|...|...|m"` whose pattern is
@@ -332,8 +359,25 @@ reached, and it is the assertion's INPUT that is degenerate. The fix is never a
 stronger assertion: GUARD the precondition (assert it holds before asserting the
 conclusion) or feed data that can only pass one way.
 
-Only after all four does "the fence is weak" remain. Deleting an assertion on
-the strength of an unexamined green is how a working guard gets removed. Ported
-from cdkd, all four shapes measured in one session (go-to-k/cdkd#2197 /
-go-to-k/cdkd#2200 / go-to-k/cdkd#2198); the mechanism is the shell and the
-tooling, not anything cdkd-specific.
+And one shape in the HARNESS rather than in the fixture: **"the suite went RED"
+and "the suite did not RUN" are different facts, and the summary line does not
+separate them by itself.** A mutation that breaks PARSING rather than behaviour
+collects nothing. Measured 2026-09-03 here, one unbalanced brace in one test
+file: rc=1, `Test Files  1 failed (1)`, and `Tests  no tests` — a `Tests` line
+that EXISTS and carries no digits. A harness counting case failures reads zero
+and concludes the fence is DEAD, which is this section's own hazard arriving
+from the harness rather than from the fixture; one keyed on rc alone reads red
+and concludes it is ALIVE. Both are false — nothing ran. Believe either verdict
+only when three things hold: the `Tests` line carries DIGITS, its total matches
+a known BASELINE, and no `Test Files … failed` sits beside zero case failures.
+The BASELINE is the one that catches a whole file silently not collecting. A
+regex requiring `(\d+) passed` does catch this particular spelling, by matching
+nothing — but only where the harness treats no-match as an ERROR rather than
+as zero.
+
+Only after all five does "the fence is weak" remain. Deleting an assertion on
+the strength of an unexamined green is how a working guard gets removed. The
+first four came from cdkd, all measured in one session there
+(go-to-k/cdkd#2197 / go-to-k/cdkd#2200 / go-to-k/cdkd#2198); the fifth was
+measured here (2026-09-03). The mechanism is the shell and the tooling in every
+case, not anything repo-specific.
