@@ -255,6 +255,17 @@ them.
 
 ### 8-z. When a mutation probe reports NO discrimination
 
+**First, a rule that applies BEFORE any probe runs: COMMIT the round's real
+fixes, then probe.** A probe deliberately breaks the tree, so an interruption
+mid-probe (a session limit, a crash) leaves deliberate breakage and unfinished
+fixes in ONE undifferentiated dirty tree. Measured 2026-09-02 on the
+go-to-k/cdk-real-drift#1841 lane: the lane subagent died at the 5-hour session
+limit mid-probe with 9 dirty files, and the resuming session had to read the
+full diff to establish that none of it was probe wreckage before it could
+commit. With a pre-probe commit the separator is just `git diff` — anything
+unstaged after a probe is the probe's (mirrored from
+go-to-k/cdk-real-drift#1853; go-to-k/cdk-local#649 is this repo's filing).
+
 **A probe that reports NO discrimination is a claim about the FENCE, and three
 other things produce the identical output.** Ask them in order before touching
 the fence — each was hit in one session (2026-08-25) and each nearly cost a
