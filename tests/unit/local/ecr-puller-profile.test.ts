@@ -164,16 +164,16 @@ describe('pullEcrImage — --profile threading', () => {
       process.env['HTTPS_PROXY'] = 'http://proxy.internal:3128';
     });
 
+    // No teardown of the `NodeHttpHandler`s the fragment builds, deliberately.
+    // A round of this review added one, and it was measured to do NOTHING:
+    // `NodeHttpHandler.destroy()` is `this.config?.httpAgent?.destroy()`, and
+    // `config` is assigned only inside `handle()` — which no case here calls,
+    // because the SDK clients are mocked. So the loop reached no agent, could
+    // not reach the second handler `credentials()` builds either, and its
+    // comment claimed a discipline it was not performing. Nothing leaks (no
+    // socket is ever opened); an assertion-free loop that reads as cleanup is
+    // worse than the absence it replaced.
     afterEach(() => {
-      // The SDK clients are mocked, so their `destroy()` is a stub and the
-      // real `NodeHttpHandler`s the fragment built would outlive the case.
-      // No socket is ever opened here, so nothing leaks today — this keeps
-      // the same discipline `aws-proxy.test.ts` follows, so a future case
-      // that does open one cannot strand it.
-      for (const cfg of [...stsCtorArgs, ...ecrCtorArgs]) {
-        const handler = cfg['requestHandler'] as { destroy?: () => void } | undefined;
-        handler?.destroy?.();
-      }
       for (const key of PROXY_KEYS) {
         const value = saved.get(key);
         if (value === undefined) delete process.env[key];

@@ -198,10 +198,12 @@ describe('buildStsClientConfig — proxy environment threading (issue #634)', ()
     chainMock.mockResolvedValue({ accessKeyId: 'AKIA', secretAccessKey: 's' });
     const config = buildStsClientConfig({ region: 'us-east-1' });
     await config.credentials!();
-    // Without the call-count assertion this passes when `defaultProvider` was
-    // called with NO argument at all — `expect(undefined).not.toHaveProperty`
-    // is satisfied by the absence of the whole init bag, not by the absence
-    // of the key.
+    // `toBeDefined` is the load-bearing line: on its own,
+    // `expect(undefined).not.toHaveProperty('profile')` is satisfied by the
+    // absence of the whole init bag rather than by the absence of the key, so
+    // a `defaultProvider()` called with NO argument would pass. The call
+    // count does not cover that case — it is satisfied by such a call too —
+    // and is here to pin that the chain is resolved exactly once.
     expect(defaultProviderMock).toHaveBeenCalledTimes(1);
     expect(defaultProviderMock.mock.calls[0]![0]).toBeDefined();
     expect(defaultProviderMock.mock.calls[0]![0]).not.toHaveProperty('profile');

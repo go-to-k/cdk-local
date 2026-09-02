@@ -52,7 +52,12 @@ import {
  * ALL THREE policies, not only from policy 1. The marker's meaning is "this
  * is not an AWS SDK client construction that reaches the network", and a
  * thing outside the population has no profile to thread and no order to
- * keep. Nothing in `src/**` carries one today.
+ * keep. No client construction is exempted by one today — the markers that
+ * DO exist in `src/**` belong to the sibling `aws-proxy-fetch-audit.test.ts`,
+ * which deliberately shares the string through `hasOptOutMarker`. They are
+ * inert here only because none of their files references `@aws-sdk/client-`;
+ * a marker written for the fetch audit in a file that also constructs an SDK
+ * client would silently exempt that construction from all three policies.
  *
  * POPULATION is derived from the defect, not from a site list: a
  * construction is in scope when its class name ends in `Client` AND the
@@ -179,6 +184,10 @@ function splitAtSeam(args: string): { fragment: string; rest: string } | null {
  *   a property of the current tree, not something this policy proves.
  * - an unbalanced (`args === null`) construction is skipped here and REPORTED
  *   by policy 1, so it cannot hide by being unparseable.
+ * - when BOTH seams appear, only the first BY INDEX is split at, so a profile
+ *   threaded into the second one lands in `rest` and is reported. A false
+ *   positive, in the safe direction and with a self-clearing message. No live
+ *   site spells both.
  */
 function findProfileOffenders(filePath: string): { line: number; text: string }[] {
   const offenders: { line: number; text: string }[] = [];
@@ -405,6 +414,25 @@ describe('AWS SDK client proxy-config audit (issue #634)', () => {
       expect(findProfileOffenders(stsHalfWired)).toEqual([
         { line: 3, text: 'export const c = new STSClient({' },
       ]);
+
+      // BOTH seams in one construction: the split takes the FIRST by index,
+      // so the profile threaded into `buildProxyClientConfig` is found even
+      // though `buildStsClientConfig` appears later without one. Flipping the
+      // selection to last-wins reports this as an offender, and nothing else
+      // in the suite or the live scan notices — no real site spells both.
+      const bothSeams = join(dir, 'both-seams.ts');
+      writeFileSync(
+        bothSeams,
+        `import { STSClient } from '@aws-sdk/client-sts';\n` +
+          `import { buildProxyClientConfig } from '../utils/aws-proxy.js';\n` +
+          `import { buildStsClientConfig } from '../utils/profile-resolver.js';\n` +
+          `export const c = new STSClient({\n` +
+          `  ...buildProxyClientConfig({ profile: options.profile }),\n` +
+          `  ...buildStsClientConfig({ region }),\n` +
+          `  profile: options.profile,\n` +
+          `});\n`
+      );
+      expect(findProfileOffenders(bothSeams)).toHaveLength(0);
 
       // An opt-out removes the construction from THIS policy too, not only
       // from policy 1 — the marker means "not in the population at all".
