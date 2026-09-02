@@ -40,7 +40,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # PROVEN TO REACH THE HOOK, not merely to be exported. With `;;&` (a bash-4
 # `case` terminator, a PARSE error under 3.2 and valid syntax under 5.x)
 # injected into the hook's detached-HEAD arm, this suite reports
-# 17 pass / 7 fail under `HOOK_BASH=/bin/bash` and 24 pass / 0 fail under
+# 18 pass / 16 fail under `HOOK_BASH=/bin/bash` and 34 pass / 0 fail under
 # `HOOK_BASH=/opt/homebrew/bin/bash` -- same suite, same mutant, only the
 # interpreter differs. A shim that did not reach the subject would print the
 # same tally twice.
@@ -48,16 +48,25 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # PATH keeps its existing entries after the shim rather than being replaced with
 # `/usr/bin:/bin`: the hook needs `jq`, which is not in either on every machine.
 if [ -n "${HOOK_BASH:-}" ]; then
-  # RESOLVE A BARE NAME BEFORE TESTING IT. `run-tests.sh` loops over the
-  # CANDIDATES `bash` and `/bin/bash` and exports `HOOK_BASH="$shell"`, so the
-  # PATH shell arrives here as the bare word `bash` -- and `-x` does no PATH
-  # lookup, so testing the raw value FATALs on a perfectly good interpreter.
-  # Measured: the first shape of this block failed the whole suite with
-  # `FATAL - HOOK_BASH is not an executable: bash` on the 5.x pass of
-  # `bash .claude/hooks/run-tests.sh`, while the 3.2 pass (an absolute
-  # `/bin/bash`) passed -- so half the matrix went missing and the tally said
-  # FAIL rather than saying nothing, which is the only reason it was caught.
-  # The `ln -sf` below needs an absolute target anyway.
+  # RESOLVE A BARE NAME BEFORE TESTING IT. `-x` does no PATH lookup, so testing
+  # the raw value FATALs on a perfectly good interpreter whenever HOOK_BASH is a
+  # bare word rather than a path -- and `HOOK_BASH=bash` is the obvious spelling
+  # for "whatever PATH gives", which is the shape the header above invites.
+  #
+  # THE JUSTIFICATION THAT USED TO STAND HERE NAMED A FILE THIS REPO DOES NOT
+  # HAVE. It said `run-tests.sh` loops over the candidates and exports
+  # `HOOK_BASH="$shell"`; that is true of CDKD's `.claude/hooks/run-tests.sh`,
+  # which is where this guard was first needed and where it was measured (the
+  # first shape of this block failed the whole 5.x pass with
+  # `FATAL - HOOK_BASH is not an executable: bash` while the 3.2 pass, an
+  # absolute `/bin/bash`, sailed through -- half the matrix gone, reported as a
+  # FAIL rather than as silence, which is the only reason it was caught).
+  #
+  # In THIS repo the runner is `vp run test:hooks` (vite.config.ts), a plain
+  # `for t in .claude/hooks/*.test.sh ...; do bash "$t"; done` under ONE shell
+  # that exports no HOOK_BASH. Nothing here hands this file a bare word on its
+  # own, so the guard covers the documented MANUAL invocation instead and the
+  # comment now says which. The `ln -sf` below needs an absolute target anyway.
   case "$HOOK_BASH" in
     */*) ;;
     *) HOOK_BASH="$(command -v "$HOOK_BASH" 2>/dev/null || printf '%s' "$HOOK_BASH")" ;;
@@ -147,6 +156,47 @@ run_case() {
   fi
 }
 
+# run_case_msg <name> <expect_exit> <stdin_json> <substring that MUST appear> \
+#              [<substring that must NOT appear>] [<a second one>]
+#
+# BOTH REMEDY ARMS EXIT 2, so an rc-only case cannot tell the operation-specific
+# wording from the plain one -- and the whole point of the operation-specific arm
+# is that the plain one names a command git refuses. The verdict under test here
+# is the TEXT, so the text is what is asserted.
+#
+# The forbidden needle for an operation row is `Re-attach first`, the literal
+# opening of the fallback remedy LINE, and not the string `switch main`: the
+# operation arms mention `switch main` themselves, in the sentence explaining why
+# it is unavailable. A needle that also matches prose about the wrong answer
+# cannot say whether the wrong answer was PRINTED.
+#
+# `grep -F --` because several needles start with a `-`.
+run_case_msg() {
+  local name="$1"; local want="$2"; local payload="$3"; local need="$4"
+  local forbid="${5:-}"; local forbid2="${6:-}"
+  local out got ok=1 why="" __f
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:$PATH" "$HOOK" 2>&1)
+  printf '%s' "$payload" | env PATH="$SHIM:$PATH" "$HOOK" >/dev/null 2>&1
+  got=$?
+  if [ "$got" != "$want" ]; then ok=0; why="want exit $want, got $got"; fi
+  if [ -n "$need" ] && ! printf '%s\n' "$out" | grep -qF -- "$need"; then
+    ok=0; why="${why:+$why; }message lacks: $need"
+  fi
+  for __f in "$forbid" "$forbid2"; do
+    if [ -n "$__f" ] && printf '%s\n' "$out" | grep -qF -- "$__f"; then
+      ok=0; why="${why:+$why; }message must not contain: $__f"
+    fi
+  done
+  if [ "$ok" = 1 ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (exit %s)\n' "$name" "$got"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $name: $why\n  payload: $payload\n  output : $out\n"
+    printf 'FAIL %s (%s)\n' "$name" "$why"
+  fi
+}
+
 # --- BRANCH-NAME verdicts (the behaviour that predates #2402) ----------------
 
 run_case "non-git command always allowed" 0 \
@@ -204,6 +254,21 @@ run_case "detached HEAD in the MAIN checkout, cwd a SUBDIR: BLOCKED" 2 \
 # tree and not on where the session happens to be sitting.
 run_case "detached MAIN checkout via -C from a worktree: BLOCKED" 2 \
   "$(printf '{"cwd":"%s","tool_input":{"command":"git -C %s commit -m oops"}}' "$mt_wt" "$mt_repo")"
+# The payload cwd reached through an EXPLICIT SYMLINK to the main checkout, which
+# is the fence for reason (ii) in the hook's toplevel-compare comment: the cwd
+# carries whatever symlink the caller typed, the porcelain path does not.
+#
+# WHY IT NEEDS ITS OWN ROW even though the four rows above already die under the
+# `$target_dir` mutation. They die for reason (ii) only because macOS's
+# `mktemp -d` hands back a `/var` path git reports as `/private/var`, so the whole
+# fixture is symlinked for free. Rebuild the same fixture on a NON-symlinked root
+# and that mutation kills exactly one of the five -- the subdir row, for reason
+# (i). `ci.yml` runs this suite via `vp run test:hooks` on `ubuntu-latest`, where
+# `mktemp -d` returns a real `/tmp/...` path, so reason (ii) had NO coverage on
+# the platform CI actually runs. This row dies on both roots.
+ln -sfn "$mt_repo" "$TMPDIR/mt-link"
+run_case "detached MAIN checkout via a SYMLINKED cwd: BLOCKED" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$TMPDIR/mt-link")"
 # Polarity control at the VERB level: the new arm must not turn this gate into
 # "refuse everything in a detached main checkout".
 run_case "detached HEAD in the MAIN checkout: git status still allowed" 0 \
@@ -256,8 +321,142 @@ git -C "$optout_repo" checkout -q main
 # over a suite that ran three rows.
 # Counted BEFORE the failure below is added, or the message reports a tally the
 # floor did not judge.
+
+# --- THE REMEDY MUST BE A COMMAND GIT ACCEPTS (go-to-k/cdkd#2402 review) ------
+#
+# The arm above blocks correctly and, before this round, printed
+# `git -C <main> switch main` unconditionally. A conflicted rebase is one of the
+# ways a MAIN checkout reaches a detached HEAD -- and `git pull` on `main` in the
+# main checkout is this repo's own mandated post-merge sync, so the route is a
+# documented one. Measured on git 2.53, mid-rebase in the main checkout:
+#
+#   git commit -m resolve   ->  rc=2 (correct)
+#   the remedy it printed   ->  git -C <main> switch main
+#   what git answers        ->  fatal: cannot switch branch while rebasing
+#
+# A gate that refuses correctly and then names an impossible command is worse
+# than one that does not refuse, because the reader has nowhere to go. The block
+# stays; the remedy now follows the operation.
+#
+# EVERY REMEDY BELOW WAS RUN, not just read: each `--abort` / `bisect reset` the
+# gate printed was executed verbatim against the fixture and exited 0 (rebase,
+# rebase -i, rebase --apply, am, cherry-pick, merge, revert, bisect).
+#
+# WHAT EACH ROW HOLDS DOWN, measured by mutating the hook and re-running this
+# suite (cdkd numbers; the siblings differ only in the pre-existing case count):
+#
+#   never detect an operation                -> 7 rows red (the six op rows + bisect)
+#   report every operation as a `rebase`     -> 5 (am, cherry-pick, merge, revert, bisect)
+#   drop the `applying` / `rebasing` sentinel-> 1 (am, and only am)
+#   `<target_dir>/.git` for the git dir      -> 1 (the mid-rebase SUBDIR row)
+#   always print the operation wording       -> 1 (the NOTHING-in-progress row)
+#
+# The one row below with no mutation against it is labelled a CONTROL where it
+# stands, rather than left looking like a fence.
+op_repo="$TMPDIR/op-repo"
+op_wt="$TMPDIR/op-wt"
+opg() { gc "$op_repo" "$@"; }
+git init -q -b main "$op_repo"
+touch "$op_repo/.markgate.yml"
+mkdir -p "$op_repo/sub"
+touch "$op_repo/sub/f.txt"
+printf 'base\n' > "$op_repo/f.txt"
+opg add -A
+opg commit -q -m base
+opg checkout -q -b other
+printf 'other\n' > "$op_repo/f.txt"
+opg commit -q -am other
+opg checkout -q main
+# Six more commits so `git bisect` lands on something that is NOT a branch tip:
+# with a two-commit history it picks an endpoint and HEAD stays ATTACHED, and the
+# bisect row would then be exercising the branch-NAME arm instead of this one.
+for op_i in 1 2 3 4 5 6; do
+  printf 'mine%s\n' "$op_i" > "$op_repo/f.txt"
+  opg commit -q -am "m$op_i"
+done
+op_root=$(git -C "$op_repo" rev-list --max-parents=0 HEAD)
+opg worktree add -q "$op_wt" -b lane/op
+opg format-patch -q -1 other -o "$TMPDIR/op-patches" >/dev/null
+
+# 1 + 2. A conflicted rebase, from the checkout root and from a SUBDIRECTORY of
+# it. The subdir row is the one that fences RESOLVING the git dir rather than
+# assuming `<target_dir>/.git`: there, `$target_dir` is `<main>/sub`, which has
+# no `.git` of its own.
+opg rebase other >/dev/null 2>&1
+run_case_msg "detached MAIN mid-REBASE: remedy is 'rebase --abort', not 'switch main'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'rebase --abort' 'Re-attach first'
+run_case_msg "detached MAIN mid-REBASE from a SUBDIR: remedy still 'rebase --abort'" 2 \
+  "$(printf '{"cwd":"%s/sub","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'rebase --abort' 'Re-attach first'
+# CONTROL, not a fence: the LINKED worktree is on a branch, so it exits at the
+# branch-NAME arm and never reaches any of the new code. No mutation of the
+# detection turns it red -- it is here to say the new arm changed nothing on the
+# path a lane actually uses while the shared checkout is mid-rebase.
+run_case "LINKED worktree while the MAIN checkout is mid-rebase: allowed" 0 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m wip"}}' "$op_wt")"
+opg rebase --abort >/dev/null 2>&1
+
+# 3. `git am`. `rebase-apply/` is shared by `git am` and `git rebase --apply`, so
+# the directory alone cannot name the remedy -- the `applying` sentinel inside it
+# is what does, and it is load-bearing: `git rebase --abort` inside an am session
+# answers "No rebase in progress?". Without this row, dropping that discriminator
+# survives.
+opg checkout -q --detach main
+opg am "$TMPDIR/op-patches"/*.patch >/dev/null 2>&1
+run_case_msg "detached MAIN mid-AM: remedy is 'am --abort'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'am --abort' 'Re-attach first'
+opg am --abort >/dev/null 2>&1
+
+# 4-6. cherry-pick / merge / revert. Each is reachable here only from a tree that
+# was ALREADY detached (on a branch, git leaves HEAD attached and the branch-NAME
+# arm catches it), and each has its own marker file, so each needs its own row or
+# deleting that branch of the detection survives.
+opg checkout -q --detach main
+opg cherry-pick other >/dev/null 2>&1
+run_case_msg "detached MAIN mid-CHERRY-PICK: remedy is 'cherry-pick --abort'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'cherry-pick --abort' 'Re-attach first'
+opg cherry-pick --abort >/dev/null 2>&1
+
+opg checkout -q --detach main
+opg merge other >/dev/null 2>&1
+run_case_msg "detached MAIN mid-MERGE: remedy is 'merge --abort'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'merge --abort' 'Re-attach first'
+opg merge --abort >/dev/null 2>&1
+
+opg checkout -q --detach main
+opg revert --no-edit other >/dev/null 2>&1
+run_case_msg "detached MAIN mid-REVERT: remedy is 'revert --abort'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'revert --abort' 'Re-attach first'
+opg revert --abort >/dev/null 2>&1
+
+# 7. bisect, the one operation git does NOT refuse a `switch main` during -- it
+# switches with a warning and leaves the bisect running. So the old wording was
+# not a dead end here, only incomplete, and the remedy has a different SHAPE
+# (`bisect reset`, no `--continue` / `--abort` pair), so this row forbids BOTH
+# the generic operation wording and the fallback one.
+opg checkout -q main
+opg bisect start >/dev/null 2>&1
+opg bisect bad >/dev/null 2>&1
+opg bisect good "$op_root" >/dev/null 2>&1
+run_case_msg "detached MAIN mid-BISECT: remedy is 'bisect reset'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'bisect reset' '--abort' 'Re-attach first'
+opg bisect reset >/dev/null 2>&1
+
+# 8. NOTHING in progress: the fallback wording is the one that must survive, and
+# it is the row that says the detection is a discriminator rather than a rewrite.
+opg checkout -q --detach main
+run_case_msg "detached MAIN, NOTHING in progress: remedy stays 'switch main'" 2 \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$op_repo")" \
+  'Re-attach first: git -C' '--abort' 'rebase --continue'
+opg checkout -q main
 ran=$((pass + fail))
-CASE_FLOOR=24
+CASE_FLOOR=34
 if [ "$ran" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$ran" "$CASE_FLOOR"

@@ -689,14 +689,31 @@ The hooks split into four classes:
   `--show-toplevel` (`/var` → `/private/var` on macOS).
 
   **This gate now has its own harness**,
-  `.claude/hooks/branch-gate.test.sh` (24 cases) — the shape cdkd and
+  `.claude/hooks/branch-gate.test.sh` (34 cases) — the shape cdkd and
   cdk-real-drift have carried for months, and its absence here was the
   gap. `gate-command-recognition.test.sh` keeps its five branch-gate
   rows: its subject is which COMMANDS reach a gate, and it has no
   fixture for a main checkout that owns a linked worktree. The new
   harness puts the interpreter on a `HOOK_BASH` shim, so running the
   suite under bash 3.2 actually runs the HOOK under 3.2 — proven with a
-  bash-4-only parse error that scores 17/7 under 3.2 and 24/0 under 5.x.
+  bash-4-only parse error that scores 18/16 under 3.2 and 34/0 under 5.x.
+
+  **The remedy it prints follows the operation in progress**
+  (go-to-k/cdkd#2402 review). A conflicted rebase is one of the ways the
+  shared checkout reaches a detached HEAD, and there `git switch main` is
+  refused outright with `fatal: cannot switch branch while rebasing` — so
+  a correct block ended in an impossible instruction, which is worse than
+  no block, because the reader has nowhere to go. The gate reads the
+  TARGET's RESOLVED git dir (not `<dir>/.git`, which is wrong from a
+  subdirectory) for `rebase-merge` / `rebase-apply` / `CHERRY_PICK_HEAD` /
+  `REVERT_HEAD` / `MERGE_HEAD` / `BISECT_LOG`, and prints
+  `<op> --continue` / `<op> --abort` — or `bisect reset`, the one case
+  where `switch main` is accepted but leaves the bisect running. The
+  `applying` sentinel inside `rebase-apply` separates `git am` from
+  `git rebase --apply`, because `git rebase --abort` in an am session
+  answers "No rebase in progress?". Every printed remedy was executed
+  against the fixture and exited 0. Both arms exit 2, so the harness
+  asserts the MESSAGE TEXT, not the code.
 
 - **`main-tree-branch-gate.sh`** blocks branch-switching commands in
   the MAIN worktree so concurrent agents don't race on the shared
