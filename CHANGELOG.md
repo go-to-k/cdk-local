@@ -1,3 +1,10 @@
+## [0.148.1](https://github.com/go-to-k/cdk-local/compare/v0.148.0...v0.148.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **integ:** make local-studio failures self-localizing; pin the dispatch child's log stream ([#657](https://github.com/go-to-k/cdk-local/issues/657)) ([971a5f9](https://github.com/go-to-k/cdk-local/commit/971a5f9e8290983ec0b1cd86ab5ba36db766d264))
+
 # [0.148.0](https://github.com/go-to-k/cdk-local/compare/v0.147.22...v0.148.0) (2026-09-02)
 
 
