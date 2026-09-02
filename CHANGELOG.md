@@ -1,3 +1,10 @@
+## [0.148.4](https://github.com/go-to-k/cdk-local/compare/v0.148.3...v0.148.4) (2026-09-02)
+
+
+### Bug Fixes
+
+* **utils:** fall back to a direct connection on an unspeakable proxy scheme, and document two proxy-value traps ([#672](https://github.com/go-to-k/cdk-local/issues/672)) ([79438d3](https://github.com/go-to-k/cdk-local/commit/79438d388f4ec5e9643340ca1364707bcc9e675f))
+
 ## [0.148.3](https://github.com/go-to-k/cdk-local/compare/v0.148.2...v0.148.3) (2026-09-02)
 
 
