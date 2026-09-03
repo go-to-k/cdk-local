@@ -214,10 +214,40 @@ if [ -z "$branch" ]; then
     # already has rows for, and this arm is reachable by `-C` from anywhere.
     #
     # `rebase-apply` is shared by `git am` and `git rebase --apply`; the
-    # `applying` / `rebasing` sentinel inside that directory is what separates
-    # them, and it is load-bearing -- `git rebase --abort` inside an am session
-    # answers "No rebase in progress?". The order below follows git's own status
-    # precedence: rebase, then cherry-pick / revert, then merge, then bisect.
+    # `applying` sentinel inside that directory is what separates them, and it is
+    # load-bearing IN THE DIRECTION THAT FAILS SILENTLY. Both crossings measured
+    # on git 2.53, from a MAIN checkout detached mid-operation:
+    #
+    #   `git rebase --abort` inside an AM session -> rc=128, `fatal: It looks
+    #     like 'git am' is in progress. Cannot rebase.`, HEAD unchanged. LOUD --
+    #     the reader is told the remedy was the wrong one.
+    #   `git am --abort` inside a `rebase --apply` session -> rc=0, NO output,
+    #     HEAD still DETACHED -- where `git rebase --abort` from that same state
+    #     lands on `main`. SILENT: exit 0 reads as "done", and the one thing the
+    #     remedy existed to fix is still true.
+    #
+    # An earlier version of this comment cited "No rebase in progress?" as git's
+    # answer to the FIRST crossing. It is not: `fatal: no rebase in progress` is
+    # what git says when NOTHING is in progress, a different condition -- and the
+    # quiet crossing is the one worth naming anyway, since a loud one cannot
+    # mislead anybody.
+    #
+    # STATED BOUND -- a `rebase-apply/` holding neither `applying` nor
+    # `head-name` reads as a rebase here, and the printed `rebase --abort` then
+    # exits 1 with `warning: could not read '.git/rebase-apply/head-name'`.
+    # `git status` calls that same state "You are currently rebasing.", so the
+    # hook agrees with git; and no git command produces it, since both rebase
+    # backends write `head-name` at start and `git am` writes `applying`. A bound
+    # rather than a bug. Measured on git 2.53 by creating the directory by hand.
+    # (`git rebase --apply` also writes a `rebasing` file, and this code
+    # deliberately does not read it. `rebase-apply` WITHOUT `applying` is a
+    # rebase, so the negative read already answers the question; a positive read
+    # would add a third, ambiguous state whose only member is exactly the
+    # hand-made directory above. The comment used to name both files as the
+    # discriminator, which overstated what the code looks at.)
+    #
+    # The order below follows git's own status precedence: rebase, then
+    # cherry-pick / revert, then merge, then bisect.
     git_dir=$(git -C "$target_dir" rev-parse --absolute-git-dir 2>/dev/null || echo "")
     inflight=""
     if [ -n "$git_dir" ]; then
@@ -239,6 +269,51 @@ if [ -z "$branch" ]; then
         inflight="bisect"
       fi
     fi
+
+    # WHERE THE REMEDY LEAVES HEAD -- the observable the previous round did not
+    # take. That round verified every printed remedy EXITS 0, which all nine do,
+    # and then promised `--abort` would "re-attach". Measured on git 2.53 by
+    # running each printed remedy verbatim against the fixture and reading HEAD
+    # afterwards:
+    #
+    #   rebase --abort, rebase started FROM a branch      -> branch main
+    #   rebase --abort, rebase started ALREADY detached   -> DETACHED
+    #   am / cherry-pick / revert / merge --abort         -> DETACHED (all four)
+    #   bisect reset                                      -> branch main
+    #
+    # `am` / `cherry-pick` / `revert` / `merge` never detach HEAD themselves, so
+    # this arm is reachable for them ONLY from an already-detached tree, and
+    # `--abort` restores exactly that pre-op state: still detached. The user runs
+    # the remedy, reads exit 0 as success, and the next gated command blocks
+    # again with `in progress : nothing` -- the same dead end this arm exists to
+    # remove, one layer down. So the promise is made conditional on what results.
+    #
+    # ONE SENTENCE COVERS BOTH ENDINGS, because the outcome is a property of the
+    # SESSION rather than of which ending is picked. Measured the same way: a
+    # completed `rebase --continue` re-attaches only when the rebase started from
+    # a branch, and `am` / `cherry-pick` / `revert` / `merge --continue` all
+    # leave HEAD detached.
+    #
+    # THE DISCRIMINATOR IS GIT'S OWN `head-name`, written by both rebase backends
+    # into `rebase-merge/` or `rebase-apply/`: `refs/heads/<branch>` when the
+    # rebase started from that branch, the literal string `detached HEAD` when it
+    # did not. `git am` writes no `head-name` at all, which is consistent with it
+    # never re-attaching. Anything not matching `refs/heads/<name>` -- absent,
+    # `detached HEAD`, empty -- is read as "no branch to return to", the
+    # conservative direction: it under-promises instead of repeating the
+    # overclaim.
+    reattach_to=""
+    if [ "$inflight" = "rebase" ] && [ -n "$git_dir" ]; then
+      __head_name=""
+      if [ -f "$git_dir/rebase-merge/head-name" ]; then
+        __head_name=$(cat "$git_dir/rebase-merge/head-name" 2>/dev/null || echo "")
+      elif [ -f "$git_dir/rebase-apply/head-name" ]; then
+        __head_name=$(cat "$git_dir/rebase-apply/head-name" 2>/dev/null || echo "")
+      fi
+      case "$__head_name" in
+        refs/heads/?*) reattach_to="${__head_name#refs/heads/}" ;;
+      esac
+    fi
     echo "Blocked by branch-gate: target git working tree has a DETACHED HEAD in the MAIN checkout." >&2
     echo "  resolved target dir: $target_dir" >&2
     echo "  main checkout      : $main_checkout" >&2
@@ -253,9 +328,16 @@ if [ -z "$branch" ]; then
       echo "  git -C \"$main_checkout\" bisect reset" >&2
     elif [ -n "$inflight" ]; then
       echo "A '$inflight' is IN PROGRESS, so 'switch main' is not available here -- git" >&2
-      echo "refuses it outright. Finish or abandon the operation instead:" >&2
+      echo "refuses it outright. Finish or abandon the operation first:" >&2
       echo "  git -C \"$main_checkout\" $inflight --continue   # after resolving the conflict" >&2
-      echo "  git -C \"$main_checkout\" $inflight --abort      # to abandon it and re-attach" >&2
+      echo "  git -C \"$main_checkout\" $inflight --abort      # to abandon it" >&2
+      if [ -n "$reattach_to" ]; then
+        echo "Either ending re-attaches HEAD to '$reattach_to' (the branch the rebase started from)." >&2
+      else
+        echo "NEITHER ending re-attaches HEAD: git has no branch recorded to return to, so" >&2
+        echo "both leave this checkout DETACHED. Re-attach afterwards:" >&2
+        echo "  git -C \"$main_checkout\" switch main" >&2
+      fi
     else
       echo "Re-attach first: git -C \"$main_checkout\" switch main" >&2
     fi

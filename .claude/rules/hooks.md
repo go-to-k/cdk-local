@@ -689,14 +689,14 @@ The hooks split into four classes:
   `--show-toplevel` (`/var` → `/private/var` on macOS).
 
   **This gate now has its own harness**,
-  `.claude/hooks/branch-gate.test.sh` (34 cases) — the shape cdkd and
+  `.claude/hooks/branch-gate.test.sh` (42 cases) — the shape cdkd and
   cdk-real-drift have carried for months, and its absence here was the
   gap. `gate-command-recognition.test.sh` keeps its five branch-gate
   rows: its subject is which COMMANDS reach a gate, and it has no
   fixture for a main checkout that owns a linked worktree. The new
   harness puts the interpreter on a `HOOK_BASH` shim, so running the
   suite under bash 3.2 actually runs the HOOK under 3.2 — proven with a
-  bash-4-only parse error that scores 18/16 under 3.2 and 34/0 under 5.x.
+  bash-4-only parse error that scores 18/24 under 3.2 and 42/0 under 5.x.
 
   **The remedy it prints follows the operation in progress**
   (go-to-k/cdkd#2402 review). A conflicted rebase is one of the ways the
@@ -710,10 +710,62 @@ The hooks split into four classes:
   `<op> --continue` / `<op> --abort` — or `bisect reset`, the one case
   where `switch main` is accepted but leaves the bisect running. The
   `applying` sentinel inside `rebase-apply` separates `git am` from
-  `git rebase --apply`, because `git rebase --abort` in an am session
-  answers "No rebase in progress?". Every printed remedy was executed
-  against the fixture and exited 0. Both arms exit 2, so the harness
-  asserts the MESSAGE TEXT, not the code.
+  `git rebase --apply`. Both arms exit 2, so the harness asserts the
+  MESSAGE TEXT, not the code.
+
+  **And what the remedy does to HEAD is stated conditionally, because it
+  IS conditional** (round 3). The round above verified that all nine
+  printed commands EXIT 0 — they do — and then promised `--abort` would
+  "abandon it and re-attach", which is false in four of the six. Exit
+  status was the wrong observable. Measured on git 2.53 by running each
+  printed remedy verbatim and reading HEAD afterwards: `am --abort`,
+  `cherry-pick --abort`, `revert --abort` and `merge --abort` all leave
+  HEAD DETACHED, and so does `rebase --abort` when the rebase was started
+  while ALREADY detached; only a rebase started FROM a branch, plus
+  `bisect reset`, re-attaches. Those four never detach HEAD themselves,
+  so this arm is reachable for them only from an already-detached tree
+  and `--abort` restores exactly that pre-op state — the user reads exit
+  0 as success and the next gated command blocks again with
+  `in progress : nothing`. The discriminator is git's own `head-name`,
+  which both rebase backends write as `refs/heads/<branch>` or as the
+  literal `detached HEAD`; the gate reads it and prints either
+  "Either ending re-attaches HEAD to '<branch>'" or
+  "NEITHER ending re-attaches HEAD" plus the `switch main` still needed
+  afterwards. One sentence covers both endings because the outcome is a
+  property of the SESSION rather than of which ending is picked — a
+  completed `--continue` splits the same way, measured. Eight rows now
+  RUN the printed remedy and assert the resulting HEAD beside that
+  claim.
+
+  **The `applying` sentinel is load-bearing in the direction that fails
+  SILENTLY**, which is not the direction this entry used to name.
+  `git am --abort` inside a `git rebase --apply` session exits 0 with no
+  output and leaves HEAD DETACHED, where `git rebase --abort` from that
+  same state lands on `main`; the reverse crossing is loud (rc=128,
+  `fatal: It looks like 'git am' is in progress. Cannot rebase.`). The
+  string `fatal: no rebase in progress`, cited here before as that
+  crossing's answer, is what git says when NOTHING is in progress — a
+  different condition. That `rebase --apply` branch had no row until
+  round 3; mutating it to `am` left all three suites fully green.
+
+  **Two stated bounds.** A path containing a NEWLINE still fails open,
+  because awk's records ARE lines, so an embedded newline ends the record
+  early whatever field expression reads it — measured, a detached MAIN
+  checkout at `<tmp>/nl<LF>repo` scores rc=0, and rc=2 with the newline
+  removed. `worktree list --porcelain -z` DOES read it and is
+  deliberately not taken: `-z` is a later addition than `--porcelain`, an
+  unsupported flag makes `worktree list` print NOTHING (failing OPEN, the
+  same bug class this arm exists to close), and once `-z` ran first the
+  awk would stop executing on every git new enough to have it, retiring
+  the spaced-path fence over a shape this repo HAS produced in exchange
+  for one over a shape nobody has. Second, a `rebase-apply/` directory
+  holding neither `applying` nor `head-name` reads as a rebase here, so
+  the printed `rebase --abort` exits 1 with
+  `warning: could not read '.git/rebase-apply/head-name'` — but
+  `git status` calls that same state "You are currently rebasing.", so
+  the hook agrees with git, and no git command produces it (both rebase
+  backends write `head-name` at start and `git am` writes `applying`),
+  which makes it a bound rather than a bug.
 
 - **`main-tree-branch-gate.sh`** blocks branch-switching commands in
   the MAIN worktree so concurrent agents don't race on the shared

@@ -197,6 +197,66 @@ run_case_msg() {
   fi
 }
 
+# run_case_head <name> <repo> <stdin_json> <remedy substring> <expected HEAD> \
+#               <claim substring> [<substring that must NOT appear>]
+#
+# ASSERTS THE RESULTING HEAD, the observable the previous round did not take. That
+# round verified every printed remedy EXITS 0 -- all nine do -- and the message
+# then promised `--abort` would "re-attach", which is true for exactly one of the
+# six operations. An exit status cannot see that; HEAD can.
+#
+# So this helper closes the loop rather than reading the message twice. It drives
+# the hook, requires the sentence the message CLAIMS about HEAD, then EXTRACTS the
+# printed remedy line verbatim (trailing `# comment` stripped), EVALS it, and
+# compares the tree's actual HEAD against <expected HEAD>. Two independent things
+# must agree with the measurement -- what git does, and what the message said git
+# would do -- so a wrong remedy and a wrong promise each turn a row red alone.
+#
+# Running the line verbatim also proves it is COPY-PASTEABLE: the fixture path is
+# a `/private/var` symlink target and the quoting is the hook's own.
+#
+# <expected HEAD> is the literal `branch <name>` or the literal `DETACHED`.
+run_case_head() {
+  local name="$1"; local repo="$2"; local payload="$3"; local need="$4"
+  local want_head="$5"; local claim="$6"; local forbid="${7:-}"
+  local out got line rc got_head ok=1 why=""
+  out=$(printf '%s' "$payload" | env PATH="$SHIM:$PATH" "$HOOK" 2>&1)
+  printf '%s' "$payload" | env PATH="$SHIM:$PATH" "$HOOK" >/dev/null 2>&1
+  got=$?
+  if [ "$got" != 2 ]; then ok=0; why="want exit 2, got $got"; fi
+  if ! printf '%s\n' "$out" | grep -qF -- "$need"; then
+    ok=0; why="${why:+$why; }message lacks the remedy: $need"
+  fi
+  if ! printf '%s\n' "$out" | grep -qF -- "$claim"; then
+    ok=0; why="${why:+$why; }message lacks the HEAD claim: $claim"
+  fi
+  if [ -n "$forbid" ] && printf '%s\n' "$out" | grep -qF -- "$forbid"; then
+    ok=0; why="${why:+$why; }message must not contain: $forbid"
+  fi
+  line=$(printf '%s\n' "$out" | grep -F -- "$need" | head -1)
+  line="${line%%#*}"
+  if [ -z "$line" ]; then
+    ok=0; why="${why:+$why; }no remedy line to run"
+  else
+    eval "$line" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" != 0 ]; then ok=0; why="${why:+$why; }the printed remedy exited $rc"; fi
+  fi
+  got_head=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "")
+  if [ -n "$got_head" ]; then got_head="branch $got_head"; else got_head="DETACHED"; fi
+  if [ "$got_head" != "$want_head" ]; then
+    ok=0; why="${why:+$why; }HEAD after the remedy is '$got_head', want '$want_head'"
+  fi
+  if [ "$ok" = 1 ]; then
+    pass=$((pass + 1))
+    printf 'OK   %s (HEAD after remedy: %s)\n' "$name" "$got_head"
+  else
+    fail=$((fail + 1))
+    fail_log="${fail_log}FAIL $name: $why\n  payload: $payload\n  output : $out\n"
+    printf 'FAIL %s (%s)\n' "$name" "$why"
+  fi
+}
+
 # --- BRANCH-NAME verdicts (the behaviour that predates #2402) ----------------
 
 run_case "non-git command always allowed" 0 \
@@ -343,13 +403,15 @@ git -C "$optout_repo" checkout -q main
 # rebase -i, rebase --apply, am, cherry-pick, merge, revert, bisect).
 #
 # WHAT EACH ROW HOLDS DOWN, measured by mutating the hook and re-running this
-# suite (cdkd numbers; the siblings differ only in the pre-existing case count):
+# suite. TWO numbers per mutation, `<in this block> / <whole suite>`, because
+# the resulting-HEAD block below shares these rows' subject and dies with them
+# (cdkd numbers; the siblings differ only in the pre-existing case count):
 #
-#   never detect an operation                -> 7 rows red (the six op rows + bisect)
-#   report every operation as a `rebase`     -> 5 (am, cherry-pick, merge, revert, bisect)
-#   drop the `applying` / `rebasing` sentinel-> 1 (am, and only am)
-#   `<target_dir>/.git` for the git dir      -> 1 (the mid-rebase SUBDIR row)
-#   always print the operation wording       -> 1 (the NOTHING-in-progress row)
+#   never detect an operation                -> 7 / 15 (the six op rows + bisect)
+#   report every operation as a `rebase`     -> 5 / 10 (am, cherry-pick, merge, revert, bisect)
+#   drop the `applying` sentinel             -> 1 / 2  (am, and only am)
+#   `<target_dir>/.git` for the git dir      -> 1 / 1  (the mid-rebase SUBDIR row)
+#   always print the operation wording       -> 1 / 1  (the NOTHING-in-progress row)
 #
 # The one row below with no mutation against it is labelled a CONTROL where it
 # stands, rather than left looking like a fence.
@@ -399,9 +461,15 @@ opg rebase --abort >/dev/null 2>&1
 
 # 3. `git am`. `rebase-apply/` is shared by `git am` and `git rebase --apply`, so
 # the directory alone cannot name the remedy -- the `applying` sentinel inside it
-# is what does, and it is load-bearing: `git rebase --abort` inside an am session
-# answers "No rebase in progress?". Without this row, dropping that discriminator
-# survives.
+# is what does. This row pins the `am` direction; the `rebase --apply` direction
+# is pinned in the resulting-HEAD block below, and it is the one that matters
+# more, because it fails QUIETLY. Measured on git 2.53: `git rebase --abort`
+# inside an am session is LOUD (rc=128, `fatal: It looks like 'git am' is in
+# progress. Cannot rebase.`), while `git am --abort` inside a `rebase --apply`
+# session exits 0 with no output and leaves HEAD DETACHED where the right remedy
+# lands on `main`. An earlier version of this comment cited "No rebase in
+# progress?" for the first crossing; that string is what git says when NOTHING is
+# in progress, a different condition.
 opg checkout -q --detach main
 opg am "$TMPDIR/op-patches"/*.patch >/dev/null 2>&1
 run_case_msg "detached MAIN mid-AM: remedy is 'am --abort'" 2 \
@@ -455,8 +523,155 @@ run_case_msg "detached MAIN, NOTHING in progress: remedy stays 'switch main'" 2 
   "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m oops"}}' "$op_repo")" \
   'Re-attach first: git -C' '--abort' 'rebase --continue'
 opg checkout -q main
+
+# --- THE REMEDY'S RESULTING HEAD (go-to-k/cdkd#2402 review round 3) -----------
+#
+# The block above asserts the remedy TEXT, and its header recorded that every
+# printed remedy had been RUN and exited 0. Both were true and the message was
+# still wrong: it promised `--abort` would "abandon it and re-attach", which
+# happens in exactly one of the six operations. Measured on git 2.53, each
+# printed remedy run verbatim against a detached MAIN checkout, HEAD read
+# afterwards -- every one rc=0:
+#
+#   cherry-pick --abort   before DETACHED   after DETACHED
+#   revert      --abort   before DETACHED   after DETACHED
+#   merge       --abort   before DETACHED   after DETACHED
+#   am          --abort   before DETACHED   after DETACHED
+#   rebase      --abort   before DETACHED   after main       (started FROM main)
+#   rebase      --abort   before DETACHED   after DETACHED   (started detached)
+#   bisect reset          before DETACHED   after main
+#
+# EXIT STATUS WAS THE WRONG OBSERVABLE. Nine remedies exiting 0 is exactly what
+# a message that leaves the user one step short also looks like, and no row here
+# asserted the right thing, which is how the wording survived the round that
+# checked all nine. The rows below RUN the printed command and assert where HEAD
+# lands, beside the sentence the message claims about it -- so the claim and the
+# outcome are pinned to each other and cannot drift apart again.
+#
+# WHAT EACH ROW HOLDS DOWN, measured by mutating the hook and re-running this
+# suite (cdkd numbers; the siblings differ only in the pre-existing case count):
+#
+#   restore `# to abandon it and re-attach`, drop the conditional -> 7 of the 8.
+#     Every operation row. The BISECT row SURVIVES, and that is the honest
+#     number rather than the one predicted: `bisect reset` is a separate arm
+#     with its own claim, which that mutation does not touch.
+#   force `reattach_to=""`, never reading `head-name`             -> 2.
+#     The two rebase-started-FROM-a-branch rows, one per backend.
+#   force `reattach_to="main"` whenever a rebase is in progress   -> 1.
+#     The rebase-started-DETACHED row, and only it.
+#   `rebase-apply` branch of the sentinel set to `am`             -> 1.
+#     The `rebase --apply` row -- the branch the `am`-direction row above
+#     cannot see, and the one whose wrong answer is silent.
+#
+# All four tallies are identical in cdk-local and cdk-real-drift (7 / 2 / 1 / 1),
+# measured the same way.
+#
+# The fixture is `op_repo` again, left on `main` by the block above. Each row
+# builds its own state; running the printed remedy IS the assertion, and the
+# teardown is a separate, explicit step -- see `op_reset` immediately below for
+# why it cannot be the remedy itself.
+
+# EACH ROW TEARS DOWN EXPLICITLY rather than relying on "the printed remedy
+# cleaned up". The remedy IS the assertion here, so a mutant that stops printing
+# one leaves the fixture MID-OPERATION and every row after it then fails for a
+# reason that is not its own. Measured before this helper existed: dropping the
+# `applying` sentinel red-lined the `am` row (correctly) and then cherry-pick,
+# revert, merge and bisect (cascade) -- 6 rows for a defect that touches 1. A
+# tally that cannot be attributed to a row is not a fence, it is noise.
+op_reset() {
+  opg rebase --abort >/dev/null 2>&1
+  opg am --abort >/dev/null 2>&1
+  opg cherry-pick --abort >/dev/null 2>&1
+  opg revert --abort >/dev/null 2>&1
+  opg merge --abort >/dev/null 2>&1
+  opg bisect reset >/dev/null 2>&1
+  opg checkout -q --force main >/dev/null 2>&1
+  :
+}
+
+# 1. rebase (merge backend) started FROM `main`: the ONE arm where `--abort`
+# really does re-attach, and the row that pins the `head-name` READ.
+opg rebase other >/dev/null 2>&1
+run_case_head "mid-REBASE from main: 'rebase --abort' lands on main, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'rebase --abort' 'branch main' "Either ending re-attaches HEAD to 'main'" 'NEITHER ending'
+op_reset
+
+# 2. The SAME operation started while ALREADY detached. Same `in progress`, same
+# printed remedy, OPPOSITE outcome -- so a blanket sentence is wrong even inside
+# `rebase`, and git's own `head-name` (the literal `detached HEAD` here, against
+# `refs/heads/main` above) is the only thing that tells the two apart.
+opg checkout -q --detach main
+opg rebase other >/dev/null 2>&1
+run_case_head "mid-REBASE started DETACHED: 'rebase --abort' stays detached, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'rebase --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+op_reset
+
+# 3. `git rebase --apply` -- the branch of the `rebase-apply` sentinel that NO
+# row reached before. Mutating it to `inflight="am"`, the inverse of the `am`
+# direction the block above pins, left all three suites fully green. It is the
+# direction worth a row because it fails QUIETLY: measured on git 2.53 from this
+# state, `git am --abort` exits 0 with no output and leaves HEAD DETACHED, where
+# `git rebase --abort` lands on `main`. The reverse crossing is loud (rc=128,
+# `fatal: It looks like 'git am' is in progress. Cannot rebase.`).
+opg rebase --apply other >/dev/null 2>&1
+run_case_head "mid-REBASE --apply: remedy is 'rebase --abort', never 'am --abort'" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'rebase --abort' 'branch main' "Either ending re-attaches HEAD to 'main'" 'am --abort'
+op_reset
+
+# 4-7. am / cherry-pick / revert / merge -- the four the old wording got wrong.
+# None of them detaches HEAD itself, so this arm is reachable for them only from
+# an ALREADY-detached tree, and `--abort` restores exactly that.
+opg checkout -q --detach main
+opg am "$TMPDIR/op-patches"/*.patch >/dev/null 2>&1
+run_case_head "mid-AM: 'am --abort' leaves HEAD DETACHED, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'am --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+op_reset
+
+opg checkout -q --detach main
+opg cherry-pick other >/dev/null 2>&1
+run_case_head "mid-CHERRY-PICK: 'cherry-pick --abort' leaves HEAD DETACHED, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'cherry-pick --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+op_reset
+
+opg checkout -q --detach main
+opg revert --no-edit other >/dev/null 2>&1
+run_case_head "mid-REVERT: 'revert --abort' leaves HEAD DETACHED, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'revert --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+op_reset
+
+opg checkout -q --detach main
+opg merge other >/dev/null 2>&1
+run_case_head "mid-MERGE: 'merge --abort' leaves HEAD DETACHED, and says so" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'merge --abort' 'DETACHED' 'NEITHER ending re-attaches HEAD' 'Either ending'
+op_reset
+
+# 8. bisect, whose remedy has a different SHAPE and whose message makes its own
+# claim ("this restores the branch you started from"). This row turns that claim
+# into a measurement, the same way the seven above do for `--abort`.
+opg bisect start >/dev/null 2>&1
+opg bisect bad >/dev/null 2>&1
+opg bisect good "$op_root" >/dev/null 2>&1
+run_case_head "mid-BISECT: 'bisect reset' lands on main, as the message says" \
+  "$op_repo" \
+  "$(printf '{"cwd":"%s","tool_input":{"command":"git commit -m resolve"}}' "$op_repo")" \
+  'bisect reset' 'branch main' 'restores the branch you started from' '--abort'
+op_reset
 ran=$((pass + fail))
-CASE_FLOOR=34
+CASE_FLOOR=42
 if [ "$ran" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$ran" "$CASE_FLOOR"
