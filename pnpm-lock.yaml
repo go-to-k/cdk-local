@@ -70,7 +70,7 @@ importers:
         version: 3.1059.0
       '@clack/core':
         specifier: ^1.3.1
-        version: 1.3.1
+        version: 1.4.3
       '@clack/prompts':
         specifier: ^1.4.0
         version: 1.4.0
@@ -564,6 +564,10 @@ packages:
 
   '@clack/core@1.3.1':
     resolution: {integrity: sha512-fT1qHVGAag4IEkrupZ6lRRbNCs1vS9P01KB/sG8zKgvUztbYtFBtQpjSITNwooDZ83tpsPzP0mRNs1/KVszCRA==}
+    engines: {node: '>= 20.12.0'}
+
+  '@clack/core@1.4.3':
+    resolution: {integrity: sha512-/kr3UWNtdJfxZtPgDqUOmG2pvwlmcLGheex5yiZKdwbzZJxhV+HMNR9QNmyY5cGwTNV6LrR7Jtp+KjhUAP1qBQ==}
     engines: {node: '>= 20.12.0'}
 
   '@clack/prompts@1.4.0':
@@ -4899,6 +4903,11 @@ snapshots:
   '@cdklabs/tskb@0.0.4': {}
 
   '@clack/core@1.3.1':
+    dependencies:
+      fast-wrap-ansi: 0.2.2
+      sisteransi: 1.0.5
+
+  '@clack/core@1.4.3':
     dependencies:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
