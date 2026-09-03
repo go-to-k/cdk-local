@@ -6,30 +6,22 @@ argument-hint: "[area hint, e.g. 'rich API Gateway' | 'CloudFront edge functions
 
 # cdk-local Bug Hunt
 
-Find latent cdk-local bugs the way real users hit them: synth a CDK app that uses a
-resource / config / CloudFormation notation **cdk-local has not exercised yet**,
-then RUN it locally against real Docker and watch for misbehavior. cdk-local's logic
-is heavily unit-tested, so the remaining bugs live in the gap between its **model of
-a synthesized template** and the **actual local-execution reality** — the real
-`public.ecr.aws/lambda/*` container via the RIE, the HTTP routing pipeline, the env
-injection, the protocol contract. Only actually running a synthed app surfaces
-those. Reading the source finds _suspected_ bugs; running finds _real_ ones.
-
-This is a deliberately exploratory workflow. It costs Docker time and image pulls
-(and, for `--from-cfn-stack` scenarios, a real AWS deploy via the upstream `cdk`
-CLI). Cost is acceptable **only because every container / network / stack is torn
-down and verified gone** — see "Cleanup is non-negotiable".
+Find latent cdk-local bugs the way real users hit them: synth a CDK app that
+uses a resource / config / CloudFormation notation **cdk-local has not
+exercised yet**, then RUN it locally against real Docker and watch for
+misbehavior — the remaining bugs live in the gap between cdk-local's model of
+a synthesized template and the actual local-execution reality. Reading the
+source finds _suspected_ bugs; running finds _real_ ones. Exploratory by
+design; the cost is acceptable **only because every container / network /
+stack is torn down and verified gone** — see "Cleanup is non-negotiable".
 
 ## Scope: hunt inside cdk-local's remit only
 
-cdk-local runs your **application compute** locally; it does NOT emulate AWS managed
-services (see `.claude/CLAUDE.md` → Scope). So a bug is a gap in how cdk-local runs
-Lambda / API Gateway / ECS / CloudFront / Bedrock AgentCore compute locally — NOT
-"DynamoDB isn't emulated". A config that cdk-local documents as out of scope
-(a managed-service call, an un-reproduced OAuth roundtrip, ACM private-key fetch) is
-not a bug; a config cdk-local CLAIMS to support but runs wrong IS. Before treating
-something as a bug, confirm it is in scope — a loud, honest `WARN`-and-skip for an
-out-of-scope feature is correct behavior, not a defect.
+cdk-local runs your **application compute** locally; it does NOT emulate AWS
+managed services (`.claude/CLAUDE.md` → Scope). A config cdk-local documents
+as out of scope is not a bug; a config it CLAIMS to support but runs wrong IS.
+A loud, honest `WARN`-and-skip for an out-of-scope feature is correct
+behavior, not a defect.
 
 ## Core principles
 
@@ -67,23 +59,18 @@ out-of-scope feature is correct behavior, not a defect.
    grep -rln "FunctionUrl\|WebSocket\|LambdaFunctionAssociations\|ResponseHeadersPolicy\|ServiceConnect" tests/integration/*/lib/*.ts tests/integration/*/app.ts
    ```
 
-   Empty hits = untested = good hunting ground. But a NON-empty hit does **NOT**
-   mean the config's untested variant is covered: an existing fixture that exercises
-   the HAPPY path of a feature never exercises its edge (an ALB rule fixture with one
-   `path-pattern` never tests `query-string` + `source-ip` together; a CloudFront
-   fixture with one S3 origin never tests a mixed S3-plus-Function-URL distribution).
-   Before skipping a "covered" type, check whether any existing fixture leaves the
-   suspect variant unexercised — if every case uses the happy path, the edge is still
-   open hunting ground.
-4. **Probe feasibility BEFORE an expensive run — skip the out-of-scope tail.** Some
-   scenarios need a real AWS deploy (`--from-cfn-stack` intrinsic resolution against
-   a deployed stack, an `--assume-role` STS path, a real-S3 CloudFront origin read).
-   Those are the costly ones — they deploy via the upstream `cdk` CLI and must be
-   swept afterward. Before burning a paid deploy, confirm the scenario is actually a
-   cdk-local code path (does the resolver claim to handle this intrinsic form?) and
-   not an out-of-scope managed-service call. A pure-local scenario (no
-   `--from-cfn-stack`) is cheap — prefer it. Reach for a deploy only when the bug
-   genuinely lives in the deployed-state resolution path.
+   Empty hits = untested = good hunting ground. But a NON-empty hit does
+   **NOT** mean the config's untested variant is covered: a fixture exercising
+   a feature's HAPPY path never exercises its edge (one `path-pattern` rule
+   says nothing about `query-string` + `source-ip` together). If every case
+   uses the happy path, the edge is still open hunting ground.
+4. **Probe feasibility BEFORE an expensive run — skip the out-of-scope tail.**
+   Scenarios needing a real AWS deploy (`--from-cfn-stack`, `--assume-role`,
+   real-S3 origin reads) are the costly ones. Before burning a paid deploy,
+   confirm the scenario is actually a cdk-local code path and not an
+   out-of-scope managed-service call; prefer a pure-local scenario, and reach
+   for a deploy only when the bug genuinely lives in the deployed-state
+   resolution path.
 5. **Predict bug classes from the resolvers + translators, then audit OFFLINE
    before any expensive run.** The per-feature resolvers and event translators under
    `src/local/` ARE the inventory of what cdk-local handles — and each is a
@@ -179,25 +166,20 @@ across the roll.
 
 ### 5. Harvest the fixture as committed regression integ (EVERY round — bug or not)
 
-This is the asset a hunt leaves behind even when it finds no bug. The fixture you
-just ran is a real end-to-end exercise of the local-execution pipeline; committing
-it under `tests/integration/<name>/` turns this one-time run into a permanent
-regression that `/run-integ` replays. A future change that would silently
-re-introduce the failure/divergence then fails a Docker integ instead of waiting for
-the next hunt. Keep the fixture MINIMAL and UNIQUE-named; commit it in the SAME PR as
-the fix (if any). A rich-but-clean fixture (a serve config with many
-listener-rules / behaviors / origins that all route correctly) is exactly the kind
-worth pinning — a clean round still ships growing regression coverage.
+This is the asset a hunt leaves behind even when it finds no bug: committing
+the fixture under `tests/integration/<name>/` turns the one-time run into a
+permanent regression `/run-integ` replays. Keep it MINIMAL and UNIQUE-named;
+commit it in the SAME PR as the fix (if any). A rich-but-clean fixture is
+exactly the kind worth pinning — a clean round still ships growing regression
+coverage.
 
 ### 6. On a confirmed bug: file an issue, then fix it — with a unit test (mandatory)
 
-**Always file a GitHub issue for every confirmed bug** (`gh issue create`), even
-when you fix it in the same session — every bug becomes a tracked, claimable unit,
-so nothing is silently lost and parallel agents/sessions don't duplicate it. An
-issue-only hunt round files the issue and stops there (the fix comes later); a
-fix-in-session round still files the issue, then closes it from the PR (`Closes
-#<n>`). The issue body carries the real repro (synth + command + observed vs
-expected) so the later fixer has the evidence.
+**Always file a GitHub issue for every confirmed bug** (`gh issue create`),
+even when you fix it in the same session — every bug becomes a tracked,
+claimable unit. An issue-only round files and stops; a fix-in-session round
+still files, then closes from the PR (`Closes #<n>`). The body carries the
+real repro (synth + command + observed vs expected).
 
 **Every issue this hunt files also carries the four classification lines**
 (`CLAUDE.md` -> "The four TODO fields"), in English, one field per line:
@@ -209,15 +191,13 @@ Effort: small (S) | medium (M) | large (L) - <which verification cycle it drags>
 Estimate: <duration, e.g. ~1-3 h -- never a bare letter> - <what eats the time>
 ```
 
-**Two of the four are ALSO LABELS on the filed issue** -- the body lines stay
-exactly as written, and the same values ride the command as
-`--label severity:<high|medium|low> --label effort:<small|medium|large>`. Prose
-is invisible to `gh issue list`, so ranking by `Severity` costs one
-`gh issue view` per candidate without them. `Session-fit` and `Estimate` get no
-label (the first is re-decided at claim time, the second is a free-form
-duration). Enforced by `.claude/hooks/issue-classification-label-gate.sh`; the
-fix PR inherits the issue's labels via
-`.github/workflows/pr-inherit-issue-labels.yml`, so never hand-add them there.
+**Two of the four are ALSO LABELS on the filed issue** — the body lines stay
+as written, and the same values ride the command as
+`--label severity:<...> --label effort:<...>` (`Session-fit` / `Estimate` get
+no label). Enforced by `.claude/hooks/issue-classification-label-gate.sh`;
+the fix PR inherits the labels via
+`.github/workflows/pr-inherit-issue-labels.yml`, so never hand-add them
+there.
 
 Four CLASSIFICATION lines, and they stay four. Alongside them the body carries a
 **`Dup-check:`** line -- a filing-time record, not a fifth classification field:
@@ -227,21 +207,15 @@ Dup-check: searched open issues for <terms> -- none covers this root cause
 ```
 
 `.claude/hooks/issue-dup-check-gate.sh` refuses `gh issue create` (and the
-`gh api repos/<o>/<r>/issues` REST mint) without it, so a hunt that skips the
-search is physically blocked from filing. This hunt is the highest-volume filer
-in the repo, so it is where the line matters most: search the CONCEPT the bug
-turns on rather than this instance's spelling, and on a HIT fold the finding into
-that issue as a checklist row via `gh issue edit` instead of minting a new number
-(`/work-issues` §5 carries the full window and the fold recipe). That is not a
-filing threshold -- an unfiled finding is strictly worse than a filed one; what
-changes is WHERE the finding is written, never whether.
-
-A hunt is the single best moment to write them: you have just reproduced the bug,
-so `Severity` is measured rather than guessed, and you already know which fixture
-the fix will drag. Deferring them to whoever picks the issue up throws that
-evidence away -- the same reason `CLAUDE.md` puts the decision at the moment of
-deferral. `/work-issues` reads these lines back when it ranks candidates, so an
-unclassified body is one this hunt made harder to triage.
+`gh api repos/<o>/<r>/issues` REST mint) without it. This hunt is the
+highest-volume filer in the repo: search the CONCEPT the bug turns on rather
+than this instance's spelling, and on a HIT fold the finding into that issue
+as a checklist row via `gh issue edit` (`/work-issues` §5 carries the window
+and the fold recipe). Not a filing threshold — an unfiled finding is strictly
+worse than a filed one; what changes is WHERE, never whether. A hunt is the
+single best moment to classify: `Severity` is measured rather than guessed,
+and you already know which fixture the fix drags — `/work-issues` reads these
+lines back when ranking candidates.
 
 When you then WORK an issue — this hunt's own or one already filed — **run
 `/work-issues` and follow it** for the collision-safe start: its §0 screens the

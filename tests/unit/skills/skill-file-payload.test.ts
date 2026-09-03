@@ -38,7 +38,7 @@ import { dirname, join } from 'node:path';
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const skillsDir = join(repoRoot, '.claude', 'skills');
 
-const MAX_SKILL_MD_BYTES = 36_000; // the largest non-split skill's size is ASSERTED below (MEASURED_LARGEST_NON_SPLIT), never quoted here
+const MAX_SKILL_MD_BYTES = 30_000; // RE-DERIVED DOWNWARD 36_000 -> 30_000 by the 2026-09-04 token-diet compression pass (mirroring go-to-k/cdkd#2493); the largest non-split skill's size is ASSERTED below (MEASURED_LARGEST_NON_SPLIT), never quoted here
 const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues' orchestrator was ~7 KB at the 2026-08-28 split; its CURRENT size and remaining margin are ASSERTED below (MEASURED), never quoted here
 // Quoting a margin in prose is both the point and the trap: the orchestrator has
 // repeatedly grown to within a few hundred bytes of this cap while the comment
@@ -64,7 +64,7 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues' orchestrator was ~7 KB at
 // addition still has to buy its space by moving something out, and MEASURED
 // asserts the live figure, so read its failure message rather than this
 // sentence.
-const MAX_REFERENCE_FILE_BYTES = 64_000; // the largest stage file's size is ASSERTED below (MEASURED), never quoted here
+const MAX_REFERENCE_FILE_BYTES = 32_000; // RE-DERIVED DOWNWARD 64_000 -> 32_000 by the 2026-09-04 token-diet compression pass; the largest stage file's size is ASSERTED below (MEASURED), never quoted here
 
 // The split skill's stage files must still exist and still carry the moved
 // content. 8 files / ~124 KB at the split; the floor sits far enough below
@@ -87,36 +87,33 @@ const MIN_REFERENCE_FILES = 6;
 // of the launch-mode / LAUNCH_BRANCH contract (it used to pin a token COUNT per
 // file, which a reviewer measured vacuous in 4 of 7 files).
 //
-// Re-derived 2026-09-03 (the go-to-k/cdk-local#650 retro lane) at that lane's
-// FINAL tree. Re-derive at the FINAL tree, and after any rebase rather than
-// before it, or every number is the pre-merge one. The inputs are in MEASURED
-// below and ASSERTED, so only the REASONING lives here.
+// Re-derived DOWNWARD 132_000 -> 119_500 by the 2026-09-04 token-diet
+// compression pass (mirroring go-to-k/cdkd#2493), at that pass's FINAL tree.
+// Re-derive at the FINAL tree, and after any rebase rather than before it, or
+// every number is the pre-merge one. The inputs are in MEASURED below and
+// ASSERTED, so only the REASONING lives here.
 //
 // WHAT CONSUMES THE MARGIN, measured rather than assumed: growth in the
 // NON-largest files ONLY. When the LARGEST file grows, corpus and largest rise
 // together and `corpus - largest` does not move at all. So the figure to watch
 // is the sum of every stage file EXCEPT the biggest -- which is why a retro lane
 // eats the margin fast: its lessons land in whichever stage file each one fires
-// in, and `implement.md` (the leader) is rarely one of them. The
-// go-to-k/cdk-local#650 lane grew
-// verify.md +4464, gotchas.md +4700, launch-mode.md +2666, retro.md +1323,
-// triage.md +1168 and claim.md +1096, and NOT ONE of them was the leader -- so
-// `corpus - largest` moved the whole ~15.4 KB and the 116,500 that preceded this
-// value LAPSED. The assertion at the bottom of this file is what said so, at the
-// commit that caused it, which is the whole point of asserting the invariant
-// rather than describing it.
+// in, and `implement.md` (the leader) is rarely one of them (the
+// go-to-k/cdk-local#650 lane grew six non-leader files by ~15.4 KB total and
+// lapsed the then-floor of 116,500; the assertion at the bottom of this file is
+// what said so, at the commit that caused it).
 //
-// This value is derived from that failure message: it sits ~3.5 KB above the
-// current `corpus - largest`, the same order of margin its two predecessors were
-// given (112,000 was set with ~4.5 KB and came out of a rebase with 91 B; the
-// 116,500 that replaced it restored ~3.4 KB and survived one retro). No upper
-// bound moves. MEASURED prints the current margin in its failure message, so the
-// next erosion arrives as a number rather than as a surprise. Still sized
-// against `corpus - largest` rather than against the either-largest case because
-// the top two stage files are ~10.0 KB apart, so a flip is not near -- that gap
-// has narrowed from ~14.5 KB, so re-check it rather than assuming; the sibling
-// cdkd sizes against the flip because ITS top two are ~2 KB apart.
-const MIN_REFERENCE_CORPUS_BYTES = 132_000;
+// This value sits ~3.5 KB above the compressed tree's `corpus - largest`, the
+// same order of margin its predecessors were given. A COMPRESSION pass moves
+// the floor DOWN in the same commit (the retro anti-regrowth rule in
+// references/retro.md section 10-c forbids buying room by raising it). MEASURED
+// prints the current margin in its failure message, so the next erosion arrives
+// as a number rather than as a surprise. Still sized against `corpus - largest`
+// rather than against the either-largest case because the top two stage files
+// are ~7.0 KB apart, so a flip is not near -- that gap has narrowed from
+// ~10.0 KB, so re-check it rather than assuming; the sibling cdkd sizes against
+// the flip because ITS top two are ~2 KB apart.
+const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -148,9 +145,9 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_837,
-    corpusBytes: 166_979,
-    largest: { file: 'implement.md', bytes: 38_217 },
-    runnerUp: { file: 'verify.md', bytes: 28_170 },
+    corpusBytes: 144_126,
+    largest: { file: 'implement.md', bytes: 28_191 },
+    runnerUp: { file: 'verify.md', bytes: 21_184 },
   },
 };
 
@@ -162,7 +159,7 @@ const MEASURED: Record<
  */
 const MEASURED_LARGEST_NON_SPLIT: { file: string; bytes: number } = {
   file: 'hunt-bugs',
-  bytes: 28_103,
+  bytes: 25_771,
 };
 
 function skillNames(): string[] {

@@ -56,10 +56,9 @@ for n in <the numbers this run filed that are still open>; do
     | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.[a-z]+' | sort -u \
     | while read -r f; do
         # Suffix match, not equality: an issue body names a file by BASENAME far
-        # more often than by full path (the bare file name, not the full
-        # repo-relative one), and an exact whole-line compare misses
-        # every one of those. Measured: the exact form fired on 1 of this run's 2
-        # deferrals and missed the one whose body used the basename.
+        # more often than by full path, and an exact whole-line compare misses
+        # every one of those. Measured: the exact form fired on 1 of this run's
+        # 2 deferrals and missed the one whose body used the basename.
         grep -E "(^|/)$(printf '%s' "$f" | sed 's/[.[\*^$]/\\&/g')\$" \
           /tmp/run-touched.$$ | while read -r hit; do
             echo "PROMOTE #$n -- this run touched $hit"
@@ -72,36 +71,29 @@ rm -f /tmp/run-touched.$$
 Pipe the loop through `sort -u`: a body naming a file twice otherwise prints two
 findings.
 
-**A hit is a prompt for judgement, not a verdict** — the check cannot tell a
-citation from a target (one hit named four files, three cited as precedent).
-A SHARED BASENAME makes it worse than uninformative: the suffix match is what
-lets a body name a file by basename, so `verify.sh` (or `package.json`,
-`index.ts`) matches every sibling directory at once — measured 2026-09-02, three
-deferrals produced 27 hits naming nine fixtures, and the count discriminated
-nothing. Read such a hit as a DIRECTORY question ("which of the sites this issue
-lists did the run open?"), never as a file one.
-Do the item now while the context is loaded, or re-classify it in the issue
-body with the reason.
-
-**And re-read the REASON, not just the files, because a deferral reason can name
-a state that has since resolved.** A reason phrased in the run's transient state
-("the PR is still open", "a fifth review round") is FALSE once that state
-resolves; re-reading an expired premise is not re-litigation — keeping a `next`
-alive on it is (2026-08-26, go-to-k/cdkd#2259 deferred behind go-to-k/cdkd#2247;
-the reason outlived the merge).
+- **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
+  citation from a target (one hit named four files, three cited as precedent).
+  A SHARED BASENAME makes it worse than uninformative: `verify.sh` (or
+  `package.json`) matches every sibling directory at once — measured
+  2026-09-02, three deferrals produced 27 hits naming nine fixtures. Read such
+  a hit as a DIRECTORY question ("which of the sites this issue lists did the
+  run open?"), never as a file one. Do the item now while the context is
+  loaded, or re-classify it in the issue body with the reason.
+- **Re-read the REASON, not just the files** — a deferral reason phrased in
+  the run's transient state ("the PR is still open") is FALSE once that state
+  resolves; re-reading an expired premise is not re-litigation — keeping a
+  `next` alive on it is (go-to-k/cdkd#2259 deferred behind go-to-k/cdkd#2247;
+  the reason outlived the merge).
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
 signals §5's window was searched by this instance's spelling, not the concept.
-Only the first of the three usual reasons is healthy:
-
-- **the code really does have that many independent defects** — say which area,
-  so the next hunt aims there.
-- **one root cause was split into many issues** — fold what is still open into
-  an umbrella now.
-- **discoveries were deferred that had session-only evidence** — re-read the
-  `now` criteria in `CLAUDE.md`; a repro that dies with this session is not a
-  residual.
+Only the first of the three usual reasons is healthy: the code really does
+have that many independent defects (say which area, so the next hunt aims
+there); one root cause was split into many issues (fold what is still open
+into an umbrella now); or discoveries were deferred that had session-only
+evidence (re-read the `now` criteria in `CLAUDE.md` — a repro that dies with
+this session is not a residual).
 
 **M <= N is NOT a target, and must never become one.** An unfiled finding is
 strictly worse than a filed one — it removes the defect from the record while
@@ -128,23 +120,18 @@ Walk the session and collect, each with its concrete instance:
 "this would be nice" stops being read to the bottom, where §9 and §10 live.
 
 **And evidence you were HANDED is not evidence you VERIFIED.** The observation
-usually survives the hand-off intact; the CAUSAL STORY attached to it does not,
-because a plausible mechanism is cheap to write and costs a command to check. So
-resolve the mechanism against the file before writing it up — the line, not the
-belief about the line. Measured 2026-09-03 in this run's own retro: an
-orchestrator handed a lane "a leaked `.markgate-pr-review-sha` would have merged
-a higher-tier PR on a review of a DIFFERENT, already-merged PR", which is
-fail-OPEN and alarming and wrong. What refuted it was opening
-`pr-review-gate.sh` and reading the condition its pass arm actually tests --
-§8 states that mechanism -- after which the leak plainly BLOCKS. Read the
-CONDITION, not a line number: the number was accurate the day this was written
-and is one edit from naming something else. The observation (markers leak
-between IN-PLACE lanes) was real; the consequence was invented, and it survived
-because everything around it was correct. Two properties make this the expensive
-kind of error: it arrives from the party a lane trusts most, and prose is the
-one artifact in the repo that no gate executes — which is why §10-d sends a
-skill-only PR through reviewers at whatever tier its SIZE gives, with no
-docs down-bias.
+usually survives the hand-off intact; the CAUSAL STORY attached to it does
+not — a plausible mechanism is cheap to write and costs a command to check.
+Resolve the mechanism against the file before writing it up — the line, not
+the belief about the line (measured 2026-09-03 in this run's own retro: an
+orchestrator handed a lane "a leaked `.markgate-pr-review-sha` would have
+merged a higher-tier PR", which is alarming and wrong — opening
+`pr-review-gate.sh` and reading the condition its pass arm tests showed the
+leak plainly BLOCKS; the observation was real, the consequence invented). Read
+the CONDITION, not a line number. Two properties make this the expensive kind
+of error: it arrives from the party a lane trusts most, and prose is the one
+artifact no gate executes — which is why §10-d sends a skill-only PR through
+reviewers at whatever tier its SIZE gives, with no docs down-bias.
 
 ### 10-b. Where the fix belongs — pick ONE
 
@@ -173,10 +160,19 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   Gotchas is for traps that span steps, not a run log.
 - **Amend the sentence that was wrong** rather than adding a sibling — two
   near-duplicate bullets blunt each other.
-- **Carry the evidence inline** (date, issue / PR number, what happened) — a
-  rule with no incident behind it cannot be re-judged or retired.
+- **Carry the evidence inline** (date, issue / PR number, what happened) — but
+  as ONE line: the rule plus a citation, not the narrative. A rule with no
+  incident behind it cannot be re-judged or retired; a rule buried in its own
+  incident report is not read.
 - **Pay for what you add**: cut a line this run proved stale, subsumed, or
-  wrong. Net growth is fine for a new lesson; unbounded growth is not.
+  wrong. **A retro NEVER buys room by raising a byte cap or a corpus floor** —
+  the caps in `tests/unit/skills/skill-file-payload.test.ts` are the
+  mechanical stop on this skill's growth loop, and a retro that raises one
+  converts the stop into a ratchet (cdkd's 2026-09-02 retro raised its corpus
+  floor to fit its additions; go-to-k/cdkd#2493's compression pass reversed it
+  and re-derived every bound DOWNWARD). If a lesson genuinely cannot be paid
+  for by compression in its stage file, split the stage; the floor moves DOWN
+  with compression passes, never up to accommodate growth.
 - Do not restate a rule already in `CLAUDE.md` or another step — point at it.
 - A FLOW lesson (vs a cdk-local one) belongs in the same-named `work-issues`
   skill in ALL THREE repos (`../cdkd`, `../cdk-real-drift`): **the session
@@ -192,20 +188,17 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   duplicates: go-to-k/cdk-local#531 mirrored a SUBSET of go-to-k/cdk-local#528
   minutes later, both closed by one PR (go-to-k/cdk-local#532);
   go-to-k/cdkd#2011 / go-to-k/cdkd#2016 hold the same shape open. **And a lane
-  WORKING a mirror issue does not mirror onward** — the clause that stops the
-  generator: re-filing a lesson you RECEIVED manufactures copies (the
-  originating session owns all three landings); only what your ADAPTATION
-  taught you is new, same rule in turn.
+  WORKING a mirror issue does not mirror onward** — re-filing a lesson you
+  RECEIVED manufactures copies (the originating session owns all three
+  landings); only what your ADAPTATION taught you is new, same rule in turn.
   **Inside this scope, `Session-fit: next` is not an available answer.** A run
   framed as "one session across the repos" cannot classify its discoveries out
-  of it; three tells: filing the SAME issue body into more than one repo (the
-  split §10 exists to end); a mechanical fix whose evidence is live in this
-  run; a prior "finish it here" from the user, which a discovery inherits.
-  §4's fields make a deferral HONEST, not available — a defensible `Effort` /
-  `Estimate` for work the run is positioned to do is the tell. (2026-08-20: a
-  cross-repo session re-filed its remaining gap as three per-repo issues;
-  fixed same-session after the user objected — same session is the bar, same
-  PR only when reviewable together.)
+  of it; three tells: filing the SAME issue body into more than one repo; a
+  mechanical fix whose evidence is live in this run; a prior "finish it here"
+  from the user, which a discovery inherits. §4's fields make a deferral
+  HONEST, not available (2026-08-20: a cross-repo session re-filed its
+  remaining gap as three per-repo issues; fixed same-session after the user
+  objected — same session is the bar, same PR only when reviewable together).
   **Verify the copy against the TARGET repo, claim by claim, before shipping
   it.** A sentence true here reads authoritative there while false, and
   nothing lints instruction prose — the first mirror (2026-08-18) carried four
@@ -213,12 +206,11 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   each gate name, hook behavior, skill name, path and cross-reference against
   that repo's files. Kept here, not in memory (per-project-path, per-machine —
   it would not load in the target repos).
-  **Verify the cited EVIDENCE too, not only the repo-specific nouns — open the
-  issue or PR the source names and confirm it says what the source claims.**
-  Evidence can be wrong where WRITTEN and travel intact: go-to-k/cdk-local#504
-  (2026-08-19) quoted a claim that go-to-k/cdk-real-drift#1761 showed a flaky
-  rc=0/rc=1 tsgolint artifact; it records a DETERMINISTIC exit 134 (Vite+
-  stdout `EAGAIN` panic). Reading it and go-to-k/cdk-real-drift#1765 cost one
+  **Verify the cited EVIDENCE too — open the issue or PR the source names and
+  confirm it says what the source claims.** Evidence can be wrong where
+  WRITTEN and travel intact: go-to-k/cdk-local#504 quoted a claim that
+  go-to-k/cdk-real-drift#1761 showed a flaky rc=0/rc=1 artifact; it records a
+  DETERMINISTIC exit 134. Reading it and go-to-k/cdk-real-drift#1765 cost one
   command each.
   **Fully qualify EVERY issue / PR reference in this file — same-repo ones
   included — as `go-to-k/<repo>#N`.** This file travels between the three
@@ -232,9 +224,8 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   full URL is the only spelling that passes.** A body does not travel;
   `pr-body-item-number-gate.sh` allows only the `closes #N` form, a
   parenthesized `(#N)`, fenced code, and full GitHub URLs — the SAME-repo
-  qualified form is refused too (`go-to-k/cdk-local#587` blocked like
-  `go-to-k/cdkd#1821`), so "qualify it" is never the fix in a body. Pick by
-  DESTINATION: `go-to-k/<repo>#N` under `.claude/**`,
+  qualified form is refused too, so "qualify it" is never the fix in a body.
+  Pick by DESTINATION: `go-to-k/<repo>#N` under `.claude/**`,
   `https://github.com/go-to-k/<repo>/issues/N` in a body. Nothing detects the
   mismatch until `gh pr create`; measured 2026-08-27, the refusal aborted a
   whole `python3 <<PY ... PY` heredoc chained to the publishing `gh api`
@@ -271,9 +262,9 @@ branch IN IT. `B` is re-assigned because a separate fenced block is a separate
 shell (§9's `$MAIN` trap), and the merged lane branch cannot be reused
 (re-pushing it is refused by post-merge-orphan-push-gate).
 `main-tree-branch-gate` backs this switch up against a cwd reset, and since
-go-to-k/cdk-local#641 (merged 2026-09-02) that covers the CHAINED form below,
-not only a bare `git switch -c`. §5 carries the measurement and the one-line
-grep that says whether the coverage is still on `main`.
+go-to-k/cdk-local#641 that covers the CHAINED form below, not only a bare
+`git switch -c`. §5 carries the measurement and the one-line grep that says
+whether the coverage is still on `main`.
 
 ```bash
 B=chore/work-issues-retro-<lesson-slug>
