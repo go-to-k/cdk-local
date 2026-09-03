@@ -95,20 +95,20 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/changelog": "^7.0.0",
     "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/git": "^11.0.1",
     "@semantic-release/github": "^12.0.0",
     "@semantic-release/npm": "^13.0.0",
     "@types/graphlib": "^2.1.12",
-    "@types/jsdom": "^28.0.3",
-    "@types/node": "^20.19.0",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.4.0",
     "@types/ws": "^8.18.1",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "semantic-release": "^25.0.0",
     "tsdown": "^0.22.9",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.2.5"
+    "vite-plus": "^0.3.0"
   },
   "peerDependencies": {
     "aws-cdk-lib": "^2.0.0",
