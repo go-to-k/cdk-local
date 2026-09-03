@@ -96,13 +96,13 @@
   },
   "devDependencies": {
     "@types/graphlib": "^2.1.12",
-    "@types/jsdom": "^28.0.3",
-    "@types/node": "^20.19.0",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.4.0",
     "@types/ws": "^8.18.1",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "tsdown": "^0.22.9",
     "typescript": "^7.0.2",
-    "vite-plus": "^0.2.5"
+    "vite-plus": "^0.3.0"
   },
   "peerDependencies": {
     "aws-cdk-lib": "^2.0.0",
