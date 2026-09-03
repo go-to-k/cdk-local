@@ -1379,6 +1379,14 @@ major version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR
 bumps, and the publish job in `.github/workflows/release.yml` hard-fails on
 any tag whose major is not 0.
 
+Known behavior: the release PR is created with `GITHUB_TOKEN`, and GitHub
+does not trigger `pull_request` workflows for such PRs — so the release PR
+shows NO CI checks. Its diff is only version/CHANGELOG/manifest; the
+maintainer merges it via the web UI. Handing the release-please step a PAT
+would restore CI on it. (Unlike the sibling cdkd, this repo has no
+ci-green-gate hook, so nothing agent-side blocks on the missing checks
+either.)
+
 ## Important implementation details
 
 - **ESM Modules**: `package.json` declares `"type": "module"`. All imports

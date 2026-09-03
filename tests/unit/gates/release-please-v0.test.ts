@@ -64,23 +64,62 @@ describe('release-please v0 fence', () => {
 
   it('the publish job refuses a non-0 major before npm publish', () => {
     const workflow = readFileSync(join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    // Everything below is asserted against the publish JOB's slice of the
+    // file (it is the last job, so slicing from its header reaches EOF) —
+    // keeping the `if:` / permissions pins from being satisfied by a line
+    // belonging to the release-please job.
+    const publishJobIndex = workflow.indexOf('\n  publish:');
+    expect(publishJobIndex, 'publish job missing from release.yml').toBeGreaterThan(-1);
+    const publishJob = workflow.slice(publishJobIndex);
+
     // Publish only runs on an actual release (the release-PR merge), never on
-    // the ordinary pushes that merely update the release PR.
-    expect(workflow).toMatch(
-      /if: \$\{\{ needs\.release-please\.outputs\.release_created == 'true' \}\}/,
+    // the ordinary pushes that merely update the release PR. Exact
+    // full-expression pin on the whole `if:` line: a weakening such as
+    // `always() ||` prepended to the same expression must fail, which a
+    // substring match would let through.
+    expect(publishJob).toMatch(
+      /^    if: \$\{\{ needs\.release-please\.outputs\.release_created == 'true' \}\}$/m,
     );
 
-    // The guard's load-bearing refusal: computed major != 0 exits non-zero
-    // before npm publish can run.
-    const guardIndex = workflow.indexOf('"$MAJOR" != "0"');
-    expect(guardIndex, 'v0 guard condition missing from release.yml').toBeGreaterThan(-1);
-    const guardBlock = workflow.slice(guardIndex, guardIndex + 400);
-    expect(guardBlock, 'v0 guard must hard-fail (exit 1)').toContain('exit 1');
+    // npm OIDC trusted publishing needs the id-token grant on the publish
+    // job; losing it turns every real release into a publish failure.
+    expect(publishJob, 'publish job must carry id-token: write').toMatch(
+      /^      id-token: write$/m,
+    );
 
-    // `run: npm publish` is the STEP, distinct from the header comment's
-    // prose mention of npm publish earlier in the file.
-    const publishIndex = workflow.indexOf('run: npm publish');
-    expect(publishIndex, 'npm publish step missing').toBeGreaterThan(-1);
+    // The guard's load-bearing refusals. Each arm's body is bounded at its
+    // own terminator (the first following `fi` line for the if-arms, `;;`
+    // for the case arm) before asserting `exit 1` inside it — an unbounded
+    // window can be satisfied by a NEIGHBORING arm's exit 1, so softening
+    // one arm to a warning would stay green (found in review round 2 here
+    // and in the cdkd twin, go-to-k/cdkd@67a0a166).
+    const pkgArm = publishJob.match(
+      /if \[ "\$PKG_VERSION" != "\$VERSION" \]; then\n([^]*?)\n\s*fi\n/,
+    );
+    expect(pkgArm, 'PKG_VERSION mismatch arm missing').not.toBeNull();
+    expect(pkgArm![1], 'PKG_VERSION mismatch arm must hard-fail').toContain('exit 1');
+
+    const majorArm = publishJob.match(/if \[ "\$MAJOR" != "0" \]; then\n([^]*?)\n\s*fi\n/);
+    expect(majorArm, 'MAJOR != 0 arm missing').not.toBeNull();
+    expect(majorArm![1], 'MAJOR != 0 arm must hard-fail').toContain('exit 1');
+
+    // The 0.* case arm is the third, independent spelling of the same fence:
+    // its default `*)` branch must refuse too.
+    expect(publishJob).toContain('0.*)');
+    const caseArm = publishJob.match(/\*\)\n([^]*?)\n\s*;;/);
+    expect(caseArm, 'case default arm missing').not.toBeNull();
+    expect(caseArm![1], 'case default arm must hard-fail').toContain('exit 1');
+
+    // Exact pin on purpose: any flag added to npm publish (e.g.
+    // --provenance) must be a deliberate test edit, not a silent drift of
+    // what ships. Also distinct from the header comment's prose mention of
+    // npm publish earlier in the file.
+    const publishIndex = publishJob.search(/^\s*run: npm publish$/m);
+    expect(
+      publishIndex,
+      'no step whose run is exactly `npm publish` (a flag change must update this pin)',
+    ).toBeGreaterThan(-1);
+    const guardIndex = publishJob.indexOf('"$MAJOR" != "0"');
     expect(guardIndex, 'v0 guard must run before npm publish').toBeLessThan(publishIndex);
   });
 
