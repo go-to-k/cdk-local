@@ -15,7 +15,7 @@ Check whether documentation is up to date with recent code changes.
    - `src/index.ts` — public library exports
    - `src/cli/index.ts`, `src/cli/commands/**` — CLI surface described in README.md
    - `src/types/**` — public type definitions
-   - **any new file added** anywhere under `src/**` — must be mentioned in `.claude/CLAUDE.md` "Architecture" section
+   - **any new file added** anywhere under `src/**` — must be mentioned in the per-module walk in `.claude/rules/code-layout.md` (the detail behind `.claude/CLAUDE.md` "Architecture")
    - `package.json` — dependency additions/removals
    - `README.md`, `.claude/CLAUDE.md`, `.claude/rules/**`, `docs/**` (when it exists) — the docs themselves
    - README-visible CLI behavior changes (new flags, changed defaults, new commands)
@@ -24,10 +24,10 @@ Check whether documentation is up to date with recent code changes.
 
 3. **For each changed source file** (when a deep review is warranted), determine what documentation might be affected:
    - `src/cli/` changes → check CLI options/commands in README.md, `.claude/CLAUDE.md`
-   - `src/synthesis/` changes → check `.claude/CLAUDE.md` Architecture section
-   - `src/local/` changes → check README.md usage examples + scope statement, `.claude/CLAUDE.md` "Runs locally" list
-   - `src/assets/` changes → check `.claude/CLAUDE.md` Architecture section
-   - New files added → check if they're mentioned in `.claude/CLAUDE.md` "Architecture"
+   - `src/synthesis/` changes → check `.claude/rules/code-layout.md` (+ the `.claude/CLAUDE.md` Architecture summary if the layout itself changed)
+   - `src/local/` changes → check README.md usage examples + scope statement, `.claude/CLAUDE.md` "Runs locally" list + `.claude/rules/local-scope.md`
+   - `src/assets/` changes → check `.claude/rules/code-layout.md`
+   - New files added → check if they're mentioned in `.claude/rules/code-layout.md`
    - New exports in `src/index.ts` → check if README usage matches
    - `package.json` dependency changes → mention in `.claude/CLAUDE.md` if user-facing
    - New CLI options → check README.md usage section

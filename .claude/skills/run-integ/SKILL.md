@@ -28,14 +28,13 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    bash tests/integration/_lib/aws-orphan-sweep.sh <test-name>; rc=$?
    ```
 
-   Do NOT first decide whether the fixture is AWS-resource-owning. That
-   decision has silently excluded a resource-owning fixture twice
-   (`*-from-cfn-stack` missed three, and the widened `*-from-cfn*` still missed
-   `local-invoke-assume-role`, which deploys a stack containing an IAM role),
-   and the script now makes it internally, from one predicate, against the
-   fixture's own `verify.sh`. A fixture that owns nothing makes no AWS call and
-   exits 0. `aws-orphan-sweep.sh --list-owners` prints the derived set if you
-   want to see it.
+   Do NOT first decide whether the fixture is AWS-resource-owning — that
+   decision silently excluded a resource-owning fixture twice
+   (`*-from-cfn-stack` missed three; the widened `*-from-cfn*` still missed
+   `local-invoke-assume-role`). The script decides internally, from one
+   predicate against the fixture's own `verify.sh`; a fixture that owns
+   nothing makes no AWS call and exits 0 (`--list-owners` prints the derived
+   set).
 
    **Also confirm the deploy toolchain is present** — the sweep checks that
    AWS is reachable, not that the fixture can deploy, and this was dropped
@@ -48,13 +47,9 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    Only needed when the sweep reported the fixture as AWS-owning (rc 0 with a
    `fixture=` line rather than the "owns no real AWS resource" line).
 
-   **Gate on the exit code. Do not read the output and judge.** That is the
-   whole point of go-to-k/cdk-local#601 — the previous recipe was prose whose
-   error branches nobody executed, and it carried four instances of one defect
-   class in a single PR (a bare stack name that could never match, a `/cdkl`
-   scope that listed every lane, a filter that degraded to `contains(Name,'-')`
-   over the whole ACCOUNT, and two stack scans with no guard at all, where a
-   wrong cwd produced a false clean on the PRIMARY resource):
+   **Gate on the exit code. Do not read the output and judge.** The previous
+   recipe was prose whose error branches nobody executed, carrying four
+   instances of one defect class in a single PR (go-to-k/cdk-local#601):
 
    | rc | meaning | what to do |
    |----|---------|------------|
@@ -66,19 +61,10 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
    Anything non-zero means do NOT proceed and do NOT set the marker in step 9.
 
-   **The decisions the script encodes** (its file header states each with its
-   reason, and `aws-orphan-sweep.test.sh` executes every failure path rather
-   than grepping for it): the lane suffix is resolved ONCE from a
-   `BASH_SOURCE`-derived path, so a wrong cwd cannot change any answer; stack
-   names, SSM paths, the CloudFormation export and the un-suffixed `froms3`
-   bucket are all DERIVED from the fixture, so a caller cannot forget one;
-   `describe-stacks --stack-name` is used rather than a status filter (which
-   hid 16 of 23 statuses, `DELETE_IN_PROGRESS` — an interrupted `cdk destroy`,
-   this sweep's own scenario — among them); exit 0 from `describe-stacks` is
-   the ORPHAN case; no query silences stderr; and the SSM / export filters
-   carry BOTH the `cdkl` anchor and this lane's suffix, with `contains` rather
-   than `ends_with` because `local-invoke-from-cfn-stack-large-stack` creates
-   ~105 parameters shaped `/cdkl-ls-<suffix>/p000`.
+   The decisions the script encodes are stated in its file header, each with
+   its reason, and `aws-orphan-sweep.test.sh` executes every failure path
+   rather than grepping for it — read the header rather than re-deriving them
+   here.
 
    **On rc=2, the script PRINTS the remediation plan.** Run what it printed.
    It names the SUFFIXED stacks (a base name matches nothing and reports
@@ -100,15 +86,38 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
 
 5. **Run the test**: `bash tests/integration/<test-name>/verify.sh`. Propagate the script's exit code — a non-zero exit must drive this skill into the failure path so step 7's cleanup verification fires. Do NOT swallow `verify.sh` failures.
 
-   **Start it in the BACKGROUND on the FIRST attempt, not after a foreground run dies.** A foreground Bash call is capped at ten minutes, and "will this fixture finish inside that?" cannot be answered from the fixture's usual runtime: a first-ever run on a host with a cold Docker cache spends most of it in the one-time `public.ecr.aws/lambda/*` base-image pull (~600 MB). Measured on the overnight run of 2026-09-02 (go-to-k/cdk-local#650): the first `local-invoke` attempt was killed at the cap (exit 143) still inside that pull, left zero orphans because the fixture's traps held, and cost a full re-run. So run this step with the Bash tool's `run_in_background`, handing it the BARE command — no trailing `&` and no `nohup`, either of which double-backgrounds and reports the launcher's exit 0 while the real run is untracked — and REDIRECT the output to a log so it survives the call:
+   **Start it in the BACKGROUND on the FIRST attempt, not after a foreground
+   run dies.** A foreground Bash call is capped at ten minutes, and a
+   first-ever run on a cold Docker cache spends most of that in the one-time
+   `public.ecr.aws/lambda/*` base-image pull (~600 MB) — measured on
+   go-to-k/cdk-local#650: the first `local-invoke` attempt was killed at the
+   cap (exit 143) still inside that pull. Run this step with the Bash tool's
+   `run_in_background`, handing it the BARE command — no trailing `&` and no
+   `nohup`, either of which double-backgrounds and reports the launcher's
+   exit 0 while the real run is untracked — and REDIRECT the output to a log:
 
    ```bash
    bash tests/integration/<test-name>/verify.sh > /tmp/integ-<test-name>.log 2>&1
    ```
 
-   **Redirect, never `| tee`.** A pipeline's status is the LAST stage's, so `verify.sh … | tee log` reports `tee`'s success and a FAILING fixture arrives as rc=0 — measured under bash, zsh AND dash alike (only `set -o pipefail` recovers it, and `dash` does not have it -- `Illegal option -o pipefail`, rc=2). That would defeat the "propagate the exit code" rule above AND step 9's first set-condition, which is that `verify.sh` finished with exit code 0: a RED run would satisfy it and `markgate set integ` would fire on a failure, in the only legitimate setter of the merge gate. It is the same family as the piped-`markgate` trap this repo built `markgate-pipe-gate.sh` for (`.claude/rules/hooks.md`), and it is worth naming twice because the log you want for polling is exactly what tempts you into the pipe. With the redirect there is no pipeline and `$?` is `verify.sh`'s own; under `run_in_background` the verdict is the exit status the completion notification reports.
+   **Redirect, never `| tee`.** A pipeline's status is the LAST stage's, so
+   `verify.sh … | tee log` reports `tee`'s success and a FAILING fixture
+   arrives as rc=0 (measured under bash, zsh AND dash; only
+   `set -o pipefail` recovers it and `dash` does not have it). A RED run
+   would then satisfy step 9's first set-condition and `markgate set integ`
+   would fire on a failure — the same family as the piped-`markgate` trap
+   `markgate-pipe-gate.sh` exists for. With the redirect, `$?` is
+   `verify.sh`'s own; under `run_in_background` the verdict is the exit
+   status the completion notification reports.
 
-   **Then POLL THE LOG for progress; a completion notification is not a timer.** `docker pull` has no timeout of its own, and neither does `verify.sh` or the background task, so from the outside a stalled pull is indistinguishable from a slow one — measured on that same run, a `docker pull` froze for 2 h 58 m across a machine-sleep window with the image ALREADY fully downloaded, and nothing anywhere fired. Read the log's tail after a few minutes; if it has not moved, walk the process tree (`pgrep -P` down to the `docker pull` pid), kill the tree, confirm 0 orphans via step 6, and re-run — with the cache then warm it completed in about a minute.
+   **Then POLL THE LOG for progress; a completion notification is not a
+   timer.** Nothing in the stack has a timeout, so a stalled pull is
+   indistinguishable from a slow one from outside (measured: a `docker pull`
+   froze 2 h 58 m across a machine-sleep window with the image ALREADY fully
+   downloaded, and nothing fired). Read the log's tail after a few minutes;
+   if it has not moved, walk the process tree (`pgrep -P` down to the
+   `docker pull` pid), kill the tree, confirm 0 orphans via step 6, and
+   re-run — with the cache warm it completes in about a minute.
 
 6. **Verify Docker cleanup** (mandatory regardless of pass/fail):
 
@@ -151,7 +160,10 @@ cdk-local is a local-execution CLI — it does NOT deploy resources itself. The 
    mise exec -- markgate set integ || echo "MARKER NOT RECORDED (rc=$?) — read the error above"
    ```
 
-   **Check the exit code; do not assume the set succeeded.** Under `hash: files` this command could not fail, so it was safe to fire and forget. Under `hash: diff` it CAN fail, and it reports the reason on stderr — an unchecked call looks silent and successful while nothing was recorded. The failure modes and their fixes:
+   **Check the exit code; do not assume the set succeeded.** Under
+   `hash: diff` the set CAN fail, reporting the reason on stderr — an
+   unchecked call looks silent and successful while nothing was recorded.
+   The failure modes and their fixes:
 
    - `no delta against merge-base(origin/main, HEAD)` — you are on the base branch. Re-run from the PR's own worktree, on the PR branch.
    - `base ref "origin/main" does not resolve` — run `git fetch origin`, then set again. Re-running the whole integ does NOT help; the set fails identically until the ref exists.

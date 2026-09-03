@@ -16,13 +16,22 @@ Run each check and report pass/fail:
    ```bash
    [ -d node_modules ] || pnpm install --frozen-lockfile
    ```
-   `git worktree add` does NOT copy `node_modules`, so a fresh worktree's `vp run typecheck` / `lint` / `build` and `vp run test` all fail with "command not found" / "Cannot find package" — but the failure is easy to miss when the output is piped to `tail` (the exit code reflects `tail`, not `vp`, and the failure line gets buried). **Do not start step 1 until this passes**, or every quality check below silently no-ops while looking green.
+   `git worktree add` does NOT copy `node_modules`, so a fresh worktree's
+   quality checks all fail with "command not found" / "Cannot find package" —
+   easy to miss when output is piped to `tail` (the exit code reflects `tail`).
+   **Do not start step 1 until this passes**, or every check below silently
+   no-ops while looking green.
 
 1. **Code quality**
    - `vp run check` passes (unified typecheck + lint + format)
    - `vp run build` succeeds (produces `dist/cli.js` + `dist/index.js`)
    - When piping any of the above to `tail` / `head` / `grep`, **check the actual output content** for `Error` / `Command failed` markers — `$?` after a pipeline reflects the LAST stage (usually 0), NOT the build tool's exit. When in doubt, capture without piping: `vp run X > /tmp/out 2>&1; rc=$?; tail -3 /tmp/out; echo "[rc=$rc]"`.
-   - **The same trap applies to `markgate verify` / `markgate set`, and there it is worse**: markgate answers with an EXIT CODE and prints nothing on the fresh path, so a piped STALE marker is byte-identical to a fresh one (no output, rc=0) and there is no output content left to check. `.claude/hooks/markgate-pipe-gate.sh` now refuses a piped `markgate verify` / `markgate set` outright (go-to-k/cdk-local#571) — this bullet is why. `markgate status` is unaffected: its answer is on stdout, so piping it to `awk` is correct.
+   - **The same trap applies to `markgate verify` / `markgate set`, and there
+     it is worse**: markgate answers with an EXIT CODE and prints nothing on
+     the fresh path, so a piped STALE marker is byte-identical to a fresh one.
+     `.claude/hooks/markgate-pipe-gate.sh` refuses the piped spelling
+     (go-to-k/cdk-local#571). `markgate status` is unaffected: its answer is
+     on stdout.
 
 2. **Tests**
    - `vp run test` — all unit tests pass
@@ -67,7 +76,13 @@ Run each check and report pass/fail:
 
 7. **Docker + integ verification** (for src/** or tests/integration/** touches)
 
-   The `integ` markgate gate physically blocks `gh pr merge` when its marker is stale (see `.claude/hooks/integ-gate.sh`). The gate runs on markgate's `hash: diff` mode, so the digest is **this branch's delta** against `merge-base(origin/main, HEAD)` within `src/**` / `tests/integration/**` — a `main` change to an in-scope file this branch did not touch no longer stales it, but any in-scope change this branch made does. The merge-time gate has a known blind spot: it reads the **local** git state, and when `gh pr merge` runs from a parent worktree still on pre-PR `main`, that tree's diff vs `origin/main` is empty, the hook's scope short-circuit exits 0, and the marker is never consulted — so an unverified change can reach main via the merge-from-parent path. `/verify-pr` runs in the PR's own worktree (post-PR content), so verifying the marker here closes that gap structurally:
+   The `integ` markgate gate physically blocks `gh pr merge` when its marker
+   is stale (`.claude/hooks/integ-gate.sh`; `hash: diff` — the digest is THIS
+   branch's delta against `merge-base(origin/main, HEAD)` within `src/**` /
+   `tests/integration/**`). The merge-time gate reads LOCAL git state, so a
+   merge run from a parent worktree still on pre-PR `main` sees an empty diff
+   and never consults the marker — `/verify-pr` runs in the PR's own worktree,
+   so verifying the marker here closes that gap structurally:
 
    ```bash
    # Only check when the PR diff actually touches the gate scope.
@@ -88,25 +103,17 @@ Run each check and report pass/fail:
    bash tests/integration/_lib/aws-orphan-sweep.sh <test-name>; rc=$?   # rc 0 = clean
    ```
 
-   Two things this replaces, both of which were live here until
-   go-to-k/cdk-local#601 (see `tests/integration/_lib/aws-orphan-sweep.sh`'s
-   header for the full history):
-
-   - **Not a `*-from-cfn-stack` glob.** That glob missed three
-     resource-owning fixtures, and the widened `*-from-cfn*` still missed
-     `local-invoke-assume-role`, which deploys a stack holding an IAM role.
-     Run the sweep for EVERY fixture; it derives ownership itself from one
-     predicate and makes no AWS call for a fixture that owns nothing.
-   - **Not `describe-stacks --stack-name <FixtureStackName>`.** Every
-     AWS-deploying fixture's stack name is LANE-UNIQUE (issue
-     go-to-k/cdk-local#582), so the bare base name matches nothing and
-     reports clean no matter what is actually deployed. That was historical
-     instance 1 of this defect class verbatim.
-
-   Gate on the exit code (0 clean / 1 usage or internal / 2 orphan /
-   3 indeterminate / 4 report-only). Anything non-zero means do not proceed —
-   `3` in particular means the sweep could not look, not that nothing is
-   there.
+   Two things this replaces, both live here until go-to-k/cdk-local#601 (the
+   script's header has the full history): **not a `*-from-cfn-stack` glob**
+   (it missed three resource-owning fixtures, and the widened `*-from-cfn*`
+   still missed `local-invoke-assume-role`; the sweep derives ownership
+   itself and makes no AWS call for a fixture that owns nothing), and **not
+   `describe-stacks --stack-name <FixtureStackName>`** (stack names are
+   LANE-UNIQUE per issue go-to-k/cdk-local#582, so the bare base name matches
+   nothing and reports clean no matter what is deployed). Gate on the exit
+   code (0 clean / 1 usage or internal / 2 orphan / 3 indeterminate /
+   4 report-only) — anything non-zero means do not proceed; `3` means the
+   sweep could not look, not that nothing is there.
 
 8. **No stale references**
    - Grep for removed imports, old module names, or deprecated references in source files.
@@ -121,17 +128,13 @@ Run each check and report pass/fail:
      The skill applies bias factors (security surfaces bump up; pure-infra / docs / tests-only bump down). Trust the recommendation; override only when you have a concrete reason (note the reason here).
 
      **Recompute the tier at the sha you will bind the marker to, not at the
-     sha you first reviewed.** The tier is a function of the diff, and the diff
-     GROWS across fix-back rounds while the tier decision, made once, does not.
-     The `pr-review` marker is sha-bound so it correctly goes stale on a new
-     push — but staleness only forces a re-REVIEW at whatever tier you last
-     chose, so an under-tiered PR is re-reviewed just as thinly the second time.
-     Measured here on 2026-08-27: go-to-k/cdk-local#609 was tiered from its
-     first commit at 819 LOC / 5 files, which is `1-reviewer`, and one reviewer
-     was dispatched. Its fix round took it to 1342 LOC, which is `3-axis`. The
-     spec and test reviewers added only after re-computing then found a live
-     order-blind fail-open in the new code and two wrong counts in the PR body,
-     neither of which the single code reviewer's remit covered.
+     sha you first reviewed.** The diff GROWS across fix-back rounds while the
+     tier decision, made once, does not; the sha-bound marker forces a
+     re-REVIEW but at whatever tier you last chose
+     (go-to-k/cdk-local#609: tiered `1-reviewer` at 819 LOC, its fix round
+     reached 1342 LOC = `3-axis`, and the reviewers added only after
+     re-computing found a live order-blind fail-open plus two wrong PR-body
+     counts the single code reviewer's remit did not cover).
    - Synthesize the reviewer reports (or your inline read) into a pass / issues-found verdict. Any blocker → fix-back loop before continuing.
    - `git diff origin/main...HEAD` — confirm the diff is what you reviewed (no last-minute commits slipped through).
    - For each change: is it correct? complete? necessary?
@@ -151,7 +154,17 @@ Run each check and report pass/fail:
      - Lambda runtime change → run `cdkl invoke` against `tests/integration/local-invoke/` (or the matching language fixture) and check the output.
      - HTTP server change → run `cdkl start-api` against `tests/integration/local-start-api/` and curl one route.
      - Library-only change → run a minimal repro that imports the new code path.
-     - PreToolUse hook change (`.claude/hooks/*.sh`) → exercise it end-to-end: build a throwaway git repo (simulate the base ref via `git update-ref refs/remotes/origin/main <sha>` + `git symbolic-ref refs/remotes/origin/HEAD`), commit an offending case AND a clean case, then pipe a synthesized payload (`jq -nc '{tool_input:{command:"<gated cmd>"},cwd:"<repo>"}'`) into the hook and assert it blocks the offender (exit 2) and passes the clean case + a non-matching command (exit 0). Shell hooks have no unit-test harness, so this end-to-end run is the ONLY correctness check — a hook that silently fail-opens (e.g. an unsupported `gh` flag) looks installed but never fires.
+     - PreToolUse hook change (`.claude/hooks/*.sh`) → exercise it
+       end-to-end: build a throwaway git repo, commit an offending case AND a
+       clean case, then pipe a synthesized payload
+       (`jq -nc '{tool_input:{command:"<gated cmd>"},cwd:"<repo>"}'`) into
+       the hook and assert it blocks the offender (exit 2) and passes the
+       clean case + a non-matching command (exit 0) — a hook that silently
+       fail-opens looks installed but never fires. For a hook that reads
+       `origin/main`, simulate the base ref in the throwaway repo
+       (`git update-ref refs/remotes/origin/main <sha>`, or
+       `git symbolic-ref` for a symbolic base) — without it the hook cannot
+       be exercised outside a real clone.
    - "Tests passed" is not "feature works." Always run the actual command before declaring done. If you cannot live-test (no Docker daemon, no fixture available), say so explicitly rather than skip silently — the gate exits non-zero so a reviewer can decide whether to accept the trade-off.
 
 11. **Retrospective + rules update**

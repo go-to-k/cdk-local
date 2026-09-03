@@ -22,37 +22,27 @@
   cannot tell a finished lane from a session working right now, already-merged
   branch tip included. The closing check is "mine are gone", not "only main
   remains".
-- **Start every marker / gate command with an explicit `cd <lane tree> &&`** — the
-  shell cwd does not reliably persist across tool calls, and a `markgate set` /
-  sha-sentinel write that lands in the WRONG worktree surfaces later as a
-  mystifying `no marker` (each worktree has its own markgate store; fired twice
-  in one run on 2026-08-19). `pwd` costs nothing; a marker in the wrong store
-  costs a re-diagnosis. **A KILLED or REFUSED call is a named trigger for the
-  cwd going wrong, and it lies about the filesystem too**: a tool-call timeout
-  that kills a call mid-run can bring the persistent shell back at the session
-  cwd, and a PreToolUse refusal aborts the WHOLE call, so a directory it was
-  going to `mkdir` never exists for a later call's relative `cd` — and a failed
-  `cd` stops an `&&` chain but NOT the later lines of a multi-line call, which
-  then write into whatever cwd was current. Both measured in a cdkd
-  `/work-issues` run (2026-08-28, go-to-k/cdkd#2370); this repo has no
-  main-tree EDIT gate to catch the stray write, so the receipt matters more
-  here. After any timeout or refusal, run `pwd` and re-verify what the aborted
-  call was supposed to create, before the next relative-path command.
-  **And the reset can land you in a DIFFERENT REPOSITORY, where every check you
-  would reach for agrees with you.** The three sibling repos share the skill
-  layout and the suite FILENAMES, so `git status` reads clean, the suite runs
-  green and the tree "matches HEAD" -- all true, all about the wrong repo.
-  Measured 2026-09-03 on this lane: the shell surfaced in `../cdk-real-drift`,
-  where the sibling's copy of the same-named hook suite answered a TALLY this
-  repo's copy does not have, and the tell was a case NAME in the output naming a
-  predicate the file under edit does not carry. (No count is quoted here on
-  purpose: a bare one went stale three times inside this single PR, twice
-  falsified by the very commit that wrote it.)
-  Nothing was damaged only because the edit ran through `python3` with
-  `assert <anchor> in s` and threw before writing -- §8-z's advice paying off in
-  a direction it was not written for. A COUNT that moves with no diff is the
-  cheap signal; confirm with `git rev-parse --show-toplevel`, never with
-  `git status`.
+- **Start every marker / gate command with an explicit `cd <lane tree> &&`** —
+  the shell cwd does not reliably persist across tool calls, and a
+  `markgate set` / sha-sentinel write landing in the WRONG worktree surfaces
+  later as a mystifying `no marker` (per-worktree stores; fired twice in one
+  run, 2026-08-19). **A KILLED or REFUSED call is a named trigger for the cwd
+  going wrong, and it lies about the filesystem too**: a timeout can bring the
+  persistent shell back at the session cwd; a PreToolUse refusal aborts the
+  WHOLE call, so a directory it was going to `mkdir` never exists for a later
+  relative `cd` — and a failed `cd` stops an `&&` chain but NOT the later
+  lines of a multi-line call (both measured, go-to-k/cdkd#2370; this repo has
+  no main-tree EDIT gate to catch the stray write). After any timeout or
+  refusal, run `pwd` and re-verify what the aborted call was supposed to
+  create. **And the reset can land you in a DIFFERENT REPOSITORY, where every
+  check you would reach for agrees with you** — the three sibling repos share
+  the skill layout and suite FILENAMES, so `git status` reads clean and the
+  suite runs green, all about the wrong repo (measured 2026-09-03: the shell
+  surfaced in `../cdk-real-drift`; the tell was a case NAME in the output
+  naming a predicate the file under edit does not carry, and nothing was
+  damaged only because the edit ran through `python3` with
+  `assert <anchor> in s`). A COUNT that moves with no diff is the cheap
+  signal; confirm with `git rev-parse --show-toplevel`, never `git status`.
 - **A hook's `if` takes ONE pattern — ` or ` matches nothing and disables the
   gate outright.** On 2026-08-20 (go-to-k/cdk-real-drift#1801) all seventeen
   gates here were written as
@@ -135,37 +125,29 @@
   and still finished its lane. Stand down any QUEUED lane the run will not reach
   at the moment that verdict is known, not at the wrap (§4).
 - **Any writer that NORMALISES an escape puts invisible non-C0 characters
-  straight into a commit, and the fences do not all cover them.** A heredoc is one
-  such writer; an EDITING TOOL is another, and that one surprises people —
-  writing this very bullet, an `Edit` call substituted a literal U+FEFF for the
-  `\uFEFF` it was given (it reports doing so: "Edit also tried swapping
-  \uXXXX escapes and their characters"), so the sentence warning about the byte
-  shipped carrying it. Write such a character through `python3` / `printf`
-  rather than an editor, then re-scan. `control-char-gate.sh` is C0-only, so both
-  U+00A0 (NBSP) and U+FEFF (BOM) walk past it — including into a commit MESSAGE,
-  which nothing scans at all -- which is how this bullet's own commit acquired an
-  instance, caught on re-read and amended away before it reached anyone. `tests/unit/no-control-bytes.test.ts` was C0-only too until
-  this retro; it now catches U+FEFF in tracked FILE CONTENT, so the gap that
-  remains is NBSP everywhere plus either byte in a commit message
-  (go-to-k/cdk-local#677). `main` carried a live instance until this retro: `tests/unit/gates/markgate-include-globs.test.ts` spelled a BOM as a
-  LITERAL character inside a regex (`ef bb bf` on the wire), invisible in every
-  reading of that line. Spell such a character as a `\u`-escape, the same rule
-  `.claude/rules/hooks.md` states for C0 bytes, and when a heredoc's subject IS
-  whitespace-adjacent text, read the bytes before committing. Match the BYTES,
-  not a `\x{...}` class, and build the bytes with `printf`. TWO shells fail
-  open here, in the same direction: `grep -P` is a GNU extension, so macOS system
-  grep exits **2** (`invalid option -- P`) rather than 1, and `$'\xc2\xa0'` is not
-  POSIX, so `dash` searches for that TEXT and exits 1 on a file that really does
-  carry the byte. Under a `|| echo clean` both read as nothing found. Measured
-  2026-09-02; the first passed review only because this shell's `grep` is shimmed,
-  and the second only because nobody ran it under `dash`. This form is portable
-  across dash / bash / zsh, and rc=1 really does mean clean. It is for the case a
-  test CANNOT reach -- the COMMIT MESSAGE, which nothing scans. File CONTENT is
-  fenced instead by `tests/unit/no-control-bytes.test.ts`, whose BOM arm reds on
-  the exact instance this bullet describes; the recipe itself is executed by no
-  test, which is a live trade rather than an oversight (a harness that extracts
-  and runs a fenced block from prose is more machinery than the one command it
-  would guard):
+  straight into a commit, and the fences do not all cover them.** A heredoc is
+  one such writer; an EDITING TOOL is another -- writing this very bullet, an
+  `Edit` call substituted a literal U+FEFF for the `\uFEFF` it was given, so
+  the sentence warning about the byte shipped carrying it. Write such a
+  character through `python3` / `printf`, spell it as a `\u`-escape (the same
+  rule `.claude/rules/hooks.md` states for C0 bytes), then re-scan — and when
+  a heredoc's subject IS whitespace-adjacent text, read the bytes before
+  committing.
+  `control-char-gate.sh` is C0-only, so U+00A0 (NBSP) and U+FEFF (BOM) walk
+  past it -- including into a commit MESSAGE, which nothing scans at all (this
+  bullet's own commit acquired an instance, amended away on re-read).
+  `tests/unit/no-control-bytes.test.ts` now catches U+FEFF in tracked FILE
+  CONTENT (`main` carried a live literal-BOM regex in
+  `tests/unit/gates/markgate-include-globs.test.ts` until that arm landed);
+  the remaining gap is NBSP everywhere plus either byte in a commit message
+  (go-to-k/cdk-local#677). For that unfenced case, the portable recipe below:
+  match the BYTES built with `printf`, never `grep -P` (macOS grep exits 2,
+  `invalid option`) and never `$'\xc2\xa0'` (`dash` searches for that TEXT and
+  exits 1 on a file that carries the byte; both fail open under
+  `|| echo clean`, measured 2026-09-02). rc=1 really does mean clean; the
+  recipe itself is executed by no test -- a live trade, since a harness that
+  extracts and runs a fenced block from prose is more machinery than the one
+  command it guards:
 
   ```sh
   git diff --cached | LC_ALL=C grep -n \
