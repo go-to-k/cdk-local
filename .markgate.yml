@@ -102,8 +102,15 @@ gates:
       # file's `.claude/hooks/**` block names. Deleting that step reds the unit
       # suite, so without this entry the marker would stay fresh over it --
       # the #620 class, freshly reintroduced by the very fence added to close
-      # it. The other two workflows are read by nothing and stay out of scope.
+      # it. `pr-title-check.yml` is read by nothing and stays out of scope.
       - ".github/workflows/ci.yml"
+      # release-please-v0.test.ts reads all three: the config's
+      # bump-minor-pre-major, the manifest's 0.x version, and the release
+      # workflow's publish-job guard (the two layers that keep an accidental
+      # v1.0.0 unshippable).
+      - ".github/workflows/release.yml"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
       # Same class a THIRD time, found in #630's fourth review round:
       # markgate-include-globs.test.ts runs `git check-ignore` to prove its one
       # allow-listed zero-match entry is a real gitignored sentinel, so

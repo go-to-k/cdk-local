@@ -1367,11 +1367,14 @@ construction.
     reads — `.claude/skills/**`, `.claude/agents/**`,
     `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
-    `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
+    `.github/workflows/ci.yml`, `.gitignore`,
+    `.github/workflows/release.yml`, `release-please-config.json` and
+    `.release-please-manifest.json` (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in
-    `.markgate.yml`). The other two workflows are read by nothing
-    and stay out of scope. Only invalidated by changes in that
-    scope.
+    `.markgate.yml` — the release trio is read by the v0 fence,
+    tests/unit/gates/release-please-v0.test.ts). The remaining
+    workflow, pr-title-check, is read by nothing and stays out of
+    scope. Only invalidated by changes in that scope.
 
     `vite.config.ts` / `.mise.toml` / `.node-version` /
     `.markgate.yml` are in for a different reason than the rest:

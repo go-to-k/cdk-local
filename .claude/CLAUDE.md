@@ -1366,6 +1366,19 @@ vp run verify
 vp run runtime:smoke
 ```
 
+## Release Flow
+
+Releases are BATCHED via release-please (GitHub Action, not a devDependency —
+config in `release-please-config.json` + `.release-please-manifest.json`).
+Pushes to `main` create/update a single standing `chore(release): <ver>` PR;
+merging THAT PR creates the tag + GitHub release and publishes to npm. An
+ordinary `feat:` / `fix:` merge no longer publishes anything by itself, so do
+not wait for a version bump after a merge, and never merge the release PR
+without the maintainer asking for a release. cdk-local deliberately stays at
+major version 0: `bump-minor-pre-major: true` maps breaking changes to MINOR
+bumps, and the publish job in `.github/workflows/release.yml` hard-fails on
+any tag whose major is not 0.
+
 ## Important implementation details
 
 - **ESM Modules**: `package.json` declares `"type": "module"`. All imports

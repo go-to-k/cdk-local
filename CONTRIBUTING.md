@@ -108,9 +108,13 @@ the right fixtures.
 
 Commits follow [Angular Conventional Commits](https://www.conventionalcommits.org/)
 (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`, etc.).
-[semantic-release](https://github.com/semantic-release/semantic-release)
-uses these to drive the next version + changelog when the release
-workflow fires from `main`.
+[release-please](https://github.com/googleapis/release-please)
+uses these to drive the next version + changelog: pushes to `main`
+create/update a single standing `chore(release): <version>` PR, and
+merging that PR cuts the tag, the GitHub release, and the npm publish
+(releases are batched, not per-merge). cdk-local deliberately stays at
+major version 0 — `bump-minor-pre-major` maps breaking changes to minor
+bumps, and the publish job refuses any non-0.x tag.
 
 Examples:
 
@@ -134,8 +138,9 @@ docs: lead getting-started with the interactive picker form
 CI's `check-build-test` job runs the same four steps `vp run verify`
 chains; a second job then builds and smoke-runs `dist/cli.js` on Node
 20 / 22 / 24. The CHANGELOG and
-GitHub release are produced automatically by semantic-release on
-merge to `main`.
+GitHub release are produced by release-please when the maintainer
+merges the standing `chore(release)` PR — an ordinary merge to `main`
+only updates that PR and publishes nothing by itself.
 
 ## Scope reminders for docs / messages
 

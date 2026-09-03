@@ -117,10 +117,13 @@ row 1, which is true today and is not a documented guarantee):
 git -C "<MAIN_CHECKOUT>" pull origin main
 ```
 
-(There is no post-release rebuild step to relocate: this repo's flow ends at the
+(There is no post-merge rebuild step to relocate: this repo's flow ends at the
 pull, and users invoke `node dist/cli.js` from their own checkout rather than a
 globally linked binary built in the main tree. The sibling cdkd has that step
-and has to run it in `$MAIN`; do not import it here.)
+and has to run it in `$MAIN`; do not import it here. Releases are BATCHED via
+release-please: an ordinary merge only updates the standing `chore(release)`
+PR, so do not poll for a version bump after a merge, and never merge the
+release PR unless the user asked for a release.)
 
 When your PR landed into a file another PR touched in the same window, grep the
 merged `main` for a marker string from EACH side before believing both survived —

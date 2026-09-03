@@ -281,7 +281,7 @@ git fetch origin && git switch -c "$B" origin/main
 ```
 
 - `chore:` prefix — agent tooling, not `src/**`; a `fix:` / `feat:` prefix
-  makes semantic-release describe a user-facing change that never happened.
+  makes release-please describe a user-facing change that never happened.
 - English only in every committed line (`non-english-text-gate` enforces it).
 - A `work-issues`-only edit sits INSIDE the `check` gate's scope
   (go-to-k/cdk-local#620: `.claude/skills/**` / `.claude/agents/**` /
