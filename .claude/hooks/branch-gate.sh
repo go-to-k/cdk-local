@@ -30,7 +30,9 @@ set -u
 # first shape here, and it silently disabled the gate whenever the library was
 # unreadable or truncated — with the sibling gates' own comments claiming the
 # opposite (go-to-k/cdkd#2130 review). The `declare -F` check catches a partial
-# source, where `.` succeeds but the function is missing.
+# source, where `.` succeeds but the functions are missing -- ALL of the ones
+# this hook goes on to call, which is the part this copy had drifted from; see
+# the list below for the measurement.
 _gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh"
 if [ ! -r "$_gate_lib" ]; then
   echo "Blocked: .claude/hooks/_command-match.sh is missing or unreadable, so this gate cannot evaluate the command." >&2
@@ -38,10 +40,31 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
-  echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
-  exit 2
-fi
+# EVERY library function this hook calls, which is the shape cdkd's twin has
+# carried since go-to-k/cdkd#2130 and the shape this copy lost. `gate_matches`
+# alone was the entire check. It is defined at line 432 of 1330, while
+# `gate_target_dir` -- called from the line right after the match -- is at
+# 1252. A copy cut anywhere between the two DEFINES `gate_matches`, passes
+# the guard, and then dies on an undefined `gate_target_dir` inside a
+# command substitution; the hook reads
+# that 127 as "no target dir", exits 0, and the gate is silently off.
+# Measured against this hook, payload `git commit -m oops` in an opted-in
+# repo on `main`, truncating the library at every 25th line: 33 of 54
+# offsets scored rc=0 NOT BLOCKED, every one of them in [526..1326]. With
+# the list below, 0 of 54. `branch-gate.test.sh` drives a real cut inside
+# that window.
+#
+# A LIST, not just the last-defined name, even though
+# `gate_target_dir` alone would cover the rest today: the definition
+# ORDER is a property of the library, not of this hook, so reordering it must
+# not silently reopen the window. One entry per library function called below.
+for _gate_fn in gate_matches gate_target_dir; do
+  if ! declare -F "$_gate_fn" >/dev/null 2>&1; then
+    echo "Blocked: .claude/hooks/_command-match.sh loaded but $_gate_fn is undefined (truncated file?)." >&2
+    exit 2
+  fi
+done
+unset _gate_fn
 
 
 # Read the entire stdin payload once; we need both .tool_input.command
@@ -56,7 +79,8 @@ fi
 #
 #   `jq` absent from PATH entirely  -> rc=0. `$cmd` is empty, so the verb match
 #     below finds nothing. (Easy to mis-measure: a dev Mac carries `jq` at BOTH
-#     /opt/homebrew/bin and /usr/bin, so dropping only the first proves nothing. Measured under `env -i PATH=<dir with bash/git/cat/dirname only>`.)
+#     /opt/homebrew/bin and /usr/bin, so dropping only the first proves nothing.
+#     Measured under `env -i PATH=<dir with bash/git/cat/dirname only>`.)
 #   a malformed or truncated JSON payload -> rc=0, same way.
 #
 # Deliberate and unchanged. A gate that could not read its own input has nothing
@@ -139,8 +163,8 @@ branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
 #   NOT the five cases this sentence used to name. That count was stale in two
 #   directions at once: the suite has grown since, and the number was never a
 #   constant to begin with. Stood in for by swapping the compare to
-#   `$target_dir` and re-running: 22 of 42 rows red on this macOS fixture root,
-#   3 of 42 on a non-symlinked one, for the reason the arm below spells out.
+#   `$target_dir` and re-running: 31 of 58 rows red on this macOS fixture root,
+#   3 of 58 on a non-symlinked one, for the reason the arm below spells out.
 #   The only fixed number in the pair is the SCOPED one that arm already
 #   quotes, so that is where a count is given and this is not.
 if [ -z "$branch" ]; then
@@ -384,6 +408,20 @@ if [ -z "$branch" ]; then
     # `git branch -D` refuses with `cannot delete branch 'x' used by worktree`
     # while the bisect holds it -- and needs a low-level `update-ref -d` to
     # produce, so it is a bound rather than a case.
+    #
+    # THE NEGATIVE ARM NAMES NO CAUSE, and that is a correction rather than a
+    # style choice. `reattach_to=""` is reached from FIVE states -- a bisect
+    # begun already detached, an EMPTY `BISECT_START`, a missing one, an
+    # unreadable one, and a start branch deleted under the bisect -- and the
+    # sentence used to assert the first ("this bisect started from a tree that
+    # was ALREADY detached"), which the code never established. With the start
+    # branch deleted, BOTH halves of that sentence are false: measured on git
+    # 2.53, `bisect reset` exits 1 with `fatal: invalid reference: <name>`, so
+    # it does not "return to that same detached commit", and the printed
+    # `switch main` fallback is what actually re-attaches. The sibling rebase
+    # arm below already had the neutral spelling ("git has no branch recorded
+    # to return to"); this arm now uses it, so one file no longer states the
+    # same fact two ways.
     reattach_to=""
     if [ "$inflight" = "rebase" ] && [ -n "$git_dir" ]; then
       __head_name=""
@@ -420,9 +458,8 @@ if [ -z "$branch" ]; then
       if [ -n "$reattach_to" ]; then
         echo "That restores the branch you started from, '$reattach_to'." >&2
       else
-        echo "That does NOT re-attach HEAD: this bisect started from a tree that was" >&2
-        echo "ALREADY detached, so 'bisect reset' returns to that same detached commit." >&2
-        echo "Re-attach afterwards:" >&2
+        echo "That does NOT re-attach HEAD: git has no branch recorded to return to, so" >&2
+        echo "'bisect reset' leaves this checkout DETACHED. Re-attach afterwards:" >&2
         echo "  git -C \"$main_checkout\" switch main" >&2
       fi
     elif [ -n "$inflight" ]; then
