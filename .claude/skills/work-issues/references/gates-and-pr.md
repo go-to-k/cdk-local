@@ -40,7 +40,8 @@ before merge (the `integ` gate) — never defer the integ to a later PR.
 
 ## 7. If main advanced while you worked (parallel merges)
 
-A peer agent merging its PRs moves `main` (+ a `chore(release)` bump). Your branch
+A peer agent merging its PRs moves `main` (and, when the release PR merges, a
+`chore(release)` commit). Your branch
 is now behind and `git diff origin/main..<branch>` shows **phantom removals** of
 the peer's added lines — that is the stale-base artifact, NOT real deletions.
 Confirm the TRUE diff and rebase:

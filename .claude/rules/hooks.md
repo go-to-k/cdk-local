@@ -1367,11 +1367,14 @@ construction.
     reads — `.claude/skills/**`, `.claude/agents/**`,
     `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
-    `.github/workflows/ci.yml` and `.gitignore` (go-to-k/cdk-local#620,
+    `.github/workflows/ci.yml`, `.gitignore`,
+    `.github/workflows/release.yml`, `release-please-config.json` and
+    `.release-please-manifest.json` (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in
-    `.markgate.yml`). The other two workflows are read by nothing
-    and stay out of scope. Only invalidated by changes in that
-    scope.
+    `.markgate.yml` — the release trio is read by the v0 fence,
+    tests/unit/gates/release-please-v0.test.ts). The remaining
+    workflow, pr-title-check, is read by nothing and stays out of
+    scope. Only invalidated by changes in that scope.
 
     `vite.config.ts` / `.mise.toml` / `.node-version` /
     `.markgate.yml` are in for a different reason than the rest:
@@ -1421,16 +1424,18 @@ construction.
   a list, because a list of the complement is the same enumeration
   that went stale above: a file is outside both scopes when no
   assertion READS it AND it does not decide what "green" means —
-  `CONTRIBUTING.md`, `.vscode/`, `.releaserc.json`, `CHANGELOG.md`
-  and `.markdownlint.json` (an editor setting nothing in
-  `vp run check` or CI reads) are examples, not the whole set. Two
+  `CONTRIBUTING.md`, `.vscode/`, `.github/dependabot.yml`,
+  `CHANGELOG.md` and `.markdownlint.json` (an editor setting
+  nothing in `vp run check` or CI reads) are examples, not the
+  whole set. Two
   cautions from go-to-k/cdk-local#630's review: the previous
   wording named `.claude/hooks/**` and `.markgate.yml` as
   out-of-scope examples and was ALREADY false for `.markgate.yml`
   when go-to-k/cdk-local#624 scoped it in; and `.github/workflows/`
-  is not wholly outside — `pr-inherit-issue-labels.yml` and
-  `ci.yml` are both checker inputs and both scoped in, while
-  `release.yml` and `pr-title-check.yml` are read by nothing.
+  is not wholly outside — `pr-inherit-issue-labels.yml`,
+  `ci.yml` and `release.yml` (the v0 fence's input since the
+  release-please switch) are checker inputs and scoped in, while
+  `pr-title-check.yml` is read by nothing.
   Settle a
   borderline case against `.markgate.yml`, or against
   `markgate verify check --explain`, which prints the RESOLVED
