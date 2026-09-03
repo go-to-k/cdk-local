@@ -621,8 +621,8 @@ Read this before adding, moving, or splitting a module under `src/`.
   `agentcore` (`INVOKE_VERBS`) — studio being a control plane over the
   CLI — streaming its stdout/stderr to the event bus and returning the
   response. `extractResponse` recovers the response per kind: a Lambda's
-  is read from the `--response-file` the dispatcher passes to `cdkl
-  invoke` (issue #291 — `cdkl invoke` writes ONLY the raw RIE response
+  is read from the `--response-file` the dispatcher passes to
+  `cdkl invoke` (go-to-k/cdk-local#291 — it writes ONLY the raw RIE response
   payload there, so a handler's own trailing `console.log(JSON)` can
   no longer be mistaken for the response), falling back to the LAST
   JSON-parseable stdout line when the file is absent (older `cdkl

@@ -209,7 +209,8 @@ that goes red to green (`vp test run tests/unit/local/<file>.test.ts`). When
 naming the command is hard, that difficulty IS the finding, usually one of:
 
 - **The verifier is bound to THIS host.** 53 of 58 integ fixtures drive a
-  real Docker daemon (measured 2026-08-26): CPU architecture, resolved image
+  real Docker daemon (measured 2026-08-26:
+  `grep -l docker tests/integration/*/verify.sh | wc -l`): CPU architecture, resolved image
   platform, daemon version (`probeHostGatewaySupport` gates `host-gateway` on
   Docker >= 20.10) and BuildKit behaviour are part of the verifier and none
   travels with the issue.
@@ -369,7 +370,8 @@ look for a sibling `*.test.sh` before writing a new harness.
     go-to-k/cdkd#2383 tallies four spellings across four rounds; this repo's
     two were different again, go-to-k/cdk-local#631 — which is the point).
     Two shapes end it and neither is a sixth pattern: parse with a REAL
-    parser, allow-list the tool's own keys, fail CLOSED outside them; or, as
+    parser, allow-list the tool's own keys, fail CLOSED outside them, and
+    raw-scan the WHOLE map as the backstop; or, as
     here — this repo declares no YAML dependency — REFUSE every shape the
     reader cannot model, the STRICTER option: an unmodelled shape stops the
     fence instead of passing through it

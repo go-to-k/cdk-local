@@ -79,8 +79,9 @@ changed behavior**.
   DO call `cleanup` pre-run (`local-start-alb-redirect` and peers), surviving
   only because their `cleanup` sweeps processes and containers, which phases
   re-create — the first fixture that computes a scratch dir at
-  variable-definition time arms it. A stubbed dry run (pre-run cleanup, then
-  the full run) catches it in seconds.
+  variable-definition time arms it. The remedy: anything `cleanup` removes
+  must be re-created by a phase, or created AFTER the pre-run call. A stubbed
+  dry run (pre-run cleanup, then the full run) catches it in seconds.
 
 ### 8-c. Fix cascades — when a round's fix produces the next round's blocker twice
 
@@ -113,7 +114,10 @@ executing a probe, never by re-reading the diff:
 - **A PROXY for a question only another component can answer → make that
   component REPORT.** The tell: each proxy is wrong in BOTH directions at
   once (go-to-k/cdkd#2157 / go-to-k/cdkd#2166: "it threw" and "the text
-  survived" each missed real cases and fired on unreal ones). Local analogue:
+  survived" each missed real cases and fired on unreal ones). When a round's
+  fix lands on a new OBSERVABLE rather than a new spelling, ask whether the
+  fact is derivable outside the component that decides it; if not, the rounds
+  are unbounded. Local analogue:
   anything only the Docker daemon or the running `cdkl` process can answer
   ("did the container actually start") — every outside proxy (log line, port
   probe, file appearing) fails both directions.
@@ -193,7 +197,8 @@ tier to under-verify. A diff that does both owes BOTH arms:
 - **Arm 2 — the diff changes PROSE only** (a skill, a rule, a doc — including
   this file) → the CLAIMS are the artifact. Resolve every gate, hook, skill,
   path, task and command the new text names against this repo's own files,
-  and RUN each command the text sends the next agent to run — §10-c's
+  and RUN each command the text sends the next agent to run, confirming its
+  output matches what the text promises — §10-c's
   claim-by-claim pass, owed even for sibling-repo text
   (go-to-k/cdk-local#511: four sibling-named artifacts do not exist here —
   `.claude/hooks/run-tests.sh`, `tests/unit/scripts/`,

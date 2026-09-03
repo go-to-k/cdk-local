@@ -160,7 +160,11 @@ Run each check and report pass/fail:
        (`jq -nc '{tool_input:{command:"<gated cmd>"},cwd:"<repo>"}'`) into
        the hook and assert it blocks the offender (exit 2) and passes the
        clean case + a non-matching command (exit 0) — a hook that silently
-       fail-opens looks installed but never fires.
+       fail-opens looks installed but never fires. For a hook that reads
+       `origin/main`, simulate the base ref in the throwaway repo
+       (`git update-ref refs/remotes/origin/main <sha>`, or
+       `git symbolic-ref` for a symbolic base) — without it the hook cannot
+       be exercised outside a real clone.
    - "Tests passed" is not "feature works." Always run the actual command before declaring done. If you cannot live-test (no Docker daemon, no fixture available), say so explicitly rather than skip silently — the gate exits non-zero so a reviewer can decide whether to accept the trade-off.
 
 11. **Retrospective + rules update**

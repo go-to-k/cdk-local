@@ -130,7 +130,9 @@
   `Edit` call substituted a literal U+FEFF for the `\uFEFF` it was given, so
   the sentence warning about the byte shipped carrying it. Write such a
   character through `python3` / `printf`, spell it as a `\u`-escape (the same
-  rule `.claude/rules/hooks.md` states for C0 bytes), then re-scan.
+  rule `.claude/rules/hooks.md` states for C0 bytes), then re-scan — and when
+  a heredoc's subject IS whitespace-adjacent text, read the bytes before
+  committing.
   `control-char-gate.sh` is C0-only, so U+00A0 (NBSP) and U+FEFF (BOM) walk
   past it -- including into a commit MESSAGE, which nothing scans at all (this
   bullet's own commit acquired an instance, amended away on re-read).
