@@ -65,21 +65,33 @@ describe('release-please v0 fence', () => {
   it('the publish job refuses a non-0 major before npm publish', () => {
     const workflow = readFileSync(join(repoRoot, '.github/workflows/release.yml'), 'utf8');
     // Everything below is asserted against the publish JOB's slice of the
-    // file (it is the last job, so slicing from its header reaches EOF) —
-    // keeping the `if:` / permissions pins from being satisfied by a line
-    // belonging to the release-please job.
+    // file — keeping the `if:` / permissions pins from being satisfied by a
+    // line belonging to a SIBLING job. The slice is bounded on both sides:
+    // it starts at the publish job header and ends at the next indent-2 job
+    // header if one exists (today publish is last and the slice reaches
+    // EOF, but a job appended after it must not be able to satisfy these
+    // pins on publish's behalf — review round 3's vacuous-pass finding).
     const publishJobIndex = workflow.indexOf('\n  publish:');
     expect(publishJobIndex, 'publish job missing from release.yml').toBeGreaterThan(-1);
-    const publishJob = workflow.slice(publishJobIndex);
+    const afterHeader = workflow.slice(publishJobIndex + '\n  publish:'.length);
+    const nextJobHeader = afterHeader.match(/\n  [\w-]+:\n/);
+    const publishJob = nextJobHeader
+      ? workflow.slice(
+          publishJobIndex,
+          publishJobIndex + '\n  publish:'.length + nextJobHeader.index!,
+        )
+      : workflow.slice(publishJobIndex);
 
     // Publish only runs on an actual release (the release-PR merge), never on
     // the ordinary pushes that merely update the release PR. Exact
-    // full-expression pin on the whole `if:` line: a weakening such as
-    // `always() ||` prepended to the same expression must fail, which a
-    // substring match would let through.
-    expect(publishJob).toMatch(
-      /^    if: \$\{\{ needs\.release-please\.outputs\.release_created == 'true' \}\}$/m,
-    );
+    // full-expression pin on the whole `if:` line (indent-exact, like every
+    // line pin in this case): a weakening such as `always() ||` prepended to
+    // the same expression must fail, which a substring match would let
+    // through.
+    expect(
+      publishJob,
+      'publish job `if:` must gate on exactly release_created == true',
+    ).toMatch(/^    if: \$\{\{ needs\.release-please\.outputs\.release_created == 'true' \}\}$/m);
 
     // npm OIDC trusted publishing needs the id-token grant on the publish
     // job; losing it turns every real release into a publish failure.
@@ -113,8 +125,9 @@ describe('release-please v0 fence', () => {
     // Exact pin on purpose: any flag added to npm publish (e.g.
     // --provenance) must be a deliberate test edit, not a silent drift of
     // what ships. Also distinct from the header comment's prose mention of
-    // npm publish earlier in the file.
-    const publishIndex = publishJob.search(/^\s*run: npm publish$/m);
+    // npm publish earlier in the file. Indent-exact (8 spaces: a step's
+    // `run:` key), consistent with the `if:` / id-token pins above.
+    const publishIndex = publishJob.search(/^        run: npm publish$/m);
     expect(
       publishIndex,
       'no step whose run is exactly `npm publish` (a flag change must update this pin)',
