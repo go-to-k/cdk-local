@@ -689,14 +689,14 @@ The hooks split into four classes:
   `--show-toplevel` (`/var` → `/private/var` on macOS).
 
   **This gate now has its own harness**,
-  `.claude/hooks/branch-gate.test.sh` (42 cases) — the shape cdkd and
+  `.claude/hooks/branch-gate.test.sh` (49 cases) — the shape cdkd and
   cdk-real-drift have carried for months, and its absence here was the
   gap. `gate-command-recognition.test.sh` keeps its five branch-gate
   rows: its subject is which COMMANDS reach a gate, and it has no
   fixture for a main checkout that owns a linked worktree. The new
   harness puts the interpreter on a `HOOK_BASH` shim, so running the
   suite under bash 3.2 actually runs the HOOK under 3.2 — proven with a
-  bash-4-only parse error that scores 18/24 under 3.2 and 42/0 under 5.x.
+  bash-4-only parse error that scores 20/29 under 3.2 and 49/0 under 5.x.
 
   **The remedy it prints follows the operation in progress**
   (go-to-k/cdkd#2402 review). A conflicted rebase is one of the ways the
@@ -713,29 +713,81 @@ The hooks split into four classes:
   `git rebase --apply`. Both arms exit 2, so the harness asserts the
   MESSAGE TEXT, not the code.
 
-  **And what the remedy does to HEAD is stated conditionally, because it
-  IS conditional** (round 3). The round above verified that all nine
-  printed commands EXIT 0 — they do — and then promised `--abort` would
-  "abandon it and re-attach", which is false in four of the six. Exit
-  status was the wrong observable. Measured on git 2.53 by running each
-  printed remedy verbatim and reading HEAD afterwards: `am --abort`,
-  `cherry-pick --abort`, `revert --abort` and `merge --abort` all leave
-  HEAD DETACHED, and so does `rebase --abort` when the rebase was started
-  while ALREADY detached; only a rebase started FROM a branch, plus
-  `bisect reset`, re-attaches. Those four never detach HEAD themselves,
-  so this arm is reachable for them only from an already-detached tree
-  and `--abort` restores exactly that pre-op state — the user reads exit
-  0 as success and the next gated command blocks again with
-  `in progress : nothing`. The discriminator is git's own `head-name`,
-  which both rebase backends write as `refs/heads/<branch>` or as the
-  literal `detached HEAD`; the gate reads it and prints either
-  "Either ending re-attaches HEAD to '<branch>'" or
+  **And what the remedy does to HEAD is stated conditionally, because it IS
+  conditional** (round 3). The round above verified that all nine printed
+  commands EXIT 0 — they do — and then promised `--abort` would "abandon it
+  and re-attach", which is false in four of the six. Exit status was the
+  wrong observable. Measured on git 2.53 by running each printed remedy
+  verbatim and reading HEAD afterwards: `am --abort`, `cherry-pick --abort`,
+  `revert --abort` and `merge --abort` all leave HEAD DETACHED, and so does
+  `rebase --abort` when the rebase was started while ALREADY detached; only
+  a rebase started FROM a branch re-attaches — and `bisect reset` only when
+  the bisect started from a branch too, which is what the round below had to
+  establish. Those four never detach HEAD themselves, so this arm is
+  reachable for them only from an already-detached tree and `--abort`
+  restores exactly that pre-op state — the user reads exit 0 as success and
+  the next gated command blocks again with `in progress : nothing`. The
+  discriminator is git's own `head-name`, which both rebase backends write
+  as `refs/heads/<branch>` or as the literal `detached HEAD`; the gate reads
+  it and prints either "Either ending re-attaches HEAD to '<branch>'" or
   "NEITHER ending re-attaches HEAD" plus the `switch main` still needed
   afterwards. One sentence covers both endings because the outcome is a
   property of the SESSION rather than of which ending is picked — a
-  completed `--continue` splits the same way, measured. Eight rows now
-  RUN the printed remedy and assert the resulting HEAD beside that
-  claim.
+  completed `--continue` splits the same way, measured. Eight rows now RUN
+  the printed remedy and assert the resulting HEAD beside that claim.
+
+  **The bisect arm carried the same defect, one arm over** (round 4). It
+  said a `git bisect` "is what detached HEAD here" and that `bisect reset`
+  "restores the branch you started from". Both are false when the bisect
+  began in a tree that was ALREADY detached — one allowed command away,
+  since `main-tree-branch-gate.sh` passes `git checkout <sha>` in the main
+  checkout. Measured on git 2.53, one fixture both ways: started FROM a
+  branch, `.git/BISECT_START` holds `main` and `bisect reset` lands on
+  branch `main`; started DETACHED, it holds a raw SHA and `bisect reset`
+  exits 0 with HEAD STILL DETACHED, so the user reads success and the next
+  gated command blocks again with `in progress : nothing`. `BISECT_START` is
+  to bisect what `head-name` is to rebase, and the gate now reads it. It
+  asks with `show-ref --verify refs/heads/<x>` rather than a 40-hex pattern,
+  because that is the question `git bisect reset` itself ends in: a branch
+  whose NAME is 40 hex characters is then answered the way `git checkout`
+  would answer it, an empty or missing `BISECT_START` is answered "no
+  branch", and a start branch deleted by a low-level `update-ref -d` is too
+  — where `bisect reset` fails loudly with `fatal: invalid reference`. Both
+  polarities now carry a row that RUNS the printed `bisect reset` and reads
+  HEAD. The previous round recorded that the single bisect row "SURVIVES"
+  the blanket-wording mutation; it did, and that was read as evidence the
+  arm was sound. It was not: a row surviving a mutation aimed elsewhere is
+  evidence about that mutation only.
+
+  **The suite no longer inherits the developer's git config** (round 4),
+  which until now decided which arm half its rows exercised. Measured by
+  breaking the hook's `rebase-merge` detection and running the suite: 38
+  pass / 4 fail by default, and 42 pass / 0 fail with a global
+  `rebase.backend = apply` — fully green over a broken hook, because every
+  plain `git rebase` then goes down `rebase-apply/` instead. On the
+  UNMUTATED hook, a global `commit.gpgsign = true` and a global
+  `init.templateDir` pointing at a failing hook each scored 25 pass / 21
+  fail. The author's machine has `init.templateDir` set (git-secrets), so
+  the suite was green only because those hooks happen to exit 0. The fixture
+  now exports `GIT_CONFIG_GLOBAL=/dev/null` and
+  `GIT_CONFIG_SYSTEM=/dev/null` and names each rebase row's backend
+  (`--merge` / `--apply`) instead of inheriting a default. Proven rather
+  than asserted: with the neutraliser in place, setting each of those three
+  global options leaves the tally unmoved at 49/0, and the
+  broken-`rebase-merge` mutant reddens the same 4 rows with or without
+  `rebase.backend = apply`.
+
+  **Four assertable-but-unasserted arms picked up rows** (round 4): `master`
+  — dropping it from the `main|master` arm left the whole suite green; the
+  two fail-CLOSED refusals, for a MISSING and for a TRUNCATED shared matcher
+  library, each of which could be flipped to `exit 0` unnoticed; and the
+  branch-NAME message BODY, which could be gutted while keeping `exit 2`. A
+  row labelled a polarity control for the SPACED linked worktree controlled
+  nothing — the tree was on a branch and its `.markgate.yml` was never
+  tracked, so the hook left at the opt-in check; the fixture now commits
+  that file and detaches the worktree, and the row dies alongside the other
+  linked rows under a mutation that blocks every detached tree. The suite is
+  49 cases, up from 42.
 
   **The `applying` sentinel is load-bearing in the direction that fails
   SILENTLY**, which is not the direction this entry used to name.
