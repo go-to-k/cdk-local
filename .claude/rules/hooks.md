@@ -1368,11 +1368,13 @@ construction.
     `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
     `.github/workflows/ci.yml`, `.gitignore`,
-    `.github/workflows/release.yml`, `release-please-config.json` and
-    `.release-please-manifest.json` (go-to-k/cdk-local#620,
+    `.github/workflows/release.yml`, `release-please-config.json`,
+    `.release-please-manifest.json` and `CHANGELOG.md`
+    (go-to-k/cdk-local#620,
     go-to-k/cdk-local#630; see the mapping comment in
-    `.markgate.yml` — the release trio is read by the v0 fence,
-    tests/unit/gates/release-please-v0.test.ts). The remaining
+    `.markgate.yml` — those four are read by the v0 fence,
+    tests/unit/gates/release-please-v0.test.ts, which also pins the
+    CHANGELOG format release-please splices into). The remaining
     workflow, pr-title-check, is read by nothing and stays out of
     scope. Only invalidated by changes in that scope.
 
@@ -1424,10 +1426,11 @@ construction.
   a list, because a list of the complement is the same enumeration
   that went stale above: a file is outside both scopes when no
   assertion READS it AND it does not decide what "green" means —
-  `CONTRIBUTING.md`, `.vscode/`, `.github/dependabot.yml`,
-  `CHANGELOG.md` and `.markdownlint.json` (an editor setting
+  `CONTRIBUTING.md`, `.vscode/`, `.github/dependabot.yml` and
+  `.markdownlint.json` (an editor setting
   nothing in `vp run check` or CI reads) are examples, not the
-  whole set. Two
+  whole set. `CHANGELOG.md` used to be listed here and no longer
+  belongs: the v0 fence reads it. Two
   cautions from go-to-k/cdk-local#630's review: the previous
   wording named `.claude/hooks/**` and `.markgate.yml` as
   out-of-scope examples and was ALREADY false for `.markgate.yml`

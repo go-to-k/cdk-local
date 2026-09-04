@@ -62,6 +62,57 @@ describe('release-please v0 fence', () => {
     expect(pkg.version).toMatch(/^0\./);
   });
 
+  /**
+   * CHANGELOG.md format conformance.
+   *
+   * release-please's Changelog updater (updaters/changelog.js) finds where to
+   * insert the next release with
+   *
+   *   const position = content.search(/\n###? v?[0-9[]/s);
+   *
+   * and splices the new entry in FRONT of that match. The leading `\n` is
+   * load-bearing: a file that BEGINS with a version header never matches its
+   * own top entry, so the search lands on the SECOND header and every release
+   * is filed one section too low — compounding, since it repeats at the same
+   * spot each time. The `##`/`###` alternation is a second cause on the same
+   * line: semantic-release wrote H1 (`# [x.y.z]`) headers for minor/major
+   * bumps, which the regex cannot see at all.
+   *
+   * Measured live on go-to-k/cdkd#2503, whose first real release PR ordered
+   * the file 0.285.13, 0.285.14, 0.285.12. This repo's CHANGELOG.md was
+   * normalized to release-please's own format (a `# Changelog` title block at
+   * the TOP, every version header H2) so the file stays conformant with
+   * nothing to do per release.
+   */
+  it('release-please splices the next entry at the TOP of CHANGELOG.md', () => {
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    // The updater's own expression, verbatim.
+    const spliceAt = changelog.search(/\n###? v?[0-9[]/s);
+    const firstHeaderAt = changelog.search(/^#{1,3} v?[0-9[]/m);
+    expect(spliceAt, 'release-please found no insertion point at all').toBeGreaterThan(-1);
+    expect(firstHeaderAt, 'CHANGELOG.md carries no version header').toBeGreaterThan(-1);
+    // Asserting the OUTCOME rather than either cause: the splice point must
+    // sit immediately before the FIRST version header (the `\n` the search
+    // consumes is the one-character offset), so a missing title block, an H1
+    // top entry, or any third cause all fail here.
+    expect(
+      spliceAt + 1,
+      'the next release would be spliced below the newest entry, not above it',
+    ).toBe(firstHeaderAt);
+  });
+
+  it('every version header is the H2 form release-please emits', () => {
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(
+      changelog.match(/^# v?[0-9[].*$/gm) ?? [],
+      'H1 version headers are invisible to release-please\'s `###?` search',
+    ).toEqual([]);
+    // Floor, so the case cannot pass vacuously on an emptied or restructured
+    // file: the normalization converted 148 H1 headers on top of 110 already
+    // H2, and the count only grows from here.
+    expect((changelog.match(/^## v?[0-9[].*$/gm) ?? []).length).toBeGreaterThanOrEqual(258);
+  });
+
   it('the publish job refuses a non-0 major before npm publish', () => {
     const workflow = readFileSync(join(repoRoot, '.github/workflows/release.yml'), 'utf8');
     // Everything below is asserted against the publish JOB's slice of the
