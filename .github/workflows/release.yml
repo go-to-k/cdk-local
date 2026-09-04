@@ -22,11 +22,32 @@ name: Release
 # merges it via the web UI. To get CI on release PRs, hand the release-please
 # step a PAT. (Unlike the sibling cdkd, this repo has no ci-green-gate hook,
 # so nothing agent-side blocks on the missing checks either.)
+#
+# Known behavior 2 — a STANDING release PR goes STALE, and looks fine while it
+# is: release-please does not rebuild a release PR whose computed release is
+# unchanged. It logs `PR #N remained the same` and leaves the branch on the
+# base it was cut from. So anything that lands on main afterwards in a file
+# release-please OWNS (CHANGELOG.md, package.json's version,
+# .release-please-manifest.json) is simply missing from that branch — and
+# GitHub still reports the PR MERGEABLE, because a stale copy is not a
+# conflict. Merging it then REVERTS that change. Measured in the sibling cdkd:
+# release PR go-to-k/cdkd#2503 was cut before the CHANGELOG normalization
+# merged, its branch still carried the pre-normalization file, and merging it
+# would have undone 285 header conversions.
+#
+# Remedy: CLOSE the release PR, DELETE its branch, and re-run this workflow —
+# release-please recomputes the identical release from current main. That is
+# what the `workflow_dispatch` trigger below is for; without it the only way
+# to re-run is `gh run rerun` on an old push run. It is safe to fire at any
+# time because release-please is idempotent: with no new releasable commits it
+# recreates the same release PR, and with none at all it does nothing.
 
 on:
   push:
     branches:
       - main
+  # Manual re-run, for the stale-standing-PR remedy above.
+  workflow_dispatch:
 
 # Serialize Release workflow runs so a back-to-back merge (#204 + #205
 # landed within ~30s and the earlier run's `git push --tags HEAD:main`
