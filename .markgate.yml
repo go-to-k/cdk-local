@@ -111,6 +111,12 @@ gates:
       - ".github/workflows/release.yml"
       - "release-please-config.json"
       - ".release-please-manifest.json"
+      # Same suite also reads CHANGELOG.md: its format decides where
+      # release-please splices the next entry (go-to-k/cdkd#2503). A release-PR
+      # merge rewrites this file, so it stales `check` — but `package.json`, in
+      # this scope since the start, already did that on every release, so the
+      # entry adds no new cost.
+      - "CHANGELOG.md"
       # Same class a THIRD time, found in #630's fourth review round:
       # markgate-include-globs.test.ts runs `git check-ignore` to prove its one
       # allow-listed zero-match entry is a real gitignored sentinel, so

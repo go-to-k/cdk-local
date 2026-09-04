@@ -62,6 +62,78 @@ describe('release-please v0 fence', () => {
     expect(pkg.version).toMatch(/^0\./);
   });
 
+  /**
+   * CHANGELOG.md format conformance.
+   *
+   * release-please's Changelog updater (updaters/changelog.js) finds where to
+   * insert the next release with
+   *
+   *   const position = content.search(/\n###? v?[0-9[]/s);
+   *
+   * and splices the new entry in FRONT of that match. The leading `\n` is
+   * load-bearing: a file that BEGINS with a version header never matches its
+   * own top entry, so the search lands on the SECOND header and every release
+   * is filed one section too low — compounding, since it repeats at the same
+   * spot each time. The `##`/`###` alternation is a second cause on the same
+   * line: semantic-release wrote H1 (`# [x.y.z]`) headers for minor/major
+   * bumps, which the regex cannot see at all.
+   *
+   * Measured live: cdkd's first release PR (go-to-k/cdkd#2503, itself a
+   * `chore(release): 0.285.14`) ordered the file 0.285.13, 0.285.14,
+   * 0.285.12. This repo's CHANGELOG.md was normalized to release-please's own
+   * format (a `# Changelog` title block at the TOP, every version header H2)
+   * so the file stays conformant with nothing to do per release.
+   *
+   * Known bound, stated rather than coded around: the splice-point case reads
+   * the file with the updater's regex and nothing else, so a version-header
+   * shape hidden inside a fenced code block, or an `[Unreleased]` section
+   * ahead of the newest release, would move the expected splice point. Neither
+   * exists here — the preamble is three lines of prose — and complicating the
+   * regex to model them would diverge it from the updater's own, which is the
+   * one property that makes this case meaningful.
+   */
+  it('release-please splices the next entry at the TOP of CHANGELOG.md', () => {
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    // The updater's own expression, verbatim — a COPY, so its provenance is
+    // recorded here rather than left implicit: verified against
+    // `DEFAULT_VERSION_HEADER_REGEX = '\n###? v?[0-9[]'` in release-please
+    // 17.3.0 (src/updaters/changelog.ts, built with the `s` flag), which is
+    // the version release-please-action@5c625bf (v4.4.1) locks — the sha
+    // pinned in release.yml. Re-check this literal when that action pin is
+    // bumped: the sha-pin case below fences THAT the action is pinned, not
+    // WHICH sha, so a bump could otherwise change the real regex under this
+    // copy with nothing going red.
+    const spliceAt = changelog.search(/\n###? v?[0-9[]/s);
+    const firstHeaderAt = changelog.search(/^#{1,3} v?[0-9[]/m);
+    expect(spliceAt, 'release-please found no insertion point at all').toBeGreaterThan(-1);
+    expect(firstHeaderAt, 'CHANGELOG.md carries no version header').toBeGreaterThan(-1);
+    // Asserting the OUTCOME rather than either cause: the splice point must
+    // sit immediately before the FIRST version header (the `\n` the search
+    // consumes is the one-character offset), so a missing title block, an H1
+    // top entry, or any third cause all fail here.
+    expect(
+      spliceAt + 1,
+      'the next release would be spliced below the newest entry, not above it',
+    ).toBe(firstHeaderAt);
+  });
+
+  it('every version header is the H2 form release-please emits', () => {
+    const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(
+      changelog.match(/^# v?[0-9[].*$/gm) ?? [],
+      'H1 version headers are invisible to release-please\'s `###?` search',
+    ).toEqual([]);
+    // Floor, so the case cannot pass vacuously on an emptied or restructured
+    // file. 240 is deliberately NEAR the 258 measured at normalization time
+    // (148 H1 converted on top of 110 already H2), not far under it: a floor
+    // far under its subject fences only total disappearance, while one just
+    // under it still reds a collapse. It never needs raising — release-please
+    // only ever appends, so the count grows by one per release — and the
+    // small headroom is there so an ordinary history trim does not force a
+    // number edit the way a floor sitting exactly at the measurement would.
+    expect((changelog.match(/^## v?[0-9[].*$/gm) ?? []).length).toBeGreaterThan(240);
+  });
+
   it('the publish job refuses a non-0 major before npm publish', () => {
     const workflow = readFileSync(join(repoRoot, '.github/workflows/release.yml'), 'utf8');
     // Everything below is asserted against the publish JOB's slice of the
