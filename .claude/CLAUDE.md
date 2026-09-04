@@ -179,6 +179,31 @@ would restore CI on it. (Unlike the sibling cdkd, this repo has no
 ci-green-gate hook, so nothing agent-side blocks on the missing checks
 either.)
 
+**A standing release PR goes STALE, and looks fine while it is.**
+release-please does NOT rebuild a release PR whose computed release is
+unchanged — it logs `PR #N remained the same` and leaves the branch on the
+base it was cut from. So anything that lands on `main` afterwards in a file
+release-please OWNS (`CHANGELOG.md`, `package.json`'s version,
+`.release-please-manifest.json`) is missing from that branch, and GitHub
+still reports the PR **MERGEABLE** — a stale copy is not a conflict.
+Merging it then REVERTS that change. Measured in the sibling cdkd: release
+PR go-to-k/cdkd#2503 was cut before the CHANGELOG normalization merged, its
+branch still carried the pre-normalization file, and merging it would have
+undone 285 header conversions.
+
+**Rule: after any PR that edits `CHANGELOG.md`, the version in
+`package.json`, or `.release-please-manifest.json`, check whether a release
+PR is open — and if one is, recreate it.** Close it, delete its branch, and
+re-run the Release workflow (`workflow_dispatch`, added for exactly this;
+`gh workflow run release.yml`). release-please then recomputes the identical
+release from current `main`. Firing it is always safe: release-please is
+idempotent — with no new releasable commits it recreates the same release
+PR, and with none at all it does nothing.
+
+```bash
+gh pr list --state open --search "chore(release) in:title"   # is one standing?
+```
+
 ## Important implementation details
 
 - **ESM Modules**: `package.json` declares `"type": "module"`. All imports
