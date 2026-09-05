@@ -149,6 +149,20 @@
           },
           {
             "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/issue-deferral-criteria-gate.sh",
+            "if": "Bash(*gh*issue*create*)",
+            "timeout": 15,
+            "statusMessage": "Checking the Session-fit deferral reason..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/issue-deferral-criteria-gate.sh",
+            "if": "Bash(*gh*api*)",
+            "timeout": 15,
+            "statusMessage": "Checking the Session-fit deferral reason..."
+          },
+          {
+            "type": "command",
             "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pr-body-item-number-gate.sh",
             "if": "Bash(*gh*pr*create*)",
             "timeout": 30,
@@ -230,6 +244,13 @@
             "if": "Bash(*git*merge*)",
             "timeout": 15,
             "statusMessage": "Verifying integ markgate marker..."
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/integ-stale-base-detector.sh",
+            "if": "Bash(*verify*)",
+            "timeout": 10,
+            "statusMessage": "Checking the integ base against origin/main..."
           },
           {
             "type": "command",
