@@ -1330,19 +1330,30 @@ gate_target_dir() {
 }
 
 # ---------------------------------------------------------------------------
-# PORTED FROM cdkd (go-to-k/cdkd#2639). Kept TEXTUALLY IDENTICAL to that
-# copy apart from path references, so a `diff` across the three repos is the
-# review: the defects this closes were found by porting, and the vocabulary
-# DIVERGING between repos is itself one of them.
+# PORTED FROM cdkd (go-to-k/cdkd#2639, tip). Kept TEXTUALLY IDENTICAL to that
+# copy apart from path references and the per-repo consumer list above, so a
+# `diff` across the three repos is the review.
+#
+# The FIRST port of this block was one revision STALE and shipped two live
+# fail-opens cdkd had already fixed (a mid-word `$'...'` span, and every path
+# byte >= 0x80 turned into U+FFFD). It passed its own four-arm
+# `gate_perl_word_ok` because all four assertions were pure ASCII at word
+# position 0. That is why the probe now has SIX arms, two of them chosen to
+# fail exactly that stale copy -- verified: the stale block passes its own
+# probe and is rejected by this one.
 # ---------------------------------------------------------------------------
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
-# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
-# `--body-file` path or an inline `--body` value out of RAW command text with
-# `perl -0777` instead, because they need a GLOBAL scan over a multi-line slurp
-# and `[[ =~ ]]` gives neither. Derive the list rather than trusting this
+# `[[ =~ ]]`. THREE gates -- issue-deferral-criteria, issue-dup-check and issue-classification-label -- pull a `--body-file` / `-F` path or an
+# inline `--body` value out of RAW command text with `perl -0777` instead,
+# because they need a GLOBAL scan over a multi-line slurp and `[[ =~ ]]` gives
+# neither. THIS LIST IS PER REPO: cdkd, which the class is ported from, has a
+# larger set (it also has gh-body-english, pr-body-item-number and
+# commit-prefix-scope). Derive it rather than trusting this sentence --
+# `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
+# revision of this comment in cdkd said "three" while five files consumed it,
+# which is the same stale-sibling-note class the constant exists to end. Derive the list rather than trusting this
 # sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
 # revision of THIS comment said "three" while five files consumed it, which is
 # the same stale-sibling-note class the constant exists to end.
@@ -1406,6 +1417,19 @@ GATE_PERL_WORD='
   # Japanese. Its inner `\\.` also differs from the plain single-quote arm:
   # inside `$\x27...\x27` a backslash ESCAPES, so `\\\x27` does not close it.
   my $GW = qr/(?:\$\x27(?:[^\x27\\]|\\.)*\x27|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27;|&()<>\x60])+/;
+  # Append-as-BYTES normaliser. Perl strings carry an internal
+  # character-vs-bytes flag, and the callers of this prelude run under mixed
+  # `-C` settings: the path extraction has none, the non-English body scan uses
+  # `-CSD`, where the input is ALREADY decoded. Mixing the two in one result
+  # produces a string that is half characters and half bytes -- which is exactly
+  # how a literal accent beside an escape defeated the class test. Everything
+  # here is bytes; whoever needs characters decodes once, at its own call site.
+  sub gate_bytes {
+    my ($t) = @_;
+    utf8::encode($t) if utf8::is_utf8($t);
+    return $t;
+  }
+
   # ANSI-C escape decoding, used only by the `$\x27...\x27` arm of gate_unq.
   #
   # EVERYTHING IS NORMALISED TO BYTES AND DECODED ONCE AT THE END, and each half
@@ -1444,41 +1468,28 @@ GATE_PERL_WORD='
     my %simple = ("a"=>"\a","b"=>"\b","e"=>"\e","E"=>"\e","f"=>"\f",
                   "n"=>"\n","r"=>"\r","t"=>"\t","v"=>"\013",
                   "\\"=>"\\","\x27"=>"\x27","\""=>"\"","?"=>"?");
+    # `\G` + `pos()`, never a destructive `s/^...//`. Each substitution copies
+    # the REMAINDER of the string, so a per-character loop over an n-character
+    # value is O(n^2): measured at 0.36 s for 5k escapes, 2.7 s for 20k and
+    # 14.5 s for 50k, against the 10 s PreToolUse timeout in
+    # .claude/settings.json -- and a timed-out hook is, for a gate, a SILENT
+    # PASS. Scanning leaves the string alone and is linear.
+    pos($v) = 0;
     my $o = "";
-    my $add = sub {                 # append as BYTES, whatever we were handed
-      my ($t) = @_;
-      utf8::encode($t) if utf8::is_utf8($t);
-      $o .= $t;
-    };
-    while (length $v) {
-      # `& 255`: bash truncates an octal escape to a byte, so `\400` is NUL and
-      # not U+0100.
-      if    ($v =~ s/^\\x([0-9A-Fa-f]{1,2})//)    { $o .= chr(hex($1) & 255); }
-      elsif ($v =~ s/^\\([0-7]{1,3})//)           { $o .= chr(oct($1) & 255); }
-      elsif ($v =~ s/^\\u([0-9A-Fa-f]{1,4})//)    { $add->(pack("U", hex($1))); }
-      elsif ($v =~ s/^\\U([0-9A-Fa-f]{1,8})//)    { $add->(pack("U", hex($1))); }
-      elsif ($v =~ s/^\\c(.)//)                   { $o .= chr(ord(uc $1) & 255 ^ 64); }
-      elsif ($v =~ s/^\\(.)//s)                   { $add->(exists $simple{$1} ? $simple{$1} : "\\" . $1); }
-      elsif ($v =~ s/^([^\\]+)//s)                { $add->($1); }
-      else                                         { $v =~ s/^(.)//s; $add->($1); }
+    my $n = length($v);
+    while (pos($v) < $n) {
+      # `& 255`: bash truncates an escape to a byte, so `\400` is NUL, not U+0100.
+      if    ($v =~ /\G\\x([0-9A-Fa-f]{1,2})/gc)  { $o .= chr(hex($1) & 255); }
+      elsif ($v =~ /\G\\([0-7]{1,3})/gc)         { $o .= chr(oct($1) & 255); }
+      elsif ($v =~ /\G\\u([0-9A-Fa-f]{1,4})/gc)  { $o .= gate_bytes(pack("U", hex($1))); }
+      elsif ($v =~ /\G\\U([0-9A-Fa-f]{1,8})/gc)  { $o .= gate_bytes(pack("U", hex($1))); }
+      elsif ($v =~ /\G\\c(.)/gcs)                { $o .= chr(ord(uc $1) & 255 ^ 64); }
+      elsif ($v =~ /\G\\(.)/gcs)                 { $o .= gate_bytes(exists $simple{$1} ? $simple{$1} : "\\" . $1); }
+      elsif ($v =~ /\G([^\\]+)/gcs)              { $o .= gate_bytes($1); }
+      elsif ($v =~ /\G(.)/gcs)                   { $o .= gate_bytes($1); }
+      else                                        { last; }
     }
-    # DECODE PER BYTE, not all-or-nothing and not per malformed RUN. Two
-    # spellings were measured and both lose data:
-    #
-    #   utf8::decode          refuses the WHOLE string on one malformed byte
-    #                         and leaves it Latin-1, so a single stray byte
-    #                         turned CJK detection off for everything:
-    #                         `--body $\x27\xff\xe6\x97\xa5\x27` gave rc=0.
-    #   Encode::decode        swallows the bytes FOLLOWING a bad lead byte as
-    #                         part of the malformed run -- the same input came
-    #                         back as one U+FFFD, the Japanese character gone.
-    #
-    # `gate_utf8_lenient` decodes maximal VALID sequences and emits exactly one
-    # U+FFFD per un-decodable BYTE, so a valid character next to a stray byte
-    # survives and is still judged. That is what has to reach the class test:
-    # gh sends the bytes, and whatever the receiver renders, the Japanese
-    # character in them is published.
-    return gate_utf8_lenient($o);
+    return $o;
   }
 
   # Byte string -> character string, lenient. The alternation is the standard
@@ -1488,30 +1499,47 @@ GATE_PERL_WORD='
   # ordinary text.
   sub gate_utf8_lenient {
     my ($b) = @_;
+    pos($b) = 0;
     my $o = "";
-    while (length $b) {
-      if ($b =~ s/^((?:[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})+)//s) {
+    my $n = length($b);
+    # `\G` + `pos()` for the same reason as gate_ansi_c: a destructive loop here
+    # is O(n^2) and the hook timeout is a silent pass.
+    while (pos($b) < $n) {
+      if ($b =~ /\G((?:[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})+)/gcs) {
         my $t = $1;
         utf8::decode($t);
         $o .= $t;
-      } else {
-        $b =~ s/^.//s;
+      } elsif ($b =~ /\G./gcs) {
         $o .= "\x{FFFD}";
+      } else {
+        last;
       }
     }
     return $o;
   }
   sub gate_unq {
     my ($t) = @_;
+    pos($t) = 0;
     my $o = "";
-    while (length $t) {
-      if ($t =~ s/^"((?:[^"\\]|\\.)*)"//s) {
-        my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= $s;
-      } elsif ($t =~ s/^\$\x27((?:[^\x27\\]|\\.)*)\x27//s) { $o .= gate_ansi_c($1);
-      } elsif ($t =~ s/^\x27([^\x27]*)\x27//s) { $o .= $1;
-      } elsif ($t =~ s/^\\(.)//s)              { $o .= $1;
-      } elsif ($t =~ s/^([^"\x27\\]+)//s)      { $o .= $1;
-      } else { $t =~ s/^(.)//s; $o .= $1; }
+    my $n = length($t);
+    # `\G` + `pos()`, not `s/^...//`: see gate_ansi_c. A value made of many
+    # adjacent quoted chunks is a per-span loop, and the same O(n^2) applies.
+    while (pos($t) < $n) {
+      if ($t =~ /\G"((?:[^"\\]|\\.)*)"/gcs) {
+        my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= gate_bytes($s);
+      } elsif ($t =~ /\G\$\x27((?:[^\x27\\]|\\.)*)\x27/gcs) { $o .= gate_ansi_c($1);
+      } elsif ($t =~ /\G\x27([^\x27]*)\x27/gcs)             { $o .= gate_bytes($1);
+      } elsif ($t =~ /\G\\(.)/gcs)                          { $o .= gate_bytes($1);
+      # `\$(?!\x27)`: an ordinary `$` is legitimate text (`cost $5`,
+      # `hello$USER`) and must be consumed here, but a `$` that OPENS an ANSI-C
+      # span must be left for the arm above. Without the look-ahead this run ate
+      # the sigil greedily, so the ANSI-C arm only ever fired at word position 0
+      # -- one ASCII character before it defeated the whole decode, and
+      # `gh api -f body=$\x27...\x27` was bypassed UNCONDITIONALLY because
+      # `body=` is always such a prefix.
+      } elsif ($t =~ /\G((?:[^"\x27\\\$]|\$(?!\x27))+)/gcs) { $o .= gate_bytes($1);
+      } elsif ($t =~ /\G(.)/gcs)                            { $o .= gate_bytes($1);
+      } else { last; }
     }
     return $o;
   }
@@ -1581,5 +1609,16 @@ gate_perl_word_ok() {
   [ "$(gate_pw_probe_ b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
   [ "$(gate_pw_probe_ a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
   [ "$(gate_pw_probe_ m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
+  # 5  a MID-WORD ANSI-C span. Added after a review measured the four arms above
+  #    certifying a one-revision-STALE library -- the exact case the guard was
+  #    written for. The bare-run arm used to eat the `$` sigil greedily, so the
+  #    ANSI-C arm fired only at word position 0; every arm above sits at
+  #    position 0 and none of them could see it.
+  [ "$(gate_pw_probe_ w "x --body-file /a/b\$'\\x20'c.md")" = '/a/b c.md' ] || return 1
+  # 6  BYTE FIDELITY. `gate_unq` must return the byte string bash would pass;
+  #    decoding inside it corrupted every path carrying a byte >= 0x80 (measured
+  #    128 of 255) while leaving all five assertions above green, because each of
+  #    them is pure ASCII.
+  [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
   return 0
 }

@@ -366,6 +366,53 @@ registration_check() {
 }
 registration_check
 
+# --- the spellings the shared value class buys ------------------------------
+# Each was a live miss with the retired `(["\x27]?)([^"\x27[:space:]]+)\1`,
+# which names WHERE a quote may sit instead of taking one shell WORD. This gate
+# was the last sibling in the repo still carrying that class. The ok-body twin
+# is the polarity control: without it a gate that refuses everything satisfies
+# the blocking half for the wrong reason.
+PBDIR="$TMPROOT/pb dir"
+mkdir -p "$PBDIR"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$PBDIR/bad.md"
+printf 'Review fixes:\n\n- the mapper was corrected\n' > "$PBDIR/ok.md"
+printf 'Review fixes:\n\n- item #4 was addressed\n' > "$TMPROOT/pb-plain.md"
+run "spaced --body-file path blocks" \
+  "gh pr create --title t --body-file \"$PBDIR/bad.md\"" 2
+run "spaced --body-file path, clean body, passes" \
+  "gh pr create --title t --body-file \"$PBDIR/ok.md\"" 0
+run "backslash-escaped --body-file path blocks" \
+  "gh pr create --title t --body-file ${PBDIR// /\\ }/bad.md" 2
+run "glued -Fbody=@<quoted spaced path> blocks" \
+  "gh pr create --title t -Fbody=@\"$PBDIR/bad.md\"" 2
+run "glued -Fbody=@<plain path> blocks" \
+  "gh pr create --title t -Fbody=@$TMPROOT/pb-plain.md" 2
+
+# The guard: a prelude that is present but does not COMPILE extracts nothing, so
+# the gate would scan no body and pass. The payload is one it NORMALLY PASSES.
+PBBROKEN="$TMPROOT/brokenlib"
+mkdir -p "$PBBROKEN"
+cp "$HOOK" "$PBBROKEN/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/_command-match.sh" > "$PBBROKEN/_command-match.sh"
+if grep -q 'unclosed' "$PBBROKEN/_command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$PBBROKEN/_command-match.sh"; then
+  pb_rc=0
+  jq -n --arg c "gh pr create --title t --body-file \"$PBDIR/ok.md\"" \
+    '{tool_name:"Bash", tool_input:{command:$c}}' \
+    | "$PBBROKEN/$(basename "$HOOK")" >/dev/null 2>&1 || pb_rc=$?
+  if [ "$pb_rc" = "2" ]; then
+    echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (exit 2)"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL: a non-compiling GATE_PERL_WORD returned $pb_rc, expected 2"
+    FAIL=$((FAIL + 1))
+  fi
+else
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+  FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -724,7 +724,7 @@ if grep -q 'unclosed' "$GWBROKEN/_command-match.sh" \
    && ! grep -q 'my \$GW = qr/(?:' "$GWBROKEN/_command-match.sh"; then
   for gw_env in "" "__GATE_PW_OK=1"; do
     gw_rc=0
-    jq -n --arg c "gh issue create -t x --body-file $GWDIR/ok.md" --arg d "$OPTIN" \
+    jq -n --arg c "gh issue create -t x --body-file \"$GWDIR/ok.md\"" --arg d "$OPTIN" \
       '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
       | env $gw_env "$GWBROKEN/$(basename "$HOOK")" >/dev/null 2>&1 || gw_rc=$?
     if [ "$gw_rc" = "2" ]; then

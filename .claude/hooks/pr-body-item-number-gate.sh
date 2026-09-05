@@ -55,7 +55,8 @@ if [ ! -r "$_gate_lib" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_gate_lib"
-if ! declare -F gate_matches >/dev/null 2>&1; then
+if ! declare -F gate_matches >/dev/null 2>&1 \
+  || ! declare -F gate_perl_word_or_die >/dev/null 2>&1; then
   echo "Blocked: .claude/hooks/_command-match.sh loaded but gate_matches is undefined (truncated file?)." >&2
   exit 2
 fi
@@ -98,9 +99,25 @@ extract_files() {
   # Use perl to handle quoted args robustly. Output is one path per
   # line. perl's regex is more permissive than bash's, and we
   # collapse single/double quotes around the value.
-  printf '%s' "$cmd" | perl -ne '
-    while (/--body-file[=[:space:]]+(["\x27]?)([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
-    while (/(?:--field|-F)[[:space:]]+(["\x27]?)body=@([^"\x27[:space:]]+)\1/g) { print "$2\n"; }
+  # `$GW` from the SHARED `GATE_PERL_WORD` prelude, not a local
+  # `(["\x27]?)([^"\x27[:space:]]+)\1`. That local shape names WHERE a quote may
+  # sit instead of taking one shell WORD, so it lost a quoted path containing a
+  # SPACE, a backslash-escaped one, and the GLUED `-F<path>` gh accepts -- the
+  # same three spellings measured as live misses on the three issue gates in
+  # this repo. This gate was the last sibling still carrying it; leaving it
+  # would have kept a known-defective class in the tree with a note beside it
+  # saying the class was retired.
+  #
+  # `[[:space:]]` -> `\s` with it: the retired class used the POSIX name, and
+  # `$GW` is defined with `\s`, so keeping both spellings in one regex would be
+  # the kind of near-duplicate that drifts.
+  printf '%s' "$cmd" | perl -ne "$GATE_PERL_WORD"'
+    while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^body=\@//;
+      print "$v\n";
+    }
   '
 }
 
@@ -317,6 +334,14 @@ scan_text() {
 # other than a heredoc redirect (`printf > f`, `python3 -c ... > f`) cannot be
 # extracted, so it falls back to whatever is on disk -- and to nothing at all
 # when the path does not exist yet. Both halves are pinned by cases.
+# The extraction below runs the shared prelude, and a prelude that is present
+# but does NOT COMPILE is silent (`perl` here has no stderr redirect, but the
+# gate reads its OUTPUT, and a failed program prints none) -- the gate would
+# scan no body and pass. Probe it functionally, once, after arming, and at TOP
+# LEVEL: `extract_files` is called inside `$( )`, where `exit 2` would end only
+# the substitution subshell.
+gate_perl_word_or_die pr-body-item-number-gate || exit 2
+
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
 

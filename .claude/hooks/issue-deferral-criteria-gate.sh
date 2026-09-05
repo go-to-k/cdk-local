@@ -599,15 +599,22 @@ $cmd"
     return 0
   fi
 
-  printf '%s' "$seg" | perl -0777 -ne '
-    while (/(?:^|\s)--body[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
-      print "$v\n";
-    }
-    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
+  # `$GW` + `gate_unq`, not a three-alternative class with the quotes STRIPPED
+  # from the ends afterwards. Stripping is not unquoting: it cannot span
+  # adjacent chunks, it cannot see a backslash escape, and it cannot handle a
+  # quote INSIDE the value -- which is gh`s own documented spelling for a field:
+  #
+  #     -f `body=<text>`   quote OUTSIDE   rc=2   correct
+  #     -f body=`<text>`   quote INSIDE    rc=0   FAIL-OPEN
+  #
+  # The `body=` prefix has to be stripped AFTER unquoting for the same reason:
+  # in the quote-inside spelling the prefix sits outside the quotes, so a
+  # strip-then-unquote order never finds it. Measured on this repo before the
+  # change; the quote-inside form is the one gh documents.
+  printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
       next unless $v =~ s/^body=//;
       next if $v =~ /^\@/;
       print "$v\n";
