@@ -282,6 +282,15 @@ clean afterwards (measured 2026-09-02: a lane's harness restored a snapshot
 taken before the round's new tests existed and took 133 lines of them with
 it). Surviving the restore is what the pre-probe commit actually buys.
 
+**ONE mutation per probe, and restore the tree byte-exact between them.** A
+probe that changed two things at once attests to NEITHER — and unlike a
+suspicious green, its RED reads as evidence and is filed as one. Measured in
+the sibling go-to-k/cdkd#2612: a comment claimed reordering either consumer
+"reds four cases", but that probe had also edited the rendered line's TEXT, so
+the reds belonged to the text edit. Re-measured one mutation at a time, each
+alone was green and the two TOGETHER reddened one case — the mechanisms are
+mutually redundant, the opposite of what the comment recorded.
+
 **A probe that reports NO discrimination is a claim about the FENCE, and four
 other things produce the identical output.** Ask in order before touching the
 fence (each hit in one cdkd session, go-to-k/cdkd#2197 / go-to-k/cdkd#2200 /
@@ -320,7 +329,11 @@ go-to-k/cdkd#2198; the fifth measured here 2026-09-03):
    and concludes the fence is DEAD, one keyed on rc alone concludes it is
    ALIVE, and both are false — nothing ran. Believe a verdict only when the
    `Tests` line carries DIGITS, its total matches a known BASELINE, and no
-   `Test Files … failed` sits beside zero case failures.
+   `Test Files … failed` sits beside zero case failures. And read the RIGHT
+   line: `vite.config.ts` enables `typecheck`, so a clean run prints
+   `Type Errors  no errors` — which is not the separate `Errors  N errors`
+   line a dying worker or a load failure puts above it. §8-e's "an exit code
+   lies both ways" is the other half: neither summary line is the verdict.
 
 Only after all five does "the fence is weak" remain. Deleting an assertion on
 the strength of an unexamined green is how a working guard gets removed.

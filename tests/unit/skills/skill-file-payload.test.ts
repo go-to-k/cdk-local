@@ -126,6 +126,23 @@ const MIN_REFERENCE_FILES = 6;
 // retro. Worth recording because the wrong version READ fine: an amortization
 // argument is checkable against the flow it describes, and nothing in this
 // file would have caught it.
+//
+// The 2026-09-05 port of four sibling retro runs' lessons is the worked example
+// of what this bound does and does not charge, and it is stated as an INVARIANT
+// rather than as figures because every figure here has now gone stale twice in
+// one day. Additions to the LARGEST stage file move `corpus - largest` by
+// exactly zero; additions to any other file, INCLUDING ones arriving from main,
+// are charged in full. So a margin that moved less than the corpus is evidence
+// about WHICH file grew, never about room the additions created -- and a file
+// that escapes this bound by being the largest pays instead out of its own
+// MAX_REFERENCE_FILE_BYTES headroom. Read the live numbers off MEASURED's
+// failure message, which is the only place they are asserted; do not re-quote
+// them here, per the convention the three constants above already state.
+//
+// That port paid section 10-c's "pay for what you add" by a CUT, not a move:
+// references/retro.md's stale-reason bullet carried one incident that the new
+// rule in .claude/rules/session-report.md subsumes, so it was deleted and
+// replaced by a pointer. Nothing left this corpus for another file.
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -158,9 +175,9 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_885,
-    corpusBytes: 145_551,
-    largest: { file: 'implement.md', bytes: 28_297 },
-    runnerUp: { file: 'verify.md', bytes: 21_533 },
+    corpusBytes: 148_597,
+    largest: { file: 'implement.md', bytes: 29_545 },
+    runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };
 

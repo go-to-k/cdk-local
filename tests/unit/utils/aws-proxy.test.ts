@@ -931,6 +931,28 @@ describe('aws-proxy (issue #634)', () => {
 
     });
 
+    // The `30_000` bound at the end of this case is load-bearing, and it is
+    // here rather than on any sibling because this is the ONLY case in the file
+    // whose body awaits an import: `src/internal.ts` pulls the whole
+    // local-execution graph, and it is paid COLD, inside the case budget. Under
+    // full-suite contention it exceeded the 5000 ms default in 3 of 4
+    // `vp run verify` runs on one host on 2026-09-05 -- always this case,
+    // always `Test timed out in 5000ms` -- while the file ALONE and CI both
+    // stayed green (go-to-k/cdk-local#703).
+    //
+    // Why a bound and not a hoist. Hoisting the import beside the two at the
+    // top of this file would pay the cost at module init, outside every case
+    // budget, and would need no number at all -- but it would EVALUATE that
+    // graph before the `beforeEach` that scrubs `PROXY_ENV_KEYS`, in a file
+    // whose whole subject is proxy env-var behaviour. That is the trade, and it
+    // is why the cheaper-looking fix is not taken here.
+    //
+    // The bound is a bound, not a removal, and it fails in the two directions
+    // that matter: an import that never RESOLVES rejects and takes the case
+    // with it long before the clock (measured: ~3 s), and one that resolves to
+    // the wrong namespace reds the guard-the-guard assertion below. Setting the
+    // bound to `1` reds the case with `Test timed out in 1ms`, which is what
+    // says the argument is honoured at all rather than decorative.
     it('resetProxySchemeWarnings is not on the host-facing surface', async () => {
       // BEHAVIOURAL, not a substring scan of source text. The first version
       // asserted `internal.ts` does not CONTAIN the name, which a
@@ -941,6 +963,6 @@ describe('aws-proxy (issue #634)', () => {
       expect(Object.keys(internal)).not.toContain('resetProxySchemeWarnings');
       // Guard-the-guard: the import really resolved the module under test.
       expect(Object.keys(internal)).toContain('buildProxyClientConfig');
-    });
+    }, 30_000);
   });
 });

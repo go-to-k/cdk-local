@@ -113,6 +113,33 @@ which it is: if the evidence is session-only, finish it now unless a genuine
 defer criterion fires, and if you must defer it anyway, put the EVIDENCE in the
 issue body, not just the diagnosis.
 
+**A reason about the FILING SESSION's own STATE expires when that session
+does.** It is a different failure from the one `/work-issues`
+`references/implement.md` §5-c refuses outright — that one is a claim about
+the PULL REQUEST ("it needs its own review surface"), which is never a
+deferral reason at all. This one is a claim about the SESSION that filed it:
+"the file is held by another open PR's diff", "the session that found it
+budgeted no integ run", "that lane's scope was frozen at its final review
+round". A PR can be named on either side, so the mention is not the tell —
+ask which of the two the sentence is ABOUT. Session-state clauses are legal
+and merely go STALE, and deciding-once does not protect them, because it
+freezes the DECISION and not the PREMISE.
+
+So prefer a reason the WORK owns. When a session-state clause is written
+anyway, name the event that ENDS it on the same line — "unblocked the moment
+that PR merges" is the model, because it is what lets a later reader see,
+without asking anyone, that the reason has expired. The "no file overlap with
+this session's lanes" reason needs it too: that is a claim about a MOVING
+target, since the lane keeps editing after the reason is written
+(go-to-k/cdkd#2440 was deferred on exactly it, and the same lane's merged PR
+then changed that very file `+9/-2`). `/work-issues` `references/retro.md`
+§10-0 re-checks every `next` at the end of a run, and this shape has been
+caught in consecutive sibling runs — go-to-k/cdkd#2544 by that end-of-run
+check, go-to-k/cdkd#2595 by the session that later claimed it.
+Nothing mechanical closes it — the wording of an expired reason is
+unremarkable, and only the question "what ends this?" separates it from a
+live one.
+
 **Before writing `next`, NAME the command the next session will run to
 verify the fix.** Every deferral is a PREDICTION that a later session can
 finish the work, and an unstated prediction is never checked: the reason

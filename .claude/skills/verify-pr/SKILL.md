@@ -44,7 +44,47 @@ Run each check and report pass/fail:
    - If no PR exists for current branch, use the `AskUserQuestion` tool to ask for the PR number
    - **First: check merge state** — `gh pr view <PR> --json mergeStateStatus,mergeable -q '"mergeable=\(.mergeable) state=\(.mergeStateStatus)"'`. When this returns `mergeable=CONFLICTING state=DIRTY`, the CI workflow will NOT fire on the PR no matter how long you wait. Resolution: `git fetch origin main && git rebase origin/main`, resolve conflicts, `git push --force-with-lease` — CI fires within ~30s of the push.
    - Only after `mergeStateStatus` is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`: `gh pr checks <PR-number>` — all checks pass.
-   - If checks are pending, wait and recheck.
+   - If checks are pending, wait and recheck — but **`--watch` waits for
+     PENDING rows to settle, not for rows to APPEAR.** With none reported it
+     has nothing to wait on and returns AT ONCE: measured 2026-09-05 on
+     go-to-k/cdk-local#1, whose branch has no checks, `gh pr checks 1 --watch`
+     came back in about a second with rc=1 and
+     `no checks reported on the '<branch>' branch`. (Do not read a fast return
+     as proof of the empty case — the same flag also returns in about a second
+     once every row has SETTLED, rc=0. It blocks only while something is
+     pending.) So an `until` loop wrapping `--watch` to wait for CI to start
+     hot-spins through a whole tool timeout. Poll for existence first, then
+     watch:
+
+     ```bash
+     gh pr checks <PR-number> --json name,state   # rc=1 + "no checks reported" = none yet
+     gh pr checks <PR-number> --watch             # only once a row exists
+     ```
+
+     **And the row set is not fixed — never compare it against a remembered
+     number, and never read a rollup as a verdict on the whole set.** The
+     mechanisms below all vary it, each measured on go-to-k/cdk-local#702, and
+     the list is not claimed to be exhaustive:
+
+     - **Rows arrive in WAVES.** `check`, `check-build-test` and `inherit`
+       existed 3 s after `gh pr create`; the `runtime-compat` matrix rows were
+       created only when `check-build-test` completed, 3 min 22 s later, because
+       `ci.yml` declares `runtime-compat: needs: check-build-test`. A gated row
+       does not exist to be watched until the job it depends on is done.
+     - **The set differs by EVENT.** `pr-inherit-issue-labels.yml` triggers on
+       `pull_request_target: [opened, edited, reopened]` with no `synchronize`,
+       so the `inherit` row appears when the PR is opened or its title or body
+       is edited, and not on a plain push; `ci.yml` takes the default
+       `pull_request` types, so a body edit produces the opposite set.
+     - **A CONFLICTING PR gets no `pull_request` rows at all** — the bullet
+       above already says CI will not fire in that state, and the rollup then
+       shows only the `pull_request_target` rows, which looks like a short green
+       rather than a blocked PR.
+
+     So derive what you EXPECT from `.github/workflows/` for the event(s) this
+     head actually saw, and reconcile the rollup against it. With runner backlog
+     the first row can be minutes out too. Read "no checks yet" as "not queued
+     yet", never as "nothing to wait for", and never as a green.
 
 4. **Working tree**
    - `git status` — clean (no uncommitted changes)

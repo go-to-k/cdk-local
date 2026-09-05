@@ -79,11 +79,12 @@ findings.
   a hit as a DIRECTORY question ("which of the sites this issue lists did the
   run open?"), never as a file one. Do the item now while the context is
   loaded, or re-classify it in the issue body with the reason.
-- **Re-read the REASON, not just the files** — a deferral reason phrased in
-  the run's transient state ("the PR is still open") is FALSE once that state
-  resolves; re-reading an expired premise is not re-litigation — keeping a
-  `next` alive on it is (go-to-k/cdkd#2259 deferred behind go-to-k/cdkd#2247;
-  the reason outlived the merge).
+- **Re-read the REASON, not just the files — when a hit CONTRADICTS it, the
+  BODY is the stale side.** A reason anchored to the filing session's own
+  state goes false while the decision it justified still stands. Re-reading an
+  expired premise is not re-litigation — keeping a `next` alive on one is.
+  `.claude/rules/session-report.md` holds the shape, the boundary against the
+  reason §5-c refuses outright, and the incidents. Correct the body.
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
