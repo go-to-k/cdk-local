@@ -126,9 +126,14 @@ gates:
       # follows `readFileSync` but cannot follow an argument into a
       # subprocess; the `execFileSync` budget there is what keeps this honest.
       - ".gitignore"
-      # The shell half (issue #630). Eight `.claude/hooks/*.test.sh` suites
+      # The shell half (issue #630). The `.claude/hooks/*.test.sh` suites
       # read `.claude/hooks/*.sh`, each resolving its subject self-relatively,
-      # and two more live under `tests/integration/_lib/`. Adding the path here
+      # and more live under `tests/integration/_lib/`. (Both sets are GLOBBED by
+      # `vp run test:hooks`, so a count here is a number nothing keeps current:
+      # it read "Eight" while nine were on disk, and this comment's own PR added
+      # two more. Same reason `markgate-include-globs.test.ts` fences the
+      # check-gate scope sentence by set equality rather than by a tally.)
+      # Adding the path here
       # is only HALF the fix and would be misleading on its own: `vp run test`
       # does not execute them (`test:hooks` is a separate task in
       # `vite.config.ts`), so a stale marker cleared by a `/check` that never

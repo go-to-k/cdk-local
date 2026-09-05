@@ -104,6 +104,19 @@ genuinely expensive is WRITING a new fixture, an integ that FAILS, and above
 all review of a larger diff, which grows superlinearly because a reviewer reads
 the whole thing and cross-file interactions multiply. Defer on those.
 
+**PR SHAPE is not one of those reasons, and a gate now says so.**
+`/work-issues` §5 ("'It needs its own PR' is NOT a `next` reason — it is a
+`now` item that gets its own PR; the bar is the SESSION, not the diff") is
+enforced at the filing site by
+`.claude/hooks/issue-deferral-criteria-gate.sh`, which refuses a
+`gh issue create` whose `Session-fit: next` reason reads `own PR` /
+`separate PR` / `share a PR` / `independent` or `separate review surface` /
+`own review`. The review-SIZE deferral this repo DOES sanction is the sweep
+§5 describes — "a sweep that would make the PR unreviewable is a genuine
+`next` (file an umbrella naming every site …)" — and the gate leaves that
+spelling alone; `.claude/rules/hooks.md` carries the measurement behind the
+split.
+
 **A newly DISCOVERED bug is not a residual.** A residual (deferred polish, a
 nit, a parity gap) is fully describable, so writing it down loses nothing. A
 discovery's expensive part is the EVIDENCE behind it — the repro you built,
