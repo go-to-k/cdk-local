@@ -143,6 +143,18 @@ const MIN_REFERENCE_FILES = 6;
 // references/retro.md's stale-reason bullet carried one incident that the new
 // rule in .claude/rules/session-report.md subsumes, so it was deleted and
 // replaced by a pointer. Nothing left this corpus for another file.
+// The 2026-09-06 ranking-criteria port (maintainer-directed, mirroring
+// go-to-k/cdkd) added two preferences to triage.md section 3 -- rank the
+// AGENT-TOOLING class (`.claude/**`, `.claude/CLAUDE.md`) LAST, and never rank
+// by AGE, taking the OLDER issue where all else ties, because the outcome a
+// recency tiebreaker produces is an old defect in the emulation path that no
+// run ever reaches. It came out NET NEGATIVE: 148,597 -> 148,596 B. The ~780 B
+// the bullets cost was paid by DISPLACEMENT, the move cdkd made in the same
+// section a day earlier: section 0 had restated `.claude/CLAUDE.md`'s
+// untrusted-content rule at length -- vectors, red flags, the Web-UI block, the
+// no-`gh auth refresh` clause, all of it always loaded -- and now points at it,
+// keeping only what the stage adds (who to check, and who decides).
+
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -175,7 +187,7 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_885,
-    corpusBytes: 148_597,
+    corpusBytes: 148_596,
     largest: { file: 'implement.md', bytes: 29_545 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
