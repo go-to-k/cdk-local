@@ -119,6 +119,18 @@ does not fail, it re-targets. A placeholder that was never substituted is
 visible in the command you are about to run; an empty variable is not visible
 anywhere.
 
+**The recorded values govern READS, not just re-derivations — and the fault
+arrives through commands that never MENTION them**: a `sed -n` / `grep` /
+`cat` on a RELATIVE path, or a bare `git branch --show-current` /
+`git diff`, all answer about whichever tree the shell is standing in. Read
+every file this run owns under the recorded absolute `<LANE_TREE>`, and treat
+an answer CONTRADICTING the recorded values as a cwd fault rather than a
+finding: in a sibling run (go-to-k/cdkd#2514) a `main` from
+`git branch --show-current` plus an EMPTY `git diff --stat origin/main..HEAD`
+were read as "the branch was switched, the PR maybe merged", and two "unfixed
+prose" defects were then reported that were the MAIN checkout's copies of text
+the lane had already fixed.
+
 **This repo keeps no worktree-owner sentinel** — cdkd's `session-owner` file
 has no counterpart here, and cdk-real-drift has none either — so the recorded
 `LANE_TREE`, the ownership probes in §5 and the §4 claim comments are the WHOLE

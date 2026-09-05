@@ -75,6 +75,14 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
   yourself before it goes anywhere durable (cdkd, 2026-08-26: FOUR relayed
   counts published in one run, all wrong — "all nine sibling sites" was 78
   across 14 files by grep).
+- **A measurement written into a SOURCE COMMENT is a published claim too** —
+  give it one of three dispositions: delete it, fence it with a test that
+  reads the code, or attribute it as a DATED measurement. Nothing downstream
+  re-checks such a line and no suite can see it — go-to-k/cdkd#2612's wrong
+  probe result sat in a branch comment beside a destructive confirm prompt,
+  and only the review round stopped it becoming a fence a later editor would
+  trust. What such a comment should state is the INVARIANT the code jointly
+  enforces, which is re-derivable and cannot go stale.
 - **Re-derive at the FINAL sha, not at the round that produced the number** —
   the PR body is written once, the branch keeps moving (measured here
   2026-08-27: FOUR published counts each accurate for its round and wrong
@@ -148,7 +156,7 @@ cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
 <one paragraph: the root cause, and where the evidence for it is>
 
 Dup-check: searched open issues for <terms> -- none covers this root cause
-Session-fit: next (not this session) -- <reason>
+Session-fit: next (not this session) -- <reason the WORK owns, not this session's circumstances -- .claude/rules/session-report.md>
 Severity: high -- <what stays broken while it is undone>
 Effort: large (L) -- <which verification cycle it drags>
 Estimate: ~3 h+ -- <what eats the time>
@@ -244,6 +252,14 @@ the misclassification; nothing in this flow did.
   two-directional defect had been measured and fixed in the other two repos;
   re-classified `now` on the maintainer's challenge and shipped — the port
   then found four more defects a fresh session would not have looked for).
+- **A reason about THIS SESSION's own state is legal and EXPIRES** — "held by
+  another open PR's diff", "no integ run budgeted here", "no overlap with this
+  session's lanes". Unlike the bullet above it is a real reason, but it goes
+  false silently while the decision it justified still stands, and §10-0's
+  promotion check is what finds it afterwards. Prefer a reason the WORK owns;
+  write one of these anyway and it must name the event that ENDS it on the
+  same line. Full shape, and the boundary against the bullet above, in
+  `.claude/rules/session-report.md`.
 - **When the issue body offers more than one fix, say which one the four
   fields cost** — cost the CHEAPEST one you would actually accept (2026-09-02:
   a `next` reason read "a behaviour change across three repos", costing only

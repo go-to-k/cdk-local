@@ -37,6 +37,60 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
    Note: `fc` is NOT adjusted — a 12-file diff is still cross-cutting even when 2 of the files are lockfiles.
 
+   **Then gather each touched `src/` file's recent HISTORY in the same pass.**
+   The recent-defect up-bias in step 3 is the one trigger that cannot be read
+   off `paths`, so a step that does not FETCH it leaves the trigger to be
+   remembered rather than evaluated — which is how it goes unused.
+
+   ```bash
+   # `paths` came from step 1's own `gh pr view`; reuse it rather than asking
+   # again. Only `baseRefOid` is a second call.
+   BASE=$(gh pr view <N> --json baseRefOid -q .baseRefOid)   # NOT a plain HEAD:
+   # run on the PR branch, an unanchored log counts the PR's OWN fix-back
+   # commits and a 2-fix-back PR self-trips the bias it already has.
+   git fetch -q origin
+   # The `if` is the point, not the `echo`. baseRefOid can be missing locally
+   # (a shallow clone; a base that exists only on the remote), and then
+   # `git log` dies, `|| true` swallows it, and every file prints 0 -- a VOID
+   # probe whose output is character-identical to a clean one. A warning BESIDE
+   # the loop does not fix that; the loop must not run at all. It is necessary
+   # but not sufficient: a GRAFTED shallow clone whose base object IS present
+   # passes this check while `git log -3` still under-counts, so read a 0 on a
+   # file you know has been fixed as a clone problem, not an answer.
+   if git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
+     for f in <the paths from step 1>; do
+       case "$f" in
+         src/*)
+           # `|| true` because `grep -c` exits 1 when the count is zero.
+           n=$(git log --oneline -3 "$BASE" -- "$f" | grep -cE '^[a-f0-9]+ fix(\(|:)' || true)
+           printf 'COUNT\t%s\t%s\n' "$f" "$n" ;;   # n >= 2 of 3 = evaluate the step-3 bias
+         .claude/*)
+           # No prefix count works here (see below) -- emit SUBJECTS to read.
+           git log --oneline -5 "$BASE" -- "$f" | sed "s|^|SUBJECT\t$f\t|" ;;
+       esac
+     done
+   else
+     echo "base $BASE is not local -- history probe VOID, not zero"
+   fi
+   ```
+
+   **The `.claude/**` arm emits subjects rather than a count because no prefix
+   count works there at all — and that is where the stakes are highest**, since
+   a wrong rule propagates into every future session. Measured 2026-09-05 over
+   the last 20 commits on `origin/main` touching `.claude/`
+   (`git log --oneline -20 origin/main -- .claude/` — anchor it, or this PR's own
+   commits shift the window):
+   16 carry a `chore` prefix (15 scoped, one bare), which is what an
+   agent-instruction change takes here, so those score ZERO however many times
+   the file has been corrected. The other four — `c3a18a2 feat:`,
+   `79438d3 fix(utils)`, `dce9064 fix(local)`, `971a5f9 fix(integ)` — each also
+   change `src/**` (14, 1, 6 and 1 source files in that order), so they are
+   source changes that edited a rule beside the code, and a NONZERO score on a
+   `.claude/**` path is about the source file rather than the instruction file.
+   Both directions are useless, which is why the arm prints commit subjects:
+   treat consecutive retro / correction commits on the same file as the
+   recency signal.
+
 2. **Determine the base tier** from `(loc, fc)` per the heuristic:
 
    | Condition | Base tier |
@@ -92,6 +146,19 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
 
      This list exists in FOUR places — `UP_PATHS` in `.claude/hooks/pr-review-gate.sh`, here, `.claude/rules/hooks.md`, and `.claude/agents/pr-code-reviewer.md` — and issue go-to-k/cdk-local#506 found it drifted in both directions at once. `.claude/hooks/pr-review-gate.test.sh` (run by `vp run test:hooks`, in CI) asserts the four agree and that every entry resolves to a real file. Keep adding to it freely — a module listed here costs one extra reviewer, a module missing from it costs a security review that never happened. Do not re-quote an individual path anywhere in this bullet: the test reads the surface out of the list above, and a stray mention would refill an entry a copy had dropped.
    - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
+   - **The code this PR edits shipped a defect in a RECENT PR.** A judgement
+     trigger, not a path list: `pr-review-gate.sh` reads the PR's stats, its
+     `files`, and the BRANCH's own commit subjects, and has no view of an
+     edited file's HISTORY — so it cannot see this and may not require the
+     marker at all. Raise the tier anyway and say why. Read the tell off the
+     history step 1 gathered — 2 or more `fix:` commits among a touched file's
+     last 3 — rather than off what you remember about the area. Measured in
+     the sibling go-to-k/cdkd#2593: the size heuristic said `inline`, while
+     the log on the one file it edited showed the two preceding merges were
+     both fixes to the same guard and the nearer one had fixed a fail-open
+     reading in the very function this PR edited again; the raised tier's
+     reviewers converged on two untested response shapes. Recency is evidence
+     about the code, the same way a security path is.
 
    **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
 
@@ -121,7 +188,15 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    - If **any blocker** surfaces (correctness bugs, security issues,
      test gaps that justify rejecting the PR), the marker is NOT set
      — the orchestrator addresses the blockers (or asks the
-     implementing agent to fix them) and re-runs `/review-pr <N>`.
+     implementing agent to fix them) and re-runs `/review-pr <N>`
+     **from step 1, on the PR's CURRENT stats**. A fix round adds LOC and
+     files AND a `fix:` commit, so neither the tier nor whether
+     `pr-review-gate.sh` demands the marker at all is fixed for the life of a
+     PR: go-to-k/cdkd#2593 opened at 306 LOC / 4 files (`inline`, no marker
+     required) and its review-fix commit took it to 406 LOC / 6 files —
+     `1-reviewer` by size, and `3-axis` once the second-`fix:`-commit up-bias
+     fired on the same push. Only recomputing before the merge catches it, and
+     it moves in both directions.
    - If every finding is **minor / nit / clean**, the orchestrator
      sets the marker bound to the PR's current HEAD sha:
 
