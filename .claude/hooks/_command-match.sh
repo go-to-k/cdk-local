@@ -56,14 +56,47 @@ gate_segments_raw() {
     # `echo dont do it`), and treating it as one swallowed every command after it
     # — fail open. The pass is redone with that character literal
     # (go-to-k/cdkd#2130).
-    # The index just past the `)` closing a `$(` that starts at `from`, or 0 when
-    # it does not close on this line. Depth-counted so `$(a $(b) c)` is one span.
-    function close_paren(line, from,   j, depth, ch) {
-      depth = 1
+    # QUOTE- AND ESCAPE-AWARE. A naive depth count returns an EARLY closer for
+    # a `)` that is data rather than structure, and an early closer is worse
+    # than none: `return 0` falls back to the stack (the benign direction),
+    # while a wrong index truncates the body and resumes with `q` still `"`, so
+    # the REST of the real body is parsed as quoted prose and the verb inside it
+    # never starts a segment. Measured, `gate_matches ... GATE_RE_GIT_COMMIT`:
+    #
+    #   echo "$(echo <sq>)<sq> ; git commit -m x)"   was UNGATED
+    #   echo "$(echo \) ; git commit -m x)"          was UNGATED
+    #   echo "$(git commit -m x)"                    GATED  (control)
+    #
+    # where <sq> is a literal single quote, spelled out rather than written:
+    # this whole awk program is a SHELL single-quoted string, so one apostrophe
+    # in a comment ends it and hands the rest of the file to bash as code. That
+    # has now broken this file three times in one session.
+    #
+    # Unbalanced parens inside quotes are ordinary -- grep counting a paren, sed
+    # substituting one, awk -F with one -- so this is not a corner case.
+    function close_paren(line, from,   j, depth, c, iq) {
+      depth = 1; iq = ""
       for (j = from; j <= length(line); j++) {
-        ch = substr(line, j, 1)
-        if (ch == "(") depth++
-        else if (ch == ")") { depth--; if (depth == 0) return j }
+        c = substr(line, j, 1)
+        if (c == "\\") { j++; continue }
+        if (iq != "") { if (c == iq) iq = ""; continue }
+        if (c == "\"" || c == "\047") { iq = c; continue }
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0) return j }
+      }
+      return 0
+    }
+    # The offset of the CLOSING backtick relative to `from`, or 0 when the span
+    # does not close. `index()` cannot be used: it takes the next backtick even
+    # when it is BACKSLASH-ESCAPED, which truncated the body the same way an
+    # early paren did -- `echo "\x60echo \\\x60 ; git commit -m x\x60"` was
+    # UNGATED. Returns the same 1-based offset `index()` did, so call sites are
+    # unchanged.
+    function close_backtick(s,   j, c) {
+      for (j = 1; j <= length(s); j++) {
+        c = substr(s, j, 1)
+        if (c == "\\") { j++; continue }
+        if (c == "\140") return j
       }
       return 0
     }
@@ -168,7 +201,7 @@ gate_segments_raw() {
         }
         if (q == "\"" && c == "`") {
           # Backticks do not nest, so the closer is simply the next one.
-          bt = index(substr(line, i + 1), "`")
+          bt = close_backtick(substr(line, i + 1))
           if (bt > 0) {
             extrabuf[++extran] = substr(line, i + 1, bt - 1)
             out = out SEP_SUBST
@@ -1690,5 +1723,10 @@ gate_perl_word_ok() {
   #    128 of 255) while leaving all five assertions above green, because each of
   #    them is pure ASCII.
   [ "$(gate_pw_probe_ y "x --body-file \$'/a/\\xc3\\xa9.md'")" = "$(printf '/a/\303\251.md')" ] || return 1
+  # 7  a SINGLE-quoted span containing a space. Arm 1 covers the double-quoted
+  #    one, and deleting the single-quote alternative from `$GW` left all six
+  #    arms above green while `--body-file '/a b/p.md'` extracted NOTHING --
+  #    the same stale-sibling fail-open shape, one quote character over.
+  [ "$(gate_pw_probe_ s "x --body-file '/a b/p.md'")" = '/a b/p.md' ] || return 1
   return 0
 }
