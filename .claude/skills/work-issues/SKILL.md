@@ -1,6 +1,6 @@
 ---
 name: work-issues
-description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick a few FILE-DISJOINT issues to fix in parallel, claim each on the issue before starting (collision-safe with other agents), verify, then carry each through merge (via /merge-pr) → pull → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
+description: Work through already-filed GitHub issues (typically the bug-hunt's output) end to end — triage safely, pick as many FILE-DISJOINT issues as the run can carry, claim each on the issue before starting (collision-safe with other agents), verify, then carry each through merge (via /merge-pr) → pull → worktree cleanup. Use when asked to "handle/address filed issues", not to hunt for new bugs (that is /hunt-bugs).
 argument-hint: "[optional focus, e.g. 'start-alb issues' | '#231 #234' | 'cloudfront FPs']"
 ---
 
@@ -116,7 +116,7 @@ wants to watch); the stage files apply unchanged either way.
 | 0. Safety screen | `references/triage.md` | Untrusted issues/comments: `author_association` via REST, never download/run third-party content, defer engage/minimize/block to the maintainer |
 | 1. List backlog | `references/triage.md` | REST listing (PR filter, `per_page=100`, `created_at`), volume assessment |
 | 2. Collision landscape | `references/triage.md` | Worktree/branch/PR/ref-recency probes (absolute, via `<MAIN_CHECKOUT>`), their pre-first-write blind spot, the shared cross-cutting runtime modules at most one lane may own |
-| 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, ownership probes before adopting a tree, disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
+| 3. Pick file-disjoint issues | `references/triage.md` | Lane count from the launch mode, batching as the DEFAULT (largest safe set), ownership probes before adopting a tree, disjointness gate, ranking rules, premise checks against `origin/main`, and §3-a: a FRESH issue belongs to the lane that FILED it (60-minute window) |
 | 4. Claim | `references/claim.md` | Claim comment BEFORE first edit (English only, like every issue this run files), claim what you FILE too, re-check for a competing claim right before you start |
 | 5. Implement | `references/implement.md` | One tree per lane, build before first test, sibling-site sweeps, unit + integ in the SAME PR |
 | 6. Gates + PR | `references/gates-and-pr.md` | Gate liveness probe before the first commit, `vp run verify`, `/check` + `/check-docs` markers, PR create with `Closes #<n>` |

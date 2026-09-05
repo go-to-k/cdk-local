@@ -165,9 +165,9 @@ CONCURRENCY, not a count of issues — a second SIMULTANEOUS lane needs a
 worktree nested inside this one, which dies with the outer workspace and takes
 its uncommitted work (go-to-k/cdk-local#635), and two lanes sharing the ONE
 tree is worse still (either lane's `git switch` moves the branch under the
-other). Rank as usual; taking SEVERAL issues is fine when they share this one
-tree in SEQUENCE: claim them all up front (§4) with every lane after the first
-marked `QUEUED`, finish them one at a time, and stand down any unreached one
+other). Rank as usual; taking SEVERAL issues is the DEFAULT (see the
+batching paragraph below) when they share this one tree in SEQUENCE: claim
+them all up front (§4) with every lane after the first marked `QUEUED`, finish them one at a time, and stand down any unreached one
 with a comment carrying the four classification fields (measured shapes:
 go-to-k/cdkd#2417 — three claimed, one merged, two left resumable; one
 IN-PLACE run here carried FOUR issues in sequence, go-to-k/cdk-local#647 /
@@ -275,9 +275,20 @@ symbol; read the issue's "Fix direction") before choosing.
   Docker/fixture repro) for a clean lane; hold complex redesigns (novel
   mechanism, needs a live design pass) for a focused solo lane.
 
-Scale the count to the backlog and to how many shared modules are free — 2–3
-clean lanes is typical; never force a lane into a contested file to raise the
-count; report the deferred ones instead.
+**Batch: take the LARGEST safe set, not the smallest.** What a run amortizes
+is CONTEXT — the launch-mode probe, §2's collision map, the backlog read and
+§10's retro — NOT the per-lane build / `/check` / review / Docker-side integ,
+which §9 even serializes. Context is still the largest single cost and the
+next session re-pays it from zero, so the second issue is far cheaper than the
+first and batching is the DEFAULT, IN-PLACE included — which is why the
+four-issue run cited above is the shape to aim at rather than an allowance.
+Scale the count to the backlog and to how many shared modules are free; 2–3
+clean lanes is a typical OBSERVATION, not a ceiling. What bounds the batch is
+what the run can still do WELL: never force a lane into a contested file to
+raise the count, and never shorten a verification to fit one more issue — the
+argument buys issue COUNT, never rigor (CLAUDE.md → "Cost is not a
+tiebreaker"). Report the candidates you did not take, and stand down the
+claimed ones you did not reach.
 
 ### 3-a. A FRESH issue belongs to the lane that FILED it
 
