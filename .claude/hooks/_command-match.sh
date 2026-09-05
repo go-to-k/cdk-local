@@ -56,7 +56,18 @@ gate_segments_raw() {
     # `echo dont do it`), and treating it as one swallowed every command after it
     # — fail open. The pass is redone with that character literal
     # (go-to-k/cdkd#2130).
-    function flush_line(line,   i, n, c, out) {
+    # The index just past the `)` closing a `$(` that starts at `from`, or 0 when
+    # it does not close on this line. Depth-counted so `$(a $(b) c)` is one span.
+    function close_paren(line, from,   j, depth, ch) {
+      depth = 1
+      for (j = from; j <= length(line); j++) {
+        ch = substr(line, j, 1)
+        if (ch == "(") depth++
+        else if (ch == ")") { depth--; if (depth == 0) return j }
+      }
+      return 0
+    }
+    function flush_line(line,   i, n, c, out, cp, bt) {
       out = ""; n = length(line)
       for (i = 1; i <= n; i++) {
         c = substr(line, i, 1)
@@ -127,11 +138,43 @@ gate_segments_raw() {
         # quoted is what let the bypass above through. Inside a SINGLE-quoted
         # span it is literal, so nothing changes there -- that asymmetry is the
         # whole point, and it is why this branch tests q rather than assuming.
+        # DUAL-EMIT when the span CLOSES on this line: collapse it to the
+        # placeholder inline and queue the body as its own segment. The stack
+        # arms below still handle a span that runs past the newline.
+        #
+        # WHY, measured: pushing onto the stack emits a `\n`, which SPLITS the
+        # enclosing text. A body like
+        #
+        #   --body "Session-fit: next (not this session) -- the `x` fix needs
+        #           its own PR"
+        #
+        # became three segments, so `Session-fit:` and the PR-shaped clause
+        # landed in different ones and issue-deferral-criteria-gate returned 0
+        # where cdkd and cdk-real-drift both return 2. Backticks and `$( )` are
+        # ordinary in the bodies this flow writes, so that is a live bypass, not
+        # a corner. Collapsing keeps the enclosing text ONE segment while the
+        # body stays visible as a command in its own right -- the same trade
+        # cdkd makes (go-to-k/cdkd#2027 / go-to-k/cdkd#2339).
         if (q == "\"" && c == "$" && substr(line, i + 1, 1) == "(") {
+          cp = close_paren(line, i + 2)
+          if (cp > 0) {
+            extrabuf[++extran] = substr(line, i + 2, cp - i - 2)
+            out = out SEP_SUBST
+            i = cp
+            continue
+          }
           sdepth++; squote[sdepth] = q; stype[sdepth] = "("; sparen[sdepth] = 1
           q = ""; out = out "\n"; i++; continue
         }
         if (q == "\"" && c == "`") {
+          # Backticks do not nest, so the closer is simply the next one.
+          bt = index(substr(line, i + 1), "`")
+          if (bt > 0) {
+            extrabuf[++extran] = substr(line, i + 1, bt - 1)
+            out = out SEP_SUBST
+            i = i + bt
+            continue
+          }
           sdepth++; squote[sdepth] = q; stype[sdepth] = "`"; sparen[sdepth] = 0
           q = ""; out = out "\n"; continue
         }
@@ -212,10 +255,35 @@ gate_segments_raw() {
       }
       open_span = q
     }
-    function run_pass(   i) {
+    function run_pass(   i, rounds, batch, bn, bi, blines) {
       q = ""; tag = ""; pending = ""; outn = 0; open_span = ""; sdepth = 0
+      extran = 0; delete extrabuf
       for (i = 1; i <= total; i++) emit(i)
       if (pending != "") outbuf[++outn] = flush_line(pending)
+      # Drain the substitution bodies queued by flush_line, so a command
+      # SUBSTITUTION is still scanned as a command in its own right. Bounded: a
+      # body can queue more (nested substitutions), so cap the rounds rather
+      # than trusting the input to terminate. Each body is run through
+      # flush_line so its OWN separators split it.
+      rounds = 0
+      while (extran > 0 && rounds < 8) {
+        bn = extran; batch = ""
+        for (bi = 1; bi <= bn; bi++) batch = batch extrabuf[bi] "\n"
+        extran = 0; delete extrabuf
+        q = ""
+        bi = split(batch, blines, "\n")
+        for (i = 1; i <= bi; i++) {
+          if (blines[i] == "") continue
+          outbuf[++outn] = flush_line(blines[i])
+        }
+        rounds++
+      }
+      # Hitting the cap DROPS the remaining bodies, i.e. stops scanning
+      # commands, so it is announced rather than swallowed -- a silent drop is
+      # the fail-open direction this file exists to avoid.
+      if (extran > 0) {
+        printf "gate_segments: substitution nesting deeper than 8; %d queued body/bodies were NOT scanned\n", extran > "/dev/stderr"
+      }
     }
     BEGIN { ignore_q = "" }
     { raw[NR] = $0; total = NR }
@@ -1345,7 +1413,9 @@ gate_target_dir() {
 # ── A shell WORD, for the gates that extract with PERL ─────────────────────
 #
 # `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
-# `[[ =~ ]]`. THREE gates -- issue-deferral-criteria, issue-dup-check and issue-classification-label -- pull a `--body-file` / `-F` path or an
+# `[[ =~ ]]`. FOUR gates -- issue-deferral-criteria, issue-dup-check,
+# issue-classification-label and pr-body-item-number -- pull a `--body-file`
+# / `-F` path or an
 # inline `--body` value out of RAW command text with `perl -0777` instead,
 # because they need a GLOBAL scan over a multi-line slurp and `[[ =~ ]]` gives
 # neither. THIS LIST IS PER REPO: cdkd, which the class is ported from, has a

@@ -741,5 +741,24 @@ else
   echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
 fi
 
+# --- a substitution INSIDE the body must not split the reason ---------------
+# `gate_segments` used to push a `$( )` or backtick span onto its stack and emit
+# a newline, which SPLIT the enclosing text: `Session-fit:` landed in one
+# segment and the PR-shaped clause in another, so the gate saw neither together
+# and returned 0. Measured against cdkd and cdk-real-drift, which both returned
+# 2 on the identical body -- a three-way divergence, and backticks are ordinary
+# in the bodies this flow writes.
+#
+# The compliant twins are the polarity control: collapsing the span must not
+# make every body block.
+run "a backtick span inside the body does not split the reason" \
+  "gh issue create --body \"Session-fit: next (not this session) -- the \`nested cond\` fix needs its own PR\"" "$OPTIN" 2
+run "a \$( ) span inside the body does not split the reason" \
+  "gh issue create --body \"Session-fit: next (not this session) -- the \$(nested cond) fix needs its own PR\"" "$OPTIN" 2
+run "a backtick span in a COMPLIANT body still passes" \
+  "gh issue create --body \"Session-fit: next (not this session) -- a \`new\` fixture must be written\"" "$OPTIN" 0
+run "a \$( ) span in a COMPLIANT body still passes" \
+  "gh issue create --body \"Session-fit: next (not this session) -- a \$(new) fixture must be written\"" "$OPTIN" 0
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

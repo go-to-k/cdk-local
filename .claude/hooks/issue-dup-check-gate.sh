@@ -255,7 +255,7 @@ seg_is_api_mint() {
 # satisfied the gate with a marker-free body (verified rc=0). A title is not a
 # record of having searched anything.
 seg_inline_bodies() {
-  printf '%s' "$1" | perl -0777 -ne '
+  printf '%s' "$1" | perl -0777 -ne "$GATE_PERL_WORD"'
       my $Q = "\x27";
       # --body <v> / --body=<v>, quoted either way or bare. `--body-file` does
       # NOT match: `[=\s]` after `--body` cannot consume the `-` of `-file`.
@@ -270,9 +270,24 @@ seg_inline_bodies() {
       # value, and a bare-token-only pattern truncated it at the first space and
       # lost the marker. `body=@file` is excluded: that is a body FILE, and the
       # file scan below owns it.
-      while (/(?:--field|--raw-field|-f|-F)[=\s]+${Q}body=([^${Q}]*)${Q}/g) { print "$1\n"; }
-      while (/(?:--field|--raw-field|-f|-F)[=\s]+"body=([^"]*)"/g)    { print "$1\n"; }
-      while (/(?:--field|--raw-field|-f|-F)[=\s]+body=([^"${Q}\s@][^"${Q}\s]*)/g) { print "$1\n"; }
+      # `$GW` + `gate_unq`, one arm instead of three enumerating quote
+      # POSITIONS. The three-arm shape could not see a quote INSIDE the value --
+      # `-f body=<single-quoted text>`, which is gh`s own documented spelling --
+      # so a COMPLIANT body carrying `Dup-check:` was extracted as nothing and
+      # the gate, which fails CLOSED on an empty extraction, REFUSED it.
+      # Measured in cdk-local before the change: quote-outside rc=0,
+      # quote-inside rc=2.
+      #
+      # `body=` is stripped AFTER unquoting for that reason: in the quote-inside
+      # spelling the prefix sits outside the quotes, so a strip-then-unquote
+      # order never finds it. `body=@file` is excluded -- that is a body FILE,
+      # and the file scan below owns it.
+      while (/(?:--field|--raw-field|-f|-F)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=//;
+        next if $v =~ /^\@/;
+        print "$v\n";
+      }
     ' 2>/dev/null
 }
 
