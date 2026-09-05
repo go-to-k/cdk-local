@@ -1328,3 +1328,258 @@ gate_target_dir() {
   done < <(gate_segments "$cmd")
   printf '%s' "$target"
 }
+
+# ---------------------------------------------------------------------------
+# PORTED FROM cdkd (go-to-k/cdkd#2639). Kept TEXTUALLY IDENTICAL to that
+# copy apart from path references, so a `diff` across the three repos is the
+# review: the defects this closes were found by porting, and the vocabulary
+# DIVERGING between repos is itself one of them.
+# ---------------------------------------------------------------------------
+# ── A shell WORD, for the gates that extract with PERL ─────────────────────
+#
+# `GATE_PATH_TOKEN` and `_GATE_WORD_CHAR` are bash EREs, usable only from
+# `[[ =~ ]]`. FIVE gates -- issue-deferral-criteria, gh-body-english,
+# issue-dup-check, issue-classification-label and pr-body-item-number -- pull a
+# `--body-file` path or an inline `--body` value out of RAW command text with
+# `perl -0777` instead, because they need a GLOBAL scan over a multi-line slurp
+# and `[[ =~ ]]` gives neither. Derive the list rather than trusting this
+# sentence -- `grep -l GATE_PERL_WORD .claude/hooks/*-gate.sh` -- because an earlier
+# revision of THIS comment said "three" while five files consumed it, which is
+# the same stale-sibling-note class the constant exists to end.
+# All of them spelled the value class `(["']?)([^"'\s]+)\1`, and that shape had
+# THREE MEASURED holes, all fail-OPEN (go-to-k/cdkd, 2026-09-05):
+#
+#   gh issue create --body-file "<dir with space>/x.md"
+#     The bare class cannot span the space, and with the optional quote group
+#     unset it cannot start on the quote either, so NOTHING is extracted and
+#     the gate judges an empty body. Measured: issue-deferral-criteria-gate
+#     rc=0 on a PR-shaped deferral where the unquoted spelling gave 2, and
+#     gh-body-english-gate rc=0 on a JAPANESE body where the unquoted spelling
+#     gave 2 -- the English-only rule was bypassable by putting the body file
+#     in a directory whose name contains a space.
+#
+#   gh api repos/O/R/issues -f body='<text>'
+#     gh's OWN documented spelling puts the quote INSIDE the value, after the
+#     `body=`. An alternation tried AFTER the literal `body=` falls through to
+#     `\S+` and captures `body='a`. Measured on issue-deferral-criteria-gate:
+#     rc=0, where `-f 'body=<text>'` (quote OUTSIDE, the only shape its suite
+#     covered) gave 2.
+#
+# So the value class is defined ONCE, here, rather than a fourth time in the
+# next hook that needs it. `GATE_PERL_WORD` is a perl PRELUDE, not a regex: a
+# caller prefixes it to its own program --
+#
+#   perl -0777 -ne "$GATE_PERL_WORD"'
+#     while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }'
+#
+# -- and it defines two names:
+#
+#   $GW        ONE shell word that may EMBED quoted spans: the perl twin of
+#              `_GATE_WORD_CHAR`. `body='a b c'` is one word, `"/a b/x.md"` is
+#              one word, and a bare run still stops at whitespace.
+#   gate_unq   the shell's own unquoting of such a word, so a caller gets the
+#              string gh actually receives: spans unwrapped, and `\X` unescaped
+#              exactly where the shell would unescape it (inside a
+#              double-quoted span only for `\ " $` and a backtick; never inside
+#              a single-quoted one, which takes no escapes).
+#
+# UNBALANCED quotes are not a regression risk here: `$GW`'s bare alternative
+# excludes both quote characters, so a word like `/tmp/o'neill/x.md` stops at
+# the apostrophe -- which is exactly where the old class stopped too.
+#
+# A hook using this MUST also assert `GATE_PERL_WORD` is non-empty in its
+# library-load guard. Left undefined, `$GW` interpolates as the EMPTY string,
+# `($GW)` then matches empty at every position, and the extraction yields empty
+# values that every caller skips -- a silent fail-open, which is the exact
+# class this constant closes.
+#
+# The apostrophes below are spelled `\x27` -- a PERL escape, valid in a regex
+# and in a substitution alike -- because this is a bash SINGLE-QUOTED string
+# and a literal apostrophe would end it. The `'"'"'` idiom used elsewhere in
+# this file would work too, and is unreadable at this density.
+GATE_PERL_WORD='
+  # ANSI-C quoting is the FIRST alternative on purpose. `$` is an ordinary
+  # character to the bare class below, so without this arm `$\x27...\x27` was
+  # split into a bare `$` plus a plain single-quoted span -- which took the body
+  # LITERALLY, so `--body $\x27日本語\x27` reached the English-only
+  # gate as the ASCII text `$日本語` and passed, while bash sent
+  # Japanese. Its inner `\\.` also differs from the plain single-quote arm:
+  # inside `$\x27...\x27` a backslash ESCAPES, so `\\\x27` does not close it.
+  my $GW = qr/(?:\$\x27(?:[^\x27\\]|\\.)*\x27|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\\.|[^\s"\x27;|&()<>\x60])+/;
+  # ANSI-C escape decoding, used only by the `$\x27...\x27` arm of gate_unq.
+  #
+  # EVERYTHING IS NORMALISED TO BYTES AND DECODED ONCE AT THE END, and each half
+  # of that is load-bearing:
+  #
+  #   bash itself is mixed -- `\xHH` and `\NNN` emit raw BYTES while `\uXXXX`
+  #   emits a CHARACTER -- so the only representation both agree on is the byte
+  #   string bash would actually pass. Hence `\u` is encoded rather than left
+  #   wide.
+  #
+  #   The LITERAL run has to be encoded too, and missing that was a live
+  #   BYPASS. The callers run under mixed `-C` settings: the path extraction has
+  #   none, the non-English body scan uses `-CSD`, where the input string is
+  #   ALREADY decoded. So a literal non-ASCII character sitting next to an
+  #   escape produced a string that was half characters and half bytes, the
+  #   closing `utf8::decode` refused it as invalid UTF-8, and the whole value
+  #   stayed Latin-1 -- which `NON_ENGLISH_RE` (CJK / Hangul) never matches.
+  #   Measured against the real hook:
+  #
+  #     --body $\x27\u65e5\u672c\u8a9e\x27         rc=2   blocked
+  #     --body $\x27<one accent>\u65e5\u672c\u8a9e\x27  rc=0   BYPASS
+  #     --body $\x27<one accent>\xe6\x97\xa5\x27        rc=0   BYPASS
+  #
+  #   Both bypasses publish Japanese, and the carrier is an ordinary Latin-1
+  #   accent that is not itself blocked, so nothing looks wrong.
+  #
+  #   `utf8::is_utf8` guards the encode: encoding unconditionally is correct for
+  #   the `-CSD` caller and DOUBLE-encodes for the byte-mode ones, which is the
+  #   same defect facing the other way.
+  #
+  # A value that is not valid UTF-8 once assembled is left exactly as built --
+  # utf8::decode returns false without modifying it, which is the right answer
+  # for a genuinely binary `\xNN` payload.
+  sub gate_ansi_c {
+    my ($v) = @_;
+    my %simple = ("a"=>"\a","b"=>"\b","e"=>"\e","E"=>"\e","f"=>"\f",
+                  "n"=>"\n","r"=>"\r","t"=>"\t","v"=>"\013",
+                  "\\"=>"\\","\x27"=>"\x27","\""=>"\"","?"=>"?");
+    my $o = "";
+    my $add = sub {                 # append as BYTES, whatever we were handed
+      my ($t) = @_;
+      utf8::encode($t) if utf8::is_utf8($t);
+      $o .= $t;
+    };
+    while (length $v) {
+      # `& 255`: bash truncates an octal escape to a byte, so `\400` is NUL and
+      # not U+0100.
+      if    ($v =~ s/^\\x([0-9A-Fa-f]{1,2})//)    { $o .= chr(hex($1) & 255); }
+      elsif ($v =~ s/^\\([0-7]{1,3})//)           { $o .= chr(oct($1) & 255); }
+      elsif ($v =~ s/^\\u([0-9A-Fa-f]{1,4})//)    { $add->(pack("U", hex($1))); }
+      elsif ($v =~ s/^\\U([0-9A-Fa-f]{1,8})//)    { $add->(pack("U", hex($1))); }
+      elsif ($v =~ s/^\\c(.)//)                   { $o .= chr(ord(uc $1) & 255 ^ 64); }
+      elsif ($v =~ s/^\\(.)//s)                   { $add->(exists $simple{$1} ? $simple{$1} : "\\" . $1); }
+      elsif ($v =~ s/^([^\\]+)//s)                { $add->($1); }
+      else                                         { $v =~ s/^(.)//s; $add->($1); }
+    }
+    # DECODE PER BYTE, not all-or-nothing and not per malformed RUN. Two
+    # spellings were measured and both lose data:
+    #
+    #   utf8::decode          refuses the WHOLE string on one malformed byte
+    #                         and leaves it Latin-1, so a single stray byte
+    #                         turned CJK detection off for everything:
+    #                         `--body $\x27\xff\xe6\x97\xa5\x27` gave rc=0.
+    #   Encode::decode        swallows the bytes FOLLOWING a bad lead byte as
+    #                         part of the malformed run -- the same input came
+    #                         back as one U+FFFD, the Japanese character gone.
+    #
+    # `gate_utf8_lenient` decodes maximal VALID sequences and emits exactly one
+    # U+FFFD per un-decodable BYTE, so a valid character next to a stray byte
+    # survives and is still judged. That is what has to reach the class test:
+    # gh sends the bytes, and whatever the receiver renders, the Japanese
+    # character in them is published.
+    return gate_utf8_lenient($o);
+  }
+
+  # Byte string -> character string, lenient. The alternation is the standard
+  # UTF-8 well-formedness table (RFC 3629): no overlongs, no surrogates, no
+  # code point above U+10FFFF -- an over-permissive matcher here would decode a
+  # surrogate-encoded sequence into a character the class test then treats as
+  # ordinary text.
+  sub gate_utf8_lenient {
+    my ($b) = @_;
+    my $o = "";
+    while (length $b) {
+      if ($b =~ s/^((?:[\x00-\x7F]|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})+)//s) {
+        my $t = $1;
+        utf8::decode($t);
+        $o .= $t;
+      } else {
+        $b =~ s/^.//s;
+        $o .= "\x{FFFD}";
+      }
+    }
+    return $o;
+  }
+  sub gate_unq {
+    my ($t) = @_;
+    my $o = "";
+    while (length $t) {
+      if ($t =~ s/^"((?:[^"\\]|\\.)*)"//s) {
+        my $s = $1; $s =~ s/\\([\\"\$`])/$1/gs; $o .= $s;
+      } elsif ($t =~ s/^\$\x27((?:[^\x27\\]|\\.)*)\x27//s) { $o .= gate_ansi_c($1);
+      } elsif ($t =~ s/^\x27([^\x27]*)\x27//s) { $o .= $1;
+      } elsif ($t =~ s/^\\(.)//s)              { $o .= $1;
+      } elsif ($t =~ s/^([^"\x27\\]+)//s)      { $o .= $1;
+      } else { $t =~ s/^(.)//s; $o .= $1; }
+    }
+    return $o;
+  }
+'
+
+# `GATE_PERL_WORD` is one shared literal that five blocking gates interpolate,
+# so its failure mode is the one this whole mechanism must not have: every
+# consumer runs `perl ... 2>/dev/null`, so a prelude that is PRESENT but does
+# not COMPILE produces no output, no stderr, and no exit-code change -- the
+# gates simply extract nothing and pass. Measured: a non-empty, non-compiling
+# prelude silently disarmed four gates at once (a Japanese body, a PR-shaped
+# deferral, an unlabelled `Severity: high`, and a bare `#4` all reached rc=0).
+#
+# `[ -n "$GATE_PERL_WORD" ]` cannot see that, so it is not the guard -- it is
+# only the cheap first half. This is the second half: run the prelude on a
+# known input and require the known answer. Call it AFTER a gate has armed, not
+# at library-load: the library is sourced by every hook on every Bash call,
+# while an armed gate is already about to fork perl anyway.
+#
+# Returns 0 when the prelude is usable, 1 otherwise. Callers must fail CLOSED.
+# Memoised fail-closed wrapper: probe once per process, at the first point a
+# gate is actually about to extract, then remember. `$1` is the gate's own name
+# so the refusal says which one refused.
+# RESET AT LOAD. `__GATE_PW_OK` is an ordinary shell variable, so without this
+# it is inheritable: `__GATE_PW_OK=1 gh issue create ...` made the probe report
+# a working prelude it never ran, and a Japanese body passed at rc=0 against a
+# deliberately broken library (measured). A guard whose whole job is to fail
+# closed on a tampered library must not be disable-able by one env var.
+__GATE_PW_OK=
+
+gate_perl_word_or_die() {
+  if [ "${__GATE_PW_OK:-}" != "1" ]; then
+    if gate_perl_word_ok; then
+      __GATE_PW_OK=1
+    else
+      echo "Blocked by $1: .claude/hooks/_command-match.sh defines GATE_PERL_WORD," >&2
+      echo "but running it does not return the expected value -- the prelude is missing," >&2
+      echo "outdated, or does not compile. Every extraction in this gate runs perl with" >&2
+      echo "stderr discarded, so a broken prelude would silently extract NOTHING and the" >&2
+      echo "gate would PASS whatever it was meant to refuse. Refusing instead." >&2
+      echo "Fix the library (or restore it from origin/main) and retry." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+gate_perl_word_ok() {
+  [ -n "${GATE_PERL_WORD:-}" ] || return 1
+  # FOUR dimensions, not one. The first cut asserted a single quoted-span pair,
+  # and a review measured two preludes that passed it while carrying a live
+  # bypass: a one-revision-STALE library (no ANSI-C arm -- which is exactly the
+  # state a sibling repo mid-port is in), and one hardcoded to the probe's own
+  # input. A guard that pins one dimension certifies one dimension.
+  #
+  # Each line below is a different arm of `$GW` / `gate_unq`, chosen because
+  # each was a measured fail-open in its own right:
+  #   1  a QUOTED span containing a space
+  #   2  a BACKSLASH-escaped space
+  #   3  an ANSI-C span, decoded rather than taken literally
+  #   4  the metacharacter STOP (the word must not swallow the `;`)
+  gate_pw_probe_() {
+    printf '%s' "$2" | perl -0777 -ne "$GATE_PERL_WORD"'
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1) }' 2>/dev/null
+  }
+  [ "$(gate_pw_probe_ q 'x --body-file "/a b/p.md"')" = '/a b/p.md' ] || return 1
+  [ "$(gate_pw_probe_ b 'x --body-file /a\ b/p.md')"  = '/a b/p.md' ] || return 1
+  [ "$(gate_pw_probe_ a "x --body-file \$'/a\\'b/p.md' rest")" = "/a'b/p.md" ] || return 1
+  [ "$(gate_pw_probe_ m 'x --body-file /a/p.md; echo hi')" = '/a/p.md' ] || return 1
+  return 0
+}

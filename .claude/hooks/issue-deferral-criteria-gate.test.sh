@@ -689,5 +689,57 @@ nonbash_check() {
 }
 nonbash_check
 
+# --- the shared GATE_PERL_WORD value class, and its guard --------------------
+# Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
+# fail-opens here before the port, each measured rc=0 where the plain path gave
+# 2: a quoted path containing a SPACE, a BACKSLASH-escaped one, and the GLUED
+# `-F<path>` gh accepts. They are cases rather than a note because a value class
+# that enumerates quote POSITIONS grows a new hole every time gh accepts another
+# spelling.
+GWDIR="$OPTIN/gw dir"
+mkdir -p "$GWDIR"
+printf 'Session-fit: next (not this session) -- it needs its own PR\n' > "$GWDIR/defer.md"
+printf 'Session-fit: next (not this session) -- a new fixture must be written\n' > "$GWDIR/ok.md"
+run "spaced --body-file path, double-quoted, blocks" \
+  "gh issue create -t x --body-file \"$GWDIR/defer.md\"" "$OPTIN" 2
+run "spaced --body-file path, backslash-escaped, blocks" \
+  "gh issue create -t x --body-file ${GWDIR// /\\ }/defer.md" "$OPTIN" 2
+run "glued -F<spaced path> blocks" \
+  "gh issue create -t x -F\"$GWDIR/defer.md\"" "$OPTIN" 2
+run "spaced --body-file path, compliant reason, passes" \
+  "gh issue create -t x --body-file \"$GWDIR/ok.md\"" "$OPTIN" 0
+
+# The guard. `[ -n "$GATE_PERL_WORD" ]` cannot see a prelude that is present but
+# does not COMPILE, and every extraction runs perl with stderr discarded -- so
+# the gate would extract nothing and PASS. The payload is one this gate NORMALLY
+# PASSES, so exit 2 can only come from the guard. The second case is the
+# ENVIRONMENT half: the memo is an ordinary shell variable, so without a reset
+# at library load `__GATE_PW_OK=1` made the probe report a prelude it never ran.
+GWBROKEN="$OPTIN/brokenlib"
+mkdir -p "$GWBROKEN"
+cp "$HOOK" "$GWBROKEN/"
+sed "s|^  my \$GW = qr/.*|  my \$GW = qr/(((unclosed/;|" \
+  "$(dirname "$HOOK")/_command-match.sh" > "$GWBROKEN/_command-match.sh"
+if grep -q 'unclosed' "$GWBROKEN/_command-match.sh" \
+   && ! grep -q 'my \$GW = qr/(?:' "$GWBROKEN/_command-match.sh"; then
+  for gw_env in "" "__GATE_PW_OK=1"; do
+    gw_rc=0
+    jq -n --arg c "gh issue create -t x --body-file $GWDIR/ok.md" --arg d "$OPTIN" \
+      '{tool_name:"Bash", tool_input:{command:$c}, cwd:$d}' \
+      | env $gw_env "$GWBROKEN/$(basename "$HOOK")" >/dev/null 2>&1 || gw_rc=$?
+    if [ "$gw_rc" = "2" ]; then
+      pass=$((pass + 1))
+      echo "PASS: a non-compiling GATE_PERL_WORD fails CLOSED (env='$gw_env')"
+    else
+      fail=$((fail + 1))
+      echo "FAIL: a non-compiling GATE_PERL_WORD returned $gw_rc with env='$gw_env', expected 2"
+    fi
+  done
+else
+  # A probe that silently does not run is the failure mode this file is about.
+  fail=$((fail + 1))
+  echo "FAIL: could not stage a broken GATE_PERL_WORD (sed anchor drifted)"
+fi
+
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

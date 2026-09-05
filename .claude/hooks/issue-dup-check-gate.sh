@@ -355,10 +355,29 @@ seg_has_marker() {
   # warning; a missed read here costs the gate.
   # Stated rather than left to be discovered: if you fix a path-extraction bug
   # in either, check the other.
-  done < <(printf '%s' "$seg" | perl -0777 -ne '
-      while (/--body-file[=\s]+(["\x27]?)([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:--field|--raw-field|-F)[=\s]+(["\x27]?)body=\@([^"\x27\s]+)\1/g) { print "$2\n"; }
-      while (/(?:^|\s)-F[=\s]+(["\x27]?)([^"\x27\s=]+)\1(?=\s|$)/g) { print "$2\n"; }
+  done < <(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+      # The value class is `$GW` from the SHARED `GATE_PERL_WORD` prelude in
+      # _command-match.sh, not a local `(["\x27]?)([^"\x27\s]+)\1`. That local
+      # shape ENUMERATES where a quote may sit instead of taking one shell WORD,
+      # and it could not span a QUOTED PATH CONTAINING A SPACE, a
+      # BACKSLASH-ESCAPED one, or the GLUED `-F<path>` gh accepts -- each
+      # measured here as a FAIL-OPEN before this change (rc=0 where the plain
+      # spelling gave 2). Ported from go-to-k/cdkd#2639; the full per-shape
+      # table lives in the header of that constant, in _command-match.sh.
+      # (No apostrophe anywhere in this comment: the whole perl program is a
+      # SHELL single-quoted string, so one would end it and hand the rest to
+      # bash as code.)
+      while (/--body-file[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+      while (/(?:--field|--raw-field|-F)[=\s]*($GW)/g) {
+        my $v = gate_unq($1);
+        next unless $v =~ s/^body=\@//;
+        print "$v\n";
+      }
+      while (/(?:^|\s)-F[=\s]*($GW)(?=[\s;&|)]|$)/g) {
+        my $v = gate_unq($1);
+        next if $v =~ /^\w+=/;
+        print "$v\n";
+      }
     ' 2>/dev/null)
   return 1
 }
@@ -366,6 +385,18 @@ seg_has_marker() {
 found_body_file=0
 unresolvable_path=""
 offending=""
+# `GATE_PERL_WORD` is one shared literal that several BLOCKING gates
+# interpolate, and every extraction runs `perl ... 2>/dev/null`. A prelude
+# that is present but does NOT COMPILE therefore produces no output, no
+# stderr and no exit-code change -- the gate extracts nothing and PASSES
+# what it exists to refuse. Measured in cdkd: one broken literal disarmed
+# four gates at once, with zero stderr. A non-empty test cannot see that,
+# so probe it FUNCTIONALLY, once, after arming, and at TOP LEVEL -- the
+# extraction helpers run inside `$( )`, where `exit 2` ends only the
+# substitution subshell (measured: an in-function guard PRINTED its
+# refusal and the hook still returned 0).
+gate_perl_word_or_die issue-dup-check-gate || exit 2
+
 while IFS= read -r seg; do
   if [[ "$seg" =~ $GATE_RE_GH_ISSUE_CREATE ]]; then
     :
