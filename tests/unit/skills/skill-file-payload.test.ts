@@ -113,6 +113,11 @@ const MIN_REFERENCE_FILES = 6;
 // are ~7.0 KB apart, so a flip is not near -- that gap has narrowed from
 // ~10.0 KB, so re-check it rather than assuming; the sibling cdkd sizes against
 // the flip because ITS top two are ~2 KB apart.
+// The 2026-09-05 batching pass added one paragraph to triage.md (batching as
+// the DEFAULT rather than a permission, with the amortization reason stated)
+// and one clause to the orchestrator's stage-3 row: corpus 144,680 -> 145,479,
+// so the margin over `corpus - largest` went 3,117 -> 2,318 B. The floor is
+// unchanged; the next addition of that size should be paid for by compression.
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -144,8 +149,8 @@ const MEASURED: Record<
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    orchestratorBytes: 11_837,
-    corpusBytes: 144_680,
+    orchestratorBytes: 11_881,
+    corpusBytes: 145_479,
     largest: { file: 'implement.md', bytes: 28_297 },
     runnerUp: { file: 'verify.md', bytes: 21_533 },
   },
