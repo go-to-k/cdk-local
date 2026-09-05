@@ -100,9 +100,16 @@ over the 268 rows of cdkd's `docs/_generated/integ-last-run.tsv` on 2026-08-20:
 median run 85 s, mean 4.6 min, p90 8.8 min. A passing run costs a few hundred
 tokens. If the session is running one for its current lane anyway, a fix riding
 the same fixture costs zero — the same run refreshes the same gate. What is
-genuinely expensive is WRITING a new fixture, an integ that FAILS, and above
-all review of a larger diff, which grows superlinearly because a reviewer reads
-the whole thing and cross-file interactions multiply. Defer on those.
+genuinely expensive is WRITING a new fixture, and an integ that FAILS
+(unbounded, and paid again next session). Defer on those.
+
+Review of a larger diff also grows superlinearly, and that cost is real — but
+it is a reason to SPLIT the PR, not to end the session, and it belongs under
+`Effort`. This paragraph listed it as a third thing to "defer on" until
+2026-09-05 — the criterion the NEXT paragraph refuses, arriving through the
+back door one paragraph early; a body wording it as `unreviewable` is now
+refused by `.claude/hooks/issue-deferral-criteria-gate.sh`, so the two halves
+of this file would have contradicted each other AND the gate.
 
 **PR SHAPE is not one of those reasons, and a gate now says so.**
 `/work-issues` §5 ("'It needs its own PR' is NOT a `next` reason — it is a
@@ -111,11 +118,12 @@ enforced at the filing site by
 `.claude/hooks/issue-deferral-criteria-gate.sh`, which refuses a
 `gh issue create` whose `Session-fit: next` reason reads `own PR` /
 `separate PR` / `share a PR` / `independent` or `separate review surface` /
-`own review`. The review-SIZE deferral this repo DOES sanction is the sweep
-§5 describes — "a sweep that would make the PR unreviewable is a genuine
-`next` (file an umbrella naming every site …)" — and the gate leaves that
-spelling alone; `.claude/rules/hooks.md` carries the measurement behind the
-split.
+`own review` / `unreviewable`. The N-sites SWEEP §5 sanctions is still a
+genuine `next`, but state it in the criteria's terms — "a sweep whose residue
+carries its own verification … file an umbrella naming every site" — because
+review size is the signal, not the criterion. `.claude/rules/hooks.md` carries
+the measurement, and the 2026-09-05 reversal that put `unreviewable` back in
+the vocabulary alongside the sibling repos.
 
 **A newly DISCOVERED bug is not a residual.** A residual (deferred polish, a
 nit, a parity gap) is fully describable, so writing it down loses nothing. A

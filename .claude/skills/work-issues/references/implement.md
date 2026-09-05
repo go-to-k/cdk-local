@@ -2,18 +2,17 @@
 
 ## 5. One tree per lane, then implement
 
-This stage (and stages 6–8) normally runs INSIDE a lane subagent the
-orchestrator dispatched — one general-purpose agent per claimed issue, so the
-lane's diffs, test output and review round-trips never land in the parent
-context. Every rule below applies unchanged inside the lane: hooks fire on the
-lane's tool calls, and markgate markers land in the lane's own worktree.
-Two actions are reserved to the parent's serialization turn and are NOT the
-lane's to start: a Docker-side integ run (`/run-integ` — and the
-`/create-integ` run a new-factory PR needs before `gh pr create`: ask the
-parent for that turn mid-lane) and the merge (`/merge-pr`) — the
-orchestrator's serialization invariant; §9. A lane stops at merge-ready and
-reports. The placement is live-proven: go-to-k/cdk-local#621 was built
-end-to-end by a lane subagent with every hook and gate firing inside the lane
+This stage (and §6–§8) normally runs INSIDE a lane subagent the orchestrator
+dispatched — one general-purpose agent per claimed issue, so the lane's diffs,
+test output and review round-trips never land in the parent context. Every
+rule below applies unchanged there: hooks fire on the lane's tool calls, and
+markgate markers land in the lane's own worktree. Two actions belong to the
+parent's serialization turn and are NOT the lane's to start: a Docker-side
+integ run (`/run-integ` — and the `/create-integ` run a new-factory PR needs
+before `gh pr create`: ask the parent for that turn mid-lane) and the merge
+(`/merge-pr`) — the orchestrator's serialization invariant; §9. A lane stops
+at merge-ready and reports. Live-proven: go-to-k/cdk-local#621 was built
+end-to-end by a lane subagent with every hook and gate firing inside it
 (sibling go-to-k/cdk-real-drift#1831 shipped the same way the same day).
 
 ### 5-a. Sweep the class, not the instance
@@ -47,10 +46,17 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
   and `Effort` / `Estimate` are what a future session budgets from.
 - **N sites of one root cause is ONE issue and ONE PR, never N issues** —
   split into N, each site pays the full fixed cost for the same edit. Two
-  boundaries: a sweep that would make the PR unreviewable is a genuine `next`
-  (file an umbrella naming every site, say which sites this lane DID close);
-  and sweep the same ROOT CAUSE, not the same AREA — the test is whether a
-  single sentence describes the fix at every site.
+  boundaries: a sweep whose RESIDUE carries its own verification is a genuine
+  `next` (file an umbrella naming every site, say which sites this lane DID
+  close); and sweep the same ROOT CAUSE, not the same AREA — the test is
+  whether a single sentence describes the fix at every site.
+  **Say WHY in the criteria's terms, not the PR's.** The first boundary read
+  "a sweep that would make the PR unreviewable" until 2026-09-05 — a spelling
+  `.claude/hooks/issue-deferral-criteria-gate.sh` refuses, so this file blessed
+  what the gate blocks (the same fix as go-to-k/cdkd#2619; three repos run this
+  skill and must answer it alike). Review size is the SIGNAL; under it is
+  verification the residue needs and this lane is not already paying. Else the
+  residue is `now`.
 - **A mechanical sweep is not verified by a PARSE — RUN every site you
   converted.** `bash -n` and the typechecker see neither of the two ways a
   sweep dies at every site at once (both hit in the go-to-k/cdk-local#603
@@ -233,11 +239,11 @@ naming the command is hard, that difficulty IS the finding, usually one of:
 
 Measured 2026-08-26: go-to-k/cdk-local#560 was filed `next` on "a fixture /
 base-image change, on a different axis" — a CATEGORY statement. The defect is
-a Go RIE fault under `linux/amd64` emulation, the filing machine was arm64,
-and a fixture with no `Architectures` resolves to `x86_64` (defaults in
+a Go RIE fault under `linux/amd64` emulation; the filing host was arm64, and a
+fixture with no `Architectures` resolves to `x86_64` (defaults in
 `src/cli/commands/local-start-api.ts` / `src/local/container-pool.ts`), so an
-amd64 host runs it natively, never reaching the emulated path. Review caught
-the misclassification; nothing in this flow did.
+amd64 host runs it natively and never reaches the emulated path. Review caught
+this; nothing in the flow did.
 
 - **Then ask what the next session will have to RE-DERIVE.** If you can point
   at something that exists only in THIS session — a table you measured, a
@@ -248,10 +254,12 @@ the misclassification; nothing in this flow did.
   gets its own PR; the bar is the SESSION, not the diff. Writing "independent
   review surface" on a `Session-fit` line is the classify-by-MEANS error
   arriving through the PR boundary (2026-09-01: a hook missing from one
-  sibling was filed `next` on exactly that wording minutes after its
+  sibling was filed `next` on exactly that wording, minutes after its
   two-directional defect had been measured and fixed in the other two repos;
-  re-classified `now` on the maintainer's challenge and shipped — the port
-  then found four more defects a fresh session would not have looked for).
+  re-classified `now` on the maintainer's challenge and shipped — the port then
+  found four more defects a fresh session would not have looked for). Enforced
+  at the filing site by `.claude/hooks/issue-deferral-criteria-gate.sh`,
+  `unreviewable` included.
 - **A reason about THIS SESSION's own state is legal and EXPIRES** — "held by
   another open PR's diff", "no integ run budgeted here", "no overlap with this
   session's lanes". Unlike the bullet above it is a real reason, but it goes

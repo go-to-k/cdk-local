@@ -12,14 +12,17 @@
 #
 #   - BLOCK for every PR-shaped spelling in the vocabulary, inline and
 #     file-borne
-#   - PASS for `unreviewable` — the cdk-local-SPECIFIC carve-out. The sibling
-#     gate in go-to-k/cdkd refuses that word; this repo's implement.md section 5
-#     says "a sweep that would make the PR unreviewable is a genuine `next`"
-#     and .claude/rules/session-report.md's Calibration paragraph says to defer
-#     on "review of a larger diff", so refusing it here would put the gate in
-#     contradiction
-#     with the rules it enforces. This case is the fence against a future
-#     copy-paste of the sibling's vocabulary.
+#   - BLOCK for `unreviewable` too, wrapped as well as inline. The port first
+#     dropped that word because implement.md section 5 and
+#     .claude/rules/session-report.md's Calibration paragraph both blessed a
+#     review-SIZE deferral; both were reworded on 2026-09-05 (matching
+#     go-to-k/cdkd#2619) so that review size is the SIGNAL and the criterion is
+#     the verification the residue needs. These two cases are the fence against
+#     the word drifting back OUT of the vocabulary.
+#   - PASS for the same sweep re-stated in the criteria's terms — the umbrella
+#     filing the reworded section 5 asks for. The pair is what makes the block
+#     above a rewording tax rather than a filing threshold: an N-sites sweep is
+#     still deferrable, it just has to say WHY in a term `Session-fit` owns.
 #   - PASS  for every LEGITIMATE `next` reason, including one that mentions a
 #     PR without being PR-SHAPED (an upstream PR is external input, which IS a
 #     criterion) — the gate keys on the reasoning, not on the token `PR`
@@ -43,13 +46,13 @@
 #   - PASS for a legitimate reason followed by a list item (this repo's own
 #     report template nests the four fields as bullets)
 #
-# MUTATION-PROBED rather than asserted, measured 2026-09-05 over the 86 cases
-# below, under bash 3.2 (the harness default). A tally says how many cases ran,
-# not what any of them fences, so each fence was broken in the real hook and
-# the survivors counted:
+# MUTATION-PROBED rather than asserted, re-measured 2026-09-05 over the 87
+# cases below, under bash 3.2 (the harness default). A tally says how many
+# cases ran, not what any of them fences, so each fence was broken in the real
+# hook and the survivors counted:
 #
-#   always-`exit 0` stub                     fails 48   (nothing passes vacuously)
-#   always-`exit 2` stub                     fails 44   (nor does anything block
+#   always-`exit 0` stub                     fails 50   (nothing passes vacuously)
+#   always-`exit 2` stub                     fails 43   (nor does anything block
 #                                                        vacuously)
 #   `next` polarity test -> `if true`        fails  2   -- exactly the two
 #                                                        `Session-fit: now` cases
@@ -80,12 +83,11 @@
 #                                                        case, so offering BOTH
 #                                                        spellings to the matchers
 #                                                        is fenced
-#   `unreviewable` added to PR_SHAPE_RE      fails  2   -- exactly the two
-#                                                        carve-out cases, so the
-#                                                        divergence from the
-#                                                        sibling repo's gate is
-#                                                        FENCED rather than merely
-#                                                        commented
+#   `unreviewable` dropped from PR_SHAPE_RE  fails  2   -- exactly the two sweep
+#                                                        cases, so the word is
+#                                                        FENCED into the list
+#                                                        rather than merely
+#                                                        commented into it
 #
 # Keep these numbers current when cases are added — a stale count in a comment
 # that exists to prove non-vacuity is itself the thing it warns about.
@@ -249,6 +251,7 @@ SIBLING="$OPTIN/sibling.md"
 CAPS="$OPTIN/caps.md"
 SWEEP="$OPTIN/sweep.md"
 SWEEPWRAP="$OPTIN/sweep-wrapped.md"
+SWEEPOK="$OPTIN/sweep-restated.md"
 
 mkbody "$OWNPR"     'Session-fit: next (not this session) -- this needs its own PR'
 mkbody "$SEPPR"     'Session-fit: next (not this session) -- a separate PR, so the diff stays small'
@@ -268,11 +271,16 @@ mkbody "$NAMEDCMD"  'Session-fit: next (not this session) -- verified by /run-in
 # `now` is never argued with, whatever the reason says.
 mkbody "$NOWPR"     'Session-fit: now (do it in this session) -- it lands in files this session has open; it will get its own PR'
 mkbody "$CAPS"      'SESSION-FIT: NEXT (NOT THIS SESSION) -- IT NEEDS ITS OWN PR'
-# THE cdk-local CARVE-OUT. implement.md section 5: "A sweep that would make the
-# PR unreviewable is a genuine `next`". The sibling repo's gate refuses the word
-# `unreviewable`; here it must pass, and it must pass on the line the rule
-# itself prints.
+# The sweep deferral, spelled the way implement.md section 5 USED to print it.
+# Refused since 2026-09-05: review size is the signal, not the criterion, and a
+# body reaching for `unreviewable` has skipped saying what verification the
+# residue needs. The word being live here is what keeps this gate answering the
+# same way as its two sibling repos.
 mkbody "$SWEEP"     'Session-fit: next (not this session) -- a sweep of all 14 sites would make the PR unreviewable; umbrella filed'
+# The SAME sweep, re-stated in the criteria's terms -- the umbrella filing the
+# reworded section 5 asks for. Without this case the block above would read as a
+# filing threshold; with it, it reads as the rewording tax it is.
+mkbody "$SWEEPOK"   'Session-fit: next (not this session) -- the residue is 13 more fixtures, each needing a Docker run this lane is not paying for; umbrella filed naming every site'
 
 # No `Session-fit` line at all: other gates own filing hygiene, this one has
 # exactly one job.
@@ -288,9 +296,9 @@ mkbody "$SWEEP"     'Session-fit: next (not this session) -- a sweep of all 14 s
   printf 'subsystem entirely and so needs its own PR\n'
   printf 'Severity: low -- internal tidiness\n'
 } > "$WRAPPED"
-# The carve-out, wrapped: the word the gate must NOT react to may also arrive on
-# a continuation line, which is where a naive "reason is one line" scan would
-# accidentally get the right answer for the wrong reason.
+# The same, wrapped: `unreviewable` may arrive on a continuation line, which a
+# line-only scan would read past -- the refusal has to survive the wrap exactly
+# as the PR-SPLIT spellings do.
 {
   printf 'Fourteen call sites share one wrong assumption.\n\n'
   printf 'Session-fit: next (not this session) -- sweeping every site would\n'
@@ -438,12 +446,11 @@ run "body-file: its own review surface (the 2026-09-02 spelling)" \
 run "inline --body: sharing a PR"      "gh issue create --body 'Session-fit: next -- sharing a PR with the fix would hide it'" "$OPTIN" 2
 run "matching is case-insensitive"     "gh issue create --body-file $CAPS"                 "$OPTIN" 2
 run "the reason may WRAP onto the next line" "gh issue create --body-file $WRAPPED"        "$OPTIN" 2
-
-echo "== PASS: the cdk-local carve-out (implement.md section 5) =================="
-run "an unreviewable SWEEP is a genuine next"      "gh issue create --body-file $SWEEP"     "$OPTIN" 0
-run "the same carve-out across a WRAPPED reason"   "gh issue create --body-file $SWEEPWRAP" "$OPTIN" 0
+run "body-file: an unreviewable SWEEP"      "gh issue create --body-file $SWEEP"            "$OPTIN" 2
+run "the same word across a WRAPPED reason" "gh issue create --body-file $SWEEPWRAP"        "$OPTIN" 2
 
 echo "== PASS: every legitimate deferral ========================================="
+run "the sweep RE-STATED in the criteria's terms" "gh issue create --body-file $SWEEPOK"    "$OPTIN" 0
 run "a NEW integ fixture must be written" "gh issue create --body-file $FIXTURE"            "$OPTIN" 0
 run "external input: an upstream PR"      "gh issue create --body-file $UPSTREAM"           "$OPTIN" 0
 run "the honest next: names the command"  "gh issue create --body-file $NAMEDCMD"           "$OPTIN" 0
@@ -626,7 +633,7 @@ run_msg "refusal names THIS repo's rule files" "gh issue create --body-file $OWN
 run_msg "refusal names the session-report field reference" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
   ".claude/rules/session-report.md"
 run_msg "refusal names the sanctioned sweep carve-out" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
-  "would make the PR unreviewable"
+  "RESIDUE carries its own verification"
 run_msg "refusal names the bypass, with the CDKL_ prefix" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
   "CDKL_SKIP_DEFERRAL_CRITERIA_GATE=1"
 

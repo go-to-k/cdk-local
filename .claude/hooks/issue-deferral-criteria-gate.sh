@@ -46,53 +46,48 @@
 # changes one word in one line, or -- the outcome it actually steers toward --
 # it makes you notice that the item is a `now`.
 #
-# WHY `unreviewable` IS NOT IN THE VOCABULARY, THOUGH THE SIBLING HAS IT
+# WHY `unreviewable` IS IN THE VOCABULARY, AND WHY TWO RULES MOVED TO MEET IT
 #
-# go-to-k/cdkd's copy refuses `unreviewable` as well. Porting that here would
-# put this gate in direct contradiction with TWO passages of this repo's own
-# rules, which is the one thing a ported mechanism must not do:
+# The first cut of this port DROPPED the word (go-to-k/cdkd's copy carries it),
+# because two passages here read as sanctioning a review-SIZE deferral:
+# implement.md §5's "a sweep that would make the PR unreviewable is a genuine
+# `next`", and .claude/rules/session-report.md's Calibration paragraph naming
+# "review of a larger diff, which grows superlinearly" among the things to
+# "defer on". A gate must not contradict its host repo's rules, so the word was
+# left out and the divergence was fenced by two suite cases.
 #
-#   implement.md §5: "a sweep that would make the PR unreviewable is a genuine
-#   `next` (file an umbrella naming every site, say which sites this lane DID
-#   close)"
-#
-#   .claude/rules/session-report.md (Calibration): "What is genuinely expensive
-#   is WRITING a new fixture, an integ that FAILS, and above all review of a
-#   larger diff, which grows superlinearly ... Defer on those."
-#
-# So in cdk-local a review-SIZE deferral is sanctioned for the N-sites sweep,
-# while a PR-SPLIT deferral is not -- and those are different claims. The
-# vocabulary below is therefore the two spellings implement.md §5 names as
-# errors ("it needs its own PR", "independent review surface") plus the
-# spellings the backlog actually uses for the same claim -- `separate PR`,
-# `share a PR`, `separate review surface`, `own review` (go-to-k/cdk-local#661
-# "on an independent review surface", go-to-k/cdk-local#666 "wants its own
-# review surface", go-to-k/cdk-local#571 "wants its own PR and its own review")
-# -- and it leaves the sanctioned spelling alone. The refusal message names
-# the carve-out so a genuine umbrella filing knows how to spell itself instead
-# of reaching for the bypass. Divergence from the sibling is the POINT here: a
-# gate copied past its host repo's rules teaches the wrong lesson in every
-# future session.
+# REVERSED 2026-09-05, in the commit that carries this line. cdkd hit the
+# identical tension and resolved it the OTHER way (go-to-k/cdkd#2619): the gate
+# keeps `unreviewable` and the DOC is reworded, because review size is the
+# SIGNAL you notice, not the criterion. Underneath it is verification the
+# residue needs and this lane is not already paying -- which the `next` criteria
+# list already contains. Both passages were rewritten alongside: §5's bullet now
+# reads "a sweep whose residue carries its own verification is a genuine `next`"
+# (the umbrella, the named sites and both drift tripwires kept verbatim), and
+# Calibration now says review cost argues for SPLITTING the PR and belongs under
+# `Effort`, not for ending the session. Three repos running one skill must not
+# answer this differently: a divergence here is not local colour, it is one rule
+# giving two answers, which is the defect this gate exists for.
 #
 # MEASURED, not argued (2026-09-05, `gh issue list --state all --limit 300`,
-# 206 bodies, of which 74 carry a `Session-fit: next` FIELD LINE -- the
-# anchored predicate this gate reads; state the predicate or the number cannot
-# be reproduced, and here a bare `grep -i 'Session-fit: next'` happens to agree
-# at 74):
+# 206 bodies, of which 74 carry a `Session-fit: next` FIELD LINE -- the anchored
+# predicate this gate reads; state the predicate or the number cannot be
+# reproduced, and here a bare `grep -i 'Session-fit: next'` happens to agree at
+# 74):
 #
-#   this vocabulary                 fires on 10 of the 74 (14%)
-#   the same list + `unreviewable`  fires on 16
+#   vocabulary without `unreviewable`   fires on 10 of the 74 (14%)
+#   this vocabulary (with it)           fires on 16 of the 74 (22%)
 #
-# All 10 are genuine PR-SPLIT deferrals ("it wants its own PR and its own
-# review", "must not share the mirror-split PR", "on an independent review
-# surface"). Every one of the 6 EXTRA is a sweep: go-to-k/cdk-local#569 (~54
-# fixtures), go-to-k/cdk-local#585 (a repo-wide segmentation change),
-# go-to-k/cdk-local#591 (30 fixtures), go-to-k/cdk-local#654 (20 fixtures),
-# go-to-k/cdk-local#655 (a different subsystem bundled into a 15-file PR
-# already at the 3-axis tier) and go-to-k/cdk-local#665 (a fifth probe value on
-# a three-round diff) -- the exact shape §5 sanctions, several of them also
-# naming their next session's verification command. Porting the sibling's word
-# list would have turned 6 rule-following deferrals into refusals.
+# The 10 are PR-SPLIT deferrals ("it wants its own PR and its own review", "must
+# not share the mirror-split PR", "on an independent review surface"). The 6
+# added are sweeps: go-to-k/cdk-local#569 (~54 fixtures), go-to-k/cdk-local#585
+# (a repo-wide segmentation change), go-to-k/cdk-local#591 (30 fixtures),
+# go-to-k/cdk-local#654 (20 fixtures), go-to-k/cdk-local#655 (a subsystem
+# bundled into a 15-file PR already at the 3-axis tier) and
+# go-to-k/cdk-local#665 (a fifth probe value on a three-round diff). Refusing
+# those 6 is the INTENT rather than collateral: each named review size where it
+# owed the claim underneath, and several already named the next session's
+# verification command -- so a re-filing states the real criterion and passes.
 #
 # WHAT IS AND IS NOT GATED
 #
@@ -233,7 +228,8 @@ optin_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)
 # threat model is an agent reaching for the cheap justification it has seen
 # before, not one evading a regex: someone who rewords the reason to dodge this
 # has had to read the criteria to do it, which is the entire ask. `unreviewable`
-# is deliberately ABSENT -- see the header.
+# IS in the list, matching the sibling gates -- see the header for the
+# 2026-09-05 reversal and the rule rewrites that came with it.
 #
 # `prs?` is bounded by `([^[:alnum:]]|$)` rather than `\b` -- `\b` is a GNU
 # extension that BSD regcomp does not carry, so on macOS it would match nothing
@@ -241,6 +237,7 @@ optin_top=$(git -C "$target_dir" rev-parse --show-toplevel 2>/dev/null || true)
 PR_SHAPE_RE='(own|separate)[[:space:]]+prs?([^[:alnum:]]|$)'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|shar(e|es|ing)[[:space:]]+((a|an|the|its|their)[[:space:]]+)?prs?([^[:alnum:]]|$)'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|(independent|separate)[[:space:]]+review[[:space:]]+surface'
+PR_SHAPE_RE="$PR_SHAPE_RE"'|unreviewable'
 PR_SHAPE_RE="$PR_SHAPE_RE"'|own[[:space:]]+review([^[:alnum:]]|$)'
 
 OFFENDING_REASON=""
@@ -650,11 +647,12 @@ done < <(gate_segments "$cmd")
   echo "    a new fixture, an integ that FAILS, or a verifier bound to a host"
   echo "    / account this session cannot reach"
   echo "  - external input: an upstream fix, a maintainer decision, a quota"
-  echo "  - a SWEEP that would make the PR unreviewable -- file an umbrella"
-  echo "    naming every site, and say which sites this lane DID close"
-  echo "    (implement.md section 5; that is the one review-SIZE deferral this"
-  echo "    repo sanctions, and it is about N sites of one root cause, not"
-  echo "    about splitting this item into its own PR)"
+  echo "  - a SWEEP whose RESIDUE carries its own verification -- file an"
+  echo "    umbrella naming every site, and say which sites this lane DID"
+  echo "    close (implement.md section 5). State it in the CRITERIA's terms:"
+  echo "    review size is the signal you noticed, and \`unreviewable\` is"
+  echo "    refused here for that reason -- name the verification the residue"
+  echo "    needs and this lane is not already paying, or it is a \`now\`."
   echo ""
   echo "And nothing is a \`next\` inside a cross-repo scope the user framed as"
   echo "one session. If none of the above fires, this is a \`now\`: ask what the"

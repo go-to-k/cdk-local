@@ -429,7 +429,7 @@ The hooks split into five classes:
   `gh api repos/<o>/<r>/issues` mint) when the body's `Session-fit: next`
   line defers the work for a PR-SHAPED reason — `own PR`, `separate PR`,
   `shar(e|ing) a PR`, `independent`/`separate review surface`, `own
-  review`, case-insensitively. **An ESCALATION, not a new rule**:
+  review`, `unreviewable`, case-insensitively. **An ESCALATION, not a new rule**:
   `/work-issues` §5 already says "'It needs its own PR' is NOT a `next`
   reason — it is a `now` item that gets its own PR; the bar is the
   SESSION, not the diff", and records its own violation (2026-09-01, a
@@ -438,29 +438,38 @@ The hooks split into five classes:
   (go-to-k/cdkd#2587 / go-to-k/cdkd#2588 / go-to-k/cdkd#2590, all
   re-classified `now` and finished the same day). §10-b: a rule written
   down and violated anyway escalates to a MECHANISM.
-  **`unreviewable` is deliberately NOT in the vocabulary, and that is the
-  port's one behavioural divergence from cdkd's copy.** This repo
-  SANCTIONS a review-size deferral for one shape — §5's "a sweep that
-  would make the PR unreviewable is a genuine `next` (file an umbrella
-  naming every site, say which sites this lane DID close)" — and
-  [session-report.md](session-report.md)'s
-  Calibration paragraph says to defer on "review of a larger diff". A
-  gate refusing that word would contradict the rules it enforces, so the
-  closed list is exactly the PR-SPLIT spellings §5 names as errors, and
-  the refusal message prints the sweep carve-out so a genuine umbrella
-  knows how to spell itself. Two suite cases fence the divergence: adding
-  `unreviewable` back reddens exactly them.
+  **`unreviewable` was dropped by the first cut of this port and RESTORED
+  on 2026-09-05**, matching go-to-k/cdkd#2619 rather than diverging from
+  it. The port left the word out because two passages here blessed a
+  review-SIZE deferral — §5's "a sweep that would make the PR
+  unreviewable is a genuine `next`" and
+  [session-report.md](session-report.md)'s Calibration paragraph naming
+  "review of a larger diff" among the things to defer on — and a gate
+  must not contradict its host repo's rules. cdkd hit the same tension
+  and resolved it the other way: review size is the SIGNAL you notice,
+  not the criterion; underneath it is verification the residue needs and
+  this lane is not already paying. Both passages were reworded in the
+  same commit (the umbrella, the named sites and the ROOT-CAUSE boundary
+  kept verbatim; Calibration now files review cost under `Effort` as a
+  reason to SPLIT the PR), so the rules and the gate agree — and three
+  repos running one skill answer this question the same way. Two suite
+  cases fence the word IN: dropping it from `PR_SHAPE_RE` reddens exactly
+  them, and a third case passes the same sweep re-stated in the
+  criteria's terms, so the block is a rewording tax rather than a filing
+  threshold.
   **Measured 2026-09-05** over `gh issue list --state all --limit 300` — 206
   bodies, 74 carrying a `Session-fit: next` FIELD LINE (the anchored predicate
-  the gate reads; a bare `grep -i` agrees at 74 here). This vocabulary fires
-  on **10 of the 74** (14%), all genuine PR-SPLIT deferrals; the same list
-  plus `unreviewable` fires on 16, and every one of the 6 extra is a sweep —
+  the gate reads; a bare `grep -i` agrees at 74 here). Without `unreviewable`
+  the vocabulary fires on **10 of the 74** (14%), all genuine PR-SPLIT
+  deferrals; **with it, on 16 of the 74** (22%). The 6 added are sweeps —
   go-to-k/cdk-local#569 (~54 fixtures), go-to-k/cdk-local#585 (a repo-wide
   segmentation change), go-to-k/cdk-local#591 (30 fixtures),
   go-to-k/cdk-local#654 (20 fixtures), go-to-k/cdk-local#655 and
-  go-to-k/cdk-local#665. The sibling's word list would have refused six
-  rule-following deferrals. It does NOT catch reasoning that never names a PR
-  or a review, and the needle was deliberately not widened to chase those.
+  go-to-k/cdk-local#665 — and refusing them is the INTENT: each named review
+  size where it owed the verification claim underneath, and several already
+  named the next session's command, so a re-filing states the real criterion
+  and passes. It does NOT catch reasoning that never names a PR or a review,
+  and the needle was deliberately not widened to chase those.
   **Not a ritual** — a gate asking the body to carry a "criteria audit"
   line is satisfiable by boilerplate; this refuses the specific defect and
   leaves every legitimate `next` untouched. **Only `next` is gated**: a
@@ -496,14 +505,15 @@ The hooks split into five classes:
   mid-command scan could not tell an assignment from the same text quoted
   inside a body, and a bypass a body can spell is not a bypass — pinned by
   a case where the assignment after a `cd` still BLOCKS. Smoke test:
-  `.claude/hooks/issue-deferral-criteria-gate.test.sh` (86 cases, bash 3.2
-  by default via `HOOK_BASH`). Mutation-probed 2026-09-05, every mutation
-  checked to have applied: `exit 0` 48, `exit 2` 44, `next` polarity
+  `.claude/hooks/issue-deferral-criteria-gate.test.sh` (87 cases, bash 3.2
+  by default via `HOOK_BASH`). Mutation-probed 2026-09-05 and re-measured
+  after the `unreviewable` restoration, every mutation checked to have
+  applied: `exit 0` 50, `exit 2` 43, `next` polarity
   exactly the two `now` cases, continuation boundary 4, segment scoping 4,
   fence strip 2, bolded key 2, list item 2, heredoc arm 3, the
   rewrite/append split exactly the APPEND case, the raw path spelling
-  exactly the relative case, and the `unreviewable` widening exactly the
-  two carve-out cases.
+  exactly the relative case, and DROPPING `unreviewable` exactly the two
+  sweep cases.
 
 - **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
   `gh pr edit` / `gh pr merge` (and their `gh -C <path>` / `cd <path>
