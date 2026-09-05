@@ -275,19 +275,20 @@ symbol; read the issue's "Fix direction") before choosing.
   Docker/fixture repro) for a clean lane; hold complex redesigns (novel
   mechanism, needs a live design pass) for a focused solo lane.
 
-**Batch: take the LARGEST safe set, not the smallest.** A run pays for its
-context load, its build, the `/check` cycle, the review dispatch and the
-Docker-side integ ONCE and amortizes them across every issue it carries;
-closing one issue and stopping makes the NEXT session re-pay all of it from
-zero. So batching is the DEFAULT, IN-PLACE included — there the batch runs in
-SEQUENCE through the one tree, which is why the four-issue run cited above is
-the shape to aim at rather than an allowance. Scale the count to the backlog
-and to how many shared modules are free: 2–3 clean lanes is a typical
-OBSERVATION, not a ceiling. What bounds the batch is what the run can still do
-WELL — never force a lane into a contested file to raise the count, and never
-shorten a verification to fit one more issue: the amortization argument buys
-issue COUNT, never rigor (CLAUDE.md → "Cost is not a tiebreaker"). Report or
-stand down the ones you do not reach.
+**Batch: take the LARGEST safe set, not the smallest.** What a run amortizes
+is CONTEXT — the launch-mode probe, §2's collision map, the backlog read and
+§10's retro — NOT the per-lane build / `/check` / review / Docker-side integ,
+which §9 even serializes. Context is still the largest single cost and the
+next session re-pays it from zero, so the second issue is far cheaper than the
+first and batching is the DEFAULT, IN-PLACE included — which is why the
+four-issue run cited above is the shape to aim at rather than an allowance.
+Scale the count to the backlog and to how many shared modules are free; 2–3
+clean lanes is a typical OBSERVATION, not a ceiling. What bounds the batch is
+what the run can still do WELL: never force a lane into a contested file to
+raise the count, and never shorten a verification to fit one more issue — the
+argument buys issue COUNT, never rigor (CLAUDE.md → "Cost is not a
+tiebreaker"). Report the candidates you did not take, and stand down the
+claimed ones you did not reach.
 
 ### 3-a. A FRESH issue belongs to the lane that FILED it
 

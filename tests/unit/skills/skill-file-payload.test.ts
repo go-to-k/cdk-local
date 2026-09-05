@@ -115,9 +115,17 @@ const MIN_REFERENCE_FILES = 6;
 // the flip because ITS top two are ~2 KB apart.
 // The 2026-09-05 batching pass added one paragraph to triage.md (batching as
 // the DEFAULT rather than a permission, with the amortization reason stated)
-// and one clause to the orchestrator's stage-3 row: corpus 144,680 -> 145,479,
-// so the margin over `corpus - largest` went 3,117 -> 2,318 B. The floor is
+// and one clause to the orchestrator's stage-3 row: corpus 144,680 -> 145,551,
+// so the margin over `corpus - largest` went 3,117 -> 2,246 B. The floor is
 // unchanged; the next addition of that size should be paid for by compression.
+// The paragraph's FIRST draft claimed a run amortizes its build, `/check`,
+// review dispatch and integ. A review of the sibling cdkd's identical text
+// found all four are PER-LANE here (references/gates-and-pr.md is titled
+// "per lane"; section 9 serializes the integs), so the corrected text claims
+// only the context -- the probe, the collision map, the backlog read and the
+// retro. Worth recording because the wrong version READ fine: an amortization
+// argument is checkable against the flow it describes, and nothing in this
+// file would have caught it.
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -149,8 +157,8 @@ const MEASURED: Record<
   // against work-issues' numbers -- permanently red, with a message naming the
   // wrong file.
   'work-issues': {
-    orchestratorBytes: 11_881,
-    corpusBytes: 145_479,
+    orchestratorBytes: 11_885,
+    corpusBytes: 145_551,
     largest: { file: 'implement.md', bytes: 28_297 },
     runnerUp: { file: 'verify.md', bytes: 21_533 },
   },
