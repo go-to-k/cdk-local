@@ -58,3 +58,6 @@ cdk.context.json
 
 # Node diagnostic reports (issue #402, --report-on-fatalerror)
 report.*.json
+
+# Python bytecode from the hook testdata probes.
+__pycache__/

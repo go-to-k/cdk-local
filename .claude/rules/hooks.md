@@ -2,10 +2,10 @@
 
 Reference for the `.claude/hooks/*.sh` safety + enforcement hooks
 shipped in cdk-local — PreToolUse gates, plus the one `Stop` hook in
-section 4. Auto-loaded when working on `.claude/hooks/**` or
-`.markgate.yml`.
+section 4 and the one non-blocking PreToolUse advisory in section 5.
+Auto-loaded when working on `.claude/hooks/**` or `.markgate.yml`.
 
-The hooks split into four classes:
+The hooks split into five classes:
 
 1. **Universal-shape one-shot safety hooks** — block known foot-guns
    at the source. Each produces an actionable error with the exact
@@ -20,6 +20,10 @@ The hooks split into four classes:
 4. **Stop hooks** — fire when a turn is about to end rather than on a
    tool call, and choose an OUTPUT CHANNEL that decides whether the turn
    continues. Section 4 covers the channel table and the nudge cadence.
+5. **Non-blocking PreToolUse advisories** — fire on a tool call like a
+   gate, but exit 0 unconditionally and write only to stderr. They guard
+   a SPEND rather than a merge, where a wrong refusal would cost more
+   than the waste it prevents.
 
 ## 1. Universal-shape safety hooks
 
@@ -420,6 +424,96 @@ The hooks split into four classes:
   always-`exit 2` stub 39 of 40, relaxing the space rule exactly 1,
   reverting the body-file precedence exactly 2, dropping the bare
   `-F <path>` arm exactly 1.
+
+- **`issue-deferral-criteria-gate.sh`** blocks `gh issue create` (and the
+  `gh api repos/<o>/<r>/issues` mint) when the body's `Session-fit: next`
+  line defers the work for a PR-SHAPED reason — `own PR`, `separate PR`,
+  `shar(e|ing) a PR`, `independent`/`separate review surface`, `own
+  review`, `unreviewable`, case-insensitively. **An ESCALATION, not a new rule**:
+  `/work-issues` §5 already says "'It needs its own PR' is NOT a `next`
+  reason — it is a `now` item that gets its own PR; the bar is the
+  SESSION, not the diff", and records its own violation (2026-09-01, a
+  missing sibling hook filed `next` on exactly that wording). The
+  sibling repo repeated the class three times in one session
+  (go-to-k/cdkd#2587 / go-to-k/cdkd#2588 / go-to-k/cdkd#2590, all
+  re-classified `now` and finished the same day). §10-b: a rule written
+  down and violated anyway escalates to a MECHANISM.
+  **`unreviewable` was dropped by the first cut of this port and RESTORED
+  on 2026-09-05**, matching go-to-k/cdkd#2619 rather than diverging from
+  it. The port left the word out because two passages here blessed a
+  review-SIZE deferral — §5's "a sweep that would make the PR
+  unreviewable is a genuine `next`" and
+  [session-report.md](session-report.md)'s Calibration paragraph naming
+  "review of a larger diff" among the things to defer on — and a gate
+  must not contradict its host repo's rules. cdkd hit the same tension
+  and resolved it the other way: review size is the SIGNAL you notice,
+  not the criterion; underneath it is verification the residue needs and
+  this lane is not already paying. Both passages were reworded in the
+  same commit (the umbrella, the named sites and the ROOT-CAUSE boundary
+  kept verbatim; Calibration now files review cost under `Effort` as a
+  reason to SPLIT the PR), so the rules and the gate agree — and three
+  repos running one skill answer this question the same way. Two suite
+  cases fence the word IN: dropping it from `PR_SHAPE_RE` reddens exactly
+  them, and a third case passes the same sweep re-stated in the
+  criteria's terms, so the block is a rewording tax rather than a filing
+  threshold.
+  **Measured 2026-09-05** over `gh issue list --state all --limit 300` — 206
+  bodies, 74 carrying a `Session-fit: next` FIELD LINE (the anchored predicate
+  the gate reads; a bare `grep -i` agrees at 74 here). Without `unreviewable`
+  the vocabulary fires on **10 of the 74** (14%), all genuine PR-SPLIT
+  deferrals; **with it, on 16 of the 74** (22%). The 6 added are sweeps —
+  go-to-k/cdk-local#569 (~54 fixtures), go-to-k/cdk-local#585 (a repo-wide
+  segmentation change), go-to-k/cdk-local#591 (30 fixtures),
+  go-to-k/cdk-local#654 (20 fixtures), go-to-k/cdk-local#655 and
+  go-to-k/cdk-local#665 — and refusing them is the INTENT: each named review
+  size where it owed the verification claim underneath, and several already
+  named the next session's command, so a re-filing states the real criterion
+  and passes. It does NOT catch reasoning that never names a PR or a review,
+  and the needle was deliberately not widened to chase those.
+  **Not a ritual** — a gate asking the body to carry a "criteria audit"
+  line is satisfiable by boilerplate; this refuses the specific defect and
+  leaves every legitimate `next` untouched. **Only `next` is gated**: a
+  `now` line is never refused whatever its reason says, and a body with no
+  `Session-fit` line passes — filing hygiene belongs to the two sibling
+  issue gates. `gh issue edit` / `comment` are NOT gated: re-classification
+  is the outcome this gate steers toward. The reason is read across
+  WRAPPED lines (a 76-column body puts "needs its own PR" on the next
+  line), bounded by a blank line, the next `Key:` field, a LIST ITEM (this
+  repo's report template nests the four fields as bullets) or a heading. A
+  FENCED CODE BLOCK is stripped first (``` and `~~~`, opening only when
+  the same marker recurs later), so a body quoting the refused line to
+  argue ABOUT the rule is not blocked by its own quotation. A bolded
+  `**Session-fit:**` key is read like the bare one. Repo opt-in
+  (`.markgate.yml`), shared command-position matcher via
+  `gate_target_dir`, fails CLOSED when the library is unloadable.
+  **It reads the body the command is about to WRITE**, reusing
+  `pr-body-item-number-gate.sh`'s go-to-k/cdk-local#637 heredoc
+  extraction: precedence is the heredoc body this command writes, then the
+  file on disk (unless a REWRITE superseded it — an APPEND still reads
+  it), then the whole command, then an inline `--body`. Without that the
+  one-call `heredoc -> file -> --body-file` shape is a FAIL-OPEN whenever
+  the target path already exists: the gate judges the PREVIOUS body and
+  passes. Unlike `issue-dup-check-gate.sh`, an UNREADABLE `--body-file`
+  still does not block: this gate objects to content it FINDS, so a
+  refusal would be unclearable. Bypass
+  `CDKL_SKIP_DEFERRAL_CRITERIA_GATE=1` for an INLINE quote of PR-shaped
+  reasoning, honored from the env and from a leading assignment AT THE
+  START of the command (go-to-k/cdkd#2368 — a PreToolUse hook is spawned
+  with the session env, so the text channel is the only one an agent's
+  Bash call can deliver). Offset 0 rather than any command position is
+  deliberate: this repo's matcher has no `strip_noncommand_spans`, so a
+  mid-command scan could not tell an assignment from the same text quoted
+  inside a body, and a bypass a body can spell is not a bypass — pinned by
+  a case where the assignment after a `cd` still BLOCKS. Smoke test:
+  `.claude/hooks/issue-deferral-criteria-gate.test.sh` (87 cases, bash 3.2
+  by default via `HOOK_BASH`). Mutation-probed 2026-09-05 and re-measured
+  after the `unreviewable` restoration, every mutation checked to have
+  applied: `exit 0` 50, `exit 2` 43, `next` polarity
+  exactly the two `now` cases, continuation boundary 4, segment scoping 4,
+  fence strip 2, bolded key 2, list item 2, heredoc arm 3, the
+  rewrite/append split exactly the APPEND case, the raw path spelling
+  exactly the relative case, and DROPPING `unreviewable` exactly the two
+  sweep cases.
 
 - **`docs-inline-json-flag-gate.sh`** blocks `gh pr create` /
   `gh pr edit` / `gh pr merge` (and their `gh -C <path>` / `cd <path>
@@ -1981,3 +2075,69 @@ cost a case a wrong-reason pass:
   field and sets the env var — and each asserts that the SECOND turn
   downgrades, since the defect there is that the nudge never stops
   firing, not that the first one is missing.
+
+## 5. Non-blocking PreToolUse advisories
+
+**`.claude/hooks/integ-stale-base-detector.sh`** — PreToolUse (`Bash`),
+**never blocks**. Warns, before a Docker integ fixture is spent, that the
+branch is behind `origin/main`, because a rebase after the run moves the merge
+base and can stale the very `integ` marker the run was spent to earn.
+
+**It warns on the OVERLAP, not on being behind.** The `integ` gate is this
+repo's only `hash: diff` gate, so its digest is this branch's delta against
+`merge-base(origin/main, HEAD)` inside `src/**` + `tests/integration/**` — and
+that delta is recomputed by a rebase for exactly one population: an in-scope
+file BOTH `main` and this branch changed (the freshness table under
+`### integ-gate` states the same rule from the marker's side). So the hook
+intersects main's in-scope advance with this branch's own in-scope delta, and
+the two arms give opposite advice: `N in-scope file(s) arriving with them are
+files THIS BRANCH also changed … Rebase FIRST` versus `None of them overlap …
+the marker will probably survive a rebase`. It counts FILES and says files.
+Both sides use a THREE-dot diff and each dot count is pinned by its own
+fixture: 2-dot on main's side sweeps in the lane's own commits, 2-dot on the
+branch's side reports main's files as part of the branch's delta, and each
+manufactures a false alarm. It does NOT `git fetch` — a PreToolUse hook must
+stay fast and side-effect-free — so it under-reports on a stale local ref,
+which is the safe direction for a nudge.
+
+**Placement is the design**: beside `markgate set integ` the fixture run is
+already spent, so this fires on the INVOCATION — the last moment a rebase is
+free. `/run-integ` §5's run is a Docker fixture whose first-ever base-image
+pull is ~600 MB and whose measured worst case (go-to-k/cdk-local#650) stalled
+for hours, so "one more run" is not a rounding error.
+**Non-blocking on purpose**, unlike `integ-gate.sh`: a deliberate run on an old
+base (a bisect, a repro) is legitimate, and it guards a SPEND, not a merge.
+
+Unlike its go-to-k/cdkd sibling this is not an escalation of a written rule —
+`references/verify.md` §8 says to run the integ LAST and `gates-and-pr.md` §7
+says to rebase when `main` advances, but neither states that a rebase ALONE can
+stale a marker already earned. The message names both files. Its scope ERE is
+DERIVED from `.markgate.yml`'s `integ` include and fenced against it: the suite
+re-reads that include block and fails on set inequality, so a hand copy cannot
+drift from the gate it describes. One invocation shape arms it —
+`bash tests/integration/<name>/verify.sh`, redirected to a log — because every
+fixture in this repo ships a `verify.sh` (re-derive with
+`for d in tests/integration/*/; do [ -f "$d/verify.sh" ] || echo "$d"; done`);
+`tests/integration/_lib/aws-orphan-sweep.sh` deliberately does not.
+Recognition goes through the SHARED matcher, which every hook on the `Bash`
+matcher must source (`_command-match.test.sh` enforces both directions of
+that) and which is also strictly better here than the grep pair cdkd's copy
+carries: `gate_matches` anchors the regex at the start of each SEGMENT, so
+`cat` / `git diff` / `cd x && grep -n foo` over a fixture path cannot match at
+all — no read-verb exclusion list is needed — and a fixture path quoted inside
+an arbitrary string, which that copy documents as a known false positive, is
+silent here. Unlike every GATE, an unloadable matcher exits 0 rather than 2:
+this hook refuses nothing, so failing "closed" would mean blocking an integ run
+the operator deliberately started. Repo opt-in (`.markgate.yml`); its `if:`
+selector is `Bash(*verify*)` and NOT `Bash(*verify.sh*)`, because a `.sh` token
+inside an `if` pattern is counted as a hook script by
+`_command-match.test.sh`'s raw cross-scan of the hooks block.
+
+Smoke test: `.claude/hooks/integ-stale-base-detector.test.sh` (24 cases, real
+git fixtures, bash 3.2 by default via `HOOK_BASH`). Every assertion is about
+the MESSAGE, because the exit code carries no signal and a silent stub would
+pass an exit-code-only suite. Mutation-probed 2026-09-05: silent stub 14,
+alarming-arm-always 4, soft-arm-always 5, each 3-dot-to-2-dot exactly 2, the
+scope regex widened to `.` exactly 1, the `overlap` initialiser forced to the
+behind-count exactly 3, and dropping the segment anchor from the run regex
+exactly the quoted-mention case.

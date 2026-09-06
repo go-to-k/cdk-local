@@ -378,6 +378,49 @@ run_no_tool_name "absent tool_name is treated as Bash (blocks)" "gh issue create
 run_no_tool_name "absent tool_name is treated as Bash (passes)" "gh issue create --body-file $WITH"    "$TMPROOT" 0
 run_nonbash "non-Bash tool passes" 0
 
+# --- the shared GATE_PERL_WORD value class, and its guard --------------------
+# Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
+# fail-opens here before the port, each measured rc=0 where the plain path gave
+# 2: a quoted path containing a SPACE, a BACKSLASH-escaped one, and the GLUED
+# `-F<path>` gh accepts. They are cases rather than a note because a value class
+# that enumerates quote POSITIONS grows a new hole every time gh accepts another
+# spelling.
+GWDIR="$TMPROOT/gw dir"
+mkdir -p "$GWDIR"
+printf 'A body with no marker at all.\n' > "$GWDIR/nomark.md"
+printf 'Dup-check: searched open+closed, no match\nBody.\n' > "$GWDIR/ok.md"
+run "spaced --body-file path, no Dup-check, blocks" \
+  "gh issue create -t x --body-file \"$GWDIR/nomark.md\"" "$TMPROOT" 2
+# The FALSE BLOCK this gate carried: it fails CLOSED on an unreadable path, so a
+# compliant body at a spaced path was refused for a marker it DID have.
+run "spaced --body-file path, WITH Dup-check, passes" \
+  "gh issue create -t x --body-file \"$GWDIR/ok.md\"" "$TMPROOT" 0
+run "backslash-escaped path, WITH Dup-check, passes" \
+  "gh issue create -t x --body-file ${GWDIR// /\\ }/ok.md" "$TMPROOT" 0
+
+# --- the GATE_PERL_WORD guard is wired here, and CANNOT be fenced by a case ---
+#
+# The other two gates assert it: with a non-compiling prelude they exit 2 on a
+# payload they normally pass, and deleting `gate_perl_word_or_die` reddens those
+# cases. This gate cannot have that case, and the reason is worth stating rather
+# than leaving as an absence.
+#
+# It fails CLOSED on an unreadable body by design (see the header): with no path
+# extracted, `seg_has_marker` returns 1 and the gate BLOCKS. A broken prelude
+# extracts nothing, so it lands on that same refusal -- exit 2 with the guard
+# and exit 2 without it. Measured: removing `gate_perl_word_or_die` leaves this
+# suite fully green, both before and after the payload was corrected.
+#
+# The first version of these cases passed the body-file path UNQUOTED through a
+# directory whose name has a space, which made them doubly vacuous -- they were
+# testing the unreadable-path refusal, not the guard. Quoting fixed that half
+# and revealed the structural half underneath.
+#
+# The guard stays wired anyway. Relying on a coincidence of polarity is exactly
+# what made this file's original miss invisible, and a later edit to
+# `seg_has_marker` could reverse it without anyone noticing this gate had been
+# leaning on it.
+
 echo ""
 echo "Pass: $PASS  Fail: $FAIL"
 [ "$FAIL" -eq 0 ]
