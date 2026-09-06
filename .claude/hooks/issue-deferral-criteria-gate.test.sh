@@ -46,8 +46,10 @@
 #   - PASS for a legitimate reason followed by a list item (this repo's own
 #     report template nests the four fields as bullets)
 #
-# MUTATION-PROBED rather than asserted, re-measured 2026-09-05 over the 87
-# cases below, under bash 3.2 (the harness default). A tally says how many
+# MUTATION-PROBED rather than asserted. The round-4 rows were taken on the 119
+# cases below, under bash 3.2 (the harness default); the rows above them were
+# taken on the 87-case baseline and are NOT re-taken here -- see the note after
+# the table, and re-take them wholesale before quoting any of them again. A tally says how many
 # cases ran, not what any of them fences, so each fence was broken in the real
 # hook and the survivors counted:
 #
@@ -88,6 +90,35 @@
 #                                                        FENCED into the list
 #                                                        rather than merely
 #                                                        commented into it
+#
+# ROUND 4, taken on the 119-case suite:
+#
+#   always-`exit 0` stub                     fails 67
+#   always-`exit 2` stub                     fails 58
+#   `restore_inline_newlines` call removed   fails  4
+#   restore slice -> the whole raw command   fails  1   -- a sibling
+#                                                        `gh issue comment` body
+#                                                        deciding this verdict
+#   restore `-b[=\s]*` -> `[=\s]+`          fails  1   -- the GLUED `-b<body>`
+#   fallback -> the segment only             fails  2
+#   `input_body_text` call removed           fails  4
+#   `--input` heredoc STATUS -> emptiness    fails  1
+#   `--input` `$VAR` heredoc arm removed     fails  1
+#   `--input` relative join dropped          fails  1
+#   `-b` extractor arm removed               fails  1
+#   `[*_]*next` -> `next`                    fails  1
+#   `:([^/]|/[^/]|$)` -> `:([^/]|$)`         fails  1   -- the `Key:/value`
+#                                                        continuation
+#   `:([^/]|$)` -> `:`                       fails  1   -- the URL scheme
+#
+# THE ROWS ABOVE THIS BLOCK WERE NOT RE-TAKEN. They predate every case added
+# since, so their numbers moved by an unknown amount -- three numbers carried
+# forward one round were contradicted the next, which is why none is carried
+# forward silently here.
+#
+# TWO PROBES NEED BOTH SITES BROKEN AT ONCE: the fallback lives at two arms
+# (unresolvable-path and unreadable-file) and each case reaches only one, so a
+# one-arm mutation kills nothing and reads as unfenced.
 #
 # Keep these numbers current when cases are added — a stale count in a comment
 # that exists to prove non-vacuity is itself the thing it warns about.
@@ -772,12 +803,52 @@ run "gh api --input: a relative payload path resolves against the cwd" \
   "gh api repos/o/r/issues -f title=t --input rel-input.json" "$OPTIN" 2
 # RELATIVE and heredoc-written at once: the heredoc lookup is handed BOTH the
 # raw spelling and the resolved path, and only the raw one matches a command
-# that writes `hd-input.json`. Dropping either spelling makes this case red.
+# that writes `hd-input.json`. The RAW spelling is the load-bearing one --
+# dropping it makes this case red; passing the resolved path twice does not.
 run "gh api --input: a relative payload written by a heredoc in the same call" \
   "cat > hd-input.json <<'JSON'
 {\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
 JSON
 gh api repos/o/r/issues -f title=t --input hd-input.json" "$OPTIN" 2
+
+# Round-3 review shapes, each measured before the fix and each killed by
+# mutating its own line.
+run "a GLUED -b multi-line body is restored too" \
+  "gh issue create --title t -b'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Effort: large (L) -- a behavior change needing its own PR plus review'" "$OPTIN" 0
+# The fallback must be the SEGMENT plus the WRITER segments, never the whole
+# command: with a writer AND a quoting sibling in one chain, a `$cmd` fallback
+# refuses a clean body.
+run "a writer and a quoting sibling in one chain do not collide" \
+  "git commit -m 'quote: Session-fit: next (not this session) -- it needs its own PR' && printf 'ok\\n' > $OPTIN/nodir/b.md && gh issue create --title t --body-file $OPTIN/nodir/b.md" \
+  "$OPTIN" 0
+run "an unresolvable body-file whose writer is in the command is judged" \
+  "printf 'Session-fit: next (not this session) -- it needs its own PR\\n' > \"\$BODY\" && gh issue create --title t --body-file \"\$BODY\"" \
+  "$OPTIN" 2
+# The restore lookup is scoped to this segment's raw slice: another segment's
+# body must not decide this one's verdict.
+run "a sibling comment body does not decide the create verdict" \
+  "gh issue comment 1 --body 'Session-fit: now -- fine.
+Session-fit: next (not this session) -- it needs its own PR' && gh issue create --title t --body 'Session-fit: now -- fine. Session-fit: next (not this session) -- it needs its own PR'" \
+  "$OPTIN" 0
+# An EMPTY heredoc body is legal, so the STATUS reports whether a heredoc was
+# found -- reading emptiness as "none" falls through to the stale file on disk.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$OPTIN/stale-input.json"
+run "gh api --input: an empty heredoc rewrite supersedes the stale payload" \
+  "cat > $OPTIN/stale-input.json <<'JSON'
+JSON
+gh api repos/o/r/issues -f title=t --input $OPTIN/stale-input.json" "$OPTIN" 0
+run "gh api --input: a \$VAR payload written by a heredoc is still read" \
+  "cat > \"\$P\" <<'JSON'
+{\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
+JSON
+gh api repos/o/r/issues -f title=t --input \"\$P\"" "$OPTIN" 2
+# The URL carve-out excepts a SCHEME, not any `Key:/value` -- a bare `:([^/]|$)`
+# folded a `Repro:/tmp/x` continuation into the reason and refused a legitimate
+# `next`.
+run "a Key:/value continuation still ends the reason" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Repro:/tmp/x it needs its own PR'" "$OPTIN" 0
 
 # --- the shared GATE_PERL_WORD value class, and its guard --------------------
 # Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
