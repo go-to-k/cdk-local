@@ -54,6 +54,12 @@ const REQUIRED: Record<string, string[]> = {
   'closes-paren-form-gate.sh': ['Bash(*gh*pr*merge*)'],
   'issue-dup-check-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
   'issue-classification-label-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*issue*edit*)'],
+  // Same two selectors as the dup-check gate, and for the same reason: the
+  // REST mint (`gh api repos/<o>/<r>/issues`) is `gh issue create` through
+  // another verb, so gating only the porcelain spelling under-approximates the
+  // TRIGGER. `gh issue edit` is deliberately absent — re-classifying a filed
+  // issue is the outcome that gate steers toward.
+  'issue-deferral-criteria-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
   'pr-body-item-number-gate.sh': [
     'Bash(*gh*pr*create*)',
     'Bash(*gh*pr*edit*)',
@@ -68,10 +74,24 @@ const REQUIRED: Record<string, string[]> = {
   'cdkd-parity-gate.sh': ['Bash(*gh*pr*create*)'],
   'create-integ-gate.sh': ['Bash(*gh*pr*create*)'],
   'gh-pr-merge-worktree-gate.sh': ['Bash(*gh*pr*merge*)'],
-  // The only gate selected on a non-`git`/`gh` command word
+  // The only BLOCKING gate selected on a non-`git`/`gh` command word
   // (go-to-k/cdk-local#571): a piped `markgate verify` reports the PIPE's
   // exit code, so a STALE gate reads as a pass.
   'markgate-pipe-gate.sh': ['Bash(*markgate*)'],
+  // Selected on a non-`git`/`gh` word too, but it is NOT a gate: a
+  // non-blocking warn on the integ fixture INVOCATION, which is the last
+  // moment a rebase is still free. `/run-integ` section 5's one invocation
+  // shape is `bash tests/integration/<name>/verify.sh`, redirected to a log,
+  // so the selector is part of the script name rather than a command verb.
+  // `*verify*` and NOT `*verify.sh*`: `_command-match.test.sh` cross-checks the
+  // parsed hook-script list against a raw `[A-Za-z0-9_-]*\.sh` scan of this
+  // block, so a `.sh` inside an `if` PATTERN is counted as a 24th hook script
+  // and the two methods disagree (measured — that is exactly how the first
+  // spelling of this entry reddened that suite). The wider glob also selects
+  // `vp run verify` and the like; the hook exits 0 after one segment match, so
+  // an over-selection costs a process spawn and an under-selection costs the
+  // nudge this hook exists to give.
+  'integ-stale-base-detector.sh': ['Bash(*verify*)'],
 };
 
 interface GateHook {

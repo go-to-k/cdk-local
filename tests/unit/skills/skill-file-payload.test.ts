@@ -187,8 +187,8 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_885,
-    corpusBytes: 148_579,
-    largest: { file: 'implement.md', bytes: 29_545 },
+    corpusBytes: 149_125,
+    largest: { file: 'implement.md', bytes: 30_091 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };
