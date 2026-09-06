@@ -46,7 +46,7 @@
 #   - PASS for a legitimate reason followed by a list item (this repo's own
 #     report template nests the four fields as bullets)
 #
-# MUTATION-PROBED rather than asserted. The round-4 rows were taken on the 119
+# MUTATION-PROBED rather than asserted. The round-4 rows were taken on the 123
 # cases below, under bash 3.2 (the harness default); the rows above them were
 # taken on the 87-case baseline and are NOT re-taken here -- see the note after
 # the table, and re-take them wholesale before quoting any of them again. A tally says how many
@@ -91,10 +91,10 @@
 #                                                        rather than merely
 #                                                        commented into it
 #
-# ROUND 4, taken on the 119-case suite:
+# ROUND 4, taken on the 123-case suite:
 #
-#   always-`exit 0` stub                     fails 67
-#   always-`exit 2` stub                     fails 58
+#   always-`exit 0` stub                     fails 70
+#   always-`exit 2` stub                     fails 59
 #   `restore_inline_newlines` call removed   fails  4
 #   restore slice -> the whole raw command   fails  1   -- a sibling
 #                                                        `gh issue comment` body
@@ -116,6 +116,17 @@
 # forward one round were contradicted the next, which is why none is carried
 # forward silently here.
 #
+#   segment ORDINAL -> plain `index`         fails  1   -- two segments that
+#                                                      collapse to identical text
+#                                                      sharing one raw slice
+#   `pull[[:space:]-]+requests?` dropped     fails  2   -- `own pull request`
+#                                                      and `own-PR`
+#
+# THE WRITER PRE-FILTER IS NOT FENCED BY A CASE, deliberately. It is a COST fix
+# -- without it 40 chained `--body-file missing$i.md` crossed the PreToolUse
+# timeout, which is a SILENT PASS -- and a wall-clock assertion in a unit suite
+# is a flake generator. Deleting it leaves the suite green; the measurement
+# lives in the comment beside it.
 # TWO PROBES NEED BOTH SITES BROKEN AT ONCE: the fallback lives at two arms
 # (unresolvable-path and unreadable-file) and each case reaches only one, so a
 # one-arm mutation kills nothing and reads as unfenced.
@@ -849,6 +860,26 @@ gh api repos/o/r/issues -f title=t --input \"\$P\"" "$OPTIN" 2
 run "a Key:/value continuation still ends the reason" \
   "gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on an AWS quota increase
 Repro:/tmp/x it needs its own PR'" "$OPTIN" 0
+
+# Round-4 blockers, each measured before the fix.
+# `index` alone hands the SECOND of two segments that collapse to identical
+# text the FIRST one's raw slice, so a flat PR-shaped filing passed on its
+# twin's newline placement. The ordinal selects the right occurrence.
+run "twin segments do not share one raw slice" \
+  "gh issue create --title t --body 'Session-fit: next (not this session)
+Severity: high it needs its own PR' && gh issue create --title t --body 'Session-fit: next (not this session) Severity: high it needs its own PR'" \
+  "$OPTIN" 2
+# `PR` / `pull request` / `own-PR` are SPELLINGS of one noun. A passing mention
+# of somebody else's pull request is not a PR-shaped REASON and must still pass.
+run "own pull request, spelled out" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- it needs its own pull request'" \
+  "$OPTIN" 2
+run "own-PR, hyphenated" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- it needs its own-PR'" \
+  "$OPTIN" 2
+run "a passing mention of an upstream pull request still passes" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on upstream pull request aws/aws-cdk#123 landing'" \
+  "$OPTIN" 0
 
 # --- the shared GATE_PERL_WORD value class, and its guard --------------------
 # Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
