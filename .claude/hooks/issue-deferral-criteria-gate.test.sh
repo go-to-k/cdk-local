@@ -689,6 +689,55 @@ nonbash_check() {
 }
 nonbash_check
 
+# --- the inline-body channel vs `--body-file` --------------------------------
+# An inline `--body` and the SAME body through `--body-file` must reach the
+# SAME verdict. They did not before `restore_inline_newlines`: `gate_segments`
+# emits one line per segment, so a multi-line inline body arrived flattened,
+# every reason terminator (`Key:` field, list item, heading, blank line) became
+# unreachable, and the whole body read as ONE reason -- folding a LATER field`s
+# text in. The MEASURED defect is a FALSE BLOCK: a legitimate `next` whose
+# `Effort:` line quotes this repo`s own "needing its own PR plus review"
+# wording. That is the first case, and it is the one the mutation probe kills.
+#
+# The last case is the OTHER direction -- a PR-shaped reason on a later line
+# must still be caught. It passed before this change too (flattening moved the
+# text, it did not hide it), so it fences the FIX against over-correcting
+# rather than fencing the defect.
+INLINE_LIMIT="gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Effort: large (L) -- a behavior change needing its own PR plus review'"
+run "an inline multi-line --body ends the reason at the next field" \
+  "$INLINE_LIMIT" "$OPTIN" 0
+printf 'Session-fit: next (not this session) -- blocked on an AWS quota increase\nEffort: large (L) -- a behavior change needing its own PR plus review\n' > "$OPTIN/inline-limit.md"
+run "...and the SAME body via --body-file reaches the same verdict" \
+  "gh issue create --title t --body-file $OPTIN/inline-limit.md" "$OPTIN" 0
+run "an inline multi-line --body still catches a PR-shaped reason on a later line" \
+  "gh issue create --title t --body 'Dup-check: searched, none
+Session-fit: next (not this session) -- it needs its own PR
+Severity: low -- x'" "$OPTIN" 2
+
+# The UNRESOLVABLE-BODY fallback is SEGMENT-scoped, like every other scan here.
+# It used to fall back to the whole command, so a `git commit -m` message that
+# QUOTES a PR-shaped line -- what the commit introducing this gate does -- was
+# read as the issue body and refused.
+run "an unresolvable body-file does not read the sibling commit message" \
+  "git commit -m 'gate: refuse a body reading
+Session-fit: next (not this session) -- it needs its own PR' && gh issue create --title t --body-file \"\$BODY\"" \
+  "$OPTIN" 0
+
+# `gh api ... --input <file>` is a body CHANNEL of its own: the REST mint the
+# gate already arms on carries the whole payload as JSON on disk, so no
+# `--body-file` / `-F` / `-f body=` arm reads it. It filed a PR-shaped `next`
+# at rc=0 before `input_body_text`. Both directions, plus the "cannot read is
+# not evidence" rule that governs every other file arm here.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$OPTIN/input-bad.json"
+printf '{"title":"t","body":"Session-fit: next (not this session) -- blocked on an AWS quota increase"}\n' > "$OPTIN/input-ok.json"
+run "gh api --input: PR-shaped body in the JSON payload" \
+  "gh api repos/o/r/issues -f title=t --input $OPTIN/input-bad.json" "$OPTIN" 2
+run "gh api --input: legitimate body in the JSON payload" \
+  "gh api repos/o/r/issues -f title=t --input $OPTIN/input-ok.json" "$OPTIN" 0
+run "gh api --input: an unreadable payload is not evidence" \
+  "gh api repos/o/r/issues -f title=t --input $OPTIN/input-missing.json" "$OPTIN" 0
+
 # --- the shared GATE_PERL_WORD value class, and its guard --------------------
 # Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
 # fail-opens here before the port, each measured rc=0 where the plain path gave

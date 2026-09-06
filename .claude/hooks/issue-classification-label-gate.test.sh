@@ -155,6 +155,21 @@ run_msg "create: no labels at all" \
 run_msg "create: severity labelled, effort missing" \
   "gh issue create -t x --body-file $BODY_BOTH --label severity:high" \
   "$TMPROOT" 2 "effort:large"
+# The inline arm was left on the retired quote-POSITION class when the rest of
+# this function moved to `$GW`, so an ANSI-C `--body` value was extracted as
+# NOTHING and the issue filed unlabelled. Measured in this repo: rc=0 before,
+# rc=2 after; the plain-quoted spelling of the same body was rc=2 throughout.
+#
+# ONE field, deliberately. With two, the whole-segment fallback at the end of
+# `segment_body_text` finds the OTHER field in the raw command text and the
+# case passes with the arm deleted -- vacuous. (The same fallback is why the
+# `-b` arm added alongside is measured-neutral here: rc=2 with and without it.
+# It stays for parity with the other gates, not as a fix, and no case claims
+# otherwise.)
+run_msg "create: ANSI-C --body value, unlabelled" \
+  "gh issue create -t x --body \$'Severity: high'" \
+  "$TMPROOT" 2 "severity:high"
+
 run_msg "create: label DISAGREES with the body" \
   "gh issue create -t x --body-file $BODY_BOTH --label severity:low --label effort:large" \
   "$TMPROOT" 2 "severity:high"

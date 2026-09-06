@@ -310,7 +310,12 @@ scan_text() { # <body text> -> 0 when the body carries a PR-shaped deferral
   # spelling `session_fit_re` accepts is load-bearing: a body that bolds one
   # field bolds them all, so a bold-blind boundary would fold the whole field
   # block into the reason.
-  local key_re='^[[:space:]]*([-*+>][[:space:]]+)?[*_]*[A-Za-z][A-Za-z_-]*[*_]*:'
+  # The NAMED sibling fields, not any `word:`. A generic key pattern also
+  # matches a URL scheme, so a reason wrapping onto a line that begins with
+  # `https://...` ended there and the PR-shaped half was never scanned
+  # (measured rc=0; the same body with `issue 700` in place of the URL gave 2).
+  # This is what the comment above already claimed the boundary was.
+  local key_re='^[[:space:]]*([-*+>][[:space:]]+)?[*_]*(Session-fit|Severity|Effort|Estimate|Notes|Dup-check)[*_]*:'
   local item_re='^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+'
   local session_fit_re='session-fit[*_]*:[*_]*(.*)$'
   case "$(shopt -p nocasematch)" in *-s*) nocase_was=1 ;; esac
@@ -384,7 +389,10 @@ EOF
       # -- an agent talking itself INTO finishing the work needs no supervision.
       # A line stating neither token (an old packed body, a `Session-fit` in
       # prose) is not a deferral decision this gate can read, so it passes.
-      if [[ $rest =~ ^[[:space:]]*next([^[:alpha:]]|$) ]]; then
+      # The KEY already accepts `**Session-fit:**`, so the VALUE must accept
+      # `**next**` too -- bolding both halves is the natural markdown, and it
+      # slipped through (measured rc=0).
+      if [[ $rest =~ ^[[:space:]]*[*_]*next([^[:alpha:]]|$) ]]; then
         reason="$rest"
         active=1
       else
@@ -521,6 +529,74 @@ heredoc_bodies_either() { # <raw spelling> <resolved path>
 # manufacture false blocks -- a title reading `Session-fit: next handling for its
 # own PR` is a title about the rule, not a deferral. pr-body-item-number-gate.sh
 # reached the same verdict from its own measurement.
+# `gate_segments` emits ONE LINE PER SEGMENT, so a newline inside a quoted
+# inline body arrives here as a SPACE (measured: `A: one\n  B: two` comes back
+# as `A: one   B: two`; only the newline is rewritten, every other byte
+# survives). `scan_text` is LINE-STRUCTURED -- the reason ends at the next
+# `Key:` field, a list item, a heading or a blank line -- so a flattened body
+# has exactly one line, every terminator is unreachable, and the whole body
+# reads as ONE reason. That is a FALSE BLOCK on a legitimate filing, and the
+# body it refuses is the one this repo tells you to write:
+#
+#   Session-fit: next (not this session) -- the integ fixture does not exist yet
+#   Effort: large (L) -- a behavior change needing its own PR plus review
+#
+# Two separate fields, the second quoted from `.claude/rules/session-report.md`
+# and from this gate`s own refusal text. Flattened, `Effort:` no longer
+# terminates the reason and the gate refuses it (measured rc=2; the same body
+# through `--body-file` gives 0).
+#
+# The fix restores the LINE STRUCTURE without widening the scan: the SEGMENT
+# still decides which command this is and which value is its body, and the raw
+# command is consulted only to look that value back up. A raw value is
+# accepted only when collapsing its newlines to spaces reproduces the extracted
+# one byte for byte, so nothing outside the segment can be substituted in.
+#
+# NOTE the env var is assigned on the PERL invocation, not before `printf`: a
+# `VAR=x printf ... | perl` assignment applies to printf, and perl then reads an
+# EMPTY value and silently restores nothing.
+# `gh api ... --input <file>`: the REST mint`s body lives in a JSON payload on
+# disk, which is a body CHANNEL none of the `--body-file` / `-F` / `-f body=`
+# arms above recognises. Extract `.body` from it. Failure at any step (no
+# `--input`, unreadable path, not JSON, no `body` key) prints nothing, which
+# the caller treats as "channel not recognised" and passes -- this gate demands
+# nothing be PRESENT, so "cannot read" is never evidence of a violation.
+input_body_text() { # <segment>
+  local f
+  f=$(printf '%s' "$1" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)--input[=\s]+($GW)/g) { print gate_unq($1), "\n"; last; }
+  ' 2>/dev/null)
+  [ -n "$f" ] || return 0
+  [ -r "$f" ] || return 0
+  jq -r '.body // empty' "$f" 2>/dev/null || true
+}
+
+restore_inline_newlines() { # <extracted body values, one per line>
+  local restored
+  restored=$(printf '%s' "$cmd" | GATE_COLLAPSED="$1" perl -0777 -ne "$GATE_PERL_WORD"'
+    my %raw;
+    my $keep = sub {
+      my ($v) = @_;
+      return unless $v =~ /\n/;
+      (my $c = $v) =~ s/\n/ /g;
+      $raw{$c} = $v unless exists $raw{$c};
+    };
+    while (/(?:^|\s)(?:--body|-b)[=\s]*($GW)/g) { $keep->(gate_unq($1)); }
+    while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
+      my $v = gate_unq($1);
+      next unless $v =~ s/^body=//;
+      next if $v =~ /^\@/;
+      $keep->($v);
+    }
+    for my $l (split /\n/, $ENV{GATE_COLLAPSED}, -1) {
+      print exists $raw{$l} ? $raw{$l} : $l, "\n";
+    }
+  ' 2>/dev/null)
+  # Fail SAFE, not open: if perl produced nothing the caller keeps the
+  # flattened text it already had, which is the pre-fix behaviour.
+  if [ -n "$restored" ]; then printf '%s' "$restored"; else printf '%s' "$1"; fi
+}
+
 segment_body_text() { # <segment>
   local seg="$1" f f_raw out="" hd have_hd
   while IFS= read -r f_raw; do
@@ -529,9 +605,16 @@ segment_body_text() { # <segment>
     # TEXT. Treat it like an unreadable path and fall back to the whole command
     # rather than refusing: unlike dup-check, this gate demands nothing be
     # PRESENT, so "cannot read" is not evidence of a violation.
+    # `$seg`, NOT `$cmd`. Falling back to the WHOLE command re-opens exactly
+    # what the segment scoping below exists to close: a `git commit -m` whose
+    # message QUOTES a PR-shaped line -- routine in this repo, the commit that
+    # introduced this gate does it -- was read as the issue body and refused.
+    # Measured: `git commit -m "<...Session-fit: next -- it needs its own
+    # PR>" && gh issue create -t t --body-file "$BODY"` gave rc=2 with `$cmd`
+    # and rc=0 with `$seg`.
     case "$f_raw" in
       *'$'*|*'`'*) out="$out
-$cmd"; continue ;;
+$seg"; continue ;;
     esac
     # BOTH spellings are kept. `f` is the path to READ; `f_raw` is the path as
     # the command SPELLS it.
@@ -563,8 +646,9 @@ $hd"
       out="$out
 $(cat "$f" 2>/dev/null || true)"
     elif [ "$have_hd" != "1" ]; then
+      # `$seg` for the same reason as the unresolvable-path arm above.
       out="$out
-$cmd"
+$seg"
     fi
   # `body=@` is matched FIRST so an `-F body=@path` is not also read as a bare
   # `-F path`. The bare `-F <path>` arm is not optional: `-F` is gh's short
@@ -612,7 +696,17 @@ $cmd"
   # strip-then-unquote order never finds it. Measured on this repo before the
   # change; the quote-inside form is the one gh documents.
   printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    # `-b` is the documented short spelling of `--body` in gh, and this scan is
+    # already scoped to the `gh issue create` SEGMENT, so it cannot collide with
+    # a `-b` belonging to some other command. Without it the gate was INERT on
+    # that spelling: measured, the same PR-shaped reason gave rc=0 through `-b`
+    # and rc=2 through `--body`. The sibling dup-check gate already had the arm,
+    # so this was a port miss rather than a decision.
+    #
+    # NOTE no apostrophes in this perl body -- it is a single-quoted shell
+    # string, and one apostrophe in a comment ends it.
     while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:^|\s)-b[=\s]*($GW)/g) { print gate_unq($1), "\n"; }
     while (/(?:^|\s)(?:-f|--field|--raw-field)[=\s]*($GW)/g) {
       my $v = gate_unq($1);
       next unless $v =~ s/^body=//;
@@ -650,7 +744,21 @@ while IFS= read -r seg; do
     fi
   fi
   body_text=$(segment_body_text "$seg")
+  # An extraction that comes back EMPTY is not evidence of a clean body -- it
+  # means no arm recognised the body CHANNEL. `--input <file>` is one: the REST
+  # mint (`gh api repos/o/r/issues`) that `GATE_RE_API_MINT` already arms on
+  # carries its whole payload as JSON on disk, and no arm above reads it.
+  # Measured: `gh api repos/o/r/issues -f title=t --input p.json` with a
+  # PR-shaped `Session-fit: next` in `p.json` filed at rc=0.
+  #
+  # Read `.body` out of it, with the same "cannot read is not evidence" rule as
+  # the `--body-file` arms: an unreadable or non-JSON file leaves `body_text`
+  # empty and the segment passes.
+  if [ -z "$body_text" ]; then
+    body_text=$(input_body_text "$seg")
+  fi
   [ -n "$body_text" ] || continue
+  body_text=$(restore_inline_newlines "$body_text")
   if scan_text "$body_text"; then
     offending_seg="$seg"
     break

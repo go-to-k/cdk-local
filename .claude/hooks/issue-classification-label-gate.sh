@@ -245,12 +245,18 @@ $cmd"
     return 0
   fi
 
-  out=$(printf '%s' "$seg" | perl -0777 -ne '
-    while (/(?:^|\s)--body[=\s]+("(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27|\S+)/g) {
-      my $v = $1;
-      $v =~ s/^["\x27]//; $v =~ s/["\x27]$//;
-      print "$v\n";
-    }' 2>/dev/null)
+  # `$GW` + `gate_unq`, like the file scan above -- this arm was left on the
+  # retired class when the rest of this function was converted, which is a
+  # half-applied refactor rather than a decision. The old class ENUMERATES
+  # where a quote may sit, so it could not see an ANSI-C value: measured,
+  # `--body $\x27Severity: high\x27` extracted nothing and the issue filed with
+  # no `severity:*` label (rc=0), while the plain-quoted spelling gave rc=2.
+  # `-b` is gh`s documented short `--body` and was missing for the same reason.
+  #
+  # NOTE no apostrophes below -- the perl body is a single-quoted SHELL string.
+  out=$(printf '%s' "$seg" | perl -0777 -ne "$GATE_PERL_WORD"'
+    while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+    while (/(?:^|\s)-b[=\s]*($GW)/g) { print gate_unq($1), "\n"; }' 2>/dev/null)
   if [ -n "$out" ]; then
     printf '%s' "$out"
     return 0

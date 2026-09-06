@@ -256,15 +256,23 @@ seg_is_api_mint() {
 # record of having searched anything.
 seg_inline_bodies() {
   printf '%s' "$1" | perl -0777 -ne "$GATE_PERL_WORD"'
-      my $Q = "\x27";
-      # --body <v> / --body=<v>, quoted either way or bare. `--body-file` does
-      # NOT match: `[=\s]` after `--body` cannot consume the `-` of `-file`.
-      while (/--body[=\s]+("([^"]*)"|${Q}([^${Q}]*)${Q}|([^\s]+))/g) {
-        print((defined($2) ? $2 : defined($3) ? $3 : $4), "\n");
-      }
-      while (/(?:^|\s)-b[=\s]+("([^"]*)"|${Q}([^${Q}]*)${Q}|([^\s]+))/g) {
-        print((defined($2) ? $2 : defined($3) ? $3 : $4), "\n");
-      }
+      # --body <v> / --body=<v>, and gh`s short `-b`, through the SAME `$GW`
+      # value class as the `-f body=` arm below. They were left on a three-arm
+      # enumeration of quote POSITIONS when the rest of this function moved,
+      # which is a half-applied refactor rather than a decision.
+      #
+      # NO measured behaviour delta here, and no test claims one: this gate
+      # fails CLOSED on an empty extraction, and every shape probed (ANSI-C
+      # `--body` / `-b`, a backslash-escaped space) reached rc=0 with the old
+      # arms too, because a later arm or the marker scan found the marker
+      # anyway. The reason to convert is the class itself -- it cannot span a
+      # quote INSIDE the value, and leaving one copy behind is how the next
+      # edit inherits it.
+      #
+      # `--body-file` still does not match: `[=\s]` after `--body` cannot
+      # consume the `-` of `-file`.
+      while (/(?:^|\s)--body[=\s]+($GW)/g) { print gate_unq($1), "\n"; }
+      while (/(?:^|\s)-b[=\s]*($GW)/g) { print gate_unq($1), "\n"; }
       # `-f body=<v>` / `--field body=<v>` and friends. The QUOTED forms come
       # first and may contain spaces -- a single-quoted `body=x Dup-check: none` is one
       # value, and a bare-token-only pattern truncated it at the first space and
