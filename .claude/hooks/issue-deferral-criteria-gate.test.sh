@@ -738,6 +738,47 @@ run "gh api --input: legitimate body in the JSON payload" \
 run "gh api --input: an unreadable payload is not evidence" \
   "gh api repos/o/r/issues -f title=t --input $OPTIN/input-missing.json" "$OPTIN" 0
 
+# Cases for the fixes an earlier round shipped UNFENCED -- each verified to go
+# red when its own line is reverted, and green otherwise.
+run "-b (gh short --body) carries a PR-shaped reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- it needs its own PR'" \
+  "$OPTIN" 2
+run "-b (gh short --body) carries a legitimate reason" \
+  "gh issue create --title t -b 'Session-fit: next (not this session) -- blocked on an AWS quota increase'" \
+  "$OPTIN" 0
+run "a BOLDED next value is read like a bolded key" \
+  "gh issue create --title t --body '**Session-fit:** **next** -- it needs its own PR'" \
+  "$OPTIN" 2
+# The reason boundary is any `Key:` line EXCEPT a URL scheme -- both halves,
+# because narrowing to the named fields fixed the URL at the cost of refusing
+# every OTHER field line, and `Note:` is one character from the `Notes:` that
+# passes.
+run "a wrapped reason is not ended by a URL scheme" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- see
+https://example.com/x it needs its own PR'" "$OPTIN" 2
+run "a sibling Note: line still ends the reason" \
+  "gh issue create --title t --body 'Session-fit: next (not this session) -- blocked on an AWS quota increase
+Note: the cleanup will get its own PR'" "$OPTIN" 0
+# The unresolvable / unreadable body fallback reads the WRITER, which lives in
+# another segment, but not an unrelated sibling command`s message.
+run "an unreadable body-file whose writer is in the command is still judged" \
+  "printf 'Session-fit: next (not this session) -- it needs its own PR\\n' > $OPTIN/nodir/b.md && gh issue create --title t --body-file $OPTIN/nodir/b.md" \
+  "$OPTIN" 2
+# `--input` goes through the same path resolution as `--body-file`: a relative
+# path is joined to the resolved cwd, and a payload written by a heredoc in the
+# SAME command is read out of it.
+printf '{"title":"t","body":"Session-fit: next (not this session) -- it needs its own PR"}\n' > "$OPTIN/rel-input.json"
+run "gh api --input: a relative payload path resolves against the cwd" \
+  "gh api repos/o/r/issues -f title=t --input rel-input.json" "$OPTIN" 2
+# RELATIVE and heredoc-written at once: the heredoc lookup is handed BOTH the
+# raw spelling and the resolved path, and only the raw one matches a command
+# that writes `hd-input.json`. Dropping either spelling makes this case red.
+run "gh api --input: a relative payload written by a heredoc in the same call" \
+  "cat > hd-input.json <<'JSON'
+{\"title\":\"t\",\"body\":\"Session-fit: next (not this session) -- it needs its own PR\"}
+JSON
+gh api repos/o/r/issues -f title=t --input hd-input.json" "$OPTIN" 2
+
 # --- the shared GATE_PERL_WORD value class, and its guard --------------------
 # Ported with the class from go-to-k/cdkd#2639. Three spellings were LIVE
 # fail-opens here before the port, each measured rc=0 where the plain path gave
