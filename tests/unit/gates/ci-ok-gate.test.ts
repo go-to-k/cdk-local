@@ -81,6 +81,41 @@ function runBody(stepName: string): string {
   return body.join('\n');
 }
 
+/**
+ * Whether a step `if:` is exempt from the unconditional-step rule.
+ *
+ * `always()` is exempt outright — the step runs on every path. `failure()` /
+ * `cancelled()` are exempt ONLY when the job carries at least one UNCONDITIONAL
+ * step: a diagnostic dump beside real work is correct code, but the same
+ * condition on a job's ONLY work skips on every green path while the job
+ * reports `success` — exactly the vacuity ci-ok cannot see.
+ *
+ * `unconditionalStepCount` is passed in because this file reads the workflow as
+ * TEXT (no YAML library here, the reason `release-please-v0.test.ts` records).
+ */
+function isExemptStepCondition(condition: string, unconditionalStepCount: number): boolean {
+  const bare = condition
+    .trim()
+    .replace(/^\$\{\{\s*/, '')
+    .replace(/\s*\}\}$/, '')
+    .trim();
+  if (bare === 'always()') return true;
+  if (bare !== 'failure()' && bare !== 'cancelled()') return false;
+  return unconditionalStepCount > 0;
+}
+
+/** Steps in a job slice that carry no `if:` of their own. */
+function unconditionalStepCount(jobSlice: string): number {
+  const openers = [...jobSlice.matchAll(/^ {6}- .*$/gm)];
+  let count = 0;
+  for (const [i, m] of openers.entries()) {
+    const from = m.index ?? 0;
+    const to = openers[i + 1]?.index ?? jobSlice.length;
+    if (!/^ {8}if:/m.test(jobSlice.slice(from, to))) count += 1;
+  }
+  return count;
+}
+
 /** Job ids, read from below `jobs:` so `on:`'s own 2-space keys cannot leak in. */
 function jobNames(): string[] {
   const yml = ci();
@@ -172,6 +207,86 @@ describe('ci-ok — the single required status check', () => {
   it('takes the results through env, not as inlined expression text', () => {
     expect(runBody('every upstream job succeeded or was skipped')).not.toContain('${{');
     expect(stepSliceForJob('ci-ok')).toContain('join(needs.*.result');
+  });
+
+  it('lets the shell exit status decide the job', () => {
+    // The cases below EXECUTE the extracted shell, so they attest that its TEXT
+    // is correct — never that the runner acts on its exit status.
+    // `continue-on-error: true` or a step-level `if:` severs that link and the
+    // job reports success having decided nothing.
+    for (const jobId of ['ci-ok', 'release-pr-not-stale']) {
+      const slice = stepSliceForJob(jobId);
+      expect(slice, `${jobId} job`).not.toMatch(/^ {4}continue-on-error:[ \t]*true$/m);
+      expect(slice, `${jobId} step`).not.toMatch(/^ {8}continue-on-error:[ \t]*true$/m);
+    }
+    // ci-ok's own gate step must carry no `if:` at all (the JOB's `always()`
+    // is the intended condition and is asserted separately).
+    expect(stepSlice('every upstream job succeeded or was skipped')).not.toMatch(/^ {8}if:/m);
+  });
+
+  it('keeps every gated job unconditional and failing', () => {
+    // Three levers let an upstream job stop contributing a real verdict while
+    // ci-ok still counts it, each landing a different `needs.*.result`:
+    //   job `if:`               -> `skipped`, which ci-ok ACCEPTS
+    //   job `continue-on-error` -> a FAILED job reports `success`
+    //   step `if:`              -> `success` with the step never executed
+    // All three give `seen == EXPECTED_UPSTREAM` and a green gate over a CI
+    // that decided nothing; the first two also read green in the Checks UI.
+    const ALLOWED_CONDITIONAL = new Set(['ci-ok', 'release-pr-not-stale']);
+    const offenders: string[] = [];
+    for (const name of jobNames()) {
+      const slice = stepSliceForJob(name);
+      if (!ALLOWED_CONDITIONAL.has(name) && /^ {4}if:/m.test(slice)) {
+        offenders.push(`${name} (job if:)`);
+      }
+      if (/^ {4}continue-on-error:[ \t]*true$/m.test(slice)) {
+        offenders.push(`${name} (job continue-on-error)`);
+      }
+      if (!ALLOWED_CONDITIONAL.has(name)) {
+        const unconditional = unconditionalStepCount(slice);
+        for (const m of slice.matchAll(/^ {8}if:[ \t]*(.+)$/gm)) {
+          if (!isExemptStepCondition(m[1] as string, unconditional)) {
+            offenders.push(`${name} (step if: ${(m[1] as string).trim()})`);
+          }
+        }
+      }
+      // NOT gated on ALLOWED_CONDITIONAL: a step-level `continue-on-error` is
+      // the job-level lever one level down — the step fails, the job reports
+      // `success`, and it reads green in the Checks UI too.
+      if (/^ {8}continue-on-error:[ \t]*true$/m.test(slice)) {
+        offenders.push(`${name} (step continue-on-error)`);
+      }
+    }
+    expect(
+      offenders,
+      `these ci.yml jobs can report a verdict ci-ok counts without earning it: ` +
+        `${offenders.join(', ')}. ci-ok accepts a SKIPPED upstream and cannot tell a ` +
+        `continue-on-error success from a real one, so any of these makes the gate green ` +
+        `over a CI that ran nothing.`
+    ).toEqual([]);
+  });
+
+  it('pins the least privilege each new job was given', () => {
+    // ci.yml has no top-level `permissions:`, so deleting either of these
+    // silently restores the repo-default token to a job that runs shell.
+    expect(stepSliceForJob('ci-ok')).toMatch(/^ {4}permissions: \{\}$/m);
+    expect(stepSliceForJob('release-pr-not-stale')).toMatch(/^ {6}contents: read$/m);
+  });
+
+  it('runs on every PR, so ci-ok can be a required check at all', () => {
+    // A `paths:`-filtered workflow does not start when nothing matches, so the
+    // required check never reports and every PR blocks forever at "Expected".
+    // `branches:` narrows the same way.
+    const header = ci().slice(0, ci().indexOf('\njobs:\n'));
+    const prBlock = /^ {2}pull_request:\n((?: {4}.*\n|\n)*)/m.exec(header);
+    expect(prBlock, 'ci.yml no longer triggers on `pull_request`').not.toBeNull();
+    const body = (prBlock as RegExpExecArray)[1] as string;
+    expect(body).not.toMatch(/^ {4}paths(-ignore)?:/m);
+    // `types:` is the same trap with a different key: narrowing it to
+    // `[opened]` means a later push creates a head sha with NO check run, so
+    // the required check sits at "Expected" on that sha forever.
+    expect(body).not.toMatch(/^ {4}types:/m);
+    expect(body).toMatch(/^ {4}branches: \[main\]$/m);
   });
 
   describe('the extracted step', () => {
