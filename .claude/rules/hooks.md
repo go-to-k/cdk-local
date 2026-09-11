@@ -1462,6 +1462,7 @@ construction.
     `.claude/rules/**`, `.claude/CLAUDE.md`, `.claude/settings.json`,
     `.github/workflows/pr-inherit-issue-labels.yml`,
     `.github/workflows/ci.yml`, `.gitignore`,
+    `.github/workflows/release-pr-staleness.yml`,
     `.github/workflows/release.yml`, `release-please-config.json`,
     `.release-please-manifest.json` and `CHANGELOG.md`
     (go-to-k/cdk-local#620,

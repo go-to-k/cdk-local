@@ -104,6 +104,12 @@ gates:
       # the #620 class, freshly reintroduced by the very fence added to close
       # it. `pr-title-check.yml` is read by nothing and stays out of scope.
       - ".github/workflows/ci.yml"
+      # release-pr-staleness.test.ts EXECUTES this workflow's shell against real
+      # git repositories, so the suite's verdict is about this file's contents.
+      # Without the entry, editing the workflow reds the suite while a `check`
+      # marker set earlier stays FRESH — a checker INPUT sitting outside the
+      # gate that guards it, the same class the entries above exist for.
+      - ".github/workflows/release-pr-staleness.yml"
       # release-please-v0.test.ts reads all three: the config's
       # bump-minor-pre-major, the manifest's 0.x version, and the release
       # workflow's publish-job guard (the two layers that keep an accidental
