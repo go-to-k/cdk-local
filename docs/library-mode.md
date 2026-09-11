@@ -42,6 +42,20 @@ The dispatcher enforces mutual exclusion across `--from-cfn-stack` and
 every registered extra flag, so users get one consistent error message
 when they pass conflicting flags.
 
+## Your `commander` major must match cdk-local's
+
+`addCommand` splices a cdk-local-built `Command` into **your** Commander
+tree, so both must resolve the same `commander` copy. If your project and
+cdk-local end up on different majors, your tree dispatches a subcommand
+built by the other major and calls internals it does not have — the
+failure is a `TypeError` deep inside `commander/lib/command.js`, not a
+version warning, and it appears at parse time rather than at install
+time.
+
+Check the version cdk-local depends on (`commander` in its
+`package.json`) and depend on the same major. `npm ls commander` /
+`pnpm why commander` should show one version.
+
 ## Rebranding the embedded commands
 
 By default the factories render cdk-local's own branding into
