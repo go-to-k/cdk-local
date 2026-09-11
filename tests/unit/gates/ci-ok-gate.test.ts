@@ -82,38 +82,50 @@ function runBody(stepName: string): string {
 }
 
 /**
- * Whether a step `if:` is exempt from the unconditional-step rule.
+ * The ONLY step `if:` this workflow is allowed to carry, keyed exactly.
  *
- * `always()` is exempt outright — the step runs on every path. `failure()` /
- * `cancelled()` are exempt ONLY when the job carries at least one UNCONDITIONAL
- * step: a diagnostic dump beside real work is correct code, but the same
- * condition on a job's ONLY work skips on every green path while the job
- * reports `success` — exactly the vacuity ci-ok cannot see.
+ * Two PREDICATE-shaped exemptions were tried here and both were holes:
  *
- * `unconditionalStepCount` is passed in because this file reads the workflow as
- * TEXT (no YAML library here, the reason `release-please-v0.test.ts` records).
+ *   1. `failure()` / `cancelled()` exempt outright. A job whose only work is
+ *      gated on `failure()` skips on every green path, reports `success`, and
+ *      ci-ok counts it — the exact vacuity this fence exists for.
+ *   2. Exempt when "some step is unconditional". Every job opens with an
+ *      unconditional `uses: actions/checkout@…`, so that predicate is TRUE for
+ *      every job by construction and (1) came straight back. Gating all five
+ *      `run:` steps of `check-build-test` while leaving the two `uses:` steps
+ *      alone yielded zero offenders.
+ *
+ * A FLOOR on unconditional `run:` steps would close (2) but still admits gating
+ * four of five. So the exemption is an exact allow-list instead: the diagnostic
+ * dump this repo really carries, and nothing else. A new gated step is a
+ * deliberate decision, made here, with a reason — and `carries no stale
+ * step-condition exemption` re-audits the list every run.
  */
-function isExemptStepCondition(condition: string, unconditionalStepCount: number): boolean {
-  const bare = condition
-    .trim()
-    .replace(/^\$\{\{\s*/, '')
-    .replace(/\s*\}\}$/, '')
-    .trim();
-  if (bare === 'always()') return true;
-  if (bare !== 'failure()' && bare !== 'cancelled()') return false;
-  return unconditionalStepCount > 0;
+const ALLOWED_STEP_CONDITIONS: { job: string; step: string; if: string }[] = [
+  {
+    // Dumps Node's crash reports when the job has ALREADY failed. It adds a
+    // gated step beside five unconditional ones and removes no work from the
+    // green path, so it cannot make a failing job report success.
+    job: 'check-build-test',
+    step: 'Dump Node diagnostic reports (on failure)',
+    if: 'failure()',
+  },
+];
+
+/** The `- name:` a step slice belongs to, or undefined for an unnamed step. */
+function stepNameAt(jobSlice: string, offset: number): string | undefined {
+  const before = jobSlice.slice(0, offset);
+  const opener = before.lastIndexOf('\n      - ');
+  if (opener === -1) return undefined;
+  const line = jobSlice.slice(opener + 1, jobSlice.indexOf('\n', opener + 1));
+  const named = /^ {6}- name: (.+)$/.exec(line);
+  return named?.[1]?.trim();
 }
 
-/** Steps in a job slice that carry no `if:` of their own. */
-function unconditionalStepCount(jobSlice: string): number {
-  const openers = [...jobSlice.matchAll(/^ {6}- .*$/gm)];
-  let count = 0;
-  for (const [i, m] of openers.entries()) {
-    const from = m.index ?? 0;
-    const to = openers[i + 1]?.index ?? jobSlice.length;
-    if (!/^ {8}if:/m.test(jobSlice.slice(from, to))) count += 1;
-  }
-  return count;
+function isAllowedStepCondition(job: string, step: string | undefined, cond: string): boolean {
+  return ALLOWED_STEP_CONDITIONS.some(
+    (a) => a.job === job && a.step === step && a.if === cond.trim()
+  );
 }
 
 /** Job ids, read from below `jobs:` so `on:`'s own 2-space keys cannot leak in. */
@@ -243,10 +255,11 @@ describe('ci-ok — the single required status check', () => {
         offenders.push(`${name} (job continue-on-error)`);
       }
       if (!ALLOWED_CONDITIONAL.has(name)) {
-        const unconditional = unconditionalStepCount(slice);
         for (const m of slice.matchAll(/^ {8}if:[ \t]*(.+)$/gm)) {
-          if (!isExemptStepCondition(m[1] as string, unconditional)) {
-            offenders.push(`${name} (step if: ${(m[1] as string).trim()})`);
+          const cond = m[1] as string;
+          const stepName = stepNameAt(slice, m.index ?? 0);
+          if (!isAllowedStepCondition(name, stepName, cond)) {
+            offenders.push(`${name} > ${stepName ?? '<step>'} (step if: ${cond.trim()})`);
           }
         }
       }
@@ -263,6 +276,25 @@ describe('ci-ok — the single required status check', () => {
         `${offenders.join(', ')}. ci-ok accepts a SKIPPED upstream and cannot tell a ` +
         `continue-on-error success from a real one, so any of these makes the gate green ` +
         `over a CI that ran nothing.`
+    ).toEqual([]);
+  });
+
+  it('carries no stale step-condition exemption', () => {
+    // An entry whose step is gone, renamed, or no longer gated is an exemption
+    // for nothing — and the next author reads it as "this shape is fine here".
+    const stale = ALLOWED_STEP_CONDITIONS.filter((a) => {
+      const jobSlice = stepSliceForJob(a.job);
+      if (!jobSlice.includes(`- name: ${a.step}`)) return true;
+      // A LITERAL line compare, not a built regex: every real condition here
+      // ends in `()`, which a `new RegExp` reads as an empty capture group —
+      // so the first cut matched `if: failure` and reported a live entry stale.
+      const stepLines = stepSlice(a.step).split('\n');
+      return !stepLines.includes(`        if: ${a.if}`);
+    }).map((a) => `${a.job} > ${a.step}`);
+    expect(
+      stale,
+      `these step-condition exemptions no longer match anything in ci.yml: ${stale.join(', ')}. ` +
+        'Remove the entry — an exemption for a step that is gone reads as permission for the shape.'
     ).toEqual([]);
   });
 
