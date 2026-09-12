@@ -162,7 +162,13 @@ describe('shadow-ready-timeout resolution (issue #265)', () => {
       );
       const cmd = addCommonEcsServiceOptions(new Command('start-service')).action(() => {});
       cmd.exitOverride();
-      cmd.parse(['node', 'cdkl', '--shadow-ready-timeout', '45000'], { from: 'user' });
+      // `from: 'user'` means the array is USER arguments — it carries no
+      // argv[0]/argv[1] prefix. Passing one made `node` and `cdkl` excess
+      // positional arguments on a command declaring no `.argument()`.
+      // Measured: commander 12 accepted them silently (they landed in
+      // `cmd.args`), commander 14 rejects with "too many arguments. Expected
+      // 0 arguments but got 2" — with or without an action handler.
+      cmd.parse(['--shadow-ready-timeout', '45000'], { from: 'user' });
       expect(cmd.opts().shadowReadyTimeout).toBe(45000);
     });
 

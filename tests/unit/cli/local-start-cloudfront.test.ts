@@ -201,7 +201,13 @@ describe('createLocalStartCloudFrontCommand — option surface', () => {
     // Options only: `parse()` would otherwise run the real start-cloudfront
     // action (issue #402).
     const fresh = withoutAction(createLocalStartCloudFrontCommand());
-    const parsed = fresh.parse(['node', 'cdkl', 'My/Dist', '--no-pull'], { from: 'user' });
+    // `from: 'user'` carries no argv[0]/argv[1] prefix, so `node` and `cdkl`
+    // were excess operands against the one declared `.argument()`. commander
+    // 12 accepted them; commander 14 calls `error()`, which only stayed
+    // invisible because `tests/setup.ts` no-ops `process.exit` — the command
+    // printed "too many arguments. Expected 1 argument but got 3." and this
+    // case passed anyway, since option parsing precedes the operand check.
+    const parsed = fresh.parse(['My/Dist', '--no-pull'], { from: 'user' });
     expect(parsed.opts().pull).toBe(false);
   });
 });
