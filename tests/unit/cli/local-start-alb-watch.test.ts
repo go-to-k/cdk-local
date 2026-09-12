@@ -72,7 +72,7 @@ describe('start-alb --watch (Phase 3 of #214)', () => {
     // throws into the test rather than calling process.exit(1).
     cmd.exitOverride();
     cmd.configureOutput({ writeOut: () => {}, writeErr: () => {} });
-    cmd.parse(['node', 'cdkl', 'start-alb', 'MyStack:WebLB', '--watch'], { from: 'user' });
+    cmd.parse(['MyStack:WebLB', '--watch'], { from: 'user' });
     expect(cmd.opts().watch).toBe(true);
 
     // Default value: a parse WITHOUT `--watch` must leave `opts().watch`
@@ -81,7 +81,7 @@ describe('start-alb --watch (Phase 3 of #214)', () => {
     const cmd2 = withoutAction(createLocalStartAlbCommand());
     cmd2.exitOverride();
     cmd2.configureOutput({ writeOut: () => {}, writeErr: () => {} });
-    cmd2.parse(['node', 'cdkl', 'start-alb', 'MyStack:WebLB'], { from: 'user' });
+    cmd2.parse(['MyStack:WebLB'], { from: 'user' });
     expect(cmd2.opts().watch).toBe(false);
   });
 });

@@ -68,9 +68,6 @@ describe('--no-logs CLI binding (Issue #227 review fix — Test G1)', () => {
     // `true` shape under today's Commander behavior; the predicate
     // mirror below locks the gate's `!== false` contract regardless.
     const opts = parseWith(createLocalStartServiceCommand, [
-      'node',
-      'cdkl',
-      'start-service',
       'MyStack:Svc',
     ]);
     expect(opts.logs).toBe(true);
@@ -81,9 +78,6 @@ describe('--no-logs CLI binding (Issue #227 review fix — Test G1)', () => {
 
   it('start-service: parse with `--no-logs` populates opts().logs=false → emulator flips streamLogs OFF', () => {
     const opts = parseWith(createLocalStartServiceCommand, [
-      'node',
-      'cdkl',
-      'start-service',
       'MyStack:Svc',
       '--no-logs',
     ]);
@@ -93,9 +87,6 @@ describe('--no-logs CLI binding (Issue #227 review fix — Test G1)', () => {
 
   it('start-alb: parse without `--no-logs` populates opts().logs=true → emulator treats this as default-on', () => {
     const opts = parseWith(createLocalStartAlbCommand, [
-      'node',
-      'cdkl',
-      'start-alb',
       'MyStack:WebLB',
     ]);
     expect(opts.logs).toBe(true);
@@ -104,9 +95,6 @@ describe('--no-logs CLI binding (Issue #227 review fix — Test G1)', () => {
 
   it('start-alb: parse with `--no-logs` populates opts().logs=false → emulator flips streamLogs OFF', () => {
     const opts = parseWith(createLocalStartAlbCommand, [
-      'node',
-      'cdkl',
-      'start-alb',
       'MyStack:WebLB',
       '--no-logs',
     ]);

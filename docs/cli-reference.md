@@ -49,6 +49,35 @@ Shared across every `cdkl` subcommand (declared in
 The `--from-cfn-stack` / `--stack-region` family is described in the
 per-command sections below.
 
+## Extra arguments are rejected, not discarded
+
+A command that takes ONE target — `invoke`, `invoke-agentcore`,
+`run-task`, `start-agentcore`, `start-cloudfront` — or none at all —
+`list`, `studio` — exits `1` with
+`error: too many arguments. Expected N arguments but got M.` when handed
+more:
+
+```console
+$ cdkl invoke MyStack:FnA MyStack:FnB
+error: too many arguments. Expected 1 argument but got 2.
+```
+
+Up to cdk-local 0.148.x the extra arguments were **silently discarded**:
+that command ran `FnA` alone and exited `0`, so it looked like both had
+run. Naming several targets was never supported by these commands; the
+second one was simply dropped. Pass one target per invocation.
+
+`start-api`, `start-alb` and `start-service` declare a variadic
+`[targets...]` and are unaffected — they accept several targets by
+design.
+
+Relatedly, a negative-number-shaped argument such as `-1` is now read as
+a VALUE rather than rejected as an unknown option, so a mistyped
+`-3000` is taken as a target name and fails later as "not found" instead
+of immediately.
+
+Both follow from the `commander` 14 upgrade.
+
 ## Interactive target selection
 
 The five run commands — `invoke`, `invoke-agentcore`, `run-task`,

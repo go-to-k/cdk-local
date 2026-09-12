@@ -45,16 +45,37 @@ when they pass conflicting flags.
 ## Your `commander` major must match cdk-local's
 
 `addCommand` splices a cdk-local-built `Command` into **your** Commander
-tree, so both must resolve the same `commander` copy. If your project and
-cdk-local end up on different majors, your tree dispatches a subcommand
-built by the other major and calls internals it does not have — the
-failure is a `TypeError` deep inside `commander/lib/command.js`, not a
-version warning, and it appears at parse time rather than at install
-time.
+tree. If your project and cdk-local resolve different commander MAJORS,
+your tree dispatches a subcommand built by the other major and calls
+internals it does not have — the failure is a `TypeError` deep inside
+`commander/lib/command.js`, not a version warning, and it arrives at
+parse time rather than at install time. Measured with a host on
+commander 15 and cdk-local on 12:
+
+```
+TypeError: subCommand._prepareForParse is not a function
+  at Command._dispatchSubcommand (commander/lib/command.js:1368)
+```
+
+Two *copies* of the SAME major are fine — commander uses `instanceof`
+only for the `.option(Option)` overload and detects argParser failures by
+`err.code`, so nothing depends on object identity across the boundary.
+What must match is the major.
+
+The type layer does not save you either way, and it does not fully warn
+you: cdk-local's published typings import `Command` and `Option` from
+`commander`, so the package enters your type graph. Commander's typings
+declare no `private` / `protected` members, so the two `Command` types
+are compared structurally — a NEWER `Command` is assignable where an
+older one is expected (it is a superset), while the reverse is not.
+Measured on that same 15-vs-12 pair: 8 errors, all of the shape
+`Type 'Command' is missing the following properties from type 'Command':
+saveStateBeforeParse, restoreStateBeforeParse, helpGroup, commandsGroup`.
+So a mismatch may typecheck in one direction and fail in the other.
 
 Check the version cdk-local depends on (`commander` in its
 `package.json`) and depend on the same major. `npm ls commander` /
-`pnpm why commander` should show one version.
+`pnpm why commander` should show one major.
 
 ## Rebranding the embedded commands
 
