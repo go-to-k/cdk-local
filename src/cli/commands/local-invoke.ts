@@ -638,7 +638,14 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-layers-`)
   );
   for (const layer of layers) {
-    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
+    // `verbatimSymlinks: true` (issue #727): a layer's RELATIVE symlink
+    // (`bin/rel-link -> real.sh`, the shape a build tool emits for a shared
+    // binary) must arrive as the same relative link. The default rewrites
+    // the target to the ABSOLUTE path of the source on the host, which is
+    // dangling inside the container, where only this tmpdir is mounted.
+    // The contract this call relies on is spelled out beside the same call
+    // in `local-start-api.ts`; keep the two in sync.
+    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true, verbatimSymlinks: true });
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },
