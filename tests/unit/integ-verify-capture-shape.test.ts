@@ -107,6 +107,9 @@ const CANONICAL_INVOKE_CAPTURE = `invoke_capture() {
  * silently widen to a fixture whose copy nobody compared against the
  * canonical text. Add a name when a fixture adopts the helper.
  */
+/** Any `*capture*` function definition, in any spelling, so a sibling helper cannot appear unfenced. */
+const CAPTURE_LIKE_DEFINITION = /^([A-Za-z_0-9]*capture[A-Za-z_0-9]*)\s*\(\)\s*\{/gim;
+
 const CAPTURE_FIXTURES = [
   'local-invoke',
   'local-invoke-agentcore',
@@ -456,6 +459,12 @@ describe('classifyCaptureShape', () => {
     expect(d.hasCanonicalCaptureBlock).toBe(false);
   });
 
+  it('recognises a capture-like helper definition in any spelling (the sibling-definition fence)', () => {
+    const names = (src: string) => [...src.matchAll(CAPTURE_LIKE_DEFINITION)].map((m) => m[1]);
+    expect(names('capture() {\nmyCapture () {\nCapture(){\ncapture_all() {\n')).toEqual(['capture', 'myCapture', 'Capture', 'capture_all']);
+    expect(names('echo "capture() {"\n  capture() {\n')).toEqual([]);
+  });
+
   it('does not read the definition line as a call', () => {
     const c = classifyCaptureShape(`${PIPEFAIL}${CANONICAL_CAPTURE}`);
     expect(c.definesCapture).toBe(true);
@@ -534,7 +543,7 @@ describe('tree-wide (issue #733)', () => {
     }
     // Nothing else in the tree defines a capture-like helper without the fence knowing.
     const others = fixtures
-      .flatMap((f) => [...f.content.matchAll(/^([A-Za-z_0-9]*capture[A-Za-z_0-9]*)\s*\(\)\s*\{/gim)].map((m) => `${f.name}:${m[1]}`))
+      .flatMap((f) => [...f.content.matchAll(CAPTURE_LIKE_DEFINITION)].map((m) => `${f.name}:${m[1]}`))
       .filter((x) => !/:(capture|capture_all|invoke_capture)$/.test(x));
     expect(others).toEqual([]);
   });
@@ -568,16 +577,23 @@ describe('tree-wide (issue #733)', () => {
       const lines = f.content.split('\n');
       const created = lines.findIndex((l) => /^\s*CDKL_STDERR="\$\(mktemp\)"/.test(l));
       expect(created, `${f.name}: CDKL_STDERR is never created`).toBeGreaterThanOrEqual(0);
+      // Both function shapes: multi-line `name() {` ... `}` and the one-line
+      // `name() { ...; }` that `local-list` / `local-studio` write.
       const removers = new Set(
-        [...f.content.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\n([\s\S]*?)\n\}/gm)]
+        [...f.content.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{([^\n]*\}\s*$|\n[\s\S]*?\n\})/gm)]
           .filter((m) => /rm -f[^\n]*\$\{CDKL_STDERR\}/.test(m[2]!))
           .map((m) => m[1]!),
       );
+      let armed = 0;
       lines.forEach((l, k) => {
         if (k <= created || /^\s*#/.test(l) || !/^\s*trap\s+/.test(l) || !/\bEXIT\b/.test(l) || /^\s*trap\s+-\s/.test(l)) return;
+        armed++;
         const ok = /\$\{CDKL_STDERR\}/.test(l) || [...removers].some((fn) => new RegExp(`\\b${fn}\\b`).test(l));
         if (!ok) offenders.push(`${f.name}/verify.sh:${k + 1}: ${l.trim()}`);
       });
+      // A fixture that never arms an EXIT trap after the mktemp leaks the
+      // file every run and would otherwise pass this check vacuously.
+      if (armed === 0) offenders.push(`${f.name}/verify.sh: no EXIT trap armed after CDKL_STDERR is created`);
     }
     expect(offenders).toEqual([]);
   });
