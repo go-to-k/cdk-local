@@ -67,21 +67,27 @@ CODE_BASE_IMAGE="public.ecr.aws/docker/library/python:3.12-slim"
 # fixture the EXIT trap then destroys the stack, taking the evidence too.
 #
 # `capture` runs the command with its exit status captured EXPLICITLY, so
-# `set -e` never fires. On a non-zero exit it prints the status and the tail
-# of the captured stderr, then still emits the (possibly empty) last stdout
-# line, so the assertion runs, FAILS, and prints its own diagnostic -- with
-# the evidence in the log. On the happy path it emits the last NON-BLANK line of
-# stdout with stderr suppressed. That differs from the old shape only when stdout
-# ends in blank lines: the old shape yielded an empty string there, this yields
-# the last non-blank line.
+# `set -e` never fires. On a non-zero exit it prints the status, the last
+# stdout line and the tail of the captured stderr, and emits NOTHING on
+# stdout -- the assertion still runs and FAILS with its own text, and a
+# response that happened to look right never passes a failed invoke (the old
+# shape's one merit, kept; issue #733). On the happy path it emits the last
+# NON-BLANK line of stdout with stderr suppressed. That differs from the old
+# shape only when stdout ends in blank lines: the old shape yielded an empty
+# string there, this yields the last non-blank line. The stderr file is
+# trap-held on purpose (`local-invoke` asserts on its contents). Every copy
+# of this function is byte-identical; the fence is
+# tests/unit/integ-verify-capture-shape.test.ts.
 CDKL_STDERR="$(mktemp)"
 capture() {
   local out rc=0
   out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
     echo "[verify] captured stderr (last 20 lines):" >&2
     tail -20 "${CDKL_STDERR}" >&2
+    return 0
   fi
   printf '%s\n' "${out}" | tail -1
 }
@@ -94,8 +100,10 @@ capture_all() {
   out="$("$@" 2>"${CDKL_STDERR}")" || rc=$?
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] command exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
     echo "[verify] captured stderr (last 20 lines):" >&2
     tail -20 "${CDKL_STDERR}" >&2
+    return 0
   fi
   printf '%s\n' "${out}"
 }
