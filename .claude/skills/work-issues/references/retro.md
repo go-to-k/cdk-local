@@ -78,19 +78,21 @@ two findings.
   `next`, list the files its fix touches; if any was read this run it is
   `now` (`.claude/rules/session-report.md`: `now` is the default, and the
   maintainer's wrap-time challenge on this has promoted every time).
+- **Count the (b)s.** `.claude/rules/session-report.md`'s reason (b) — cold
+  AND heavy — must stay rare; more than one (b) among this run's filings
+  means re-classify all but the strongest as `now`.
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target (one hit named four files, three cited as precedent).
   A SHARED BASENAME (`verify.sh`, `package.json`) matches every sibling
-  directory at once — measured 2026-09-02, three deferrals produced 27 hits
-  naming nine fixtures. Read such a hit as a DIRECTORY question ("which of the
-  sites this issue lists did the run open?"), never as a file one. Do the item
-  now, or re-classify it in the issue body with the reason.
+  directory at once (2026-09-02: three deferrals, 27 hits, nine fixtures);
+  read such a hit as a DIRECTORY question ("which of the sites this issue
+  lists did the run open?"). Do the item now, or re-classify it in the issue
+  body with the reason.
 - **Re-read the REASON, not just the files — when a hit CONTRADICTS it, the
   BODY is the stale side.** A reason anchored to the filing session's own
-  state goes false while the decision it justified still stands. Re-reading an
-  expired premise is not re-litigation — keeping a `next` alive on one is.
-  `.claude/rules/session-report.md` holds the shape and the incidents. Correct
-  the body.
+  state goes false while the decision it justified still stands; re-reading
+  an expired premise is not re-litigation — keeping a `next` alive on one is
+  (`.claude/rules/session-report.md` holds the incidents). Correct the body.
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
@@ -119,7 +121,7 @@ Walk the session and collect, each with its concrete instance:
 3. **Steps you had to invent** because the skill is silent — the next run would
    re-invent them.
 4. **Right instruction, wrong place** — done, but a step too late (claim after
-   triage; rebase found after the phantom diff).
+   triage).
 5. **Followed it and still paid** — text obeyed, retry happened anyway.
 
 **No evidence, no edit.** A clean run's output is one wrap line
@@ -127,8 +129,8 @@ Walk the session and collect, each with its concrete instance:
 "this would be nice" stops being read to the bottom, where §9 and §10 live.
 
 **And evidence you were HANDED is not evidence you VERIFIED.** The observation
-usually survives the hand-off intact; the CAUSAL STORY attached to it does
-not — a plausible mechanism is cheap to write and costs a command to check.
+survives the hand-off; the CAUSAL STORY attached to it often does not — a
+plausible mechanism is cheap to write and costs a command to check.
 Resolve the mechanism against the file before writing it up — the line, not
 the belief about the line (2026-09-03: an orchestrator handed a lane "a leaked
 `.markgate-pr-review-sha` would have merged a higher-tier PR" — reading the
@@ -161,8 +163,8 @@ through reviewers at whatever tier its SIZE gives, with no docs down-bias.
 
 Every run appending one more bullet is how a long skill becomes an unread one.
 
-- Put the fix **in the step where it fires** — a claiming lesson belongs in §4.
-  Gotchas is for traps that span steps, not a run log.
+- Put the fix **in the step where it fires** — a claiming lesson belongs in §4;
+  gotchas is for traps that span steps, not a run log.
 - **Amend the sentence that was wrong** rather than adding a sibling — two
   near-duplicate bullets blunt each other.
 - **Carry the evidence inline** (date, issue / PR number, what happened) — but

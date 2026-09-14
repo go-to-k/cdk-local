@@ -46,19 +46,19 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
   and `Effort` / `Estimate` are what a future session budgets from.
 - **N sites of one root cause is ONE issue and ONE PR, never N issues** —
   split into N, each site pays the full fixed cost for the same edit. Two
-  boundaries: a sweep whose RESIDUE needs a NEW integ fixture is a genuine
-  `next` — `.claude/rules/session-report.md`'s reason (a); (b) is the only
-  other one a residue can take, its files being loaded, so never (c) (file an
-  umbrella naming every site, say which sites this lane DID close); and sweep
+  boundaries: a sweep whose RESIDUE waits on EXTERNAL INPUT is a genuine
+  `next` — `.claude/rules/session-report.md`'s reason (a), the only one a
+  residue can take, its files being loaded (a fixture it still needs is
+  written NOW); when (a) holds, file an umbrella naming every site and say
+  which sites this lane DID close; and sweep
   the same ROOT CAUSE, not the same AREA — the test is
   whether a single sentence describes the fix at every site.
   **Say WHY in the criteria's terms, not the PR's.** The first boundary read
   "a sweep that would make the PR unreviewable" until 2026-09-05 — a spelling
   `.claude/hooks/issue-deferral-criteria-gate.sh` refuses, so this file blessed
   what the gate blocks (the same fix as go-to-k/cdkd#2619; three repos run this
-  skill and must answer it alike). Review size is the SIGNAL; under it is
-  verification the residue needs and this lane is not already paying. Else the
-  residue is `now`.
+  skill and must answer it alike). Review size is the SIGNAL; under it must
+  be external input the residue waits on. Else the residue is `now`.
 - **A mechanical sweep is not verified by a PARSE — RUN every site you
   converted.** `bash -n` and the typechecker see neither of the two ways a
   sweep dies at every site at once (both hit in the go-to-k/cdk-local#603
@@ -215,11 +215,13 @@ gh issue create -t 'fix(local): ...' \
 
 ### 5-c. `Session-fit: next` must NAME the next session's verification
 
-**`now` is the default; `next` needs one of the three reasons
-`.claude/rules/session-report.md` enumerates** (a NEW integ fixture to write /
-external input / a COLD subsystem). Once the first two are excluded, the
-CONTEXT TEST decides: list the files the fix touches or must read; if this
-session read, edited or reviewed ANY of them, the item is `now`. The
+**`now` is the default; `next` needs one of the two reasons
+`.claude/rules/session-report.md` enumerates** (external input / COLD AND
+HEAVY). Once external input is excluded, the CONTEXT TEST decides: list the
+files the fix touches or must read; if this session read, edited or reviewed
+ANY of them, the item is `now` — and so is anything that compounds if left
+loose (an integ fixture the fix still needs is written HERE, while the
+subsystem is loaded). The
 maintainer's wrap-time "cheaper to do it here, with the context loaded?" has
 flipped every item it was asked about; this paragraph asks it in advance.
 
@@ -242,8 +244,9 @@ naming the command is hard, that difficulty IS the finding, usually one of:
   `verify.sh` calls the upstream `cdk deploy` (why `/run-integ` pre-flights
   `which cdk` and `aws sts get-caller-identity` for those).
 - **The verifier does not exist yet**, and writing it is most of the work —
-  `.claude/rules/session-report.md`'s reason (a), and right BECAUSE you could
-  name what is missing.
+  write it NOW while the subsystem is loaded (an unwritten fixture is the
+  loose end that compounds); `next` only under
+  `.claude/rules/session-report.md`'s reason (a) or (b).
 - **You cannot name it at all** — then nobody can confirm the fix later
   either; not a deferral but an unbounded one.
 
@@ -270,7 +273,7 @@ emulated path. Review caught this; nothing in the flow did.
   `unreviewable` included.
 - **A reason about THIS SESSION's own state is legal only as the EXPIRY
   event of a `next` reason, and it EXPIRES** — "held by another open PR's
-  diff" is reason (b) ending at that merge; "no integ run budgeted here" and
+  diff" is reason (a) ending at that merge; "no integ run budgeted here" and
   "no overlap with this session's lanes" are no longer reasons at all (the
   context test decides on files READ, not edited). It goes false silently
   while the decision it justified still stands, and §10-0's promotion check

@@ -159,7 +159,7 @@ const MIN_REFERENCE_FILES = 6;
 // The `now`-by-default pass first lapsed this floor by 113 B (retro.md's
 // promotion bullet is a non-leader addition, charged in full) and PAID rather
 // than raised, per section 10-c: three retro.md narratives compressed to their
-// citations in the same commit. The floor is unchanged and the margin is 108 B
+// citations in the same commit. The floor is unchanged and the margin is 10 B
 // (MEASURED's comment states the baseline; its failure message carries the
 // live figure).
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
@@ -204,8 +204,14 @@ const MEASURED: Record<
     // review rounds folded in; measured at the sha pushed: corpus 150,144,
     // largest 30,752, so `corpus - largest` = 119,392 -- 108 B under the
     // floor. The next non-leader addition must be paid for in its own file.
-    corpusBytes: 150_144,
-    largest: { file: 'implement.md', bytes: 30_752 },
+    // The follow-up that dropped "a NEW fixture" as a `next` reason (two
+    // reasons now: external input / cold AND heavy; `Severity: high` and
+    // loose ends are `now`) grew the leader, implement.md 30,752 -> 30,936,
+    // and retro.md by a (b)-counting bullet paid inside retro.md by three
+    // trims: corpus 150,426, `corpus - largest` 119,490 -- 10 B under the
+    // floor. The next non-leader addition must be paid for in its own file.
+    corpusBytes: 150_426,
+    largest: { file: 'implement.md', bytes: 30_936 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

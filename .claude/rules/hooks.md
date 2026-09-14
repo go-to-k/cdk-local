@@ -447,8 +447,9 @@ The hooks split into five classes:
   "review of a larger diff" among the things to defer on — and a gate
   must not contradict its host repo's rules. cdkd hit the same tension
   and resolved it the other way: review size is the SIGNAL you notice,
-  not the criterion; underneath it is verification the residue needs and
-  this lane is not already paying. Both passages were reworded in the
+  not the criterion; underneath it must be external input the residue
+  waits on (once "verification the residue needs", retired when a NEW
+  fixture stopped being a `next` reason). Both passages were reworded in the
   same commit (the umbrella, the named sites and the ROOT-CAUSE boundary
   kept verbatim; Calibration now files review cost under `Effort` as a
   reason to SPLIT the PR), so the rules and the gate agree — and three

@@ -34,8 +34,8 @@
 # instead: a `next` line whose REASON is PR-SHAPED. Everything else passes
 # untouched, including every legitimate `next` this repo documents --
 #
-#   Session-fit: next (not this session) -- a NEW integ fixture must be written
 #   Session-fit: next (not this session) -- blocked on an upstream fix landing
+#   Session-fit: next (not this session) -- waits on a quota raise in the account
 #   Session-fit: next (not this session) -- verified by `/run-integ
 #     local-start-api-watch` on an arm64 host, which a fresh session has
 #
@@ -59,11 +59,12 @@
 # REVERSED 2026-09-05, in the commit that carries this line. cdkd hit the
 # identical tension and resolved it the OTHER way (go-to-k/cdkd#2619): the gate
 # keeps `unreviewable` and the DOC is reworded, because review size is the
-# SIGNAL you notice, not the criterion. Underneath it is verification the
-# residue needs and this lane is not already paying -- which the `next` criteria
-# list already contains. Both passages were rewritten alongside: §5's bullet
+# SIGNAL you notice, not the criterion. Underneath it must be external input
+# the residue waits on -- session-report.md's reason (a) (it once read
+# "verification the residue needs", retired when a NEW fixture stopped being a
+# `next` reason). Both passages were rewritten alongside: §5's bullet
 # read "a sweep whose residue carries its own verification is a genuine `next`"
-# (now "needs a NEW integ fixture" -- session-report.md's reason (a); the
+# (now "`next` only on external input" -- session-report.md's reason (a); the
 # umbrella, the named sites and both drift tripwires kept verbatim), and
 # Calibration now says review cost argues for SPLITTING the PR and belongs under
 # `Effort`, not for ending the session. Three repos running one skill must not
@@ -971,19 +972,20 @@ EOF
   echo "    \`local-*\` fixture needing only Docker, a \`vp test run <path>\""
   echo "    assertion, an ordinary \`gh\` query) -- and RUNNING an existing"
   echo "    integ is never a deferral reason (median 85 s over 268 rows)"
-  echo "  - reason (a): a NEW integ fixture must be WRITTEN and writing it is"
-  echo "    most of the work (a unit case never qualifies; an integ that FAILS"
-  echo "    is an Estimate line, not a reason)"
-  echo "  - reason (b): external input -- an upstream fix, a quota, a host or"
-  echo "    account this session cannot reach, a maintainer decision already"
-  echo "    asked through AskUserQuestion and unanswered"
-  echo "  - reason (c): a COLD subsystem -- nothing the fix touches or must read"
-  echo "    was read this session, and no \`now\` criterion fires"
-  echo "  - a SWEEP whose RESIDUE needs a NEW integ fixture is reason (a) -- file"
+  echo "  - reason (a): external input -- an upstream fix, a quota, a host or"
+  echo "    account this session cannot reach, a file held by another lane's"
+  echo "    OPEN PR, a maintainer decision already asked through"
+  echo "    AskUserQuestion and unanswered"
+  echo "  - reason (b): COLD AND HEAVY -- nothing the fix touches or must read"
+  echo "    was read this session, no \`now\` criterion fires, and doing it"
+  echo "    here is clearly worse than fresh (rare; cold alone is \`now\`)"
+  echo "  - a NEW integ fixture the fix needs is WRITTEN NOW, never a reason;"
+  echo "    an integ that FAILS is an Estimate line, not a reason"
+  echo "  - a SWEEP whose RESIDUE waits on external input is reason (a) -- file"
   echo "    an umbrella naming every site, and say which sites this lane DID"
   echo "    close (implement.md section 5). Review size is the signal you"
   echo "    noticed, and \`unreviewable\` is refused here for that reason --"
-  echo "    name the fixture the residue needs, or it is a \`now\`."
+  echo "    name the input the residue waits on, or it is a \`now\`."
   echo ""
   echo "And nothing is a \`next\` inside a cross-repo scope the user framed as"
   echo "one session. If none of the above fires, this is a \`now\`: ask what the"
