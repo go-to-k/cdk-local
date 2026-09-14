@@ -217,7 +217,12 @@ Read this before adding, moving, or splitting a module under `src/`.
   re-raise them ABOVE the relay (the policy is defined positively, so it
   withholds anything that is not a parsed service response — including text
   cdk-local wrote itself)),
-  rie-client, intrinsic-image, runtime-image, target-lister
+  rie-client, intrinsic-image, runtime-image, layer-tree-copy
+  (go-to-k/cdk-local#727 — `copyLayerTreeLastWins`, the ONE layer-merge copy both
+  `invoke` and `start-api` call: `cpSync` for everything but symlinks, which
+  are then placed by hand last-wins with their own target strings; its doc
+  comment records why a bare `verbatimSymlinks: true` was wrong in both
+  directions), target-lister
   (`cdkl list` target enumeration), target-picker (interactive arrow-key
   target selection via `@clack/prompts` when a target is omitted in a TTY),
   agentcore-resolver (`AWS::BedrockAgentCore::Runtime` target resolution +

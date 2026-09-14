@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -23,6 +23,7 @@ import {
 } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
+import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
@@ -638,14 +639,12 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-layers-`)
   );
   for (const layer of layers) {
-    // `verbatimSymlinks: true` (issue #727): a layer's RELATIVE symlink
-    // (`bin/rel-link -> real.sh`, the shape a build tool emits for a shared
-    // binary) must arrive as the same relative link. The default rewrites
-    // the target to the ABSOLUTE path of the source on the host, which is
-    // dangling inside the container, where only this tmpdir is mounted.
-    // The contract this call relies on is spelled out beside the same call
-    // in `local-start-api.ts`; keep the two in sync.
-    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true, verbatimSymlinks: true });
+    // Merged in template order with AWS's "last layer wins" semantic, mode
+    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+    // the two ways a bare `cpSync` breaks it, are written once on
+    // `copyLayerTreeLastWins` (issue #727); `local-start-api.ts`'s merge is
+    // the same call.
+    copyLayerTreeLastWins(layer.assetPath, tmpDir);
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },
