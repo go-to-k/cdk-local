@@ -61,9 +61,10 @@
 # keeps `unreviewable` and the DOC is reworded, because review size is the
 # SIGNAL you notice, not the criterion. Underneath it is verification the
 # residue needs and this lane is not already paying -- which the `next` criteria
-# list already contains. Both passages were rewritten alongside: §5's bullet now
-# reads "a sweep whose residue carries its own verification is a genuine `next`"
-# (the umbrella, the named sites and both drift tripwires kept verbatim), and
+# list already contains. Both passages were rewritten alongside: §5's bullet
+# read "a sweep whose residue carries its own verification is a genuine `next`"
+# (now "needs a NEW integ fixture" -- session-report.md's reason (a); the
+# umbrella, the named sites and both drift tripwires kept verbatim), and
 # Calibration now says review cost argues for SPLITTING the PR and belongs under
 # `Effort`, not for ending the session. Three repos running one skill must not
 # answer this differently: a divergence here is not local colour, it is one rule
@@ -970,16 +971,19 @@ EOF
   echo "    \`local-*\` fixture needing only Docker, a \`vp test run <path>\""
   echo "    assertion, an ordinary \`gh\` query) -- and RUNNING an existing"
   echo "    integ is never a deferral reason (median 85 s over 268 rows)"
-  echo "  - what the Calibration paragraph calls genuinely expensive: WRITING"
-  echo "    a new fixture, an integ that FAILS, or a verifier bound to a host"
-  echo "    / account this session cannot reach"
-  echo "  - external input: an upstream fix, a maintainer decision, a quota"
-  echo "  - a SWEEP whose RESIDUE carries its own verification -- file an"
-  echo "    umbrella naming every site, and say which sites this lane DID"
-  echo "    close (implement.md section 5). State it in the CRITERIA's terms:"
-  echo "    review size is the signal you noticed, and \`unreviewable\` is"
-  echo "    refused here for that reason -- name the verification the residue"
-  echo "    needs and this lane is not already paying, or it is a \`now\`."
+  echo "  - reason (a): a NEW integ fixture must be WRITTEN and writing it is"
+  echo "    most of the work (a unit case never qualifies; an integ that FAILS"
+  echo "    is an Estimate line, not a reason)"
+  echo "  - reason (b): external input -- an upstream fix, a quota, a host or"
+  echo "    account this session cannot reach, a maintainer decision already"
+  echo "    asked through AskUserQuestion and unanswered"
+  echo "  - reason (c): a COLD subsystem -- nothing the fix touches or must read"
+  echo "    was read this session, and no \`now\` criterion fires"
+  echo "  - a SWEEP whose RESIDUE needs a NEW integ fixture is reason (a) -- file"
+  echo "    an umbrella naming every site, and say which sites this lane DID"
+  echo "    close (implement.md section 5). Review size is the signal you"
+  echo "    noticed, and \`unreviewable\` is refused here for that reason --"
+  echo "    name the fixture the residue needs, or it is a \`now\`."
   echo ""
   echo "And nothing is a \`next\` inside a cross-repo scope the user framed as"
   echo "one session. If none of the above fires, this is a \`now\`: ask what the"

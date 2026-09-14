@@ -68,7 +68,8 @@ done
 rm -f /tmp/run-touched.$$
 ```
 
-Pipe the loop through `sort -u`: a body naming a file twice prints two findings.
+Pipe the loop through `sort -u`: a body naming a file twice otherwise prints
+two findings.
 
 - **The diff is a LOWER bound on what this run loaded — run the context test
   on every `next` as well.** The query sees files the run EDITED; the run also
@@ -133,8 +134,8 @@ the belief about the line (2026-09-03: an orchestrator handed a lane "a leaked
 `.markgate-pr-review-sha` would have merged a higher-tier PR" — reading the
 condition `pr-review-gate.sh`'s pass arm tests showed the leak plainly BLOCKS;
 the observation was real, the consequence invented). Read the CONDITION, not
-a line number. It arrives from the party a lane trusts most, and prose is the
-one artifact no gate executes — which is why §10-d sends a skill-only PR
+a line number. This error arrives from the party a lane trusts most, and
+prose is the one artifact no gate executes — which is why §10-d sends a skill-only PR
 through reviewers at whatever tier its SIZE gives, with no docs down-bias.
 
 ### 10-b. Where the fix belongs — pick ONE
@@ -185,9 +186,9 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   carries ALL of the run's lessons for that repo, not one PR per lesson** (the
   gate cycle is the per-PR cost). Landing in one repo is how they drift.
   **Filing mirror issues instead is a WHOLE-REMAINDER exception, not the
-  fallback of first resort**: session budget is not a `next` reason
-  (`.claude/rules/session-report.md`), so only on external input; then file
-  into EVERY remaining repo in ONE turn, each naming
+  fallback of first resort** — session budget is not a `next` reason
+  (`.claude/rules/session-report.md`), so only external input qualifies. Then
+  file into EVERY remaining repo in ONE turn, each naming
   the other filings plus the repo already landed in (each with the
   `Session-fit` line, in English, per §4). Partial filing manufactures
   duplicates: go-to-k/cdk-local#531 mirrored a SUBSET of go-to-k/cdk-local#528

@@ -159,8 +159,9 @@ const MIN_REFERENCE_FILES = 6;
 // The `now`-by-default pass first lapsed this floor by 113 B (retro.md's
 // promotion bullet is a non-leader addition, charged in full) and PAID rather
 // than raised, per section 10-c: three retro.md narratives compressed to their
-// citations in the same commit. The floor is unchanged; MEASURED's failure
-// message carries the live margin.
+// citations in the same commit. The floor is unchanged and the margin is 108 B
+// (MEASURED's comment states the baseline; its failure message carries the
+// live figure).
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -199,9 +200,12 @@ const MEASURED: Record<
     // now name the rule's reasons (part-funded by compressing the
     // go-to-k/cdk-local#560 narrative beside them); retro.md 10-0 gained the
     // read-set-is-wider-than-the-diff promotion bullet, paid inside retro.md
-    // by three narrative compressions so the floor below did not move.
-    corpusBytes: 150_052,
-    largest: { file: 'implement.md', bytes: 30_688 },
+    // by three narrative compressions so the floor below did not move. Two
+    // review rounds folded in; measured at the sha pushed: corpus 150,144,
+    // largest 30,752, so `corpus - largest` = 119,392 -- 108 B under the
+    // floor. The next non-leader addition must be paid for in its own file.
+    corpusBytes: 150_144,
+    largest: { file: 'implement.md', bytes: 30_752 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

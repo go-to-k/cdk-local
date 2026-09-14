@@ -47,9 +47,10 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
 - **N sites of one root cause is ONE issue and ONE PR, never N issues** —
   split into N, each site pays the full fixed cost for the same edit. Two
   boundaries: a sweep whose RESIDUE needs a NEW integ fixture is a genuine
-  `next` — `.claude/rules/session-report.md`'s reason (a), the only one a
-  residue can take (file an umbrella naming every site, say which sites this
-  lane DID close); and sweep the same ROOT CAUSE, not the same AREA — the test is
+  `next` — `.claude/rules/session-report.md`'s reason (a); (b) is the only
+  other one a residue can take, its files being loaded, so never (c) (file an
+  umbrella naming every site, say which sites this lane DID close); and sweep
+  the same ROOT CAUSE, not the same AREA — the test is
   whether a single sentence describes the fix at every site.
   **Say WHY in the criteria's terms, not the PR's.** The first boundary read
   "a sweep that would make the PR unreviewable" until 2026-09-05 — a spelling
@@ -214,13 +215,13 @@ gh issue create -t 'fix(local): ...' \
 
 ### 5-c. `Session-fit: next` must NAME the next session's verification
 
-**`now` is the default, and the CONTEXT TEST comes before the decision.** List
-the files the fix touches; if this session has already read, edited or
-reviewed ANY of them, the item is `now` — `next` is reserved for the three
-reasons `.claude/rules/session-report.md` enumerates (a NEW verifier to write
-/ external input / a COLD subsystem). The maintainer's wrap-time "cheaper to
-do it here, with the context loaded?" has flipped every item it was asked
-about; this paragraph asks it in advance.
+**`now` is the default; `next` needs one of the three reasons
+`.claude/rules/session-report.md` enumerates** (a NEW integ fixture to write /
+external input / a COLD subsystem). Once the first two are excluded, the
+CONTEXT TEST decides: list the files the fix touches or must read; if this
+session read, edited or reviewed ANY of them, the item is `now`. The
+maintainer's wrap-time "cheaper to do it here, with the context loaded?" has
+flipped every item it was asked about; this paragraph asks it in advance.
 
 **Before writing `Session-fit: next`, NAME the command the next session will
 run to verify the fix — and say that a fresh session will be able to run it.**

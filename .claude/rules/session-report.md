@@ -127,8 +127,9 @@ decided first; (c) is what the test decides.
   `Effort: large`) must be WRITTEN and writing it is most of the work — a
   unit case never qualifies, every fix writes one; (b) external input (a
   quota, an upstream fix, a host this machine is not — the arm64 case below —
-  or a maintainer decision already asked through `AskUserQuestion` and
-  unanswered; a routine call is yours to make); or (c) the subsystem is COLD
+  a file held by another lane's OPEN PR, or a maintainer decision already
+  asked through `AskUserQuestion` and unanswered; a routine call is yours to
+  make); or (c) the subsystem is COLD
   — nothing the fix touches or must read was read this session AND no `now`
   criterion fires. **Nothing about the SESSION
   is a reason**: its length, the context left, "it has done enough", a wrap
@@ -172,8 +173,10 @@ the vocabulary alongside the sibling repos.
 **A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive
 part is the EVIDENCE behind it — the repro you built, what you watched actually
 happen, the number you measured — and that is exactly what an issue body cannot
-carry cheaply. If you must defer it anyway on reason (a) or (b), put the
-EVIDENCE in the issue body, not just the diagnosis.
+carry cheaply — unless that evidence is already PERSISTED in the repo (a
+committed fixture), when (c) applies as usual. If you must defer it anyway on
+reason (a) or (b), put the EVIDENCE in the issue body, not just the
+diagnosis.
 
 **A reason about the FILING SESSION's own STATE expires when that session
 does.** It is a different failure from the one `/work-issues`
@@ -224,11 +227,11 @@ have; on amd64 they never emulate, so a run there cannot see the fault.
 
 **`Session-fit: next` is not on the menu inside a cross-repo scope.** When the
 user framed the work as "do this across the repos in one session", anything
-discovered inside that scope is `now`, and three tells force it: (a) you are
+discovered inside that scope is `now`, and three tells force it: (1) you are
 about to file the SAME issue body in more than one repo, which is the split
-the framing exists to end and not triage; (b) the fix is mechanical and its
+the framing exists to end and not triage; (2) the fix is mechanical and its
 evidence is live right now, with the repro built, the files open, and a gate
-cycle already running; (c) the user already said "finish it here" for the
+cycle already running; (3) the user already said "finish it here" for the
 surrounding task, so a discovery inside that task inherits the instruction
 instead of getting a budget of its own. The four fields exist to make a
 deferral HONEST, not to make one available: a defensible-looking `Effort` /
