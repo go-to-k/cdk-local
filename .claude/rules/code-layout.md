@@ -915,3 +915,16 @@ Read this before adding, moving, or splitting a module under `src/`.
 (`verify.sh` runs the CLI against a deployed-style fixture). cdk-local
 itself does not invoke AWS; integration tests that need `--from-cfn-stack`
 deploy via the upstream `cdk` CLI.
+
+A `verify.sh` never reads the CLI with `V=$(cmd 2>/dev/null | tail -1)`:
+under `set -euo pipefail` a non-zero exit aborts the script AT the
+assignment with stderr already gone (go-to-k/cdk-local#577, then
+go-to-k/cdk-local#733). It uses the
+`capture` helper (`V=$(capture ${CDKL} invoke ...)`; every copy is
+byte-identical to `CANONICAL_CAPTURE` in
+`tests/unit/integ-verify-capture-shape.test.ts`, its stderr file trap-held
+because `local-invoke` asserts on it), which on a non-zero exit logs the
+status, the last stdout line and the stderr tail and emits NOTHING — the
+assertion fails with its own text and a good-looking response never passes a
+failed invoke. A retry loop keeps stderr in a file (`2>"${err}"`) and prints
+its tail on the failure paths. The same file fences the shape tree-wide.

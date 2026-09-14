@@ -151,13 +151,18 @@ invoke_capture() {
   # the stack, taking the evidence with it. All the operator saw was
   # `[verify] FAIL (exit 1) - attempting cdk destroy to clean up`.
   #
-  # Now a non-zero exit prints the status plus the captured stderr and the
-  # assertion still runs, so the FAIL branch below is actually reachable.
+  # Now a non-zero exit prints the status, the last stdout line and the
+  # captured stderr, and emits NOTHING, so the assertion still runs and its
+  # FAIL branch is actually reachable -- and a response that happened to
+  # look right never passes a failed invoke (issue #733).
   local out rc=0
   out="$(${CLI} invoke "$@" --no-pull 2>"${CDKL_STDERR}")" || rc=$?
   if [ "${rc}" -ne 0 ]; then
-    echo "[verify] cdkl invoke exited ${rc}; stderr (last 20 lines):" >&2
+    echo "[verify] cdkl invoke exited ${rc}: $*" >&2
+    echo "[verify] last stdout line: $(printf '%s\n' "${out}" | tail -1)" >&2
+    echo "[verify] captured stderr (last 20 lines):" >&2
     tail -20 "${CDKL_STDERR}" >&2
+    return 0
   fi
   printf '%s\n' "${out}" | tail -1
 }

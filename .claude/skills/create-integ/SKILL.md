@@ -172,8 +172,13 @@ command asserts differently: `start-service` / `start-alb` use listener /
 `--host-port` ports (no `--port`); `invoke` / `run-task` / `list` /
 `invoke-agentcore` are not servers — run `${CLI} <cmd> ...` to completion (or
 until a ready banner for a streaming run) and assert on its captured **stdout**
-(the response payload / the `==> ... passed` lines), not a curl. Pick the shape
-that matches your command's surface.
+(the response payload / the `==> ... passed` lines), not a curl. Capture it
+through the `capture` helper (copy `CANONICAL_CAPTURE` from
+`tests/unit/integ-verify-capture-shape.test.ts`, with its trap-held
+`CDKL_STDERR`), never `$(... 2>/dev/null | tail -1)` — under pipefail that
+shape aborts at the assignment with no diagnostic, and the same file refuses
+it tree-wide (go-to-k/cdk-local#733). Pick the shape that matches your
+command's surface.
 
 ```bash
 #!/usr/bin/env bash
