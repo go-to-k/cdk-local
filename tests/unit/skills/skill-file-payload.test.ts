@@ -204,8 +204,12 @@ const MEASURED: Record<
     // review rounds folded in; measured at the sha pushed: corpus 150,144,
     // largest 30,752, so `corpus - largest` = 119,392 -- 108 B under the
     // floor. The next non-leader addition must be paid for in its own file.
-    corpusBytes: 150_144,
-    largest: { file: 'implement.md', bytes: 30_752 },
+    // The follow-up that dropped "a NEW fixture" as a `next` reason (two
+    // reasons now: external input / cold AND heavy; `Severity: high` and
+    // loose ends are `now`) grew only the leader, implement.md 30,752 ->
+    // 30,975, so `corpus - largest` and the 108 B margin are unchanged.
+    corpusBytes: 150_367,
+    largest: { file: 'implement.md', bytes: 30_975 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

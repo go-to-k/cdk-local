@@ -675,7 +675,7 @@ run_msg "refusal names THIS repo's rule files" "gh issue create --body-file $OWN
 run_msg "refusal names the session-report field reference" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
   ".claude/rules/session-report.md"
 run_msg "refusal names the sanctioned sweep carve-out" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
-  "RESIDUE needs a NEW integ fixture"
+  "RESIDUE waits on external input"
 run_msg "refusal names the bypass, with the CDKL_ prefix" "gh issue create --body-file $OWNPR" "$OPTIN" 2 \
   "CDKL_SKIP_DEFERRAL_CRITERIA_GATE=1"
 
