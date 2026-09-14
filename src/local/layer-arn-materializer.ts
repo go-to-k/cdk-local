@@ -38,7 +38,7 @@ import { isIamRoleArn, refusedRoleArnMessage } from '../utils/role-arn.js';
  *      DEFLATE compression method.
  *
  * Returns the absolute path to the unzipped directory; the caller
- * `cpSync`-merges it into the `/opt` host tmpdir alongside any
+ * merges it (`copyLayerTreeLastWins`) into the `/opt` host tmpdir alongside any
  * same-stack `kind: 'asset'` layers and records the path in the
  * tracking set for cleanup.
  *

@@ -2635,14 +2635,20 @@ export async function materializeLambdaLayers(
   const dir = mkdtempSync(
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-start-api-layers-`)
   );
-  for (const layer of flat) {
-    // Merged in template order with AWS's "last layer wins" semantic, mode
-    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
-    // the two ways a bare `cpSync` breaks it, are written once on
-    // `copyLayerTreeLastWins` (issue #727); `local-invoke.ts`'s
-    // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
-    // fixture exercises it end-to-end.
-    copyLayerTreeLastWins(layer.assetPath, dir);
+  try {
+    for (const layer of flat) {
+      // Merged in template order with AWS's "last layer wins" semantic, mode
+      // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+      // the ways a bare `cpSync` breaks it, are written once on
+      // `copyLayerTreeLastWins` (issue #727); `local-invoke.ts`'s
+      // `materializeLambdaLayers` is the same call. The `local-invoke-layers`
+      // fixture exercises it end-to-end.
+      copyLayerTreeLastWins(layer.assetPath, dir);
+    }
+  } catch (error) {
+    // Not yet in `layerTmpDirs`, so shutdown would never remove it.
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
   layerTmpDirs.add(dir);
   return dir;

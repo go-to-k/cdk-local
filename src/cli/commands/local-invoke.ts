@@ -638,13 +638,20 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
   const tmpDir = mkdtempSync(
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-layers-`)
   );
-  for (const layer of layers) {
-    // Merged in template order with AWS's "last layer wins" semantic, mode
-    // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
-    // the two ways a bare `cpSync` breaks it, are written once on
-    // `copyLayerTreeLastWins` (issue #727); `local-start-api.ts`'s merge is
-    // the same call.
-    copyLayerTreeLastWins(layer.assetPath, tmpDir);
+  try {
+    for (const layer of layers) {
+      // Merged in template order with AWS's "last layer wins" semantic, mode
+      // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+      // the ways a bare `cpSync` breaks it, are written once on
+      // `copyLayerTreeLastWins` (issue #727); `local-start-api.ts`'s merge
+      // is the same call.
+      copyLayerTreeLastWins(layer.assetPath, tmpDir);
+    }
+  } catch (error) {
+    // A merge that throws mid-loop has nobody to hand the tmpdir to — the
+    // caller never sees it, so it would sit in the OS tmp root forever.
+    rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },

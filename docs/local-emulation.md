@@ -311,7 +311,8 @@ inside the container. The flow:
      (no copy).
    - **Multiple layers**: each layer's contents are copied into a
      freshly-allocated tmpdir IN ORDER (later layers overwrite earlier
-     files via `cpSync({force: true})`); the merged tmpdir is then
+     files, and symlinks are kept verbatim — see `copyLayerTreeLastWins`);
+     the merged tmpdir is then
      bind-mounted at `/opt` and removed in the cleanup path.
    - The merge mirrors AWS Lambda's actual runtime behavior: AWS
      extracts every layer ZIP into `/opt` in template order so later
