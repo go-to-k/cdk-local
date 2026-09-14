@@ -46,20 +46,19 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
   and `Effort` / `Estimate` are what a future session budgets from.
 - **N sites of one root cause is ONE issue and ONE PR, never N issues** —
   split into N, each site pays the full fixed cost for the same edit. Two
-  boundaries: a sweep whose RESIDUE needs a NEW integ fixture is a genuine
-  `next` — `.claude/rules/session-report.md`'s reason (a), external input,
-  the only one a residue can take, its files being loaded (a fixture it still
-  needs is written NOW); when (a) holds, file an umbrella naming every site
-  and say which sites this lane DID close; and sweep
+  boundaries: a sweep whose RESIDUE waits on EXTERNAL INPUT is a genuine
+  `next` — `.claude/rules/session-report.md`'s reason (a), the only one a
+  residue can take, its files being loaded (a fixture it still needs is
+  written NOW); when (a) holds, file an umbrella naming every site and say
+  which sites this lane DID close; and sweep
   the same ROOT CAUSE, not the same AREA — the test is
   whether a single sentence describes the fix at every site.
   **Say WHY in the criteria's terms, not the PR's.** The first boundary read
   "a sweep that would make the PR unreviewable" until 2026-09-05 — a spelling
   `.claude/hooks/issue-deferral-criteria-gate.sh` refuses, so this file blessed
   what the gate blocks (the same fix as go-to-k/cdkd#2619; three repos run this
-  skill and must answer it alike). Review size is the SIGNAL; under it is
-  verification the residue needs and this lane is not already paying. Else the
-  residue is `now`.
+  skill and must answer it alike). Review size is the SIGNAL; under it must
+  be external input the residue waits on. Else the residue is `now`.
 - **A mechanical sweep is not verified by a PARSE — RUN every site you
   converted.** `bash -n` and the typechecker see neither of the two ways a
   sweep dies at every site at once (both hit in the go-to-k/cdk-local#603
@@ -247,7 +246,7 @@ naming the command is hard, that difficulty IS the finding, usually one of:
 - **The verifier does not exist yet**, and writing it is most of the work —
   write it NOW while the subsystem is loaded (an unwritten fixture is the
   loose end that compounds); `next` only under
-  `.claude/rules/session-report.md`'s reason (b).
+  `.claude/rules/session-report.md`'s reason (a) or (b).
 - **You cannot name it at all** — then nobody can confirm the fix later
   either; not a deferral but an unbounded one.
 

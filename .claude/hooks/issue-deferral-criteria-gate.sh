@@ -34,8 +34,8 @@
 # instead: a `next` line whose REASON is PR-SHAPED. Everything else passes
 # untouched, including every legitimate `next` this repo documents --
 #
-#   Session-fit: next (not this session) -- a NEW integ fixture must be written
 #   Session-fit: next (not this session) -- blocked on an upstream fix landing
+#   Session-fit: next (not this session) -- waits on a quota raise in the account
 #   Session-fit: next (not this session) -- verified by `/run-integ
 #     local-start-api-watch` on an arm64 host, which a fresh session has
 #
@@ -59,9 +59,10 @@
 # REVERSED 2026-09-05, in the commit that carries this line. cdkd hit the
 # identical tension and resolved it the OTHER way (go-to-k/cdkd#2619): the gate
 # keeps `unreviewable` and the DOC is reworded, because review size is the
-# SIGNAL you notice, not the criterion. Underneath it is verification the
-# residue needs and this lane is not already paying -- which the `next` criteria
-# list already contains. Both passages were rewritten alongside: §5's bullet
+# SIGNAL you notice, not the criterion. Underneath it must be external input
+# the residue waits on -- session-report.md's reason (a) (it once read
+# "verification the residue needs", retired when a NEW fixture stopped being a
+# `next` reason). Both passages were rewritten alongside: §5's bullet
 # read "a sweep whose residue carries its own verification is a genuine `next`"
 # (now "`next` only on external input" -- session-report.md's reason (a); the
 # umbrella, the named sites and both drift tripwires kept verbatim), and

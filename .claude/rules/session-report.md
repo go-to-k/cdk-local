@@ -29,8 +29,9 @@ classification field: it is written once when the issue is created and
 never re-decided on a claim. `.claude/hooks/issue-dup-check-gate.sh`
 refuses `gh issue create` without it.
 
-**The four answer four DIFFERENT questions and none derives from
-another**: `Session-fit` is the decision, `Severity` the cost of
+**The four answer four DIFFERENT questions and none is a spelling of
+another** (the one sanctioned link: `Severity: high` forces `now` unless
+external input blocks it): `Session-fit` is the decision, `Severity` the cost of
 leaving it undone, `Effort` which verification cycle the fix drags,
 `Estimate` the hours. In particular do not collapse `Severity` into
 `Session-fit` — a `Severity: high` item can still be `next` (external
@@ -88,8 +89,9 @@ capability is missing but there is a workaround, or it only shows up
 under a specific condition; `low` = internal tidiness, invisible to
 users. **Rate what a user experiences, never why this session should do
 it** — "leaving main self-inconsistent" is a `Session-fit: now` trigger,
-not a Severity level, and copying it here makes that flavour of `high`
-permanently un-`next`-able. `Effort` measures the
+not a Severity level; rating it `high` smuggles a Session-fit trigger
+through the wrong field (and `high` itself now forces `now`, so a misrated
+one cannot be re-judged). `Effort` measures the
 verification tail rather than the edit: `small` = edit plus unit
 tests, riding verification this session already pays for; `medium` = one
 re-review round, or a run of an EXISTING integ fixture this session was not
@@ -112,7 +114,8 @@ ONE loaded file makes the item `now`: a fresh session pays the launch probe,
 `pnpm install`, build, the module read and the evidence re-derivation BEFORE
 its first edit, while this session pays the edit alone. Precedence: `next`
 reason (a) below asks whether the work CAN finish here and is decided first;
-(b) is what the test decides.
+(b) is what the test gates — it decides whether (b) is available at all,
+not that it fires.
 
 - **`now`** — any of: a file the fix touches is loaded (above); skipping it
   leaves main self-inconsistent (docs contradicting shipped code, a stale
@@ -123,10 +126,11 @@ reason (a) below asks whether the work CAN finish here and is decided first;
   undeployed — "merged" is not done); **leaving it loose compounds** — an
   integ fixture not yet written for a subsystem this session holds, a
   pattern landed at some sites and not others, a guard with a known hole:
-  the cost of undone grows with every session that passes, and the fixture
-  case is the clearest — deferred, it is the piece that never lands; or
-  **`Severity: high`** — a wrong result, data loss, or a security surface is
-  `now` unless (a) blocks it; (b) never overrides a `high`. **Residuals of a
+  the cost of undone grows FOR THE REPO with every session that passes, and
+  the fixture case is the clearest — deferred, it is the piece that never
+  lands; or **`Severity: high`** — a wrong result, data loss, or a security
+  surface, rated on the scale below and never on the decision it forces —
+  is `now` unless (a) blocks it. **Residuals of a
   just-merged lane** — polish, nits, parity gaps, sibling sites a review
   named — are the hottest context there is and are `now` by the test above;
   "only a residual" names no cost. Writing a NEW integ fixture is
@@ -136,15 +140,15 @@ reason (a) below asks whether the work CAN finish here and is decided first;
   lane's OPEN PR, or a maintainer decision already asked through
   `AskUserQuestion` and unanswered; a routine call is yours to make); or (b)
   the work is COLD AND HEAVY — nothing the fix touches or must read was read
-  this session, no `now` criterion fires, AND doing it here is clearly worse
-  than fresh: it needs a large body of context this session would load from
-  zero anyway, or the context this session does hold would degrade the work
-  (a security surface read through an unrelated subsystem's assumptions).
-  Cold alone is not (b) — a small cold fix is `now`. (b) is legitimate and
-  never to be forced through — but it must stay RARE: the reason names the
-  context the work needs and why THIS session is the wrong one to load it; a
-  (b) fired twice in one run, or on an item with a loaded file, is the
-  reflex, not the reason. **Nothing about the SESSION is a reason**: its
+  this session, no `now` criterion fires, AND doing it here is clearly WORSE
+  than fresh, not merely as costly: the reason names the modules to load and
+  says why loading them beside THIS session's context degrades the work (a
+  security surface read through an unrelated subsystem's assumptions). That
+  is the one claim about the session that counts. Cold alone is not (b) — a
+  small cold fix is `now`. (b) is legitimate and never to be forced through
+  — but it must stay RARE: a (b) fired twice in one run, or on an item with
+  a loaded file, is the reflex, not the reason, and `/work-issues` §10-0
+  counts them. **Nothing about the SESSION is a reason**: its
   length, the context left, "it has done enough", a wrap report already
   drafted, the PR already merged. The wrap reflex (file → classify → close)
   fires exactly when the context is richest, which is why it produces `next`
@@ -180,9 +184,9 @@ enforced at the filing site by
 `own review` / `unreviewable`. The N-sites SWEEP §5 sanctions is `next` ONLY
 on reason (a), external input — its files are loaded by construction, and a
 fixture it still needs is written NOW — so state it that way and file an
-umbrella naming every site; review size is the signal, not the criterion. `.claude/rules/hooks.md` carries
-the measurement, and the 2026-09-05 reversal that put `unreviewable` back in
-the vocabulary alongside the sibling repos.
+umbrella naming every site; review size is the signal, not the criterion.
+`.claude/rules/hooks.md` carries the measurement, and the 2026-09-05 reversal
+that put `unreviewable` back in the vocabulary alongside the sibling repos.
 
 **A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive
 part is the EVIDENCE behind it — the repro you built, what you watched actually

@@ -303,7 +303,7 @@ mkbody "$SHAREPR"   'Session-fit: next (not this session) -- a schema bump must 
 # The literal 2026-09-02 spelling implement.md section 5 records as the error.
 mkbody "$OWNREVIEW" 'Session-fit: next (not this session) -- a behaviour change across three repos with its own review surface'
 # The legitimate criteria, in this repo's own vocabulary.
-mkbody "$FIXTURE"   'Session-fit: next (not this session) -- a NEW integ fixture must be written'
+mkbody "$FIXTURE"   'Session-fit: next (not this session) -- blocked on an upstream fix landing'
 # A `next` whose reason MENTIONS a PR without being PR-SHAPED: an upstream PR is
 # external input, which IS a criterion. This is the control that keeps the
 # vocabulary closed -- widen the regex to any mention of `PR` and this fails.
@@ -352,7 +352,7 @@ mkbody "$SWEEPOK"   'Session-fit: next (not this session) -- the residue is 13 m
 # unconditionally turns this into a false block.
 {
   printf 'The ALB router drops a nested condition on reload.\n\n'
-  printf 'Session-fit: next (not this session) -- a NEW integ fixture must be written\n'
+  printf 'Session-fit: next (not this session) -- blocked on an upstream fix landing\n'
   printf 'Notes: it will land as its own PR once the fixture exists\n'
 } > "$SIBLING"
 
@@ -436,7 +436,7 @@ BOLDFIT2="$OPTIN/bold-fit-2.md"
 BOLDOK="$OPTIN/bold-ok.md"
 {
   printf 'The ALB router drops a nested condition on reload.\n\n'
-  printf '**Session-fit:** next (not this session) -- a NEW integ fixture must be written\n'
+  printf '**Session-fit:** next (not this session) -- blocked on an upstream fix landing\n'
   printf '**Severity:** low -- internal tidiness\n'
   printf '**Notes:** it will land as its own PR once the fixture exists\n'
 } > "$BOLDOK"
@@ -493,7 +493,7 @@ run "the same word across a WRAPPED reason" "gh issue create --body-file $SWEEPW
 
 echo "== PASS: every legitimate deferral ========================================="
 run "the sweep RE-STATED in the criteria's terms" "gh issue create --body-file $SWEEPOK"    "$OPTIN" 0
-run "a NEW integ fixture must be written" "gh issue create --body-file $FIXTURE"            "$OPTIN" 0
+run "blocked on an upstream fix landing" "gh issue create --body-file $FIXTURE"            "$OPTIN" 0
 run "external input: an upstream PR"      "gh issue create --body-file $UPSTREAM"           "$OPTIN" 0
 run "the honest next: names the command"  "gh issue create --body-file $NAMEDCMD"           "$OPTIN" 0
 run "Session-fit: now mentioning its own PR" "gh issue create --body-file $NOWPR"           "$OPTIN" 0
@@ -512,7 +512,7 @@ run "gh issue list passes"        "gh issue list --state open --search foo"  "$O
 
 echo "== the REST mint =========================================================="
 run "gh api issues POST, PR-shaped" "gh api repos/go-to-k/cdk-local/issues -f title=t -f 'body=Session-fit: next -- needs its own PR'" "$OPTIN" 2
-run "gh api issues POST, legitimate" "gh api repos/go-to-k/cdk-local/issues -f title=t -f 'body=Session-fit: next -- a NEW integ fixture must be written'" "$OPTIN" 0
+run "gh api issues POST, legitimate" "gh api repos/go-to-k/cdk-local/issues -f title=t -f 'body=Session-fit: next -- blocked on an upstream fix landing'" "$OPTIN" 0
 run "gh api comments is not a mint"  "gh api repos/go-to-k/cdk-local/issues/5/comments -f 'body=Session-fit: next -- own PR'" "$OPTIN" 0
 
 echo "== spellings a line-start-anchored matcher would leak ======================"
@@ -581,7 +581,7 @@ gh issue create --body-file $OPTIN/hd.md"
 HD_OK="cat > $OPTIN/hd2.md <<'EOF'
 The ALB router drops a nested condition.
 
-Session-fit: next (not this session) -- a NEW integ fixture must be written
+Session-fit: next (not this session) -- blocked on an upstream fix landing
 EOF
 gh issue create --body-file $OPTIN/hd2.md"
 run "heredoc body is PR-shaped"  "$HD_BAD" "$OPTIN" 2
@@ -592,7 +592,7 @@ echo "== the heredoc window when the path ALREADY EXISTS =======================
 # alone judges a body nobody is submitting, in BOTH directions -- it can miss,
 # and it can BLOCK a clean submission quoting a line that will not exist.
 STALE_OK="$OPTIN/stale-ok.md"
-mkbody "$STALE_OK" 'Session-fit: next (not this session) -- a NEW integ fixture must be written'
+mkbody "$STALE_OK" 'Session-fit: next (not this session) -- blocked on an upstream fix landing'
 STALE_BAD="$OPTIN/stale-bad.md"
 mkbody "$STALE_BAD" 'Session-fit: next (not this session) -- this needs its own PR'
 run "existing CLEAN file, heredoc rewrites it PR-shaped" \
@@ -602,7 +602,7 @@ EOF
 gh issue create --body-file $STALE_OK" "$OPTIN" 2
 run "existing PR-shaped file, heredoc rewrites it CLEAN" \
   "cat > $STALE_BAD <<'EOF'
-Session-fit: next (not this session) -- a NEW integ fixture must be written
+Session-fit: next (not this session) -- blocked on an upstream fix landing
 EOF
 gh issue create --body-file $STALE_BAD" "$OPTIN" 0
 # An APPEND does not supersede: the file is the FIRST HALF of the submitted
@@ -616,7 +616,7 @@ gh issue create --body-file $STALE_BAD" "$OPTIN" 2
 # The RELATIVE spelling. The write-detection matches against raw command TEXT,
 # so handing it only the resolved absolute path leaves this shape unscanned.
 STALE_REL_OK="$OPTIN/stale-rel.md"
-mkbody "$STALE_REL_OK" 'Session-fit: next (not this session) -- a NEW integ fixture must be written'
+mkbody "$STALE_REL_OK" 'Session-fit: next (not this session) -- blocked on an upstream fix landing'
 run "relative spelling, existing file, heredoc PR-shaped" \
   "cd $OPTIN && cat > stale-rel.md <<'EOF'
 Session-fit: next (not this session) -- this needs its own PR
