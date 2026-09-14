@@ -19,8 +19,10 @@ Re-run `mise install` whenever a pull changes `.mise.toml` — the pinned
 markgate version and `.markgate.yml` move together, and an older binary
 rejects a newer config outright rather than degrading gracefully.
 
-The shipped runtime targets **Node 20+**; CI runs the Node 20 / 22 / 24
-matrix.
+The shipped runtime targets **Node.js 22.12 or later** (`package.json`
+`engines`, the `vp pack` target and the CI matrix move together —
+`tests/unit/gates/node-floor-sync.test.ts` pins them to one another); CI
+runs the Node 22.12 / 24 matrix (the first row is the exact floor).
 
 ## Build, lint, test
 
@@ -137,7 +139,7 @@ docs: lead getting-started with the interactive picker form
 
 CI's `check-build-test` job runs the same four steps `vp run verify`
 chains; a second job then builds and smoke-runs `dist/cli.js` on Node
-20 / 22 / 24. The CHANGELOG and
+22.12 (the exact floor) and 24. The CHANGELOG and
 GitHub release are produced by release-please when the maintainer
 merges the standing `chore(release)` PR — an ordinary merge to `main`
 only updates that PR and publishes nothing by itself.

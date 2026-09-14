@@ -57,9 +57,10 @@ const DISARM_STEP = 'disarm auto-merge on a release PR main has moved past';
 /**
  * The `run:` body of the workflow's disarm step, taken from the file rather
  * than re-typed — a copy here would keep passing after the workflow's copy was
- * broken. Read as TEXT (this repo ships no YAML library, the reason
- * `release-please-v0.test.ts` records) by slicing the block scalar and
- * dedenting it.
+ * broken. Read as TEXT (the repo shipped no YAML library when this was
+ * written, the reason `release-please-v0.test.ts` records; the block scalar
+ * is executed verbatim, so the text slice is the subject either way) by
+ * slicing the block scalar and dedenting it.
  */
 function disarmShell(): string {
   const yml = readFileSync(WORKFLOW, 'utf8');

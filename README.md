@@ -15,7 +15,7 @@ Or drive it all from a browser with `cdkl studio` — pick a target, invoke or s
 
 ## Quick start
 
-Requires **Docker** (running) and **Node.js 20+**.
+Requires **Docker** (running) and **Node.js 22.12 or later**.
 
 ```bash
 npm install -g cdk-local      # installs the `cdkl` command

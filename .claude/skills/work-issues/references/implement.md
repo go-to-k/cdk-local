@@ -408,9 +408,9 @@ look for a sibling `*.test.sh` before writing a new harness.
     Two shapes end it and neither is a sixth pattern: parse with a REAL
     parser, allow-list the tool's own keys, fail CLOSED outside them, and
     raw-scan the WHOLE map as the backstop; or, as
-    here — this repo declares no YAML dependency — REFUSE every shape the
-    reader cannot model, the STRICTER option: an unmodelled shape stops the
-    fence instead of passing through it
+    here — written when this repo declared no YAML dependency — REFUSE every
+    shape the reader cannot model, the STRICTER option: an unmodelled shape
+    stops the fence instead of passing through it
     (`tests/unit/gates/markgate-include-globs.test.ts` is the worked example,
     and it held against every respelling its reviewers could construct).
   - **Delete the thing the fence REQUIRES, and watch it fail.** A predicate

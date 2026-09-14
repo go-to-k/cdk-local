@@ -27,10 +27,12 @@ import { describe, expect, it } from 'vite-plus/test';
  *
  * The workflow assertions read release.yml as TEXT rather than through a
  * YAML parser: unlike the sibling cdkd (whose runtime `yaml` dependency its
- * twin of this suite borrows), this repo ships no YAML library, and adding
- * one as a devDependency only for this fence would be a heavier change than
- * the fence itself. The strings pinned here are exact-match load-bearing
- * lines, the same idiom the hook suites in this directory's neighbours use.
+ * twin of this suite borrows), this repo shipped no YAML library when this
+ * was written, and adding one as a devDependency only for this fence would
+ * have been a heavier change than the fence itself. The `yaml` devDependency
+ * arrived later with `node-floor-sync.test.ts` (go-to-k/cdk-local#722); the
+ * strings pinned here stay exact-match load-bearing lines, the same idiom
+ * the hook suites in this directory's neighbours use.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');

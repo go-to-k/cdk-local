@@ -160,7 +160,7 @@ export default defineConfig({
     },
     outDir: 'dist',
     platform: 'node',
-    target: 'node20',
+    target: 'node22',
     format: 'esm',
     fixedExtension: false,
     dts: true,

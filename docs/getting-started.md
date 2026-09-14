@@ -6,7 +6,7 @@ If you already use cdk-local and want the full surface, jump to [docs/cli-refere
 
 ## Prerequisites
 
-- **Node.js 20 or later** — `node --version` must report `v20.x` or higher.
+- **Node.js 22.12 or later** — `node --version` must report `v22.12.0` or higher.
 - **Docker** — `docker info` must succeed. Lambda code runs in the real `public.ecr.aws/lambda/*` base image via the Lambda Runtime Interface Emulator (RIE), and ECS tasks run as real Docker containers, so a working Docker daemon is non-negotiable. On macOS / Windows, Docker Desktop is the easiest path; on Linux, the OS package is fine.
 - **A CDK app** (TypeScript or JavaScript) with at least one Lambda function. If you don't have one handy, the next section uses the standard `cdk init sample-app` template.
 

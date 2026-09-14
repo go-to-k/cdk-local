@@ -172,7 +172,7 @@ function cachedPairIsFresh(certPath: string, keyPath: string, regenWithinDays: n
 function readCertNotAfter(certPath: string): Date | undefined {
   try {
     // `crypto.X509Certificate` parses a PEM/DER cert and exposes the `validTo`
-    // string. Available since Node 15.6 — well within the >=20 engine floor.
+    // string. Available since Node 15.6 — well within the >=22.12 engine floor.
     const cert = new X509Certificate(readFileSync(certPath));
     const parsed = new Date(cert.validTo);
     return Number.isNaN(parsed.getTime()) ? undefined : parsed;

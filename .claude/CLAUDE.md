@@ -229,8 +229,14 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   the base layer and overrides only win for keys they touch.
 
 - **Node version**: `.node-version` pins to 24.x for dev / CI. `vp pack`
-  targets `node20` for the shipped runtime — `package.json` engines
-  declares `>=20`.
+  targets `node22` for the shipped runtime — `package.json` engines
+  declares `>=22.12.0` (22.12 is the first 22.x with unflagged
+  `require(esm)` and the floor `commander@15` — the next major of the
+  `commander@14` this package ships — declares, so that bump cannot move
+  it again; go-to-k/cdk-local#722). The floor
+  lives in five places — `engines`, the pack target, the CI matrix, the
+  docs and this file — and `tests/unit/gates/node-floor-sync.test.ts`
+  pins them to one another, so move all of them in one PR.
 
 ## Workflow rules
 
@@ -636,4 +642,4 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   README's "Programmatic use" pointer.
 - `vite.config.ts` — vp tasks, lint / fmt / pack / test config.
 - `.github/workflows/ci.yml` — CI (`vp run check` + `test` +
-  `test:hooks` + `build`, then a Node 20/22/24 matrix smoke).
+  `test:hooks` + `build`, then a Node 22.12/24 matrix smoke).

@@ -33,10 +33,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
  *
  * Both shells are EXTRACTED from the workflow and EXECUTED, never re-typed: a
  * copy in this file would keep passing after the workflow's copy was broken.
- * The workflow is read as TEXT rather than through a YAML parser for the reason
- * `release-please-v0.test.ts` in this directory already records — this repo
- * ships no YAML library, and adding one as a devDependency only for a fence
- * would be a heavier change than the fence.
+ * The workflow is read as TEXT rather than through a YAML parser: when this was
+ * written the repo shipped no YAML library (the reason `release-please-v0.test.ts`
+ * in this directory records), and the `yaml` devDependency that arrived later
+ * with `node-floor-sync.test.ts` (go-to-k/cdk-local#722) changes nothing here —
+ * both shells are block scalars EXECUTED verbatim, so the text slice IS the
+ * subject, and re-reading it through a parser would only add a second way for
+ * the extraction to drift from the runner's.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');

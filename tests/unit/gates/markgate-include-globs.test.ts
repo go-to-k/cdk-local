@@ -54,15 +54,18 @@ import { fileURLToPath } from 'node:url';
  *
  * ## Why a hand-rolled parser at all
  *
- * Because this repo has no YAML parser to reach for: `package.json` declares
- * none, and neither does the dev-dependency set (the sibling repos cdkd and
- * cdk-real-drift both DO have one, which is why their equivalents parse rather
- * than refuse). Adding a dependency to a lockfile so a single fence can read a
- * single config is a worse trade than refusing the shapes it cannot model —
- * and refusal turns out to be the STRICTER option, not the weaker one: a
- * parser accepts a novel spelling and quietly gets it wrong, while this one
- * stops. Read the refusals below as the point of the design, not as its
- * limitation.
+ * Because when this was written the repo had no YAML parser to reach for:
+ * `package.json` declared none, and neither did the dev-dependency set (the
+ * sibling repos cdkd and cdk-real-drift both DID have one, which is why their
+ * equivalents parse rather than refuse). Adding a dependency to a lockfile so
+ * a single fence could read a single config was a worse trade than refusing
+ * the shapes it cannot model — and refusal turns out to be the STRICTER
+ * option, not the weaker one: a parser accepts a novel spelling and quietly
+ * gets it wrong, while this one stops. That second argument is why the
+ * reader stays hand-rolled now that `yaml` IS a devDependency (it arrived
+ * with `node-floor-sync.test.ts`, go-to-k/cdk-local#722, whose subject is a
+ * plain list under a known key). Read the refusals below as the point of the
+ * design, not as its limitation.
  *
  * ## The parser refuses what it cannot model
  *
