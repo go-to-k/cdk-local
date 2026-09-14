@@ -336,11 +336,23 @@ describe('classifyCaptureShape', () => {
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
   });
 
-  it('attributes a statement joined after a `&&`-ending line to that line, not the next', () => {
+  it.each([
+    ['&&', '[ -n "$X" ] &&\n  R=$(x 2>/dev/null | tail -1)\n'],
+    ['||', '[ -n "$X" ] ||\n  R=$(x 2>/dev/null | tail -1)\n'],
+    ['|', 'printf x |\n  R=$(x 2>/dev/null | tail -1)\n'],
+  ])('attributes a statement joined after a `%s`-ending line to that line, not the next', (_op, body) => {
     // The `|` / `&&` / `||` arm of the join is observable only through the
     // line number: the open-`$(` arm already joins a wrapped pipe by itself.
-    const c = classifyCaptureShape(`${PIPEFAIL}[ -n "$X" ] &&\n  R=$(x 2>/dev/null | tail -1)\n`);
+    const c = classifyCaptureShape(`${PIPEFAIL}${body}`);
     expect(c.abortShapedCaptures.map((f) => f.line)).toEqual([3]);
+  });
+
+  it('a heredoc opened on a CONTINUATION line inside an open $( is blanked where it starts', () => {
+    // The opener sits on the second physical line of the statement, so only
+    // the `skipHeredoc` call inside the join loop can see it; with that call
+    // gone the body is joined into the statement and its shape misreported.
+    const body = ['V="$(', "  python3 - <<'PY'", 'ls 2>/dev/null | tail -1', 'PY', ')"', 'R=$(x 2>/dev/null | tail -1)', ''].join('\n');
+    expect(classifyCaptureShape(`${PIPEFAIL}${body}`).abortShapedCaptures.map((f) => f.line)).toEqual([8]);
   });
 
   it('a heredoc opened inside an open $( is blanked in place and the join resumes after its terminator', () => {
@@ -515,11 +527,14 @@ describe('tree-wide (issue #733)', () => {
     // line and returns BEFORE any stdout is emitted.
     for (const block of [CANONICAL_CAPTURE, CANONICAL_CAPTURE_ALL, CANONICAL_INVOKE_CAPTURE]) {
       expect(block).toContain('[verify] last stdout line:');
+      // `indexOf` alone would be -1 without the `return` and still "less
+      // than" -- the presence check first keeps the ordering check honest.
+      expect(block).toContain('return 0');
       expect(block.indexOf('return 0')).toBeLessThan(block.lastIndexOf("printf '%s"));
     }
     // Nothing else in the tree defines a capture-like helper without the fence knowing.
     const others = fixtures
-      .flatMap((f) => [...f.content.matchAll(/^([a-z_]*capture[a-z_]*)\(\) \{/gm)].map((m) => `${f.name}:${m[1]}`))
+      .flatMap((f) => [...f.content.matchAll(/^([A-Za-z_0-9]*capture[A-Za-z_0-9]*)\s*\(\)\s*\{/gim)].map((m) => `${f.name}:${m[1]}`))
       .filter((x) => !/:(capture|capture_all|invoke_capture)$/.test(x));
     expect(others).toEqual([]);
   });
@@ -538,9 +553,32 @@ describe('tree-wide (issue #733)', () => {
       f.content
         .split('\n')
         .map((l, k) => [l, k + 1] as const)
-        .filter(([l]) => !/^\s*#/.test(l) && /(?<!<)<<-?(?!<)\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/.test(l) && /(\\|\||&&)\s*$/.test(l))
+        .filter(([l]) => !/^\s*#/.test(l) && HEREDOC_OPENER.test(l) && /(\\|\||&&)\s*$/.test(l))
         .map(([, k]) => `${f.name}/verify.sh:${k}`),
     );
+    expect(offenders).toEqual([]);
+  });
+
+  it('every EXIT trap re-armed after CDKL_STDERR is created still removes it (the trap-held file has no per-call rm)', () => {
+    // The fixtures rebuild `trap 'rm -f ...' EXIT` cumulatively (7 times in
+    // local-invoke, 8 in agentcore); one re-arm that drops the name leaks a
+    // file per run, and the helper's byte-identity cannot see it.
+    const offenders: string[] = [];
+    for (const f of fixtures.filter((x) => x.definesCapture || /invoke_capture\(\)/.test(x.content))) {
+      const lines = f.content.split('\n');
+      const created = lines.findIndex((l) => /^\s*CDKL_STDERR="\$\(mktemp\)"/.test(l));
+      expect(created, `${f.name}: CDKL_STDERR is never created`).toBeGreaterThanOrEqual(0);
+      const removers = new Set(
+        [...f.content.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\n([\s\S]*?)\n\}/gm)]
+          .filter((m) => /rm -f[^\n]*\$\{CDKL_STDERR\}/.test(m[2]!))
+          .map((m) => m[1]!),
+      );
+      lines.forEach((l, k) => {
+        if (k <= created || /^\s*#/.test(l) || !/^\s*trap\s+/.test(l) || !/\bEXIT\b/.test(l) || /^\s*trap\s+-\s/.test(l)) return;
+        const ok = /\$\{CDKL_STDERR\}/.test(l) || [...removers].some((fn) => new RegExp(`\\b${fn}\\b`).test(l));
+        if (!ok) offenders.push(`${f.name}/verify.sh:${k + 1}: ${l.trim()}`);
+      });
+    }
     expect(offenders).toEqual([]);
   });
 
@@ -581,7 +619,8 @@ describe('real-code probes (issue #733)', () => {
     const fixed = 'if out=$(${CLI} invoke "${args[@]}" 2>"${err}" | tail -1) && \\';
     expect(real.split(fixed)).toHaveLength(2);
     const broken = real.replace(fixed, 'if out=$(${CLI} invoke "${args[@]}" 2>/dev/null | tail -1) && \\');
-    expect(classifyCaptureShape(broken).abortShapedCaptures).toHaveLength(1);
+    const line = broken.slice(0, broken.indexOf(fixed.replace('2>"${err}"', '2>/dev/null'))).split('\n').length;
+    expect(classifyCaptureShape(broken).abortShapedCaptures.map((f) => f.line)).toEqual([line]);
     expect(classifyCaptureShape(real).abortShapedCaptures).toEqual([]);
   });
 });
