@@ -33,8 +33,8 @@ refuses `gh issue create` without it.
 another**: `Session-fit` is the decision, `Severity` the cost of
 leaving it undone, `Effort` which verification cycle the fix drags,
 `Estimate` the hours. In particular do not collapse `Severity` into
-`Session-fit` — a `Severity: high` item can still be `next` (it needs
-a new integ fixture has to be written) and a `low` one can be `now` (it lands in a file
+`Session-fit` — a `Severity: high` item can still be `next` (a new integ
+fixture has to be written) and a `low` one can be `now` (it lands in a file
 this session already has open). The moment the two track each other,
 `Severity` is a second spelling of the decision and the field is
 wasted. Likewise `Effort` is not `Estimate`: "one integ run" is a kind
@@ -104,11 +104,14 @@ touched was already read). This rule pre-answers that question; it must never
 need asking again.
 
 **Write the CONTEXT TEST before the decision**: list the files the fix
-touches and say, per file, whether this session already READ it — read,
-edited, or reviewed in a diff; a reviewer's read set counts exactly like an
-author's. ONE loaded file makes the item `now`: a fresh session pays the
-launch probe, `pnpm install`, build, the module read and the evidence
-re-derivation BEFORE its first edit, while this session pays the edit alone.
+touches or must read to be made correctly (tests and docs included), and
+say, per file, whether this session already READ it — read, edited, or
+reviewed in a diff; a reviewer's read set counts exactly like an author's.
+ONE loaded file makes the item `now`: a fresh session pays the launch probe,
+`pnpm install`, build, the module read and the evidence re-derivation BEFORE
+its first edit, while this session pays the edit alone. Precedence: `next`
+reasons (a) and (b) below ask whether the work CAN finish here and are
+decided first; (c) is what the test decides.
 
 - **`now`** — any of: a file the fix touches is loaded (above); skipping it
   leaves main self-inconsistent (docs contradicting shipped code, a stale
@@ -120,11 +123,14 @@ re-derivation BEFORE its first edit, while this session pays the edit alone.
   polish, nits, parity gaps, sibling sites a review named — are the hottest
   context there is and are `now` by the test above; "only a residual" names
   no cost.
-- **`next`** — ONLY one of: a NEW verifier (integ fixture / unit case) must
-  be WRITTEN and writing it is most of the work; external input (a quota, a
-  maintainer decision, an upstream fix, a host this machine is not — see the
-  arm64 case below); or the subsystem is COLD — no file the fix touches was
-  read this session AND no `now` criterion fires. **Nothing about the SESSION
+- **`next`** — ONLY one of: (a) a NEW live verifier (an integ fixture,
+  `Effort: large`) must be WRITTEN and writing it is most of the work — a
+  unit case never qualifies, every fix writes one; (b) external input (a
+  quota, an upstream fix, a host this machine is not — the arm64 case below —
+  or a maintainer decision already asked through `AskUserQuestion` and
+  unanswered; a routine call is yours to make); or (c) the subsystem is COLD
+  — nothing the fix touches or must read was read this session AND no `now`
+  criterion fires. **Nothing about the SESSION
   is a reason**: its length, the context left, "it has done enough", a wrap
   report already drafted, the PR already merged. The wrap reflex (file →
   classify → close) fires exactly when the context is richest, which is why
@@ -137,8 +143,9 @@ over the 268 rows of cdkd's `docs/_generated/integ-last-run.tsv` on 2026-08-20:
 median run 85 s, mean 4.6 min, p90 8.8 min. A passing run costs a few hundred
 tokens. If the session is running one for its current lane anyway, a fix riding
 the same fixture costs zero — the same run refreshes the same gate. What is
-genuinely expensive is WRITING a new fixture, and an integ that FAILS
-(unbounded, and paid again next session). Defer on those.
+genuinely expensive is WRITING a new fixture — reason (a) — and an integ that
+FAILS, which is an `Estimate` line, not a reason: unbounded here is unbounded
+next session too.
 
 Review of a larger diff also grows superlinearly, and that cost is real — but
 it is a reason to SPLIT the PR, not to end the session, and it belongs under
@@ -156,16 +163,16 @@ enforced at the filing site by
 `gh issue create` whose `Session-fit: next` reason reads `own PR` /
 `separate PR` / `share a PR` / `independent` or `separate review surface` /
 `own review` / `unreviewable`. The N-sites SWEEP §5 sanctions is still a
-genuine `next`, but state it in the criteria's terms — "a sweep whose residue
-carries its own verification … file an umbrella naming every site" — because
-review size is the signal, not the criterion. `.claude/rules/hooks.md` carries
+genuine `next` ONLY as reason (a) — its residue needs a NEW integ fixture; its
+files are loaded by construction — so state it that way and file an umbrella
+naming every site; review size is the signal, not the criterion. `.claude/rules/hooks.md` carries
 the measurement, and the 2026-09-05 reversal that put `unreviewable` back in
 the vocabulary alongside the sibling repos.
 
 **A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive
 part is the EVIDENCE behind it — the repro you built, what you watched actually
 happen, the number you measured — and that is exactly what an issue body cannot
-carry cheaply. If you must defer it anyway on a genuine `next` reason, put the
+carry cheaply. If you must defer it anyway on reason (a) or (b), put the
 EVIDENCE in the issue body, not just the diagnosis.
 
 **A reason about the FILING SESSION's own STATE expires when that session
@@ -176,9 +183,11 @@ deferral reason at all. This one is a claim about the SESSION that filed it:
 "the file is held by another open PR's diff", "the session that found it
 budgeted no integ run", "that lane's scope was frozen at its final review
 round". A PR can be named on either side, so the mention is not the tell —
-ask which of the two the sentence is ABOUT. Session-state clauses are legal
-and merely go STALE, and deciding-once does not protect them, because it
-freezes the DECISION and not the PREMISE.
+ask which of the two the sentence is ABOUT. Of those three only the first
+survives, as reason (b) ending at that merge; the other two are no longer
+reasons at all. A session-state clause is legal only as the EXPIRY event of a
+`next` reason, and it goes STALE — deciding-once does not protect it, because
+it freezes the DECISION and not the PREMISE.
 
 So prefer a reason the WORK owns. When a session-state clause is written
 anyway, name the event that ENDS it on the same line — "unblocked the moment

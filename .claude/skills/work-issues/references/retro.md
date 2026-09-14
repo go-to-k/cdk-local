@@ -68,31 +68,28 @@ done
 rm -f /tmp/run-touched.$$
 ```
 
-Pipe the loop through `sort -u`: a body naming a file twice otherwise prints two
-findings.
+Pipe the loop through `sort -u`: a body naming a file twice prints two findings.
 
 - **The diff is a LOWER bound on what this run loaded — run the context test
   on every `next` as well.** The query sees files the run EDITED; the run also
   READ its reviewers' diffs, the modules its lanes traced and every sibling
-  site a review named, none of which is in `run-touched`. For each `next`
-  still open, list the files its fix touches and ask whether any was read
-  this run — if one was, it is `now` (`.claude/rules/session-report.md`: the
-  default is `now`, and the maintainer's wrap-time challenge on exactly this
-  has promoted every time it was asked).
+  site a review named, none of which is in `run-touched`. For each open
+  `next`, list the files its fix touches; if any was read this run it is
+  `now` (`.claude/rules/session-report.md`: `now` is the default, and the
+  maintainer's wrap-time challenge on this has promoted every time).
 - **A hit is a prompt for judgement, not a verdict** — the check cannot tell a
   citation from a target (one hit named four files, three cited as precedent).
-  A SHARED BASENAME makes it worse than uninformative: `verify.sh` (or
-  `package.json`) matches every sibling directory at once — measured
-  2026-09-02, three deferrals produced 27 hits naming nine fixtures. Read such
-  a hit as a DIRECTORY question ("which of the sites this issue lists did the
-  run open?"), never as a file one. Do the item now while the context is
-  loaded, or re-classify it in the issue body with the reason.
+  A SHARED BASENAME (`verify.sh`, `package.json`) matches every sibling
+  directory at once — measured 2026-09-02, three deferrals produced 27 hits
+  naming nine fixtures. Read such a hit as a DIRECTORY question ("which of the
+  sites this issue lists did the run open?"), never as a file one. Do the item
+  now, or re-classify it in the issue body with the reason.
 - **Re-read the REASON, not just the files — when a hit CONTRADICTS it, the
   BODY is the stale side.** A reason anchored to the filing session's own
   state goes false while the decision it justified still stands. Re-reading an
   expired premise is not re-litigation — keeping a `next` alive on one is.
-  `.claude/rules/session-report.md` holds the shape, the boundary against the
-  reason §5-c refuses outright, and the incidents. Correct the body.
+  `.claude/rules/session-report.md` holds the shape and the incidents. Correct
+  the body.
 
 Report one line — `closed N / filed M (new K / folded J)` — and **when M > N,
 give the reason in one more line**. `J = 0` over several findings in one area
@@ -101,8 +98,8 @@ Only the first of the three usual reasons is healthy: the code really does
 have that many independent defects (say which area, so the next hunt aims
 there); one root cause was split into many issues (fold what is still open
 into an umbrella now); or discoveries were deferred that had session-only
-evidence (re-read the `now` criteria in `CLAUDE.md` — a repro that dies with
-this session is not a residual).
+evidence (`.claude/rules/session-report.md`: a discovered bug is `now` even
+in a cold subsystem, because the repro dies with this session).
 
 **M <= N is NOT a target, and must never become one.** An unfiled finding is
 strictly worse than a filed one — it removes the defect from the record while
@@ -132,15 +129,13 @@ Walk the session and collect, each with its concrete instance:
 usually survives the hand-off intact; the CAUSAL STORY attached to it does
 not — a plausible mechanism is cheap to write and costs a command to check.
 Resolve the mechanism against the file before writing it up — the line, not
-the belief about the line (measured 2026-09-03 in this run's own retro: an
-orchestrator handed a lane "a leaked `.markgate-pr-review-sha` would have
-merged a higher-tier PR", which is alarming and wrong — opening
-`pr-review-gate.sh` and reading the condition its pass arm tests showed the
-leak plainly BLOCKS; the observation was real, the consequence invented). Read
-the CONDITION, not a line number. Two properties make this the expensive kind
-of error: it arrives from the party a lane trusts most, and prose is the one
-artifact no gate executes — which is why §10-d sends a skill-only PR through
-reviewers at whatever tier its SIZE gives, with no docs down-bias.
+the belief about the line (2026-09-03: an orchestrator handed a lane "a leaked
+`.markgate-pr-review-sha` would have merged a higher-tier PR" — reading the
+condition `pr-review-gate.sh`'s pass arm tests showed the leak plainly BLOCKS;
+the observation was real, the consequence invented). Read the CONDITION, not
+a line number. It arrives from the party a lane trusts most, and prose is the
+one artifact no gate executes — which is why §10-d sends a skill-only PR
+through reviewers at whatever tier its SIZE gives, with no docs down-bias.
 
 ### 10-b. Where the fix belongs — pick ONE
 
@@ -190,8 +185,9 @@ Every run appending one more bullet is how a long skill becomes an unread one.
   carries ALL of the run's lessons for that repo, not one PR per lesson** (the
   gate cycle is the per-PR cost). Landing in one repo is how they drift.
   **Filing mirror issues instead is a WHOLE-REMAINDER exception, not the
-  fallback of first resort**: only when the session cannot pay the remaining
-  gate cycles, file into EVERY remaining repo in the SAME turn, each naming
+  fallback of first resort**: session budget is not a `next` reason
+  (`.claude/rules/session-report.md`), so only on external input; then file
+  into EVERY remaining repo in ONE turn, each naming
   the other filings plus the repo already landed in (each with the
   `Session-fit` line, in English, per §4). Partial filing manufactures
   duplicates: go-to-k/cdk-local#531 mirrored a SUBSET of go-to-k/cdk-local#528

@@ -103,15 +103,16 @@ const MIN_REFERENCE_FILES = 6;
 // lapsed the then-floor of 116,500; the assertion at the bottom of this file is
 // what said so, at the commit that caused it).
 //
-// This value sits ~3.5 KB above the compressed tree's `corpus - largest`, the
-// same order of margin its predecessors were given. A COMPRESSION pass moves
+// This value was set ~3.5 KB above the compressed tree's `corpus - largest`
+// at derivation, the same order of margin its predecessors were given (live
+// margin: MEASURED's failure message). A COMPRESSION pass moves
 // the floor DOWN in the same commit (the retro anti-regrowth rule in
 // references/retro.md section 10-c forbids buying room by raising it). MEASURED
 // prints the current margin in its failure message, so the next erosion arrives
 // as a number rather than as a surprise. Still sized against `corpus - largest`
 // rather than against the either-largest case because the top two stage files
-// are ~7.0 KB apart, so a flip is not near -- that gap has narrowed from
-// ~10.0 KB, so re-check it rather than assuming; the sibling cdkd sizes against
+// are ~8 KB apart, so a flip is not near -- that gap has moved from ~10.0 KB
+// to ~7.0 KB and back, so re-check it rather than assuming; the sibling cdkd sizes against
 // the flip because ITS top two are ~2 KB apart.
 // The 2026-09-05 batching pass added one paragraph to triage.md (batching as
 // the DEFAULT rather than a permission, with the amortization reason stated)
@@ -155,11 +156,12 @@ const MIN_REFERENCE_FILES = 6;
 // untrusted-content rule at length -- vectors, red flags, the Web-UI block, the
 // no-`gh auth refresh` clause, all of it always loaded -- and now points at it
 // (-873 B), keeping only what the stage adds: who to check, and who decides.
-// Raised 119_500 -> 120_000 by the `now`-by-default pass: retro.md's +579 is
-// a non-leader addition charged in full, and the old floor had lapsed by
-// 113 B (corpus minus largest = 119,613), so it must clear that figure again.
-// The invariant above is unchanged.
-const MIN_REFERENCE_CORPUS_BYTES = 120_000;
+// The `now`-by-default pass first lapsed this floor by 113 B (retro.md's
+// promotion bullet is a non-leader addition, charged in full) and PAID rather
+// than raised, per section 10-c: three retro.md narratives compressed to their
+// citations in the same commit. The floor is unchanged; MEASURED's failure
+// message carries the live margin.
+const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -193,12 +195,13 @@ const MEASURED: Record<
     orchestratorBytes: 11_885,
     // The `now`-by-default pass (the maintainer's recurring wrap-time "cheaper
     // to do it here?" challenge, answered in advance): implement.md 5-c gained
-    // the context-test-first paragraph (part-funded by compressing the
-    // go-to-k/cdk-local#560 narrative beside it, 30,091 -> 30,472) and
-    // retro.md 10-0 the read-set-is-wider-than-the-diff promotion bullet
-    // (+579). = +960; the leader kept its place with ~1.5 KB of cap headroom.
-    corpusBytes: 150_085,
-    largest: { file: 'implement.md', bytes: 30_472 },
+    // the context-test-first paragraph and its session-state / sweep bullets
+    // now name the rule's reasons (part-funded by compressing the
+    // go-to-k/cdk-local#560 narrative beside them); retro.md 10-0 gained the
+    // read-set-is-wider-than-the-diff promotion bullet, paid inside retro.md
+    // by three narrative compressions so the floor below did not move.
+    corpusBytes: 150_052,
+    largest: { file: 'implement.md', bytes: 30_688 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

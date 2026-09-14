@@ -580,7 +580,9 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   open PRs owned by this session; no running background tasks / integs /
   subagents; no leftover Docker containers or networks from local runs
   (`docker ps --filter name=cdkl-`, `docker network ls --filter
-  name=cdkl-task-`); every TODO filed as an issue.
+  name=cdkl-task-`); every TODO filed as an issue; **zero `Session-fit: now`
+  TODOs open** (an open `now` and CLOSEABLE cannot both be true — do the
+  item, or re-classify it with the reason stated).
 
   **The full field reference — semantics, scales, labels, calibration and
   templates — lives in

@@ -46,9 +46,10 @@ CLASS: once the root cause is named, grep for the same shape across `src/`.
   and `Effort` / `Estimate` are what a future session budgets from.
 - **N sites of one root cause is ONE issue and ONE PR, never N issues** —
   split into N, each site pays the full fixed cost for the same edit. Two
-  boundaries: a sweep whose RESIDUE carries its own verification is a genuine
-  `next` (file an umbrella naming every site, say which sites this lane DID
-  close); and sweep the same ROOT CAUSE, not the same AREA — the test is
+  boundaries: a sweep whose RESIDUE needs a NEW integ fixture is a genuine
+  `next` — `.claude/rules/session-report.md`'s reason (a), the only one a
+  residue can take (file an umbrella naming every site, say which sites this
+  lane DID close); and sweep the same ROOT CAUSE, not the same AREA — the test is
   whether a single sentence describes the fix at every site.
   **Say WHY in the criteria's terms, not the PR's.** The first boundary read
   "a sweep that would make the PR unreviewable" until 2026-09-05 — a spelling
@@ -240,8 +241,8 @@ naming the command is hard, that difficulty IS the finding, usually one of:
   `verify.sh` calls the upstream `cdk deploy` (why `/run-integ` pre-flights
   `which cdk` and `aws sts get-caller-identity` for those).
 - **The verifier does not exist yet**, and writing it is most of the work —
-  the one case where `next` is genuinely right, BECAUSE you could name what
-  is missing.
+  `.claude/rules/session-report.md`'s reason (a), and right BECAUSE you could
+  name what is missing.
 - **You cannot name it at all** — then nobody can confirm the fix later
   either; not a deferral but an unbounded one.
 
@@ -266,13 +267,14 @@ emulated path. Review caught this; nothing in the flow did.
   found four more defects a fresh session would not have looked for). Enforced
   at the filing site by `.claude/hooks/issue-deferral-criteria-gate.sh`,
   `unreviewable` included.
-- **A reason about THIS SESSION's own state is legal and EXPIRES** — "held by
-  another open PR's diff", "no integ run budgeted here", "no overlap with this
-  session's lanes". Unlike the bullet above it is a real reason, but it goes
-  false silently while the decision it justified still stands, and §10-0's
-  promotion check is what finds it afterwards. Prefer a reason the WORK owns;
-  write one of these anyway and it must name the event that ENDS it on the
-  same line. Full shape, and the boundary against the bullet above, in
+- **A reason about THIS SESSION's own state is legal only as the EXPIRY
+  event of a `next` reason, and it EXPIRES** — "held by another open PR's
+  diff" is reason (b) ending at that merge; "no integ run budgeted here" and
+  "no overlap with this session's lanes" are no longer reasons at all (the
+  context test decides on files READ, not edited). It goes false silently
+  while the decision it justified still stands, and §10-0's promotion check
+  is what finds it afterwards. Prefer a reason the WORK owns; write one of
+  these anyway and it must name the event that ENDS it on the same line. Full shape, and the boundary against the bullet above, in
   `.claude/rules/session-report.md`.
 - **When the issue body offers more than one fix, say which one the four
   fields cost** — cost the CHEAPEST one you would actually accept (2026-09-02:
