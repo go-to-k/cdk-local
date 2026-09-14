@@ -210,8 +210,10 @@ const MEASURED: Record<
     // and retro.md by a (b)-counting bullet paid inside retro.md by three
     // trims: corpus 150,426, `corpus - largest` 119,490 -- 10 B under the
     // floor. The next non-leader addition must be paid for in its own file.
-    corpusBytes: 150_426,
-    largest: { file: 'implement.md', bytes: 30_936 },
+    // go-to-k/cdk-local#722 then re-dated one sentence in implement.md
+    // (+13 B, inside the largest file, so `corpus - largest` is unchanged).
+    corpusBytes: 150_439,
+    largest: { file: 'implement.md', bytes: 30_949 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

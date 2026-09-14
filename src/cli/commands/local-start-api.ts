@@ -2640,20 +2640,24 @@ export async function materializeLambdaLayers(
     // later layer's entry at the same relative path overwrites the
     // earlier one.
     //
-    // **Contract pinned (Node 20+)**: this call relies on `fs.cpSync`
-    // defaults that the integ-test fixture (`tests/integration/local-
-    // invoke-layers/`) exercises end-to-end, and that future
-    // refactors must NOT silently drop:
+    // **Contract pinned (Node 22.12+, the `engines` floor)**: this call
+    // relies on `fs.cpSync` defaults that the integ-test fixture
+    // (`tests/integration/local-invoke-layers/`) exercises end-to-end,
+    // and that future refactors must NOT silently drop:
     //   - `mode` defaults to preserving the source's file-mode bits,
     //     including `+x`. AWS layers commonly ship executable scripts
     //     under `bin/` and a handler that runs `/opt/bin/<script>`
     //     would otherwise fail with "Permission denied".
-    //   - `verbatimSymlinks` defaults to true on Node 20+; symlinks
-    //     are copied as symlinks (not dereferenced), matching AWS's
-    //     layer-ZIP extraction into `/opt`.
-    // Mirrors the same contract pinned in `local-invoke.ts`'s
-    // `materializeLambdaLayers`; keep the two call sites in sync if
-    // they ever consolidate into one helper.
+    //   - `dereference` defaults to false, so symlinks are copied as
+    //     symlinks rather than flattened, matching AWS's layer-ZIP
+    //     extraction into `/opt`. KNOWN DEFECT, issue #727:
+    //     `verbatimSymlinks` ALSO defaults to false (in every Node
+    //     release), and a non-verbatim copy rewrites a RELATIVE link
+    //     target to the source's absolute host path, so the link is
+    //     dangling in the container — the fix belongs to that issue.
+    // The same call sits in `local-invoke.ts`'s `materializeLambdaLayers`
+    // (uncommented there); keep the two call sites in sync if they ever
+    // consolidate into one helper.
     cpSync(layer.assetPath, dir, { recursive: true, force: true });
   }
   layerTmpDirs.add(dir);
