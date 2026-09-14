@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import * as path from 'node:path';
@@ -23,6 +23,7 @@ import {
 } from '../../utils/role-arn.js';
 import { CdkLocalError, withErrorHandling } from '../../utils/error-handler.js';
 import { listTargets } from '../../local/target-lister.js';
+import { copyLayerTreeLastWins } from '../../local/layer-tree-copy.js';
 import { resolveSingleTarget } from '../../local/target-picker.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import { resolveApp } from '../config-loader.js';
@@ -637,8 +638,20 @@ export function materializeLambdaLayers(layers: { logicalId: string; assetPath: 
   const tmpDir = mkdtempSync(
     path.join(tmpdir(), `${getEmbedConfig().resourceNamePrefix}-invoke-layers-`)
   );
-  for (const layer of layers) {
-    cpSync(layer.assetPath, tmpDir, { recursive: true, force: true });
+  try {
+    for (const layer of layers) {
+      // Merged in template order with AWS's "last layer wins" semantic, mode
+      // bits (`+x`) preserved and symlinks kept VERBATIM — the contract, and
+      // the ways a bare `cpSync` breaks it, are written once on
+      // `copyLayerTreeLastWins` (issue #727); `local-start-api.ts`'s merge
+      // is the same call.
+      copyLayerTreeLastWins(layer.assetPath, tmpDir);
+    }
+  } catch (error) {
+    // A merge that throws mid-loop has nobody to hand the tmpdir to — the
+    // caller never sees it, so it would sit in the OS tmp root forever.
+    rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
   }
   return {
     mount: { hostPath: tmpDir, containerPath: '/opt', readOnly: true },
