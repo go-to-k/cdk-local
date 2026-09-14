@@ -155,7 +155,11 @@ const MIN_REFERENCE_FILES = 6;
 // untrusted-content rule at length -- vectors, red flags, the Web-UI block, the
 // no-`gh auth refresh` clause, all of it always loaded -- and now points at it
 // (-873 B), keeping only what the stage adds: who to check, and who decides.
-const MIN_REFERENCE_CORPUS_BYTES = 119_500;
+// Raised 119_500 -> 120_000 by the `now`-by-default pass: retro.md's +579 is
+// a non-leader addition charged in full, and the old floor had lapsed by
+// 113 B (corpus minus largest = 119,613), so it must clear that figure again.
+// The invariant above is unchanged.
+const MIN_REFERENCE_CORPUS_BYTES = 120_000;
 
 /**
  * The measurements every comment in this file reasons from, ASSERTED against the
@@ -187,8 +191,14 @@ const MEASURED: Record<
   // wrong file.
   'work-issues': {
     orchestratorBytes: 11_885,
-    corpusBytes: 149_125,
-    largest: { file: 'implement.md', bytes: 30_091 },
+    // The `now`-by-default pass (the maintainer's recurring wrap-time "cheaper
+    // to do it here?" challenge, answered in advance): implement.md 5-c gained
+    // the context-test-first paragraph (part-funded by compressing the
+    // go-to-k/cdk-local#560 narrative beside it, 30,091 -> 30,472) and
+    // retro.md 10-0 the read-set-is-wider-than-the-diff promotion bullet
+    // (+579). = +960; the leader kept its place with ~1.5 KB of cap headroom.
+    corpusBytes: 150_085,
+    largest: { file: 'implement.md', bytes: 30_472 },
     runnerUp: { file: 'verify.md', bytes: 22_452 },
   },
 };

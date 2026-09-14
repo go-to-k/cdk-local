@@ -95,6 +95,43 @@ re-review round, or a run of an EXISTING integ fixture this session was not
 otherwise going to run; `large` = a NEW integ fixture has to be WRITTEN, or a
 behavior change needing its own PR plus review.
 
+**`now` is the DEFAULT; `next` needs one of three reasons.** At the wrap of
+nearly every recent session the maintainer has had to ask whether the leftover
+would not be cheaper to finish HERE, with the context already loaded — and
+every time the answer was yes: the item was re-classified `now` and done in
+that session (go-to-k/cdkd#3083 is the latest, ~25 min because every file it
+touched was already read). This rule pre-answers that question; it must never
+need asking again.
+
+**Write the CONTEXT TEST before the decision**: list the files the fix
+touches and say, per file, whether this session already READ it — read,
+edited, or reviewed in a diff; a reviewer's read set counts exactly like an
+author's. ONE loaded file makes the item `now`: a fresh session pays the
+launch probe, `pnpm install`, build, the module read and the evidence
+re-derivation BEFORE its first edit, while this session pays the edit alone.
+
+- **`now`** — any of: a file the fix touches is loaded (above); skipping it
+  leaves main self-inconsistent (docs contradicting shipped code, a stale
+  rationale comment, a fixture that no longer discriminates); it blocks
+  another lane; it rides an EXISTING integ fixture (calibration below); its
+  evidence exists only in this session (a live repro, a Docker observation, a
+  measurement); or the user cannot use the result yet (unreleased /
+  undeployed — "merged" is not done). **Residuals of a just-merged lane** —
+  polish, nits, parity gaps, sibling sites a review named — are the hottest
+  context there is and are `now` by the test above; "only a residual" names
+  no cost.
+- **`next`** — ONLY one of: a NEW verifier (integ fixture / unit case) must
+  be WRITTEN and writing it is most of the work; external input (a quota, a
+  maintainer decision, an upstream fix, a host this machine is not — see the
+  arm64 case below); or the subsystem is COLD — no file the fix touches was
+  read this session AND no `now` criterion fires. **Nothing about the SESSION
+  is a reason**: its length, the context left, "it has done enough", a wrap
+  report already drafted, the PR already merged. The wrap reflex (file →
+  classify → close) fires exactly when the context is richest, which is why
+  it produces `next` — and why the context test is written first. Before the
+  final report, re-run the test on every `next` it lists: the report is the
+  last moment the loaded context can still be spent.
+
 **Calibration: RUNNING an existing integ is not a reason to defer.** Measured
 over the 268 rows of cdkd's `docs/_generated/integ-last-run.tsv` on 2026-08-20:
 median run 85 s, mean 4.6 min, p90 8.8 min. A passing run costs a few hundred
@@ -125,14 +162,11 @@ review size is the signal, not the criterion. `.claude/rules/hooks.md` carries
 the measurement, and the 2026-09-05 reversal that put `unreviewable` back in
 the vocabulary alongside the sibling repos.
 
-**A newly DISCOVERED bug is not a residual.** A residual (deferred polish, a
-nit, a parity gap) is fully describable, so writing it down loses nothing. A
-discovery's expensive part is the EVIDENCE behind it — the repro you built,
-what you watched actually happen, the number you measured — and that is exactly
-what an issue body cannot carry cheaply. When a bug surfaces mid-session, ask
-which it is: if the evidence is session-only, finish it now unless a genuine
-defer criterion fires, and if you must defer it anyway, put the EVIDENCE in the
-issue body, not just the diagnosis.
+**A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive
+part is the EVIDENCE behind it — the repro you built, what you watched actually
+happen, the number you measured — and that is exactly what an issue body cannot
+carry cheaply. If you must defer it anyway on a genuine `next` reason, put the
+EVIDENCE in the issue body, not just the diagnosis.
 
 **A reason about the FILING SESSION's own STATE expires when that session
 does.** It is a different failure from the one `/work-issues`

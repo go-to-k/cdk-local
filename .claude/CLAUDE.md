@@ -595,11 +595,16 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   `gh issue create` without it). `Severity` / `Effort` are ALSO labels on
   the issue (`issue-classification-label-gate.sh` enforces body/label
   agreement; `.github/workflows/pr-inherit-issue-labels.yml` copies them
-  onto the PR — never hand-add them there). Before writing `next`, NAME
-  the concrete command the next session will run to verify the fix and
-  say a fresh session can run it; a newly DISCOVERED bug whose evidence
-  is session-only defaults to `now`; and `Session-fit: next` is not on
-  the menu inside a scope the user framed as cross-repo-in-one-session.
+  onto the PR — never hand-add them there). **`now` is the DEFAULT;
+  `next` needs one of that rule's three reasons** (a NEW verifier to
+  write / external input / a COLD subsystem). Context test first: if ANY
+  file the fix touches was read this session — a reviewer's read set
+  counts — it is `now`; every recent wrap-time challenge on this flipped
+  it. Before writing `next`, NAME the concrete command the next session
+  will run to verify the fix and say a fresh session can run it; a newly
+  DISCOVERED bug whose evidence is session-only is `now` even in a cold
+  subsystem; and `Session-fit: next` is not on the menu inside a scope
+  the user framed as cross-repo-in-one-session.
 
 ## Positioning when communicating
 

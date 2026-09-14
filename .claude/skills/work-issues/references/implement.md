@@ -213,6 +213,14 @@ gh issue create -t 'fix(local): ...' \
 
 ### 5-c. `Session-fit: next` must NAME the next session's verification
 
+**`now` is the default, and the CONTEXT TEST comes before the decision.** List
+the files the fix touches; if this session has already read, edited or
+reviewed ANY of them, the item is `now` — `next` is reserved for the three
+reasons `.claude/rules/session-report.md` enumerates (a NEW verifier to write
+/ external input / a COLD subsystem). The maintainer's wrap-time "cheaper to
+do it here, with the context loaded?" has flipped every item it was asked
+about; this paragraph asks it in advance.
+
 **Before writing `Session-fit: next`, NAME the command the next session will
 run to verify the fix — and say that a fresh session will be able to run it.**
 A deferral is a PREDICTION; unstated, it is never checked, and the
@@ -239,11 +247,9 @@ naming the command is hard, that difficulty IS the finding, usually one of:
 
 Measured 2026-08-26: go-to-k/cdk-local#560 was filed `next` on "a fixture /
 base-image change, on a different axis" — a CATEGORY statement. The defect is
-a Go RIE fault under `linux/amd64` emulation; the filing host was arm64, and a
-fixture with no `Architectures` resolves to `x86_64` (defaults in
-`src/cli/commands/local-start-api.ts` / `src/local/container-pool.ts`), so an
-amd64 host runs it natively and never reaches the emulated path. Review caught
-this; nothing in the flow did.
+a Go RIE fault under `linux/amd64` emulation on an arm64 host (a fixture with
+no `Architectures` resolves to `x86_64`), so an amd64 host never reaches the
+emulated path. Review caught this; nothing in the flow did.
 
 - **Then ask what the next session will have to RE-DERIVE.** If you can point
   at something that exists only in THIS session — a table you measured, a
