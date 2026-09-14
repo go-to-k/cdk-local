@@ -220,11 +220,11 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
      # the marker to a stale sha that the gate then refuses as
      # `(mismatch)`. So bind only when it equals local HEAD: run this
      # after `gh pr checks <N> --watch`, never in the push's own call;
-     # on a mismatch re-run it (no sleep loop — a foreground sleep is
-     # blocked). `:?` refuses an empty answer, which would compare equal
-     # to an empty `rev-parse` outside a repo.
+     # on a mismatch re-run it (no sleep loop — the harness blocks a
+     # foreground sleep). `:?` refuses an empty answer, which would compare
+     # equal to an empty `rev-parse` outside a repo.
      SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
-     if [ "${SHA:?}" = "$(git rev-parse HEAD)" ]; then
+     if [ "${SHA:?no PR head}" = "$(git rev-parse HEAD)" ]; then
        printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
      else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
      ```
