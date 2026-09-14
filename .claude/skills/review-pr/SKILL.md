@@ -214,8 +214,19 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
      # concurrent agents in different worktrees no longer collide on
      # a shared main-tree marker store. Convention: set markers from
      # the worktree you intend to merge from.
-     gh pr view <N> --json headRefOid -q .headRefOid > .markgate-pr-review-sha
-     mise exec -- markgate set pr-review
+     #
+     # Right after a push `gh pr view` can still answer the PREVIOUS
+     # head (hit merging go-to-k/cdkd#879; twice on 2026-09-14), binding
+     # the marker to a stale sha that the gate then refuses as
+     # `(mismatch)`. So bind only when it equals local HEAD: run this
+     # after `gh pr checks <N> --watch`, never in the push's own call;
+     # on a mismatch re-run it (no sleep loop — the harness blocks a
+     # foreground sleep). `:?` refuses an empty answer, which would compare
+     # equal to an empty `rev-parse` outside a repo.
+     SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
+     if [ "${SHA:?no PR head}" = "$(git rev-parse HEAD)" ]; then
+       printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
+     else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
      ```
 
    For the `inline` tier, the marker is NOT set — the gate's heuristic
@@ -225,9 +236,8 @@ The skill itself never spawns reviewers. It reads PR stats, applies the heuristi
    **NEVER set the marker without dispatching the reviewers first.**
    The whole point of the gate is that an un-reviewed large PR cannot
    reach main; bypassing dispatch defeats it. The gate's hook
-   (`.claude/hooks/pr-review-gate.sh`, ship in a follow-up PR) blocks
-   `gh pr merge` until the marker is fresh AND the recorded sha matches
-   the PR's current HEAD.
+   (`.claude/hooks/pr-review-gate.sh`) blocks `gh pr merge` until the
+   marker is fresh AND the recorded sha matches the PR's current HEAD.
 
 ## Output template
 
