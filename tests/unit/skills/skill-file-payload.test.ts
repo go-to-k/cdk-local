@@ -359,9 +359,13 @@ describe('skill file payload budget', () => {
         MIN_REFERENCE_CORPUS_BYTES,
         `MIN_REFERENCE_CORPUS_BYTES (${MIN_REFERENCE_CORPUS_BYTES}) has lapsed: the ` +
           `${name} corpus is ${total} B and its largest stage file is ${largest} B, so ` +
-          `deleting that one file would leave ${total - largest} B and still pass. Raise ` +
-          `the floor above ${total - largest} (and re-derive the comment beside it), or ` +
-          `re-derive it DOWNWARD in the same commit as a genuine compression pass.`
+          `deleting that one file would leave ${total - largest} B and still pass. If YOUR ` +
+          `commit grew a non-leader stage file, PAY for it by compression in that file ` +
+          `rather than raising this floor -- references/retro.md section 10-c forbids a ` +
+          `retro buying room that way, and the comment beside the constant records the ` +
+          `passes that paid. Raise the floor above ${total - largest} (and re-derive the ` +
+          `comment beside it) only when the lapse is not yours to compress, or re-derive ` +
+          `it DOWNWARD in the same commit as a genuine compression pass.`
       ).toBeGreaterThan(total - largest);
     });
 
