@@ -12,10 +12,7 @@ changed behavior**.
 - **Run the integ LAST — and set the `check` / `docs` markers AFTER it, not
   before.** A fixture run writes `cdk.out/`, `node_modules/` and
   `pnpm-lock.yaml` under `tests/integration/<fixture>/`; the `check` gate
-  covers `tests/**` (plus `src/**`, the files that decide what green means —
-  `vite.config.ts` / `.mise.toml` / `.node-version` / `.markgate.yml` —
-  `.claude/hooks/**` and the checker-input agent-instruction files and
-  workflows; `.claude/rules/hooks.md` has the authoritative list) and markgate
+  covers `tests/**` (`.markgate.yml` is the authoritative scope) and markgate
   digests those artifacts even though git ignores them
   (go-to-k/cdk-local#620) — a green integ stales a marker set minutes earlier
   with `git status` clean. Order: edit → integ → `/check` → `markgate set` →
@@ -47,13 +44,19 @@ changed behavior**.
   the Lambda, hit the served route, run the task), not just the unit suite.
   Reproduce with the FIXED binary — `vp run build` first; the CLI runs from
   `dist/`. `/run-integ <local-*>` exercises the real Docker path; keep or
-  extend the covering fixture in the SAME PR.
+  extend the covering fixture in the SAME PR. **A lane that may not RUN the
+  fixture yet still WRITES the arm** — §9 makes the Docker turn the parent's
+  to grant, and whoever holds the turn runs it, so filing the arm instead is
+  the deferral "Never defer the integ" forbids (go-to-k/cdkd#3103's lane read
+  "do not run it" as "do not write it" and filed a `--no-wait` phase as
+  `Session-fit: next`; the parent wrote it and reddened its mutant within the
+  hour, 2026-09-14).
 - **Granting the integ turn is not the end of the parent's job: POLL, and the
   poll must measure the RUNNING THING** (`/run-integ` step 5 holds the
-  recipe). A watcher polled `stat -f %z` on an agent's `.output` path — a
-  SYMLINK — read the constant 153-byte link length, and reported three still-
-  growing transcripts "size-stable" until `stat -Lf` showed otherwise. A probe
-  that cannot move fails in the reassuring direction.
+  recipe). A watcher polled `stat -f %z` on an agent's `.output` SYMLINK, read
+  the constant 153-byte link length, and called three growing transcripts
+  "size-stable" until `stat -Lf` showed otherwise: a probe that cannot move
+  fails in the reassuring direction.
 - **Live-test the CONSEQUENCE you WROTE DOWN, not only the code path.** A
   consequence derived by READING lands in a code comment, `.claude/CLAUDE.md`,
   a commit message and an issue comment before anything tests it — the same
@@ -208,12 +211,10 @@ tier to under-verify. A diff that does both owes BOTH arms:
 
 ### 8-f. Orphans and markers
 
-After a Docker-backed run, sweep for orphans and clean up via `/cleanup` (the
-container / network filters and the AWS orphan sweep — run for EVERY fixture
-via `tests/integration/_lib/aws-orphan-sweep.sh`, not scoped by a
-`*-from-cfn-stack` glob, which missed three resource-owning fixtures — are in
-`.claude/CLAUDE.md` → "After running integration tests"). Leaving orphans is
-never acceptable.
+After a Docker-backed run, sweep for orphans and clean up via `/cleanup` —
+`.claude/CLAUDE.md` → "After running integration tests" holds the container /
+network filters and the EVERY-fixture `aws-orphan-sweep.sh` rule, including
+why it is not glob-scoped. Leaving orphans is never acceptable.
 
 `/verify-pr` sets the `check` + `docs` + `verify-pr` markers, which clear
 `verify-pr-gate` — not `gh pr merge` as a whole. That merge is additionally
@@ -242,30 +243,22 @@ and, from a side worktree, `gh-pr-merge-worktree-gate` (only `/merge-pr`).
   (go-to-k/cdkd#2383: three rounds of lane reviewers each found the next
   spelling of one defect; the independent orchestrator round found the YAML
   merge key the lane's own tripwire had been added to backstop and did not
-  fire on; go-to-k/cdk-real-drift#1838 spent its own rounds on the same
-  class). Take the tier `/review-pr` gives for YOUR pass: a lane's clean
+  fire on). Take the tier `/review-pr` gives for YOUR pass: a lane's clean
   round is evidence about the lane's assumptions, not about the diff.
-- **A reviewer's scratch COPY of a worktree is not detached from git.** A
-  linked worktree's `.git` is a FILE holding
-  `gitdir: <repo>/.git/worktrees/<name>`, and `cp -R` carries the pointer —
-  a read-only reviewer's `git add -A` inside its copy staged three tracked
-  DELETIONS in the LIVE tree (cdkd, 2026-08-29). **A PARALLEL round adds a
-  second way to write to that tree: the mutation probe §8-z asks for** —
-  reviewers dispatched together share one worktree, so one reviewer
+- **A reviewer's scratch COPY of a worktree is not detached from git** —
+  `.claude/agents/pr-*-reviewer.md` carries the mechanism, the 2026-08-29
+  incident, the no-WRITING-git-verb rule and the before/after
+  `git status --porcelain` report (which a mutate-and-restore probe slips
+  past — hence the copy rule), so a dispatch cannot omit them. Three
+  things are NOT there. Probe on a copy OUTSIDE every repository (deleting
+  the `.git` file does not detach a copy, it only makes discovery walk
+  upward). **A PARALLEL round adds a second writer — the mutation probe §8-z
+  asks for**: reviewers dispatched together share one worktree, so one
   live-mutating the subject corrupts every peer's run
   (go-to-k/cdk-local#675: a code reviewer's first two probes were invalidated
-  by a peer mutating the hook they were both reading). Two lines belong in
-  every read-only reviewer's brief (both live in
-  `.claude/agents/pr-*-reviewer.md`, so a dispatch cannot omit them): **run
-  no WRITING git verb** (`add` / `commit` / `restore` / `checkout` / `stash`
-  / `clean`) anywhere, copy included — probe on a copy OUTSIDE every
-  repository (deleting the `.git` file does not detach a copy, it only makes
-  discovery walk upward) — and **report the TARGET worktree's
-  `git status --porcelain` before AND after the round** (the pair makes
-  damage attributable; the porcelain pair does NOT catch a probe that mutates
-  and restores inside the window, which is why the copy rule exists). If
-  damage happens anyway, the repair is `git restore --staged` (the INDEX
-  only, never the working tree).
+  by a peer mutating the hook they were both reading). And if damage happens
+  anyway, the repair is `git restore --staged` (the INDEX only, never the
+  working tree).
 
 ### 8-z. When a mutation probe reports NO discrimination
 
