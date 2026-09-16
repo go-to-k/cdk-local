@@ -97,7 +97,8 @@
   from a side worktree trips the `'main' is already used by worktree` fatal (the
   remote merge lands but local cleanup fails) and is gate-blocked besides.
 - **Never defer the integ** — a `src/**` fix ships its Docker/fixture coverage in
-  the SAME PR (the `integ` gate enforces it at merge time).
+  the SAME PR, every slice (the `integ` gate enforces it at merge time;
+  `.claude/CLAUDE.md` → Workflow rules).
 - **Do not restore an agent's uncommitted work with `git checkout -- <file>`.**
   It resets to HEAD, and a fan-out agent's work is UNCOMMITTED by instruction, so
   the file goes back to `origin/main` and the agent's edit is gone (destroyed a
@@ -112,18 +113,26 @@
   the true size with `git status --porcelain | wc -l` plus
   `git diff --shortstat`, or accept that untracked files are missing from the
   stat and say so.
-- **A run interrupted by a rate-limit reset resumes cheaply, but only if it was
-  ARMED before the pause — and the salvage inventory is what makes it cheap.** A
-  one-shot cron at reset + 3 minutes re-enters the run; the +3 is not padding,
-  since a one-shot job scheduled on the hour can fire up to 90 s EARLY, i.e.
-  still rate-limited. What SURVIVES the pause: markgate markers (per-worktree,
-  on disk), the PR, its CI, and every reviewer verdict already posted to GitHub.
-  What does NOT: in-flight subagents. So the resuming session re-derives its
-  state from the markers plus `gh pr view` plus the review comments, and
-  re-dispatches only the reviewers that died. Measured on the overnight run of
-  2026-09-02 (go-to-k/cdk-local#650), which crossed two resets and a host sleep
-  and still finished its lane. Stand down any QUEUED lane the run will not reach
-  at the moment that verdict is known, not at the wrap (§4).
+- **A run interrupted by a rate-limit reset resumes cheaply only if it was
+  ARMED before the pause, and the salvage inventory is what makes it cheap.**
+  Arm a one-shot cron at reset + 3 min — an on-the-hour job can fire 90 s
+  EARLY, i.e. still rate-limited. SURVIVES: markgate markers (per-worktree, on
+  disk), the PR, its CI, every reviewer verdict already posted to GitHub. Does
+  NOT: in-flight subagents — so the resuming session re-derives state from the
+  markers plus `gh pr view` plus the review comments and re-dispatches only the
+  reviewers that died (go-to-k/cdk-local#650's 2026-09-02 overnight run crossed
+  two resets and a host sleep and still finished its lane). Stand down any
+  QUEUED lane the run will not reach the moment that verdict is known, not at
+  the wrap (§4).
+- **A lane killed by the account rate limit (HTTP 429 mid-turn) keeps its
+  context — `SendMessage` it, never re-dispatch**, and read the TREE before
+  writing the message: it may have committed, pushed and opened the PR
+  already, with a sha-bound marker left on a sha a later push superseded —
+  here only `pr-review` is bound that way, via `.markgate-pr-review-sha`
+  (three kills across the go-to-k/cdkd#3103 / go-to-k/cdkd#3139 lanes,
+  2026-09-14; there the stale one was `verify-pr`, not sha-bound here).
+  The bullet above is the other side of that boundary: a run re-entered by the
+  reset cron is a NEW session and cannot reach the lane at all.
 - **Any writer that NORMALISES an escape puts invisible non-C0 characters
   straight into a commit, and the fences do not all cover them.** A heredoc is
   one such writer; an EDITING TOOL is another -- writing this very bullet, an
@@ -145,9 +154,9 @@
   `invalid option`) and never `$'\xc2\xa0'` (`dash` searches for that TEXT and
   exits 1 on a file that carries the byte; both fail open under
   `|| echo clean`, measured 2026-09-02). rc=1 really does mean clean; the
-  recipe itself is executed by no test -- a live trade, since a harness that
-  extracts and runs a fenced block from prose is more machinery than the one
-  command it guards:
+  recipe itself is executed by no test -- a deliberate trade, a harness that
+  runs a fenced block from prose being more machinery than the one command it
+  guards:
 
   ```sh
   git diff --cached | LC_ALL=C grep -n \
@@ -171,8 +180,6 @@
   already, in that one (§3's launch-mode probe) — with DISJOINT files; merge via
   `/merge-pr`.
   (`.claude/CLAUDE.md` → Workflow rules.)
-- **Never defer integration tests to a later PR** — every slice ships its own integ
-  coverage green before merge. (`.claude/CLAUDE.md` → Workflow rules.)
 - **Never download/run/install untrusted third-party content** (§0).
 - **Wrap with a Remaining-work section + Session-close verdict, scoped to the
   issues this run actually worked.** This skill is the easiest place to get that

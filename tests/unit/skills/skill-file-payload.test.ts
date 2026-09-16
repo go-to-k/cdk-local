@@ -59,8 +59,9 @@ const MAX_ORCHESTRATOR_BYTES = 12_000; // work-issues' orchestrator was ~7 KB at
 // five clauses here saying so, sending its rules to
 // references/{launch-mode,claim,ship,retro}.md -- which is why a change touching
 // thirteen files cost the always-loaded file so little. The remaining margin is
-// ~163 B -- two wrapped lines at 80 columns, not the "under one wrapped line"
-// this said until go-to-k/cdk-local#675 re-derived it. The next orchestrator
+// ~115 B -- about one wrapped line at 80 columns. go-to-k/cdk-local#675 read it
+// as ~163 B at 11,837 B, and the 2026-09-05 batching pass's stage-3 clause
+// (11,837 -> 11,885) ate the difference. The next orchestrator
 // addition still has to buy its space by moving something out, and MEASURED
 // asserts the live figure, so read its failure message rather than this
 // sentence.
@@ -159,9 +160,11 @@ const MIN_REFERENCE_FILES = 6;
 // The `now`-by-default pass first lapsed this floor by 113 B (retro.md's
 // promotion bullet is a non-leader addition, charged in full) and PAID rather
 // than raised, per section 10-c: three retro.md narratives compressed to their
-// citations in the same commit. The floor is unchanged and the margin is 10 B
-// (MEASURED's comment states the baseline; its failure message carries the
-// live figure).
+// citations in the same commit. The go-to-k/cdk-local#735 retro mirror took
+// the same route from a 10 B margin -- its two additions land in verify.md and
+// gotchas.md, both NON-leaders and so charged in full -- and over-paid, so the
+// floor is unchanged and the binding margin is now 70 B (MEASURED's comment
+// states the baseline; its failure message carries the live figure).
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -212,9 +215,25 @@ const MEASURED: Record<
     // floor. The next non-leader addition must be paid for in its own file.
     // go-to-k/cdk-local#722 then re-dated one sentence in implement.md
     // (+13 B, inside the largest file, so `corpus - largest` is unchanged).
-    corpusBytes: 150_439,
+    // The go-to-k/cdk-local#735 mirror of the cdkd go-to-k/cdkd#3077 run's
+    // retro (2026-09-16): verify.md 8-b gained the "a lane that may not RUN
+    // the fixture yet still WRITES the arm" sentence (+~430 B) and gotchas.md
+    // gained the 429-resume bullet (+~490 B), both PAID for by compression in
+    // their own files rather than by moving the floor (section 10-c). What
+    // paid: verify.md's scratch-COPY paragraph, its restatement of the `check`
+    // gate's include list and its restatement of the orphan-sweep rule now
+    // point at `.claude/agents/pr-*-reviewer.md`, `.markgate.yml` and
+    // `.claude/CLAUDE.md` respectively, a third reviewer-round citation went,
+    // and two incident narratives were compressed to one line each;
+    // gotchas.md's reset-cron bullet was compressed and its duplicate "never
+    // defer integration tests" appendix entry folded into the gotcha that
+    // already said it. verify.md 22,452 -> 21,979 and gotchas.md
+    // 13,023 -> 13,436, net -60 B on the corpus, so `corpus - largest` fell
+    // 119,490 -> 119,430 and the floor's binding margin went 10 -> 70 B with
+    // the floor UNCHANGED.
+    corpusBytes: 150_379,
     largest: { file: 'implement.md', bytes: 30_949 },
-    runnerUp: { file: 'verify.md', bytes: 22_452 },
+    runnerUp: { file: 'verify.md', bytes: 21_979 },
   },
 };
 
