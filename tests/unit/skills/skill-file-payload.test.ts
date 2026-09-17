@@ -163,8 +163,12 @@ const MIN_REFERENCE_FILES = 6;
 // citations in the same commit. The go-to-k/cdk-local#735 retro mirror took
 // the same route from a 10 B margin -- its two additions land in verify.md and
 // gotchas.md, both NON-leaders and so charged in full -- and over-paid, so the
-// floor is unchanged and the binding margin is now 70 B (MEASURED's comment
-// states the baseline; its failure message carries the live figure).
+// floor is unchanged. The LIVE margin is deliberately not quoted here, the
+// same rule the three cap comments above state about themselves: this clause
+// used to end "and the binding margin is now 70 B", which was true at the
+// commit that wrote it and false at the next three, in present tense, in the
+// text a lane reads before adding to a non-leader file. MEASURED asserts the
+// inputs and its failure message prints the live figure; read that.
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -231,9 +235,55 @@ const MEASURED: Record<
     // 13,023 -> 13,436, net -60 B on the corpus, so `corpus - largest` fell
     // 119,490 -> 119,430 and the floor's binding margin went 10 -> 70 B with
     // the floor UNCHANGED.
-    corpusBytes: 150_379,
-    largest: { file: 'implement.md', bytes: 30_949 },
-    runnerUp: { file: 'verify.md', bytes: 21_979 },
+    // The go-to-k/cdk-local#737 mirror of cdkd's go-to-k/cdkd#3296 retro
+    // (2026-09-17): implement.md 5-e gained the bullet saying a narrow probe
+    // VALUE input and an assertion's EXEMPTION are one defect, carrying the
+    // three requirements that follow -- whole class per message, assert the
+    // VALUE, and a TRANSCRIBED class needs a whole-domain behaviour fence
+    // against the copy IN USE. The independence sentence was RELOCATED into
+    // it out of verify.md's probe-diagnosis ladder, which now points here
+    // rather than restating it, so the concept has one home (section 10-c's
+    // near-duplicate rule). No cap and no floor moved, but state the
+    // accounting in terms of the figures this record ASSERTS, and in no
+    // others. Two rounds of review each caught a false byte claim in this
+    // paragraph -- first a claim that the change was paid for in BOTH files,
+    // when verify.md had GROWN and paid nothing; then a hand-written
+    // decomposition of the bullet's size against what one compression
+    // recovered, out by the same amount in each term, so the NET still
+    // reconciled and the suite stayed green. A recount is not the fix for a
+    // figure that keeps drifting: an UNFENCED number in the record the next
+    // lane reads to decide where to pay misdirects exactly that reader, and
+    // nothing re-checks it. Neither wrong figure is restated here, not even
+    // to correct it -- a labelled-false number is still a number this record
+    // carries and nothing re-derives. Only the four asserted below are
+    // stated; go-to-k/cdk-local#738's comment thread holds the arithmetic,
+    // POSTED there -- an earlier revision of this line deferred to a thread
+    // that was empty, because the review rounds were agent reports nobody had
+    // published. A pointer at nothing is the same defect as an unfenced
+    // number: check the target exists before writing the deferral.
+    //
+    // implement.md 30,949 -> 31,921 (79 B under the cap, down from 1,051),
+    // verify.md 21,979 -> 22,000, corpus 150,379 -> 151,372, `corpus -
+    // largest` 119,430 -> 119,451, so the floor's binding margin is 49 B with
+    // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. verify.md ABSORBED its growth --
+    // the pointer replacing the relocated sentence is longer than the
+    // sentence was -- so implement.md's cap headroom is what funded this.
+    // The next NON-LEADER addition has under 49 B before the floor lapses
+    // (the assertion is a strict `>`, so 49 B exactly LAPSES it and a lane
+    // has 48), and must be paid for in whichever file receives it:
+    // COMPRESSING implement.md buys nothing here, because a size change to
+    // the LARGEST file moves corpus and largest by the same amount and leaves
+    // their difference where it was.
+    //
+    // One compression was tried and is REVERTED: shortening
+    // `.claude/skills/review-pr/SKILL.md` to `review-pr/SKILL.md` "under
+    // `.claude/`" composed to a path that does not exist -- a fact lost in a
+    // compression, inside the one bullet whose subject is auditing every copy
+    // of an enumerated path list. Bytes are not worth a wrong path; spell
+    // them in full.
+    corpusBytes: 151_372,
+    largest: { file: 'implement.md', bytes: 31_921 },
+    runnerUp: { file: 'verify.md', bytes: 22_000 },
   },
 };
 

@@ -150,14 +150,12 @@ as labels**:
 # `<issue-slug>` per FINDING, not per lane -- the root cause plus your branch.
 # Two reasons, and the second is the one that bites: parallel lanes share /tmp,
 # AND the gate prefers a READABLE file at that path over the heredoc below it.
-# Measured: with a file already there carrying `Dup-check:`, a command whose
-# heredoc omits that line exits 0 and then overwrites it, filing the
-# marker-less body. Reusing one slug for a second finding is exactly how that
-# happens. The REVERSE is reachable too, and it costs a FALSE BLOCK: run that
-# same slug a THIRD time with a properly marked heredoc and the gate returns
-# rc=2, because it reads the STALE marker-less file on disk in preference to
-# the heredoc about to replace it -- the refusal is about a stale READABLE
-# file, not a missing marker (measured 2026-09-01, here and in cdkd). Nor does
+# Measured 2026-09-01, here and in cdkd: with a marked file already there, a
+# heredoc omitting `Dup-check:` exits 0 and overwrites it, filing the
+# marker-less body -- and the REVERSE costs a FALSE BLOCK, since a properly
+# marked heredoc returns rc=2 while a STALE marker-less file sits at that
+# path. Reusing one slug for a second finding is how both happen; the refusal
+# is about a stale READABLE file, not a missing marker. Nor does
 # a marker-less file need a gated writer: a plain
 # `cat > /tmp/wi-issue-body-x.md` carries no `gh` verb, so no gate sees it.
 cat > /tmp/wi-issue-body-<issue-slug>.md <<'BODY'
@@ -429,6 +427,21 @@ look for a sibling `*.test.sh` before writing a new harness.
 - **A fence is not evidence until you have watched it go red on something you
   had NOT already counted** — calibration hits do not count, nor the failure
   direction driven with the same instances.
+- **A narrow probe VALUE input and an assertion's EXEMPTION are one defect.**
+  An exemption is the enumeration the property replaced, and each exempt case
+  is an unproved claim about the SUBJECT that only the TEST's shape justified
+  (go-to-k/cdkd#3275: a sanitizer property exempted `\t` to defend the
+  separator its inputs were JOINED with, then `\n` a round later on the same
+  reasoning — both stripped by the sanitizer, so it twice admitted the shape
+  it existed to catch). Assert the subject's whole class PER MESSAGE, so no
+  separator needs exempting, and assert the VALUE — `out === input` is blind
+  wherever the subject maps a value to itself, and leaves the replacement
+  unpinned. An expected value must stay an INDEPENDENT variable from the one
+  under test (`references/verify.md` §8-z sends you here), so a TRANSCRIBED
+  class needs a behaviour fence over the WHOLE domain — a bound is an
+  exemption too — over EVERY fact it copies, and against the copy IN USE:
+  cdkd's first fence declared its own third copy, so it paired only itself
+  while the two copies actually read could be narrowed back with it green.
 - **A suite enumerated along ONE dimension goes green over defects that live
   in the other one.** The probes above vary the SPELLING; the second axis is
   the STATE the subject arrives in, enumerated by accident when every case
