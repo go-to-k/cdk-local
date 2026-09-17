@@ -240,26 +240,35 @@ const MEASURED: Record<
     // it out of verify.md's probe-diagnosis ladder, which now points here
     // rather than restating it, so the concept has one home (section 10-c's
     // near-duplicate rule). No cap and no floor moved, but state the
-    // accounting exactly rather than as "paid in-file", because review
-    // measured that claim false once already: the new bullet is ~1,077 B,
-    // ONE compression inside implement.md (the /tmp-body-gate comment)
-    // recovered ~105 B, and the REST came out of cap headroom, which falls
-    // 1,051 -> 79 B. verify.md did not pay either -- it ABSORBED +27 B for
-    // the pointer that replaced the relocated sentence. A second compression
-    // was tried in implement.md's `/review-pr` path-list narrative and is
-    // REVERTED: shortening `.claude/skills/review-pr/SKILL.md` to
-    // `review-pr/SKILL.md` "under `.claude/`" composed to a path that does
-    // not exist -- a fact lost in a compression, inside the one bullet whose
-    // subject is auditing every copy of an enumerated path list. Bytes are
-    // not worth a wrong path; spell them in full.
-    // implement.md 30,949 -> 31,921 (79 B under the cap), verify.md
-    // 21,979 -> 22,006, corpus 150,379 -> 151,378, `corpus - largest`
-    // 119,430 -> 119,457, so the floor's binding margin is 43 B with
-    // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. The next non-leader addition has
-    // under 43 B before it lapses -- pay in that file.
-    corpusBytes: 151_378,
+    // accounting in terms of the figures this record ASSERTS, and in no
+    // others. Two rounds of review each caught a false byte claim in this
+    // paragraph -- first "PAID for in both files ... verify.md's ladder item
+    // shortened" (verify.md GREW and paid nothing), then a hand-written
+    // decomposition ("the bullet is ~1,077 B", "the compression recovered
+    // ~105 B") that was out by 65 B in each term. A recount is not the fix
+    // for a figure that keeps drifting: an UNFENCED number in the record the
+    // next lane reads to decide where to pay misdirects exactly that reader,
+    // and nothing re-checks it. So the sub-totals are GONE and only the four
+    // asserted below are stated.
+    //
+    // implement.md 30,949 -> 31,921 (79 B under the cap, down from 1,051),
+    // verify.md 21,979 -> 22,000, corpus 150,379 -> 151,372, `corpus -
+    // largest` 119,430 -> 119,451, so the floor's binding margin is 49 B with
+    // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. verify.md ABSORBED its growth --
+    // the pointer replacing the relocated sentence is longer than the
+    // sentence was -- so implement.md's cap headroom is what funded this,
+    // and the next non-leader addition has under 49 B before the floor
+    // lapses. Pay in that file.
+    //
+    // One compression was tried and is REVERTED: shortening
+    // `.claude/skills/review-pr/SKILL.md` to `review-pr/SKILL.md` "under
+    // `.claude/`" composed to a path that does not exist -- a fact lost in a
+    // compression, inside the one bullet whose subject is auditing every copy
+    // of an enumerated path list. Bytes are not worth a wrong path; spell
+    // them in full.
+    corpusBytes: 151_372,
     largest: { file: 'implement.md', bytes: 31_921 },
-    runnerUp: { file: 'verify.md', bytes: 22_006 },
+    runnerUp: { file: 'verify.md', bytes: 22_000 },
   },
 };
 

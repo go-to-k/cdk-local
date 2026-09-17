@@ -304,10 +304,10 @@ go-to-k/cdkd#2198; the fifth measured here 2026-09-03):
    somewhere else" print identically. Use ABSOLUTE paths and confirm by a
    property the wrong tree cannot fake (`ls -la` mtime).
 4. **The probe passes VACUOUSLY when its own PREMISE has evaporated — make
-   the premise ASSERTABLE.** The independence rule, and its cost when the
-   expected value TRANSCRIBES its subject, are in `references/implement.md`
-   §5-e. Here: a stub keyed content on a sha defaulting to the same literal on
-   both sides, so breaking the producing call still served it. Four more (the
+   the premise ASSERTABLE.** The independence rule, and its TRANSCRIPTION
+   cost, are in `references/implement.md` §5-e. Here: a stub keyed content on
+   a sha whose default was the same literal on both sides, so breaking the
+   producing call still served it. Four more of the shape in one run (the
    go-to-k/cdk-local#667 lane): an `undefined` env assignment arriving as the
    STRING `"undefined"`; a docker stub exiting 0 unconditionally; an
    after-set always a SUPERSET of the before-set, so `comm` could not
