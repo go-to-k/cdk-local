@@ -163,8 +163,12 @@ const MIN_REFERENCE_FILES = 6;
 // citations in the same commit. The go-to-k/cdk-local#735 retro mirror took
 // the same route from a 10 B margin -- its two additions land in verify.md and
 // gotchas.md, both NON-leaders and so charged in full -- and over-paid, so the
-// floor is unchanged and the binding margin is now 70 B (MEASURED's comment
-// states the baseline; its failure message carries the live figure).
+// floor is unchanged. The LIVE margin is deliberately not quoted here, the
+// same rule the three cap comments above state about themselves: this clause
+// used to end "and the binding margin is now 70 B", which was true at the
+// commit that wrote it and false at the next three, in present tense, in the
+// text a lane reads before adding to a non-leader file. MEASURED asserts the
+// inputs and its failure message prints the live figure; read that.
 const MIN_REFERENCE_CORPUS_BYTES = 119_500;
 
 /**
@@ -242,23 +246,28 @@ const MEASURED: Record<
     // near-duplicate rule). No cap and no floor moved, but state the
     // accounting in terms of the figures this record ASSERTS, and in no
     // others. Two rounds of review each caught a false byte claim in this
-    // paragraph -- first "PAID for in both files ... verify.md's ladder item
-    // shortened" (verify.md GREW and paid nothing), then a hand-written
-    // decomposition ("the bullet is ~1,077 B", "the compression recovered
-    // ~105 B") that was out by 65 B in each term. A recount is not the fix
-    // for a figure that keeps drifting: an UNFENCED number in the record the
-    // next lane reads to decide where to pay misdirects exactly that reader,
-    // and nothing re-checks it. So the sub-totals are GONE and only the four
-    // asserted below are stated.
+    // paragraph -- first a claim that the change was paid for in BOTH files,
+    // when verify.md had GREW and paid nothing; then a hand-written
+    // decomposition of the bullet's size against what one compression
+    // recovered, out by the same amount in each term, so the NET still
+    // reconciled and the suite stayed green. A recount is not the fix for a
+    // figure that keeps drifting: an UNFENCED number in the record the next
+    // lane reads to decide where to pay misdirects exactly that reader, and
+    // nothing re-checks it. Neither wrong figure is restated here, not even
+    // to correct it -- a labelled-false number is still a number this record
+    // carries and nothing re-derives. Only the four asserted below are
+    // stated; the review thread on go-to-k/cdk-local#738 holds the arithmetic.
     //
     // implement.md 30,949 -> 31,921 (79 B under the cap, down from 1,051),
     // verify.md 21,979 -> 22,000, corpus 150,379 -> 151,372, `corpus -
     // largest` 119,430 -> 119,451, so the floor's binding margin is 49 B with
     // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. verify.md ABSORBED its growth --
     // the pointer replacing the relocated sentence is longer than the
-    // sentence was -- so implement.md's cap headroom is what funded this,
-    // and the next non-leader addition has under 49 B before the floor
-    // lapses. Pay in that file.
+    // sentence was -- so implement.md's cap headroom is what funded this.
+    // The next NON-LEADER addition has under 49 B before the floor lapses,
+    // and must be paid for in whichever file receives it: paying inside
+    // implement.md buys nothing here, because growth in the LARGEST file
+    // raises corpus and largest together and leaves the difference unmoved.
     //
     // One compression was tried and is REVERTED: shortening
     // `.claude/skills/review-pr/SKILL.md` to `review-pr/SKILL.md` "under
