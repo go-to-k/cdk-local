@@ -231,9 +231,25 @@ const MEASURED: Record<
     // 13,023 -> 13,436, net -60 B on the corpus, so `corpus - largest` fell
     // 119,490 -> 119,430 and the floor's binding margin went 10 -> 70 B with
     // the floor UNCHANGED.
-    corpusBytes: 150_379,
-    largest: { file: 'implement.md', bytes: 30_949 },
-    runnerUp: { file: 'verify.md', bytes: 21_979 },
+    // The go-to-k/cdk-local#737 mirror of cdkd's go-to-k/cdkd#3296 retro
+    // (2026-09-17): implement.md 5-e gained the bullet saying a narrow probe
+    // VALUE input and an assertion's EXEMPTION are one defect, carrying the
+    // three requirements that follow -- whole class per message, assert the
+    // VALUE, and a TRANSCRIBED class needs a whole-domain behaviour fence
+    // against the copy IN USE. The independence sentence was RELOCATED into
+    // it out of verify.md's probe-diagnosis ladder, which now points here
+    // rather than restating it, so the concept has one home (section 10-c's
+    // near-duplicate rule). PAID for in both files rather than by moving a
+    // cap or the floor: implement.md's `/review-pr` path-list narrative and
+    // its /tmp-body-gate comment were compressed, verify.md's ladder item
+    // shortened on the relocation. implement.md 30,949 -> 31,915 (85 B under
+    // the cap), verify.md 21,979 -> 22,005, corpus 150,379 -> 151,371, and
+    // `corpus - largest` 119,430 -> 119,456, so the floor's binding margin is
+    // 44 B with MIN_REFERENCE_CORPUS_BYTES UNCHANGED. The next non-leader
+    // addition must be paid for in its own file.
+    corpusBytes: 151_371,
+    largest: { file: 'implement.md', bytes: 31_915 },
+    runnerUp: { file: 'verify.md', bytes: 22_005 },
   },
 };
 
