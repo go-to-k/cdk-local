@@ -247,7 +247,7 @@ const MEASURED: Record<
     // accounting in terms of the figures this record ASSERTS, and in no
     // others. Two rounds of review each caught a false byte claim in this
     // paragraph -- first a claim that the change was paid for in BOTH files,
-    // when verify.md had GREW and paid nothing; then a hand-written
+    // when verify.md had GROWN and paid nothing; then a hand-written
     // decomposition of the bullet's size against what one compression
     // recovered, out by the same amount in each term, so the NET still
     // reconciled and the suite stayed green. A recount is not the fix for a
@@ -256,7 +256,11 @@ const MEASURED: Record<
     // nothing re-checks it. Neither wrong figure is restated here, not even
     // to correct it -- a labelled-false number is still a number this record
     // carries and nothing re-derives. Only the four asserted below are
-    // stated; the review thread on go-to-k/cdk-local#738 holds the arithmetic.
+    // stated; go-to-k/cdk-local#738's comment thread holds the arithmetic,
+    // POSTED there -- an earlier revision of this line deferred to a thread
+    // that was empty, because the review rounds were agent reports nobody had
+    // published. A pointer at nothing is the same defect as an unfenced
+    // number: check the target exists before writing the deferral.
     //
     // implement.md 30,949 -> 31,921 (79 B under the cap, down from 1,051),
     // verify.md 21,979 -> 22,000, corpus 150,379 -> 151,372, `corpus -
@@ -264,10 +268,12 @@ const MEASURED: Record<
     // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. verify.md ABSORBED its growth --
     // the pointer replacing the relocated sentence is longer than the
     // sentence was -- so implement.md's cap headroom is what funded this.
-    // The next NON-LEADER addition has under 49 B before the floor lapses,
-    // and must be paid for in whichever file receives it: paying inside
-    // implement.md buys nothing here, because growth in the LARGEST file
-    // raises corpus and largest together and leaves the difference unmoved.
+    // The next NON-LEADER addition has under 49 B before the floor lapses
+    // (the assertion is a strict `>`, so 49 B exactly LAPSES it and a lane
+    // has 48), and must be paid for in whichever file receives it:
+    // COMPRESSING implement.md buys nothing here, because a size change to
+    // the LARGEST file moves corpus and largest by the same amount and leaves
+    // their difference where it was.
     //
     // One compression was tried and is REVERTED: shortening
     // `.claude/skills/review-pr/SKILL.md` to `review-pr/SKILL.md` "under
