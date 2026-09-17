@@ -365,12 +365,12 @@ look for a sibling `*.test.sh` before writing a new harness.
   never produces exactly the one instance someone noticed (go-to-k/cdkd#1972:
   one reported dead path; the audit found a second plus four live surfaces
   never added). Here, go-to-k/cdk-local#506: `/review-pr`'s up-bias path list
-  is written FOUR times (`UP_PATHS` in `.claude/hooks/pr-review-gate.sh`, plus
-  `review-pr/SKILL.md`, `rules/hooks.md` and `agents/pr-code-reviewer.md`
-  under `.claude/`) — audit every copy; the first draft of this rule said
-  "three" and missed the copy already out of sync. Then make the recurrence
-  mechanical: a sync-required list is a test asserting every entry resolves
-  and the copies agree (shipped in
+  is written FOUR times (`UP_PATHS` in `.claude/hooks/pr-review-gate.sh`,
+  `.claude/skills/review-pr/SKILL.md`, `.claude/rules/hooks.md`,
+  `.claude/agents/pr-code-reviewer.md`) — audit every copy; the first draft
+  of this rule said "three" and missed the copy already out of sync. Then
+  make the recurrence mechanical: a sync-required list is a test asserting
+  every entry resolves and the copies agree (shipped in
   `.claude/hooks/pr-review-gate.test.sh`). Traps found writing it: **compare
   in document order with duplicates preserved, and keep path names out of
   prose inside the extracted region** (a sorted-set compare let an evidence

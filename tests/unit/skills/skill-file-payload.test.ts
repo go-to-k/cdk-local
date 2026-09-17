@@ -239,17 +239,27 @@ const MEASURED: Record<
     // against the copy IN USE. The independence sentence was RELOCATED into
     // it out of verify.md's probe-diagnosis ladder, which now points here
     // rather than restating it, so the concept has one home (section 10-c's
-    // near-duplicate rule). PAID for in both files rather than by moving a
-    // cap or the floor: implement.md's `/review-pr` path-list narrative and
-    // its /tmp-body-gate comment were compressed, verify.md's ladder item
-    // shortened on the relocation. implement.md 30,949 -> 31,915 (85 B under
-    // the cap), verify.md 21,979 -> 22,005, corpus 150,379 -> 151,371, and
-    // `corpus - largest` 119,430 -> 119,456, so the floor's binding margin is
-    // 44 B with MIN_REFERENCE_CORPUS_BYTES UNCHANGED. The next non-leader
-    // addition must be paid for in its own file.
-    corpusBytes: 151_371,
-    largest: { file: 'implement.md', bytes: 31_915 },
-    runnerUp: { file: 'verify.md', bytes: 22_005 },
+    // near-duplicate rule). No cap and no floor moved, but state the
+    // accounting exactly rather than as "paid in-file", because review
+    // measured that claim false once already: the new bullet is ~1,077 B,
+    // ONE compression inside implement.md (the /tmp-body-gate comment)
+    // recovered ~105 B, and the REST came out of cap headroom, which falls
+    // 1,051 -> 79 B. verify.md did not pay either -- it ABSORBED +27 B for
+    // the pointer that replaced the relocated sentence. A second compression
+    // was tried in implement.md's `/review-pr` path-list narrative and is
+    // REVERTED: shortening `.claude/skills/review-pr/SKILL.md` to
+    // `review-pr/SKILL.md` "under `.claude/`" composed to a path that does
+    // not exist -- a fact lost in a compression, inside the one bullet whose
+    // subject is auditing every copy of an enumerated path list. Bytes are
+    // not worth a wrong path; spell them in full.
+    // implement.md 30,949 -> 31,921 (79 B under the cap), verify.md
+    // 21,979 -> 22,006, corpus 150,379 -> 151,378, `corpus - largest`
+    // 119,430 -> 119,457, so the floor's binding margin is 43 B with
+    // MIN_REFERENCE_CORPUS_BYTES UNCHANGED. The next non-leader addition has
+    // under 43 B before it lapses -- pay in that file.
+    corpusBytes: 151_378,
+    largest: { file: 'implement.md', bytes: 31_921 },
+    runnerUp: { file: 'verify.md', bytes: 22_006 },
   },
 };
 
