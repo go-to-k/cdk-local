@@ -1,10 +1,8 @@
-<!-- Part of the /work-issues skill. Stage files: launch-mode.md (before stage 0), triage.md (§0–§3), claim.md (§4), implement.md (§5), gates-and-pr.md (§6–§7), verify.md (§8), ship.md (§9), retro.md (§10), gotchas.md (appendix). A bare §N points into the file that holds that section. READ THIS FILE IN FULL before stage 0. -->
+<!-- Part of the /work-issues skill (before stage 0). A bare §N points into the stage file holding that section; the map is SKILL.md's "Stages" table. READ THIS FILE IN FULL before stage 0. -->
 
 ## Launch mode — the PARENT runs this BEFORE stage 0
 
-This is the ONLY copy of the probe. SKILL.md "Launch mode" points here rather
-than restating it, because a second verbatim copy of a command is the drift
-shape §10-b fences elsewhere.
+This is the ONLY copy of the probe.
 
 ```bash
 [ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ] \
@@ -19,182 +17,71 @@ printf 'MODE=%s\nLANE_TREE=%s\nMAIN_CHECKOUT=%s\nLAUNCH_BRANCH=%s\n' \
   "$MODE" "$LANE_TREE" "$MAIN_CHECKOUT" "$LAUNCH_BRANCH"
 ```
 
-### Why here and not at the top of stage 3
-
-The probe used to sit at the top of §3, on the reasoning that §3 is the first
-place the answer is used. Both halves of that were wrong, and each one alone
-would be enough to move it:
-
-- **Stages 1 and 2 already consume the mode.** §2's collision map runs
-  `git -C .claude/worktrees/<w> log|show|status` — a RELATIVE path, correct
-  only from the main checkout. Run IN-PLACE, the cwd is a lane tree, that path
-  does not exist, git errors, and the scan returns NOTHING. An empty collision
-  map reads as "no competing agents", which is the exact failure §2 exists to
-  prevent, and it fails QUIETLY. `MAIN_CHECKOUT` is what makes that scan
-  absolute, so it has to exist before §2 runs, not after.
-- **Stages 0–3 are DELEGATED to a read-only triage subagent** (SKILL.md), whose
-  return payload is a candidate table — no git state, no paths. An answer
-  computed inside it never reaches the parent, and the parent is the party that
-  later runs `git worktree add` or does not. Computing it in the parent before
-  dispatching anything removes the problem instead of documenting it.
-
-So: run it in the parent, pass `MODE` / `LANE_TREE` / `MAIN_CHECKOUT` /
-`LAUNCH_BRANCH` into the triage dispatch and into every lane dispatch, and state
-all four in the opening report.
+Run it in the PARENT, before stage 0; state all four values in the opening
+report and pass them into the triage dispatch and every lane dispatch. Later,
+or inside the triage subagent, is too late: §2's collision map needs
+`<MAIN_CHECKOUT>/.claude/worktrees/<w>` and, given a relative path from a lane
+tree, returns NOTHING — read as "no competing agents", failing QUIETLY — and
+the parent is the party that later runs `git worktree add` or does not.
 
 ### Reading the four values
 
-`GITDIR` equals `COMMON` only in the main checkout — a linked worktree's
-`--git-dir` is `<common-dir>/worktrees/<name>`. `pwd -P` is load-bearing in
-BOTH directions: the main checkout answers `.git` RELATIVELY for both, so an
-unnormalised compare is only accidentally right, and macOS spells `/tmp` as
-`/private/tmp`. Chosen over comparing against the first row of
-`git worktree list --porcelain` because it needs no listing order, no path
-parsing and no awareness of other worktrees.
-
-`MAIN_CHECKOUT` is `dirname "$COMMON"` — the parent of the ONE shared git dir —
-never `pwd` and never `--show-toplevel`, both of which answer "the tree I am
-standing in" and so are exactly wrong in the mode that needs the value.
-
-`LANE_TREE` is "the tree this run stands in", NOT "the lane worktree":
-MAIN-CHECKOUT records the main checkout under it, and the two are equal there.
-IN-PLACE they differ, and that difference is the whole point.
-
-`LAUNCH_BRANCH` is `git branch --show-current` **at probe time** — the branch the
-tree was handed to this run ON, which IN-PLACE means the branch the OUTER TOOL
-created. An EMPTY value is a legitimate answer, not a probe failure: it says the
-run was launched detached, and §9's restore keeps a detach fallback for exactly
-that case. It is unguarded on purpose, unlike the three paths above: inside a
-work tree — which line 1 has already established — `git branch --show-current`
-exits 0 and prints nothing only when HEAD is detached, so there is no failing
-spelling for an empty value to be confused with. It is the one value that becomes UNRECOVERABLE if not recorded now —
-§5 switches the tree onto the lane's own branch, so every later
-`git branch --show-current` answers with the LANE's branch and the thing this
-value exists to name (what to put back) is gone. MAIN-CHECKOUT records it and
-does nothing with it: the run never leaves the main checkout, so §9's restore arm
-does not fire there.
+- **`MAIN_CHECKOUT`** — the parent of the ONE shared git dir. Never `pwd` or
+  `--show-toplevel`: both answer "the tree I am standing in", exactly wrong in
+  the mode that needs the value.
+- **`LANE_TREE`** — "the tree this run stands in", NOT "the lane worktree".
+  MAIN-CHECKOUT records the main checkout under it; IN-PLACE they differ, and
+  that difference is the point.
+- **`LAUNCH_BRANCH`** — the branch the tree was handed to this run ON, read **at
+  probe time**; IN-PLACE that is the branch the OUTER TOOL created. EMPTY is
+  legitimate, not a failure — the run was launched detached, and §9 keeps a
+  detach fallback for it. UNRECOVERABLE if not recorded now: §5 switches the
+  tree onto the lane's own branch, after which `git branch --show-current`
+  answers with the LANE's branch.
 
 **IN-PLACE, `LAUNCH_BRANCH` is a branch to PUT BACK, never one to commit to.**
-§5 branches in place off `origin/main` instead of committing onto it, and the
-reason is not tidiness: the merge deletes the REMOTE branch the PR was opened
-from (`/merge-pr`, §9), so a lane that worked directly on the outer tool's branch
-would delete the outer tool's branch on the way out — a far heavier interference
-than the detached HEAD this whole rule exists to avoid. The lane owns its own
+§5 branches in place off `origin/main` instead, because the merge deletes the
+REMOTE branch the PR was opened from (§9) — a lane working directly on the
+outer tool's branch would delete it on the way out. The lane owns its own
 branch and deletes only that one.
 
-**The guard on the first line is not decoration.** Outside a work tree every
-`git rev-parse` fails and each substitution collapses to the empty string, so
-an unguarded compare tests `""` against `""` and prints MAIN-CHECKOUT — a wrong
-verdict, with a wrong `LANE_TREE` beside it. Measured 2026-08-31, the shells
-even disagreed about the wreckage: bash REFUSES `cd ""` (rc=1) while zsh
-accepts it (rc=0) and prints the cwd twice. `--is-inside-work-tree` is compared
-to the literal `true` rather than trusted for its exit status, because inside a
-`.git` directory it prints `false` and exits 0 — measured 2026-09-01; the
-exit-status form passed there and produced an empty `LANE_TREE` under a
-`MAIN-CHECKOUT` verdict. With the value compare, both non-repo positions fail
-loudly in both shells, and the shell divergence stops mattering.
-
-**An empty value is worse than a failed command, which is why the probe stops
-rather than warning.** `git -C "" rev-parse --show-toplevel` exits 0 and prints
-the CWD's repo, so a `git -C "<LANE_TREE>"` recipe handed a blank silently
-retargets whatever tree the shell is standing in — the main checkout, in
-exactly the scenario the `-C` was added for. The guard would degrade into the
-bug it guards, with no failure to read.
+A blank value is worse than a failure — `git -C ""` silently re-targets the
+cwd's repo — so the probe stops on its first line. Do not weaken that guard or
+the `pwd -P` calls.
 
 ### The values are RECORDED, never re-derived
 
 The opening report is their ONLY recorded copy. Every later stage runs in a
 fresh shell whose cwd may have silently reset to the main checkout (appendix,
-the `cd <lane tree> &&` rule), so a stage that re-derives `LANE_TREE` from
-`$(git rev-parse --show-toplevel)` or from `pwd` answers "the main checkout" in
-precisely the case the value exists to guard.
+the `cd <lane tree> &&` rule), so re-deriving `LANE_TREE` from
+`git rev-parse --show-toplevel` or `pwd` — and equally a `grep` / `cat` on a
+RELATIVE path, or a bare `git branch --show-current` / `git diff` — answers
+about the main checkout in exactly the case the value exists to guard. Read
+every file this run owns under the recorded absolute `<LANE_TREE>`, and treat
+an answer CONTRADICTING the recorded values as a cwd fault, not a finding
+(go-to-k/cdkd#2514). This repo keeps no worktree-owner sentinel, so those
+values, §5's ownership probes and the §4 claims are the WHOLE ownership record.
 
 **`<LANE_TREE>` and `<MAIN_CHECKOUT>` in a later stage are SUBSTITUTION
-PLACEHOLDERS, not shell variables.** Paste the absolute path from the opening
-report into the command text. Do NOT write `git -C "$LANE_TREE"`: the
-assignments live in THIS fenced block, and every later block is its own Bash
-call and its own shell (§9 spells the same trap out for `MAIN`), so the variable
-is already empty there — and per the paragraph above, an empty `-C`
-does not fail, it re-targets. A placeholder that was never substituted is
-visible in the command you are about to run; an empty variable is not visible
-anywhere.
-
-**The recorded values govern READS, not just re-derivations — and the fault
-arrives through commands that never MENTION them**: a `sed -n` / `grep` /
-`cat` on a RELATIVE path, or a bare `git branch --show-current` /
-`git diff`, all answer about whichever tree the shell is standing in. Read
-every file this run owns under the recorded absolute `<LANE_TREE>`, and treat
-an answer CONTRADICTING the recorded values as a cwd fault rather than a
-finding: in a sibling run (go-to-k/cdkd#2514) a `main` from
-`git branch --show-current` plus an EMPTY `git diff --stat origin/main..HEAD`
-were read as "the branch was switched, the PR maybe merged", and two "unfixed
-prose" defects were then reported that were the MAIN checkout's copies of text
-the lane had already fixed.
-
-**This repo keeps no worktree-owner sentinel** — cdkd's `session-owner` file
-has no counterpart here, and cdk-real-drift has none either — so the recorded
-`LANE_TREE`, the ownership probes in §5 and the §4 claim comments are the WHOLE
-ownership record. That is why the recorded value matters more here than in the
-one sibling that does have the sentinel, not less.
+PLACEHOLDERS, not shell variables.** Paste the absolute path from the report
+into the command text; never `git -C "$LANE_TREE"`, since every later block is
+its own shell where the variable is already empty — and an empty `-C`
+re-targets rather than failing. An unsubstituted placeholder is visible in the
+command; an empty variable is not visible anywhere.
 
 ### What IN-PLACE changes, and where each consequence fires
 
-SKILL.md carries the same list in short form; this is the one with the file
-pointers. IN-PLACE means this run was launched inside a worktree someone else
-created (an Orca/ADE workspace, a stray `cd`), so it has exactly ONE working
-tree:
+IN-PLACE = launched inside a worktree someone else created (an Orca/ADE
+workspace, a stray `cd`): exactly ONE working tree.
 
 | # | Consequence | Where |
 |---|---|---|
-| 1 | Lanes run SERIALLY — a second CONCURRENT lane would need a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work, plus the same-branch double-checkout collision (go-to-k/cdk-local#635). Several issues in one run is still fine when they share this tree in sequence: claim them all up front with the later ones marked QUEUED, and stand the unstarted ones down with a four-field comment if the run ends first, which leaves every issue claimable (go-to-k/cdkd#2417, 2026-09-02; four issues one tree here, 2026-09-02) | §3 |
+| 1 | Lanes run SERIALLY — a concurrent second lane needs a worktree NESTED inside this one, which dies with the outer workspace and takes its uncommitted work (go-to-k/cdk-local#635). Several issues per run is still fine in sequence: claim all up front, later ones QUEUED, stand down any the run will not reach | §3 |
 | 2 | §2's worktree probes take `<MAIN_CHECKOUT>/.claude/worktrees/<w>`, not a relative path | §2 |
-| 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, which belongs to the outer tool | §4 |
-| 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS — and never commit onto `LAUNCH_BRANCH`. §5 defines the rule and holds the recipe; this row is the one-line version an orchestrator sees without opening that file | §5 |
-| 5 | `/merge-pr` stops once the merge is CONFIRMED: its local-cleanup step (the `git worktree remove` + `git branch -D` one) must not run at all, because a lane that removes the tree it runs in deletes its own cwd. Cleanup of the TREE belongs to whoever created it | §9, §10-d |
-| 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — and delete only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
-| 7 | `main` is checked out in the main checkout, so `git checkout main && git pull` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
-| 8 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not inside §9's per-lane cleanup | §10-d |
-| 9 | The markgate store and the `.markgate-pr-review-sha` sentinel are per-WORKTREE, and this mode has ONE — so a lane INHERITS the previous lane's markers instead of starting empty. Both inheritances fail CLOSED; what they cost is a confusing block and a step of verification a lane can skip without noticing (see below) | §8 |
-
-There is deliberately no rebuild row: this repo's ship stage ends at the pull,
-and users invoke `node dist/cli.js` from their own checkout rather than a
-globally linked binary built in the main tree. The sibling cdkd has that step
-and has to relocate it; do not import it here.
-
-"Four things and nothing else" was the previous count, and it was wrong in the
-direction that matters: this file is not always loaded, SKILL.md is, so an
-undercount in the orchestrator wins over the reference files it points at.
-Count the rows before writing a number beside them.
-
-### Row 9: this mode's ONE tree means one markgate store, shared by every lane
-
-markgate's store lives in the worktree's own git dir
-(`<common-dir>/worktrees/<name>/markgate/`) and `.markgate-pr-review-sha` is a
-gitignored file in the tree, so MAIN-CHECKOUT hands each lane an EMPTY store
-along with its fresh worktree; IN-PLACE hands lane N whatever lane N-1 left.
-Measured at the start of this run's FOURTH lane, on a clean tree at
-`origin/main` with no edit yet made: `markgate verify docs` rc=0 and
-`markgate verify pr-review` rc=0, the sentinel still holding
-go-to-k/cdk-local#672's merged HEAD sha.
-
-**Neither inheritance is a way past a gate, and the first draft of this section
-said the `pr-review` one was** — the overclaim §10-a exists to stop, written
-into a lane's brief by the orchestrator and refuted only by reading the hook's
-pass condition. §8 states that mechanism and this file does not restate it;
-applied here it settles the question, because a sentinel naming a MERGED PR
-cannot equal the new PR's `headRefOid`. So the leak BLOCKS — `Marker state: bound to <sha> (mismatch)` —
-and is fail-CLOSED. What it costs is a confusing refusal naming an unrelated
-PR, and the cycle spent diagnosing it.
-
-The `docs` inheritance costs one STEP rather than a bypass, and the hole it
-shortens is not this mode's: `verify-pr` is declared `requires: [check, docs]`
-with no digest of its own, so refreshing both children re-freshens it at a sha
-`/verify-pr` never walked (go-to-k/cdk-local#661 — reproduced in this lane,
-where `markgate verify verify-pr` answered rc=0 having never been run).
-MAIN-CHECKOUT reaches that state by running `/check` and `/check-docs`;
-IN-PLACE reaches it on `/check` alone, because `docs` arrived free.
-
-So, at the top of every lane after the first: delete `.markgate-pr-review-sha`,
-and read every gate's rc before trusting one — an rc=0 at a lane's FIRST command
-is INHERITED, not earned, so run the skill that owns it for THIS lane whatever
-it reports.
+| 3 | The claim names the tree already checked out here plus the branch §5 WILL create in it — never `LAUNCH_BRANCH`, the outer tool's | §4 |
+| 4 | Create no worktree; after confirming the tree is YOURS, branch IN PLACE off `origin/main` — ALWAYS — and never commit onto `LAUNCH_BRANCH`. §5 holds the recipe | §5 |
+| 5 | `/merge-pr` stops once the merge is CONFIRMED: its local-cleanup step (`git worktree remove` + `git branch -D`) must not run — a lane removing the tree it runs in deletes its own cwd. The TREE belongs to whoever created it | §9, §10-d |
+| 6 | Switch back to `LAUNCH_BRANCH` **as-is** — no pull, no rebase, no fast-forward — deleting only the branches THIS run created; detach only when `LAUNCH_BRANCH` was empty at probe time or is now gone | §9 |
+| 7 | `main` is checked out in the main checkout, so `git checkout main` cannot run here — pull through `git -C "<MAIN_CHECKOUT>"` | §9 |
+| 8 | The retro branch is created in THIS tree too, so the `LAUNCH_BRANCH` restore is the run's LAST step — after the retro PR merges, not in §9's per-lane cleanup | §10-d |
+| 9 | The markgate store is per-WORKTREE and this mode has ONE, so a lane INHERITS the previous lane's `integ` marker. An rc=0 at a lane's FIRST command is inherited, not earned — run `/run-integ` for THIS lane whatever it reports | §8 |

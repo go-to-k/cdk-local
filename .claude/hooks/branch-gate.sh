@@ -139,13 +139,12 @@ fi
 # `if [ -z "$branch" ]` arm below, which is where that used to be got wrong.
 branch=$(git -C "$target_dir" symbolic-ref --short HEAD 2>/dev/null || echo "")
 
-# The MAIN-vs-LINKED distinction, in the shape `main-tree-branch-gate.sh`
-# already uses: the main checkout is whatever `git worktree list --porcelain`
-# lists FIRST. Reused rather than re-invented, per go-to-k/cdkd#2402 -- but two
-# parts of that shape are deliberately NOT copied here, because each was
-# measured to buy nothing at this call site:
+# The MAIN-vs-LINKED distinction: the main checkout is whatever
+# `git worktree list --porcelain` lists FIRST (go-to-k/cdkd#2402). Two parts of
+# the sibling repos' spelling of this are deliberately NOT copied here, because
+# each was measured to buy nothing at this call site:
 #
-#   NO MEMO. That gate asks the question once per matched SEGMENT and caches the
+#   NO MEMO. A gate asking the question once per matched SEGMENT caches the
 #   last answer in a pair of globals. This gate asks at most once per command,
 #   so a memo would cache nothing.
 #
@@ -178,10 +177,9 @@ if [ -z "$branch" ]; then
   #       exactly the state this gate exists to catch, wearing a spelling it
   #       could not see because it recognised the state only by branch NAME.
   #
-  # (b) is reachable from the documented flow. `main-tree-branch-gate.sh`
-  # deliberately passes `git checkout <sha>` in the main checkout (its own
-  # `--detach` note carries the measurement, and keeps the verdict); the tree
-  # detaches, and this gate then waved a commit straight into the SHARED main
+  # (b) is reachable from the documented flow: nothing refuses
+  # `git checkout <sha>` in the main checkout, the tree detaches, and without
+  # this arm the gate waves a commit straight into the SHARED main
   # checkout. Measured on a scratch opted-in repo before this arm existed,
   # driving this hook with a `git commit -m x` payload: rc=2 on `main`, rc=0
   # once detached. Two gates, a hole neither has alone (go-to-k/cdkd#2402).
@@ -219,12 +217,11 @@ if [ -z "$branch" ]; then
   # roots: non-symlinked 1/5 -> 2/6, symlinked 5/5 -> 6/6.
   #
   # BLOCKED ONLY IN THE MAIN CHECKOUT. A detached HEAD in a LINKED worktree is
-  # the remedy this repo's own Stop hook prints -- `stop-unmerged-lane-warn.sh`
-  # tells a session that must not remove its worktree to run
-  # `git switch --detach origin/main`, "because a worktree with no current
-  # branch is not a lane". Blocking that would refuse a documented instruction.
+  # the lane-clearing state a session that must not remove its worktree is told
+  # to reach (`git switch --detach origin/main`), because a worktree with no
+  # current branch is not a lane. Blocking it would refuse that instruction.
   #
-  # `substr($0, 10)` rather than `$2`, for the reason the sibling gate records:
+  # `substr($0, 10)` rather than `$2`:
   # awk splits on whitespace, so a checkout path containing a SPACE is truncated
   # at it and the compare below then never matches -- the gate standing down
   # over a main checkout it had mis-read. Fenced by the spaced-path case in
@@ -384,9 +381,9 @@ if [ -z "$branch" ]; then
     # sentence below it used to carry was the SAME defect one arm over: it said
     # the bisect "is what detached HEAD here" and that `bisect reset` "restores
     # the branch you started from". Both are false of a bisect begun in a tree
-    # that was ALREADY detached -- and `main-tree-branch-gate.sh` passes
-    # `git checkout <sha>` in the main checkout, so that is one allowed command
-    # away. Measured on git 2.53, same fixture both ways:
+    # that was ALREADY detached -- and nothing refuses `git checkout <sha>` in
+    # the main checkout, so that is one allowed command away. Measured on git
+    # 2.53, same fixture both ways:
     #
     #   started FROM a branch   BISECT_START = main    reset -> branch main
     #   started DETACHED        BISECT_START = <sha>   reset -> rc=0, STILL DETACHED

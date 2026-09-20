@@ -9,10 +9,8 @@
 # says so in its own header ("the gates' own verdict logic is out of scope
 # here"). It carries five branch-gate rows as a by-product. What it has no
 # fixture for is the shape the verdict actually turns on -- a MAIN checkout that
-# owns a LINKED worktree, with either one detached -- and its 297-case floor
-# makes it the wrong place to grow one. The sibling repos cdkd and
-# cdk-real-drift have carried a `branch-gate.test.sh` for months; this repo's
-# absence was the gap, not the duplication.
+# owns a LINKED worktree, with either one detached -- which is why that shape
+# lives here instead.
 #
 # Why a shell script and not a vitest test: the hook IS a shell script, and the
 # contract IS the stdin JSON payload plus the exit code. A TypeScript wrapper
@@ -144,13 +142,10 @@ unset _ni_probe _ni_var
 # interpreter differs. A shim that did not reach the subject would print the
 # same tally twice.
 #
-# THE PAIR THAT USED TO STAND HERE WAS STALE, and stale in the direction that
-# flatters: it predated the resulting-HEAD rows, so it under-reported both the
-# damage under 3.2 and the clean 5.x total. `.claude/rules/hooks.md` already
-# carried the corrected pair (18/24 and 42/0), so the code and the doc
-# disagreed inside one PR, and the doc was the one telling the truth. Numbers
-# that are cheap to leave behind are exactly the ones to re-measure whenever
-# rows are added; this round did, and both sides now say 21/37 and 58/0.
+# A PAIR OF TALLIES LEFT IN A COMMENT GOES STALE in the direction that
+# flatters: written before rows are added, it under-reports both the damage
+# under 3.2 and the clean 5.x total. Re-measure whenever rows are added, and
+# keep the pair in ONE place -- here -- so there is nothing to disagree with.
 #
 # WHAT THIS MUTANT IS BLIND TO, and why -- because 21 of the rows still
 # pass under it and a reader should not mistake that for coverage:
@@ -576,14 +571,14 @@ run_case_hook "$fc_mid/branch-gate.sh" "matcher library truncated MID-FILE: gate
 # `symbolic-ref --short HEAD` is EMPTY on a detached HEAD, so the gate's
 # `case "$branch" in main|master)` matched neither arm and fell to `exit 0`.
 # Measured on a scratch opted-in repo before the fix, same payload both times:
-# rc=2 on `main`, rc=0 once detached -- while `main-tree-branch-gate.sh` passes
+# rc=2 on `main`, rc=0 once detached -- and nothing refuses
 # `git checkout <sha>` in the main checkout, so the route to that state is one
 # allowed command.
 #
 # BOTH POLARITIES ARE PINNED, because the fix has an allowed half that is easy
-# to lose: a detached HEAD in a LINKED worktree is what this repo's own
-# `stop-unmerged-lane-warn.sh` tells a session to do (`git switch --detach
-# origin/main`) when it must not remove its worktree.
+# to lose: a detached HEAD in a LINKED worktree is the lane-clearing state a
+# session that must not remove its worktree is told to reach
+# (`git switch --detach origin/main`).
 
 git -C "$mt_repo" checkout -q --detach "$mt_sha"
 
@@ -623,8 +618,8 @@ run_case_msg "detached block prints 'in progress: nothing' when nothing is" 2 \
   "  in progress        : nothing"
 # The cwd one level DOWN. The gate compares TOPLEVELS rather than the raw
 # resolved dir, so a subdirectory of the main checkout is still the main
-# checkout. `main_tree_of` in main-tree-branch-gate.sh compares the raw dir and
-# would answer "not the main checkout" here.
+# checkout. Comparing the raw resolved dir instead would answer "not the main
+# checkout" here.
 run_case "detached HEAD in the MAIN checkout, cwd a SUBDIR: BLOCKED" 2 \
   "$(printf '{"cwd":"%s/sub","tool_input":{"command":"git commit -m oops"}}' "$mt_repo")"
 # Reached by `-C` from a LINKED worktree cwd, so the verdict is on the RESOLVED
@@ -1127,7 +1122,7 @@ op_reset
 # whose absence let the bisect arm repeat, verbatim, the defect rows 1 and 2
 # fixed for rebase. The old wording said the bisect "is what detached HEAD here"
 # and that `bisect reset` "restores the branch you started from"; both are false
-# from a tree that was already detached, and `main-tree-branch-gate.sh` passes
+# from a tree that was already detached, and nothing refuses
 # `git checkout <sha>` in the main checkout, so that state is one allowed
 # command away. Measured on git 2.53, same fixture both ways:
 #

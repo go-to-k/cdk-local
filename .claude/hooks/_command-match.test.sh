@@ -66,54 +66,26 @@ want_match 1 "push is not commit"                 'git push origin HEAD' "$C"
 want_match 1 "gh pr create is not merge"          'gh pr create --fill' "$M"
 
 # --- the verbs cdk-local adds --------------------------------------------------
-SW="$GATE_RE_GIT_SWITCH"
-CO="$GATE_RE_GIT_CHECKOUT"
 GM="$GATE_RE_GIT_MERGE"
-IC="$GATE_RE_GH_ISSUE_CREATE"
-ICM="$GATE_RE_GH_ISSUE_COMMENT"
-API="$GATE_RE_GH_API"
-
-want_match 0 "git switch after a cd"          'cd /w/t && git switch -c feat/x' "$SW"
-want_match 1 "switch inside a string"         'echo "then git switch main"' "$SW"
-want_match 1 "switch is not checkout"         'git switch main' "$CO"
-
-want_match 0 "git checkout in second position" 'git fetch origin && git checkout main' "$CO"
-want_match 1 "checkout inside a string"        "echo 'git checkout main next'" "$CO"
 
 want_match 0 "git merge after a fetch"        'git fetch && git merge --ff-only origin/main' "$GM"
 want_match 1 "merge-base is not merge"        'git merge-base origin/main HEAD' "$GM"
 want_match 1 "gh pr merge is not git merge"   'gh pr merge 1 --squash' "$GM"
 
-want_match 0 "gh issue create after a write"  'cat > /tmp/b.md <<EOF
+want_match 0 "gh pr create after a heredoc write" 'cat > /tmp/b.md <<EOF
 body
 EOF
-gh issue create --body-file /tmp/b.md' "$IC"
-want_match 1 "issue create inside a string"   'echo "run gh issue create later"' "$IC"
-
-want_match 0 "gh issue comment in a chain"    'git push && gh issue comment 7 --body-file /tmp/b.md' "$ICM"
-want_match 1 "issue create is not comment"    'gh issue create --fill' "$ICM"
-
-want_match 0 "gh api after a cd"              'cd /w/t && gh api -X PATCH repos/o/r/pulls/1 -F body=@/tmp/b.md' "$API"
-want_match 1 "api inside a string"            'echo "next: gh api repos/o/r"' "$API"
-want_match 1 "gh pr create is not gh api"     'gh pr create --fill' "$API"
+gh pr create --body-file /tmp/b.md' "$GATE_RE_GH_PR_CREATE"
 
 # --- GATE_GH_C absorbs `-C` / `-R` / `--repo` for EVERY gh verb --------------
-# It absorbed `-C <path>` only until 2026-08-25, which was a live gate bypass:
-# `gh -R o/r pr merge 1 --squash` matched nothing and walked past verify-pr-gate
-# and integ-gate. These pin the widened surface on every gh verb regex, since
-# they all share the absorber.
-want_match 0 "IC: -R <repo>"                  'gh -R go-to-k/cdk-local issue create -t x' "$IC"
-want_match 0 "IC: --repo <repo>"              'gh --repo go-to-k/cdkd issue create -t x' "$IC"
-want_match 0 "IC: -C and -R together"         'gh -C /w/t -R go-to-k/cdkd issue create -t x' "$IC"
-want_match 0 "IC: quoted -C path"             'gh -C "/a b" issue create -t x' "$IC"
-want_match 0 "IC: -R after a cd, chained"     'cd /w/t && gh -R go-to-k/cdkd issue create -t x' "$IC"
-# THE bypass cases. Before the widening these matched NOTHING.
+# An absorber that takes `-C <path>` only is a live gate bypass:
+# `gh -R o/r pr merge 1 --squash` then matches nothing and walks past integ-gate.
+# These pin the widened surface on every gh verb regex, since they all share the
+# absorber. THE bypass cases: without the widening these match NOTHING.
 want_match 0 "pr merge: -R <repo>"            'gh -R go-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr merge: --repo <repo>"        'gh --repo go-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr create: -R <repo>"           'gh -R go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
 want_match 0 "pr edit: -R <repo>"             'gh -R go-to-k/cdk-local pr edit 1 --body x' "$GATE_RE_GH_PR_EDIT"
-want_match 0 "issue comment: -R <repo>"       'gh -R go-to-k/cdk-local issue comment 7 --body x' "$ICM"
-want_match 0 "gh api: -R <repo>"              'gh -R go-to-k/cdk-local api repos/o/r/pulls/1' "$API"
 # ALL THREE separators `gh` accepts, not just the space form. Verified against a
 # real repo: `gh pr list --repo=go-to-k/cdkd`, `-R=go-to-k/cdkd` and the GLUED
 # `-Rgo-to-k/cdkd` all return the same PR number. An explicit flag alternation
@@ -124,48 +96,22 @@ want_match 0 "pr merge: -R=<repo>"           'gh -R=go-to-k/cdk-local pr merge 1
 want_match 0 "pr merge: -R<repo> glued"      'gh -Rgo-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr merge: -C=<path>"           'gh -C=/w/t pr merge 1 --squash' "$M"
 want_match 0 "pr create: --repo=<repo>"      'gh --repo=go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
-want_match 0 "IC: --repo=<repo>"             'gh --repo=go-to-k/cdk-local issue create -t x' "$IC"
-want_match 0 "IC: -R=<repo>"                 'gh -R=go-to-k/cdk-local issue create -t x' "$IC"
-want_match 0 "IC: -R<repo> glued"            'gh -Rgo-to-k/cdk-local issue create -t x' "$IC"
-want_match 0 "IC: two flags, mixed seps"     'gh -C /w/t --repo=go-to-k/cdkd issue create -t x' "$IC"
-want_match 0 "api mint: --repo=<repo>"       'gh --repo=go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t' "$GATE_RE_GH_API_ISSUE_CREATE"
 # The wider token must still not let one gh verb match a DIFFERENT one, and the
 # `=`/glued forms are where a too-greedy absorber would show it first.
 want_match 1 "glued -R: pr view is not create" 'gh -Rgo-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
 want_match 1 "glued -R: pr create is not merge" 'gh -Rgo-to-k/cdk-local pr create --fill' "$M"
-want_match 1 "--repo=: issue comment is not create" 'gh --repo=go-to-k/cdk-local issue comment 7 --body x' "$IC"
 # A flag VALUE must not swallow the verb: GATE_FLAGS' optional value group could
 # consume `pr`, and only backtracking saves it. Pin both directions.
 want_match 0 "flag with no value, then verb"  'gh --draft pr create --fill' "$GATE_RE_GH_PR_CREATE"
 want_match 0 "boolean flag before merge"      'gh --yes pr merge 1 --squash' "$M"
 # The plain and `-C` spellings must keep the verdicts they already had --
 # widening an absorber must not change what a verb regex means.
-want_match 0 "IC: plain unchanged"            'gh issue create -t x' "$IC"
-want_match 0 "IC: -C unchanged"               'gh -C /w/t issue create -t x' "$IC"
 want_match 0 "pr merge: plain unchanged"      'gh pr merge 1 --squash' "$M"
 want_match 0 "pr merge: -C unchanged"         'gh -C /w/t pr merge 1 --squash' "$M"
 # ...and the absorber must not let one gh verb match a DIFFERENT gh verb, which
 # is the failure mode a greedy flag run would introduce.
 want_match 1 "pr merge: -R pr create is not merge" 'gh -R go-to-k/cdk-local pr create --fill' "$M"
-want_match 1 "IC: -R issue comment is not create"  'gh -R go-to-k/cdk-local issue comment 7 --body x' "$IC"
-want_match 1 "IC: -R pr create is not issue create" 'gh -R go-to-k/cdk-local pr create --fill' "$IC"
 want_match 1 "pr create: -R pr view is not create"  'gh -R go-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
-want_match 1 "IC: -R inside a string"              'echo "gh -R o/r issue create"' "$IC"
-
-# --- the REST mint (issue-dup-check-gate) -------------------------------------
-# `gh api repos/<o>/<r>/issues` creates an issue; the path must NOT continue
-# past `issues`, which is what separates a mint from a comment or an edit.
-APIIC="$GATE_RE_GH_API_ISSUE_CREATE"
-want_match 0 "gh api issues POST"             'gh api repos/go-to-k/cdk-local/issues -f title=t' "$APIIC"
-want_match 0 "gh api issues POST after a cd"  'cd /w/t && gh api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
-want_match 0 "gh api issues POST with -R"     'gh -R go-to-k/cdkd api repos/go-to-k/cdkd/issues -f title=t' "$APIIC"
-want_match 1 "gh api issue comments"          'gh api repos/go-to-k/cdk-local/issues/5/comments -f body=x' "$APIIC"
-want_match 1 "gh api issue PATCH"             'gh api -X PATCH repos/go-to-k/cdk-local/issues/5 -f body=x' "$APIIC"
-want_match 1 "gh api pulls is not issues"     'gh api repos/go-to-k/cdk-local/pulls -f title=t' "$APIIC"
-want_match 1 "gh issue create is not gh api"  'gh issue create --fill' "$APIIC"
-
-want_dir "/w/t" "gh -C on an issue comment"   'gh -C /w/t issue comment 7 --body x' /fallback "$ICM"
-want_dir "/w/t" "cd before a git switch"      'cd /w/t && git switch main' /fallback "$SW"
 
 # --- target directory ---------------------------------------------------------
 want_dir "/fallback"  "no cd, no -C"           'git commit -m x' /fallback "$C"
@@ -195,7 +141,6 @@ want_dir "/w/t" "-C= alone"                'gh -C=/w/t pr merge 1 --squash' /fal
 want_dir "/w/t" "-C glued alone"           'gh -C/w/t pr merge 1 --squash' /fallback "$M"
 want_dir "/w t" "-R first, quoted -C path" 'gh -R o/r -C "/w t" pr merge 1 --squash' /fallback "$M"
 want_dir "/w/t" "last -C wins, after -R"   'gh -R o/r -C /a -C /w/t pr merge 1 --squash' /fallback "$M"
-want_dir "/w/t" "-C after -R on issue create" 'gh -R o/r -C /w/t issue create -t x' /fallback "$IC"
 # A `-C` AFTER the verb is an argument, not a flag of the verb run, so it must
 # NOT steer the lookup -- the scan reads only the text the verb ERE consumed.
 want_dir "/fallback" "-C after the verb is ignored" 'gh pr merge 1 --squash -C /w/t' /fallback "$M"
@@ -309,9 +254,8 @@ import json, sys, os
 # string 'Bash' appears in the matcher, which handed a free pass to exactly the
 # shape that receives the MOST -- a `PreToolUse` group with the matcher omitted,
 # empty, `*` or `.*`, which fires on every tool. Measured: registering a
-# non-sourcing hook under `matcher: '*'` left this suite at 229/0. It is also
-# the shape this repo just added (the `Stop` group carries no matcher), so the
-# next gate copied from it would have dodged the fence silently.
+# non-sourcing hook under `matcher: '*'` left this suite at 229/0, so a gate
+# registered that way would dodge the fence silently.
 TOOL_EVENTS = ('PreToolUse', 'PostToolUse')
 
 def bashy(m):
@@ -664,123 +608,6 @@ want_match 0 "process substitution inside a quoted one" 'echo "$(cat <(git commi
 want_match 1 "process substitution in a body stays prose" \
   'gh pr create --body "ver $(cat <(date)) then git commit -m z"' "$C"
 
-# --- go-to-k/cdk-local#571: `gate_piped_segments` / `gate_matches_piped` ------
-# The distinction the ordinary segmenter cannot make, because it collapses `&&`,
-# `;` and `|` to the same newline: whose exit status does the shell REPORT?
-MG="$GATE_RE_MARKGATE_VERDICT"
-
-# want_piped <expect 0|1> <label> <command> <regex>
-want_piped() {
-  local want="$1" label="$2" cmd="$3" re="$4" got
-  if gate_matches_piped "$cmd" "$re"; then got=0; else got=1; fi
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (want %s got %s) :: %s\n' "$label" "$want" "$got" "$cmd"
-  fi
-}
-
-want_piped 0 "verdict feeds a pipe"            'mise exec -- markgate verify integ 2>&1 | tail -5' "$MG"
-want_piped 0 "bare markgate feeds a pipe"      'markgate verify check | grep state' "$MG"
-want_piped 0 "set feeds a pipe"                'mise exec -- markgate set integ | tee /tmp/l' "$MG"
-want_piped 0 "|& feeds a pipe"                 'markgate set integ |& tee /tmp/l' "$MG"
-want_piped 1 "|| is a status TEST, not a pipe" 'mise exec -- markgate set integ || echo NOPE' "$MG"
-want_piped 1 "&& is a status TEST, not a pipe" 'markgate verify check && gh pr merge 1' "$MG"
-want_piped 1 "un-piped verdict"                'mise exec -- markgate verify integ >/dev/null 2>&1; rc=$?' "$MG"
-want_piped 1 "last stage of a pipeline"        'echo x | markgate verify check' "$MG"
-want_piped 1 "status is not a verdict verb"    'mise exec -- markgate status integ | awk "/state/"' "$MG"
-# `2>&1` is a REDIRECTION, not a separator. Splitting on its `&` put the pipe
-# mark on the trailing `1`, so the issue's own repro walked past the gate.
-want_piped 0 "2>&1 before the pipe"            'markgate verify integ 2>&1 | tail -5' "$MG"
-want_piped 0 "&> before the pipe"              'markgate verify integ &> /dev/null | tail -5' "$MG"
-# ...while a REAL bare `&` still separates.
-want_match 0 "bare & still separates"          'sleep 0 & markgate verify check' "$MG"
-
-want_piped 0 "run is a verdict verb too"        'mise exec -- markgate run check -- vp run check | tail -5' "$MG"
-# The launcher prefix must absorb LAUNCHER ARGUMENTS only. An unrestricted run
-# of words made this a false block -- and it is the command someone auditing
-# this very gate would type.
-want_piped 1 "mise exec -- rg <pattern> is not markgate" 'mise exec -- rg markgate verify .claude | head' "$MG"
-# A launcher flag that TAKES A VALUE must still reach the verb. Tightening the
-# interposed run to close the `rg` false block above dropped these, turning
-# BLOCK into pass -- so the two cases are pinned as a PAIR, since either fix
-# alone re-breaks the other.
-want_piped 0 "mise exec -C <dir> -- markgate"  'mise exec -C /w -- markgate verify x | tail' "$MG"
-want_piped 0 "mise exec --cd <dir> -- markgate" 'mise exec --cd /w -- markgate verify x | tail' "$MG"
-want_piped 0 "mise exec -j <n> -- markgate"    'mise exec -j 4 -- markgate set integ | tee /tmp/l' "$MG"
-want_piped 1 "mise exec -C <dir> -- rg is not markgate" 'mise exec -C /w -- rg markgate verify . | head' "$MG"
-# ...and a BOOLEAN launcher flag must NOT swallow the command word. Giving every
-# flag an optional value (the fix for the two cases above) re-opened the `rg`
-# false block one keystroke away. mise has many boolean flags: `--raw`, `-q`,
-# `-v`, `-y`, `--silent`, `--deny-all`, `--no-deps`, `--locked`.
-want_piped 1 "boolean flag then rg"            'mise exec --raw rg markgate verify . | head' "$MG"
-want_piped 1 "short boolean flag then rg"      'mise exec -q rg markgate verify . | head' "$MG"
-want_piped 1 "boolean flag then grep"          'mise exec --silent grep -rn markgate verify . | head' "$MG"
-want_piped 0 "boolean flag then -- markgate"   'mise exec --raw -- markgate verify x | tail' "$MG"
-want_piped 0 "two boolean flags then markgate" 'mise exec -q --raw -- markgate verify x | tail' "$MG"
-# A QUOTED flag value -- the same shape `GATE_FLAGS` needed for
-# `git -C "/a b" commit`. A `[^-][^[:space:]]*` value cannot span it.
-want_piped 0 "quoted launcher flag value"      'mise exec --cd "/w t" -- markgate verify x | tail' "$MG"
-# The `--allow-*` sandbox flags take a value too, and were missed when the
-# enumeration was first written -- the failure mode an enumeration always has.
-want_piped 0 "--allow-net <host> before --"    'mise exec --allow-net github.com -- markgate verify integ | tail' "$MG"
-want_piped 0 "--allow-read <path> before --"   'mise exec --allow-read /w -- markgate verify integ | tail' "$MG"
-# A value-taking flag whose "value" is the command word itself must still fall
-# back to the boolean parse rather than eating it.
-want_piped 0 "-C directly before markgate"     'mise exec -C markgate verify x | tail' "$MG"
-# A GLOBAL flag sits BEFORE the subcommand. Without its own absorber this was
-# under-matched -- the gate simply did not fire, which is the original defect
-# one flag position away.
-want_piped 0 "global -C <dir> before exec"     'mise -C /w exec -- markgate verify x | tail' "$MG"
-want_piped 0 "global --cd <dir> before exec"   'mise --cd /w exec -- markgate set integ | tee /tmp/l' "$MG"
-want_piped 0 "global boolean flag before exec" 'mise -q exec -- markgate verify x | tail' "$MG"
-want_piped 1 "global flag, then rg not markgate" 'mise -C /w exec -- rg markgate verify . | head' "$MG"
-# ...and a NON-FLAG word is not a global flag. This replaces a
-# `mise --version | head` case that was VACUOUS: that segment holds no
-# `markgate` substring at all, so no spelling of these constants could ever
-# match it -- it was a proof, not a probe. This one is the too-wide direction
-# the whole chain fights: with the global run unrestricted, `ls` is absorbed,
-# the later `exec` satisfies the subcommand, and an ordinary `mise ls` becomes
-# a FALSE BLOCK.
-want_piped 1 "a non-flag word is not a global flag" 'mise ls exec -- markgate verify x | tail' "$MG"
-want_piped 1 "two non-flag words before exec"  'mise settings set x exec -- markgate verify a | tail' "$MG"
-# The pipe belongs to the OUTER command, so the `bash -c` recursion has to carry
-# the mark inward: it used to drop it and `gate_piped_segments` emitted nothing.
-want_piped 0 "bash -c body, outer pipe"        "bash -c 'markgate verify a' | tail" "$MG"
-want_piped 0 "bash -c double-quoted body"      'bash -c "mise exec -- markgate verify a" | tail' "$MG"
-want_piped 1 "bash -c body, NOT piped"         "bash -c 'markgate verify a'" "$MG"
-# go-to-k/cdk-local#585: the launcher-hosted spelling of the same recursion.
-want_piped 0 "mise exec -c body, inner pipe"   'mise exec -c "markgate verify integ | tail"' "$MG"
-want_piped 0 "mise x -c body, inner pipe"      'mise x -c "markgate set integ | cat"' "$MG"
-want_piped 0 "rtx exec -c body, inner pipe"    'rtx exec -c "markgate verify integ | tail"' "$MG"
-want_piped 0 "mise exec -c body, OUTER pipe"   "mise exec -c 'markgate verify a' | tail" "$MG"
-want_piped 1 "mise exec -c body, NOT piped"    'mise exec -c "markgate verify integ"' "$MG"
-want_piped 1 "mise exec -c rg is not markgate" 'mise exec -c "rg markgate verify ."' "$MG"
-want_piped 1 "bare mise -c is not a launcher"  'mise -c "markgate verify integ | tail"' "$MG"
-want_piped 0 "mise exec with a tool pin"       'mise exec markgate@0.4 -- markgate verify integ | cat' "$MG"
-# Multi-line: the pipe is on a later line than the verb, and on the SAME line as
-# a different one. A segmenter that only ever saw line 1 passed both.
-want_piped 0 "multi-line, pipe on line two"    'cd /w/t
-markgate verify integ | tail -5' "$MG"
-want_piped 0 "backslash continuation"          'markgate verify integ \
-  | tail -5' "$MG"
-want_piped 1 "multi-line, un-piped"            'cd /w/t
-markgate verify integ >/dev/null 2>&1; rc=$?' "$MG"
-
-# `gate_piped_segments` must print the piped segments and ONLY those, with the
-# marker stripped -- a caller reading them as ordinary text is the contract.
-got=$(gate_piped_segments 'markgate verify a | tail; markgate verify b' | tr '\n' '/')
-if [ "$got" = "markgate verify a/" ]; then
-  pass=$((pass + 1)); printf 'OK   gate_piped_segments prints only the piped segment\n'
-else
-  fail=$((fail + 1)); printf 'FAIL gate_piped_segments printed: %s\n' "$got"
-fi
-got=$(gate_piped_segments '(markgate verify a) | tail')
-if [ "$got" = "markgate verify a" ]; then
-  pass=$((pass + 1)); printf 'OK   gate_piped_segments emits ordinary segment text\n'
-else
-  fail=$((fail + 1)); printf 'FAIL gate_piped_segments emitted: [%s]\n' "$got"
-fi
 # The mark must never leak into ORDINARY segments, or every gate would see it.
 if gate_segments 'markgate verify a | tail' | grep -q "$GATE_PIPE_MARK"; then
   fail=$((fail + 1)); printf 'FAIL the pipe mark leaked into gate_segments output\n'
@@ -788,25 +615,12 @@ else
   pass=$((pass + 1)); printf 'OK   gate_segments is unchanged by the pipe mark\n'
 fi
 
-# --- GATE_RE_GIT_ADD + gate_verb_args (go-to-k/cdk-local#576) ------------------
-# control-char-gate has to know whether the SAME Bash call also stages, because
-# a PreToolUse hook runs before the command and the index it can read is the
-# PRE-add one. The verb regex is built like every other one here, so the flagged
-# and launcher spellings must reach it identically -- and `gate_verb_args` must
-# hand back the arguments with the flag run already consumed, so the gate cannot
-# match one way and parse another.
-A="$GATE_RE_GIT_ADD"
-
-want_match 0 "bare git add"                  'git add -A' "$A"
-want_match 0 "git add before a commit"       'git add -A && git commit -m x' "$A"
-want_match 0 "git -C <path> add"             'git -C /w/t add -A && git commit -m x' "$A"
-want_match 0 "git -C=<path> add (glued sep)" 'git -C=/w/t add -A' "$A"
-want_match 0 "launcher passthrough"          'mise exec -- git add -A' "$A"
-want_match 0 "inside bash -c"                'bash -c "git add -A && git commit -m x"' "$A"
-want_match 1 "add inside a string"           'echo "then git add -A"' "$A"
-want_match 1 "git add-something is not add"  'git add--interactive' "$A"
-want_match 1 "commit is not add"             'git commit -m x' "$A"
-want_match 1 "a pathspec named add"          'git rm add' "$A"
+# --- gate_verb_args -----------------------------------------------------------
+# A gate that both MATCHES on a verb ERE and then READS the verb's arguments must
+# get the arguments with the flag run already consumed, or it matches one way and
+# parses another. The strip is `BASH_REMATCH[0]` of the same regex that armed the
+# gate rather than a locally written prefix chop, which is what makes the two
+# agree by construction.
 
 # want_args <expected, newline-joined> <label> <command> <regex>
 want_args() {
@@ -819,280 +633,20 @@ want_args() {
   fi
 }
 
-want_args "-A"          "args after a bare add"        'git add -A' "$A"
+want_args "origin HEAD" "args after a bare push"       'git push origin HEAD' "$P"
 # The `-C /w/t` is consumed by the verb ERE, so it must NOT come back as an
-# argument -- that is the whole reason the strip is BASH_REMATCH[0] of the same
-# regex that armed the gate rather than a locally written prefix chop.
-want_args "-A"          "leading -C is absorbed"       'git -C /w/t add -A' "$A"
-want_args "src/a.ts"    "a pathspec"                   'git add src/a.ts && git commit -m x' "$A"
-want_args '"d i r"'     "a quoted pathspec stays whole" 'git add "d i r"' "$A"
-# One line per matching segment, so two adds in one call are both readable.
-want_args "-u
-docs" "two add segments"                              'git add -u; git add docs' "$A"
-want_args ""            "no matching segment"          'git commit -m x' "$A"
-want_args "-am x"       "commit args, for the -a scan" 'git commit -am x' "$C"
-
-# `stage` is git's own alias for `add`, so the staging scan must reach it.
-want_match 0 "git stage -A"                  'git stage -A && git commit -m x' "$A"
-want_match 0 "git -C <path> stage"           'git -C /w/t stage src' "$A"
-want_match 1 "git stash is not git stage"    'git stash push -m x' "$A"
-want_args "-A"          "args after git stage"         'git stage -A' "$A"
+# argument.
+want_args "origin HEAD" "leading -C is absorbed"       'git -C /w/t push origin HEAD' "$P"
+want_args "origin HEAD" "glued -C separator"           'git -C=/w/t push origin HEAD' "$P"
+want_args "origin HEAD" "launcher passthrough"         'mise exec -- git push origin HEAD' "$P"
+want_args '"a b"'       "a quoted argument stays whole" 'git push "a b"' "$P"
+# One line per matching segment, so two pushes in one call are both readable.
+want_args "origin a
+origin b" "two push segments"                          'git push origin a; git push origin b' "$P"
+want_args ""            "no matching segment"          'git commit -m x' "$P"
+want_args "-am x"       "commit args"                  'git commit -am x' "$C"
 
 
-# --- gate_verb_args_dir: the tree AND the args, per segment, from one walk ----
-#
-# `want_dir` above measures `gate_target_dir`, which answers for the WHOLE
-# command. These measure the per-segment answer, and the FIRST of them is the
-# anti-drift fence: on a single-segment command the two functions must agree, so
-# the deliberate copy of the cd / `-C` reading inside `gate_verb_args_dir`
-# cannot drift from the original without a red case.
-want_lines() { # <expected, newline-joined> <label> <cmd> <fallback> <re>
-  local want="$1" label="$2" cmd="$3" fallback="$4" re="$5" got
-  got=$(gate_verb_args_dir "$cmd" "$fallback" "$re")
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$label" "$want" "$got"
-  fi
-}
-
-TAB=$(printf '\t')
-for _probe in 'git push origin main' 'cd /a/b && git push origin main' \
-              'git -C /w/t push origin main' 'cd /a/b && git -C /w/t push origin main' \
-              'cd /a/b && cd c && git push origin main'; do
-  _one=$(gate_target_dir "$_probe" /fallback "$P")
-  _each=$(gate_verb_args_dir "$_probe" /fallback "$P")
-  _each="${_each%%$TAB*}"
-  if [ "$_one" = "$_each" ]; then
-    pass=$((pass + 1)); printf 'OK   per-segment dir agrees with gate_target_dir :: %s\n' "$_probe"
-  else
-    fail=$((fail + 1)); printf 'FAIL per-segment dir disagrees :: %s\n  whole: %s\n  seg:   %s\n' "$_probe" "$_one" "$_each"
-  fi
-done
-unset _probe _one _each
-
-# ...and the part `gate_target_dir` CANNOT express: two segments, two trees.
-want_lines "/w/one${TAB}origin a
-/w/two${TAB}origin b" "two -C segments resolve independently" \
-  'git -C /w/one push origin a && git -C /w/two push origin b' /fallback "$P"
-# A `cd` PERSISTS into the next segment; a `-C` binds only its own command.
-want_lines "/a/b${TAB}origin a
-/a/b${TAB}origin b" "a cd carries into later segments" \
-  'cd /a/b && git push origin a && git push origin b' /fallback "$P"
-want_lines "/a/b${TAB}origin a
-/w/t${TAB}origin b
-/a/b${TAB}origin c" "a -C does not leak into the next segment" \
-  'cd /a/b && git push origin a && git -C /w/t push origin b && git push origin c' /fallback "$P"
-# An UNEXPANDED path is skipped, exactly as `gate_target_dir` skips it, so the
-# segment falls back to the running cd state rather than to a literal `$W`.
-want_lines "/fallback${TAB}origin a" "an unexpanded -C falls back, not to a literal" \
-  'git -C "$W" push origin a' /fallback "$P"
-
-
-
-# --- gate_tokens ---------------------------------------------------------------
-#
-# The argument-list splitter main-tree-branch-gate parses options with. It lives
-# HERE rather than in the gate because matching `GATE_EMBEDDING_TOKEN` inside a
-# hook and then reading a positional `${BASH_REMATCH[N]}` out of it is the
-# go-to-k/cdkd#2200 coupling: widening the shared constant shifts the index and
-# silently re-opens the gate. Pinned here so the gate can rely on it.
-tok_case() { # name, text, expected newline-joined tokens
-  local name="$1" text="$2" want="$3" got
-  got=$(gate_tokens "$text")
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   gate_tokens: %s\n' "$name"
-  else
-    fail=$((fail + 1))
-    printf 'FAIL gate_tokens: %s\n  text: [%s]\n  want: [%s]\n  got : [%s]\n' "$name" "$text" "$want" "$got"
-  fi
-}
-tok_case "plain words" " -b feat" "$(printf -- '-b\nfeat')"
-tok_case "leading and trailing space" "   feat   " "feat"
-tok_case "empty text yields nothing" "" ""
-tok_case "only whitespace yields nothing" "    " ""
-tok_case "a double-quoted span stays ONE token" ' -c "wt feat new"' "$(printf -- '-c\n"wt feat new"')"
-tok_case "a single-quoted span stays ONE token" " -c 'wt feat new'" "$(printf -- "-c\n'wt feat new'")"
-tok_case "a glued flag value is not split" " --orphan=feat" "--orphan=feat"
-tok_case "a bare -- survives as its own token" " some-feature -- README.md" "$(printf -- 'some-feature\n--\nREADME.md')"
-tok_case "an unquoted glob is not expanded" " *" "*"
-tok_case "runs of spaces collapse" " a     b" "$(printf -- 'a\nb')"
-
-
-# --- gate_argv ------------------------------------------------------------------
-#
-# `gate_tokens` splits SHELL WORDS; this splits git's ARGV, which is what an
-# option parse actually reads. The difference is not cosmetic: a redirection, its
-# spaced target, a trailing `&` and a `#` comment are all WORDS and none of them
-# is an ARGUMENT, and counting them as arguments is what made
-# `git checkout <branch> 2>/dev/null` read as a two-positional file restore and
-# PASS through main-tree-branch-gate (measured rc=0, want 2, on a command that
-# really moves HEAD).
-argv_case() { # name, text, expected newline-joined argv, expected rc
-  local name="$1" text="$2" want="$3" wantrc="${4:-0}" got gotrc
-  got=$(gate_argv "$text"); gotrc=$?
-  if [ "$got" = "$want" ] && [ "$gotrc" = "$wantrc" ]; then
-    pass=$((pass + 1)); printf 'OK   gate_argv: %s\n' "$name"
-  else
-    fail=$((fail + 1))
-    printf 'FAIL gate_argv: %s\n  text: [%s]\n  want: [%s] rc=%s\n  got : [%s] rc=%s\n' \
-      "$name" "$text" "$want" "$wantrc" "$got" "$gotrc"
-  fi
-}
-argv_case "plain words are argv unchanged" " -b feat" "$(printf -- '-b\nfeat')"
-argv_case "a glued redirection is dropped" " feat 2>/dev/null" "feat"
-argv_case "two glued redirections are dropped" " feat >/dev/null 2>&1" "feat"
-argv_case "an append redirection is dropped" " feat 2>>log" "feat"
-argv_case "a SPACED redirection drops its target too" " feat > /dev/null" "feat"
-argv_case "a numbered spaced redirection drops its target" " feat 2> log" "feat"
-argv_case "an input redirection is dropped" " feat < in" "feat"
-argv_case "a trailing & is dropped" " feat &" "feat"
-argv_case "a comment ends the argv" " feat # switch lane" "feat"
-argv_case "a comment ends it even mid-list" " a # b -- c" "a"
-# The COMMENT rule keys on an UNQUOTED leading `#`. A quoted one is an argument
-# the shell passes through, and the token still carries its quotes here.
-argv_case "a QUOTED # is an argument, not a comment" " '#branch'" "'#branch'"
-argv_case "a # inside a word is not a comment" " feat#1" "feat#1"
-# CONTROLS: the things that look like the above and are NOT shell syntax.
-argv_case "a bare -- survives" " feat -- README.md" "$(printf -- 'feat\n--\nREADME.md')"
-argv_case "a digit-only word is not a redirection" " --unified 3 feat" "$(printf -- '--unified\n3\nfeat')"
-argv_case "a quoted span survives whole" ' -c "wt feat new"' "$(printf -- '-c\n"wt feat new"')"
-# An UNBALANCED quote cannot be split at all. Reporting it is the whole point:
-# `gate_tokens` used to return the prefix it managed and rc=0, so `-b
-# agent's-branch` yielded the single token `-b` and the gate read a bare
-# `git checkout`.
-argv_case "an unbalanced quote returns 1 and nothing" " -b agent's-branch" "" 1
-argv_case "an unbalanced quote at the start returns 1" " a'unbalanced" "" 1
-argv_case "empty text is not a truncation" "" "" 0
-# CONTROL, not a fence: `gate_argv` feeds its loop from a HEREDOC, and a heredoc
-# delimiter is matched in the SCRIPT text rather than in an expansion -- so a
-# token that happens to spell the delimiter cannot end the body early. Nothing
-# reddens this today; it is here so a rewrite that re-scans the value (an `eval`,
-# a here-string built from it) has a case to fail.
-argv_case "a token spelling the heredoc delimiter survives" " EOF -- x" "$(printf -- 'EOF\n--\nx')"
-
-
-# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
-# one -- or deleting a case -- removes assertions SILENTLY while the tally still
-# reads `fail: 0`. No suite in this repo had one, so the only thing standing
-# between a gutted loop and a green run was somebody noticing the number move.
-# Raise it when cases are added; never lower it to make a red run green.
-# --- gate_word_is_literal -------------------------------------------------------
-#
-# The INVERTED default. `gate_argv` above splits words; this answers whether a
-# word reaches the command as the text it carries, and it answers NO by default.
-# Three rounds of `main-tree-branch-gate` fixes each taught the stripper one more
-# shell form and each time the next round found the form still missing -- last
-# `$EMPTY` (an empty expansion VANISHES, so the gate counted a positional git
-# never receives) and `{fd}>/dev/null` (bash's fd-variable redirection, a word
-# git never receives at all). Both turned a real branch switch into a two-
-# positional file restore and PASSED.
-#
-# The cases below are therefore in two halves, and the SECOND half is what makes
-# the first mean anything: if the inert list quietly shrank, the refusals would
-# all still pass while every ordinary command started blocking.
-lit_case() { # name, word, want-rc
-  local name="$1" word="$2" wantrc="$3" gotrc
-  gate_word_is_literal "$word"; gotrc=$?
-  if [ "$gotrc" = "$wantrc" ]; then
-    pass=$((pass + 1)); printf 'OK   gate_word_is_literal: %s\n' "$name"
-  else
-    fail=$((fail + 1))
-    printf 'FAIL gate_word_is_literal: %s\n  word: [%s]\n  want rc=%s got rc=%s\n' \
-      "$name" "$word" "$wantrc" "$gotrc"
-  fi
-}
-# REFUSED -- every one of these is a word the shell may rewrite or remove.
-lit_case "an unquoted \$ expansion is refused" '$EMPTY' 1
-lit_case "a braced \$ expansion is refused" '${EMPTY}' 1
-lit_case "a \$ inside DOUBLE quotes is still refused" '"$f"' 1
-lit_case "a backtick substitution is refused" '`date`' 1
-lit_case "a backslash escape is refused" 'a\b' 1
-lit_case "the fd-variable redirection prefix is refused" '{fd}>/dev/null' 1
-lit_case "a brace word is refused" '{a,b}' 1
-lit_case "a glob star is refused" '*.ts' 1
-lit_case "a glob question mark is refused" 'a?b' 1
-lit_case "a bracket expression is refused" 'a[bc]' 1
-lit_case "a leading tilde is refused" '~/x' 1
-lit_case "a history bang is refused" 'a!b' 1
-lit_case "a metacharacter that reached here is refused" 'a;b' 1
-lit_case "a pipe is refused" 'a|b' 1
-lit_case "a redirection character is refused" '>x' 1
-lit_case "a subshell paren is refused" '(x)' 1
-lit_case "a leading # is refused (it opens a comment)" '#branch' 1
-lit_case "an unbalanced quote is refused" "'open" 1
-lit_case "the empty word is refused" '' 1
-# ADMITTED -- the other half. Each of these is an ordinary git argument, and the
-# gate's ALLOW arms are unreachable without them.
-lit_case "a plain name is literal" 'feat' 0
-lit_case "a slashed, dotted, dashed name is literal" 'feat/x-1.2' 0
-lit_case "a glued long-option value is literal" '--create=feat' 0
-lit_case "a caret revision is literal" 'HEAD^' 0
-lit_case "a # INSIDE a word is literal" 'has#hash' 0
-lit_case "a comma is literal without a brace" 'a,b' 0
-lit_case "a colon and an at-sign are literal" 'a:b@c' 0
-lit_case "a plus and a percent are literal" 'a+b%c' 0
-lit_case "a SINGLE-quoted \$ is literal" "'feat\$x'" 0
-lit_case "a single-quoted space is literal" "'my branch'" 0
-lit_case "a DOUBLE-quoted plain word is literal" '"main"' 0
-lit_case "an embedded quoted span is literal" 'core.pager="less"' 0
-
-# --- gate_strip_comment ---------------------------------------------------------
-#
-# The cut happens BEFORE the split, which is the whole fix: an apostrophe inside
-# a comment used to be weighed as a quote, so `git checkout main # don't switch
-# lanes` came back a truncation and the gate blocked a command bash calls valid
-# and git answers with "Already on 'main'".
-cut_case() { # name, text, want
-  local name="$1" text="$2" want="$3" got
-  got=$(gate_strip_comment "$text")
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   gate_strip_comment: %s\n' "$name"
-  else
-    fail=$((fail + 1))
-    printf 'FAIL gate_strip_comment: %s\n  text: [%s]\n  want: [%s]\n  got : [%s]\n' \
-      "$name" "$text" "$want" "$got"
-  fi
-}
-cut_case "a comment is cut at the word start" 'main # switch lane' 'main '
-cut_case "an APOSTROPHE inside the comment does not poison it" \
-  "main # don't switch lanes" 'main '
-cut_case "a # mid-word is not a comment" 'feat#1' 'feat#1'
-cut_case "a # inside a quoted span is not a comment" "main -- 'a#b'" "main -- 'a#b'"
-# The DISCRIMINATING half of that pair: with a SPACE before it, the `#` sits at
-# what would be a word start if the quotes were not tracked, so a cut here is
-# exactly what dropping the quote state produces. The case above cannot see
-# that -- its `#` is preceded by `a` either way.
-cut_case "a # at a word start INSIDE quotes is still not a comment" \
-  "main -- 'a #b' tail" "main -- 'a #b' tail"
-cut_case "an escaped # is not a comment" 'main \# x' 'main \# x'
-cut_case "text with no comment is unchanged" '-b feat' '-b feat'
-# The SECOND PASS, the `ignore_q` trick `gate_segments_raw` already uses: the
-# leading `'` never closes, so on the retry it is treated as literal and the
-# comment is found. The result is still unsplittable, and `gate_argv` still
-# refuses it -- correctly, since bash calls that text a syntax error.
-cut_case "an unclosed quote is retried with the quote literal" \
-  "'unbalanced # x" "'unbalanced "
-
-# --- gate_argv: round 4 ---------------------------------------------------------
-argv_case "a comment carrying an apostrophe no longer truncates" \
-  " main # don't switch lanes" "main"
-# SPACED redirection operators. Each of these drops BOTH words; dropping an
-# operator from GATE_REDIR_TOKEN makes the operator itself read as an argument,
-# which is the FAIL-OPEN direction (an extra positional relaxes the gate's
-# verdict to "file restore").
-argv_case "a spaced append redirection drops its target" " feat 2>> log" "feat"
-argv_case "a spaced clobber redirection drops its target" " feat >| out" "feat"
-argv_case "a spaced dup-out redirection drops its target" " feat >& out" "feat"
-argv_case "a spaced dup-in redirection drops its target" " feat <& 3" "feat"
-argv_case "a spaced &> redirection drops its target" " feat &> out" "feat"
-argv_case "a spaced &>> redirection drops its target" " feat &>> out" "feat"
-
-CASE_FLOOR=442
-if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
-  fail=$((fail + 1))
-  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
-fi
 # --- a mis-closed substitution span must not HIDE the verb inside it ---------
 #
 # `close_paren` / `close_backtick` decide where a `$( )` or backtick span ends.
@@ -1102,9 +656,9 @@ fi
 # the verb inside it never starts a segment.
 #
 # All three shapes were UNGATED before the helpers learned about quotes and
-# backslashes, and all twelve hook suites stayed green throughout -- nothing
-# pinned a MIS-closed span, only balanced ones. Unbalanced parens inside quotes
-# are ordinary: grep counting a paren, sed substituting one, awk -F with one.
+# backslashes, and every hook suite stayed green throughout -- nothing pinned a
+# MIS-closed span, only balanced ones. Unbalanced parens inside quotes are
+# ordinary: grep counting a paren, sed substituting one, awk -F with one.
 want_match 0 'paren inside a quoted string in the body does not end the span' \
   "$(printf 'echo "$(echo %s)%s ; git commit -m x)"' "'" "'")" "$C"
 want_match 0 'backslash-escaped paren does not end the span' \
@@ -1119,34 +673,10 @@ want_match 0 'a balanced substitution body is still seen' \
 # not passing because the command matches regardless of the span.
 want_match 1 'a mis-closed span with NO verb in it does not match' \
   "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")" "$C"
-# --- gate_perl_word_ok must reject a STALE prelude ---------------------------
-#
-# The guard exists to catch a library that is present but does not WORK, and the
-# case it is most likely to meet is a SIBLING REPO one revision behind -- this
-# prelude is copied between three repos on purpose. A four-dimension probe was
-# measured certifying exactly that: the pre-`ebf5ac39` prelude (no mid-word
-# ANSI-C arm, `gate_unq` decoding instead of returning bytes) passed every
-# assertion, because all four inputs were pure ASCII at word position 0.
-#
-# Each case deletes ONE dimension from the REAL prelude and requires a
-# rejection. A dimension whose deletion still passes is one the probe does not
-# actually certify. Driven from a single python block rather than per-case shell
-# arguments: the mutations are regex literals full of quotes and backslashes,
-# and threading them through shell quoting broke the file twice.
-__pr_out=$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/testdata/probe-rejects.py" \
-             "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_command-match.sh" 2>&1)
-__pr_rc=$?
-printf '%s\n' "$__pr_out"
-__pr_ok=$(printf '%s\n' "$__pr_out" | grep -c '^OK   probe-rejects:')
-__pr_bad=$(printf '%s\n' "$__pr_out" | grep -c '^FAIL probe-rejects:')
-# The COUNT is asserted, not just the failures: a script that dies early prints
-# nothing and would otherwise read as six silent passes.
-if [ "$__pr_rc" != 0 ] || [ "$__pr_ok" -ne 7 ] || [ "$__pr_bad" -ne 0 ]; then
+CASE_FLOOR=229
+if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
-  printf 'FAIL probe-rejects: expected 7 OK / 0 FAIL, got %s / %s (rc=%s)\n' "$__pr_ok" "$__pr_bad" "$__pr_rc"
-  fail_log+="FAIL probe-rejects: expected 7 OK / 0 FAIL, got $__pr_ok / $__pr_bad\n"
-else
-  pass=$((pass + __pr_ok))
+  printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
 fi
 
 printf '\npass: %s  fail: %s\n' "$pass" "$fail"

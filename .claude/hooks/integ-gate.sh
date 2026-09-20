@@ -13,7 +13,7 @@
 # to that scope, NOT the working tree's content. So a `main` merge /
 # rebase that moves an in-scope file this branch did not touch leaves
 # the marker fresh, while an overlapping `main` change still stales it.
-# See .claude/rules/hooks.md "integ-gate (pre-merge)" and issue #498.
+# See .claude/rules/hooks.md and issue #498.
 #
 # The `.markgate.yml` integ gate also carries a 14-day TTL on top
 # of the diff-scope check, so the marker decays even when nothing
@@ -89,7 +89,7 @@ cd "$target_dir" 2>/dev/null || exit 0
 # which otherwise fires on EVERY merge from a fresh worktree (a new worktree
 # has no per-worktree marker, so `markgate verify integ` reports "no marker"
 # regardless of what the PR actually changed). Mirrors the origin/main diff
-# base used by `create-integ-gate.sh` / `cdkd-parity-gate.sh`.
+# base a PR diff is always computed against here.
 #
 # Only short-circuit when the diff is computable. If origin/main is
 # unresolvable (fresh clone, a worktree that never fetched), fall

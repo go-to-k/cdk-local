@@ -1,15 +1,13 @@
 # Session-wrap report: the full field reference
 
-CLAUDE.md's "Every session-wrap / task-complete report" rule states the
-contract; this file carries the complete field semantics, scales, and
+CLAUDE.md states the contract; this file carries the field semantics, scales and
 templates. Read it when writing a wrap report or filing a deferral.
 
-**The four TODO fields — decide them WHEN THE ITEM ARISES, not at wrap
-time.** By wrap time the evidence for the call (which files were open,
-which verification cycle was already being paid for) is gone, and a
-retrospective guess is worth little. Record them **in the issue body**
-so they outlive the session. The issue body and the report use the
-SAME four lines, one field per line:
+**The four TODO fields — decide them WHEN THE ITEM ARISES, not at wrap time.**
+By wrap time the evidence for the call (which files were open, which
+verification cycle was already paid for) is gone. Record them **in the issue
+body** so they outlive the session. The issue body and the report use the SAME
+four lines, one field per line:
 
 ```text
 Session-fit: now (do it in this session) | next (not this session) — <reason>
@@ -18,253 +16,169 @@ Effort: small (S) | medium (M) | large (L) — <which verification cycle it drag
 Estimate: <duration, e.g. ~1-3 h> — <what eats the time>
 ```
 
-A report adds a fifth line, **`Notes`**, for session-specific context
-(`none` when there is nothing); the issue body carries no `Notes`,
-because what belongs there is only the part that outlives the session.
-Four CLASSIFICATION lines, and they stay four — a filed issue body also
-carries a **`Dup-check:`** line recording that the OPEN issue list was
-searched for an issue already covering this root cause
-(`/work-issues` §5), but that is a filing-time record rather than a
-classification field: it is written once when the issue is created and
-never re-decided on a claim. `.claude/hooks/issue-dup-check-gate.sh`
-refuses `gh issue create` without it.
+A report adds a fifth line, **`Notes`**, for session-specific context (`none`
+when there is nothing); the issue body carries no `Notes` — what belongs there
+is only what outlives the session. Before filing, SEARCH the open issues for one
+already covering the same root cause; duplicates split the evidence.
 
-**The four answer four DIFFERENT questions and none is a spelling of
-another** (the one sanctioned link: `Severity: high` forces `now` unless
-external input blocks it): `Session-fit` is the decision, `Severity` the cost of
-leaving it undone, `Effort` which verification cycle the fix drags,
-`Estimate` the hours. In particular do not collapse `Severity` into
-`Session-fit` — a `Severity: high` item can still be `next` (external
-input) and a `low` one is usually `now` (it lands in a file this session
-already has open); `Severity` says what a USER suffers, `Session-fit` what
-THIS session does. The moment the two track each other,
-`Severity` is a second spelling of the decision and the field is
-wasted. Likewise `Effort` is not `Estimate`: "one integ run" is a kind
-of cost, and how many hours it takes depends on which fixture.
+**The four answer four DIFFERENT questions and none is a spelling of another**
+(one sanctioned link: `Severity: high` forces `now` unless external input blocks
+it). `Session-fit` is the decision, `Severity` the cost of leaving it undone,
+`Effort` which verification cycle the fix drags, `Estimate` the hours.
+Do not collapse `Severity` into `Session-fit` — a `Severity: high` item can
+still be `next` (external input) and a `low` one is usually `now` (it lands in a
+file this session already has open); `Severity` says what a USER suffers,
+`Session-fit` what THIS session does. Likewise `Effort` is not `Estimate`: "one
+integ run" is a kind of cost; its hours depend on which fixture.
 
-**The keys are spelled identically everywhere** — issue body, English
-report, Japanese report; never translated or renamed per context.
-**No bare tokens**, because a value must be readable without knowing
-the internal scale: write `Session-fit: next (not this session)` and
-never a lone `next`; `Effort: large (L)` and never a lone `L`;
-`Severity` as a word and **never as an initial** (the initials collide
-with `Effort`'s both ways — `M` is `medium` on either scale, and `L`
-would be *low*, the least urgent thing there is, against *large*, the
-biggest); and always BOTH `Effort` and `Estimate` — dropping the
-duration and keeping the letter is exactly the failure this split
-exists to end.
+**The keys are spelled identically everywhere** — issue body, English report,
+Japanese report; never translated or renamed. **No bare tokens**, because a
+value must be readable without knowing the internal scale: write
+`Session-fit: next (not this session)` and never a lone `next`; `Effort: large
+(L)` and never a lone `L`; `Severity` as a word and **never as an initial** (the
+initials collide with `Effort`'s both ways — `M` is `medium` on either scale,
+and `L` would be *low*, the least urgent thing there is, against *large*); and
+always BOTH `Effort` and `Estimate`.
 
-**`Severity` and `Effort` are ALSO LABELS on a filed issue.** The two
-lines stay exactly as written — nothing about the report or the body
-changes — and the same two values are mirrored onto the issue as
-`severity:high` / `severity:medium` / `severity:low` and
-`effort:small` / `effort:medium` / `effort:large`. Prose is invisible
-to every query the backlog is actually triaged with, so ranking by
-`Severity` costs one `gh issue view` per candidate while
-`gh issue list --label severity:high` is one call. Set them at filing
-time (`gh issue create ... --label severity:high --label effort:large`)
-and again when a claim rewrites an old packed body into the four-line
-shape (`gh issue edit <n> --add-label ...`), which is where `Severity`
-first exists for most of the backlog. **Only these two get labels**:
-`Session-fit` is re-decided at claim time and a label silently
-disagreeing with the body is worse than none, and `Estimate` is a
-free-form duration whose informative half — what actually eats the
-time — is exactly what a label cannot hold. The prefixed full words
-are the "no bare tokens" rule applied to a label: the two scales share
-the token `medium`, and their initials collide in the dangerous
-direction. Enforced by
-`.claude/hooks/issue-classification-label-gate.sh`, which refuses a
-`gh issue create` / `gh issue edit` whose body states a value the
-issue's labels do not carry. **The PR inherits them automatically** —
-`.github/workflows/pr-inherit-issue-labels.yml` copies every label of
-the issues a PR closes onto the PR itself (add-only, minus the
-release-management family), so never hand-add them to a PR. The copy
-runs when the PR is opened, reopened, or its body edited, reading the
-labels the issue carries AT THAT MOMENT — which is why the label
-belongs on the issue at CLAIM time, before the lane's PR exists.
+**`Severity` and `Effort` are ALSO LABELS on a filed issue.** The two lines stay
+as written, and the same values are mirrored onto the issue as
+`severity:high|medium|low` and `effort:small|medium|large` — prose is invisible
+to every query the backlog is triaged with. Set them at filing
+(`gh issue create ... --label severity:high --label effort:large`) and again
+when a claim rewrites an old packed body into the four-line shape. **Only these
+two get labels**: `Session-fit` is re-decided at claim time and a label silently
+disagreeing with the body is worse than none, and `Estimate`'s informative half
+— what eats the time — a label cannot hold. The prefixed full words apply the
+"no bare tokens" rule to labels: the two scales share `medium` and their
+initials collide. **The PR inherits them automatically** —
+`.github/workflows/pr-inherit-issue-labels.yml` copies every label of the issues
+a PR closes onto the PR (add-only, minus the release-management family), so
+never hand-add them to a PR. It reads the issue's labels when the PR is opened,
+reopened or its body edited — which is why the label belongs on the ISSUE at
+CLAIM time, before the lane's PR exists.
 
-**Scales.** `Severity`: `high` = a wrong result, data loss, a security
-surface, or something a user hits in normal operation; `medium` = a
-capability is missing but there is a workaround, or it only shows up
-under a specific condition; `low` = internal tidiness, invisible to
-users. **Rate what a user experiences, never why this session should do
-it** — "leaving main self-inconsistent" is a `Session-fit: now` trigger,
-not a Severity level; rating it `high` smuggles a Session-fit trigger
-through the wrong field (and `high` itself now forces `now`, so a misrated
-one cannot be re-judged). `Effort` measures the
-verification tail rather than the edit: `small` = edit plus unit
+## Scales
+
+`Severity`: `high` = a wrong result, data loss, a security surface, or something
+a user hits in normal operation; `medium` = a capability is missing but there is
+a workaround, or it shows up only under a specific condition; `low` = internal
+tidiness, invisible to users. **Rate what a user experiences, never why this
+session should do it** — "leaving main self-inconsistent" is a `Session-fit: now`
+trigger, not a Severity level; rating it `high` smuggles that trigger through
+the wrong field, and `high` forces `now`, so a misrated one cannot be re-judged.
+
+`Effort` measures the verification tail, not the edit: `small` = edit plus unit
 tests, riding verification this session already pays for; `medium` = one
 re-review round, or a run of an EXISTING integ fixture this session was not
 otherwise going to run; `large` = a NEW integ fixture has to be WRITTEN, or a
 behavior change needing its own PR plus review.
 
-**`now` is the DEFAULT; `next` needs one of two reasons.** At the wrap of
-nearly every recent session the maintainer has had to ask whether the leftover
-would not be cheaper to finish HERE, with the context already loaded — and
-every time the answer was yes: the item was re-classified `now` and done in
-that session (go-to-k/cdkd#3083 is the latest, ~25 min because every file it
-touched was already read). This rule pre-answers that question; it must never
-need asking again.
+## `now` is the DEFAULT; `next` needs one of two reasons
 
-**Write the CONTEXT TEST before the decision**: list the files the fix
-touches or must read to be made correctly (tests and docs included), and
-say, per file, whether this session already READ it — read, edited, or
-reviewed in a diff; a reviewer's read set counts exactly like an author's.
-ONE loaded file makes the item `now`: a fresh session pays the launch probe,
-`pnpm install`, build, the module read and the evidence re-derivation BEFORE
-its first edit, while this session pays the edit alone. Precedence: `next`
-reason (a) below asks whether the work CAN finish here and is decided first;
-(b) is what the test gates — it decides whether (b) is available at all,
-not that it fires.
+**Write the CONTEXT TEST before the decision**: list the files the fix touches
+or must read to be made correctly (tests and docs included), and say, per file,
+whether this session already READ it — read, edited, or reviewed in a diff; a
+reviewer's read set counts like an author's. ONE loaded file makes the
+item `now`: a fresh session re-pays install, build, the module read and the
+evidence re-derivation before its first edit, while this session pays the edit
+alone. Precedence: reason (a) asks whether the work CAN finish here and is
+decided first; (b) is what the test gates.
 
 - **`now`** — any of: a file the fix touches is loaded (above); skipping it
   leaves main self-inconsistent (docs contradicting shipped code, a stale
-  rationale comment, a fixture that no longer discriminates); it blocks
-  another lane; it rides an EXISTING integ fixture (calibration below); its
-  evidence exists only in this session (a live repro, a Docker observation, a
-  measurement); or the user cannot use the result yet (unreleased /
-  undeployed — "merged" is not done); **leaving it loose compounds** — an
-  integ fixture not yet written for a subsystem this session holds, a
-  pattern landed at some sites and not others, a guard with a known hole:
-  the cost of undone grows FOR THE REPO with every session that passes, and
-  the fixture case is the clearest — deferred, it is the piece that never
-  lands; or **`Severity: high`** — a wrong result, data loss, or a security
-  surface, rated on the scale below and never on the decision it forces —
-  is `now` unless (a) blocks it. **Residuals of a
-  just-merged lane** — polish, nits, parity gaps, sibling sites a review
-  named — are the hottest context there is and are `now` by the test above;
+  rationale comment, a fixture that no longer discriminates); it blocks another
+  lane; it rides an EXISTING integ fixture; its evidence exists only in this
+  session (a live repro, a measurement); the user cannot use the result yet
+  (unreleased — "merged" is not done);
+  **leaving it loose compounds** — an integ fixture not yet written for a
+  subsystem this session holds, a pattern landed at some sites and not others, a
+  guard with a known hole: the cost grows FOR THE REPO every session, and a
+  deferred fixture is the piece that never lands; or **`Severity: high`** — a
+  wrong result, data loss, or a security surface — unless (a) blocks it. **Residuals of a just-merged lane** — polish, nits,
+  parity gaps, sibling sites a review named — are the hottest context there is;
   "only a residual" names no cost. Writing a NEW integ fixture is
   `Effort: large`, a cost to record, never a reason to defer.
-- **`next`** — ONLY one of: (a) external input (a quota, an upstream fix, a
-  host this machine is not — the arm64 case below — a file held by another
-  lane's OPEN PR, or a maintainer decision already asked through
-  `AskUserQuestion` and unanswered; a routine call is yours to make); or (b)
-  the work is COLD AND HEAVY — nothing the fix touches or must read was read
-  this session, no `now` criterion fires, AND doing it here is clearly WORSE
-  than fresh, not merely as costly: the reason names the modules to load and
-  says why loading them beside THIS session's context degrades the work (a
-  security surface read through an unrelated subsystem's assumptions). That
-  is the one claim about the session that counts. Cold alone is not (b) — a
-  small cold fix is `now`. (b) is legitimate and never to be forced through
-  — but it must stay RARE: a (b) fired twice in one run, or on an item with
-  a loaded file, is the reflex, not the reason, and `/work-issues` §10-0
-  counts them. **Nothing about the SESSION is a reason**: its
-  length, the context left, "it has done enough", a wrap report already
-  drafted, the PR already merged. The wrap reflex (file → classify → close)
-  fires exactly when the context is richest, which is why it produces `next`
-  — and why the context test is written first. Before the
-  final report, re-run the test on every `next` it lists: the report is the
-  last moment the loaded context can still be spent.
+- **`next`** — ONLY one of: (a) external input (a quota, an upstream fix, a host
+  this machine is not, a file held by another lane's OPEN PR, or a maintainer
+  decision already asked through `AskUserQuestion` and unanswered; a routine
+  call is yours to make); or (b) the work is COLD AND HEAVY — nothing the fix
+  touches or must read was read this session, no `now` criterion fires, AND
+  doing it here is clearly WORSE than fresh, not merely as costly: name the
+  modules to load and why loading them beside THIS session's context degrades
+  the work. Cold alone is not (b) — a small cold fix is `now`.
+  (b) is legitimate, but RARE: fired twice in one run, or on an item with a
+  loaded file, it is the reflex rather than the reason (`/work-issues` §10-0
+  counts them). **Nothing about the SESSION
+  is a reason**: its length, the context left, "it has done enough", a wrap
+  report already drafted, the PR already merged. The wrap reflex fires exactly
+  when the context is richest, which is why it produces `next` — so re-run the
+  context test on every `next` before the final report.
 
-**Calibration: RUNNING an existing integ is not a reason to defer.** Measured
-over the 268 rows of cdkd's `docs/_generated/integ-last-run.tsv` on 2026-08-20:
-median run 85 s, mean 4.6 min, p90 8.8 min. A passing run costs a few hundred
-tokens. If the session is running one for its current lane anyway, a fix riding
+**Calibration: RUNNING an existing integ is not a reason to defer.** A passing
+run is minutes, and if the session is running one for its lane anyway, a fix riding
 the same fixture costs zero — the same run refreshes the same gate. What is
-genuinely expensive is WRITING a new fixture, and an integ that FAILS. Both
-are `Effort` / `Estimate` lines, not reasons: the fixture is written cheapest
-while the subsystem is loaded, and unbounded here is unbounded next session
-too.
+genuinely expensive is WRITING a new fixture, and an integ that FAILS. Both are
+`Effort` / `Estimate` lines, not reasons: the fixture is written cheapest while
+the subsystem is loaded, and unbounded here is unbounded next session too.
+Review of a larger diff grows superlinearly — but that is a reason to SPLIT the
+PR, not to end the session.
 
-Review of a larger diff also grows superlinearly, and that cost is real — but
-it is a reason to SPLIT the PR, not to end the session, and it belongs under
-`Effort`. This paragraph listed it as a third thing to "defer on" until
-2026-09-05 — the criterion the NEXT paragraph refuses, arriving through the
-back door one paragraph early; a body wording it as `unreviewable` is now
-refused by `.claude/hooks/issue-deferral-criteria-gate.sh`, so the two halves
-of this file would have contradicted each other AND the gate.
+**PR SHAPE is not a reason.** "It needs its own PR" is a `now` item that gets
+its own PR; the bar is the SESSION, not the diff. Neither is "separate review
+surface" / "unreviewable". An N-sites SWEEP is `next` ONLY on reason (a) — its
+files are loaded by construction — so state it that way and file an umbrella
+naming every site.
 
-**PR SHAPE is not one of those reasons, and a gate now says so.**
-`/work-issues` §5 ("'It needs its own PR' is NOT a `next` reason — it is a
-`now` item that gets its own PR; the bar is the SESSION, not the diff") is
-enforced at the filing site by
-`.claude/hooks/issue-deferral-criteria-gate.sh`, which refuses a
-`gh issue create` whose `Session-fit: next` reason reads `own PR` /
-`separate PR` / `share a PR` / `independent` or `separate review surface` /
-`own review` / `unreviewable`. The N-sites SWEEP §5 sanctions is `next` ONLY
-on reason (a), external input — its files are loaded by construction, and a
-fixture it still needs is written NOW — so state it that way and file an
-umbrella naming every site; review size is the signal, not the criterion.
-`.claude/rules/hooks.md` carries the measurement, and the 2026-09-05 reversal
-that put `unreviewable` back in the vocabulary alongside the sibling repos.
-
-**A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive
-part is the EVIDENCE behind it — the repro you built, what you watched actually
-happen, the number you measured — and that is exactly what an issue body cannot
-carry cheaply — unless that evidence is already PERSISTED in the repo (a
-committed fixture), when (b) applies as usual. If you must defer it anyway on
-(a) or (b), put the EVIDENCE in the issue body, not just the
-diagnosis.
+**A newly DISCOVERED bug is `now` even in a COLD subsystem.** Its expensive part
+is the EVIDENCE — the repro you built, what you watched happen, the number you
+measured — which is exactly what an issue body cannot carry cheaply, unless that
+evidence is already PERSISTED in the repo (a committed fixture), when (b)
+applies as usual. If you defer it anyway, put the EVIDENCE in the issue body,
+not just the diagnosis.
 
 **A reason about the FILING SESSION's own STATE expires when that session
-does.** It is a different failure from the one `/work-issues`
-`references/implement.md` §5-c refuses outright — that one is a claim about
-the PULL REQUEST ("it needs its own review surface"), which is never a
-deferral reason at all. This one is a claim about the SESSION that filed it:
-"the file is held by another open PR's diff", "the session that found it
-budgeted no integ run", "that lane's scope was frozen at its final review
-round". A PR can be named on either side, so the mention is not the tell —
-ask which of the two the sentence is ABOUT. Of those three only the first
-survives, as reason (a) ending at that merge; the other two are no longer
-reasons at all. A session-state clause is legal only as the EXPIRY event of a
-`next` reason, and it goes STALE — deciding-once does not protect it, because
-it freezes the DECISION and not the PREMISE.
+does** — "the session that found it budgeted no integ run", "that lane's scope
+was frozen at its final review round". Of that family only "the file is held by
+another open PR's diff" survives, as reason (a), ending at that merge. A PR can
+be named on either side of this line, so ask which the sentence is ABOUT — the
+session, or the PR (which is never a reason at all; see PR SHAPE above).
 
-So prefer a reason the WORK owns. When a session-state clause is written
-anyway, name the event that ENDS it on the same line — "unblocked the moment
-that PR merges" is the model, because it is what lets a later reader see,
-without asking anyone, that the reason has expired. The "no file overlap with
-this session's lanes" reason needs it too: that is a claim about a MOVING
-target, since the lane keeps editing after the reason is written
-(go-to-k/cdkd#2440 was deferred on exactly it, and the same lane's merged PR
-then changed that very file `+9/-2`). `/work-issues` `references/retro.md`
-§10-0 re-checks every `next` at the end of a run, and this shape has been
-caught in consecutive sibling runs — go-to-k/cdkd#2544 by that end-of-run
-check, go-to-k/cdkd#2595 by the session that later claimed it.
-Nothing mechanical closes it — the wording of an expired reason is
-unremarkable, and only the question "what ends this?" separates it from a
-live one.
+So prefer a reason the WORK owns. A session-state clause is legal only as the
+EXPIRY event of a `next` reason: name the event that ENDS it on the same line —
+"unblocked the moment that PR merges" — so a later reader can see, without
+asking anyone, that the reason has expired. "No file overlap with this session's
+lanes" needs it too: it is a claim about a MOVING target, since the lane keeps
+editing after the reason is written. Only the question "what ends this?"
+separates an expired reason from a live one, and `/work-issues`
+`references/retro.md` §10-0 re-asks it of every `next`.
 
-**Before writing `next`, NAME the command the next session will run to
-verify the fix.** Every deferral is a PREDICTION that a later session can
-finish the work, and an unstated prediction is never checked: the reason
-line decays into naming the KIND of work ("a fixture change", "a
-different subsystem"), which is the MEANS rather than the purpose. You
-may not write `Session-fit: next` until you can name the concrete
-command (the fixture, not "the integ"; the assertion that goes red to
-green, not "a test") and say a FRESH session will be able to run it. The
-check is generative rather than a lookup, so it catches what no
-enumerated trigger list contains: a verifier bound to this host (CPU
-architecture, the platform of a Docker image, the daemon), to this
-account (a `*-from-cfn-stack` integ fixture's `cdk deploy`), or one that
-does not exist yet. On 2026-08-26 go-to-k/cdk-local#560 was deferred as "a
-fixture / base-image change" when the real verification was two
-`start-api` fixtures ON AN arm64 HOST, which a fresh session may not
-have; on amd64 they never emulate, so a run there cannot see the fault.
-`/work-issues` §5 carries the worked version, beside the filing recipe.
+**Before writing `next`, NAME the command the next session will run to verify
+the fix.** Every deferral predicts that a later session can finish the work, and
+an unstated prediction is never checked: the reason line decays into naming the
+KIND of work ("a fixture change"), which is the MEANS rather than the purpose.
+Do not write `Session-fit: next` until you can name the concrete command (the
+fixture, not "the integ"; the assertion that goes red to green, not "a test")
+and say a FRESH session can run it. Being generative rather than a lookup, this
+catches what no trigger list contains: a verifier bound to this host (CPU
+architecture, a Docker image's platform), to this account (a `*-from-cfn-stack`
+fixture's `cdk deploy`), or one that does not exist.
 
 **`Session-fit: next` is not on the menu inside a cross-repo scope.** When the
 user framed the work as "do this across the repos in one session", anything
-discovered inside that scope is `now`, and three tells force it: (1) you are
-about to file the SAME issue body in more than one repo, which is the split
-the framing exists to end and not triage; (2) the fix is mechanical and its
-evidence is live right now, with the repro built, the files open, and a gate
-cycle already running; (3) the user already said "finish it here" for the
-surrounding task, so a discovery inside that task inherits the instruction
-instead of getting a budget of its own. The four fields exist to make a
-deferral HONEST, not to make one available: a defensible-looking `Effort` /
-`Estimate` written for work this session is already positioned to do is the
-tell that the classification has turned into an excuse. On 2026-08-20 a
-session asked to consolidate one `/work-issues` lesson across cdkd, cdk-local
-and cdk-real-drift found that every PreToolUse gate was inert, fixed the
-matchers in all three, and then filed the remaining script-level gap as three
-separate issues, reproducing exactly the per-repo split the user had asked to
-end. Fixing it in the same PRs was the correct move, and is what happened
-once the user objected.
+discovered inside that scope is `now`. Three tells force it: (1) you are about
+to file the SAME issue body in more than one repo — the split the framing exists
+to end; (2) the fix is mechanical and its evidence is live right now; (3) the
+user already said "finish it here" for the surrounding task, so a discovery
+inside it inherits that instruction. The four fields exist to make a deferral
+HONEST, not to make one available: a defensible-looking `Effort` / `Estimate`
+written for work this session is already positioned to do is the tell that
+classification has turned into excuse.
 
-**One field per line — never pack two onto one**, and keep the field
-names and their order identical every time. A field with nothing to
-say gets an explicit `none`, never omission:
+## Template
+
+**One field per line — never pack two onto one**, with the field names and their
+order identical every time. A field with nothing to say gets an explicit `none`,
+never omission:
 
 ```text
 ## Remaining work

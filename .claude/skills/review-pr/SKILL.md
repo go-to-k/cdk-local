@@ -1,331 +1,165 @@
 ---
 name: review-pr
-description: Recommend the right reviewer count for a PR based on size + bias factors. Outputs a concrete plan (inline spot-check / 1 reviewer / 3-axis parallel) plus ready-to-paste Agent dispatch prompts when reviewers are warranted.
+description: Recommend the right reviewer set for a PR from what it touches. Outputs a concrete plan (1 reviewer by default, plus the security lens or the spec + test axes when a trigger fires) with ready-to-paste Agent dispatch prompts.
 argument-hint: "<PR-number>"
 ---
 
 # PR Review Recommendation
 
-Decide how much review rigor a PR actually warrants — and surface the dispatch prompts for the orchestrator to copy-paste. Running all 3 reviewer agents on every PR is expensive (~25 min) and drains attention; running none on a large security-sensitive PR misses bugs.
+Decide which reviewers a PR warrants and print the dispatch prompts. The skill
+itself never spawns reviewers: the **main session orchestrator** reading its
+output issues the `Agent` calls.
 
-The skill itself never spawns reviewers. It reads PR stats, applies the heuristic, and prints a recommendation. The **main session orchestrator** (the parent reading this skill's output) is responsible for actually issuing the `Agent` tool calls when the recommendation says to.
+## The reviewer rule
 
-## Inputs
+- **1 `pr-code-reviewer` by default.** Every PR gets this one.
+- **Add `pr-spec-reviewer` + `pr-test-reviewer`** when the `src/**` part of the
+  diff exceeds **400 changed lines** or **8 files**.
+- **Add a security-lens review** when the diff touches a secret / credential /
+  process-launch / Docker-exec surface (see the list below). This repo has no
+  `pr-security-reviewer` agent — dispatch a SECOND `pr-code-reviewer` carrying an
+  explicit security question instead of inventing an agent that does not exist.
+- **Reviewers run ONCE, on the FINAL sha** — after the last fix-back commit, not
+  on an intermediate one. Reviewing early wastes the pass: the diff grows
+  underneath it.
+- **A fix round is re-checked by MESSAGING the same reviewer** (SendMessage to
+  its agent id), never by dispatching a fresh one — the original still holds the
+  context of what it flagged and what it already cleared.
+- `pr-spec-reviewer` needs a design doc, or the bodies of the issues the PR says
+  it closes. With neither, skip it and say so — spec review against nothing is
+  noise.
 
-- **Required**: PR number (positional). Example: `/review-pr 42`.
+When genuinely unsure between one reviewer and three, take three. Reviewers are
+read-only and run in parallel; cost is not a tiebreaker for review depth.
 
 ## Steps
 
-1. **Fetch PR stats** via `gh`:
+1. **Fetch the PR's stats and paths:**
 
    ```bash
-   gh pr view <N> --json additions,deletions,changedFiles,title,headRefName,files \
-     -q '{a: .additions, d: .deletions, fc: .changedFiles, title: .title, branch: .headRefName, paths: [.files[].path]}'
+   gh pr view <N> --json title,headRefName,files \
+     -q '{title, branch: .headRefName, paths: [.files[].path]}'
    ```
 
-   Record: `additions` (`a`), `deletions` (`d`), `changedFiles` (`fc`), `title`, `branch`, list of file `paths`.
-
-   Compute `loc = a + d`.
-
-   **Subtract auto-generated LOC** before computing the tier — generated artifacts (snapshot fixtures, large lockfile diffs, etc.) and lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`) inflate LOC without adding reviewer surface. Reviewers do not (and cannot meaningfully) audit these files line-by-line:
+2. **Measure the `src/**` part of the diff** — generated artifacts, lockfiles,
+   docs and tests do not carry reviewer surface and do not count toward the
+   threshold:
 
    ```bash
-   excluded=$(gh pr view <N> --json files \
-     -q '[.files[] | select(.path | test("/pnpm-lock\\.yaml$|/package-lock\\.json$|/yarn\\.lock$")) | .additions + .deletions] | add // 0')
-   loc=$(( a + d - excluded ))
+   gh pr view <N> --json files \
+     -q '[.files[] | select(.path | startswith("src/"))]
+         | {files: length, loc: (map(.additions + .deletions) | add // 0)}'
    ```
 
-   Note: `fc` is NOT adjusted — a 12-file diff is still cross-cutting even when 2 of the files are lockfiles.
+   `loc > 400` OR `files > 8` → add the spec and test axes.
 
-   **Then gather each touched `src/` file's recent HISTORY in the same pass.**
-   The recent-defect up-bias in step 3 is the one trigger that cannot be read
-   off `paths`, so a step that does not FETCH it leaves the trigger to be
-   remembered rather than evaluated — which is how it goes unused.
+3. **Scan `paths` for the security surface.** Any hit adds the security-lens
+   pass, at any size:
+   - _Credential / secret material_ — `src/utils/role-arn.ts`,
+     `src/utils/profile-resolver.ts`, `src/utils/aws-proxy.ts`,
+     `src/cli/commands/local-profile-credentials-file.ts`,
+     `src/local/ecs-secrets-resolver.ts`, `src/local/ssm-parameter-resolver.ts`,
+     `src/local/ecs-task-runner.ts`
+   - _Inbound auth: verification, enforcement, request signing_ —
+     `src/local/cognito-jwt.ts`, `src/local/lambda-authorizer.ts`,
+     `src/local/sigv4-verify.ts`, `src/local/authorizer-resolver.ts`,
+     `src/local/authorizer-cache.ts`, `src/local/front-door-auth.ts`,
+     `src/local/agentcore-serve-auth.ts`, `src/local/agentcore-sigv4-sign.ts`,
+     `src/local/http-server.ts`, `src/local/front-door-server.ts`,
+     `src/local/agentcore-http-server.ts`, `src/local/websocket-server.ts`,
+     `src/utils/url-authority.ts`
+   - _Untrusted code / argv / archive + path traversal_ —
+     `src/utils/docker-cmd.ts`, `src/local/docker-runner.ts`,
+     `src/local/docker-image-builder.ts`, `src/local/ecr-puller.ts`,
+     `src/assets/docker-build.ts`, `src/local/image-override-engine.ts`,
+     `src/local/cloudfront-function-runtime.ts`, `src/local/studio-dispatch.ts`,
+     `src/local/studio-serve-manager.ts`, `src/local/studio-option-catalog.ts`,
+     `src/local/cloudfront-static-origin.ts`, `src/local/lambda-resolver.ts`,
+     `src/local/agentcore-s3-bundle.ts`, `src/local/layer-arn-materializer.ts`
 
-   ```bash
-   # `paths` came from step 1's own `gh pr view`; reuse it rather than asking
-   # again. Only `baseRefOid` is a second call.
-   BASE=$(gh pr view <N> --json baseRefOid -q .baseRefOid)   # NOT a plain HEAD:
-   # run on the PR branch, an unanchored log counts the PR's OWN fix-back
-   # commits and a 2-fix-back PR self-trips the bias it already has.
-   git fetch -q origin
-   # The `if` is the point, not the `echo`. baseRefOid can be missing locally
-   # (a shallow clone; a base that exists only on the remote), and then
-   # `git log` dies, `|| true` swallows it, and every file prints 0 -- a VOID
-   # probe whose output is character-identical to a clean one. A warning BESIDE
-   # the loop does not fix that; the loop must not run at all. It is necessary
-   # but not sufficient: a GRAFTED shallow clone whose base object IS present
-   # passes this check while `git log -3` still under-counts, so read a 0 on a
-   # file you know has been fixed as a clone problem, not an answer.
-   if git rev-parse --verify -q "$BASE^{commit}" >/dev/null; then
-     for f in <the paths from step 1>; do
-       case "$f" in
-         src/*)
-           # `|| true` because `grep -c` exits 1 when the count is zero.
-           n=$(git log --oneline -3 "$BASE" -- "$f" | grep -cE '^[a-f0-9]+ fix(\(|:)' || true)
-           printf 'COUNT\t%s\t%s\n' "$f" "$n" ;;   # n >= 2 of 3 = evaluate the step-3 bias
-         .claude/*)
-           # No prefix count works here (see below) -- emit SUBJECTS to read.
-           git log --oneline -5 "$BASE" -- "$f" | sed "s|^|SUBJECT\t$f\t|" ;;
-       esac
-     done
-   else
-     echo "base $BASE is not local -- history probe VOID, not zero"
-   fi
-   ```
+   The list is a floor, not a closed set: a module not on it that handles a
+   secret, verifies a caller, or launches a process still earns the pass.
 
-   **The `.claude/**` arm emits subjects rather than a count because no prefix
-   count works there at all — and that is where the stakes are highest**, since
-   a wrong rule propagates into every future session. Measured 2026-09-05 over
-   the last 20 commits on `origin/main` touching `.claude/`
-   (`git log --oneline -20 origin/main -- .claude/` — anchor it, or this PR's own
-   commits shift the window):
-   16 carry a `chore` prefix (15 scoped, one bare), which is what an
-   agent-instruction change takes here, so those score ZERO however many times
-   the file has been corrected. The other four — `c3a18a2 feat:`,
-   `79438d3 fix(utils)`, `dce9064 fix(local)`, `971a5f9 fix(integ)` — each also
-   change `src/**` (14, 1, 6 and 1 source files in that order), so they are
-   source changes that edited a rule beside the code, and a NONZERO score on a
-   `.claude/**` path is about the source file rather than the instruction file.
-   Both directions are useless, which is why the arm prints commit subjects:
-   treat consecutive retro / correction commits on the same file as the
-   recency signal.
-
-2. **Determine the base tier** from `(loc, fc)` per the heuristic:
-
-   | Condition | Base tier |
-   |-----------|-----------|
-   | `loc < 300` OR `fc < 5` | **inline** (inline spot-check by the orchestrator) |
-   | `300 <= loc < 1000` AND `5 <= fc < 10` | **1-reviewer** (single code-quality pass) |
-   | `loc >= 1000` OR `fc >= 10` | **3-axis** (spec + code + test in parallel) |
-
-   The two boundary conditions overlap intentionally — a 200-LOC / 12-file PR triggers 3-axis via the file count even though LOC is small (a 12-file diff has cross-cutting risk regardless of LOC), and a 5000-LOC / 3-file PR triggers 3-axis via LOC.
-
-3. **Compute bias factors** by scanning the `paths` list:
-
-   **Up-bias triggers** (move tier UP by one step, never above 3-axis):
-
-   - Any path matches **security / process-launch surface** — credential or secret material, inbound auth verification, or untrusted-code / image execution:
-     - _Credential / secret material_
-       - `src/utils/role-arn.ts`
-       - `src/utils/profile-resolver.ts`
-       - `src/utils/aws-proxy.ts`
-       - `src/cli/commands/local-profile-credentials-file.ts`
-       - `src/local/ecs-secrets-resolver.ts`
-       - `src/local/ssm-parameter-resolver.ts`
-       - `src/local/ecs-task-runner.ts`
-     - _Inbound auth: verification, enforcement, request signing_
-       - `src/local/cognito-jwt.ts`
-       - `src/local/lambda-authorizer.ts`
-       - `src/local/sigv4-verify.ts`
-       - `src/local/authorizer-resolver.ts`
-       - `src/local/authorizer-cache.ts`
-       - `src/local/front-door-auth.ts`
-       - `src/local/agentcore-serve-auth.ts`
-       - `src/local/agentcore-sigv4-sign.ts`
-       - `src/local/http-server.ts`
-       - `src/local/front-door-server.ts`
-       - `src/local/agentcore-http-server.ts`
-       - `src/local/websocket-server.ts`
-       - `src/utils/url-authority.ts`
-     - _Untrusted code / argv / archive + path traversal_
-       - `src/utils/docker-cmd.ts`
-       - `src/local/docker-runner.ts`
-       - `src/local/docker-image-builder.ts`
-       - `src/local/ecr-puller.ts`
-       - `src/assets/docker-build.ts`
-       - `src/local/image-override-engine.ts`
-       - `src/local/cloudfront-function-runtime.ts`
-       - `src/local/studio-dispatch.ts`
-       - `src/local/studio-serve-manager.ts`
-       - `src/local/studio-option-catalog.ts`
-       - `src/local/cloudfront-static-origin.ts`
-       - `src/local/lambda-resolver.ts`
-       - `src/local/agentcore-s3-bundle.ts`
-       - `src/local/layer-arn-materializer.ts`
-
-     This list exists in FOUR places — `UP_PATHS` in `.claude/hooks/pr-review-gate.sh`, here, `.claude/rules/hooks.md`, and `.claude/agents/pr-code-reviewer.md` — and issue go-to-k/cdk-local#506 found it drifted in both directions at once. `.claude/hooks/pr-review-gate.test.sh` (run by `vp run test:hooks`, in CI) asserts the four agree and that every entry resolves to a real file. Keep adding to it freely — a module listed here costs one extra reviewer, a module missing from it costs a security review that never happened. Do not re-quote an individual path anywhere in this bullet: the test reads the surface out of the list above, and a stray mention would refill an entry a copy had dropped.
-   - Branch has > 1 fix-back commit (heuristic for "multiple sub-agents wrote the diff" — count commits whose message starts with `fix:` / `fix(` via `git log main..<branch> --oneline | grep -cE '^[a-f0-9]+ fix(\(|:)'`)
-   - **The code this PR edits shipped a defect in a RECENT PR.** A judgement
-     trigger, not a path list: `pr-review-gate.sh` reads the PR's stats, its
-     `files`, and the BRANCH's own commit subjects, and has no view of an
-     edited file's HISTORY — so it cannot see this and may not require the
-     marker at all. Raise the tier anyway and say why. Read the tell off the
-     history step 1 gathered — 2 or more `fix:` commits among a touched file's
-     last 3 — rather than off what you remember about the area. Measured in
-     the sibling go-to-k/cdkd#2593: the size heuristic said `inline`, while
-     the log on the one file it edited showed the two preceding merges were
-     both fixes to the same guard and the nearer one had fixed a fail-open
-     reading in the very function this PR edited again; the raised tier's
-     reviewers converged on two untested response shapes. Recency is evidence
-     about the code, the same way a security path is.
-
-   **Down-bias triggers** (move tier DOWN by one step, never below inline) — only fires when ALL paths fall in the listed buckets:
-
-   - **Pure docs/infra**: every path matches one of `.gitignore`, `README.md`, `**/*.md`, `docs/**`, `package.json` (top-level deps only). The `**/*.md` entry catches markdown anywhere outside `docs/**` (most commonly `tests/integration/*/README.md`).
-     - **Agent-instruction files are EXCLUDED from this bucket** (issue go-to-k/cdk-local#501): `CLAUDE.md`, `.claude/CLAUDE.md`, anything under `.claude/**`, and `.markgate.yml` — they are markdown, so the `**/*.md` entry would re-admit them if the exclusion were dropped, and a wrong rule there changes how EVERY future session behaves, the opposite of the low risk a down-bias assumes. A skills-only or hooks-only PR keeps its size-derived tier. Keep in sync with cdkd's copy and with `DOWN_DOCS_REGEX` / `AGENT_INSTRUCTION_REGEX` in `.claude/hooks/pr-review-gate.sh`.
-   - **Test-only**: every path matches `tests/**`
-
-   If both up- and down-bias triggers fire (e.g. a tests-only diff that touches a security-sensitive provider's test file), prefer up-bias — security wins.
-
-4. **Apply the bias** to compute the final tier:
-
-   - `inline` + up → `1-reviewer`
-   - `1-reviewer` + up → `3-axis`
-   - `3-axis` + up → `3-axis` (clamp)
-   - `3-axis` + down → `1-reviewer`
-   - `1-reviewer` + down → `inline`
-   - `inline` + down → `inline` (clamp)
-
-5. **Render the recommendation** in the format below.
-
-6. **Dispatch reviewers + set the marker** (only when `final_tier` is `1-reviewer` or `3-axis`):
-
-   The recommendation tells the orchestrator what to do. The orchestrator
-   then dispatches the recommended reviewers (1 or 3) via the Agent tool,
-   waits for all of them to complete, and synthesizes the findings:
-
-   - If **any blocker** surfaces (correctness bugs, security issues,
-     test gaps that justify rejecting the PR), the marker is NOT set
-     — the orchestrator addresses the blockers (or asks the
-     implementing agent to fix them) and re-runs `/review-pr <N>`
-     **from step 1, on the PR's CURRENT stats**. A fix round adds LOC and
-     files AND a `fix:` commit, so neither the tier nor whether
-     `pr-review-gate.sh` demands the marker at all is fixed for the life of a
-     PR: go-to-k/cdkd#2593 opened at 306 LOC / 4 files (`inline`, no marker
-     required) and its review-fix commit took it to 406 LOC / 6 files —
-     `1-reviewer` by size, and `3-axis` once the second-`fix:`-commit up-bias
-     fired on the same push. Only recomputing before the merge catches it, and
-     it moves in both directions.
-   - If every finding is **minor / nit / clean**, the orchestrator
-     sets the marker bound to the PR's current HEAD sha:
-
-     ```bash
-     # The pr-review markgate gate's scope is the sentinel file at
-     # repo root, so writing the PR HEAD sha into it before `markgate
-     # set` implicitly binds the marker to that sha. A subsequent push
-     # to the PR will invalidate the marker (the next /review-pr run
-     # rewrites the sentinel and markgate's digest reports stale).
-     #
-     # The sentinel + markgate state both land in the CURRENT worktree
-     # — the same one where `gh pr merge <N>` will later run. The gate
-     # hook resolves the target worktree from the PreToolUse payload's
-     # `cwd` field + `cd <path>` / `gh -C <path>` in the command, so
-     # concurrent agents in different worktrees no longer collide on
-     # a shared main-tree marker store. Convention: set markers from
-     # the worktree you intend to merge from.
-     #
-     # Right after a push `gh pr view` can still answer the PREVIOUS
-     # head (hit merging go-to-k/cdkd#879; twice on 2026-09-14), binding
-     # the marker to a stale sha that the gate then refuses as
-     # `(mismatch)`. So bind only when it equals local HEAD: run this
-     # after `gh pr checks <N> --watch`, never in the push's own call;
-     # on a mismatch re-run it (no sleep loop — the harness blocks a
-     # foreground sleep). `:?` refuses an empty answer, which would compare
-     # equal to an empty `rev-parse` outside a repo.
-     SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
-     if [ "${SHA:?no PR head}" = "$(git rev-parse HEAD)" ]; then
-       printf '%s\n' "$SHA" > .markgate-pr-review-sha && mise exec -- markgate set pr-review
-     else echo "PR head ${SHA:0:7} != local HEAD: NOT bound" >&2; fi
-     ```
-
-   For the `inline` tier, the marker is NOT set — the gate's heuristic
-   also outputs `inline` for the same PR, so no enforcement fires and
-   the merge proceeds without a marker.
-
-   **NEVER set the marker without dispatching the reviewers first.**
-   The whole point of the gate is that an un-reviewed large PR cannot
-   reach main; bypassing dispatch defeats it. The gate's hook
-   (`.claude/hooks/pr-review-gate.sh`) blocks `gh pr merge` until the
-   marker is fresh AND the recorded sha matches the PR's current HEAD.
+4. **Render the recommendation** (template below) and hand it to the
+   orchestrator, which dispatches, waits for every reviewer, and synthesizes the
+   findings into a verdict. Blockers (correctness bugs, security issues, test
+   gaps) go back to the implementing agent; re-check them by messaging the
+   reviewer that raised them.
 
 ## Output template
 
 ```
-Recommendation: <inline | 1-reviewer | 3-axis>
+Reviewers: <pr-code-reviewer | + security lens | + spec + test>
 
 PR #<N>: <title>
-Stats: +<additions> / -<deletions> = <loc> LOC, <fc> files
 Branch: <branch>
+src/** diff: <loc> lines across <files> files
+Triggers:
+  - <size threshold crossed / security path hit / "none">
 
-Base tier (from stats): <base>
-Bias factors:
-  - <factor 1, or "none">
-  - <factor 2>
-Applied bias: <up / down / none>
-Final tier: <final>
-
-Rationale: <one line — e.g. "Small infra-only diff; orchestrator can spot-check in 5 min." / "Touches src/local/cognito-jwt.ts (credential surface), bumps base tier up.">
+Rationale: <one line>
 ```
 
-Then, **if final tier is `1-reviewer`**, emit:
+Then emit one dispatch block per reviewer:
 
 ```
-Dispatch this single reviewer (run via Agent tool in the main session):
-
   Agent {
-    subagent_type: "general-purpose",
+    subagent_type: "pr-code-reviewer",
     description: "PR <N> code review",
     prompt: |
-      Read your role definition at `.claude/agents/pr-code-reviewer.md` (relative to the repo root) and follow it.
-      Inputs:
-      - PR number: <N>
-      - Branch: <branch>
+      Review PR <N> (branch <branch>). Read your role definition at
+      `.claude/agents/pr-code-reviewer.md` (relative to the repo root) and
+      follow it. Review the FINAL sha; report file:line citations with severity.
   }
 ```
 
-**If final tier is `3-axis`**, emit:
+For the **security lens**, a second `pr-code-reviewer` with the tracing question
+made explicit:
 
 ```
-Dispatch these three reviewers IN PARALLEL (single message, three Agent tool calls):
-
   Agent {
-    subagent_type: "general-purpose",
+    subagent_type: "pr-code-reviewer",
+    description: "PR <N> security review",
+    prompt: |
+      Review PR <N> (branch <branch>) through a SECURITY lens. Read
+      `.claude/agents/pr-code-reviewer.md` and follow it, with this as the
+      load-bearing question: for every sensitive value this diff touches
+      (credential, secret, token, signing input, env var injected into a
+      container, process argv), trace it from where it is WRITTEN to EVERY
+      reader — log line, console output, cache, persisted file, container env,
+      outbound request, error message. Report any reader that receives it
+      unmasked, plus injection, path-traversal and deletion-safety issues.
+      Touched security paths: <list them>.
+  }
+```
+
+For the **spec + test axes** (dispatch in the same message as the code
+reviewer, so they run in parallel):
+
+```
+  Agent {
+    subagent_type: "pr-spec-reviewer",
     description: "PR <N> spec compliance review",
     prompt: |
-      Read your role definition at `.claude/agents/pr-spec-reviewer.md` (relative to the repo root) and follow it.
-      Inputs:
-      - PR number: <N>
-      - Branch: <branch>
-      - Design doc: <ASK THE USER — the orchestrator should fill this in before dispatching; spec review is meaningless without a design doc to compare against. If no design doc exists for this PR, downgrade to 1-reviewer instead.>
+      Review PR <N> (branch <branch>) against its spec. Read
+      `.claude/agents/pr-spec-reviewer.md` and follow it.
+      Spec: <design doc path, or the bodies of the issues the PR closes>
   }
 
   Agent {
-    subagent_type: "general-purpose",
-    description: "PR <N> code review",
-    prompt: |
-      Read your role definition at `.claude/agents/pr-code-reviewer.md` (relative to the repo root) and follow it.
-      Inputs:
-      - PR number: <N>
-      - Branch: <branch>
-  }
-
-  Agent {
-    subagent_type: "general-purpose",
+    subagent_type: "pr-test-reviewer",
     description: "PR <N> test adequacy review",
     prompt: |
-      Read your role definition at `.claude/agents/pr-test-reviewer.md` (relative to the repo root) and follow it.
-      Inputs:
-      - PR number: <N>
-      - Branch: <branch>
+      Review PR <N> (branch <branch>) for test adequacy. Read
+      `.claude/agents/pr-test-reviewer.md` and follow it.
   }
-```
-
-**If final tier is `inline`**, emit:
-
-```
-No reviewer dispatch — orchestrator should spot-check inline:
-
-  - `gh pr diff <N>` — read the full diff in one pass
-  - For each changed file, ask: is it correct, complete, necessary?
-  - Estimated time: 5 min
-
-If during the inline read you discover a non-obvious bug class (cross-cutting state machine, race, security-sensitive logic), STOP and re-run /review-pr <N> after manually adding the file path to the up-bias trigger list locally, or just dispatch a code reviewer by hand.
 ```
 
 ## Important
 
-- **Never auto-dispatch** the Agent tool from inside this skill. Skills run in the main conversation; this skill's job is to *recommend*, the orchestrator's job is to *act*.
-- The orchestrator can extend each reviewer prompt with PR-specific context (concerns to deep-dive, design doc path for spec-reviewer, files to focus on). Treat the dispatch blocks as starting templates, not final prompts.
-- For 3-axis dispatches: the spec reviewer needs a design doc path. If no design doc exists for the PR (small features, bug fixes, refactors), downgrade to 1-reviewer rather than dispatching spec-reviewer with no inputs.
-- Thresholds are heuristics, not laws. When in doubt, ask: "would I be comfortable spot-checking this in 5 minutes?" — if yes, inline; if no, dispatch.
+- **Never dispatch from inside this skill.** It recommends; the orchestrator
+  acts.
+- Extend any prompt with PR-specific context (concerns to deep-dive, files to
+  focus on). The blocks are starting templates, not final prompts.
+- The available agents are `pr-code-reviewer`, `pr-spec-reviewer` and
+  `pr-test-reviewer` under `.claude/agents/`. Do not name any other.

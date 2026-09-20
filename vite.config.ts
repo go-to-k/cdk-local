@@ -229,9 +229,8 @@ export default defineConfig({
       },
       verify: {
         // Kept in step with what `/check` runs (issue #630): `test:hooks` is
-        // part of what the `check` markgate marker attests to, so an alias
-        // that stopped short would hand back a green this repo's gate does
-        // not mean.
+        // a SEPARATE task from `vp run test`, so an alias that stopped short
+        // would hand back a green that never ran the shell hook suites.
         command: 'vp run check && vp run test && vp run test:hooks && vp run build',
         // `run.cache.tasks` is on, and an alias that REPLAYS is the same
         // false green one level up: a recorded exit code from before a
