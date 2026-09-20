@@ -229,15 +229,6 @@ if [ -x "$NOGH/gh" ] || env PATH="$NOGH" command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-# branch-gate guards commit AND push, and only on a protected branch.
-git -C "$repo" checkout -q -b main
-run_case "branch-gate: commit on main"        2 branch-gate.sh 'git commit -m x'
-run_case "branch-gate: push on main"          2 branch-gate.sh 'git push origin HEAD'
-run_case "branch-gate: chained commit"        2 branch-gate.sh 'vp run check && git commit -m x'
-run_case "branch-gate: status on main"        0 branch-gate.sh 'git status'
-git -C "$repo" checkout -q feature
-run_case "branch-gate: commit on a feature branch" 0 branch-gate.sh 'git commit -m x'
-
 # post-merge-orphan-push-gate blocks a push to a branch whose PR already merged.
 # The defect this pins: it used to read the remote/branch off the WHOLE COMMAND with a leftmost-longest `=~ [[:space:]]push
 # (.*)$`, then cut at the first `&&` / `;` / `|`. Run standalone, that parse gave:
@@ -449,7 +440,7 @@ run_marker() {
 
 run_marker "integ-gate verifies integ"         integ-gate.sh     "gh pr merge 1 --squash"   integ
 
-CASE_FLOOR=45
+CASE_FLOOR=40
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

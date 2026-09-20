@@ -629,6 +629,14 @@ GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'
 # rounds of this survived. Same defect and same fix as go-to-k/cdkd#2027 review
 # round 4, whose GATE_GH_C is this same GATE_FLAGS.
 GATE_GH_C="$GATE_FLAGS"
+# NO PRODUCTION CONSUMER since `branch-gate.sh` went, and KEPT anyway: it is the
+# specimen verb this library's own suite is written against -- 138 of its cases
+# use it to exercise SEGMENTATION, quoting, heredocs and substitutions, none of
+# which is about `git commit`. Deleting it means re-pointing all of them at a
+# live verb, and a mechanical re-point silently changes what a case means (a
+# `git add -A && git commit` shape has no `git push` twin). If you want it gone,
+# re-point the suite deliberately rather than deleting the constant; it costs
+# one line to keep.
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
 GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)"
