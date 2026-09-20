@@ -117,8 +117,8 @@ git fetch origin && git switch -c "$B" origin/main
 
 - `chore:` prefix — agent tooling, not `src/**`; `fix:` / `feat:` would make
   release-please describe a user-facing change that never happened. English
-  only in every committed line (`non-english-text-gate` enforces it on
-  `gh pr create` / `edit` / `merge`).
+  only in every committed line, and in the PR title and body
+  (`pr-content-checks.yml` / `issue-conventions.yml` check both in CI).
 - A `work-issues`-only edit is still unit-suite INPUT, so run `/check` and
   `/check-docs`; with no `src/**` change there is no integ and no live test.
   `/review-pr` gives a skill-only PR the tier its size earns, no docs

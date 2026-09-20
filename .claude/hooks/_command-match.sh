@@ -426,7 +426,7 @@ GATE_CMDSTRING_VALUE="(\"[^\"]*\"|'[^']*'|[^-[:space:]\"'][^[:space:]\"']*)"
 # pin (`mise exec node@20 -c "…"`).
 GATE_CMDSTRING_FLAGS="([[:space:]]+(${GATE_MISE_VALUE_FLAG_NOCMD}[[:space:]]+${GATE_CMDSTRING_VALUE}|--?[A-Za-z][^[:space:]\"']*|[^[:space:]\"']+@[^[:space:]\"']+))*"
 # Matches the PREFIX only -- the body is `${segment#"${BASH_REMATCH[0]}"}`, the
-# same technique `gate_pr_selector` uses, so nothing depends on a capture index
+# same technique `gate_verb_args` uses, so nothing depends on a capture index
 # that the added alternative would renumber.
 GATE_RE_CMDSTRING="^((bash|zsh|ksh|sh)[[:space:]]+-[a-z]*c[[:space:]]+|([^[:space:]]*/)?(mise|rtx)${GATE_CMDSTRING_FLAGS}[[:space:]]+(exec|x)${GATE_CMDSTRING_FLAGS}[[:space:]]+${GATE_MISE_CMD_FLAG}([[:space:]]+|=))"
 #
@@ -469,7 +469,7 @@ gate_strip_prefix() {
     # launcher-passthrough alternative brings its own groups, and any capture
     # added inside the alternation RENUMBERS a tail group. Reading the tail as
     # "whatever the match did not consume" is immune to that -- the same reason
-    # `gate_pr_selector` scans from `BASH_REMATCH[0]`. Behaviour is unchanged:
+    # `gate_verb_args` scans from `BASH_REMATCH[0]`. Behaviour is unchanged:
     # `[[:space:]]+` is greedy either way, so the removed prefix is exactly the
     # leader plus its trailing run.
     if [[ "$s" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|command|nohup|time|timeout[[:space:]]+[^[:space:]]+|${GATE_RE_LAUNCH_PASSTHRU}|exec|then|do|else|elif|if|while|until|!|sudo|xargs|-[A-Za-z][^[:space:]]*|\{|\()[[:space:]]+ ]]; then
@@ -631,8 +631,6 @@ GATE_FLAGS='([[:space:]]+-[^[:space:]]+([[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'
 GATE_GH_C="$GATE_FLAGS"
 GATE_RE_GIT_COMMIT="^git${GATE_FLAGS}[[:space:]]+commit([[:space:]]|$)"
 GATE_RE_GIT_PUSH="^git${GATE_FLAGS}[[:space:]]+push([[:space:]]|$)"
-GATE_RE_GH_PR_CREATE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+create([[:space:]]|$)"
-GATE_RE_GH_PR_EDIT="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+edit([[:space:]]|$)"
 GATE_RE_GH_PR_MERGE="^gh${GATE_GH_C}[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)"
 
 GATE_RE_GIT_MERGE="^git${GATE_FLAGS}[[:space:]]+merge([[:space:]]|$)"
@@ -652,11 +650,11 @@ gate_unquote() {
 # the leading flag run. Nothing is printed for a command with no matching
 # segment.
 #
-# This is `gate_pr_selector`'s first two lines, factored out: that function
-# exists because four gates each rolled their own "strip the verb, then read the
-# arguments" and all four broke the moment GATE_GH_C widened. The strip must
-# come from the SAME constant that armed the gate -- `BASH_REMATCH[0]` of the
-# verb ERE -- so a gate cannot match one way and parse another. A caller that
+# Gates that each rolled their own "strip the verb, then read the arguments"
+# all broke the moment GATE_GH_C widened, so the strip lives here instead. It
+# must come from the SAME constant that armed the gate -- `BASH_REMATCH[0]` of
+# the verb ERE -- so a gate cannot match one way and parse another. A caller
+# that
 # wants something other than a PR number (post-merge-orphan-push-gate wants
 # `git push`'s remote and branch) gets the same guarantee here instead of
 # writing the strip again.
@@ -666,152 +664,6 @@ gate_verb_args() {
     [[ "$segment" =~ $re ]] || continue
     printf '%s\n' "${segment#"${BASH_REMATCH[0]}"}"
   done < <(gate_segments "$cmd")
-}
-
-# gate_pr_selector <command> <verb-ere>
-#
-# Print the PR number the guarded command targets, or NOTHING when it carries no
-# positional (gh's "the PR for the current branch" semantics). The caller
-# decides what "nothing" means; this function never guesses one.
-#
-# WHY THIS IS SHARED, and why a local prefix strip is not good enough.
-# Four gates each rolled their own extraction, and all four broke the moment
-# GATE_GH_C learned to absorb `-R <owner/repo>`. Widening the absorber makes the
-# flagged command REACH the gate; it does nothing about the gate then parsing it.
-# Measured 2026-08-25 against `gh -R go-to-k/cdk-local pr merge 552 --squash`:
-#
-#   closes-paren-form-gate   `args="${cmd##*gh pr merge}"` does not strip, the
-#                            number regex finds nothing, exit 0 -- gh never
-#                            called. The plain form exits 2. Fully bypassed.
-#   non-english-text-gate    a hard-coded `-C`-only PR-number regex misses, so it
-#   docs-inline-json-flag    falls back to `gh pr view --json number`, the
-#                            CURRENT BRANCH's PR: `pr diff 999` instead of 552.
-#                            The verdict is about someone else's diff.
-#   pr-review-gate           same failed strip, then its arg loop scans the WHOLE
-#                            command for the first bare integer, so
-#                            `sleep 30 && gh -R o/r pr merge 552` resolves to 30.
-#                            The wrong PR's size decides the review tier.
-#
-# So the extraction is derived from the SAME constant that decides the trigger:
-# the verb ERE is anchored at the segment start and already absorbs every flag
-# spelling, so `BASH_REMATCH[0]` is exactly the part to remove, whatever flags it
-# swallowed. A gate can no longer match one way and parse another.
-gate_pr_selector() {
-  local cmd="$1" re="$2" segment args tok
-  while IFS= read -r segment; do
-    [[ "$segment" =~ $re ]] || continue
-    # Everything after the matched verb -- flags included, because the verb ERE
-    # consumed them. Scanning starts here rather than at the segment start, which
-    # is what stops a leading `sleep 30 &&` from being read as the PR number.
-    args="${segment#"${BASH_REMATCH[0]}"}"
-    # Walk with GATE_EMBEDDING_TOKEN, not `set -- $args`. Word-splitting breaks a
-    # QUOTED flag value at its first space, so `gh pr merge --subject "chore: x"
-    # 2195` split into `"chore:` and `x"`, the flag consumed only the first half,
-    # and the second half -- a non-numeric positional -- ended the walk empty.
-    # Embedding tokens keep the value whole. It also removes the globbing hazard
-    # entirely (an unquoted `$args` let a literal `*` expand against the CWD:
-    # measured with files `77` and `aaa` present, `gh pr merge --some-flag * 552`
-    # resolved to 77) -- nothing is ever expanded now, so no `set -f` is needed.
-    while [[ "$args" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
-      tok="${BASH_REMATCH[1]}"
-      args="${BASH_REMATCH[3]}"
-      [ -n "$tok" ] || break
-      case "$tok" in
-        --*=*) continue ;;
-        # Enumerate the VALUELESS flags; treat every other `-...` as consuming
-        # the next token.
-        #
-        # THE DIRECTION OF STALENESS IS THE WHOLE ARGUMENT, and it is asymmetric.
-        # This file briefly had the opposite polarity -- value-takers enumerated
-        # -- and that is strictly worse:
-        #
-        #   enumerate value-takers -> an unlisted VALUE-TAKING flag leaves its
-        #     value in the walk -> a plausible integer becomes the selector ->
-        #     the gate judges a DIFFERENT PR. Measured: `gh pr merge -t 42 552`
-        #     resolved to 42.
-        #   enumerate valueless    -> an unlisted VALUELESS flag eats the number
-        #     -> the selector is EMPTY -> the caller falls back to gh's
-        #     current-branch semantics, or declines.
-        #
-        # Wrong-PR is severe; no-PR is not. Note this also covers the flags the
-        # verb ERE does NOT absorb: it only swallows what precedes the verb, so
-        # `gh pr merge -R <slug> 552` puts `-R` into THIS walk.
-        #
-        # The short spellings are gh pr merge's own valueless flags (`-d`
-        # delete-branch, `-s` squash, `-m` merge, `-r` rebase); they are listed
-        # because omitting them costs the number for the commonest hand-typed
-        # form. `--match-head-commit`, `--body`, `-b`, `--body-file`, `-F`, `-t`,
-        # `--subject`, `-R`, `--repo` are all deliberately ABSENT: they take
-        # values, and being unlisted is now the SAFE side.
-        --squash|--merge|--rebase|--auto|--disable-auto|--admin|--delete-branch|-d|-s|-m|-r)
-          continue ;;
-        -*)
-          # consume this flag's value
-          if [[ "$args" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
-            args="${BASH_REMATCH[3]}"
-          fi
-          continue ;;
-        *)
-          # THE FINAL NUMERIC GUARD. Every caller wants a PR NUMBER, so a
-          # non-numeric positional -- a branch name, a URL, or a repo slug that
-          # an unlisted flag left behind -- must yield EMPTY rather than be
-          # handed on. Stop rather than walk on: continuing would find a digit
-          # further along that belongs to something else entirely.
-          if [[ "$tok" =~ ^[0-9]+$ ]]; then printf '%s' "$tok"; fi
-          return 0 ;;
-      esac
-    done
-    return 0
-  done < <(gate_segments "$cmd")
-  return 0
-}
-
-# gate_cmd_repo <command> <verb-ere>
-#
-# Print the `-R <owner/repo>` / `--repo <owner/repo>` the guarded command names,
-# or nothing when it names none. All three of gh's separators are handled, and
-# tokens embed quoted spans (see GATE_EMBEDDING_TOKEN), so a repo slug inside a
-# quoted flag value is not mistaken for the flag.
-#
-# WHY: a gate resolves the PR NUMBER and then asks `gh pr view <N>` from the
-# resolved directory, WITHOUT the repo flag -- so `gh -R go-to-k/OTHER pr merge
-# 552` made every gate judge the LOCAL repo's PR 552. Right number, wrong repo,
-# and no assertion anywhere could see it because the exit code and the number
-# are both indistinguishable from the correct case. The gates pass this through
-# to their own gh calls so the question they ask matches the command they guard.
-gate_cmd_repo() {
-  local cmd="$1" re="$2" segment remaining tok found=""
-  while IFS= read -r segment; do
-    [[ "$segment" =~ $re ]] || continue
-    # The WHOLE segment, not just the verb run: gh accepts the repo flag on
-    # either side of the verb, and `gh pr merge -R <slug> 552` writes it after.
-    # A segment is one command, so any repo flag in it belongs to this
-    # invocation.
-    remaining="$segment"
-    while [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; do
-      tok="${BASH_REMATCH[1]}"
-      remaining="${BASH_REMATCH[3]}"
-      [ -n "$tok" ] || break
-      case "$tok" in
-        --repo=*) found="${tok#--repo=}" ;;
-        -R=*)     found="${tok#-R=}" ;;
-        -R|--repo)
-          if [[ "$remaining" =~ ^[[:space:]]*$GATE_EMBEDDING_TOKEN(.*)$ ]]; then
-            found="${BASH_REMATCH[1]}"; remaining="${BASH_REMATCH[3]}"
-          fi ;;
-        -R*) found="${tok#-R}" ;;
-        *) ;;
-      esac
-    done
-    break
-  done < <(gate_segments "$cmd")
-  found=$(gate_unquote "$found")
-  # An unexpanded value is not a repo; better to ask about the local one than
-  # about a literal `$VAR`.
-  case "$found" in *'$'*|*'`'*) found="" ;; esac
-  # Must look like owner/repo, or it is some other flag's value.
-  [[ "$found" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || found=""
-  printf '%s' "$found"
 }
 
 # gate_target_dir <cmd> <fallback> <extended-regex>

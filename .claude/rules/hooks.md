@@ -57,20 +57,6 @@ issue-worthy and not backlog-worthy.
   to read stdin eats the segments not yet judged. Fails open without `gh`, and
   states each per-COMMAND note once however many segments it walks.
 
-### Third-party artifacts
-
-- **`non-english-text-gate.sh`** — blocks `gh pr create` / `edit` / `merge`
-  (and their `gh -C <path>` forms) when the resolved PR diff — or local
-  `origin/main..HEAD` when no PR exists yet — contains non-English
-  writing-system characters: hiragana (U+3040-U+309F), katakana
-  (U+30A0-U+30FF), CJK ideographs (U+4E00-U+9FFF), Hangul syllables
-  (U+AC00-U+D7AF) or CJK punctuation (U+3000-U+303F). The ranges are scoped to
-  writing systems, not general Unicode, so em-dashes, curly quotes,
-  box-drawing and arrow glyphs pass. Binary / lockfile / asset extensions are
-  skipped. Fails open when `gh` is missing or unauthenticated. **This is the
-  repo's only enforcement of the English-only rule**; nothing in CI repeats
-  it.
-
 ### The maintainer's AWS account
 
 - **`integ-gate.sh`** — blocks `gh pr merge` (incl. `--auto`) and `git merge`
@@ -157,9 +143,9 @@ DELIMITER (`<<'EOF'`) and interpolate the few live values with a separate
 `printf`. Assert the RENDERED message in the suite, never a restatement of it.
 
 **A blocking gate that cannot load the shared matcher exits 2.** So does one
-whose helper is missing: an undefined `gate_pr_selector` returns an EMPTY
-selector, and the gate would then judge the wrong PR — or none — instead of
-declining. `gate-command-recognition.test.sh` pins that arm.
+whose helper is missing: an undefined function returns an EMPTY answer, and a
+gate that then judges the wrong thing — or nothing — is worse than one that
+declines. Name the missing symbol in the refusal.
 
 **An unreadable target directory is likewise a REFUSAL**: a hook receives
 command TEXT, not the shell's expansion, so `git -C "$W" commit` arrives
@@ -187,10 +173,10 @@ Every Bash gate parses its command through this one library.
   three separators (space, `=`, glued), and `GATE_GH_C` is literally
   `GATE_FLAGS` so every gh verb absorbs them identically.
 - **Widening the absorber is necessary and NOT sufficient.** It makes the
-  flagged command REACH the gate; the gate must then PARSE it. A gate reading
-  the PR number with its own prefix chop resolves the CURRENT BRANCH's PR
-  instead of the named one, at the same exit code. Use `gate_pr_selector` for
-  the number and `gate_cmd_repo` for the repo — never a local regex.
+  flagged command REACH the gate; the gate must then PARSE it, and a gate that
+  chops the prefix with its own regex reads the WRONG argument at the same exit
+  code. Strip with `BASH_REMATCH[0]` of the verb ERE that armed the gate —
+  `gate_verb_args` is that strip — never with a local regex.
 - **`gate_verb_args` strips exactly `BASH_REMATCH[0]` of the same regex that
   armed the gate**, so a gate cannot match one way and parse another. It emits
   one line per matching segment.

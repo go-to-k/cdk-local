@@ -45,6 +45,12 @@ statement, with the roster it produced, is in
   keep honest than the drift it catches. Do not reintroduce one; a recurring
   prose defect is recorded here and, on a SECOND occurrence, fixed in the
   prose.
+- **The English-only rule is enforced from CI, not by a hook.** The
+  PreToolUse gate that carried it was kept as a stated exception when the hook
+  layer was cut, because it was the repo's only enforcement. That exception is
+  now RESOLVED: `scripts/check-pr-non-english-text.ts` and
+  `scripts/check-gh-body-english.ts` do the job from CI, over the artifact
+  rather than over an agent's command text.
 - **Each sibling repo keeps its own flow text.** A lesson learned in cdkd or
   cdk-real-drift is NOT mirrored into this repo's skills, and vice versa. Only
   the PRODUCT contract with cdkd — the public library surface, checked by
@@ -68,6 +74,7 @@ hand at the time of removal, and none is rebuilt until it bites a second time.
 | `Severity:` / `Effort:` body-vs-label agreement at filing time | `issue-classification-label-gate.sh` | same; the labels stay, and CI still copies them onto the PR |
 | A `Session-fit: next` deferred for a PR-shaped reason | `issue-deferral-criteria-gate.sh` | same; the rule survives in `.claude/rules/session-report.md` |
 | A doc example handing inline JSON to a file-path CLI flag | `docs-inline-json-flag-gate.sh` | clean — the gate's own regex, run over `docs/`, `README.md`, `.claude/` and `src/`, returns zero matches |
+| Non-English writing-system characters in a PR diff, refused BEFORE `gh pr create` | `non-english-text-gate.sh` | replaced, and strictly stronger: `scripts/check-pr-non-english-text.ts` in `pr-content-checks.yml` checks the ARTIFACT, so the web UI, a fork PR and every non-`gh` client are covered for the first time. `scripts/check-gh-body-english.ts` adds the title / body / comment surfaces the hook never saw. The one thing lost is TIMING on an issue or a comment, where the text is public before the check reports |
 
 ## Open tooling items
 

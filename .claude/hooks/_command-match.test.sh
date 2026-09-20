@@ -72,11 +72,6 @@ want_match 0 "git merge after a fetch"        'git fetch && git merge --ff-only 
 want_match 1 "merge-base is not merge"        'git merge-base origin/main HEAD' "$GM"
 want_match 1 "gh pr merge is not git merge"   'gh pr merge 1 --squash' "$GM"
 
-want_match 0 "gh pr create after a heredoc write" 'cat > /tmp/b.md <<EOF
-body
-EOF
-gh pr create --body-file /tmp/b.md' "$GATE_RE_GH_PR_CREATE"
-
 # --- GATE_GH_C absorbs `-C` / `-R` / `--repo` for EVERY gh verb --------------
 # An absorber that takes `-C <path>` only is a live gate bypass:
 # `gh -R o/r pr merge 1 --squash` then matches nothing and walks past integ-gate.
@@ -84,8 +79,6 @@ gh pr create --body-file /tmp/b.md' "$GATE_RE_GH_PR_CREATE"
 # absorber. THE bypass cases: without the widening these match NOTHING.
 want_match 0 "pr merge: -R <repo>"            'gh -R go-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr merge: --repo <repo>"        'gh --repo go-to-k/cdk-local pr merge 1 --squash' "$M"
-want_match 0 "pr create: -R <repo>"           'gh -R go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
-want_match 0 "pr edit: -R <repo>"             'gh -R go-to-k/cdk-local pr edit 1 --body x' "$GATE_RE_GH_PR_EDIT"
 # ALL THREE separators `gh` accepts, not just the space form. Verified against a
 # real repo: `gh pr list --repo=go-to-k/cdkd`, `-R=go-to-k/cdkd` and the GLUED
 # `-Rgo-to-k/cdkd` all return the same PR number. An explicit flag alternation
@@ -95,14 +88,11 @@ want_match 0 "pr merge: --repo=<repo>"       'gh --repo=go-to-k/cdk-local pr mer
 want_match 0 "pr merge: -R=<repo>"           'gh -R=go-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr merge: -R<repo> glued"      'gh -Rgo-to-k/cdk-local pr merge 1 --squash' "$M"
 want_match 0 "pr merge: -C=<path>"           'gh -C=/w/t pr merge 1 --squash' "$M"
-want_match 0 "pr create: --repo=<repo>"      'gh --repo=go-to-k/cdk-local pr create --fill' "$GATE_RE_GH_PR_CREATE"
 # The wider token must still not let one gh verb match a DIFFERENT one, and the
 # `=`/glued forms are where a too-greedy absorber would show it first.
-want_match 1 "glued -R: pr view is not create" 'gh -Rgo-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
 want_match 1 "glued -R: pr create is not merge" 'gh -Rgo-to-k/cdk-local pr create --fill' "$M"
 # A flag VALUE must not swallow the verb: GATE_FLAGS' optional value group could
 # consume `pr`, and only backtracking saves it. Pin both directions.
-want_match 0 "flag with no value, then verb"  'gh --draft pr create --fill' "$GATE_RE_GH_PR_CREATE"
 want_match 0 "boolean flag before merge"      'gh --yes pr merge 1 --squash' "$M"
 # The plain and `-C` spellings must keep the verdicts they already had --
 # widening an absorber must not change what a verb regex means.
@@ -111,7 +101,6 @@ want_match 0 "pr merge: -C unchanged"         'gh -C /w/t pr merge 1 --squash' "
 # ...and the absorber must not let one gh verb match a DIFFERENT gh verb, which
 # is the failure mode a greedy flag run would introduce.
 want_match 1 "pr merge: -R pr create is not merge" 'gh -R go-to-k/cdk-local pr create --fill' "$M"
-want_match 1 "pr create: -R pr view is not create"  'gh -R go-to-k/cdk-local pr view 42' "$GATE_RE_GH_PR_CREATE"
 
 # --- target directory ---------------------------------------------------------
 want_dir "/fallback"  "no cd, no -C"           'git commit -m x' /fallback "$C"
@@ -148,69 +137,6 @@ want_dir "/fallback" "-C after the verb is ignored" 'gh pr merge 1 --squash -C /
 want_dir "/w/t" "git -c config before -C" 'git -c user.name=t -C /w/t commit -m x' /fallback "$C"
 want_dir "/fallback" "git -c alone is not -C" 'git -c user.name=t commit -m x' /fallback "$C"
 want_dir "/base" "-C= with an unexpanded variable falls back" 'gh -R o/r -C="$WT" pr merge 1' /base "$M"
-
-# --- gate_pr_selector: DIRECT cases -----------------------------------------
-# It was fenced only indirectly, through the gates in
-# gate-command-recognition.test.sh. A helper four gates depend on for the PR
-# they judge deserves cases at its own level.
-want_sel() {
-  local want="$1" label="$2" cmd="$3" re="$4" got
-  got=$(gate_pr_selector "$cmd" "$re")
-  [ -z "$got" ] && got="(none)"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %s\n' "$label"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$label" "$want" "$got"
-  fi
-}
-want_sel "552"    "plain positional"            'gh pr merge 552 --squash' "$M"
-want_sel "552"    "-R before the verb"          'gh -R go-to-k/x pr merge 552 --squash' "$M"
-want_sel "552"    "--repo= before the verb"     'gh --repo=go-to-k/x pr merge 552 --squash' "$M"
-want_sel "552"    "glued -R before the verb"    'gh -Rgo-to-k/x pr merge 552 --squash' "$M"
-want_sel "552"    "flags before the number"     'gh pr merge --squash --auto 552' "$M"
-want_sel "552"    "short boolean before number" 'gh pr merge -d 552' "$M"
-want_sel "552"    "--flag=value before number"  'gh pr merge --body=x 552' "$M"
-want_sel "552"    "numeric token BEFORE the verb is not the selector" \
-  'sleep 30 && gh -R go-to-k/x pr merge 552 --squash' "$M"
-want_sel "552"    "an earlier merge mention does not win" \
-  'echo "gh pr merge 11" && gh pr merge 552 --squash' "$M"
-want_sel "(none)" "no positional means current branch" 'gh pr merge --squash' "$M"
-want_sel "(none)" "a branch name is not a number"      'gh pr merge my-branch --squash' "$M"
-want_sel "(none)" "a URL positional is not a number"   'gh pr merge https://github.com/o/r/pull/552' "$M"
-want_sel "(none)" "verb not present"                   'gh pr view 552' "$M"
-want_sel "552"    "pr edit selector"                   'gh -R go-to-k/x pr edit 552 --body x' "$GATE_RE_GH_PR_EDIT"
-# THE POLARITY of the flag enumeration, pinned in both directions. VALUELESS
-# flags are enumerated; every other `-...` consumes its next token. The opposite
-# polarity -- enumerating value-takers -- was tried and is strictly worse,
-# because the two failure modes are not symmetric:
-#
-#   unlisted VALUE-TAKER   -> its value stays in the walk -> a plausible integer
-#                             becomes the selector -> a DIFFERENT PR is judged.
-#                             Measured: `gh pr merge -t 42 552` resolved to 42.
-#   unlisted VALUELESS     -> it eats the number -> selector EMPTY -> the caller
-#                             falls back to current-branch semantics.
-#
-# Wrong-PR is severe, no-PR is not, so the empty results below are the DESIRED
-# outcome, not a gap.
-want_sel "552"    "--disable-auto is valueless"    'gh pr merge --disable-auto 552' "$M"
-want_sel "552"    "--admin is valueless"           'gh pr merge --admin 552' "$M"
-want_sel "552"    "-d short boolean"               'gh pr merge -d 552' "$M"
-want_sel "2195"   "--delete-branch --squash"       'gh pr merge --delete-branch --squash 2195' "$M"
-want_sel "(none)" "an unknown future flag yields EMPTY, not a wrong PR" \
-  'gh pr merge --some-new-flag 552' "$M"
-# The verb ERE absorbs only what PRECEDES the verb, so a repo flag written AFTER
-# it lands in this walk. Unlisted => value-taking => the slug is consumed and the
-# real number is found. Under the value-taker polarity `-R` was treated as
-# valueless and the SLUG became the selector.
-want_sel "552"    "-R <slug> after the verb"       'gh pr merge -R go-to-k/cdk-local 552 --squash' "$M"
-want_sel "552"    "--repo <slug> after the verb"   'gh pr merge --repo go-to-k/cdk-local 552' "$M"
-want_sel "552"    "-t <title> after the verb"      'gh pr merge -t 42 552' "$M"
-want_sel "552"    "--body-file value is skipped"   'gh pr merge --body-file /tmp/b.md 552' "$M"
-want_sel "552"    "--match-head-commit is skipped" 'gh pr merge --match-head-commit abc123 552' "$M"
-want_sel "552"    "-b value is skipped"            'gh pr merge -b text 552' "$M"
-# The FINAL NUMERIC GUARD: every caller wants a PR number, so a non-numeric
-# positional must yield empty rather than be handed on.
-want_sel "(none)" "a repo slug alone is not a PR number" 'gh pr merge go-to-k/cdk-local' "$M"
 
 # --- gate_target_dir must not read inside a quoted flag VALUE ---------------
 # `GATE_PATH_TOKEN` is "a quoted span OR a bare run of non-space", so it split
@@ -554,14 +480,11 @@ want_match 1 "two words before exec --"       'mise settings set x exec -- git c
 want_match 1 "the passthrough as prose"       'echo "mise exec -- git commit -m x"' "$C"
 # The stripped leader must leave the SEGMENT parseable by the helpers that read
 # the verb's own flag run out of it. A surviving leader would hand the payload
-# cwd the verdict (`gate_target_dir`) or the wrong PR (`gate_pr_selector`).
+# cwd the verdict (`gate_target_dir`).
 want_dir "/w/t"  "-C through the passthrough"  'mise exec -- git -C /w/t commit -m x' /base "$C"
 want_dir "/w/t"  "cd then the passthrough"     'cd /w/t && mise exec -- git commit -m x' /base "$C"
 want_dir "/w/t"  "gh -C through the passthrough" 'mise exec -- gh -C /w/t pr merge 1' /base "$M"
 want_dir "/base" "passthrough with no -C"      'mise exec -- git commit -m x' /base "$C"
-want_sel "552"   "selector through the passthrough" 'mise exec -- gh pr merge 552 --squash' "$M"
-want_sel "552"   "selector through passthrough + -R" \
-  'mise exec -- gh -R go-to-k/cdk-local pr merge 552 --squash' "$M"
 want_match 0 "process substitution"        'diff <(git commit -m x) b' "$C"
 # An escaped separator outside quotes is LITERAL — one `echo`, not two commands.
 want_match 1 "escaped semicolon is literal" 'echo a\; git commit -m x' "$C"
@@ -646,7 +569,6 @@ origin b" "two push segments"                          'git push origin a; git p
 want_args ""            "no matching segment"          'git commit -m x' "$P"
 want_args "-am x"       "commit args"                  'git commit -am x' "$C"
 
-
 # --- a mis-closed substitution span must not HIDE the verb inside it ---------
 #
 # `close_paren` / `close_backtick` decide where a `$( )` or backtick span ends.
@@ -673,7 +595,7 @@ want_match 0 'a balanced substitution body is still seen' \
 # not passing because the command matches regardless of the span.
 want_match 1 'a mis-closed span with NO verb in it does not match' \
   "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")" "$C"
-CASE_FLOOR=229
+CASE_FLOOR=192
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"
