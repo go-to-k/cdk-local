@@ -34,7 +34,7 @@ Claiming to avoid collision with parallel agents."
 
 English only — every committed/public artifact, including every issue this run
 FILES. The classification lines (`Session-fit` / `Severity` / `Effort` /
-`Estimate`, one field per line — `CLAUDE.md` → "The four TODO fields") and
+`Estimate`, one field per line — `AGENTS.md` → "The four TODO fields") and
 their parenthetical glosses are part of the issue body, so write them in
 English: `Session-fit: next (not this session)`. `issue-conventions.yml` now
 checks an issue body AFTER it is created — it reports and asks for an edit, it

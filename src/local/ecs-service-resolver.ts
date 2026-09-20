@@ -134,7 +134,7 @@ export interface ResolvedEcsService {
    * `shouldRestart`); there is no health-check polling in v1 because
    * health-check-driven restarts are only meaningful once the local
    * load-balancer emulator lands (see [docs/design/461-awsvpc-decision.md]
-   * and the deferred LB scope in CLAUDE.md). The field is parsed,
+   * and the deferred LB scope in AGENTS.md). The field is parsed,
    * surfaced on `ResolvedEcsService`, and intentionally retained so the
    * follow-up LB emulator PR can use it as the time-from-start before
    * an unhealthy target-group health check counts toward a restart. The

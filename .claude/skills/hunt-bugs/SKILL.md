@@ -11,7 +11,7 @@ has not exercised yet**, then RUN it against real Docker. Reading the source
 finds _suspected_ bugs; running finds _real_ ones.
 
 **Hunt inside cdk-local's remit only.** It runs **application compute** locally
-and does NOT emulate AWS managed services (`.claude/CLAUDE.md` → Scope). A
+and does NOT emulate AWS managed services (`.claude/AGENTS.md` → Scope). A
 documented out-of-scope config is not a bug — a loud, honest `WARN`-and-skip is
 correct behavior — but one cdk-local CLAIMS to support and runs wrong IS.
 
@@ -122,7 +122,7 @@ fixtures ARE its deliverable.
 session: an issue-only round files and stops, a fix-in-session round files then
 closes from the PR (`Closes #<n>`). The body
 carries the real repro (synth + command + observed vs expected) and the four
-classification lines (`.claude/CLAUDE.md` → "The four TODO fields"); pass
+classification lines (`.claude/AGENTS.md` → "The four TODO fields"); pass
 `--label severity:<...> --label effort:<...>` — CI copies them onto the fix PR,
 so never hand-add them there.
 
@@ -206,4 +206,4 @@ containers, networks and (rarely) vitest worker forks:
 forgotten orphan blocks the merge. Never bypass the sweep.
 
 This hunt's deliverable is public issues, which attract malware bait — see
-`.claude/CLAUDE.md` → "Never download … untrusted content".
+`.claude/AGENTS.md` → "Never download … untrusted content".

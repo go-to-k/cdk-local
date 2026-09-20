@@ -64,7 +64,7 @@ only on the SECOND occurrence of the same failure. Otherwise:
 
 - **This skill's stage files** — the `references/<stage>.md` where the lesson
   fires, never the SKILL.md orchestrator unless the stage list changed.
-- **Another skill**, only one this run exercised, or **`.claude/CLAUDE.md` /
+- **Another skill**, only one this run exercised, or **`.claude/AGENTS.md` /
   `.claude/rules/**`** when it applies to any work here.
 - **Memory** for judgmental, cross-repo lessons — weakest enforcement, and the
   landing spot when nothing above can hold the rule.
@@ -75,12 +75,12 @@ Every run appending one more bullet is how a long skill becomes an unread one.
 
 - Put the fix **in the step where it fires** (gotchas is for traps that span
   steps), **amend the sentence that was wrong** rather than adding a sibling,
-  and point at a rule already in `.claude/CLAUDE.md` rather than restating it.
+  and point at a rule already in `.claude/AGENTS.md` rather than restating it.
 - **Carry the evidence inline as ONE line**: the rule plus a citation, never
   the narrative. A rule with no incident behind it cannot be retired; one
   buried in its incident report is not read.
 - **Pay for what you add** by cutting a line this run proved stale, subsumed or
-  wrong. The budgets in `.claude/CLAUDE.md`'s Tooling Policy are the stop on
+  wrong. The budgets in `.claude/AGENTS.md`'s Tooling Policy are the stop on
   this skill's growth loop; nothing enforces them, so raising one instead of
   paying is a choice you make in the open. A lesson compression cannot pay for
   splits the stage instead.

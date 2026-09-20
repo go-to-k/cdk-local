@@ -5,7 +5,7 @@
  * NEW COVERAGE for this repo. The retired `non-english-text-gate.sh` scanned
  * the PR DIFF only, so a Japanese PR title, PR body, issue body or issue
  * comment was never checked by anything -- and those are published artifacts
- * exactly like a committed file (`.claude/CLAUDE.md` -> Workflow rules ->
+ * exactly like a committed file (`.claude/AGENTS.md` -> Workflow rules ->
  * English only says so in as many words). Ported from the sibling cdkd repo,
  * which retired a second hook for this surface.
  *
@@ -288,7 +288,7 @@ export function formatReport(subject: Subject, offenders: Offender[]): string {
     '- Chat with the user stays in whatever language you like; this check covers only what gets PUBLISHED.',
   );
   lines.push('');
-  lines.push('Rule: .claude/CLAUDE.md -> Workflow rules -> English only');
+  lines.push('Rule: .claude/AGENTS.md -> Workflow rules -> English only');
   return lines.join('\n');
 }
 

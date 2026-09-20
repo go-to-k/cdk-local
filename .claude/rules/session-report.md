@@ -1,6 +1,6 @@
 # Session-wrap report: the full field reference
 
-CLAUDE.md states the contract; this file carries the field semantics, scales and
+AGENTS.md states the contract; this file carries the field semantics, scales and
 templates. Read it when writing a wrap report or filing a deferral.
 
 **The four TODO fields — decide them WHEN THE ITEM ARISES, not at wrap time.**

@@ -20,7 +20,7 @@ the row here says which issue took it. An unworked row stays a row.
 BLOCK only when the harm completes at the moment of the action AND lands
 irreversibly on a THIRD PARTY's artifact, on ANOTHER SESSION's work, or on the
 MAINTAINER's AWS account. Everything else becomes a sentence in
-`.claude/CLAUDE.md`, a CI unit test on `src/**`, or nothing. The full
+`.claude/AGENTS.md`, a CI unit test on `src/**`, or nothing. The full
 statement, with the roster it produced, is in
 [.claude/rules/hooks.md](../.claude/rules/hooks.md).
 
@@ -63,7 +63,7 @@ hand at the time of removal, and none is rebuilt until it bites a second time.
 
 | What is no longer checked | Was checked by | State at removal |
 | --- | --- | --- |
-| Per-file byte caps over `.claude/skills/**` | `skill-file-payload.test.ts` | the budgets are now stated in `.claude/CLAUDE.md`'s Tooling Policy and checked by hand |
+| Per-file byte caps over `.claude/skills/**` | `skill-file-payload.test.ts` | the budgets are now stated in `.claude/AGENTS.md`'s Tooling Policy and checked by hand |
 | `/work-issues`'s launch-mode probe executes correctly | `work-issues-launch-mode.test.ts` | the probe itself is unchanged; only the prose around it was trimmed |
 | The fully qualified `owner/repo#N` reference shape in `.claude/**` | `work-issues-skill-refs.test.ts` | NOT clean — five in-repo `#N` prose references remain; the shape rule survives as a sentence and matters for text PUBLISHED to GitHub |
 | Every markgate `include:` glob matches a real file | `markgate-include-globs.test.ts` | clean — one gate remains, with two globs (`src/**`, `tests/integration/**`), both non-empty |

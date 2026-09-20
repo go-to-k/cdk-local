@@ -110,7 +110,7 @@ the verifying — the easy tier to under-verify. A diff doing both owes both:
 ### 8-f. Orphans and the merge conditions
 
 After a Docker-backed run, sweep for orphans and clean up via `/cleanup` —
-`.claude/CLAUDE.md` → "After running integration tests" holds the container /
+`.claude/AGENTS.md` → "After running integration tests" holds the container /
 network filters and the EVERY-fixture `aws-orphan-sweep.sh` rule. Leaving orphans is never acceptable.
 
 `gh pr merge` / `git merge` is blocked by `integ-gate` on any `src/**` /

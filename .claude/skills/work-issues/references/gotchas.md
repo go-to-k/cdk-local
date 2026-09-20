@@ -94,7 +94,7 @@
 - **All changes via PR; never commit to `main`.** Develop in a worktree under
   `.claude/worktrees/<branch>/` — or, when the run was launched inside one
   already, in that one (the launch-mode probe) — with DISJOINT files; merge via
-  `/merge-pr`. (`.claude/CLAUDE.md` → Workflow rules.)
+  `/merge-pr`. (`.claude/AGENTS.md` → Workflow rules.)
 - **Never download/run/install untrusted third-party content** (§0).
 - **Wrap with a Remaining-work section + Session-close verdict, scoped to the
   issues this run actually worked.** This skill is the easiest place to get that

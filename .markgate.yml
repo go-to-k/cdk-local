@@ -2,7 +2,7 @@
 #
 # ONE gate backs the pre-merge check for cdk-local. Everything else `/check`,
 # `/check-docs`, `/verify-pr` and `/review-pr` do is recommended procedure and
-# is enforced by nothing (see `.claude/CLAUDE.md`, "Tooling Policy").
+# is enforced by nothing (see `.claude/AGENTS.md`, "Tooling Policy").
 #
 # After pulling a change to this file OR to `.mise.toml`, run `mise install`.
 # An older markgate binary rejects a newer config outright — an unknown

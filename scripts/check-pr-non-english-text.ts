@@ -6,7 +6,7 @@
  * A PreToolUse gate on `gh pr create` / `gh pr edit` / `gh pr merge` that
  * refused the call when the PR diff carried non-English writing-system
  * characters. The repo is OSS and every committed artifact must be English
- * (`.claude/CLAUDE.md` -> Workflow rules -> English only). The gate was the
+ * (`.claude/AGENTS.md` -> Workflow rules -> English only). The gate was the
  * repo's ONLY enforcement of that rule, and it steered an agent rather than
  * checking the artifact: a PR opened from the web UI, from a fork, or by any
  * client that is not this flow never passed through it.
