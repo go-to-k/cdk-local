@@ -15,10 +15,11 @@ All green, then run `/check` (and `/check-docs` if the diff touches docs) —
 **recommended, nothing enforces them**. Commit (conventional-commit prefix),
 push, open the PR with `Closes #<n>`.
 
-The MECHANICAL merge conditions are the required status checks on the `main`
-ruleset (see `.github/workflows/ci.yml` for the set the workflows supply) and a
-fresh `integ` marker, set by `/run-integ` and enforced by `integ-gate.sh` at
-`gh pr merge` / `git merge`. So a `src/**` touch needs a green `/run-integ` in
+The MECHANICAL merge conditions are the `main` ruleset's required status
+checks (enumerated in `.claude/rules/hooks.md`) and a fresh `integ` marker, set
+by `/run-integ` and enforced by `integ-gate.sh` at `gh pr merge` / `git merge`.
+The ruleset also REQUIRES a pull request and allows only a squash merge, so
+there is no way to put a commit on `main` without one. So a `src/**` touch needs a green `/run-integ` in
 the SAME PR — never defer the integ to a later one, and every line you commit
 plus the PR title and body must be English (CI checks both).
 

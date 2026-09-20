@@ -91,9 +91,9 @@ Every run appending one more bullet is how a long skill becomes an unread one.
 
 ### 10-d. Ship it like any other change
 
-After `/merge-pr` you are back on `main`, where `branch-gate` blocks commits,
-so the retro gets its own branch. MAIN-CHECKOUT (§3's launch-mode probe) runs
-THIS block, not the next one:
+After `/merge-pr` you are back on `main`, and the ruleset requires a PR for
+every change to it, so the retro gets its own branch. MAIN-CHECKOUT (§3's
+launch-mode probe) runs THIS block, not the next one:
 
 ```bash
 # Suffix the branch with the LESSON, not the date: a merged branch is deleted

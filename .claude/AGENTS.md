@@ -246,8 +246,12 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   comment the check can only REPORT: the text is already public.
 
 - **Never commit / push directly to `main`**: all changes via a feature
-  branch + PR, and `branch-gate.sh` refuses a commit or push on `main` in any
-  tree. From the MAIN CHECKOUT:
+  branch + PR — the `main` ruleset now REQUIRES one and allows only a squash
+  merge, so `git push origin main` is refused for any commit, green or not. It
+  has no opinion on a COMMIT on your local `main`, which never reaches it; move
+  one with `git branch <name> && git reset --hard origin/main`. The rules are
+  enumerated once, in
+  [.claude/rules/hooks.md](.claude/rules/hooks.md). From the MAIN CHECKOUT:
   `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`, never
   branching in the main worktree (shared state across parallel agents).
   **That recipe is wrong from anywhere else** (go-to-k/cdk-local#635): when
@@ -261,50 +265,54 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   LOCAL-CLEANUP step must not run, or it removes the outer tool's worktree and
   every uncommitted change in it (name that CONDITION, never a step number).
   Then switch that branch back AS-IS at the very end, deleting only the
-  branches this run made and leaving the TREE for whoever made it. `/work-issues` computes which case applies before its
-  first stage; do not re-implement it here.
+  branches this run made and leaving the TREE for whoever made it.
+  `/work-issues` computes which case applies; do not re-implement it here.
 
-- **Squash merge only, via `/merge-pr`**: the `/merge-pr <N>` skill
-  squash-merges from inside the feature worktree and cleans up the worktree +
-  local + remote branch in one pass. Do NOT hand-run
+- **Squash merge only, via `/merge-pr`**: it squash-merges from inside the
+  feature worktree and cleans up the worktree + local + remote branch in one
+  pass. Do NOT hand-run
   `gh pr merge <N> --squash --delete-branch` from a side worktree:
   `--delete-branch` trips the `'main' is already used by worktree` fatal, so
   the remote merge lands but local cleanup fails.
 
-- **Always add unit tests for new functionality**: don't wait to be
-  asked. `tests/unit/**` mirrors `src/**`. Mock external boundaries
-  (toolkit-lib, docker CLI, AWS SDK) with `vi.mock` / `vi.hoisted`.
+- **Always add unit tests for new functionality**: don't wait to be asked.
+  `tests/unit/**` mirrors `src/**`. Mock external boundaries (toolkit-lib,
+  docker CLI, AWS SDK) with `vi.mock` / `vi.hoisted`.
 
-- **After source changes**: run `vp run build` before reporting "ready
-  to test" — users invoke cdk-local via `node dist/cli.js` (or the
-  `cdkl` bin), so source changes without a build have no runtime
-  effect.
+- **After source changes**: run `vp run build` before reporting "ready to
+  test" — users invoke cdk-local via `node dist/cli.js` (or the `cdkl` bin), so
+  source changes without a build have no runtime effect.
 
 - **Before opening a PR**: run `vp run verify` (= check + test + test:hooks +
   build). `test:hooks` is a SEPARATE task from `vp run test`, so an alias
   stopping short of it reports a green that never ran the shell hook suites.
 
-- **Registration is not execution — prove the hooks are ALIVE before the first
-  commit of a session**: run `git commit --dry-run -m "gate liveness probe"`
-  from a tree on `main`, **as a Bash TOOL CALL**. PreToolUse hooks gate the
-  AGENT's tool calls only, so the same line typed into a terminal proves
-  nothing. `--dry-run` commits nothing; a `Blocked by branch-gate` line means
-  the hooks fire, git's ordinary output means they do not. An `if:` holding
-  `A or B` matches nothing and leaves every entry registered and inert
-  (go-to-k/cdk-real-drift#1801), which `/hooks` cannot show because it lists
-  registration, not firing.
+- **Registration is not execution — probe it before the first gated command of
+  a session**, as a Bash TOOL CALL (a line typed into a terminal never passes
+  through a PreToolUse hook, so it proves nothing):
+
+  ```bash
+  B=$(gh pr list --state merged --limit 1 --json headRefName -q '.[0].headRefName')
+  git push --dry-run origin "$B"
+  ```
+
+  `post-merge-orphan-push-gate` treats `--dry-run` as a valueless flag and
+  judges the push anyway, so a `Blocked by ...` line is CONCLUSIVE and nothing
+  is pushed either way. An `if:` holding `A or B` matches nothing and leaves
+  every entry inert (go-to-k/cdk-real-drift#1801); `/hooks` lists registration,
+  not firing — that class is fenced by
+  `tests/unit/hooks/gate-if-matchers.test.ts`.
 
 - **Before every commit, and before opening or merging any PR — recommended,
   not enforced**: run `/check` (typecheck / lint / build / `vp run test` /
   `vp run test:hooks`) and `/check-docs` (README / `.claude/AGENTS.md` /
-  `docs/` / `.claude/rules/` consistency with `src/`); before a PR, run
-  `/verify-pr`, whose checklist still applies in full — a PR whose live
-  behavior was never exercised is not ready. Run `/check-docs` ONCE per PR, at
+  `docs/` / `.claude/rules/` consistency with `src/`); before a PR run
+  `/verify-pr`, whose checklist applies in full — a PR whose live behavior was
+  never exercised is not ready. Run `/check-docs` ONCE per PR, at
   the FINAL sha. **Nothing enforces them.** The MECHANICAL merge conditions are
-  whatever the `main` ruleset lists as a required status check, plus a fresh
-  `integ` marker (`integ-gate.sh`). `.github/workflows/ci.yml` names the set
-  the workflows supply; the ruleset is repository settings nothing in this tree
-  can read. Skipping the rest is how `main` goes red. Install `vp` + `markgate`
+  the `main` ruleset's required status checks plus a fresh `integ` marker
+  (`integ-gate.sh`) — the ruleset is repository settings, so read it rather
+  than a doc. Skipping the rest is how `main` goes red. Install `vp` + `markgate`
   via `mise install`, and re-run it after any pull that changes `.mise.toml` —
   an older markgate binary rejects a newer `.markgate.yml` outright.
 
@@ -319,10 +327,10 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   out=$(mise exec -- markgate verify integ 2>&1 >/dev/null); rc=$?
   ```
 
-  `$?` after a pipeline is the LAST STAGE's, and markgate prints NOTHING when
-  a marker is fresh, so `markgate verify integ | tail -5` reports "no output,
-  rc=0" for a STALE marker — exactly what a fresh one looks like
-  (go-to-k/cdk-local#571). `… || echo …` is fine: `||` READS the exit status.
+  `$?` after a pipeline is the LAST STAGE's, and markgate prints NOTHING when a
+  marker is fresh, so `markgate verify integ | tail -5` reports "no output,
+  rc=0" for a STALE marker — what a fresh one looks like
+  (go-to-k/cdk-local#571). `… || echo …` is fine: `||` READS the status.
 
 - **Reviewer count**: **1 reviewer by default** (`pr-code-reviewer`); add
   **spec + test** when the `src/**` diff exceeds **400 lines or 8 files**; add
@@ -330,69 +338,62 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   `docker exec` surface is touched or the PR is a security fix. Reviewers run
   **once, on the FINAL sha** — a fix round is re-checked by MESSAGING the same
   reviewer with the delta, never by a fresh dispatch. `/review-pr` produces the
-  dispatch prompts. Nothing blocks a merge on a review; the count is a rule,
-  not a gate.
+  dispatch prompts. Nothing blocks a merge on a review; it is a rule, not a gate.
 
 - **PR review pattern**: the reviewers are read-only sub-agents at
   `.claude/agents/pr-{spec,code,test}-reviewer.md`, dispatched in parallel
-  against a PR's diff; their reports are what the parent uses to decide merge
-  vs fix-back. Their tools are read-only (Read / Glob / Grep / Bash) so they
-  can never accidentally edit. This repo has no dedicated security reviewer
-  agent: for the security lens, dispatch `pr-code-reviewer` with an explicit
-  tracing question — follow every sensitive value from WRITE to every READER
-  (persist, replay, log, display, export).
+  against a PR's diff; their reports decide merge vs fix-back. There is no
+  dedicated security reviewer agent: for that lens, dispatch
+  `pr-code-reviewer` with an explicit tracing question — follow every
+  sensitive value from WRITE to every READER (persist, replay, log, display,
+  export).
 
-- **Before merging ANY PR: CI must be green.** The `ci-ok` job is the single
-  required status check on the `main` ruleset and it aggregates every other
-  job, including the matrix. Wait with `gh pr checks <N> --watch`, then merge;
-  never chain a merge after a checks display. Name the PR by number, one merge
-  per command.
+- **Before merging ANY PR: CI must be green.** The ruleset gates on FOUR
+  named contexts ([.claude/rules/hooks.md](.claude/rules/hooks.md)), so a red
+  check OUTSIDE that set does not block the merge — read `gh pr checks <N>` in
+  full rather than trusting the button. Wait with
+  `gh pr checks <N> --watch`, then merge; never chain a merge after a checks
+  display. One merge per command, PR named by number.
 
 - **Never defer integration tests to a later PR**: every slice that lands on
-  `main` carries its own green integration coverage. A slice that adds a
-  runtime code path without exercising it end-to-end (Docker / fixture) can
-  release with a latent bug behind a working-looking unit suite. Each PR is a
-  self-contained vertical; a "final integ pass" slice is a design smell. If a
-  slice's behavior is not yet user-reachable, gate it so it cannot ship
-  enabled — but still integ-test the code path it adds.
+  `main` carries its own green integration coverage. A runtime code path never
+  exercised end-to-end (Docker / fixture) can release with a latent bug behind
+  a working-looking unit suite. Each PR is a self-contained vertical; a "final
+  integ pass" slice is a design smell. If a slice's behavior is not yet
+  user-reachable, gate it so it cannot ship enabled — but still integ-test the
+  code path it adds.
 
-- **Creating a NEW integ fixture**: use `/create-integ <name>`. It
-  scaffolds the fixture (`package.json` pinned with `packageManager` so
-  `vp install` is a no-op, plus `bin` / `lib` / `cdk.json` / `tsconfig` and a
-  `verify.sh` harness), has you fill
-  in the stack + assertions, and RUNS it via `/run-integ`. **A NEW command
-  factory — a new `src/cli/commands/local-<verb>.ts` declaring a
-  `createLocal*Command` — is brand-new behavior with no existing fixture, so it
-  MUST ship its own.** That does not apply to a new non-factory helper module
-  under `src/cli/commands/`, nor to a new flag on an EXISTING command (extend
-  that command's fixture instead). Nothing enforces it. Details:
+- **Creating a NEW integ fixture**: use `/create-integ <name>`. It scaffolds
+  the fixture, has you fill in the stack + assertions, and RUNS it via
+  `/run-integ`. **A NEW command factory — a new
+  `src/cli/commands/local-<verb>.ts` declaring a `createLocal*Command` — is
+  brand-new behavior with no existing fixture, so it MUST ship its own.** That
+  does not apply to a new non-factory helper module under
+  `src/cli/commands/`, nor to a new flag on an EXISTING command (extend that
+  command's fixture instead). Nothing enforces it. Details:
   [.claude/skills/create-integ/SKILL.md](.claude/skills/create-integ/SKILL.md).
 
-- **When running integration tests**: use `/run-integ <test-name>`
-  (e.g., `/run-integ local-invoke`). Never bypass by shelling into
-  the fixture's `verify.sh` directly — the skill encodes Docker
-  pre-flight + verify.sh + post-run Docker sweep + the AWS orphan sweep
-  (`tests/integration/_lib/aws-orphan-sweep.sh`, run for EVERY fixture) in one
-  block.
+- **When running integration tests**: use `/run-integ <test-name>`. Never
+  bypass it by shelling into the fixture's `verify.sh` — the skill encodes
+  Docker pre-flight + verify.sh + the post-run Docker sweep + the AWS orphan
+  sweep (`tests/integration/_lib/aws-orphan-sweep.sh`, run for EVERY fixture)
+  in one block.
   Skipping any step risks setting the `integ` marker on incomplete
   verification. `integ-gate.sh` blocks `gh pr merge` / `git merge` when
   `src/**` or `tests/integration/**` is touched and the marker is stale — the
-  one mechanical merge condition that is not a CI check, and it survives the
-  hook criterion because those AWS-deploying fixtures leak into the
-  maintainer's account. `integ` runs on markgate's `hash: diff` mode: its
-  digest is THIS branch's delta against
-  `merge-base(origin/main, HEAD)` in that scope, so merging an
-  updated `main` that moved an in-scope file this branch did not touch
-  no longer forces a Docker re-run, while your own in-scope changes
-  (and the 14d TTL) still stale it. Set the marker from the PR's own
-  worktree on the PR branch — on a clean `main` the empty delta makes
-  markgate refuse rather than silently pass.
+  one mechanical merge condition that is not a CI check, and it clears the hook
+  criterion because those AWS-deploying fixtures leak into the maintainer's
+  account. `integ` runs on markgate's `hash: diff` mode, so merging an updated
+  `main` that moved an in-scope file this branch did not touch no longer forces
+  a Docker re-run, while your own in-scope changes (and the 14d TTL) still
+  stale it. Set the marker from the PR's own worktree on the PR branch — on a
+  clean `main` the empty delta makes markgate refuse rather than silently pass.
   Details: [.claude/rules/hooks.md](.claude/rules/hooks.md).
 
-- **After running integration tests**: verify no leftover Docker
-  containers / networks remain (`docker ps --filter name=cdkl-`,
-  `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`), and run
-  the AWS orphan sweep for EVERY fixture, requiring exit 0:
+- **After running integration tests**: verify no leftover Docker containers /
+  networks remain (`docker ps --filter name=cdkl-`,
+  `docker network ls --filter name=cdkl-task-` / `cdkl-svc-`), and run the AWS
+  orphan sweep for EVERY fixture, requiring exit 0:
 
   ```bash
   bash tests/integration/_lib/aws-orphan-sweep.sh <test-name>; rc=$?
@@ -400,14 +401,13 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
 
   **Run it for EVERY fixture, never behind a `*-from-cfn*` glob** — such a
   glob has missed resource-owning fixtures twice. The script derives ownership
-  itself and makes no AWS call for a fixture that owns nothing, so it is safe
-  to run unconditionally. Exit codes: 0 clean / 1 usage or internal / 2 orphan
-  / 3 indeterminate (it could not look — NOT clean) / 4 report-only. On a find
-  it prints a remediation plan; run what it printed, which uses
+  itself and makes no AWS call for a fixture owning nothing, so it is safe
+  unconditionally. Exit codes: 0 clean / 1 usage or internal / 2 orphan / 3
+  indeterminate (it could not look — NOT clean) / 4 report-only. On a find it
+  prints a remediation plan; run what it printed, which uses
   `aws cloudformation delete-stack` and never `cdk destroy` (that needs
   `--app` context and exits 0 SILENTLY on a name the app never synthesized).
-  Leaving orphan resources after an integ run is never acceptable. Rationale:
-  `tests/integration/_lib/aws-orphan-sweep.sh` (issue #601).
+  Leaving orphans after an integ run is never acceptable (#601).
 
 - **Every account-global name an AWS-deploying fixture owns is
   lane-unique** (issue #582). `tests/integration/_lib/stack-name.sh` is
@@ -429,10 +429,9 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   fixture still break each other.
 
 - **cdkd parity** (host-CLI library-surface drift) — recommended, not
-  enforced: when a diff touches the public library surface a host CLI embeds
+  enforced: when a diff touches the surface a host CLI embeds
   (`src/cli/commands/**`, `src/internal.ts`, `src/index.ts`, or a NEW `.ts`
-  file under `src/local/**`), run `/check-cdkd-parity`. It walks the four
-  host-impacting categories:
+  file under `src/local/**`), run `/check-cdkd-parity`. Its four categories:
   - **New subcommand factory** — exported from `src/index.ts`? cdkd tracking
     issue filed (cat 1, REQUIRED)?
   - **New CLI option** — added inside the relevant `add<Cmd>SpecificOptions`
@@ -444,13 +443,11 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   - **Behavior change** — cdkd tracking issue filed (cat 4, REQUIRED)?
     migration note in PR body?
 
-  The skill AUTO-FILES the cdkd tracking issue (`gh issue create --repo
-  go-to-k/cdkd`, idempotent via the per-worktree `.cdkd-parity-issue`
-  sentinel) for every applicable category, labeling each with its host action
-  (wrap / inherit / optional-adopt / adapt) so the cdkd agent can follow by
-  working its issue queue. `.claude/settings.json` `permissions.allow`
-  pre-authorizes the scoped `gh issue create`. Out-of-scope diffs (internal
-  refactors, docs, tests) need none of it. Details:
+  The skill AUTO-FILES the cdkd tracking issue per applicable category
+  (idempotent via the per-worktree `.cdkd-parity-issue` sentinel), labeling
+  each with its host action so the cdkd agent can follow by working its queue.
+  Out-of-scope diffs (internal refactors, docs, tests) need none of it.
+  Details:
   [.claude/skills/check-cdkd-parity/SKILL.md](.claude/skills/check-cdkd-parity/SKILL.md).
 
 - **Never download, unpack, run, apply, or install untrusted third-party
@@ -571,8 +568,12 @@ the PR body for the maintainer to decide.
    an exotic shell shape (quoting, heredocs, `$( )`, `bash -c`, `eval`, case
    arms, redirections) is accepted as-is: hooks steer a cooperative agent, they
    are not a security boundary, and `main` is protected server-side by a GitHub
-   ruleset. Such a miss is not issue-worthy and not backlog-worthy. Roster and
-   criterion: [.claude/rules/hooks.md](.claude/rules/hooks.md).
+   ruleset. Such a miss is not issue-worthy. Corollary, and what retired
+   `branch-gate.sh`: **a hook DUPLICATING a server-side rule earns nothing** —
+   the ruleset requires a PR for every change to `main`, and all the hook added
+   beyond that was refusing a commit on a local `main`, which `git branch` +
+   `git reset` undoes. Roster, criterion, the ruleset and the residuals it does
+   NOT cover: [.claude/rules/hooks.md](.claude/rules/hooks.md).
 3. **No fences on prose.** A test may check that a link resolves, a file
    exists, a `paths:` glob matches, or a byte cap holds. It may not count
    phrases, pin wording, compare two copies of a sentence, or assert that a

@@ -23,25 +23,42 @@ issue-worthy and not backlog-worthy.
 
 ## The roster
 
-### Another session's work, and `main`
+**`main` itself is protected SERVER-SIDE, not by a hook. This is the ONE place
+the ruleset is written down** — everywhere else points here. It is repository
+settings rather than a file, so read the live rules rather than this paragraph:
 
-- **`branch-gate.sh`** — blocks `git commit` / `git push` when the TARGET
-  working tree is on `main` / `master`, and when the MAIN checkout is on a
-  DETACHED HEAD; a detached LINKED worktree keeps passing. Cwd-aware: it reads
-  `tool_input.cwd` from the payload and parses `cd <path>` / `git -C <path>`
-  out of the command, so a `cd /parent && git commit` into a parent worktree
-  on `main` is caught too. The discriminator for the detached case is
-  `rev-parse --show-toplevel` compared against the FIRST `worktree ` line of
-  `git worktree list --porcelain` — toplevels, not raw resolved dirs, which
-  also handles a cwd one level down and a payload cwd still carrying a symlink
-  git has resolved out (`/var` -> `/private/var` on macOS). The printed remedy
-  follows the operation in progress, read from git's own state: during a
-  conflicted rebase `git switch main` is refused outright
-  (`fatal: cannot switch branch while rebasing`), so a correct block must not
-  end in an impossible instruction. Suite: `branch-gate.test.sh`.
+```bash
+gh api repos/go-to-k/cdk-local/rules/branches/main
+```
 
-  **Repo opt-in**: this gate fires ONLY in a repo carrying `.markgate.yml` at
-  its root.
+`enforcement: active`, `bypass_actors: []`, scope `~DEFAULT_BRANCH`. Four
+rules:
+
+| Rule | What it refuses |
+| --- | --- |
+| `deletion` | deleting `main` |
+| `non_fast_forward` | a force push to `main` |
+| `required_status_checks` | a merge whose head has not passed `ci-ok`, `check`, `pr-content` and `English-only (pull request)` |
+| `pull_request` | **any change that did not arrive through a PR**; `allowed_merge_methods: [squash]`, `required_approving_review_count: 0` |
+
+So `git push origin main` is refused for ANY commit, green or not, and history
+on `main` is squash-only. Nothing local needs to repeat that, which is why
+`branch-gate.sh` went.
+
+**Two residuals remain, and neither is hook-shaped.**
+
+1. **A commit on a LOCAL `main` is refused by nothing.** It never reaches the
+   server, so the ruleset has no opinion. Move it:
+   `git branch <name> && git reset --hard origin/main`.
+2. **A red NON-required check does not block a merge.** The ruleset gates on
+   exactly the four contexts above, so a fifth workflow going red is invisible
+   to it. Read `gh pr checks <N>` in full rather than trusting the merge
+   button. (`required_approving_review_count: 0` likewise means a PR is
+   required but an APPROVAL is not, and
+   `strict_required_status_checks_policy: false` means the branch need not be
+   up to date with `main` first.)
+
+### Another session's work
 
 - **`post-merge-orphan-push-gate.sh`** — blocks `git push <remote> <branch>`
   (incl. `-u` / `--set-upstream` / `git -C <path> push`) when `<remote>` is
@@ -153,9 +170,9 @@ unexpanded and the resolver returns 2 rather than guessing. These shapes must
 NOT be refused: an absolute `-C` or `cd` mooting an earlier unreadable one, a
 `cd` AFTER the verb, and a leading literal `~`.
 
-**Hooks must be bash 3.2 compatible.** `gate-command-recognition.test.sh` and
-`branch-gate.test.sh` export `HOOK_BASH` so the HOOK, not just the suite, runs
-under the chosen interpreter; run both under `bash` and `/bin/bash`. CI runs
+**Hooks must be bash 3.2 compatible.** `gate-command-recognition.test.sh`
+exports `HOOK_BASH` so the HOOK, not just the suite, runs under the chosen
+interpreter; run the suites under both `bash` and `/bin/bash`. CI runs
 every `.claude/hooks/*.test.sh` and `tests/integration/_lib/*.test.sh` through
 `vp run test:hooks`.
 

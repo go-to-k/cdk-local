@@ -141,8 +141,9 @@ want_dir "/base" "-C= with an unexpanded variable falls back" 'gh -R o/r -C="$WT
 # --- gate_target_dir must not read inside a quoted flag VALUE ---------------
 # `GATE_PATH_TOKEN` is "a quoted span OR a bare run of non-space", so it split
 # `core.pager="less` at the first space and read the tail `-C /evil"` as a fresh
-# `-C` flag: a quoted flag value STEERED the target directory, and through
-# branch-gate on `main` that turns rc=2 into rc=0. Tokens now EMBED quoted spans.
+# `-C` flag: a quoted flag value STEERED the target directory, which turned a
+# refusing rc=2 into rc=0 for the gate that read it. Tokens now EMBED quoted
+# spans.
 want_dir "/fallback" "-C inside a quoted flag value is not a flag" \
   'git -c core.pager="less -C /evil" commit -m y' /fallback "$C"
 want_dir "/fallback" "-C inside a single-quoted value is not a flag" \
@@ -595,7 +596,7 @@ want_match 0 'a balanced substitution body is still seen' \
 # not passing because the command matches regardless of the span.
 want_match 1 'a mis-closed span with NO verb in it does not match' \
   "$(printf 'echo "$(echo %s)%s ; echo done)"' "'" "'")" "$C"
-CASE_FLOOR=192
+CASE_FLOOR=190
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

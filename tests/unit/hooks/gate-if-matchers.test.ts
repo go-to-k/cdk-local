@@ -34,7 +34,6 @@ const SETTINGS = join(here, '..', '..', '..', '.claude', 'settings.json');
 
 /** Which command each gate must be selected for. */
 const REQUIRED: Record<string, string[]> = {
-  'branch-gate.sh': ['Bash(*git*commit*)', 'Bash(*git*push*)'],
   'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
   'integ-gate.sh': ['Bash(*gh*pr*merge*)', 'Bash(*git*merge*)'],
 };
@@ -130,13 +129,20 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
       );
     const selects = (gate: string, spelling: string) =>
       hooks.filter((h) => h.name === gate).some((h) => globToRe(h.condition).test(spelling));
+    // `git push` rather than `git commit`: with branch-gate gone, no surviving
+    // gate is selected on a commit, so a commit spelling here would assert
+    // nothing. The SHAPES are the ones that matter either way -- a global flag
+    // between the command and its verb, and a chained second command.
     for (const spelling of [
-      'git commit -m x',
-      'git -C /w/t commit -m x',
-      'git -c user.name=t commit -m x',
-      'git add -A && git commit -m x',
+      'git push origin HEAD',
+      'git -C /w/t push origin HEAD',
+      'git -c user.name=t push origin HEAD',
+      'git fetch origin && git push origin HEAD',
     ]) {
-      expect(selects('branch-gate.sh', spelling), `branch-gate misses: ${spelling}`).toBe(true);
+      expect(
+        selects('post-merge-orphan-push-gate.sh', spelling),
+        `post-merge-orphan-push-gate misses: ${spelling}`
+      ).toBe(true);
     }
     for (const spelling of ['gh pr merge 1 --squash', 'gh -R go-to-k/x pr merge 1 --squash']) {
       expect(selects('integ-gate.sh', spelling), `integ-gate misses: ${spelling}`).toBe(true);
