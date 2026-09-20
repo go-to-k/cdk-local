@@ -69,24 +69,24 @@ the integ marker on incomplete verification.
 CI does not run the integration fixtures, and you do not need to run
 them to contribute. If your change needs integration coverage (see
 below), just say so in your PR — the maintainer runs the required
-fixtures before merging, and the maintainer's merge gates block the
-merge until they pass, so coverage is guaranteed either way. This
+fixtures before merging, and the `integ` merge gate blocks the merge
+until they pass, so coverage is guaranteed either way. This
 matters especially for the `*-from-cfn-stack` fixtures (they deploy
 real AWS resources and incur real charges) and for contributors
 without a local Docker daemon.
 
 ### When is an integration run needed, and which one?
 
-Which verification a PR needs is derived mechanically from the paths
-it touches. The path lists are the gate scopes in
-[`.markgate.yml`](.markgate.yml) — the maintainer's merge gates read
-exactly those, so that file is the source of truth. In summary:
+Which verification a PR needs is derived from the paths it touches.
+Only the first row is mechanically enforced — its scope is the `integ`
+gate in [`.markgate.yml`](.markgate.yml), which is the source of truth
+for that row. The rest is the maintainer's procedure.
 
-| Your PR touches | Required verification (gate) |
+| Your PR touches | Required verification |
 | --- | --- |
-| Any `src/**` or `tests/integration/**` file | A `local-*` fixture run covering the changed surface (`integ`) |
-| A NEW `src/cli/commands/local-<verb>.ts` subcommand factory | A new integ fixture for the subcommand, shipped in the same PR — the maintainer can run it for you (`create-integ`) |
-| `src/cli/commands/**`, `src/index.ts`, or `src/internal.ts` | A host-CLI embedding parity check, run by the maintainer (`cdkd-parity`) |
+| Any `src/**` or `tests/integration/**` file | A `local-*` fixture run covering the changed surface — the one gate that blocks the merge (`integ`) |
+| A NEW `src/cli/commands/local-<verb>.ts` subcommand factory | A new integ fixture for the subcommand, shipped in the same PR — the maintainer can run it for you |
+| `src/cli/commands/**`, `src/index.ts`, or `src/internal.ts` | A host-CLI embedding parity check, run by the maintainer |
 | Docs / tooling only | No integration run — unit tests and CI are enough |
 
 When in doubt, open the PR and ask; the maintainer will pick and run

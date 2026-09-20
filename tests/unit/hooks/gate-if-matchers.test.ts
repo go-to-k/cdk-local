@@ -17,9 +17,8 @@ import { describe, expect, it } from 'vite-plus/test';
  * three throwaway hooks in the sibling repo: an `if`-less hook fired, one with
  * `if: "Bash(git status*)"` fired, and one with `if: "Bash(git commit*) or
  * Bash(git status*)"` never did — while `git commit` on `main` with no markers
- * reached git in two different clients. All seventeen gates here were in that
- * shape, including `check-gate`, `branch-gate`, `verify-pr-gate`, `pr-review-gate`
- * and `integ-gate`.
+ * reached git in two different clients. Every gate in this repo was in that
+ * shape.
  *
  * So: an `if` carries exactly ONE pattern, and a gate guarding two verbs gets two
  * ENTRIES. The pattern is deliberately UNANCHORED (`*git commit*`) because the
@@ -36,62 +35,13 @@ const SETTINGS = join(here, '..', '..', '..', '.claude', 'settings.json');
 /** Which command each gate must be selected for. */
 const REQUIRED: Record<string, string[]> = {
   'branch-gate.sh': ['Bash(*git*commit*)', 'Bash(*git*push*)'],
-  'main-tree-branch-gate.sh': ['Bash(*git*switch*)', 'Bash(*git*checkout*)'],
-  'commit-msg-heredoc-gate.sh': ['Bash(*git*commit*)'],
-  'control-char-gate.sh': ['Bash(*git*commit*)'],
-  'gh-pr-edit-deprecation-gate.sh': ['Bash(*gh*pr*edit*)'],
+  'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
   'non-english-text-gate.sh': [
     'Bash(*gh*pr*create*)',
     'Bash(*gh*pr*edit*)',
     'Bash(*gh*pr*merge*)',
   ],
-  'docs-inline-json-flag-gate.sh': [
-    'Bash(*gh*pr*create*)',
-    'Bash(*gh*pr*edit*)',
-    'Bash(*gh*pr*merge*)',
-  ],
-  'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
-  'closes-paren-form-gate.sh': ['Bash(*gh*pr*merge*)'],
-  'issue-dup-check-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
-  'issue-classification-label-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*issue*edit*)'],
-  // Same two selectors as the dup-check gate, and for the same reason: the
-  // REST mint (`gh api repos/<o>/<r>/issues`) is `gh issue create` through
-  // another verb, so gating only the porcelain spelling under-approximates the
-  // TRIGGER. `gh issue edit` is deliberately absent — re-classifying a filed
-  // issue is the outcome that gate steers toward.
-  'issue-deferral-criteria-gate.sh': ['Bash(*gh*issue*create*)', 'Bash(*gh*api*)'],
-  'pr-body-item-number-gate.sh': [
-    'Bash(*gh*pr*create*)',
-    'Bash(*gh*pr*edit*)',
-    'Bash(*gh*issue*create*)',
-    'Bash(*gh*issue*comment*)',
-    'Bash(*gh*api*)',
-  ],
-  'check-gate.sh': ['Bash(*git*commit*)'],
-  'pr-review-gate.sh': ['Bash(*gh*pr*merge*)'],
-  'verify-pr-gate.sh': ['Bash(*gh*pr*create*)', 'Bash(*gh*pr*merge*)'],
   'integ-gate.sh': ['Bash(*gh*pr*merge*)', 'Bash(*git*merge*)'],
-  'cdkd-parity-gate.sh': ['Bash(*gh*pr*create*)'],
-  'create-integ-gate.sh': ['Bash(*gh*pr*create*)'],
-  'gh-pr-merge-worktree-gate.sh': ['Bash(*gh*pr*merge*)'],
-  // The only BLOCKING gate selected on a non-`git`/`gh` command word
-  // (go-to-k/cdk-local#571): a piped `markgate verify` reports the PIPE's
-  // exit code, so a STALE gate reads as a pass.
-  'markgate-pipe-gate.sh': ['Bash(*markgate*)'],
-  // Selected on a non-`git`/`gh` word too, but it is NOT a gate: a
-  // non-blocking warn on the integ fixture INVOCATION, which is the last
-  // moment a rebase is still free. `/run-integ` section 5's one invocation
-  // shape is `bash tests/integration/<name>/verify.sh`, redirected to a log,
-  // so the selector is part of the script name rather than a command verb.
-  // `*verify*` and NOT `*verify.sh*`: `_command-match.test.sh` cross-checks the
-  // parsed hook-script list against a raw `[A-Za-z0-9_-]*\.sh` scan of this
-  // block, so a `.sh` inside an `if` PATTERN is counted as a 24th hook script
-  // and the two methods disagree (measured — that is exactly how the first
-  // spelling of this entry reddened that suite). The wider glob also selects
-  // `vp run verify` and the like; the hook exits 0 after one segment match, so
-  // an over-selection costs a process spawn and an under-selection costs the
-  // nudge this hook exists to give.
-  'integ-stale-base-detector.sh': ['Bash(*verify*)'],
 };
 
 interface GateHook {
@@ -126,9 +76,11 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
 
   it('finds the gate hooks', () => {
     const names = new Set(hooks.map((h) => h.name));
-    expect(names.has('check-gate.sh')).toBe(true);
-    expect(names.has('verify-pr-gate.sh')).toBe(true);
-    expect(hooks.length).toBeGreaterThanOrEqual(19);
+    for (const gate of Object.keys(REQUIRED)) expect(names.has(gate)).toBe(true);
+    // The floor is the sum of REQUIRED's own rows, so it cannot go stale
+    // against the table it guards.
+    const declared = Object.values(REQUIRED).reduce((n, ps) => n + ps.length, 0);
+    expect(hooks.length).toBeGreaterThanOrEqual(declared);
   });
 
   // THE regression case: this exact join disabled every gate in the repo.
@@ -189,24 +141,15 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
       'git -c user.name=t commit -m x',
       'git add -A && git commit -m x',
     ]) {
-      expect(selects('check-gate.sh', spelling), `check-gate misses: ${spelling}`).toBe(true);
+      expect(selects('branch-gate.sh', spelling), `branch-gate misses: ${spelling}`).toBe(true);
+    }
+    for (const spelling of ['gh pr merge 1 --squash', 'gh -R go-to-k/x pr merge 1 --squash']) {
+      expect(selects('integ-gate.sh', spelling), `integ-gate misses: ${spelling}`).toBe(true);
     }
     for (const spelling of ['gh pr create --fill', 'gh -R go-to-k/x pr create --fill']) {
-      expect(selects('verify-pr-gate.sh', spelling), `verify-pr-gate misses: ${spelling}`).toBe(
-        true
-      );
-    }
-    // markgate-pipe-gate is selected on the LAUNCHER-prefixed spelling every
-    // skill in this repo writes, not on a bare `markgate …` — an anchored
-    // `Bash(markgate*)` would miss all of these and the gate would be inert.
-    for (const spelling of [
-      'markgate verify check | tail -5',
-      'mise exec -- markgate verify integ 2>&1 | tail -5',
-      'cd /w/t && mise exec -- markgate set integ | tee /tmp/l',
-    ]) {
       expect(
-        selects('markgate-pipe-gate.sh', spelling),
-        `markgate-pipe-gate misses: ${spelling}`
+        selects('non-english-text-gate.sh', spelling),
+        `non-english-text-gate misses: ${spelling}`
       ).toBe(true);
     }
   });

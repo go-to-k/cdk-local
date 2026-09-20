@@ -1,130 +1,84 @@
 # Integration Test Creator
 
 Scaffold a NEW `tests/integration/<name>/` fixture, fill in its stack +
-assertions, RUN it, and record the `create-integ` marker.
+assertions, and RUN it.
 
-cdk-local's integ fixtures are the lifeline — they exercise the actual
-user-facing behavior against real Docker (and, for `*-from-cfn-stack`
-fixtures, a real deployed CloudFormation stack via the upstream `cdk` CLI).
-Every new subcommand factory (`src/cli/commands/local-<verb>.ts`) is
-brand-new behavior with no existing fixture, so it MUST ship its own —
-`create-integ-gate.sh` blocks `gh pr create` until this marker is fresh.
-
-Use this skill whenever you add a new command, or a new feature that genuinely
-needs its OWN fixture (a new runtime path that no existing fixture exercises).
-A new flag on an existing command usually reuses that command's fixture —
-extend it instead.
+Every new subcommand factory (`src/cli/commands/local-<verb>.ts`) is brand-new
+behavior with no existing fixture, so it MUST ship its own. Use this skill for a
+new command, or a new runtime path no existing fixture exercises; a new flag on
+an existing command usually extends that command's fixture instead.
 
 ## Arguments
 
 - `name`: the fixture directory name under `tests/integration/`, by convention
-  `local-<command>[-<scenario>]` (e.g. `local-start-foo`,
-  `local-start-foo-from-cfn-stack`). If omitted, ask which command/behavior the
-  fixture covers and derive the name.
+  `local-<command>[-<scenario>]`. If omitted, ask which command/behavior it
+  covers and derive the name.
 
 ## Steps
 
 1. **Decide the shape.** Two kinds:
-   - **Docker-only** (most): the command runs containers locally; `verify.sh`
-     boots `cdkl <cmd>` against a synthesized fixture and asserts the result.
-   - **`*-from-cfn-stack`** (real AWS): the command needs a deployed stack;
-     `verify.sh` does `cdk deploy` first, runs `cdkl <cmd> --from-cfn-stack`,
-     then `cdk destroy`. Name it with the `-from-cfn-stack` suffix so
-     `/run-integ` runs the AWS orphan-stack sweep.
+   - **Docker-only** (most): `verify.sh` boots `cdkl <cmd>` against a
+     synthesized fixture and asserts the result.
+   - **`*-from-cfn-stack`** (real AWS): `verify.sh` does `cdk deploy` first, runs
+     `cdkl <cmd> --from-cfn-stack`, then `cdk destroy`.
 
 2. **Scaffold the files** under `tests/integration/<name>/`:
 
-   - `cdk.json`:
-     ```json
-     {
-       "app": "node bin/app.ts"
-     }
-     ```
+   - `cdk.json`: `{ "app": "node bin/app.ts" }`
 
-   - `package.json` — **pin `packageManager`** so `vp install` is a no-op and
-     does NOT dirty the file on the first integ run (the recurring churn trap).
-     Keep the trailing newline:
-     ```json
-     {
-       "name": "cdkl-integ-<name>",
-       "version": "1.0.0",
-       "private": true,
-       "description": "Integration test fixture for <what it covers>",
-       "scripts": {
-         "build": "tsc",
-         "watch": "tsc -w"
-       },
-       "devDependencies": {
-         "@types/node": "^20.0.0",
-         "typescript": "^5.0.0"
-       },
-       "dependencies": {
-         "aws-cdk-lib": "^2.169.0",
-         "constructs": "^10.0.0"
-       },
-       "type": "module",
-       "packageManager": "pnpm@11.5.1"
-     }
-     ```
-     Match the `packageManager` version to what `vp install` would write (run
-     `vp install` once in a throwaway dir if unsure; it must match exactly, or
-     it re-churns). Copy `tsconfig.json` verbatim from an existing fixture
-     (e.g. `local-start-cloudfront-s3-from-cfn-stack/tsconfig.json`).
+   - `package.json` and `tsconfig.json` — copy both from an existing fixture
+     (e.g. `local-start-cloudfront-s3-from-cfn-stack/`), rename to
+     `cdkl-integ-<name>`, and keep the trailing newline. **Keep the pinned
+     `packageManager`**, at exactly the version `vp install` would write:
+     without it (or with a mismatch) the first integ run rewrites
+     `package.json`, dirtying the tree, staling the `integ` marker and leaking
+     into the PR.
 
    - `bin/app.ts`:
+
      ```ts
      #!/usr/bin/env node
      import * as cdk from 'aws-cdk-lib';
      import { <Stack> } from '../lib/<name>-stack.ts';
 
      const app = new cdk.App();
-     new <Stack>(app, '<FixtureStackName>', {
-       description: 'Fixture stack for cdkl <cmd> integ test',
-     });
+     new <Stack>(app, '<FixtureStackName>', {});
      ```
 
    - `lib/<name>-stack.ts` — the minimal CDK resources the command exercises.
-     Keep it as small as possible (a `*-from-cfn-stack` fixture that does NOT
-     need a slow resource deployed should gate it behind a `withX` context flag,
-     like the cloudfront fixtures deploy a bucket-only stack and synth the
-     distribution locally only under `-c withDistribution=true`).
+     Gate a slow resource behind a `withX` context flag when the fixture does not
+     need it deployed (the cloudfront fixtures deploy a bucket-only stack and
+     synth the distribution under `-c withDistribution=true`).
 
      **If the stack declares ANY Lambda, it MUST declare the HOST CPU
-     architecture** (issues go-to-k/cdk-local#560 / go-to-k/cdk-local#569). A Lambda with no `architecture`
-     defaults to `X86_64`, so on an arm64 host cdk-local pins
-     `--platform linux/amd64` and the container runs under CPU emulation,
-     where the Go RIE faults intermittently — a failure that lands on a
-     different assertion every run and reads as a flaky test. CI runs on
-     amd64, where the buggy default IS the host arch, so CI can never catch
-     it. Copy this verbatim above the stack class:
+     architecture** (issue go-to-k/cdk-local#560). A Lambda with no
+     `architecture` defaults to `X86_64`, so on an arm64 host cdk-local pins
+     `--platform linux/amd64`, the container runs under emulation, and the Go RIE
+     faults intermittently — a failure landing on a different assertion each run,
+     which reads as flaky. CI runs on amd64, where the buggy default IS the host
+     arch, so CI can never catch it. Copy this above the stack class:
 
      ```typescript
      const HOST_ARCHITECTURE =
        process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
      ```
 
-     then pass `architecture: HOST_ARCHITECTURE` on every `lambda.Function` /
+     Pass `architecture: HOST_ARCHITECTURE` on every `lambda.Function` /
      `lambda.DockerImageFunction`, and `architectures: [HOST_ARCHITECTURE.name]`
-     on every L1 `lambda.CfnFunction` (the L1 takes architecture NAMES, not the
-     `Architecture` object). Do NOT hardcode either value: `ARM_64` makes an
-     amd64 CI runner emulate, and `X86_64` is the default that caused go-to-k/cdk-local#560.
-     Two exceptions, both where an ARTIFACT dictates the architecture rather
-     than the host: a handler shipping a PREBUILT binary compiled for a
-     specific arch (pin to match the BINARY), and a `DockerImageFunction`
-     whose Dockerfile pulls an arch-specific base image or `COPY`s in a
-     cross-compiled executable (the declared architecture drives
-     `docker build` as well as `docker run`, so it cannot be built for the
-     host). A Dockerfile on a multi-arch base such as
-     `public.ecr.aws/lambda/nodejs:20`, with no prebuilt binary copied in, is
-     NOT an exception and should declare the host architecture.
+     on every L1 `lambda.CfnFunction` (the L1 takes architecture NAMES). Never
+     hardcode either value. Two exceptions, both where an ARTIFACT dictates the
+     architecture: a handler shipping a PREBUILT binary (pin to the BINARY), and
+     a `DockerImageFunction` whose Dockerfile pulls an arch-specific base image or
+     `COPY`s in a cross-compiled executable (the declared architecture drives
+     `docker build` as well as `docker run`). A multi-arch base with no prebuilt
+     binary copied in is NOT an exception.
 
      Then add the new file to `HOST_ARCHITECTURE_STACKS` in
      `tests/unit/integ-fixture-host-architecture.test.ts` — that fence asserts
      every fixture source constructing a `*Function(` is accounted for, so a new
      fixture fails the suite until it is classified there.
 
-   - `verify.sh` (executable; `chmod +x`) — start from the harness below and
-     fill in the deploy (for `*-from-cfn-stack`) + the boot + assertions.
+   - `verify.sh` (executable; `chmod +x`) — start from the harness below.
 
 3. **Fill in the assertions.** Read the command's actual output shape and assert
    the real user-facing behavior (the ready-line banner, the served response, a
@@ -132,147 +86,56 @@ extend it instead.
 
 4. **Make the source files tracked.** `tests/integration/.gitignore` ignores
    `*.js` / `*.d.ts` and (for some) `pnpm-lock.yaml`. Confirm your `.ts` sources
-   are tracked (`git add -f` a handler `*.js` if your fixture ships one, or add a
-   `!subdir/*.js` negation to the fixture's own `.gitignore`). The fixture must
-   build on a fresh checkout / in CI.
+   are tracked (`git add -f` a handler `*.js`, or add a `!subdir/*.js` negation
+   to the fixture's own `.gitignore`) — it must build on a fresh checkout and in CI.
 
 5. **RUN it** (NEVER skip — the whole point is to exercise the real path):
+
    ```
    /run-integ <name>
    ```
-   `/run-integ` does the Docker pre-flight, `verify.sh`, the post-run orphan
-   sweep, and the AWS orphan sweep — which it runs for EVERY fixture, not just
-   `*-from-cfn-stack` ones: that glob missed three resource-owning fixtures and
-   the widened `*-from-cfn*` still missed `local-invoke-assume-role`, so
-   `tests/integration/_lib/aws-orphan-sweep.sh` derives ownership itself and
-   makes no AWS call for a fixture that owns nothing. A brand-new Docker-only
-   fixture therefore passes it at exit 0 with nothing deployed. It then sets the
-   `integ` marker on a clean run. Fix anything it surfaces and re-run until
-   green with 0 orphans.
 
-6. **Record the `create-integ` marker** — ONLY after `/run-integ` finished
-   clean (verify.sh exit 0, 0 docker orphans, and the AWS orphan sweep at
-   exit 0):
-   ```bash
-   mise exec -- markgate set create-integ
-   ```
-   Skip this if the run was not clean — a stale marker correctly keeps
-   `gh pr create` blocked until the fixture actually passes.
+   It does the Docker pre-flight, `verify.sh`, the post-run Docker sweep and the
+   AWS orphan sweep (which runs for EVERY fixture — `aws-orphan-sweep.sh`
+   derives ownership itself rather than globbing the name, and makes no AWS call
+   for a fixture that owns nothing), then sets the `integ` marker on a clean
+   run. Fix what it surfaces and re-run until green with 0 orphans.
 
 ## verify.sh harness
 
-The repetitive shell scaffold (stop / cleanup-trap / fail / a boot-and-curl
-helper / the ready-line wait). Fill in `<CMD>`, `<STACK>`, ports, and the
-assertions. For a Docker-only fixture, drop the `cdk deploy` / `cdk destroy`
-blocks.
+Start from a real one — `tests/integration/local-start-cloudfront-s3-from-cfn-stack/verify.sh`
+for the `*-from-cfn-stack` shape, any `local-invoke-*` fixture for the
+run-to-completion shape — and adapt `<CMD>`, `<STACK>`, ports and assertions.
+For a Docker-only fixture, drop its `cdk deploy` / `cdk destroy` blocks.
 
-`boot_and_get` below is the **HTTP-server shape** — it fits `start-api` /
-`start-cloudfront` (they declare `--port` and serve over HTTP). A non-serving
-command asserts differently: `start-service` / `start-alb` use listener /
-`--host-port` ports (no `--port`); `invoke` / `run-task` / `list` /
-`invoke-agentcore` are not servers — run `${CLI} <cmd> ...` to completion (or
-until a ready banner for a streaming run) and assert on its captured **stdout**
-(the response payload / the `==> ... passed` lines), not a curl. Capture it
-through the `capture` helper (copy `CANONICAL_CAPTURE` from
-`tests/unit/integ-verify-capture-shape.test.ts`, with its trap-held
-`CDKL_STDERR`), never `$(... 2>/dev/null | tail -1)` — under pipefail that
-shape aborts at the assignment with no diagnostic, and the same file refuses
-it tree-wide (go-to-k/cdk-local#733). Pick the shape that matches your
-command's surface.
+Whatever you copy, the script MUST keep:
 
-```bash
-#!/usr/bin/env bash
-#
-# Real-Docker validation for `cdkl <CMD>` (<what it covers>).
-# Run via `/run-integ <name>`.
+- `set -euo pipefail`, and `CLI="node $(git rev-parse --show-toplevel)/dist/cli.js"`
+  — never a globally installed `cdkl`.
+- A `cleanup()` that seeds `rc=$?` FIRST, stops the server, `cdk destroy`s the
+  stack when this run created it (`WE_CREATED_STACK=1`), removes its temp files
+  and `exit "${rc}"`, armed with `trap cleanup EXIT INT TERM`. Without INT/TERM
+  a killed run leaks containers and a real stack; without the `rc` seed the trap
+  exits 0 and the fixture reports green.
+- A `fail()` that dumps the captured CLI output to stderr and exits 1.
+- A bounded ready-line wait that ALSO re-checks `kill -0 "${CDKL_PID}"` each
+  iteration, so a server that died is reported as "exited before it was ready"
+  rather than timing out.
+- For `*-from-cfn-stack`, a pre-flight refusal when the target stack already
+  exists — never deploy on top of someone else's stack.
 
-set -euo pipefail
-
-REGION="${AWS_REGION:-us-east-1}"
-export AWS_REGION="${REGION}"
-STACK="<FixtureStackName>"
-TARGET="${STACK}/<Construct>"
-PORT=18500
-
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-TEST_DIR="${REPO_ROOT}/tests/integration/<name>"
-CLI="node ${REPO_ROOT}/dist/cli.js"
-
-CDKL_PID=""
-WE_CREATED_STACK=0          # *-from-cfn-stack only
-OUT_FILE="$(mktemp)"
-BODY_FILE="$(mktemp)"
-
-stop_server() {
-  if [ -n "${CDKL_PID}" ] && kill -0 "${CDKL_PID}" 2>/dev/null; then
-    kill -TERM "${CDKL_PID}" 2>/dev/null || true
-    for _ in $(seq 1 60); do kill -0 "${CDKL_PID}" 2>/dev/null || break; sleep 0.25; done
-    kill -KILL "${CDKL_PID}" 2>/dev/null || true
-  fi
-  CDKL_PID=""
-}
-
-cleanup() {
-  rc=$?
-  stop_server
-  if [ "${WE_CREATED_STACK}" -eq 1 ]; then
-    (cd "${TEST_DIR}" && cdk destroy "${STACK}" --force --region "${REGION}" \
-      --no-version-reporting --no-asset-metadata --no-path-metadata) || true
-  fi
-  rm -f "${OUT_FILE}" "${BODY_FILE}" "${BODY_FILE}.code"
-  exit "${rc}"
-}
-trap cleanup EXIT INT TERM
-
-fail() { echo "[verify] FAIL: $*" >&2; cat "${OUT_FILE}" >&2 || true; exit 1; }
-
-# boot_and_get <port> <uri> <body-out> [extra cdkl flags...]
-boot_and_get() {
-  local port="$1" uri="$2" body_out="$3"; shift 3
-  : > "${OUT_FILE}"
-  lsof -ti "tcp:${port}" >/dev/null 2>&1 && lsof -ti "tcp:${port}" | xargs -r kill -9 || true
-  ${CLI} <CMD> "${TARGET}" --port "${port}" "$@" > "${OUT_FILE}" 2>&1 &
-  CDKL_PID=$!
-  local booted=0
-  for _ in $(seq 1 240); do
-    if grep -q "<READY LINE>" "${OUT_FILE}"; then booted=1; break; fi
-    kill -0 "${CDKL_PID}" 2>/dev/null || fail "server exited before it was ready"
-    sleep 0.5
-  done
-  [ "${booted}" -eq 1 ] || fail "server did not print its ready banner in time"
-  curl -s -o "${body_out}" -w '%{http_code}' "http://127.0.0.1:${port}${uri}" > "${body_out}.code" || true
-  stop_server
-}
-
-echo "[verify] step 1: install + build cdk-local"
-(cd "${REPO_ROOT}" && pnpm install)
-(cd "${REPO_ROOT}" && vp run build)
-cd "${TEST_DIR}"
-[ -d node_modules ] || vp install --prefer-offline
-
-# --- *-from-cfn-stack only: deploy first ---
-# if aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" >/dev/null 2>&1; then
-#   echo "[verify] FAIL: ${STACK} already exists — clean up first"; exit 1; fi
-# WE_CREATED_STACK=1
-# cdk deploy "${STACK}" --require-approval never --no-version-reporting \
-#   --no-asset-metadata --no-path-metadata --region "${REGION}"
-
-echo "[verify] step 2: <assert the new behavior>"
-boot_and_get "${PORT}" "/" "${BODY_FILE}"
-[ "$(cat "${BODY_FILE}.code")" = "200" ] || fail "GET / did not return 200"
-# grep -qi "<expected body>" "${BODY_FILE}" || fail "..."
-
-echo "[verify] PASS: <one-line summary of what was proven>"
-```
+Pick the assertion shape for the command's surface. `start-api` /
+`start-cloudfront` declare `--port` and serve over HTTP, so boot and `curl`.
+`start-service` / `start-alb` use listener / `--host-port` ports (no `--port`).
+`invoke` / `run-task` / `list` / `invoke-agentcore` are not servers — run
+`${CLI} <cmd> ...` to completion (or to a ready banner for a streaming run) and
+assert on its captured **stdout**. Capture through the `capture` helper (copy
+`CANONICAL_CAPTURE` from `tests/unit/integ-verify-capture-shape.test.ts`, with
+its trap-held `CDKL_STDERR`), never `$(... 2>/dev/null | tail -1)` — under
+pipefail that shape aborts at the assignment with no diagnostic, and that same
+file refuses it tree-wide.
 
 ## Important
 
-- **Always RUN the fixture (step 5) before recording the marker.** A scaffold
-  that never ran proves nothing. `create-integ` is earned by a clean
-  `/run-integ`, not by writing files.
-- **`packageManager` is pinned on purpose** — without it `vp install` adds it on
-  the first run, dirtying `package.json`, staling the `integ` marker, and
-  leaking into the PR. Pinning it makes the install a no-op.
+- **Always RUN the fixture (step 5).** A scaffold that never ran proves nothing.
 - **English only** for all committed artifacts (see `.claude/CLAUDE.md`).
-- This skill is the ONLY legitimate setter of `create-integ`; never
-  `markgate set create-integ` from a shell to bypass `create-integ-gate.sh`.

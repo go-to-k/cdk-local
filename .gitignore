@@ -42,9 +42,6 @@ cdk.context.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# markgate pr-review sentinel
-.markgate-pr-review-sha
-
 # cdkd-parity tracking-issue sentinel (per-worktree; written by /check-cdkd-parity)
 .cdkd-parity-issue
 
@@ -58,6 +55,3 @@ cdk.context.json
 
 # Node diagnostic reports (issue #402, --report-on-fatalerror)
 report.*.json
-
-# Python bytecode from the hook testdata probes.
-__pycache__/

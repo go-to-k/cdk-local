@@ -1,43 +1,36 @@
 ---
 name: cleanup
-description: Detect and delete leftovers from interrupted cdk-local runs — Docker containers / networks, AND orphaned vitest forks worker processes that failed to terminate (issue go-to-k/cdk-local#402, e.g. a worker spinning at 100% CPU after its parent died).
+description: Detect and delete leftovers from interrupted cdk-local runs — Docker containers / networks, and orphaned vitest tinypool worker processes that failed to terminate (issue go-to-k/cdk-local#402).
 argument-hint: "[--detect-only]"
 ---
 
 # Leftover Resource Cleanup
 
 Detect and optionally delete leftovers from an interrupted cdk-local run
-(SIGKILL, crash, a killed test run) before its own cleanup could fire:
-
-- **Docker** containers / networks / built images from a `cdkl` serve or integ run.
-- **Orphaned vitest forks worker processes** — a tinypool fork worker that
-  failed to terminate and was reparented when its parent (the `vp test`
-  process) died, often spinning at 100% CPU. This is the externally-visible
-  tail of issue go-to-k/cdk-local#402's hang variant: the in-worker SIGTERM/SIGINT guard only
-  fires when the parent SIGTERMs the worker, so a worker orphaned by a dead
-  parent (no signal sent) can spin forever and must be swept from outside.
+(SIGKILL, crash, killed test run): Docker containers / networks / built images
+from a `cdkl` serve or integ run, and orphaned tinypool fork workers. The
+in-worker SIGTERM/SIGINT guard only fires when the parent SIGTERMs the worker,
+so a worker orphaned by a dead parent can spin forever and must be swept from
+outside.
 
 ## Safety
 
-- **Docker**: ONLY targets containers / networks whose names match the
-  cdk-local prefix conventions (`cdkl-*`, `cdk-local-*`). NEVER touches
-  non-matching containers.
-- **Processes**: ONLY targets node processes running the tinypool fork-worker
-  entry (`tinypool/dist/entry/process.js`) WHOSE working directory is under a
-  cdk-local checkout. The DEFAULT auto-kill set is further narrowed to
-  **orphaned** workers (parent pid `1` — the original parent is gone, so the
-  worker is provably abandoned). A still-parented worker (even at high CPU)
-  could be an active test run, so it is LISTED separately and only killed on
-  explicit `AskUserQuestion` confirmation. A worker whose cwd is NOT under a
-  cdk-local checkout (another repo's tests, an editor LSP's own tinypool pool
-  elsewhere) is never touched.
-- Default mode is detect-only (no deletion / no kill).
-- Uses `AskUserQuestion` to confirm before any actual `docker rm -f` /
-  `docker network rm` / `kill`.
+- **Docker**: ONLY containers / networks whose names match the cdk-local prefix
+  conventions (`cdkl-*`, `cdk-local-*`). Anything not matching that prefix is
+  presumed external and is NEVER touched.
+- **Processes**: ONLY node processes running the tinypool fork-worker entry
+  (`tinypool/dist/entry/process.js`) WHOSE cwd is under a cdk-local checkout.
+  The default auto-kill set is narrowed further to **orphaned** workers (parent
+  pid `1` — provably abandoned). A still-parented worker, even at high CPU,
+  could be an active test run: LIST it, kill it only on explicit
+  `AskUserQuestion` confirmation. A worker outside a cdk-local checkout, or a
+  parented low-CPU one, is never touched.
+- Default mode is detect-only. `AskUserQuestion` confirms before any
+  `docker rm -f` / `docker network rm` / `kill`.
 
 ## Arguments
 
-- `--detect-only`: Only list leftover resources, don't delete (this is the default).
+- `--detect-only`: list only, don't delete (the default).
 
 ## Steps
 
@@ -56,15 +49,13 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
    docker network ls --filter name=cdk-local-task- --format '{{.ID}}\t{{.Name}}\t{{.Driver}}'
    ```
 
-3. **Scan ephemeral cdkl-built images** (optional — only if the user passed an argument hinting at image cleanup):
+3. **Scan ephemeral cdkl-built images** (optional — only if the user asked for image cleanup):
 
    ```bash
    docker images --filter reference='cdkl-built:*' --format '{{.ID}}\t{{.Repository}}:{{.Tag}}'
    ```
 
-4. **Scan orphaned vitest forks worker processes** (issue go-to-k/cdk-local#402): find node
-   processes running the tinypool fork-worker entry, then classify each by
-   parent pid + CPU + working directory.
+4. **Scan orphaned vitest worker processes**, then classify by ppid + CPU + cwd.
 
    ```bash
    # Candidate workers (pid, ppid, %cpu, elapsed, command).
@@ -72,8 +63,8 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
      | grep 'tinypool/dist/entry/process\.js' | grep -v grep
    ```
 
-   For EACH candidate pid, resolve its working directory (macOS has no
-   `/proc`, so use `lsof`) and keep only those under a cdk-local checkout:
+   For EACH candidate pid, resolve its cwd (macOS has no `/proc`, so `lsof`)
+   and keep only those under a cdk-local checkout:
 
    ```bash
    cwd=$(lsof -a -p "<pid>" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
@@ -81,55 +72,41 @@ Detect and optionally delete leftovers from an interrupted cdk-local run
    ```
 
    Bucket the cdk-local workers:
-   - **Orphaned** (`ppid == 1`): the parent `vp test` process is gone, so the
-     worker is provably abandoned — the DEFAULT auto-kill set.
-   - **Parented + high CPU** (`ppid != 1` AND `%cpu` sustained high, e.g.
-     `>= 50`): possibly an active test run, possibly a runaway. LIST it but do
-     NOT auto-kill; ask before touching.
-   - Everything else (parented, low CPU): a live, healthy run — never touched.
+   - **Orphaned** (`ppid == 1`): the parent `vp test` process is gone — the
+     DEFAULT auto-kill set.
+   - **Parented + high CPU** (`ppid != 1` AND `%cpu` sustained `>= 50`):
+     possibly an active test run, possibly a runaway. LIST it, do NOT auto-kill.
+   - Everything else (parented, low CPU): a live run — never touched.
 
-5. **Report findings**: Show a table of detected resources grouped by type
-   (containers / networks / images / orphaned workers / suspect workers). If
-   everything is empty, confirm "no orphans" and stop.
+5. **Report findings**: a table grouped by type (containers / networks / images
+   / orphaned workers / suspect workers). If empty, confirm "no orphans" and stop.
 
 6. **If deletion / kill requested** (not `--detect-only`):
-   - Use `AskUserQuestion` to show the full list and confirm. For the
-     **parented high-CPU** workers, call them out as "possibly an active test
-     run" so the user can opt out per-pid.
+   - `AskUserQuestion` with the full list. Call the **parented high-CPU**
+     workers out as "possibly an active test run" so the user can opt out per-pid.
    - Docker, in this order:
-     1. Containers first (`docker rm -f <id>` — works even if running).
-     2. Networks next (`docker network rm <id>` — must come after containers that use them are gone).
-     3. Built images last (`docker rmi <id>` — only if image cleanup was requested AND the image is not referenced by any remaining container).
-   - Orphaned worker processes: `kill <pid>` (SIGTERM) first, then re-check;
-     a spinning orphan that ignores SIGTERM gets `kill -9 <pid>`. Parented
-     high-CPU workers are killed ONLY for the pids the user confirmed.
+     1. Containers (`docker rm -f <id>` — works even if running).
+     2. Networks (`docker network rm <id>` — must come after the containers using them are gone).
+     3. Built images (`docker rmi <id>` — only if requested AND not referenced by any remaining container).
+   - Orphaned workers: `kill <pid>` (SIGTERM), then re-check; one that ignores
+     SIGTERM gets `kill -9 <pid>`. Parented high-CPU workers are killed ONLY for
+     the pids the user confirmed.
    - Report each result.
 
-## Important
+## AWS-side orphans
 
-- This skill cleans up LOCAL state from cdk-local runs only — Docker resources
-  and orphaned vitest forks worker PROCESSES.
-- cdk-local itself does NOT deploy AWS resources, so there is no AWS-side orphan
-  scan here. For AWS resources a fixture's `--from-cfn-stack` deploy created, run
-  the sweep and require exit 0 — it derives the lane-unique names, so it is the
-  only thing that can tell an orphan from a peer's live stack:
+cdk-local itself deploys no AWS resources. For AWS resources a fixture's
+`--from-cfn-stack` deploy created, run the sweep and require exit 0 — it derives
+the lane-unique names, so it alone can tell an orphan from a peer's live stack:
 
-  ```bash
-  bash tests/integration/_lib/aws-orphan-sweep.sh <fixture-name>; rc=$?
-  ```
+```bash
+bash tests/integration/_lib/aws-orphan-sweep.sh <fixture-name>; rc=$?
+```
 
-  **Do NOT reach for `cdk destroy` here.** It needs `--app` context this cwd does
-  not provide, and — run by hand from outside the fixture, where
-  `INTEG_STACK_SUFFIX` is unset — the app builds UN-suffixed names, your
-  suffixed argument matches nothing, and it **exits 0 SILENTLY with the stack
-  still deployed**. In a skill whose whole job is orphan cleanup that reads as
-  "cleaned up" when nothing was. The sweep prints a remediation plan built on
-  `aws cloudformation delete-stack`, which needs neither app context nor the
-  suffix in the environment (issue go-to-k/cdk-local#601). A fixture's OWN
-  cleanup trap using `cdk destroy` is a different case and is correct — it runs
-  from the fixture directory with the suffix exported.
-- The `cdkl-*` / `cdk-local-*` name prefix is the contract for Docker:
-  anything not matching that prefix is presumed external and is never touched.
-- For processes the contract is: tinypool fork-worker entry + cwd under a
-  cdk-local checkout + (orphaned OR user-confirmed). A worker outside a
-  cdk-local checkout, or a healthy parented low-CPU worker, is never touched.
+**Do NOT reach for `cdk destroy` here.** Run by hand from outside the fixture,
+where `INTEG_STACK_SUFFIX` is unset, the app builds UN-suffixed names, your
+suffixed argument matches nothing, and it **exits 0 SILENTLY with the stack
+still deployed**. The sweep's remediation plan uses
+`aws cloudformation delete-stack`, which needs neither app context nor the
+suffix. A fixture's OWN cleanup trap using `cdk destroy` is correct — it runs
+from the fixture directory with the suffix exported.

@@ -62,9 +62,8 @@ jobs:
 
           # GitHub's auto-close grammar: a closing keyword, then a parens-FREE
           # `#N` or a full issue URL in THIS repo. The `Closes (#N)` paren form
-          # is deliberately NOT matched -- it does not auto-close either, and
-          # `.claude/hooks/closes-paren-form-gate.sh` refuses a merge that uses
-          # it, so matching it here would paper over that gate.
+          # is deliberately NOT matched -- it does not auto-close either, so
+          # matching it here would paper over a PR that closes nothing.
           #
           # `|| true` on both greps: `set -o pipefail` plus a no-match grep
           # makes the whole substitution fail, and "this PR closes no issue" is

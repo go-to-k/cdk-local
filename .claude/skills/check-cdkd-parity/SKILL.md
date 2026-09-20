@@ -1,37 +1,30 @@
 ---
 name: check-cdkd-parity
-description: Triggers when a PR adds a new subcommand factory, CLI option, public helper, or behavior change to cdk-local that cdkd (host CLI) may need to inherit. Walks the diff and pins each category to "exported via internal.ts / inside add<Cmd>SpecificOptions / cdkd notified" — sets the cdkd-parity marker so gh pr create can fire.
+description: Walk a PR that adds a new subcommand factory, CLI option, public helper, or behavior change to cdk-local, pinning each category to "exported via internal.ts / inside add<Cmd>SpecificOptions / cdkd notified". Run it before opening a PR that touches the library surface cdkd embeds.
 ---
 
 # cdkd Parity Check
 
-cdk-local is a library + CLI; cdkd embeds it as a library. Whenever
-cdk-local extends its public surface — new subcommand, new option, new
-exported helper, behavior change — cdkd has to either import the new
-helper, wrap the new subcommand, inherit the new option block, or
-update its own behavior to match. The mechanical part is covered by
-per-command unit-test contracts; this skill walks the judgment-level
-questions that are easy to skip: did you export it, did you put it in
-the right helper, did you tell the host?
-
-This skill is consumed by `cdkd-parity-gate.sh`, which blocks
-`gh pr create` when the diff touches the gate's scope and this marker
-is stale.
+cdk-local is a library + CLI; cdkd embeds it as a library. Whenever cdk-local
+extends its public surface — new subcommand, option, exported helper, or a
+behavior change — cdkd has to wrap, import, inherit or adapt. Per-command
+unit-test contracts cover the mechanical part; this skill walks the
+judgment-level questions that are easy to skip: did you export it, did you put
+it in the right helper, did you tell the host? Recommended procedure — nothing
+blocks on it.
 
 ## Pre-flight scope check
 
-Determine whether the PR's diff actually touches cdk-local's library
-surface. Two signals trigger the gate:
+Two signals put a PR in scope:
 
-1. Any path under `src/cli/commands/**`, `src/internal.ts`, or
-   `src/index.ts` (the library-surface scope).
-2. A NEW `.ts` file added under `src/local/**` (`--diff-filter=A`).
-   Edits to existing `src/local/**` files are deliberately out of
-   scope — internal refactors are noise — but a brand-new file is
-   the strongest signal that a host-facing helper may have been
-   introduced without an explicit `src/internal.ts` re-export.
+1. Any path under `src/cli/commands/**`, `src/internal.ts`, or `src/index.ts`
+   (the library surface itself).
+2. A NEW `.ts` file under `src/local/**` (`--diff-filter=A`). Edits to existing
+   `src/local/**` files are deliberately out of scope — internal refactors are
+   noise — but a brand-new file is the strongest signal that a host-facing helper
+   arrived without an `src/internal.ts` re-export.
 
-Run from the worktree:
+Run from the worktree (the diff base is `origin/main`, not local `main`):
 
 ```bash
 {
@@ -43,279 +36,117 @@ Run from the worktree:
   || echo "out-of-scope"
 ```
 
-If the output is `out-of-scope` (neither signal fires), write one
-line — "no library-surface touched; cdkd-parity n/a" — set the
-marker (see "Final step" below), and stop. Do NOT walk the
-categories below for unrelated edits; the marker is correct to set
-because there is nothing for cdkd to inherit.
-
-The diff base is `origin/main`, not local `main` (see memory:
-`feedback_diff_base_origin_main`).
+On `out-of-scope`, write one line — "no library surface touched; parity n/a" —
+and stop. Do NOT walk the categories for unrelated edits.
 
 ## Category 1: New subcommand factory?
 
-A new file like `src/cli/commands/local-<verb>.ts` that exports a
-`createLocal<Verb>Command` factory is a new public CLI subcommand.
-cdkd embeds these via `src/index.ts` and wraps them with host-side
-options.
-
-**Detect**:
+A new `src/cli/commands/local-<verb>.ts` exporting a `createLocal<Verb>Command`
+factory is a new public CLI subcommand; cdkd embeds these via `src/index.ts` and
+wraps them with host-side options.
 
 ```bash
 git diff origin/main...HEAD --name-only --diff-filter=A \
   | grep -E '^src/cli/commands/local-[^/]+\.ts$'
 ```
 
-Empty output → no new subcommand → skip to Category 2.
+Empty → skip to Category 2. Per new factory file:
 
-For each new factory file:
-
-- [ ] **Exported from `src/index.ts`?** — host CLIs reach the factory
-      via the public library entry. Confirm:
-
-      ```bash
-      grep -nE 'createLocal[A-Z][A-Za-z]*Command' src/index.ts
-      ```
-
-      The new factory name must appear in the export list. If it
-      doesn't, add the export before setting the marker.
-
-- [ ] **cdkd tracking issue filed?** — REQUIRED for a new subcommand. File
-      (or reuse) the cdkd issue per "File the cdkd tracking issue" below,
-      labeling this as cat 1 "wrap the new subcommand
-      (`createLocal<Verb>Command`) — REQUIRED". The `cdkd-parity-gate.sh`
-      hook hard-blocks `gh pr create` until `.cdkd-parity-issue` carries the
-      issue URL.
+- [ ] **Exported from `src/index.ts`?** Host CLIs reach the factory through the
+      public library entry — `grep -nE 'createLocal[A-Z][A-Za-z]*Command' src/index.ts`
+      must show the new name. If it does not, add the export.
+- [ ] **cdkd tracking issue filed?** REQUIRED for a new subcommand — label it
+      cat 1, "wrap the new subcommand (`createLocal<Verb>Command`) — REQUIRED".
 
 ## Category 2: New CLI option on an existing command?
 
-A new `addOption(new Option(...))` call inside an existing
-`src/cli/commands/local-*.ts` is a new flag the host CLI must inherit.
-
-**Detect**:
+A new `addOption(new Option(...))` inside an existing `src/cli/commands/local-*.ts`
+is a flag the host CLI must inherit.
 
 ```bash
 git diff origin/main...HEAD -- 'src/cli/commands/*.ts' \
   | grep -E '^\+.*addOption.*new Option'
 ```
 
-Empty output → no new option → skip to Category 3.
+Empty → skip to Category 3. Per added option:
 
-For each added option:
-
-- [ ] **Added inside the relevant `add<Cmd>SpecificOptions` helper, NOT
-      inline in `create<Cmd>Command`?** — the helper is the seam cdkd
-      reuses to inherit the option block without duplicating it.
-      Inline-in-factory means the host can't pick up the option without
-      copy-paste. Read the diff context — the `+addOption(...)` should
-      sit inside an `add<Cmd>SpecificOptions(cmd: Command)` function,
-      not in the factory body.
-
-- [ ] **Contract test still passes?** — the per-command option-contract
-      tests assert that the helper's output matches the factory's
-      attached options. `vp run test` covers this; the `check` marker's
-      freshness already implies this passed. If the option was added
-      inline in the factory, the contract test will catch it as a
-      drift.
+- [ ] **Added inside the relevant `add<Cmd>SpecificOptions` helper, NOT inline in
+      `create<Cmd>Command`?** The helper is the seam cdkd reuses to inherit the
+      option block without duplicating it; inline-in-factory leaves the host only
+      copy-paste. In the diff context, `+addOption(...)` must sit inside
+      `add<Cmd>SpecificOptions(cmd: Command)`.
+- [ ] **Contract test still passes?** The per-command option-contract tests
+      assert the helper's output matches the factory's attached options, so they
+      catch an inline addition as drift. `vp run test` covers them.
+- [ ] **cdkd tracking issue filed?** REQUIRED — label it cat 2, "inherit the new
+      option (`add<Cmd>SpecificOptions`) — REQUIRED".
 
 ## Category 3: New public helper / type in `src/local/**`?
 
-A new exported function / class / type under `src/local/**` is a
-low-level building block. Host CLIs reach these via the
-`cdk-local/internal` subpath (`src/internal.ts`); the main entry
-`src/index.ts` does NOT re-export them. See memory:
-`feedback_internal_exports_placement`.
-
-**Detect**:
+A new exported function / class / type under `src/local/**` is a low-level
+building block. Hosts reach these through the `cdk-local/internal` subpath
+(`src/internal.ts`); the main entry `src/index.ts` does NOT re-export them.
 
 ```bash
-# A new file in src/local/** is the strongest signal — it's also the
-# scope trigger that fires the gate independently of internal.ts edits.
-git diff origin/main...HEAD --diff-filter=A --name-only \
-  | grep -E '^src/local/.+\.ts$'
-# And any edits to src/local/** files that may have added exports.
+git diff origin/main...HEAD --diff-filter=A --name-only | grep -E '^src/local/.+\.ts$'
 git diff origin/main...HEAD --name-only -- 'src/local/**'
 ```
 
-Empty output → no helper changes → skip to Category 4.
+Empty → skip to Category 4. For each new export:
 
-For each new export in `src/local/**`:
-
-- [ ] **Exported from `src/internal.ts`?** — the host reaches it via
-      `import { ... } from 'cdk-local/internal'`. Confirm:
-
-      ```bash
-      grep -nE "from '\./local/" src/internal.ts
-      ```
-
-      The new symbol must show up either as a named re-export or via a
-      `export *` line covering its module.
-
-- [ ] **JSDoc explains the host-side use case?** — `internal.ts` has no
-      semver guarantee, so the JSDoc on each exported symbol is the
-      only contract a host author has. Read the new symbol's JSDoc and
-      confirm it names the intended host-side use case (e.g. "consumed
-      by cdkd's `<command>` provider to ..."). Pure-implementation
-      docstrings ("returns a Foo") are not sufficient.
-
-- [ ] **cdkd tracking issue filed?** — file (or reuse) the cdkd issue per
-      "File the cdkd tracking issue" below, labeling this as cat 3 "new
-      internal primitive available — OPTIONAL: adopt if useful, cdkd
-      decides". Additive, so cdkd's build won't break by not adopting —
-      but filing surfaces it so cdkd makes the adoption call, instead of
-      cdk-local silently deciding for it. (The hook does NOT hard-block
-      cat 3; the marker covers it.)
+- [ ] **Exported from `src/internal.ts`?** `grep -nE "from '\./local/" src/internal.ts`
+      — the new symbol must appear as a named re-export or under an `export *`
+      line covering its module.
+- [ ] **JSDoc explains the host-side use case?** `internal.ts` carries no semver
+      guarantee, so the JSDoc is the only contract a host author has: it must
+      name the intended host-side use ("consumed by cdkd's `<command>` provider
+      to …"). A pure-implementation docstring ("returns a Foo") is not enough.
+- [ ] **cdkd tracking issue filed?** Label it cat 3, "new internal primitive
+      available — OPTIONAL: adopt if useful, cdkd decides". Additive, so cdkd's
+      build cannot break by not adopting; filing just lets cdkd make the call.
 
 ## Category 4: Behavior change in an existing command?
 
-Behavior changes — changed defaults, new validation, changed output
-format, changed exit codes, changed error messages a host might match
-on — are silent breakage for cdkd. Purely additive changes
-(Categories 1-3) do not count here.
+Changed defaults, new validation, changed output format, changed exit codes,
+changed error messages a host might match on — all silent breakage for cdkd.
+Purely additive changes (categories 1-3) do not count here.
 
-**Detect**: walk the diff yourself. There is no mechanical grep for
-this — read every changed `src/cli/commands/*.ts` and every changed
-`src/local/**` file and ask "does the externally observable behavior
-change for an existing input?".
+**Detect**: no mechanical grep exists. Read every changed
+`src/cli/commands/*.ts` and `src/local/**` file and ask "does the observable
+behavior change for an existing input?".
 
 For each behavior change:
 
-- [ ] **cdkd tracking issue filed?** — REQUIRED for a behavior change. File
-      (or reuse) the cdkd issue per "File the cdkd tracking issue" below,
-      labeling this as cat 4 "behavior change — adapt — REQUIRED" and naming
-      the old behavior, the new behavior, and the migration cdkd needs to
-      apply. (The hook does NOT mechanically detect cat 4; the marker covers
-      it — so filing here is on your honor, but it is REQUIRED.)
+- [ ] **cdkd tracking issue filed?** REQUIRED — label it cat 4, "behavior change
+      — adapt — REQUIRED", naming the old behavior, the new behavior, and the
+      migration cdkd needs.
+- [ ] **Migration note in the PR body?** Under a `Behavior change` (or
+      `Breaking change`) heading, so anyone bumping the `cdk-local` version in
+      cdkd reads it without digging through the diff.
 
-- [ ] **Migration note in PR body?** — the PR body must ALSO call out the
-      behavior change in a section labeled `Behavior change` (or
-      `Breaking change` when appropriate), so anyone bumping the
-      `cdk-local` version in cdkd reads it without digging through the
-      diff.
+## File the cdkd tracking issue (when any category applies)
 
-## File the cdkd tracking issue (REQUIRED when any category applies)
+cdk-local's job is to SURFACE the change; cdkd decides whether and how to follow.
+File on `go-to-k/cdkd` so its agent picks the work up from its own issue queue.
 
-When ANY of categories 1-4 above applies, you MUST file a tracking issue on
-the `go-to-k/cdkd` repo so the cdkd agent can inherit the change by working
-its own issue queue — without having to actively watch cdk-local. cdk-local's
-job is to SURFACE the change; cdkd decides whether/how to follow.
-
-This is no longer optional or a PR-body note. The `cdkd-parity-gate.sh` hook
-hard-blocks `gh pr create` for category 1 (new subcommand) and category 2 (new
-option) until the per-worktree sentinel `.cdkd-parity-issue` carries a
-`github.com/go-to-k/cdkd/issues/` reference. Categories 3 and 4 are filed too
-(the gate relies on the marker for those, but you still file).
-
-**Idempotent — reuse the sentinel; never open a duplicate on a re-run:**
+**Search first**, for the SURFACE this change touches (the subcommand, the
+option, the helper name) — not for this PR's wording:
 
 ```bash
-SENTINEL=".cdkd-parity-issue"   # per-worktree, gitignored (like .markgate-pr-review-sha)
-if [ -f "$SENTINEL" ] && grep -q 'github.com/go-to-k/cdkd/issues/' "$SENTINEL"; then
-  echo "Reusing existing cdkd issue: $(cat "$SENTINEL")"
-  # If the applicable categories changed since it was filed, append an update
-  # with: gh issue comment "$(cat "$SENTINEL")" --repo go-to-k/cdkd --body-file <file>
-else
-  # Build the body in a file (NEVER inline bare #N — the cross-repo auto-link
-  # trap; reference the cdk-local PR/branch as a FULL GitHub URL). Label EACH
-  # applicable category with its host action:
-  #   cat 1 -> "wrap the new subcommand (createLocal<Verb>Command) — REQUIRED"
-  #   cat 2 -> "inherit the new option (add<Cmd>SpecificOptions) — REQUIRED"
-  #   cat 3 -> "new internal primitive available — OPTIONAL: adopt if useful, cdkd decides"
-  #   cat 4 -> "behavior change — adapt — REQUIRED" (name old vs new + migration)
-  # SEARCH FIRST. `issue-dup-check-gate.sh` refuses a `gh issue create` whose
-  # body carries no `Dup-check:` line, and this auto-file is THE cross-repo
-  # mirror filer whose duplicate history is that gate's stated rationale
-  # (`/work-issues` §5) -- so it is the last place to skip the search. Search
-  # cdkd's OPEN issues for the SURFACE this change touches (the subcommand, the
-  # option, the helper name), not for this PR's wording:
-  #
-  #   gh issue list --repo go-to-k/cdkd --state open --limit 200 \
-  #     --search 'Follow cdk-local <surface>' --json number,title
-  #   gh issue list --repo go-to-k/cdkd --state open --limit 200 \
-  #     --json number,title,body \
-  #     --jq '.[] | select((.body // "") | test("<subcommand / option / helper>";"i"))
-  #           | "\(.number)\t\(.title)"'
-  #
-  # On a HIT, do NOT file: add this change as a checklist row on that issue and
-  # write its URL to the sentinel, which satisfies the gate the same way --
-  #
-  #   U=$(mktemp)
-  #   gh issue view <hit> --repo go-to-k/cdkd --json body -q .body > "$U" \
-  #     && [ -s "$U" ] \
-  #     && printf -- '- [ ] <surface>: <one line> (%s)\n' "<cdk-local PR URL>" >> "$U" \
-  #     && gh issue edit <hit> --repo go-to-k/cdkd --body-file "$U"
-  #   printf '%s\n' "<hit URL>" > "$SENTINEL"   # only after the edit SUCCEEDS
-  #
-  # On a MISS, file, and RECORD THE TERMS YOU ACTUALLY SEARCHED on the
-  # `Dup-check:` line below -- replace the placeholder, do not ship it verbatim.
-  # NOT a fixed /tmp path. `issue-dup-check-gate` falls back to scanning the
-  # command when the body file cannot be read, but a fixed path that ALREADY
-  # EXISTS on this machine is readable -- so a marker-free heredoc writing it
-  # passes the gate against a STALE on-disk file. The gate's own message
-  # mandates `mktemp` for the fold recipe; the same applies here.
-  BODY_FILE=$(mktemp)
-  cat > "$BODY_FILE" <<'BODY'
-## Follow cdk-local: <one-line summary>
-
-cdk-local changed its host-facing surface. All changes are additive unless a
-category-4 item below says otherwise. cdk-local PR:
-https://github.com/go-to-k/cdk-local/pull/<N>  (or the branch URL pre-merge)
-
-<one bullet per applicable category, each with the host-action label above>
-
-Dup-check: searched go-to-k/cdkd open issues for <the surface terms you used>
--- none covers this root cause
-BODY
-  url=$(gh issue create --repo go-to-k/cdkd \
-    --title "Follow cdk-local: <one-line summary>" \
-    --body-file "$BODY_FILE") \
-    && [ -n "$url" ] \
-    && printf '%s\n' "$url" > "$SENTINEL" \
-    && echo "Filed cdkd tracking issue: $url"
-  # CHAINED, and the `-n` test is load-bearing: an unchained `> "$SENTINEL"`
-  # runs even when `gh issue create` failed, writing an empty file that
-  # `cdkd-parity-gate` then reads -- satisfying the gate with no issue behind
-  # it. The MISS path below fails closed by contrast; this one must too.
-  rm -f "$BODY_FILE"
-fi
+gh issue list --repo go-to-k/cdkd --state open --limit 200 \
+  --search 'Follow cdk-local <surface>' --json number,title
 ```
 
-If `gh issue create` is denied (permission / offline), say so explicitly and
-STOP — do NOT hand-write the sentinel to satisfy the gate. The whole point is
-that the issue actually exists. (The committed `permissions.allow` in
-`.claude/settings.json` pre-authorizes `gh issue create --repo go-to-k/cdkd`,
-so this should not normally prompt.)
-
-## Final step: set the marker
-
-Only call `mise exec -- markgate set cdkd-parity` when EVERY check
-above passed or was explicitly marked N/A, AND — when any category applied —
-the cdkd tracking issue has been filed and `.cdkd-parity-issue` carries its
-URL. If any item is unresolved, skip the marker, list the unresolved items,
-and stop — the `cdkd-parity-gate.sh` hook will then correctly block
-`gh pr create` until the walk-through is repeated.
-
-```bash
-mise exec -- markgate set cdkd-parity
-```
-
-Run from the same worktree (cwd) where `gh pr create` will eventually
-be invoked. See `.claude/rules/hooks.md` "Markgate-backed gates" for
-the per-worktree marker convention.
+On a HIT, do not file: add the change as a checklist row on that issue, building
+the new body from its current one so nothing is lost. On a MISS, file
+`Follow cdk-local: <one-line summary>` with one bullet per applicable category,
+each carrying its host-action label, and link the cdk-local PR as a FULL GitHub
+URL — a bare `#N` auto-links to an issue in the TARGET repo. If `gh issue create`
+is denied (permission / offline), say so explicitly and stop.
 
 ## Important
 
-- English-only for all committed artifacts (see `.claude/CLAUDE.md`
-  "Workflow rules").
-- Do NOT reference cdkd internal implementation in cdk-local artifacts
-  — the dependency direction is `cdkd -> cdk-local`. The skill talks
-  about "notify cdkd" / "host CLI", not about cdkd's deploy or
-  provider system.
-- Filing the cdkd tracking issue is done BY this skill (auto `gh issue
-  create --repo go-to-k/cdkd`, idempotent via the `.cdkd-parity-issue`
-  sentinel), not left as a manual prompt — that is the change that makes
-  cdkd follow-up actually happen (it never did under the old manual /
-  PR-body-note path). cat 1 / cat 2 are hard-blocked by the gate until the
-  sentinel carries the issue URL; cat 3 / cat 4 are filed on the marker's
-  honor. The committed `permissions.allow` in `.claude/settings.json`
-  pre-authorizes the scoped `gh issue create` / `gh issue comment`.
+- English only for every committed or published artifact.
+- Do NOT reference cdkd internals in cdk-local artifacts — the dependency
+  direction is `cdkd -> cdk-local`. Talk about "notify cdkd" / "the host CLI",
+  never about cdkd's deploy or provider system.

@@ -5,29 +5,19 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Fence for issue #576.
+ * Fence for issue #576: no tracked text file may carry a C0 control byte.
  *
- * `.claude/hooks/control-char-gate.sh` blocks a `git commit` whose staged
- * blobs carry a C0 control byte, because a raw control byte in committed
- * text is invisible in the worst possible way: `file` reports the whole
- * file as `data`, `git diff` reports `Bin 0 -> N bytes` and hides the added
- * lines, and -- the expensive one -- **`grep` returns NOTHING for that
- * file**, silently, for every pattern.
+ * A raw control byte in committed text is invisible in the worst possible
+ * way: `file` reports the whole file as `data`, `git diff` reports
+ * `Bin 0 -> N bytes` and hides the added lines, and -- the expensive one --
+ * **`grep` returns NOTHING for that file**, silently, for every pattern. It
+ * has happened: `src/local/front-door-server.ts` reached `main` carrying two
+ * raw NUL bytes inside a regex character class in `sanitizeRawHeaderValue`.
+ * Functionally correct JavaScript, which is why no test or type-check
+ * noticed, while `grep -c host` on that 49 KB file answered `0` -- so every
+ * grep-based audit over `src/local/**` had been skipping it.
  *
- * The gate is a PreToolUse hook, so it only ever sees the AGENT's tool
- * calls, and issue #576 records a command shape that walks straight past
- * it (`git add -A && git commit ...` in one call presents the gate with
- * the tree as it was BEFORE the `git add`). Registration is not
- * execution, and the proof is that a byte got through: on 2026-08-27,
- * `src/local/front-door-server.ts` was found on `main` carrying two raw
- * NUL bytes -- inside a regex character class and its comment in
- * `sanitizeRawHeaderValue`. Functionally correct JavaScript, which is why
- * no test or type-check noticed, while `grep -c host` on that 49 KB file
- * answered `0`. That file is on the `UP_PATHS` security surface listed in
- * `.claude/hooks/pr-review-gate.sh`, so every grep-based audit over
- * `src/local/**` had been skipping it.
- *
- * This file is the part of that fence that runs in CI on every commit,
+ * This is the CI half, and now the only half: it runs on every commit
  * whatever shape the command took and whoever typed it.
  *
  * ## Population
@@ -51,10 +41,9 @@ import { fileURLToPath } from 'node:url';
  *
  * That first assertion used to read `expect(excludedExts).toEqual(['.gif'])`
  * -- `.gif` being the only excluded extension the tree carried. This file is
- * a repo-wide scanner and therefore sits OUTSIDE the `check` markgate gate's
- * include (the deliberate carve-out documented in `.markgate.yml`), and that
- * carve-out is only proportionate while the condition the scanner fires on is
- * RARE. A raw C0 control byte in committed text is rare. Committing a `.png`
+ * a repo-wide scanner, so an equality pin makes it fire on ORDINARY content
+ * rather than on the rare condition it exists for. A raw C0 control byte in
+ * committed text is rare. Committing a `.png`
  * screenshot, a `.pdf`, or a `.woff2` font is ORDINARY -- and under the
  * equality pin any one of them reddened this suite, in a file the committer
  * has no reason to open. The predicate, not the breadth of the population,
@@ -121,12 +110,10 @@ const FORBIDDEN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
 /**
  * U+FEFF (BOM), as its THREE UTF-8 bytes rather than as the code point.
  *
- * It is not in C0, so `FORBIDDEN` never saw it -- and `main` really did carry
- * one, spelled as a literal character inside a regex in
- * `tests/unit/gates/markgate-include-globs.test.ts` (go-to-k/cdk-local#675). It
- * is invisible on screen, so nothing but a byte scan finds it, and the repo's
- * pre-commit hook `control-char-gate.sh` is C0-only for the same reason this
- * was.
+ * It is not in C0, so a C0-only scan never sees it -- and `main` really did
+ * carry one, spelled as a literal character inside a regex
+ * (go-to-k/cdk-local#675). It is invisible on screen, so nothing but a byte
+ * scan finds it.
  *
  * Written as bytes because `scan` reads latin1 (see its comment): under that
  * decode a BOM arrives as `ï` `»` `¿`, so a `\uFEFF` character class here would
