@@ -154,10 +154,30 @@ jobs:
   # first-time contributor's run needs maintainer approval, and a fork token is
   # read-only. Human review of a workflow diff remains the control.
   #
-  # Every PR check in this repo is reachable from `needs:` below: no workflow
-  # here carries a `paths:` filter, and `pr-inherit-issue-labels.yml` runs on
-  # `pull_request_target`, which is not a PR check. So `ci-ok` plus
-  # `pr-title-check.yml`'s `check` is the whole required set.
+  # `needs:` reaches only jobs in THIS workflow, so `ci-ok` aggregates ci.yml
+  # and nothing else. The repo's other PR checks are required in their own
+  # right, and the required set is:
+  #
+  #   ci-ok                        (this job)
+  #   check                        (pr-title-check.yml)
+  #   pr-content                   (pr-content-checks.yml)
+  #   English-only (pull request)  (issue-conventions.yml)
+  #
+  # Each of those runs on `pull_request` with `synchronize` in its `types:`, so
+  # every head sha of a PR they DO run on gets a run and none can sit at
+  # "Expected" forever -- the property a required check has to have. The scope
+  # is not uniform and that is worth knowing before adding a fifth: `ci-ok` and
+  # `pr-content` carry `branches: [main]`, while `check` and
+  # `English-only (pull request)` have no branch filter, so a PR targeting some
+  # other base would never produce the first two. This repo merges only into
+  # `main`, so the difference is currently inert.
+  # `pr-inherit-issue-labels.yml` runs on `pull_request_target` and is not a PR
+  # check.
+  #
+  # The two English-only jobs are deliberately NOT folded into ci.yml: they need
+  # nothing but git and a type-stripping Node (seconds), while
+  # `check-build-test` installs the lockfile and runs the whole suite (minutes).
+  # Folding them would put a fast, always-relevant signal behind a slow one.
   ci-ok:
     if: always()
     needs: [check-build-test, runtime-compat, release-pr-not-stale]

@@ -1,0 +1,146 @@
+name: PR content checks
+
+# The CI half of the retired `.claude/hooks/non-english-text-gate.sh`.
+#
+#   scripts/check-pr-non-english-text.ts  <- .claude/hooks/non-english-text-gate.sh
+#
+# The hook was ~290 lines almost entirely because a PreToolUse hook is handed
+# raw SHELL COMMAND TEXT and has to find the artifact inside it (`gh -C` / `-R`
+# resolution, the PR-number selector, the `gh auth status` / `gh pr view` /
+# `gh api contents` chain). A CI job is handed the base and head SHAs by the
+# event payload, so all of that parsing is deleted rather than translated. Only
+# the DETECTION logic was ported; the script's header records what it dropped
+# and the one thing that got stronger — a hook steers an agent, while this
+# checks the ARTIFACT, so a PR opened from the web UI or from a fork is covered
+# for the first time.
+#
+# `pull_request`, NOT `pull_request_target`: this job reads the PR's own code,
+# so it must run with the read-only fork token. It needs no secrets and no
+# write scope — it reads git and exits non-zero.
+#
+# Kept out of ci.yml on purpose: ci.yml's `check-build-test` job installs the
+# lockfile and runs the whole build + suite (minutes), while this check needs
+# nothing but `git` and a Node that can strip types (seconds). Merging them
+# would put a fast, always-relevant signal behind a slow one — and this job
+# therefore CANNOT join `ci-ok`'s `needs:`, which only reaches jobs in the same
+# workflow. It is required in its own right, exactly like `pr-title-check.yml`'s
+# `check`; see the note in ci.yml.
+
+on:
+  pull_request:
+    # SPELLED OUT rather than left to GitHub's default, which is
+    # [opened, synchronize, reopened] and omits `edited`. Retargeting the PR's
+    # BASE BRANCH is an `edited` event and it changes the three-dot diff this
+    # check reads, so on the default set the verdict silently describes the old
+    # base.
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: pr-content-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-content:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A job-level block REPLACES the workflow-level one rather than merging, so
+    # `contents: read` is granted here and everything not listed stays `none`.
+    permissions:
+      contents: read
+    steps:
+      # The check reads each changed file's content AT THE PR HEAD — not the
+      # merge ref, which carries base-branch content the PR did not write, and
+      # which would let a violation on main be reported against this PR (and, on
+      # the other side, would hide one a merge silently resolves away). That is
+      # a property of what the SCRIPT reads (`git show $HEAD_SHA:<path>`), and
+      # it is deliberately NOT achieved by checking the head out — see below.
+      #
+      # `fetch-depth: 0` is load-bearing: the script runs
+      # `git merge-base <base> <head>` to get the same three-dot view
+      # `gh pr diff` gave the hook. A shallow clone makes that fail — and the
+      # script treats that as an ERROR, not a pass, so a regression here goes
+      # red rather than silently scanning nothing.
+      #
+      # The checkout supplies the CHECKER; the CONTENT comes from
+      # `git show $HEAD_SHA:<path>` inside the script. Those are different trust
+      # levels, so they come from different places.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # SAME-REPO PR -> the head; FORK PR -> the base.
+          #
+          # Two requirements pull opposite ways and both are real. TRUST: a fork
+          # PR must not supply the checker that judges it — edit the script to
+          # `process.exit(0)`, or add your own file to the allow-list, and the
+          # check reports green while the violation ships. BOOTSTRAP: pinning
+          # base unconditionally means the PR that ADDS a checker runs a base
+          # that does not contain it, so the job dies with ERR_MODULE_NOT_FOUND
+          # and can never go green — which would also red every future PR that
+          # adds or renames one. (This very PR is that case.)
+          #
+          # Fork-ness resolves both: a same-repo branch is pushed by someone who
+          # already has write access, so taking the checker from the head grants
+          # them nothing they do not have; a fork author has no such access, and
+          # for them the base copy is the only trustworthy one. The CONTENT
+          # under test always comes from `$HEAD_SHA` inside the script either
+          # way, so this decides only WHICH CHECKER runs, never WHAT is checked.
+          #
+          # WHAT THIS DOES NOT CLOSE, stated rather than implied: on a
+          # `pull_request` trigger the WORKFLOW DEFINITION itself comes from the
+          # PR's own ref, so a fork can rewrite this `run:` to `exit 0` and the
+          # required check reports green under the same name. That is a property
+          # of every `pull_request`-based required check, not something this ref
+          # choice introduced — `ci.yml` records the same residual for `ci-ok`,
+          # and the controls are the same: the edit is visible in the diff, a
+          # first-time contributor's run needs maintainer approval, and a fork
+          # token is read-only. Human review of a workflow diff remains the
+          # control.
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository
+            && github.event.pull_request.head.sha
+            || github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      # The head commit is not an ancestor of base, and for a FORK PR it is not
+      # on any branch of this repo — it lives at `refs/pull/N/head`. Fetch it as
+      # DATA so `git show $HEAD_SHA:<path>` and `git merge-base` resolve.
+      # `set -euo pipefail` so a fetch failure reds the job: the script treats an
+      # unreadable head as an ERROR, but only if it gets to run at all.
+      - name: fetch the PR head as data
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/${PR_NUMBER}/head"
+
+      # Node 24 strips type annotations, so `node scripts/**/*.ts` runs
+      # directly (.claude/CLAUDE.md -> Node version). The check imports node
+      # builtins only, so `run-install: false` and `cache: false`: there is
+      # nothing to install and no lockfile to key a cache on. A runner whose
+      # node cannot strip types fails LOUDLY here, never silently.
+      #
+      # `!cancelled()` here too, and it is not symmetry for its own sake:
+      # without it a failed head fetch SKIPS the node setup while the check step
+      # still runs under `!cancelled()`, on whatever node the runner ships.
+      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+        if: ${{ !cancelled() }}
+        with:
+          node-version: "24"
+          cache: false
+          run-install: false
+
+      # The check step carries `if: ${{ !cancelled() }}`, so it still reports
+      # when an earlier step failed. Among the RUN steps only `fetch the PR head
+      # as data` is exempt — it is the prerequisite, not a check.
+      - name: non-English writing-system characters in the PR diff
+        if: ${{ !cancelled() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-pr-non-english-text.ts

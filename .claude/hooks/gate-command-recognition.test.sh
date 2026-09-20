@@ -88,7 +88,7 @@ exec /usr/bin/git "$@"
 GIT
 # A `gh` shim that LOGS its argv. Without it the gh-calling gates fail open and
 # every pair below is satisfied vacuously at 0 -- which is exactly how three live
-# bypasses were certified green (see run_sel).
+# bypasses were certified green.
 # The stub DRAINS ITS STDIN, and that is the point rather than hygiene. A gate
 # calls `gh` from inside a `while IFS= read -r` loop whose stdin IS the
 # `gate_segments` process substitution, so a `gh` that reads stdin eats the
@@ -396,12 +396,6 @@ run_pair "integ-gate: --repo=<repo>"      integ-gate.sh "gh pr merge 1 --squash"
 run_pair "integ-gate: -R=<repo>"          integ-gate.sh "gh pr merge 1 --squash" "gh -R=$R pr merge 1 --squash" 2
 run_pair "integ-gate: -R<repo> glued"     integ-gate.sh "gh pr merge 1 --squash" "gh -R$R pr merge 1 --squash" 2
 run_pair "integ-gate: -C=<path>"          integ-gate.sh "gh pr merge 1 --squash" "gh -C=$repo pr merge 1 --squash" 2
-# non-english-text-gate fails open under the stubbed `gh`, so this pair is a
-# CONTROL rather than a fence -- say so rather than let the count imply
-# coverage. What fences ITS resolution is run_sel / run_repo below.
-run_pair "non-english-gate: -R pr merge (control)" non-english-text-gate.sh \
-  "gh pr merge 1 --squash" "gh -R $R pr merge 1 --squash"
-
 # --- the DIRECTORY a gate consults, for the gates whose rc cannot show it ----
 # `markgate` is asked from inside the resolved target dir, so logging its $PWD
 # is a direct read of gate_target_dir's answer through the real hook, and it is
@@ -433,7 +427,7 @@ run_dir "integ-gate: -R then -C="                  integ-gate.sh "gh -R $R -C=$o
 run_dir "integ-gate: -C after the verb is ignored" integ-gate.sh "gh $verb -C $other"           "$repo"
 
 # --- WHICH MARKER a gate verifies -------------------------------------------
-# The same lens as run_sel, turned on markgate instead of gh. Swapping a gate's
+# The same lens as `run_dir`, turned on markgate instead of $PWD. Swapping a gate's
 # marker name for another gate's is a LIVE BYPASS -- the merge then passes
 # whenever the OTHER marker is fresh -- and the exit codes cannot see it.
 #
@@ -455,117 +449,7 @@ run_marker() {
 
 run_marker "integ-gate verifies integ"         integ-gate.sh     "gh pr merge 1 --squash"   integ
 
-# --- the RESOLVED SELECTOR, not just the exit code --------------------------
-# Equal exit codes cannot tell "resolved the same PR" from "both failed
-# differently", and that gap is where live bypasses live: widening GATE_GH_C
-# makes a flagged command REACH the gate, but the gate then extracts its PR
-# number with the same `-C`-only shape the absorber had outgrown and asks about
-# `pr diff 999` -- the CURRENT BRANCH's PR -- instead of the named one.
-#
-# So assert what the gate ASKED GITHUB ABOUT. The shim answers 999 to
-# `pr view --json number`, so a fall-through to current-branch resolution shows
-# up as a wrong number rather than as silence.
-#
-# run_sel <name> <hook> <cmd> <expected-pr-number>
-run_sel() {
-  local name="$1" hook="$2" cmd="$3" want="$4" log got
-  log="$TMPDIR/gh.log"; : > "$log"
-  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
-    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 GH_LOG="$log" "$HOOKS/$hook" >/dev/null 2>&1
-  got=$(grep -oE 'pr (view|diff) [0-9]+' "$log" | head -1 | grep -oE '[0-9]+$')
-  [ -z "$got" ] && got="none"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(resolved PR $got)"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (resolved PR %s, expected %s)\n' "$name" "$got" "$want"
-  fi
-}
-
-# Every spelling must resolve the SAME PR the plain form does. The plain arm of
-# each group is the control: if it stops resolving 552 the group is broken
-# rather than passing vacuously.
-for gate in non-english-text-gate.sh; do
-  run_sel "$gate: plain"        "$gate" "gh pr merge 552 --squash"          552
-  run_sel "$gate: -R <repo>"    "$gate" "gh -R $R pr merge 552 --squash"    552
-  run_sel "$gate: --repo=<repo>" "$gate" "gh --repo=$R pr merge 552 --squash" 552
-  run_sel "$gate: -R<repo> glued" "$gate" "gh -R$R pr merge 552 --squash"   552
-  # A leading numeric token must not be read as the selector.
-  run_sel "$gate: numeric token before the verb" "$gate" \
-    "sleep 30 && gh -R $R pr merge 552 --squash" 552
-  # Flag VALUES must not be read as the selector either.
-  run_sel "$gate: -d before the number" "$gate" "gh -R $R pr merge -d 552" 552
-done
-
-# --- WHICH REPO the gate asks about -----------------------------------------
-# The fourth blind spot, and the one no existing helper could see: `run_sel`
-# greps the NUMBER out of the gh log and ignores `-R`, so
-# `gh -R go-to-k/OTHER pr merge 552` looked identical to the correct case in
-# both exit code and selector while every gate asked the LOCAL repo about ITS
-# PR 552. Right number, wrong repo. Assert the repo the gate names.
-#
-# run_repo <name> <hook> <cmd> <expected --repo value, or "(local)">
-run_repo() {
-  local name="$1" hook="$2" cmd="$3" want="$4" log got
-  log="$TMPDIR/gh.log"; : > "$log"
-  printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$repo" "$cmd" \
-    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 GH_LOG="$log" "$HOOKS/$hook" >/dev/null 2>&1
-  got=$(grep -oE '\-\-repo [^ ]+' "$log" | head -1 | awk '{print $2}')
-  [ -z "$got" ] && got="(local)"
-  if [ "$got" = "$want" ]; then
-    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$name" "(asked $got)"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s (asked %s, expected %s)\n' "$name" "$got" "$want"
-  fi
-}
-
-for gate in non-english-text-gate.sh; do
-  run_repo "$gate: no -R asks the local repo" "$gate" "gh pr merge 552 --squash"            "(local)"
-  run_repo "$gate: -R is passed through"      "$gate" "gh -R go-to-k/OTHER pr merge 552"    "go-to-k/OTHER"
-  run_repo "$gate: --repo= is passed through" "$gate" "gh --repo=go-to-k/OTHER pr merge 552" "go-to-k/OTHER"
-  run_repo "$gate: -R after the verb"         "$gate" "gh pr merge -R go-to-k/OTHER 552"    "go-to-k/OTHER"
-done
-
-# --- the `gate_pr_selector` fail-closed arms --------------------------------
-# Four gates refuse when the shared library predates the shared PR-selector
-# extractor, because an undefined function returns an EMPTY selector and the
-# gate would silently judge the wrong PR (or none) instead of declining. That
-# guard had zero cases: flipping all four to `exit 0` was green, so the commit
-# asserted it rather than measuring it.
-#
-# The library here defines `gate_matches` and the GATE_RE_* constants but NOT
-# `gate_pr_selector`, which is exactly the "older library" shape.
-selector_guard() {
-  local hook="$1" tmp out rc
-  tmp=$(mktemp -d)
-  cp "$HOOKS"/*.sh "$tmp/" 2>/dev/null
-  # strip the helper, keeping everything else loadable
-  python3 - "$tmp/_command-match.sh" <<'STRIP'
-import io,sys,re
-p=sys.argv[1]; s=io.open(p,encoding='utf-8').read()
-a=s.index('gate_pr_selector() {')
-b=s.index('\n}\n', a)+3
-io.open(p,'w',encoding='utf-8').write(s[:a]+s[b:])
-STRIP
-  out=$(printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":"gh pr merge 1 --squash"}}' "$repo" \
-    | env PATH="$SHIM:/usr/bin:/bin" MARKGATE_RC=1 "$tmp/$hook" 2>&1); rc=$?
-  rm -rf "$tmp"
-  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF "gate_pr_selector"; then
-    pass=$((pass + 1)); printf 'OK   %-46s %s\n' "$hook: fails closed without gate_pr_selector" "(exit $rc)"
-  else
-    fail=$((fail + 1)); printf 'FAIL %s must exit 2 naming gate_pr_selector (got %s)\n' "$hook" "$rc"
-  fi
-}
-for g in non-english-text-gate.sh; do
-  selector_guard "$g"
-done
-
-
-# A FLOOR on the case total. Every `for` loop above expands a LIST, and emptying
-# one -- or deleting a case -- removes assertions SILENTLY while the tally still
-# reads `fail: 0`. No suite in this repo had one, so the only thing standing
-# between a gutted loop and a green run was somebody noticing the number move.
-# Raise it when cases are added; never lower it to make a red run green.
-CASE_FLOOR=57
+CASE_FLOOR=45
 if [ "$((pass + fail))" -lt "$CASE_FLOOR" ]; then
   fail=$((fail + 1))
   printf 'FAIL case floor: only %s cases ran, expected at least %s\n' "$((pass + fail))" "$CASE_FLOOR"

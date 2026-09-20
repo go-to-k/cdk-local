@@ -36,11 +36,6 @@ const SETTINGS = join(here, '..', '..', '..', '.claude', 'settings.json');
 const REQUIRED: Record<string, string[]> = {
   'branch-gate.sh': ['Bash(*git*commit*)', 'Bash(*git*push*)'],
   'post-merge-orphan-push-gate.sh': ['Bash(*git*push*)'],
-  'non-english-text-gate.sh': [
-    'Bash(*gh*pr*create*)',
-    'Bash(*gh*pr*edit*)',
-    'Bash(*gh*pr*merge*)',
-  ],
   'integ-gate.sh': ['Bash(*gh*pr*merge*)', 'Bash(*git*merge*)'],
 };
 
@@ -145,12 +140,6 @@ describe('PreToolUse gate matchers (go-to-k/cdk-real-drift#1801)', () => {
     }
     for (const spelling of ['gh pr merge 1 --squash', 'gh -R go-to-k/x pr merge 1 --squash']) {
       expect(selects('integ-gate.sh', spelling), `integ-gate misses: ${spelling}`).toBe(true);
-    }
-    for (const spelling of ['gh pr create --fill', 'gh -R go-to-k/x pr create --fill']) {
-      expect(
-        selects('non-english-text-gate.sh', spelling),
-        `non-english-text-gate misses: ${spelling}`
-      ).toBe(true);
     }
   });
 

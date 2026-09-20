@@ -36,8 +36,9 @@ English only — every committed/public artifact, including every issue this run
 FILES. The classification lines (`Session-fit` / `Severity` / `Effort` /
 `Estimate`, one field per line — `CLAUDE.md` → "The four TODO fields") and
 their parenthetical glosses are part of the issue body, so write them in
-English: `Session-fit: next (not this session)`. `non-english-text-gate` guards
-the PR diff, not `gh issue create`, so nothing catches this for you
+English: `Session-fit: next (not this session)`. `issue-conventions.yml` now
+checks an issue body AFTER it is created — it reports and asks for an edit, it
+cannot refuse — so the text is public before you hear about it
 (go-to-k/cdk-local#509 shipped with a Japanese gloss and needed patching after
 creation).
 

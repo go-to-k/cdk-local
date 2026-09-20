@@ -100,6 +100,7 @@
     "@types/node": "^20.19.0",
     "@types/ws": "^8.18.1",
     "jsdom": "^29.1.1",
+    "marked": "18.0.11",
     "tsdown": "^0.22.9",
     "typescript": "^7.0.2",
     "vite-plus": "^0.2.5",

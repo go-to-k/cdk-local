@@ -231,15 +231,19 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
 
 ## Workflow rules
 
-- **English only for committed files**: source, scripts, hook messages,
-  configs (`.claude/settings.json`, `vite.config.ts`), docs, comments,
-  commit messages, PR titles/bodies/comments, GitHub issue text. No
-  Japanese characters (hiragana / katakana / kanji) in any committed
-  artifact. Chat in the orchestrating session may be Japanese — this rule
-  applies only to files / GitHub artifacts that land in the repo.
-  `non-english-text-gate.sh` blocks `gh pr create` / `edit` / `merge` on a PR
-  diff carrying CJK or Hangul text — this repo's only enforcement of the
-  rule.
+- **English only for committed files**: source, scripts, configs, docs,
+  comments, commit messages, PR titles/bodies/comments, GitHub issue text. No
+  hiragana / katakana / kanji / hangul / CJK punctuation. Chat may be Japanese;
+  this rule covers what lands in the repo or on GitHub.
+
+  Enforced in CI, not by a hook: `scripts/check-pr-non-english-text.ts`
+  (`pr-content-checks.yml`) scans every changed file at the PR head, and
+  `scripts/check-gh-body-english.ts` (`issue-conventions.yml`) scans a PR's
+  title and body, an issue body and an issue comment. Both check the ARTIFACT,
+  so the web UI and every non-`gh` client are covered. A file that legitimately
+  carries the characters goes in `scripts/non-english-allowlist.txt`, matched
+  exactly — the list is empty, and an entry is a permanent hole. On an issue or
+  comment the check can only REPORT: the text is already public.
 
 - **Never commit / push directly to `main`**: all changes via a feature
   branch + PR, and `branch-gate.sh` refuses a commit or push on `main` in any
@@ -276,41 +280,37 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   `cdkl` bin), so source changes without a build have no runtime
   effect.
 
-- **Before opening a PR**: run `vp run verify` (= check + test +
-  test:hooks + build). `test:hooks` is a SEPARATE task from `vp run test`,
-  so an alias stopping short of it reports a green that does not cover the
-  shell hook suites. This is what CI's `check-build-test` job runs; failing
-  locally is faster feedback than failing in GitHub Actions.
+- **Before opening a PR**: run `vp run verify` (= check + test + test:hooks +
+  build). `test:hooks` is a SEPARATE task from `vp run test`, so an alias
+  stopping short of it reports a green that never ran the shell hook suites.
 
 - **Registration is not execution — prove the hooks are ALIVE before the first
-  commit of a session**: run `git commit --dry-run -m "gate liveness probe"` from
-  a tree on `main`, **as a Bash TOOL CALL**. PreToolUse hooks gate the AGENT's
-  tool calls only: the same line typed by a human into a terminal never passes
-  through them, so it proves nothing and will always look "unblocked".
-  `--dry-run` commits nothing regardless of the tree; a `Blocked by branch-gate`
-  line means the hooks fire, and git's ordinary output means they do not. An
-  `if:` condition holding `A or B` matches nothing and leaves every entry
-  registered and inert (go-to-k/cdk-real-drift#1801), which `/hooks` cannot show
-  because it lists registration, not firing.
+  commit of a session**: run `git commit --dry-run -m "gate liveness probe"`
+  from a tree on `main`, **as a Bash TOOL CALL**. PreToolUse hooks gate the
+  AGENT's tool calls only, so the same line typed into a terminal proves
+  nothing. `--dry-run` commits nothing; a `Blocked by branch-gate` line means
+  the hooks fire, git's ordinary output means they do not. An `if:` holding
+  `A or B` matches nothing and leaves every entry registered and inert
+  (go-to-k/cdk-real-drift#1801), which `/hooks` cannot show because it lists
+  registration, not firing.
 
 - **Before every commit, and before opening or merging any PR — recommended,
   not enforced**: run `/check` (typecheck / lint / build / `vp run test` /
   `vp run test:hooks`) and `/check-docs` (README / `.claude/CLAUDE.md` /
   `docs/` / `.claude/rules/` consistency with `src/`); before a PR, run
   `/verify-pr`, whose checklist still applies in full — a PR whose live
-  behavior was never exercised is not ready, whatever the unit suite says.
-  Run `/check-docs` ONCE per PR, at the FINAL sha. **No hook and no marker
-  enforce any of them.** The two remaining MECHANICAL merge conditions are CI
-  green (the `ci-ok` required status check on the `main` ruleset) and a fresh
-  `integ` marker (`integ-gate.sh`); everything else is your own discipline, and
-  skipping it is how `main` goes red. Install `vp` + `markgate` via
-  `mise install` at the repo root, and re-run it after any pull that changes
-  `.mise.toml` — an older markgate binary rejects a newer `.markgate.yml`
-  outright.
+  behavior was never exercised is not ready. Run `/check-docs` ONCE per PR, at
+  the FINAL sha. **Nothing enforces them.** The MECHANICAL merge conditions are
+  whatever the `main` ruleset lists as a required status check, plus a fresh
+  `integ` marker (`integ-gate.sh`). `.github/workflows/ci.yml` names the set
+  the workflows supply; the ruleset is repository settings nothing in this tree
+  can read. Skipping the rest is how `main` goes red. Install `vp` + `markgate`
+  via `mise install`, and re-run it after any pull that changes `.mise.toml` —
+  an older markgate binary rejects a newer `.markgate.yml` outright.
 
-- **Hooks, rules, skills, fences: read the Tooling Policy section below before
-  adding, widening or filing an issue about any of them.** The default answer
-  to "should this become a hook / rule / fence?" is no.
+- **Hooks, rules, skills, fences: read the Tooling Policy below before adding
+  or widening any of them.** The default answer to "should this become a hook /
+  rule / fence?" is no.
 
 - **Never pipe `markgate verify` / `set` / `run`** — read the verdict with a
   command substitution, where `$?` is markgate's own status:
@@ -322,8 +322,7 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   `$?` after a pipeline is the LAST STAGE's, and markgate prints NOTHING when
   a marker is fresh, so `markgate verify integ | tail -5` reports "no output,
   rc=0" for a STALE marker — exactly what a fresh one looks like
-  (go-to-k/cdk-local#571). `markgate status | awk …` and `… || echo …` are
-  fine: `||` READS the exit status. Nothing enforces this.
+  (go-to-k/cdk-local#571). `… || echo …` is fine: `||` READS the exit status.
 
 - **Reviewer count**: **1 reviewer by default** (`pr-code-reviewer`); add
   **spec + test** when the `src/**` diff exceeds **400 lines or 8 files**; add
@@ -377,12 +376,12 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
   block.
   Skipping any step risks setting the `integ` marker on incomplete
   verification. `integ-gate.sh` blocks `gh pr merge` / `git merge` when
-  `src/**` or `tests/integration/**` is touched and the marker is stale —
-  one of the two mechanical merge conditions that remain, and it survives
-  the hook criterion because those AWS-deploying fixtures leak into the
+  `src/**` or `tests/integration/**` is touched and the marker is stale — the
+  one mechanical merge condition that is not a CI check, and it survives the
+  hook criterion because those AWS-deploying fixtures leak into the
   maintainer's account. `integ` runs on markgate's `hash: diff` mode: its
   digest is THIS branch's delta against
-  `merge-base(origin/main, HEAD)` within that scope, so merging an
+  `merge-base(origin/main, HEAD)` in that scope, so merging an
   updated `main` that moved an in-scope file this branch did not touch
   no longer forces a Docker re-run, while your own in-scope changes
   (and the 14d TTL) still stale it. Set the marker from the PR's own
@@ -596,9 +595,9 @@ the PR body for the maintainer to decide.
 6. **Enforcement is procedure, not machinery.** `/check`, `/check-docs` (once
    per PR, at the final sha), `/verify-pr`, `/review-pr` and
    `/check-cdkd-parity` are the recommended path and are enforced by no hook
-   and no marker. The mechanical merge conditions are CI green (the `ci-ok`
-   required status check) and a fresh `integ` marker (`integ-gate.sh`). Do not
-   add another without the maintainer's decision.
+   and no marker. The mechanical merge conditions are the required status
+   checks on the `main` ruleset and a fresh `integ` marker (`integ-gate.sh`).
+   Do not add another without the maintainer's decision.
 
 7. **Each sibling repo keeps its own flow text.** A lesson learned here is
    written here; it is NOT mirrored into cdkd or cdk-real-drift, and a lesson
