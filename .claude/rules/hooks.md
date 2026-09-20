@@ -1,7 +1,7 @@
 # Hooks and Gates
 
 Reference for `.claude/hooks/*.sh` and `.markgate.yml`. The policy that
-decides whether a hook may exist at all is in `.claude/CLAUDE.md`, section
+decides whether a hook may exist at all is in `.claude/AGENTS.md`, section
 "Tooling Policy"; this file is the roster and the authoring contract.
 
 ## When a hook may BLOCK, and when it may exist at all
@@ -9,7 +9,7 @@ decides whether a hook may exist at all is in `.claude/CLAUDE.md`, section
 **A gate may block only when the harm completes at the moment of the action
 AND lands irreversibly on a THIRD PARTY's artifact, on ANOTHER SESSION's work,
 or on the MAINTAINER's AWS account.** Everything else becomes a sentence in
-`.claude/CLAUDE.md`, a CI unit test on `src/**`, or nothing. Ask the two
+`.claude/AGENTS.md`, a CI unit test on `src/**`, or nothing. Ask the two
 clauses separately — is the harm reversible, and whose artifact does it land
 on — never one about severity: irreversibility alone would block a duplicate
 issue, which is the filer's own artifact and closes cleanly.

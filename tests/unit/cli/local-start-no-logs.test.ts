@@ -31,7 +31,7 @@ import { withoutAction } from '../../helpers/without-action.js';
  *      opposite) would silently invert the default. Drive the parse
  *      end-to-end so the boolean value flowing through is locked.
  *
- * Mirrors the binding pattern documented in `CLAUDE.md` (site-level
+ * Mirrors the binding pattern documented in `AGENTS.md` (site-level
  * binding test for shared helpers) — extracted helper without a
  * site-level test silently keeps the old form in a less-trafficked
  * branch.

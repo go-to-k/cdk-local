@@ -113,7 +113,7 @@ const DOCS_STATING_THE_FLOOR: ReadonlyArray<readonly [file: string, statement: R
   // The same line states the floor a second time, as the version `node
   // --version` must report; pinned separately so the self-probe sees it.
   ['docs/getting-started.md', new RegExp(String.raw`\x60v${FLOOR_RE}\x60\s+or\s+higher`)],
-  ['.claude/CLAUDE.md', new RegExp(String.raw`engines\s+declares\s+\x60>=${FLOOR_RE}\x60`)],
+  ['.claude/AGENTS.md', new RegExp(String.raw`engines\s+declares\s+\x60>=${FLOOR_RE}\x60`)],
 ];
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -140,7 +140,7 @@ describe('the published Node.js floor is one number across every surface', () =>
       'CONTRIBUTING.md',
       'docs/getting-started.md',
       'docs/getting-started.md',
-      '.claude/CLAUDE.md',
+      '.claude/AGENTS.md',
     ]);
   });
 

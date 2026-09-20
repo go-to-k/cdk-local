@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Guidance for Claude Code when working in this repository.
 
@@ -296,7 +296,7 @@ gh pr list --state open --search "chore(release) in:title"   # is one standing?
 
 - **Before every commit, and before opening or merging any PR — recommended,
   not enforced**: run `/check` (typecheck / lint / build / `vp run test` /
-  `vp run test:hooks`) and `/check-docs` (README / `.claude/CLAUDE.md` /
+  `vp run test:hooks`) and `/check-docs` (README / `.claude/AGENTS.md` /
   `docs/` / `.claude/rules/` consistency with `src/`); before a PR, run
   `/verify-pr`, whose checklist still applies in full — a PR whose live
   behavior was never exercised is not ready. Run `/check-docs` ONCE per PR, at
@@ -584,7 +584,7 @@ the PR body for the maintainer to decide.
    issue or PR number per decision. Budgets: `.claude/rules/**` <= 100 KB total
    and <= 12 KB per file, with a 20 KB allowance for at most THREE named index
    files (today: `code-layout-local.md` alone); `.claude/skills/**` <= 150 KB
-   total; `.claude/CLAUDE.md` no larger than it is now. A change that pushes a
+   total; `.claude/AGENTS.md` no larger than it is now. A change that pushes a
    file over its budget trims that file in the same PR — or splits it, as
    `code-layout.md` was split.
 5. **Tooling findings are not issues.** Hooks, rules, skills, CI fences and the

@@ -3,7 +3,7 @@
 # Lane-unique naming for integration fixtures that create real AWS
 # resources (issue #582).
 #
-# `.claude/CLAUDE.md` mandates parallel work in git worktrees under
+# `.claude/AGENTS.md` mandates parallel work in git worktrees under
 # `.claude/worktrees/<branch>/`, and markgate markers are per-worktree so
 # lanes verify concurrently. Every AWS-deploying fixture used to hard-code
 # ONE CloudFormation stack name, so two lanes deployed, read and destroyed

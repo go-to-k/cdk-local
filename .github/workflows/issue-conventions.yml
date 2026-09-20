@@ -7,7 +7,7 @@ name: Issue conventions
 #
 # The retired `.claude/hooks/non-english-text-gate.sh` scanned the PR DIFF only,
 # so none of these was checked by anything. They are published OSS artifacts
-# exactly like a committed file (`.claude/CLAUDE.md` -> Workflow rules ->
+# exactly like a committed file (`.claude/AGENTS.md` -> Workflow rules ->
 # English only says so in as many words), so this is NEW coverage rather than a
 # port of something this repo had.
 #

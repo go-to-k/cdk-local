@@ -138,4 +138,4 @@ file refuses it tree-wide.
 ## Important
 
 - **Always RUN the fixture (step 5).** A scaffold that never ran proves nothing.
-- **English only** for all committed artifacts (see `.claude/CLAUDE.md`).
+- **English only** for all committed artifacts (see `.claude/AGENTS.md`).
