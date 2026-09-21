@@ -95,9 +95,9 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
-      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+      - uses: voidzero-dev/setup-vp@24d870228786dc83ae73482406bdd1e7befaec14 # v1
         with:
           # Node 24 strips type annotations, so `node scripts/*.ts` runs the
           # TypeScript directly. `run-install: false` because the checker
@@ -187,7 +187,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           # SAME-REPO PR -> the head; FORK PR -> the base. The same trust vs
           # bootstrap argument as `pr-content-checks.yml`, and the same residual
@@ -199,7 +199,7 @@ jobs:
             && github.event.pull_request.head.sha
             || github.event.pull_request.base.sha }}
 
-      - uses: voidzero-dev/setup-vp@ca1c46663915d6c1042ae23bd39ab85718bfb0fa # v1
+      - uses: voidzero-dev/setup-vp@24d870228786dc83ae73482406bdd1e7befaec14 # v1
         with:
           node-version: "24"
           cache: false
