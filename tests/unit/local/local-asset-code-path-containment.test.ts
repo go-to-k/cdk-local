@@ -838,6 +838,39 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     expect(lines[1]).toContain(stage);
   });
 
+  it('WARNS for `..`, which mounts the WHOLE derived root', () => {
+    // The maximal shape, and the one an attacker picks: one shot, no
+    // knowledge of sibling names. `..` from the Stage manifest folds exactly
+    // onto the derived root and takes the "names the bound itself" exit,
+    // which returned before the per-path warning — so the same mount gave two
+    // different signals depending on whether it was written relative or
+    // absolute.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-dotdot-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
+    resetDerivedRootWarnings();
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      lines.push(m);
+    });
+
+    const dirs = assetPathDirs({
+      assetManifestPath: join(stage, 'Stk.assets.json'),
+      assetOutdir: stage,
+    } as unknown as StackInfo);
+
+    expect(
+      resolveAssetCodeDirectory(dirs.manifestDir, '..', (m) => new Error(m), dirs.assetOutdir, 'Fn')
+    ).toBe(outdir);
+
+    // The climb line, then the per-path line for the root itself.
+    expect(lines, lines.join(' | ')).toHaveLength(2);
+    expect(lines[1]).toContain(outdir);
+    expect(lines[1]).toContain(stage);
+  });
+
   it('stays SILENT for an accepted path INSIDE the directory --app named', () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-inside-')));
     const outdir = join(root, 'cdk.out');

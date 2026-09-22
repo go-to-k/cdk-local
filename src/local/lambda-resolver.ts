@@ -849,6 +849,15 @@ export function resolveAssetCodeDirectory(
     resolved.escape === 'lexical' &&
     resolved.path === resolve(assetOutdir)
   ) {
+    // The per-path warning belongs HERE too, and this exit is the one that
+    // needs it most: after a climb `assetOutdir` IS the derived root, so
+    // `aws:asset:path: '..'` from a Stage manifest folds exactly onto it and
+    // mounts the WHOLE root — in the tarbomb shape, the user's home. It is
+    // also what an attacker picks: one shot, no knowledge of sibling names.
+    // The ABSOLUTE spelling of the same mount already warned, so leaving this
+    // exit silent made one mount give two different signals depending on how
+    // it was written.
+    warnOutsideNamedDirectory(assetOutdir, resolved.path);
     return resolved.path;
   }
   if (!resolved.contained) {
@@ -1067,9 +1076,28 @@ function parentDeclaresNestedAssembly(parent: string, child: string): boolean {
  * routinely multi-MB — is re-read and re-parsed for every one of them, and
  * `--watch` repeats that per firing. It is also the amplification bound on an
  * attacker-sized manifest.
+ *
+ * **A cached root can outlive its own evidence, and only in the already-warned
+ * direction.** If a `--watch` re-synth rewrites the parent so it no longer
+ * declares the child, the cache keeps answering the WIDE root while a fresh
+ * derivation would decline and narrow. That grants nothing new: the root
+ * warning fired for that root when it was first derived, and re-deriving can
+ * only narrow. The reverse — cached narrow, a declaring manifest appears
+ * later — stays narrow, which is fail-closed. So the cache cannot introduce an
+ * UNWARNED widening in either direction.
+ *
+ * Keyed by the raw outdir STRING and never evicted, which is sound because one
+ * process serves one app: a long-lived library host reusing a process across
+ * two assemblies whose outdir strings collide would get the first tree's root,
+ * and must call {@link resetDerivedRootWarnings} between them.
  */
 const derivedRootCache = new Map<string, string>();
-/** Derived root -> the directory the user actually named. */
+/**
+ * Derived root -> the directory the user actually named. LAST WRITER WINS,
+ * which is cosmetic: two sibling Stages climbing to one root make the per-path
+ * warning name the other sibling as "the directory --app named". The root and
+ * the offending path are both still correct.
+ */
 const derivedRootOrigins = new Map<string, string>();
 const warnedDerivedRoots = new Set<string>();
 const warnedOutsideNamed = new Set<string>();
