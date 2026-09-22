@@ -832,6 +832,7 @@ export function resolveAssetCodeDirectory(
           `you did not synthesize with that flag, treat this assembly as untrusted.`
       );
     }
+    warnOutsideNamedDirectory(assetOutdir, absolute);
     return absolute;
   }
   // RESOLVE against the manifest's directory, CONTAIN within the app's outdir.
@@ -887,6 +888,9 @@ export function resolveAssetCodeDirectory(
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}${stageHint}`
     );
   }
+  // ACCEPTED — but if the bound was WIDENED by a climb, say so per path that
+  // leaves what the user actually named. No-op when no climb happened.
+  warnOutsideNamedDirectory(assetOutdir, resolved.path);
   return resolved.path;
 }
 
@@ -1012,6 +1016,14 @@ export function assetPathDirs(stack: StackInfo): {
  * relative `--output cdk.out` come back absolute for every ordinary app.
  */
 function assemblyRootOf(outdir: string): string {
+  const cached = derivedRootCache.get(outdir);
+  if (cached !== undefined) return cached;
+  const root = climbToAssemblyRoot(outdir);
+  derivedRootCache.set(outdir, root);
+  return root;
+}
+
+function climbToAssemblyRoot(outdir: string): string {
   let dir = resolve(outdir);
   let climbed = false;
   for (;;) {
@@ -1022,6 +1034,7 @@ function assemblyRootOf(outdir: string): string {
     climbed = true;
   }
   if (!climbed) return outdir;
+  derivedRootOrigins.set(dir, outdir);
   warnDerivedAssemblyRoot(outdir, dir);
   return dir;
 }
@@ -1048,12 +1061,54 @@ function parentDeclaresNestedAssembly(parent: string, child: string): boolean {
   }
 }
 
-/** Warned ONCE per derived root per process; the climb runs per resolve. */
+/**
+ * Per-process state for the climb. `assetPathDirs` runs once per Lambda AND
+ * once per layer, so without the cache a real `cdk.out/manifest.json` —
+ * routinely multi-MB — is re-read and re-parsed for every one of them, and
+ * `--watch` repeats that per firing. It is also the amplification bound on an
+ * attacker-sized manifest.
+ */
+const derivedRootCache = new Map<string, string>();
+/** Derived root -> the directory the user actually named. */
+const derivedRootOrigins = new Map<string, string>();
 const warnedDerivedRoots = new Set<string>();
+const warnedOutsideNamed = new Set<string>();
 
 /** Test seam; one process serves one app. */
 export function resetDerivedRootWarnings(): void {
+  derivedRootCache.clear();
+  derivedRootOrigins.clear();
   warnedDerivedRoots.clear();
+  warnedOutsideNamed.clear();
+}
+
+/**
+ * Warn that an accepted path leaves the directory the user NAMED, when the
+ * bound was widened by a climb.
+ *
+ * **This is what makes the climb's signal as loud as the absolute arm's.**
+ * Without it the two diverge in the attacker's favour: an absolute path warns
+ * PER LAMBDA naming the exact directory, while a climb warned once at startup
+ * about the root and then mounted each individual path in silence — so
+ * whoever gets the climb converts a per-mount warning into a one-line notice.
+ * Now both arms say something per path that leaves what the user asked for.
+ */
+function warnOutsideNamedDirectory(assetOutdir: string, resolved: string): void {
+  const named = derivedRootOrigins.get(assetOutdir);
+  if (named === undefined) return;
+  // `absoluteAssemblyPathEscape`, not a hand-rolled `isInside`: it is
+  // real-path aware and treats the directory itself as inside, which is the
+  // question being asked, and it keeps this module from widening
+  // `assembly-path.ts`'s exported surface for one comparison.
+  if (absoluteAssemblyPathEscape(named, resolved) === undefined) return;
+  if (warnedOutsideNamed.has(resolved)) return;
+  warnedOutsideNamed.add(resolved);
+  getLogger().warn(
+    `'${sanitizeServiceExceptionMessage(resolved)}' is outside ` +
+      `'${sanitizeServiceExceptionMessage(named)}', the directory --app named. It is ` +
+      `inside the assembly root derived from it, so ${getEmbedConfig().productName} is ` +
+      `using it.`
+  );
 }
 
 /**

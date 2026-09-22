@@ -42,6 +42,7 @@ import { join } from 'node:path';
 import {
   assetPathDirs,
   resetDerivedRootWarnings,
+  resolveAssetCodeDirectory,
   resolveLambdaTarget,
 } from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
@@ -795,6 +796,99 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     expect(lines[0]).toContain(stage);
     expect(lines[0]).toContain(outdir);
     expect(lines[0]).toContain('siblings of the directory you named');
+  });
+
+  it('WARNS per path that leaves the directory --app named, after a climb', () => {
+    // The last asymmetry between the two arms. An absolute path warns PER
+    // LAMBDA naming the exact directory; a climb warned once at startup about
+    // the root and then mounted each path in silence, so whoever got the climb
+    // converted a per-mount warning into a one-line notice. Both arms now say
+    // something per path that leaves what the user asked for.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-perpath-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    mkdirSync(join(outdir, 'asset.abc123'));
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
+    resetDerivedRootWarnings();
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      lines.push(m);
+    });
+
+    const dirs = assetPathDirs({
+      assetManifestPath: join(stage, 'Stk.assets.json'),
+      assetOutdir: stage,
+    } as unknown as StackInfo);
+    // One line for the climb itself...
+    expect(lines).toHaveLength(1);
+
+    // ...and one per accepted path outside the named directory. The Stage's
+    // own asset is staged in the app outdir, which is outside `assembly-MyStage`.
+    resolveAssetCodeDirectory(
+      dirs.manifestDir,
+      '../asset.abc123',
+      (m) => new Error(m),
+      dirs.assetOutdir,
+      'Fn'
+    );
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(join(outdir, 'asset.abc123'));
+    expect(lines[1]).toContain(stage);
+  });
+
+  it('stays SILENT for an accepted path INSIDE the directory --app named', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-inside-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(join(stage, 'asset.local'), { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
+    resetDerivedRootWarnings();
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      lines.push(m);
+    });
+
+    const dirs = assetPathDirs({
+      assetManifestPath: join(stage, 'Stk.assets.json'),
+      assetOutdir: stage,
+    } as unknown as StackInfo);
+    resolveAssetCodeDirectory(
+      dirs.manifestDir,
+      'asset.local',
+      (m) => new Error(m),
+      dirs.assetOutdir,
+      'Fn'
+    );
+
+    // The climb line only; the asset never left what the user named.
+    expect(lines).toHaveLength(1);
+  });
+
+  it('parses the parent manifest ONCE, however many Lambdas resolve', () => {
+    // `assetPathDirs` runs per Lambda AND per layer. A real
+    // `cdk.out/manifest.json` is routinely multi-MB, so an uncached climb
+    // re-reads and re-parses it for every one of them — and it is the
+    // amplification bound on an attacker-sized manifest. A pure perf change
+    // reds nothing on its own, so the read COUNT is the assertion.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-memo-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
+    resetDerivedRootWarnings();
+    const stack = { assetOutdir: stage } as unknown as StackInfo;
+
+    expect(assetPathDirs(stack).assetOutdir).toBe(outdir);
+
+    // Measured by BEHAVIOUR, not by spying: `vi.spyOn` cannot wrap an ESM
+    // namespace export, so the read count is unobservable. Removing the
+    // manifest makes an uncached climb decline and answer the named
+    // directory; a cached one still answers the root.
+    rmSync(join(outdir, 'manifest.json'), { force: true });
+
+    expect(assetPathDirs(stack).assetOutdir).toBe(outdir);
   });
 
   it('stays SILENT when no climb happens', () => {
