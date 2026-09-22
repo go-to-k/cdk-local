@@ -9,7 +9,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
@@ -21,6 +21,13 @@ import {
   tryResolveImageFnJoin,
 } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
+import {
+  absoluteAssemblyPathEscape,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
+import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 
 /**
@@ -720,6 +727,470 @@ function extractImageLambdaProperties(args: {
 }
 
 /**
+ * Where a Lambda's `Metadata['aws:asset:path']` really lives on this host
+ * (go-to-k/cdkd#3534, applying the decision taken in go-to-k/cdkd#3494).
+ *
+ * THE one spelling shared by `cdkl invoke`'s resolver and `cdkl start-api`'s,
+ * which each carried their own copy of `isAbsolute(p) ? p : resolve(dir, p)`.
+ * A second hand-written copy is how a guard on one twin becomes a guard on
+ * neither. It throws through the CALLER's `wrapError` so each site keeps its
+ * own error class and names its own command.
+ *
+ * TWO VALUE SHAPES, ANSWERED DIFFERENTLY, and the asymmetry is the decision
+ * rather than an accident:
+ *
+ * - RELATIVE, escaping. REFUSED. `path.resolve` folds `..` exactly as
+ *   `path.join` does, so `../../../home/<user>/.aws` leaves the assembly, and
+ *   nothing a real `cdk synth` emits has that shape.
+ * - ABSOLUTE. ACCEPTED, with a WARNING naming the path when it leaves the
+ *   asset outdir, and SILENCE when it does not.
+ *
+ * **Why absolute is accepted, when the security axis argued for refusing it.**
+ * `cdk synth --no-staging` (context flag `aws:cdk:disable-asset-staging`) makes
+ * upstream `AssetStaging.relativeStagedPath` return the staged path verbatim
+ * instead of relativising it, so `aws:asset:path` is the asset's absolute
+ * SOURCE directory, normally outside the outdir. Refusing it therefore rejects
+ * the output of a documented CDK CLI flag, and the user's view is simply that
+ * cdk-local will not read what `cdk` just wrote. Record both halves of the
+ * trade, because a later reader must not "restore" the refusal as an
+ * oversight:
+ *
+ * - The security cost is genuine. This value is BIND-MOUNTED read-only at
+ *   `/var/task` (or `/opt` for a layer) into a container running handler code
+ *   the SAME assembly supplied, and the run may carry the caller's
+ *   credentials, so an absolute path a hostile assembly chose reaches the host
+ *   filesystem. Nothing here can distinguish a `--no-staging` value from a
+ *   planted one: both are an absolute directory the assembly named.
+ * - What bounds it: this is a LOCAL developer command run against an assembly
+ *   the user pointed at, and the warning names the directory so an unexpected
+ *   one is visible rather than silent. **Do not count the read-only mount as
+ *   the bound.** It stops writes to the tree, not the capability: a read-only
+ *   bind of a directory holding a unix socket (`/var/run`, `/run`) still
+ *   permits `connect(2)` on, say, `docker.sock`. The warning is the
+ *   mitigation.
+ *
+ * The `..` containment is NOT relaxed with it, but be precise about what it
+ * buys. Against an ADVERSARY it stops nothing: they write the ABSOLUTE
+ * spelling and reach the same place with a warning instead of a refusal. What
+ * it still catches is an ACCIDENTAL or legacy `..`, and it costs nothing,
+ * which is why the arm stays. There is no containment boundary here any more;
+ * the warning is the whole signal.
+ *
+ * CONTAIN WITHIN `assetOutdir`, NOT the manifest's directory. A Lambda inside
+ * a `cdk.Stage` legitimately carries `../asset.<hash>`, because `cdk synth`
+ * stages a Stage's assets into the APP's outdir while the Stage's manifest
+ * sits in `cdk.out/assembly-<Stage>/`. Binding to the manifest directory
+ * refuses every Stage asset as "hand-modified".
+ *
+ * Exported for unit testing and for `local-start-api.ts`'s copy of the caller.
+ */
+export function resolveAssetCodeDirectory(
+  manifestDir: string,
+  assetPath: string,
+  wrapError: (message: string) => Error,
+  /**
+   * The app's outdir, the CONTAINMENT bound; see the note above for why it is
+   * not the manifest's directory.
+   *
+   * **REQUIRED, and positioned here so OMITTING it is a type error.** The
+   * dangerous mistake is not a SWAP, it is a DROP: an optional bound
+   * defaulting to `manifestDir` silently refuses every legitimate Stage asset
+   * while every top-level test stays green, because there `manifestDir` and
+   * `assetOutdir` coincide. `logicalId` comes LAST because it is only ever
+   * interpolated into a message — the least dangerous parameter belongs in the
+   * position a mistake is least costly. A `logicalId` / `assetOutdir` swap is
+   * still expressible and is caught by the tests rather than the compiler: the
+   * bound becomes `resolve('<logicalId>')` under the cwd, disjoint from the
+   * base, so every path is refused and every Stage acceptance case reds.
+   */
+  assetOutdir: string,
+  logicalId: string
+): string {
+  if (isAbsolute(assetPath)) {
+    // ACCEPTED — see the header. `resolve` only normalises here, the value
+    // already being absolute; it is what makes the warning name the directory
+    // that is really mounted rather than an unfolded spelling of it.
+    const absolute = resolve(assetPath);
+    const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
+    if (escape !== undefined) {
+      // WARN, never throw: the one producer of this shape is a real
+      // `cdk synth --no-staging`, and refusing it rejects the output of a
+      // documented CDK CLI flag. The warning exists so an absolute path the
+      // user did NOT expect is visible rather than silent, so it names the
+      // directory and says what is done with it.
+      getLogger().warn(
+        `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has an absolute ` +
+          `Metadata['aws:asset:path'] pointing outside the assembly: ` +
+          `'${sanitizeServiceExceptionMessage(absolute)}'` +
+          (escape.escape === 'symlink'
+            ? ` (through a symbolic link to '${sanitizeServiceExceptionMessage(escape.realPath)}')`
+            : '') +
+          `. ${getEmbedConfig().productName} will read that directory and expose its ` +
+          `contents to the container — bind-mounted read-only, or copied when the asset is ` +
+          `a .zip or one of several merged layers — where the code in this assembly can ` +
+          `read it. This is what cdk synth --no-staging emits, and is expected for it; if ` +
+          `you did not synthesize with that flag, treat this assembly as untrusted.`
+      );
+    }
+    warnOutsideNamedDirectory(assetOutdir, absolute);
+    return absolute;
+  }
+  // RESOLVE against the manifest's directory, CONTAIN within the app's outdir.
+  const resolved = resolveAssemblyPath(manifestDir, assetPath, {
+    containWithin: assetOutdir,
+  });
+  // NAMING THE BOUND ITSELF is not an escape here, and the two arms must agree
+  // about that. `resolveAssemblyPath`'s `isInside` is false for an empty
+  // `path.relative` — right for a caller that reads a FILE, wrong here, where
+  // the value is a DIRECTORY to bind-mount by design. Left alone it also
+  // contradicts the absolute arm, which accepts the same directory.
+  if (
+    !resolved.contained &&
+    resolved.escape === 'lexical' &&
+    resolved.path === resolve(assetOutdir)
+  ) {
+    // The per-path warning belongs HERE too, and this exit is the one that
+    // needs it most: after a climb `assetOutdir` IS the derived root, so
+    // `aws:asset:path: '..'` from a Stage manifest folds exactly onto it and
+    // mounts the WHOLE root — in the tarbomb shape, the user's home. It is
+    // also what an attacker picks: one shot, no knowledge of sibling names.
+    // The ABSOLUTE spelling of the same mount already warned, so leaving this
+    // exit silent made one mount give two different signals depending on how
+    // it was written.
+    warnOutsideNamedDirectory(assetOutdir, resolved.path);
+    return resolved.path;
+  }
+  if (!resolved.contained) {
+    // The default provenance sentence blames a hand-modified assembly, and
+    // there is ONE legitimate layout it would accuse falsely: `--app` naming a
+    // Stage SUB-assembly makes that directory the assembly root, so the
+    // Stage's assets — staged into the APP's outdir by `cdk synth` — sit one
+    // level above it and CDK's own `../asset.<hash>` escapes. Say so, so the
+    // user repoints `--app` instead of hunting a tamper that did not happen.
+    // A HEURISTIC, deliberately: it keys on the `assembly-<Stage>` directory
+    // name `cdk synth` uses, so it stays silent for a differently-named
+    // sub-assembly and would fire for a user outdir that happens to be called
+    // `assembly-*`. Both are cheap — the clause is additive and the verdict is
+    // unchanged either way. The `..` test is separator-aware for the reason
+    // `isInside` gives: a sibling named `..foo` is not an escape upward, and
+    // the hint would be noise on it.
+    // `/` as well as the platform `sep`: an assembly's own values are always
+    // `/`-separated, so on Windows a `sep`-only test never fires and the Stage
+    // hint silently disappears from the message that needs it most.
+    const climbsOut =
+      assetPath === '..' || assetPath.startsWith(`..${sep}`) || assetPath.startsWith('../');
+    // Reaching this clause now means the climb in `assetPathDirs` DECLINED:
+    // the directory is named like a Stage sub-assembly but its parent carries
+    // no `manifest.json`, so it is not one. A real sub-assembly never gets
+    // here — the bound is its parent and `../asset.<hash>` resolves inside.
+    // So the sentence points at the layout rather than asserting it.
+    const stageHint =
+      basename(assetOutdir).startsWith('assembly-') && climbsOut
+        ? ` This directory is named like a cdk.Stage sub-assembly, but its parent ` +
+          `is not an assembly (no manifest.json), so it was treated as the assembly ` +
+          `root. If you meant to point --app at a Stage inside an app's output ` +
+          `directory, point it at that output directory.`
+        : '';
+    throw wrapError(
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has ` +
+        `Metadata['aws:asset:path']='${sanitizeServiceExceptionMessage(assetPath)}' which ` +
+        `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}${stageHint}`
+    );
+  }
+  // ACCEPTED — but if the bound was WIDENED by a climb, say so per path that
+  // leaves what the user actually named. No-op when no climb happened.
+  warnOutsideNamedDirectory(assetOutdir, resolved.path);
+  return resolved.path;
+}
+
+/**
+ * The two directories an asset path is judged against — THE one spelling both
+ * resolvers derive them with, for the same reason
+ * {@link resolveAssetCodeDirectory} is one function: two sites disagreeing
+ * about the BOUND is a defect no refusal test can see.
+ *
+ * Asset paths are relative to the manifest's own directory: the stack's
+ * `assetManifestPath` is `<cdk.out>/<stack>.assets.json`, so stripping the
+ * filename gives the base.
+ *
+ * `assetOutdir` is the app's outdir and is the CONTAINMENT bound. An ABSENT
+ * one falls back to the base, which is correct for a top-level stack and
+ * NARROWS for a Stage — it never opens past the base, so a hand-built
+ * `StackInfo` carrying neither field is refused rather than admitted.
+ * `AssemblyReader` always sets it.
+ *
+ * The two fallbacks are asymmetric, and the base's prefers `assetOutdir` over
+ * `process.cwd()` deliberately: `AssemblyReader` always sets `assetOutdir` but
+ * may leave `assetManifestPath` undefined, and taking `process.cwd()` there
+ * produces a base DISJOINT from the bound — nothing under the cwd is inside
+ * `cdk.out` — so every asset path is refused with a message blaming the
+ * assembly. Fail-closed, so never a hole, but a wrong diagnosis.
+ * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field,
+ * where base and bound coincide again.
+ *
+ * A PRESENT `assetOutdir` is never replaced BY THE BASE. It may be replaced by
+ * its own ANCESTOR, and only in one shape: {@link assemblyRootOf} climbs when
+ * `--app` names a `cdk.Stage` sub-assembly. That is a real widening, decided
+ * partly by a file inside the tree being examined, and every instance of it is
+ * warned — the reasoning is on `assemblyRootOf` and must be read with this
+ * paragraph, not instead of it. **Do not restate the stronger claim here.** An
+ * earlier revision of this block said the bound is used "AS GIVEN" after the
+ * climb had already made that false, which is the same failure this PR
+ * repaired in `StackInfo.assetOutdir`'s own doc one commit earlier.
+ *
+ * Note also that this helper is no longer pure: the climb reads the filesystem
+ * and can emit a log line.
+ *
+ * The base/bound asymmetry is a trust boundary rather than a style choice:
+ * `assetOutdir` comes from the user's own `--app` / `--output`, while
+ * `manifestDir` is derived from `AssetManifestArtifact.file`, which cx-api
+ * resolves out of the assembly's OWN `manifest.json` — so the base is
+ * assembly-CONTROLLED and the bound is not. An earlier revision dropped a
+ * present bound whenever it was not an ancestor of the base, meaning to
+ * improve the diagnosis for a host that supplied a nonsense bound; measured,
+ * it let a planted `"file": "../../../../x.assets.json"` push `manifestDir` to
+ * `/` and carry the bound with it, so a plain relative `etc/passwd` resolved
+ * CONTAINED. A disjoint host-supplied bound refusing everything is a wrong
+ * DIAGNOSIS; a widened bound is the vulnerability this module exists to stop.
+ *
+ * State the property precisely, because the obvious stronger version is FALSE:
+ * it is NOT that "the base left the bound, so everything resolved against it is
+ * outside" — a candidate can climb back in (`app/cdk.out/asset.9f1` from a base
+ * of `/Users/dev`). What holds is that THE BOUND IS ENFORCED INDEPENDENTLY OF
+ * THE BASE, so a planted `file` can steer where a relative value resolves FROM
+ * and can still only reach inside the BOUND — the user's own outdir, or the
+ * root `assemblyRootOf` derived from it, which is the one case where a planted
+ * tree can influence the bound and is warned for exactly that reason. A later reader leaning on the stronger sentence would think a
+ * separate base check is redundant.
+ *
+ * An EMPTY string is treated as ABSENT rather than as a bound, because
+ * `path.resolve('')` is the cwd — a directory the host never named. It takes
+ * the same fallback as `undefined`.
+ *
+ * KNOW WHAT THE ABSENT CASE BUYS, which is NOT "a narrower bound": the
+ * fallback is `manifestDir`, and that is assembly-derived, so a `StackInfo`
+ * carrying no `assetOutdir` gets NO containment rather than a tighter one — a
+ * planted `file` moves base and bound together. It is unreachable through
+ * `AssemblyReader`, which always sets `assetOutdir` from `cloudAssembly.directory`,
+ * and it is what cdkd does; a library host that builds `StackInfo` by hand and
+ * wants the guard must supply the field.
+ *
+ * Exported for `local-start-api.ts`'s copy of the caller, and for unit testing.
+ */
+export function assetPathDirs(stack: StackInfo): {
+  manifestDir: string;
+  assetOutdir: string;
+} {
+  const bound = stack.assetOutdir === '' ? undefined : stack.assetOutdir;
+  const manifestDir = stack.assetManifestPath
+    ? dirname(stack.assetManifestPath)
+    : (bound ?? process.cwd());
+  return {
+    manifestDir,
+    assetOutdir: bound === undefined ? manifestDir : assemblyRootOf(bound),
+  };
+}
+
+/**
+ * The real assembly ROOT for a `--app` that names a `cdk.Stage`
+ * SUB-assembly.
+ *
+ * When a user points `--app` at `cdk.out/assembly-MyStage`, the assembly they
+ * are working with is rooted at `cdk.out` — `cdk synth` writes the Stage's
+ * manifest into the sub-directory and stages its ASSETS one level above, so
+ * CDK's own `../asset.<hash>` is a within-assembly reference. Bounding at the
+ * named directory made every one of those look like an escape, and the
+ * refusal had to append a paragraph explaining that the layout "is not a
+ * tamper" — a guard that has to talk you out of its own verdict is computing
+ * the wrong thing.
+ *
+ * **It is a CONVENIENCE, not a safety property, and an earlier revision of
+ * this comment claimed the opposite.** That revision argued the climb is safe
+ * because it runs on a USER-supplied value. That is true of the STRING and
+ * false of the DECISION: the predicate is a directory NAME and the presence of
+ * a FILE, both inside the tree being examined — which under this module's own
+ * threat model is the attacker's. An archive unpacking as `manifest.json` +
+ * `assembly-X/` into a user's home, run as `--app ~/assembly-X`, moved the
+ * bound to `~`, after which `../.aws` resolved CONTAINED and was mounted with
+ * no refusal and no warning. It had been refused before the climb existed.
+ *
+ * So the climb is bounded by two things that are not arguments:
+ *
+ * 1. **It WARNS every time it fires** (see {@link warnDerivedAssemblyRoot}),
+ *    naming the directory the user passed and the one derived from it. The
+ *    module's doctrine for an absolute path applies here unchanged — a
+ *    directory the user did not name must be visible rather than silent — and
+ *    it costs one line on the legitimate Stage path.
+ * 2. **The parent must DECLARE this child**, not merely sit above it: its
+ *    `manifest.json` must parse and carry a `cdk:cloud-assembly` artifact
+ *    whose `properties.directoryName` is this directory's basename, which is
+ *    cx-api's own invariant. This removes the accidental collision entirely
+ *    (`manifest.json` is not a CDK-exclusive filename) and makes the hostile
+ *    case require a purpose-built manifest. It does NOT make the climb safe
+ *    against someone who ships the whole tree — they can write that manifest
+ *    too. Point 1 is what covers that, which is why it is first.
+ *
+ * `manifestDir` never climbs: it stays `dirname(assetManifestPath)`, the
+ * assembly-derived value, and is still judged against whatever this returns.
+ *
+ * Returns the caller's own spelling UNCHANGED when no climb happens, because
+ * the bound is used as given elsewhere and normalising it would make a
+ * relative `--output cdk.out` come back absolute for every ordinary app.
+ */
+function assemblyRootOf(outdir: string): string {
+  const cached = derivedRootCache.get(outdir);
+  if (cached !== undefined) return cached;
+  const root = climbToAssemblyRoot(outdir);
+  derivedRootCache.set(outdir, root);
+  return root;
+}
+
+/** The climb itself; {@link assemblyRootOf} holds the reasoning and memoizes. */
+function climbToAssemblyRoot(outdir: string): string {
+  let dir = resolve(outdir);
+  let climbed = false;
+  for (;;) {
+    if (!basename(dir).startsWith('assembly-')) break;
+    const parent = dirname(dir);
+    if (parent === dir || !parentDeclaresNestedAssembly(parent, basename(dir))) break;
+    dir = parent;
+    climbed = true;
+  }
+  if (!climbed) return outdir;
+  derivedRootOrigins.set(dir, outdir);
+  warnDerivedAssemblyRoot(outdir, dir);
+  return dir;
+}
+
+/**
+ * Whether `parent`'s own `manifest.json` declares `child` as a nested
+ * assembly, which is what cx-api writes for a `cdk.Stage`.
+ *
+ * Tolerant by construction: an unreadable or unparseable manifest, or one with
+ * no matching artifact, answers `false` and the climb stops — the conservative
+ * direction, since not climbing only restores the previous refusal.
+ */
+function parentDeclaresNestedAssembly(parent: string, child: string): boolean {
+  try {
+    const raw = readFileSync(join(parent, 'manifest.json'), 'utf-8');
+    const artifacts = (JSON.parse(raw) as { artifacts?: Record<string, unknown> }).artifacts;
+    if (artifacts === null || typeof artifacts !== 'object') return false;
+    return Object.values(artifacts).some((a) => {
+      const art = a as { type?: unknown; properties?: { directoryName?: unknown } };
+      return art?.type === 'cdk:cloud-assembly' && art.properties?.directoryName === child;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Per-process state for the climb. `assetPathDirs` runs once per Lambda AND
+ * once per layer, so without the cache a real `cdk.out/manifest.json` —
+ * routinely multi-MB — is re-read and re-parsed for every one of them, and
+ * `--watch` repeats that per firing. It is also the amplification bound on an
+ * attacker-sized manifest.
+ *
+ * **A cached root can outlive its own evidence, and only in the already-warned
+ * direction.** If a `--watch` re-synth rewrites the parent so it no longer
+ * declares the child, the cache keeps answering the WIDE root while a fresh
+ * derivation would decline and narrow. That grants nothing new: the root
+ * warning fired for that root when it was first derived, and re-deriving can
+ * only narrow. The reverse — cached narrow, a declaring manifest appears
+ * later — stays narrow, which is fail-closed. So the cache cannot introduce an
+ * UNWARNED widening in either direction.
+ *
+ * Keyed by the raw outdir STRING and never evicted. Sound because the same
+ * string names the same directory: a second assembly reusing an outdir is the
+ * same tree, and a changed tree under it is case A above. Growth is one entry
+ * per distinct `--app`, and a climb only happens under `readFromDirectory`
+ * where that argument is constant for the process.
+ */
+const derivedRootCache = new Map<string, string>();
+/**
+ * Derived root -> the directory the user actually named. LAST WRITER WINS, and
+ * the consequence is always a WRONG NAME, never a missing warning: two sibling
+ * Stages climbing to one root make the per-path line name the other sibling,
+ * and a long-lived host that processes assembly A (climbed to `/x/cdk.out`)
+ * and then assembly B whose `--app` IS `/x/cdk.out` names A's Stage directory
+ * throughout run B. The root and the offending path stay correct in both.
+ * Both are a wrong NAME in a line that still fires with the right root and the
+ * right path, which is why neither buys an eviction policy.
+ */
+const derivedRootOrigins = new Map<string, string>();
+const warnedDerivedRoots = new Set<string>();
+const warnedOutsideNamed = new Set<string>();
+
+/**
+ * Clear the climb's per-process state.
+ *
+ * A TEST SEAM. It is deliberately not advertised as a host API and is not on
+ * the `cdk-local/internal` surface, because the cache does not need one: it is
+ * keyed by the outdir STRING, and the same string names the same directory, so
+ * a second assembly reusing it is the same tree. The only cross-assembly
+ * residual is cosmetic — `derivedRootOrigins` naming the earlier `--app`
+ * directory in the per-path warning — and inventing an exported reset for that
+ * would be surface nothing imports.
+ */
+export function resetDerivedRootWarnings(): void {
+  derivedRootCache.clear();
+  derivedRootOrigins.clear();
+  warnedDerivedRoots.clear();
+  warnedOutsideNamed.clear();
+}
+
+/**
+ * Warn that an accepted path leaves the directory the user NAMED, when the
+ * bound was widened by a climb.
+ *
+ * **This is what makes the climb's signal as loud as the absolute arm's.**
+ * Without it the two diverge in the attacker's favour: an absolute path warns
+ * PER LAMBDA naming the exact directory, while a climb warned once at startup
+ * about the root and then mounted each individual path in silence — so
+ * whoever gets the climb converts a per-mount warning into a one-line notice.
+ * Now both arms say something per path that leaves what the user asked for.
+ */
+function warnOutsideNamedDirectory(assetOutdir: string, resolved: string): void {
+  const named = derivedRootOrigins.get(assetOutdir);
+  if (named === undefined) return;
+  // `absoluteAssemblyPathEscape`, not a hand-rolled `isInside`: it is
+  // real-path aware and treats the directory itself as inside, which is the
+  // question being asked, and it keeps this module from widening
+  // `assembly-path.ts`'s exported surface for one comparison.
+  if (absoluteAssemblyPathEscape(named, resolved) === undefined) return;
+  if (warnedOutsideNamed.has(resolved)) return;
+  warnedOutsideNamed.add(resolved);
+  getLogger().warn(
+    `'${sanitizeServiceExceptionMessage(resolved)}' is outside ` +
+      `'${sanitizeServiceExceptionMessage(named)}', the directory --app named. It is ` +
+      `inside the assembly root derived from it, so ${getEmbedConfig().productName} is ` +
+      `using it.`
+  );
+}
+
+/**
+ * Say that the assembly root was DERIVED rather than given.
+ *
+ * The user named one directory and the containment bound is another, wider
+ * one. On the legitimate Stage path that is exactly what they wanted and the
+ * line is informative; on a hostile tree it is the only signal that a sibling
+ * of the directory they named is now inside the bound.
+ */
+function warnDerivedAssemblyRoot(named: string, derived: string): void {
+  if (warnedDerivedRoots.has(derived)) return;
+  warnedDerivedRoots.add(derived);
+  getLogger().warn(
+    `'${sanitizeServiceExceptionMessage(named)}' is a cdk.Stage sub-assembly, so ` +
+      `${getEmbedConfig().productName} is treating its parent ` +
+      `'${sanitizeServiceExceptionMessage(derived)}' as the assembly root — that is ` +
+      `where cdk synth stages a Stage's assets. Everything under that parent is now ` +
+      `inside the containment bound, including siblings of the directory you named. ` +
+      `If you did not expect the wider directory, point --app at the app's own output ` +
+      `directory instead.`
+  );
+}
+
+/**
  * Resolve the local directory that corresponds to a function's deployed
  * asset, using the CDK-blessed `Metadata['aws:asset:path']` hint (D2). The
  * value is a directory path relative to `cdk.out` (e.g. `asset.abc123def`)
@@ -729,7 +1200,10 @@ function extractImageLambdaProperties(args: {
  * Falls back to a clear error when the metadata is missing OR the resolved
  * directory does not exist (CDK should always emit it for asset-backed
  * Lambdas; absence usually means the user pre-synthesized with a different
- * cdk.out and pointed `--output` at a stale one).
+ * cdk.out and pointed `--output` at a stale one). Through
+ * {@link resolveAssetCodeDirectory} it REFUSES an escaping RELATIVE value and
+ * WARNS on an ABSOLUTE one that leaves the asset outdir — see that function
+ * for why the two differ.
  */
 function resolveAssetCodePath(
   stack: StackInfo,
@@ -741,24 +1215,25 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ` +
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no ` +
+        `Metadata['aws:asset:path']. ` +
         `${getEmbedConfig().cliName} invoke needs this hint to find the local asset directory. ` +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
   }
 
-  // Asset paths are typically relative to cdk.out. The stack's
-  // `assetManifestPath` is `<cdk.out>/<stack>.assets.json`; we strip the
-  // filename to get the assembly directory. As a fallback (e.g. for
-  // stacks with no asset manifest), use the dirname of the template
-  // path implicit in the stack info — but in v1 every Lambda-bearing
-  // stack has an asset manifest, so the fallback is mostly defensive.
-  const cdkOutDir = stack.assetManifestPath ? dirname(stack.assetManifestPath) : process.cwd();
-
-  const abs = isAbsolute(assetPath) ? assetPath : resolve(cdkOutDir, assetPath);
+  const { manifestDir, assetOutdir } = assetPathDirs(stack);
+  const abs = resolveAssetCodeDirectory(
+    manifestDir,
+    assetPath,
+    (message) => new LocalInvokeResolutionError(message),
+    assetOutdir,
+    logicalId
+  );
   if (!existsSync(abs)) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' asset path '${abs}' does not exist. ` +
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
+        `'${sanitizeServiceExceptionMessage(abs)}' does not exist. ` +
         'Re-synthesize the app and retry.'
     );
   }
@@ -775,7 +1250,8 @@ function resolveAssetCodePath(
     return abs;
   }
   throw new LocalInvokeResolutionError(
-    `Lambda '${logicalId}' asset path '${abs}' is not a directory` +
+    `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
+      `'${sanitizeServiceExceptionMessage(abs)}' is not a directory` +
       (options.allowZip ? ' or a .zip archive' : '') +
       '. Re-synthesize the app and retry.'
   );
@@ -823,7 +1299,8 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
   // still get an actionable error instead of a raw `ENOENT` from `statSync`.
   if (!existsSync(codePath)) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset path '${codePath}' does not exist. Re-synthesize the app and retry.`
+      `Lambda asset path '${sanitizeServiceExceptionMessage(codePath)}' does not exist. ` +
+        'Re-synthesize the app and retry.'
     );
   }
   if (statSync(codePath).isDirectory()) {
@@ -835,7 +1312,8 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
     files = unzipSync(zipBytes);
   } catch (err) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset '${codePath}' is a file but could not be read as a ZIP archive: ` +
+      `Lambda asset '${sanitizeServiceExceptionMessage(codePath)}' is a file but could not ` +
+        `be read as a ZIP archive: ` +
         `${err instanceof Error ? err.message : String(err)}. Re-synthesize the app and retry.`
     );
   }

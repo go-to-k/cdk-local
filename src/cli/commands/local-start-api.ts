@@ -15,7 +15,11 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  sanitizeServiceExceptionMessage,
+} from '../../local/credential-error.js';
 import {
   applyRoleArnIfSet,
   assumeRoleCredentials,
@@ -100,8 +104,10 @@ import {
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
 import {
+  assetPathDirs,
   extractEphemeralStorageMb,
   materializeAssetCodeDir,
+  resolveAssetCodeDirectory,
   resolveLambdaArchitecture,
   resolveLambdaLayers,
   type ResolvedLambdaLayer,
@@ -2985,6 +2991,12 @@ function resolveImageLambda(args: {
  * Locate the Lambda's local code directory using the CDK-blessed
  * `Metadata['aws:asset:path']` hint. Bind-mounted directly at
  * `/var/task` (read-only) by the docker-runner.
+ *
+ * The resolution itself is `lambda-resolver.ts`'s
+ * {@link resolveAssetCodeDirectory} — THE one spelling, so this twin and
+ * `cdkl invoke`'s cannot disagree about the containment bound. It REFUSES an
+ * escaping RELATIVE value and WARNS on an ABSOLUTE one that leaves the asset
+ * outdir; that function's header records why the two shapes differ.
  */
 function resolveAssetCodePath(
   stack: StackInfo,
@@ -2995,11 +3007,17 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
-  const cdkOutDir = stack.assetManifestPath ? path.dirname(stack.assetManifestPath) : process.cwd();
-  return path.isAbsolute(assetPath) ? assetPath : path.resolve(cdkOutDir, assetPath);
+  const { manifestDir, assetOutdir } = assetPathDirs(stack);
+  return resolveAssetCodeDirectory(
+    manifestDir,
+    assetPath,
+    (message) => new Error(message),
+    assetOutdir,
+    logicalId
+  );
 }
 
 /**
