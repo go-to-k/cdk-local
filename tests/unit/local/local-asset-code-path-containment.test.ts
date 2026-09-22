@@ -354,6 +354,23 @@ for (const site of SITES) {
       expect(message).not.toMatch(/[\n\r\u001b]/);
     });
 
+    it('CAPS the refusal too, not only the warning', () => {
+      // The cap inside `renderAssemblyPathEscape` is on the REFUSAL arm, which
+      // had no length assertion while the warn arm did — measured, dropping it
+      // gave a 200 363-character message. Leaving one arm of the same failure
+      // fenced and the other not is the odd state, so both are pinned.
+      const a = assembly(`../${'x'.repeat(200000)}`);
+
+      let message = '';
+      try {
+        site.call(a);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message.length).toBeLessThan(4000);
+      expect(message).toMatch(/truncated/);
+    });
+
     // ---- the WIRING pair -------------------------------------------------
     // Both cases live BELOW a Stage manifest, the only shape in which the
     // bound and the resolution base differ. A top-level case cannot see the
@@ -483,6 +500,25 @@ for (const site of SITES) {
       expect(() => site.call(a)).toThrow(/is not a tamper/);
     });
 
+    it('does NOT offer the Stage hint for a NON-climbing escape below a Stage bound', () => {
+      // The hint's `..` test, not just its directory-name test. Below a
+      // sub-assembly bound a value that escapes through a SYMLINK rather than
+      // through `..` has nothing to do with the staged-asset layout, so the
+      // reassuring clause would be noise on it.
+      const a = assembly('link/throwaway-victim', { stage: true });
+      (a.stack as { assetOutdir?: string }).assetOutdir = a.manifestDir;
+      symlinkSync(a.outer, join(a.manifestDir, 'link'), 'dir');
+
+      let message = '';
+      try {
+        site.call(a);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).toMatch(/symbolic link/);
+      expect(message).not.toMatch(/sub-assembly/);
+    });
+
     it('does NOT offer the Stage hint for an ordinary escape', () => {
       // The hint must not become noise on every refusal: a top-level assembly
       // escaping with `../throwaway-victim` has nothing to do with a Stage.
@@ -508,6 +544,46 @@ for (const site of SITES) {
     });
   });
 }
+
+describe('aws:asset:path — the messages AFTER the containment verdict', () => {
+  // The containment verdict is not the only place the value is rendered. A
+  // CONTAINED relative path still reaches `cdkl invoke`'s existence check,
+  // which prints it — and that branch is MORE reachable than the warning,
+  // since any relative value with no `..` gets there. Measured before the fix:
+  // it carried ESC/CR/LF verbatim and had no length bound, so the same
+  // forgery and the same flood worked on it.
+  it('FLATTENS and CAPS the "does not exist" message', () => {
+    const a = assembly('placeholder');
+    setAssetPath(a, 'Fn', `absent\u001b[2K\rINFO  asset verified\nINFO  done${'x'.repeat(200000)}`);
+
+    let message = '';
+    try {
+      resolveLambdaTarget('Stk:Fn', [a.stack]);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/does not exist/);
+    expect(message).not.toMatch(/[\n\r\u001b]/);
+    expect(message.length).toBeLessThan(4000);
+  });
+
+  it('FLATTENS and CAPS the "is not a directory" message', () => {
+    const a = assembly('placeholder');
+    const name = `file\u001b[2K\rINFO  verified${'x'.repeat(200000)}`;
+    // A FILE, so the directory check is what refuses it.
+    writeFileSync(join(a.outdir, name.slice(0, 200)), '');
+    setAssetPath(a, 'Fn', name.slice(0, 200));
+
+    let message = '';
+    try {
+      resolveLambdaTarget('Stk:Fn', [a.stack]);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/is not a directory/);
+    expect(message).not.toMatch(/[\n\r\u001b]/);
+  });
+});
 
 describe('aws:asset:path containment — cdkl invoke layer assets', () => {
   // `resolveLambdaLayers` resolves a same-stack `AWS::Lambda::LayerVersion`

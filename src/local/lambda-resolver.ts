@@ -853,8 +853,16 @@ export function resolveAssetCodeDirectory(
     // Stage's assets — staged into the APP's outdir by `cdk synth` — sit one
     // level above it and CDK's own `../asset.<hash>` escapes. Say so, so the
     // user repoints `--app` instead of hunting a tamper that did not happen.
+    // A HEURISTIC, deliberately: it keys on the `assembly-<Stage>` directory
+    // name `cdk synth` uses, so it stays silent for a differently-named
+    // sub-assembly and would fire for a user outdir that happens to be called
+    // `assembly-*`. Both are cheap — the clause is additive and the verdict is
+    // unchanged either way. The `..` test is separator-aware for the reason
+    // `isInside` gives: a sibling named `..foo` is not an escape upward, and
+    // the hint would be noise on it.
+    const climbsOut = assetPath === '..' || assetPath.startsWith(`..${sep}`);
     const stageHint =
-      basename(assetOutdir).startsWith('assembly-') && assetPath.startsWith('..')
+      basename(assetOutdir).startsWith('assembly-') && climbsOut
         ? ` If --app names a cdk.Stage sub-assembly, that directory is the assembly ` +
           `root and the Stage's assets are staged one level above it; this layout is ` +
           `what CDK emits and is not a tamper.`
@@ -906,13 +914,26 @@ export function resolveAssetCodeDirectory(
  * CONTAINED. A disjoint host-supplied bound refusing everything is a wrong
  * DIAGNOSIS; a widened bound is the vulnerability this module exists to stop.
  *
- * With the bound kept, a planted `file` fails CLOSED on its own: the base
- * leaves the bound, so every candidate resolved against it is outside and is
- * refused.
+ * State the property precisely, because the obvious stronger version is FALSE:
+ * it is NOT that "the base left the bound, so everything resolved against it is
+ * outside" — a candidate can climb back in (`app/cdk.out/asset.9f1` from a base
+ * of `/Users/dev`). What holds is that THE BOUND IS ENFORCED INDEPENDENTLY OF
+ * THE BASE, so a planted `file` can steer where a relative value resolves FROM
+ * and can still only reach inside the user's own outdir — which the assembly
+ * already owns. A later reader leaning on the stronger sentence would think a
+ * separate base check is redundant.
  *
  * An EMPTY string is treated as ABSENT rather than as a bound, because
  * `path.resolve('')` is the cwd — a directory the host never named. It takes
  * the same fallback as `undefined`.
+ *
+ * KNOW WHAT THE ABSENT CASE BUYS, which is NOT "a narrower bound": the
+ * fallback is `manifestDir`, and that is assembly-derived, so a `StackInfo`
+ * carrying no `assetOutdir` gets NO containment rather than a tighter one — a
+ * planted `file` moves base and bound together. It is unreachable through
+ * `AssemblyReader`, which always sets `assetOutdir` from `cloudAssembly.directory`,
+ * and it is what cdkd does; a library host that builds `StackInfo` by hand and
+ * wants the guard must supply the field.
  *
  * Exported for `local-start-api.ts`'s copy of the caller, and for unit testing.
  */
@@ -952,7 +973,8 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ` +
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no ` +
+        `Metadata['aws:asset:path']. ` +
         `${getEmbedConfig().cliName} invoke needs this hint to find the local asset directory. ` +
         'Re-synthesize the app (without `--output <stale-dir>`) and retry.'
     );
@@ -968,7 +990,8 @@ function resolveAssetCodePath(
   );
   if (!existsSync(abs)) {
     throw new LocalInvokeResolutionError(
-      `Lambda '${logicalId}' asset path '${abs}' does not exist. ` +
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
+        `'${sanitizeServiceExceptionMessage(abs)}' does not exist. ` +
         'Re-synthesize the app and retry.'
     );
   }
@@ -985,7 +1008,8 @@ function resolveAssetCodePath(
     return abs;
   }
   throw new LocalInvokeResolutionError(
-    `Lambda '${logicalId}' asset path '${abs}' is not a directory` +
+    `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' asset path ` +
+      `'${sanitizeServiceExceptionMessage(abs)}' is not a directory` +
       (options.allowZip ? ' or a .zip archive' : '') +
       '. Re-synthesize the app and retry.'
   );
@@ -1033,7 +1057,8 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
   // still get an actionable error instead of a raw `ENOENT` from `statSync`.
   if (!existsSync(codePath)) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset path '${codePath}' does not exist. Re-synthesize the app and retry.`
+      `Lambda asset path '${sanitizeServiceExceptionMessage(codePath)}' does not exist. ` +
+        'Re-synthesize the app and retry.'
     );
   }
   if (statSync(codePath).isDirectory()) {
@@ -1045,7 +1070,8 @@ export function materializeAssetCodeDir(codePath: string): MaterializedAssetCode
     files = unzipSync(zipBytes);
   } catch (err) {
     throw new LocalInvokeResolutionError(
-      `Lambda asset '${codePath}' is a file but could not be read as a ZIP archive: ` +
+      `Lambda asset '${sanitizeServiceExceptionMessage(codePath)}' is a file but could not ` +
+        `be read as a ZIP archive: ` +
         `${err instanceof Error ? err.message : String(err)}. Re-synthesize the app and retry.`
     );
   }

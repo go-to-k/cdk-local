@@ -99,6 +99,7 @@ import {
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
+import { sanitizeServiceExceptionMessage } from '../../local/credential-error.js';
 import {
   assetPathDirs,
   extractEphemeralStorageMb,
@@ -3003,7 +3004,7 @@ function resolveAssetCodePath(
   const assetPath = meta?.['aws:asset:path'];
   if (typeof assetPath !== 'string' || assetPath.length === 0) {
     throw new Error(
-      `Lambda '${logicalId}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
+      `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has no Metadata['aws:asset:path']. ${getEmbedConfig().cliName} start-api needs this hint to find the local asset directory. Re-synthesize the app and retry.`
     );
   }
   const { manifestDir, assetOutdir } = assetPathDirs(stack);
