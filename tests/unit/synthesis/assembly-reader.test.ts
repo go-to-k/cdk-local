@@ -14,7 +14,7 @@ const {
   const mockAwsCliCompatible = vi.fn(() => baseCredsSentinel);
   const mockDispose = vi.fn().mockResolvedValue(undefined);
   const mockSynth = vi.fn().mockResolvedValue({
-    cloudAssembly: { stacks: [] },
+    cloudAssembly: { directory: '/app/cdk.out', stacks: [], stacksRecursively: [] },
     dispose: mockDispose,
   });
   const mockFromCdkApp = vi.fn().mockResolvedValue({ __source: true });
@@ -51,6 +51,8 @@ vi.mock('@aws-cdk/toolkit-lib', () => ({
 vi.mock('@aws-cdk/cloud-assembly-api', () => ({
   AssetManifestArtifact: class {},
 }));
+
+import { AssetManifestArtifact } from '@aws-cdk/cloud-assembly-api';
 
 import { AssemblyReader } from '../../../src/synthesis/assembly-reader.js';
 
@@ -135,5 +137,97 @@ describe('AssemblyReader.readFromDirectory — pre-synth assembly', () => {
     expect(mockSynth).toHaveBeenCalledTimes(1);
     expect(mockDispose).toHaveBeenCalledTimes(1);
     expect(stacks).toEqual([]);
+  });
+});
+
+describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => {
+  // `assetOutdir` is the CONTAINMENT BOUND every `Metadata['aws:asset:path']`
+  // is judged against. It must be the APP's outdir, not the directory the
+  // stack's own asset manifest sits in: `cdk synth` stages a `cdk.Stage`'s
+  // assets into the app outdir while the Stage's manifest lives in
+  // `cdk.out/assembly-<Stage>/`, so a Stage Lambda legitimately carries
+  // `../asset.<hash>`. Bound to the manifest directory, every Stage asset is
+  // refused as hand-modified — and the resolver suite cannot see that, because
+  // it builds its own `StackInfo`. This is the only case that fences the
+  // THREADING.
+  beforeEach(() => {
+    MockToolkit.mockClear();
+    mockFromCdkApp.mockClear();
+    mockFromAssemblyDirectory.mockClear();
+    mockSynth.mockClear();
+    mockDispose.mockClear();
+  });
+
+  /**
+   * An app carrying a `cdk.Stage`. The Stage's stack is NOT in `stacks` — a
+   * Stage is a `NestedCloudAssemblyArtifact` — so only `stacksRecursively`
+   * reaches it, and its manifest sits one level below the app outdir while its
+   * asset is staged INTO that outdir.
+   */
+  function stageAssembly(): unknown {
+    const assetManifest = new AssetManifestArtifact();
+    (assetManifest as unknown as { file: string }).file =
+      '/app/cdk.out/assembly-MyStage/Stk.assets.json';
+    const top = {
+      stackName: 'TopStack',
+      displayName: 'TopStack',
+      id: 'TopStack',
+      template: { Resources: {} },
+      dependencies: [],
+      environment: {},
+    };
+    const staged = {
+      stackName: 'MyStage-Stk',
+      displayName: 'MyStage/Stk',
+      id: 'MyStageStk',
+      template: { Resources: {} },
+      dependencies: [assetManifest],
+      environment: {},
+    };
+    return {
+      cloudAssembly: {
+        directory: '/app/cdk.out',
+        stacks: [top],
+        stacksRecursively: [top, staged],
+      },
+      dispose: mockDispose,
+    };
+  }
+
+  it('read() reaches a Stage stack and bounds it by the app outdir', async () => {
+    mockSynth.mockResolvedValueOnce(stageAssembly());
+
+    const stacks = await new AssemblyReader().read('node app.ts');
+
+    // `stacks` alone would return TopStack only, and a Stage Lambda would be
+    // unreachable except by pointing --app at the sub-assembly, where the
+    // bound collapses onto the manifest directory and CDK's own
+    // `../asset.<hash>` is refused.
+    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack', 'MyStageStk']);
+    const staged = stacks[1];
+    expect(staged?.assetOutdir).toBe('/app/cdk.out');
+    expect(staged?.assetManifestPath).toBe('/app/cdk.out/assembly-MyStage/Stk.assets.json');
+  });
+
+  it('readFromDirectory() does the same', async () => {
+    mockSynth.mockResolvedValueOnce(stageAssembly());
+
+    const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
+
+    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack', 'MyStageStk']);
+    expect(stacks[1]?.assetOutdir).toBe('/app/cdk.out');
+  });
+
+  it('the bound is the ROOT directory, never the artifact\'s own assembly', async () => {
+    // Reds if `collectStacks` ever reads `stack.assembly.directory`: for the
+    // Stage stack that is `cdk.out/assembly-MyStage`, which is exactly the
+    // manifest directory the bound must not be.
+    mockSynth.mockResolvedValueOnce(stageAssembly());
+
+    const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
+
+    for (const s of stacks) {
+      expect(s.assetOutdir).toBe('/app/cdk.out');
+    }
   });
 });

@@ -1,5 +1,6 @@
 import { readlinkSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { flattenToOneLine } from '../local/credential-error.js';
 
 /**
  * Containment for a path a Cloud Assembly names.
@@ -18,7 +19,15 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
  * asymmetry is why {@link absoluteAssemblyPathEscape} exists beside
  * {@link resolveAssemblyPath} rather than falling out of it.
  *
- * An import-free LEAF, so any layer may import it.
+ * EVERY path this module RENDERS goes through `flattenToOneLine`, for the
+ * reason the mitigation itself depends on: the warning and the refusal exist
+ * FOR a hand-modified assembly, so the path is attacker-chosen and lands on a
+ * log line. `path.resolve` preserves control characters, so an unsanitized
+ * value can carry `\x1b[2K\r` and `\n` and erase the warning it appears in,
+ * forging benign lines in its place. Since the decision here is "accept and
+ * WARN", a forgeable warning is no warning at all. Same direction as
+ * `src/utils/role-arn.ts`, which already reaches into `credential-error.ts`
+ * for the one spelling of that rule.
  */
 
 export type ResolvedAssemblyPath =
@@ -102,6 +111,16 @@ const MAX_LINK_HOPS = 40;
  * recursion below, which is one frame per component, so a pathological value
  * cannot raise a `RangeError` from inside {@link tryRealpath}'s own `try` (its
  * `catch` would swallow the crash into a silent `undefined`).
+ *
+ * KNOW THAT EXHAUSTING THIS FAILS OPEN, and why that is accepted rather than
+ * unnoticed. Unlike {@link MAX_LINK_HOPS}, which has the OS's own `ELOOP` cap
+ * behind it, nothing else stops a path of 1 001 absent components: the climb
+ * gives up, the symlink arm goes silent, and a value that would land outside
+ * reads as CONTAINED on the lexical verdict alone. It is not reachable in
+ * effect — such a path cannot exist, so `cdkl invoke`'s `existsSync` refuses it
+ * and `start-api`'s `docker run` fails to mount it — but that safety lives in
+ * the CONSUMERS, not here. A consumer that neither checks existence nor mounts
+ * would need its own answer.
  */
 const MAX_PATH_COMPONENTS = 1000;
 
@@ -122,7 +141,16 @@ const MAX_PATH_COMPONENTS = 1000;
  * one that does not exist yet this is a best-effort MODEL of kernel
  * resolution; the known edge is a `..` INSIDE an unresolvable link's target,
  * folded lexically here while the kernel folds it only after following each
- * preceding component.
+ * preceding component. That edge is benign for THESE callers rather than in
+ * general: it needs the target to be absent, and both consumers resolve the
+ * path and then open or mount it, so the divergence is between this model and
+ * a path nothing can reach. A caller that CREATED a file through such a path
+ * would need an `lstat` of its own.
+ *
+ * `EACCES` is folded into "does not resolve" along with `ENOENT`, so a link
+ * under a directory this process cannot traverse reads as contained. Same
+ * bound: the consumer's own `existsSync` / mount runs as the same user and
+ * fails identically.
  */
 function resolveThroughLinks(target: string, hops = 0, climbs = 0): string | undefined {
   const direct = tryRealpath(target);
@@ -246,6 +274,23 @@ export function resolveAssemblyPath(
  * where an empty `path.relative` means "names the directory rather than a file
  * inside it". An asset path legitimately names a DIRECTORY, so a value equal
  * to the bound is inside it and reporting it as outside would be false.
+ *
+ * THE REAL PATHS DECIDE IN BOTH DIRECTIONS, which is the one place this
+ * deliberately does more than {@link resolveAssemblyPath}'s lexical-first
+ * ordering. The lexical verdict here is about a SPELLING, and two spellings of
+ * the same directory are common rather than exotic: macOS resolves `/tmp` to
+ * `/private/tmp` and `/var` to `/private/var`, and a user may symlink `cdk.out`
+ * itself. With an outdir of `/tmp/cdk.out` and a `--no-staging` value of
+ * `/private/tmp/cdk.out/src`, a lexical-only verdict cries "pointing outside
+ * the assembly ... treat this assembly as untrusted" about an asset that is
+ * plainly inside it — and this arm exists to make an UNEXPECTED path visible,
+ * so a false alarm is the failure that costs it its meaning.
+ *
+ * Exonerating requires the kernel to answer for BOTH operands: an unresolvable
+ * one leaves the lexical verdict standing, so the arm stays loud when it cannot
+ * see. (`resolveAssemblyPath` cannot take the same shape: its verdict is about
+ * a path built with `path.join`, and letting a real path overrule the lexical
+ * `..` there would answer about a location the caller never opens.)
  */
 export function absoluteAssemblyPathEscape(
   bound: string,
@@ -253,17 +298,23 @@ export function absoluteAssemblyPathEscape(
 ): AssemblyPathEscape | undefined {
   const resolvedBound = resolve(bound);
   const target = resolve(absolutePath);
-
-  if (!isInside(resolvedBound, target) && target !== resolvedBound) {
-    return { contained: false, escape: 'lexical', path: target };
-  }
+  const lexicallyOutside = !isInside(resolvedBound, target) && target !== resolvedBound;
 
   const realBound = resolveThroughLinks(resolvedBound);
-  if (realBound !== undefined) {
-    const realTarget = resolveThroughLinks(target);
-    if (realTarget !== undefined && !isInside(realBound, realTarget) && realTarget !== realBound) {
-      return { contained: false, escape: 'symlink', path: target, realPath: realTarget };
-    }
+  const realTarget = resolveThroughLinks(target);
+  const reallyOutside =
+    realBound === undefined || realTarget === undefined
+      ? undefined
+      : !isInside(realBound, realTarget) && realTarget !== realBound;
+
+  if (lexicallyOutside) {
+    // `false` is the kernel saying the two spellings name the same place.
+    // `undefined` is "could not look", which must not silence the arm.
+    if (reallyOutside === false) return undefined;
+    return { contained: false, escape: 'lexical', path: target };
+  }
+  if (reallyOutside === true) {
+    return { contained: false, escape: 'symlink', path: target, realPath: realTarget! };
   }
   return undefined;
 }
@@ -272,12 +323,14 @@ export function absoluteAssemblyPathEscape(
  * The shared tail of a containment refusal: what the value resolved to, what
  * it escaped, and why that means the assembly is not CDK-generated. The call
  * site supplies its own subject ("Lambda 'X' has ... which ") and its own
- * error class. `action` completes "Refusing to ...".
+ * error class. `action` completes "Refusing to ..." and is REQUIRED rather
+ * than defaulted: a default is a branch no caller takes, so it can neither be
+ * fenced nor be right for the next caller.
  */
 export function renderAssemblyPathEscape(
   escape: AssemblyPathEscape,
   dir: string,
-  action = 'load'
+  action: string
 ): string {
   const provenance =
     `CDK emits assembly paths that stay inside the assembly directory; one that leaves it ` +
@@ -290,20 +343,24 @@ export function renderAssemblyPathEscape(
   // print "outside '/tmp/cdk.out'", a false clause about a path that IS the
   // directory.
   const realBase = resolveThroughLinks(base) ?? base;
+  // Every rendered operand is attacker-chosen; see this module's header for
+  // why an unsanitized one makes the message forge its own replacement.
+  const shownPath = flattenToOneLine(escape.path);
+  const shownBase = flattenToOneLine(base);
   if (escape.escape === 'symlink') {
     if (escape.realPath === realBase) {
       return (
-        `resolves to '${escape.path}', a symbolic link to the directory ` +
-        `'${base}' itself rather than to a path inside it. ${provenance}`
+        `resolves to '${shownPath}', a symbolic link to the directory ` +
+        `'${shownBase}' itself rather than to a path inside it. ${provenance}`
       );
     }
     return (
-      `resolves to '${escape.path}', which leads through a symbolic link to ` +
-      `'${escape.realPath}', outside '${base}'. ${provenance}`
+      `resolves to '${shownPath}', which leads through a symbolic link to ` +
+      `'${flattenToOneLine(escape.realPath)}', outside '${shownBase}'. ${provenance}`
     );
   }
   if (escape.path === base) {
-    return `names the directory '${base}' itself rather than a path inside it. ${provenance}`;
+    return `names the directory '${shownBase}' itself rather than a path inside it. ${provenance}`;
   }
-  return `resolves to '${escape.path}', outside '${base}'. ${provenance}`;
+  return `resolves to '${shownPath}', outside '${shownBase}'. ${provenance}`;
 }

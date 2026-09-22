@@ -174,9 +174,7 @@ export class AssemblyReader {
     });
     const cached = await toolkit.synth(source);
     try {
-      return cached.cloudAssembly.stacks.map((stack) =>
-        mapStackArtifact(stack, cached.cloudAssembly.directory)
-      );
+      return collectStacks(cached.cloudAssembly);
     } finally {
       await cached.dispose();
     }
@@ -209,13 +207,36 @@ export class AssemblyReader {
     });
     const cached = await toolkit.synth(source);
     try {
-      return cached.cloudAssembly.stacks.map((stack) =>
-        mapStackArtifact(stack, cached.cloudAssembly.directory)
-      );
+      return collectStacks(cached.cloudAssembly);
     } finally {
       await cached.dispose();
     }
   }
+}
+
+/**
+ * Every stack in the assembly, NESTED ASSEMBLIES INCLUDED.
+ *
+ * `CloudAssembly.stacks` lists only this assembly's own artifacts, and a
+ * `cdk.Stage` is a `NestedCloudAssemblyArtifact`, not a
+ * `CloudFormationStackArtifact` — so `.stacks` on an app carrying a Stage
+ * returns the top-level stacks and silently omits the Stage's. The only way to
+ * reach a Stage stack was then to point `--app` at `cdk.out/assembly-<Stage>/`
+ * itself, which makes the sub-assembly the root and leaves the Stage's assets
+ * (staged into the APP's outdir by `cdk synth`) outside it.
+ *
+ * `stacksRecursively` is what makes `assetOutdir` mean something: reached from
+ * the app outdir, a Stage stack's manifest sits in `cdk.out/assembly-<Stage>/`
+ * while its bound is `cdk.out`, which is exactly the shape
+ * `Metadata['aws:asset:path']`'s `../asset.<hash>` needs. Pointing `--app` at a
+ * SUB-assembly still narrows the bound to that directory and refuses the
+ * Stage's own assets; point it at the app outdir instead.
+ */
+function collectStacks(assembly: {
+  directory: string;
+  stacksRecursively: CloudFormationStackArtifact[];
+}): StackInfo[] {
+  return assembly.stacksRecursively.map((stack) => mapStackArtifact(stack, assembly.directory));
 }
 
 /**

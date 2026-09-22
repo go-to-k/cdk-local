@@ -9,7 +9,7 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { TemplateResource } from '../types/resource.js';
@@ -21,6 +21,7 @@ import {
   tryResolveImageFnJoin,
 } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
+import { flattenToOneLine } from './credential-error.js';
 import {
   absoluteAssemblyPathEscape,
   renderAssemblyPathEscape,
@@ -814,15 +815,17 @@ export function resolveAssetCodeDirectory(
       // user did NOT expect is visible rather than silent, so it names the
       // directory and says what is done with it.
       getLogger().warn(
-        `Lambda '${logicalId}' has an absolute Metadata['aws:asset:path'] pointing ` +
-          `outside the assembly: '${absolute}'` +
+        `Lambda '${flattenToOneLine(logicalId)}' has an absolute ` +
+          `Metadata['aws:asset:path'] pointing outside the assembly: ` +
+          `'${flattenToOneLine(absolute)}'` +
           (escape.escape === 'symlink'
-            ? ` (through a symbolic link to '${escape.realPath}')`
+            ? ` (through a symbolic link to '${flattenToOneLine(escape.realPath)}')`
             : '') +
-          `. ${getEmbedConfig().productName} will bind-mount that directory into the ` +
-          `container read-only, where the code in this assembly can read it. This is what ` +
-          `cdk synth --no-staging emits, and is expected for it; if you did not synthesize ` +
-          `with that flag, treat this assembly as untrusted.`
+          `. ${getEmbedConfig().productName} will read that directory and expose its ` +
+          `contents to the container — bind-mounted read-only, or copied when the asset is ` +
+          `a .zip or one of several merged layers — where the code in this assembly can ` +
+          `read it. This is what cdk synth --no-staging emits, and is expected for it; if ` +
+          `you did not synthesize with that flag, treat this assembly as untrusted.`
       );
     }
     return absolute;
@@ -845,7 +848,8 @@ export function resolveAssetCodeDirectory(
   }
   if (!resolved.contained) {
     throw wrapError(
-      `Lambda '${logicalId}' has Metadata['aws:asset:path']='${assetPath}' which ` +
+      `Lambda '${flattenToOneLine(logicalId)}' has ` +
+        `Metadata['aws:asset:path']='${flattenToOneLine(assetPath)}' which ` +
         `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
     );
   }
@@ -877,6 +881,18 @@ export function resolveAssetCodeDirectory(
  * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field,
  * where base and bound coincide again.
  *
+ * A SUPPLIED `assetOutdir` is used only when it is the base or an ancestor of
+ * it, which is the invariant a bound has to satisfy and the only relation
+ * `AssemblyReader` can produce (equal for a top-level stack, the parent for a
+ * Stage). cdk-local is a LIBRARY, so a host builds `StackInfo` by hand, and a
+ * bound that is neither — `''`, a relative `'cdk.out'` against an absolute
+ * manifest path, or an unrelated directory — is DISJOINT from the base once
+ * both are resolved, which refuses every asset path with a message blaming the
+ * assembly. Falling back to the base there narrows, never widens, and keeps
+ * the diagnosis honest. Deliberately NOT a throw: the value is the host's
+ * mistake, not the assembly's, and this function's callers are resolving a
+ * path, not validating a `StackInfo`.
+ *
  * Exported for `local-start-api.ts`'s copy of the caller, and for unit testing.
  */
 export function assetPathDirs(stack: StackInfo): {
@@ -886,7 +902,21 @@ export function assetPathDirs(stack: StackInfo): {
   const manifestDir = stack.assetManifestPath
     ? dirname(stack.assetManifestPath)
     : (stack.assetOutdir ?? process.cwd());
-  return { manifestDir, assetOutdir: stack.assetOutdir ?? manifestDir };
+  return { manifestDir, assetOutdir: usableBound(stack.assetOutdir, manifestDir) };
+}
+
+/** `bound` when it contains `base` (or is it), else `base`. See {@link assetPathDirs}. */
+function usableBound(bound: string | undefined, base: string): string {
+  if (bound === undefined || bound === '') return base;
+  const resolvedBound = resolve(bound);
+  const resolvedBase = resolve(base);
+  if (resolvedBound === resolvedBase) return bound;
+  // SEPARATOR-AWARE, like the same test inside `assembly-path.ts`: a bare
+  // `startsWith('..')` would also read a legitimate `<bound>/..foo` base as
+  // outside and drop a correct bound.
+  const rel = relative(resolvedBound, resolvedBase);
+  const outside = rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  return outside ? base : bound;
 }
 
 /**

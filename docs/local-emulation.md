@@ -312,6 +312,12 @@ own asset manifest sits in, so a Lambda under a `cdk.Stage` — whose
 manifest lives in `cdk.out/assembly-<Stage>/` while its asset is staged
 into `cdk.out/` — resolves normally.
 
+That holds when `--app` names the app's own output directory. Pointing
+it at a Stage SUB-assembly (`--app cdk.out/assembly-MyStage`) makes that
+sub-directory the assembly root, so the Stage's own assets sit outside
+it and are refused. Point `--app` at `cdk.out` instead; Stage stacks are
+enumerated from there.
+
 ### Lambda Layers
 
 Same-stack `AWS::Lambda::LayerVersion` references in `Properties.Layers`

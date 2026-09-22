@@ -176,6 +176,10 @@ for (const site of SITES) {
 
       expect(site.call(a)).toBe(victim);
 
+      // The needle the five SILENT cases below assert the ABSENCE of. Assert
+      // it in the positive case too, or a reworded warning makes all five
+      // vacuous at once.
+      expect(warn.said()).toMatch(/aws:asset:path/);
       expect(warn.said()).toMatch(/absolute/);
       // Naming the path is the whole point of the warning: an absolute path
       // the user did not expect has to be VISIBLE, not silent.
@@ -284,6 +288,69 @@ for (const site of SITES) {
       expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
     });
 
+    it('REFUSES a bare `..`, which names the parent of the outdir', () => {
+      // `isInside`'s `rel === '..'` arm, which no `../<name>` case reaches.
+      // Drop it and this mounts the directory cdk.out sits in.
+      const a = assembly('..');
+
+      expect(() => site.call(a)).toThrow(/outside '/);
+    });
+
+    it('REFUSES a relative value resolving through a link to the outdir ITSELF', () => {
+      // The two arms DISAGREE here, deliberately rather than by accident, and
+      // the disagreement is fenced so it stays a decision. The ABSOLUTE arm
+      // accepts a link pointing at the bound (previous case): `--no-staging`
+      // legitimately names a directory, and that is the value the user's own
+      // synth wrote. The RELATIVE arm refuses it: no synth emits a link back
+      // to the outdir under an asset path, and the refusal reads correctly
+      // ("a symbolic link to the directory ... itself").
+      const a = assembly('self-link');
+      symlinkSync(a.outdir, join(a.manifestDir, 'self-link'), 'dir');
+
+      expect(() => site.call(a)).toThrow(/a symbolic link to the directory/);
+    });
+
+    it('stays SILENT for an absolute value inside the outdir by ANOTHER SPELLING', () => {
+      // The real-path exoneration in `absoluteAssemblyPathEscape`. Two
+      // spellings of one directory are routine (macOS resolves `/tmp` to
+      // `/private/tmp`), and a lexical-only verdict tells the user to treat
+      // their own assembly as untrusted because of one. Drop the exoneration
+      // and this reds.
+      const a = assembly('/placeholder');
+      const realOut = join(a.outer, 'real-out');
+      mkdirSync(join(realOut, 'asset.xyz'), { recursive: true });
+      // The BOUND becomes the link; the value is the same place spelled real.
+      const linked = join(a.outer, 'linked-out');
+      symlinkSync(realOut, linked, 'dir');
+      (a.stack as { assetOutdir?: string }).assetOutdir = linked;
+      (a.stack as { assetManifestPath?: string }).assetManifestPath = join(
+        linked,
+        'Stk.assets.json'
+      );
+      writeFileSync(join(realOut, 'Stk.assets.json'), '{}');
+      setAssetPath(a, 'Fn', join(realOut, 'asset.xyz'));
+      const warn = warnSpy();
+
+      expect(site.call(a)).toBe(join(realOut, 'asset.xyz'));
+      expect(warn.said()).not.toMatch(/aws:asset:path/);
+    });
+
+    it('FLATTENS control characters out of the refusal', () => {
+      // The path is assembly-chosen and lands on a log line; `path.resolve`
+      // preserves `\x1b[2K\r` and `\n`, which erase the line and forge
+      // benign ones in its place.
+      const a = assembly('../evil\u001b[2K\rINFO  asset verified\nINFO  done');
+
+      expect(() => site.call(a)).toThrow(/outside '/);
+      let message = '';
+      try {
+        site.call(a);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).not.toMatch(/[\n\r\u001b]/);
+    });
+
     // ---- the WIRING pair -------------------------------------------------
     // Both cases live BELOW a Stage manifest, the only shape in which the
     // bound and the resolution base differ. A top-level case cannot see the
@@ -330,6 +397,26 @@ for (const site of SITES) {
       // assembly. Fail-closed, never a hole, but a wrong diagnosis.
       const a = assembly('asset.abc123');
       delete (a.stack as { assetManifestPath?: string }).assetManifestPath;
+
+      expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
+    });
+
+    it('WIRING: a NONSENSE assetOutdir falls back to the manifest directory', () => {
+      // cdk-local is a LIBRARY, so a host builds `StackInfo` by hand. A bound
+      // that is neither the base nor an ancestor of it — here a RELATIVE
+      // 'cdk.out' against an absolute manifest path — resolves under the cwd
+      // and is DISJOINT from the base, which refuses every asset path with a
+      // message blaming the assembly. Fail-closed, never a hole, but a wrong
+      // diagnosis pointed at the wrong party.
+      const a = assembly('asset.abc123');
+      (a.stack as { assetOutdir?: string }).assetOutdir = 'cdk.out';
+
+      expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
+    });
+
+    it('WIRING: an EMPTY assetOutdir falls back too, rather than binding to the cwd', () => {
+      const a = assembly('asset.abc123');
+      (a.stack as { assetOutdir?: string }).assetOutdir = '';
 
       expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
     });
