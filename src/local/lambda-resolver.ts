@@ -969,43 +969,113 @@ export function assetPathDirs(stack: StackInfo): {
  * The real assembly ROOT for a `--app` that names a `cdk.Stage`
  * SUB-assembly.
  *
- * **This is not a widened bound; it is the bound computed correctly.** When a
- * user points `--app` at `cdk.out/assembly-MyStage`, the assembly they are
- * working with is rooted at `cdk.out` — `cdk synth` writes the Stage's
+ * When a user points `--app` at `cdk.out/assembly-MyStage`, the assembly they
+ * are working with is rooted at `cdk.out` — `cdk synth` writes the Stage's
  * manifest into the sub-directory and stages its ASSETS one level above, so
- * CDK's own `../asset.<hash>` is a within-assembly reference. Treating the
- * sub-directory as the root made every one of those look like an escape, and
- * the refusal had to append a paragraph explaining that the layout "is not a
+ * CDK's own `../asset.<hash>` is a within-assembly reference. Bounding at the
+ * named directory made every one of those look like an escape, and the
+ * refusal had to append a paragraph explaining that the layout "is not a
  * tamper" — a guard that has to talk you out of its own verdict is computing
  * the wrong thing.
  *
- * It climbs from a USER-supplied value (`--app` / `--output`), never from an
- * assembly-supplied one, so no manifest can move its own bound by writing a
- * path: `manifestDir` is unchanged and is still judged against this result.
+ * **It is a CONVENIENCE, not a safety property, and an earlier revision of
+ * this comment claimed the opposite.** That revision argued the climb is safe
+ * because it runs on a USER-supplied value. That is true of the STRING and
+ * false of the DECISION: the predicate is a directory NAME and the presence of
+ * a FILE, both inside the tree being examined — which under this module's own
+ * threat model is the attacker's. An archive unpacking as `manifest.json` +
+ * `assembly-X/` into a user's home, run as `--app ~/assembly-X`, moved the
+ * bound to `~`, after which `../.aws` resolved CONTAINED and was mounted with
+ * no refusal and no warning. It had been refused before the climb existed.
  *
- * TWO conditions, both required, because the directory NAME alone is a
- * heuristic a user could trip with an app outdir of their own called
- * `assembly-*`: the basename must look like cx-api's `assembly-<Stage>`, AND
- * the parent must itself be an assembly (carry a `manifest.json`). Nested
- * Stages climb repeatedly; the loop is bounded by the path's own depth and
- * stops at the first directory that fails either test.
+ * So the climb is bounded by two things that are not arguments:
+ *
+ * 1. **It WARNS every time it fires** (see {@link warnDerivedAssemblyRoot}),
+ *    naming the directory the user passed and the one derived from it. The
+ *    module's doctrine for an absolute path applies here unchanged — a
+ *    directory the user did not name must be visible rather than silent — and
+ *    it costs one line on the legitimate Stage path.
+ * 2. **The parent must DECLARE this child**, not merely sit above it: its
+ *    `manifest.json` must parse and carry a `cdk:cloud-assembly` artifact
+ *    whose `properties.directoryName` is this directory's basename, which is
+ *    cx-api's own invariant. This removes the accidental collision entirely
+ *    (`manifest.json` is not a CDK-exclusive filename) and makes the hostile
+ *    case require a purpose-built manifest. It does NOT make the climb safe
+ *    against someone who ships the whole tree — they can write that manifest
+ *    too. Point 1 is what covers that, which is why it is first.
+ *
+ * `manifestDir` never climbs: it stays `dirname(assetManifestPath)`, the
+ * assembly-derived value, and is still judged against whatever this returns.
+ *
+ * Returns the caller's own spelling UNCHANGED when no climb happens, because
+ * the bound is used as given elsewhere and normalising it would make a
+ * relative `--output cdk.out` come back absolute for every ordinary app.
  */
 function assemblyRootOf(outdir: string): string {
-  // Returns the caller's own spelling UNCHANGED when no climb happens. The
-  // bound is used as given everywhere else, and normalising it here would
-  // make a relative `--output cdk.out` come back absolute for every ordinary
-  // app — a silent change to a value the rest of the module compares by
-  // string as well as by resolution.
   let dir = resolve(outdir);
   let climbed = false;
   for (;;) {
     if (!basename(dir).startsWith('assembly-')) break;
     const parent = dirname(dir);
-    if (parent === dir || !existsSync(join(parent, 'manifest.json'))) break;
+    if (parent === dir || !parentDeclaresNestedAssembly(parent, basename(dir))) break;
     dir = parent;
     climbed = true;
   }
-  return climbed ? dir : outdir;
+  if (!climbed) return outdir;
+  warnDerivedAssemblyRoot(outdir, dir);
+  return dir;
+}
+
+/**
+ * Whether `parent`'s own `manifest.json` declares `child` as a nested
+ * assembly, which is what cx-api writes for a `cdk.Stage`.
+ *
+ * Tolerant by construction: an unreadable or unparseable manifest, or one with
+ * no matching artifact, answers `false` and the climb stops — the conservative
+ * direction, since not climbing only restores the previous refusal.
+ */
+function parentDeclaresNestedAssembly(parent: string, child: string): boolean {
+  try {
+    const raw = readFileSync(join(parent, 'manifest.json'), 'utf-8');
+    const artifacts = (JSON.parse(raw) as { artifacts?: Record<string, unknown> }).artifacts;
+    if (artifacts === null || typeof artifacts !== 'object') return false;
+    return Object.values(artifacts).some((a) => {
+      const art = a as { type?: unknown; properties?: { directoryName?: unknown } };
+      return art?.type === 'cdk:cloud-assembly' && art.properties?.directoryName === child;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Warned ONCE per derived root per process; the climb runs per resolve. */
+const warnedDerivedRoots = new Set<string>();
+
+/** Test seam; one process serves one app. */
+export function resetDerivedRootWarnings(): void {
+  warnedDerivedRoots.clear();
+}
+
+/**
+ * Say that the assembly root was DERIVED rather than given.
+ *
+ * The user named one directory and the containment bound is another, wider
+ * one. On the legitimate Stage path that is exactly what they wanted and the
+ * line is informative; on a hostile tree it is the only signal that a sibling
+ * of the directory they named is now inside the bound.
+ */
+function warnDerivedAssemblyRoot(named: string, derived: string): void {
+  if (warnedDerivedRoots.has(derived)) return;
+  warnedDerivedRoots.add(derived);
+  getLogger().warn(
+    `'${sanitizeServiceExceptionMessage(named)}' is a cdk.Stage sub-assembly, so ` +
+      `${getEmbedConfig().productName} is treating its parent ` +
+      `'${sanitizeServiceExceptionMessage(derived)}' as the assembly root — that is ` +
+      `where cdk synth stages a Stage's assets. Everything under that parent is now ` +
+      `inside the containment bound, including siblings of the directory you named. ` +
+      `If you did not expect the wider directory, point --app at the app's own output ` +
+      `directory instead.`
+  );
 }
 
 /**

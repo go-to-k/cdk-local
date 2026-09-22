@@ -39,7 +39,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { assetPathDirs, resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
+import {
+  assetPathDirs,
+  resetDerivedRootWarnings,
+  resolveLambdaTarget,
+} from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
@@ -82,11 +86,22 @@ function assembly(
   mkdirSync(join(outdir, 'asset.abc123'));
   mkdirSync(join(outdir, 'nested'), { recursive: true });
   writeFileSync(join(manifestDir, 'Stk.assets.json'), JSON.stringify({ version: '54.0.0' }));
-  // The app outdir carries a `manifest.json`, as every real assembly does.
-  // It is what lets `assetPathDirs` tell a genuine Stage sub-assembly from a
-  // user directory merely NAMED `assembly-*`; a fixture without it makes the
-  // sub-assembly cases exercise the look-alike branch instead.
-  writeFileSync(join(outdir, 'manifest.json'), JSON.stringify({ version: '54.0.0' }));
+  // The app outdir's `manifest.json` DECLARES the Stage, as cx-api writes it.
+  // Mere presence is not enough and must not be: `manifest.json` is not a
+  // CDK-exclusive filename, and a fixture that only creates the file would
+  // assert a weaker rule than the code applies.
+  writeFileSync(
+    join(outdir, 'manifest.json'),
+    JSON.stringify({
+      version: '54.0.0',
+      artifacts: {
+        'assembly-MyStage': {
+          type: 'cdk:cloud-assembly',
+          properties: { directoryName: 'assembly-MyStage' },
+        },
+      },
+    })
+  );
 
   const fn: TemplateResource = {
     Type: 'AWS::Lambda::Function',
@@ -526,12 +541,18 @@ for (const site of SITES) {
     });
 
     it('does NOT offer the Stage hint for a NON-climbing escape below a Stage bound', () => {
+      // Without this the bound CLIMBS to `cdk.out`, whose basename is not
+      // `assembly-*`, so the hint is unreachable through its directory-name
+      // test and the case stops exercising its own subject — the `..` test.
+      // Measured: with the climb in play, deleting the whole `climbsOut &&`
+      // clause leaves every hint case green.
       // The hint's `..` test, not just its directory-name test. Below a
       // sub-assembly bound a value that escapes through a SYMLINK rather than
       // through `..` has nothing to do with the staged-asset layout, so the
       // reassuring clause would be noise on it.
       const a = assembly('link/throwaway-victim', { stage: true });
       (a.stack as { assetOutdir?: string }).assetOutdir = a.manifestDir;
+      rmSync(join(a.outdir, 'manifest.json'), { force: true });
       symlinkSync(a.outer, join(a.manifestDir, 'link'), 'dir');
 
       let message = '';
@@ -593,11 +614,21 @@ describe('aws:asset:path — the messages AFTER the containment verdict', () => 
   });
 
   it('FLATTENS and CAPS the "is not a directory" message', () => {
+    // The CAP half needs a path that actually exceeds it, and a single
+    // component cannot: filesystems stop at 255 bytes per name, so the
+    // previous fixture was ~200 characters and the cap could be deleted
+    // without reddening. NESTED directories get past 512 while every
+    // component stays legal.
     const a = assembly('placeholder');
-    const name = `file\u001b[2K\rINFO  verified${'x'.repeat(200000)}`;
+    const deep = Array.from({ length: 12 }, (_, i) => `d${i}${'y'.repeat(60)}`);
+    mkdirSync(join(a.outdir, ...deep.slice(0, -1)), { recursive: true });
+    const leafDir = join(a.outdir, ...deep.slice(0, -1));
+    const leaf = `file\u001b[2K\rINFO  verified${'x'.repeat(40)}`;
     // A FILE, so the directory check is what refuses it.
-    writeFileSync(join(a.outdir, name.slice(0, 200)), '');
-    setAssetPath(a, 'Fn', name.slice(0, 200));
+    writeFileSync(join(leafDir, leaf), '');
+    const relative = [...deep.slice(0, -1), leaf].join('/');
+    expect(relative.length).toBeGreaterThan(512);
+    setAssetPath(a, 'Fn', relative);
 
     let message = '';
     try {
@@ -607,6 +638,11 @@ describe('aws:asset:path — the messages AFTER the containment verdict', () => 
     }
     expect(message).toMatch(/is not a directory/);
     expect(message).not.toMatch(/[\n\r\u001b]/);
+    // The CAP, with a bound that can actually fail: the message is 646 code
+    // points capped and grows past 1000 uncapped, so 700 sits between. A
+    // looser bound is decoration — measured by raising SERVICE_MESSAGE_MAX
+    // and watching this assertion stay green at 900.
+    expect(message.length).toBeLessThan(700);
   });
 });
 
@@ -643,6 +679,12 @@ describe('aws:asset:path containment — cdkl invoke layer assets', () => {
   });
 });
 
+const declares = (child: string): string =>
+  JSON.stringify({
+    version: '54.0.0',
+    artifacts: { [child]: { type: 'cdk:cloud-assembly', properties: { directoryName: child } } },
+  });
+
 describe('assetPathDirs — the bound the two sites are given', () => {
   // Asserted DIRECTLY rather than through a resolver, because the interesting
   // failure is cwd-dependent: `path.resolve('')` is the cwd, so dropping the
@@ -661,14 +703,16 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     const outdir = join(root, 'cdk.out');
     const stage = join(outdir, 'assembly-MyStage');
     mkdirSync(stage, { recursive: true });
-    writeFileSync(join(outdir, 'manifest.json'), '{}');
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
 
+    // The whole object: a mutant that climbed `manifestDir` too would
+    // otherwise only show up through a resolver case.
     expect(
       assetPathDirs({
         assetManifestPath: join(stage, 'Stk.assets.json'),
         assetOutdir: stage,
-      } as unknown as StackInfo).assetOutdir
-    ).toBe(outdir);
+      } as unknown as StackInfo)
+    ).toEqual({ manifestDir: stage, assetOutdir: outdir });
   });
 
   it('climbs through NESTED Stage sub-assemblies', () => {
@@ -676,8 +720,8 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     const outdir = join(root, 'cdk.out');
     const inner = join(outdir, 'assembly-Outer', 'assembly-Inner');
     mkdirSync(inner, { recursive: true });
-    writeFileSync(join(outdir, 'manifest.json'), '{}');
-    writeFileSync(join(outdir, 'assembly-Outer', 'manifest.json'), '{}');
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-Outer'));
+    writeFileSync(join(outdir, 'assembly-Outer', 'manifest.json'), declares('assembly-Inner'));
 
     expect(
       assetPathDirs({ assetOutdir: inner } as unknown as StackInfo).assetOutdir
@@ -686,9 +730,7 @@ describe('assetPathDirs — the bound the two sites are given', () => {
 
   it('does NOT climb out of a user outdir that merely LOOKS like a sub-assembly', () => {
     // The name is a heuristic a user can trip with an outdir of their own
-    // called `assembly-*`, so the parent must itself be an assembly. Without
-    // the `manifest.json` test this widens a real bound by one level, on a
-    // directory the user named as their root.
+    // called `assembly-*`, so the parent must DECLARE this child.
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-lookalike-')));
     const outdir = join(root, 'assembly-mine');
     mkdirSync(outdir);
@@ -696,6 +738,78 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     expect(
       assetPathDirs({ assetOutdir: outdir } as unknown as StackInfo).assetOutdir
     ).toBe(outdir);
+  });
+
+  it('does NOT climb for a parent that merely HAS a manifest.json', () => {
+    // **The blocker this guard exists for.** An archive unpacking as
+    // `manifest.json` + `assembly-X/` into a user's home, run as
+    // `--app ~/assembly-X`, moved the bound to `~` — after which `../.aws`
+    // resolved CONTAINED and was mounted, with no refusal and no warning. It
+    // had been refused before the climb existed. Presence is not a test:
+    // `manifest.json` is not a CDK-exclusive filename, and an attacker ships
+    // the whole tree anyway. The parent must DECLARE this child, which is
+    // cx-api's own invariant.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-tarbomb-')));
+    const shipped = join(home, 'assembly-Prod');
+    mkdirSync(shipped);
+    mkdirSync(join(home, '.aws'));
+    writeFileSync(join(home, 'manifest.json'), JSON.stringify({ version: '54.0.0' }));
+
+    expect(
+      assetPathDirs({ assetOutdir: shipped } as unknown as StackInfo).assetOutdir
+    ).toBe(shipped);
+  });
+
+  it('does NOT climb when the parent declares a DIFFERENT child', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-otherchild-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-SomethingElse'));
+
+    expect(
+      assetPathDirs({ assetOutdir: stage } as unknown as StackInfo).assetOutdir
+    ).toBe(stage);
+  });
+
+  it('WARNS when it climbs, naming the directory given and the one derived', () => {
+    // The climb widens the one hard boundary, and the module's doctrine for an
+    // absolute path applies unchanged: a directory the user did not name must
+    // be visible rather than silent. The declaration test raises the bar
+    // against a planted tree; it does not close it, because the attacker
+    // writes that manifest too. This line is what covers that.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-warn-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), declares('assembly-MyStage'));
+    resetDerivedRootWarnings();
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      lines.push(m);
+    });
+
+    assetPathDirs({ assetOutdir: stage } as unknown as StackInfo);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(stage);
+    expect(lines[0]).toContain(outdir);
+    expect(lines[0]).toContain('siblings of the directory you named');
+  });
+
+  it('stays SILENT when no climb happens', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-nowarn-')));
+    const outdir = join(root, 'cdk.out');
+    mkdirSync(outdir);
+    resetDerivedRootWarnings();
+    const lines: string[] = [];
+    vi.spyOn(getLogger(), 'warn').mockImplementation((m: string) => {
+      lines.push(m);
+    });
+
+    assetPathDirs({ assetOutdir: outdir } as unknown as StackInfo);
+
+    expect(lines).toEqual([]);
   });
 
   it('treats an EMPTY assetOutdir as absent, whatever the cwd is', () => {
