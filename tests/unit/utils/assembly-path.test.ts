@@ -171,15 +171,43 @@ describe('resolveAssemblyPath — the symlink arm', () => {
     expect(Date.now() - started).toBeLessThan(5000);
   });
 
-  it('gives up rather than overflowing the stack on a very deep absent path', () => {
-    // MAX_PATH_COMPONENTS. The climb recurses once per unresolvable
-    // COMPONENT, so without the budget a hostile value raises a `RangeError`
-    // INSIDE `tryRealpath`'s own `try`, whose `catch` turns the crash into a
-    // silent `undefined`.
-    const dir = tmp();
-    const deep = Array.from({ length: 5000 }, (_, i) => `d${i}`).join('/');
+  it('spends MAX_PATH_COMPONENTS and then gives up, rather than overflowing', () => {
+    // The budget's VALUE, asserted from both sides so the case cannot pass
+    // with the budget removed: a count-based "does it throw" probe is
+    // sub-floor, because the engine's own stack limit lands somewhere above
+    // it. Under the budget the symlink arm still answers; over it the climb
+    // gives up and the lexical verdict stands (the documented fail-open,
+    // recorded on the constant).
+    const outer = tmp();
+    const dir = join(outer, 'cdk.out');
+    mkdirSync(dir);
+    symlinkSync(outer, join(dir, 'link'), 'dir');
+    const under = (n: number): string =>
+      `link/${Array.from({ length: n }, (_, i) => `d${i}`).join('/')}/leaf`;
 
-    expect(() => resolveAssemblyPath(dir, deep)).not.toThrow();
+    expect(resolveAssemblyPath(dir, under(990)).contained).toBe(false);
+    expect(resolveAssemblyPath(dir, under(1010)).contained).toBe(true);
+  });
+
+  it('re-applies an ABSENT leaf under the link its parent really points at', () => {
+    // The non-link half of the climb: `join(realParent, basename(target))`.
+    // Return `target` instead and a live directory link with an absent leaf
+    // reads as CONTAINED — the same class as the dangling-target fold above,
+    // and the shape `cdkl start-api` hits, since it resolves without an
+    // existence check.
+    const outer = tmp();
+    const dir = join(outer, 'cdk.out');
+    const d2 = join(outer, 'd2');
+    mkdirSync(dir);
+    mkdirSync(d2);
+    symlinkSync(d2, join(dir, 'aliasdir'), 'dir');
+
+    const out = resolveAssemblyPath(dir, 'aliasdir/absent-asset');
+
+    expect(out.contained).toBe(false);
+    expect(out.contained === false && out.escape === 'symlink' && out.realPath).toBe(
+      join(d2, 'absent-asset')
+    );
   });
 });
 
@@ -218,6 +246,24 @@ describe('absoluteAssemblyPathEscape', () => {
     symlinkSync(real, boundViaLink, 'dir');
 
     expect(absoluteAssemblyPathEscape(boundViaLink, join(real, 'src'))).toBeUndefined();
+  });
+
+  it('keeps the escape when the real paths CANNOT be looked up', () => {
+    // `undefined` from the resolver is "could not look", which must not be
+    // read as "the kernel says it is inside". Weaken the exoneration to
+    // `reallyOutside !== true` and a value outside the bound that the kernel
+    // refuses to resolve — here an ELOOP cycle — is silently accepted.
+    const outer = tmp();
+    const dir = join(outer, 'cdk.out');
+    mkdirSync(dir);
+    symlinkSync(join(outer, 'cyc-b'), join(outer, 'cyc-a'), 'dir');
+    symlinkSync(join(outer, 'cyc-a'), join(outer, 'cyc-b'), 'dir');
+
+    expect(absoluteAssemblyPathEscape(dir, join(outer, 'cyc-a'))).toEqual({
+      contained: false,
+      escape: 'lexical',
+      path: join(outer, 'cyc-a'),
+    });
   });
 
   it('still reports an escape when the real paths disagree too', () => {

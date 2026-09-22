@@ -425,9 +425,13 @@ into `cdk.out/` — resolves normally.
 
 That holds when `--app` names the app's own output directory. Pointing
 it at a Stage SUB-assembly (`--app cdk.out/assembly-MyStage`) makes that
-sub-directory the assembly root, so the Stage's own assets sit outside
-it and are refused. Point `--app` at `cdk.out` instead; Stage stacks are
-enumerated from there.
+sub-directory the assembly root, so the Stage's own assets — staged into
+the app's outdir by `cdk synth` — sit outside it and are refused. The
+refusal says so, because the generic wording would otherwise blame a
+hand-modified assembly for a layout CDK produced. cdk-local does not yet
+enumerate a Stage's stacks from the app outdir either
+([#746](https://github.com/go-to-k/cdk-local/issues/746)), so a Stage
+Lambda has no working route today.
 
 ### Lambda Layers
 

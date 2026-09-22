@@ -39,7 +39,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
+import { assetPathDirs, resolveLambdaTarget } from '../../../src/local/lambda-resolver.js';
 import { resolveLambdaByLogicalId } from '../../../src/cli/commands/local-start-api.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { TemplateResource } from '../../../src/types/resource.js';
@@ -299,11 +299,14 @@ for (const site of SITES) {
     it('REFUSES a relative value resolving through a link to the outdir ITSELF', () => {
       // The two arms DISAGREE here, deliberately rather than by accident, and
       // the disagreement is fenced so it stays a decision. The ABSOLUTE arm
-      // accepts a link pointing at the bound (previous case): `--no-staging`
-      // legitimately names a directory, and that is the value the user's own
-      // synth wrote. The RELATIVE arm refuses it: no synth emits a link back
-      // to the outdir under an asset path, and the refusal reads correctly
-      // ("a symbolic link to the directory ... itself").
+      // accepts a link pointing at the bound for the same reason the
+      // re-spelling exoneration exists: NOTHING LEAVES THE BOUND, so a warning
+      // would be a false alarm, and the arm's whole worth is that an alarm
+      // means something. The RELATIVE arm refuses it because refusing costs
+      // nothing there: no synth emits a link back to the outdir under an asset
+      // path, and the refusal already reads correctly
+      // ("a symbolic link to the directory ... itself") rather than as a
+      // generic escape.
       const a = assembly('self-link');
       symlinkSync(a.outdir, join(a.manifestDir, 'self-link'), 'dir');
 
@@ -401,24 +404,98 @@ for (const site of SITES) {
       expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
     });
 
-    it('WIRING: a NONSENSE assetOutdir falls back to the manifest directory', () => {
-      // cdk-local is a LIBRARY, so a host builds `StackInfo` by hand. A bound
-      // that is neither the base nor an ancestor of it — here a RELATIVE
-      // 'cdk.out' against an absolute manifest path — resolves under the cwd
-      // and is DISJOINT from the base, which refuses every asset path with a
-      // message blaming the assembly. Fail-closed, never a hole, but a wrong
-      // diagnosis pointed at the wrong party.
+    it('WIRING: a PRESENT bound is never replaced by the assembly-derived base', () => {
+      // THE TRUST BOUNDARY. `assetOutdir` comes from the user's `--app` /
+      // `--output`; `manifestDir` is derived from the assembly's own
+      // `manifest.json` (cx-api resolves `AssetManifestArtifact.file` out of
+      // it), so the BASE is attacker-controlled and the BOUND is not. An
+      // earlier revision dropped a present bound whenever it was not an
+      // ancestor of the base, to improve the diagnosis for a host that
+      // supplied a nonsense one — and a planted `file` pointing out of the
+      // assembly then carried the bound with it, so a plain relative value
+      // resolved CONTAINED with no refusal and no warning.
+      const a = assembly('asset.abc123');
+      // A planted manifest path two levels above the outdir.
+      (a.stack as { assetManifestPath?: string }).assetManifestPath = join(
+        a.outer,
+        '..',
+        'Stk.assets.json'
+      );
+      setAssetPath(a, 'Fn', 'throwaway-victim');
+
+      expect(() => site.call(a)).toThrow(/outside '/);
+    });
+
+    it('WIRING: a host bound that is DISJOINT from the base refuses, rather than widening', () => {
+      // Fail-closed with a wrong diagnosis is the accepted cost; the
+      // alternative reopened the hole above.
       const a = assembly('asset.abc123');
       (a.stack as { assetOutdir?: string }).assetOutdir = 'cdk.out';
 
-      expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
+      expect(() => site.call(a)).toThrow(/outside '/);
     });
 
-    it('WIRING: an EMPTY assetOutdir falls back too, rather than binding to the cwd', () => {
+    it('WIRING: an EMPTY assetOutdir is treated as ABSENT, not as the cwd', () => {
       const a = assembly('asset.abc123');
       (a.stack as { assetOutdir?: string }).assetOutdir = '';
 
       expect(site.call(a)).toBe(join(a.outdir, 'asset.abc123'));
+    });
+
+    it('CAPS an unbounded path instead of letting it flood the line', () => {
+      // The warn fires BEFORE any existence check, so the path never has to
+      // exist: an unbounded one scrolls the leading clause off screen and
+      // blows a bounded log line.
+      const a = assembly('/placeholder');
+      setAssetPath(a, 'Fn', join(a.outer, 'x'.repeat(200000)));
+      // The LOGICAL ID is assembly-chosen too, and is interpolated first.
+      a.stack.template.Resources!['L'.repeat(200000)] =
+        a.stack.template.Resources!['Fn']!;
+      delete a.stack.template.Resources!['Fn'];
+      const warn = warnSpy();
+
+      // `invoke` throws on the existence check AFTER warning, which is itself
+      // the point: the warning fires first, so the path need not exist.
+      try {
+        (site.name.includes('start-api')
+          ? resolveLambdaByLogicalId('L'.repeat(200000), [a.stack])
+          : resolveLambdaTarget(`Stk:${'L'.repeat(200000)}`, [a.stack])) as unknown;
+      } catch {
+        /* the existence check, not the subject here */
+      }
+
+      expect(warn.said().length).toBeLessThan(4000);
+      expect(warn.said()).toMatch(/truncated/);
+    });
+
+    it('names the Stage SUB-ASSEMBLY layout in the refusal instead of blaming the user', () => {
+      // `--app cdk.out/assembly-MyStage` makes that directory the assembly
+      // root, so the Stage's assets — staged into the APP's outdir by
+      // `cdk synth` — are one level above it and CDK's own `../asset.<hash>`
+      // escapes. The generic provenance sentence would accuse a hand-modified
+      // assembly of a layout CDK produced, and the user would hunt a tamper
+      // that did not happen (go-to-k/cdk-local#746).
+      const a = assembly('../asset.abc123', { stage: true });
+      // Read AS a sub-assembly: the Stage directory is the root.
+      (a.stack as { assetOutdir?: string }).assetOutdir = a.manifestDir;
+
+      expect(() => site.call(a)).toThrow(/cdk\.Stage sub-assembly/);
+      expect(() => site.call(a)).toThrow(/is not a tamper/);
+    });
+
+    it('does NOT offer the Stage hint for an ordinary escape', () => {
+      // The hint must not become noise on every refusal: a top-level assembly
+      // escaping with `../throwaway-victim` has nothing to do with a Stage.
+      const a = assembly('../throwaway-victim');
+
+      expect(() => site.call(a)).toThrow(/outside '/);
+      let message = '';
+      try {
+        site.call(a);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).not.toMatch(/sub-assembly/);
     });
 
     it('WIRING: a StackInfo with no assetOutdir falls back to the manifest directory', () => {
@@ -462,5 +539,40 @@ describe('aws:asset:path containment — cdkl invoke layer assets', () => {
     const a = assembly('../asset.abc123', { layer: true, stage: true });
 
     expect(layerPath(a)).toBe(join(a.outdir, 'asset.abc123'));
+  });
+});
+
+describe('assetPathDirs — the bound the two sites are given', () => {
+  // Asserted DIRECTLY rather than through a resolver, because the interesting
+  // failure is cwd-dependent: `path.resolve('')` is the cwd, so dropping the
+  // empty-string guard only shows up when the cwd is an ANCESTOR of the base —
+  // which is the ordinary case (`cdkl` run from the project root with `cdk.out`
+  // below it) and never the case for a /tmp fixture. Through a resolver the
+  // mutant passes for the wrong reason.
+  it('treats an EMPTY assetOutdir as absent, whatever the cwd is', () => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+
+    expect(
+      assetPathDirs({
+        assetManifestPath: join(outdir, 'Stk.assets.json'),
+        assetOutdir: '',
+      } as unknown as StackInfo)
+    ).toEqual({ manifestDir: outdir, assetOutdir: outdir });
+  });
+
+  it('uses a PRESENT bound as given, even when it is disjoint from the base', () => {
+    const outer = tmp();
+    const outdir = join(outer, 'cdk.out');
+
+    // Fail-closed: every path under the base is then outside the bound. The
+    // alternative — dropping the bound — lets an assembly-controlled manifest
+    // path widen it.
+    expect(
+      assetPathDirs({
+        assetManifestPath: join(outdir, 'Stk.assets.json'),
+        assetOutdir: 'cdk.out',
+      } as unknown as StackInfo).assetOutdir
+    ).toBe('cdk.out');
   });
 });

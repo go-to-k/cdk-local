@@ -1,6 +1,6 @@
 import { readlinkSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { flattenToOneLine } from '../local/credential-error.js';
+import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 
 /**
  * Containment for a path a Cloud Assembly names.
@@ -19,7 +19,7 @@ import { flattenToOneLine } from '../local/credential-error.js';
  * asymmetry is why {@link absoluteAssemblyPathEscape} exists beside
  * {@link resolveAssemblyPath} rather than falling out of it.
  *
- * EVERY path this module RENDERS goes through `flattenToOneLine`, for the
+ * EVERY path this module RENDERS goes through `sanitizeServiceExceptionMessage`, for the
  * reason the mitigation itself depends on: the warning and the refusal exist
  * FOR a hand-modified assembly, so the path is attacker-chosen and lands on a
  * log line. `path.resolve` preserves control characters, so an unsanitized
@@ -66,6 +66,10 @@ function isInside(base: string, candidate: string): boolean {
   const rel = relative(base, candidate);
   if (rel === '' || rel === '..') return false;
   if (rel.startsWith(`..${sep}`)) return false;
+  // WIN32 ONLY, and unreachable on POSIX: `path.relative` returns an absolute
+  // path when the two sides share no root, which needs drive letters or a UNC
+  // prefix. Kept because `path` is the PLATFORM's here, so this file is the
+  // Windows verdict too.
   return !isAbsolute(rel);
 }
 
@@ -345,8 +349,8 @@ export function renderAssemblyPathEscape(
   const realBase = resolveThroughLinks(base) ?? base;
   // Every rendered operand is attacker-chosen; see this module's header for
   // why an unsanitized one makes the message forge its own replacement.
-  const shownPath = flattenToOneLine(escape.path);
-  const shownBase = flattenToOneLine(base);
+  const shownPath = sanitizeServiceExceptionMessage(escape.path);
+  const shownBase = sanitizeServiceExceptionMessage(base);
   if (escape.escape === 'symlink') {
     if (escape.realPath === realBase) {
       return (
@@ -356,7 +360,7 @@ export function renderAssemblyPathEscape(
     }
     return (
       `resolves to '${shownPath}', which leads through a symbolic link to ` +
-      `'${flattenToOneLine(escape.realPath)}', outside '${shownBase}'. ${provenance}`
+      `'${sanitizeServiceExceptionMessage(escape.realPath)}', outside '${shownBase}'. ${provenance}`
     );
   }
   if (escape.path === base) {

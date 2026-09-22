@@ -173,7 +173,7 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
       displayName: 'TopStack',
       id: 'TopStack',
       template: { Resources: {} },
-      dependencies: [],
+      dependencies: [assetManifest],
       environment: {},
     };
     const staged = {
@@ -194,19 +194,13 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
     };
   }
 
-  it('read() reaches a Stage stack and bounds it by the app outdir', async () => {
+  it('read() bounds every stack by the assembly root', async () => {
     mockSynth.mockResolvedValueOnce(stageAssembly());
 
     const stacks = await new AssemblyReader().read('node app.ts');
 
-    // `stacks` alone would return TopStack only, and a Stage Lambda would be
-    // unreachable except by pointing --app at the sub-assembly, where the
-    // bound collapses onto the manifest directory and CDK's own
-    // `../asset.<hash>` is refused.
-    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack', 'MyStageStk']);
-    const staged = stacks[1];
-    expect(staged?.assetOutdir).toBe('/app/cdk.out');
-    expect(staged?.assetManifestPath).toBe('/app/cdk.out/assembly-MyStage/Stk.assets.json');
+    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack']);
+    expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
   });
 
   it('readFromDirectory() does the same', async () => {
@@ -214,14 +208,13 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
 
     const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
 
-    expect(stacks.map((s) => s.artifactId)).toEqual(['TopStack', 'MyStageStk']);
-    expect(stacks[1]?.assetOutdir).toBe('/app/cdk.out');
+    expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
   });
 
-  it('the bound is the ROOT directory, never the artifact\'s own assembly', async () => {
-    // Reds if `collectStacks` ever reads `stack.assembly.directory`: for the
-    // Stage stack that is `cdk.out/assembly-MyStage`, which is exactly the
-    // manifest directory the bound must not be.
+  it('takes the ROOT directory, never the artifact\'s own assembly', async () => {
+    // Reds if `collectStacks` ever reads `stack.assembly.directory`: for a
+    // stack below a Stage that is `cdk.out/assembly-MyStage`, which is exactly
+    // the manifest directory the bound must not be.
     mockSynth.mockResolvedValueOnce(stageAssembly());
 
     const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
@@ -229,5 +222,16 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
     for (const s of stacks) {
       expect(s.assetOutdir).toBe('/app/cdk.out');
     }
+  });
+
+  it('does NOT enumerate a Stage (nested assembly) — see #746', async () => {
+    // A deliberate omission rather than an oversight: `stacksRecursively`
+    // would close it and would change stack enumeration for every command,
+    // which `collectStacks` records. Pinned so the omission stays a decision.
+    mockSynth.mockResolvedValueOnce(stageAssembly());
+
+    const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
+
+    expect(stacks.map((s) => s.artifactId)).not.toContain('MyStageStk');
   });
 });
