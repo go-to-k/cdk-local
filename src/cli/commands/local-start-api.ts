@@ -15,7 +15,11 @@ import {
 } from '../options.js';
 import { resolveProfileCredentials, buildStsClientConfig } from '../../utils/profile-resolver.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailureForWarn, flattenToOneLine } from '../../local/credential-error.js';
+import {
+  describeAwsFailureForWarn,
+  flattenToOneLine,
+  sanitizeServiceExceptionMessage,
+} from '../../local/credential-error.js';
 import {
   applyRoleArnIfSet,
   assumeRoleCredentials,
@@ -99,7 +103,6 @@ import {
   type ApiServerGroup,
 } from '../../local/api-server-grouping.js';
 import { resolveEnvVars, type EnvOverrideFile } from '../../local/env-resolver.js';
-import { sanitizeServiceExceptionMessage } from '../../local/credential-error.js';
 import {
   assetPathDirs,
   extractEphemeralStorageMb,

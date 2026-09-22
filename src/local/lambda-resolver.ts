@@ -762,8 +762,12 @@ function extractImageLambdaProperties(args: {
  *   filesystem. Nothing here can distinguish a `--no-staging` value from a
  *   planted one: both are an absolute directory the assembly named.
  * - What bounds it: this is a LOCAL developer command run against an assembly
- *   the user pointed at, the mount is read-only, and the warning names the
- *   directory so an unexpected one is visible rather than silent.
+ *   the user pointed at, and the warning names the directory so an unexpected
+ *   one is visible rather than silent. **Do not count the read-only mount as
+ *   the bound.** It stops writes to the tree, not the capability: a read-only
+ *   bind of a directory holding a unix socket (`/var/run`, `/run`) still
+ *   permits `connect(2)` on, say, `docker.sock`. The warning is the
+ *   mitigation.
  *
  * The `..` containment is NOT relaxed with it, but be precise about what it
  * buys. Against an ADVERSARY it stops nothing: they write the ABSOLUTE
@@ -860,7 +864,11 @@ export function resolveAssetCodeDirectory(
     // unchanged either way. The `..` test is separator-aware for the reason
     // `isInside` gives: a sibling named `..foo` is not an escape upward, and
     // the hint would be noise on it.
-    const climbsOut = assetPath === '..' || assetPath.startsWith(`..${sep}`);
+    // `/` as well as the platform `sep`: an assembly's own values are always
+    // `/`-separated, so on Windows a `sep`-only test never fires and the Stage
+    // hint silently disappears from the message that needs it most.
+    const climbsOut =
+      assetPath === '..' || assetPath.startsWith(`..${sep}`) || assetPath.startsWith('../');
     const stageHint =
       basename(assetOutdir).startsWith('assembly-') && climbsOut
         ? ` If --app names a cdk.Stage sub-assembly, that directory is the assembly ` +

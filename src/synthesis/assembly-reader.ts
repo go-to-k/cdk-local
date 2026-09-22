@@ -45,8 +45,15 @@ export interface StackInfo {
    * directory refuses every one of them.
    *
    * Always set by {@link AssemblyReader}; optional only for a hand-built
-   * `StackInfo` (a host embedding cdk-local as a library), where the bound
-   * falls back to the manifest directory — narrower, never wider.
+   * `StackInfo` (a host embedding cdk-local as a library).
+   *
+   * **The absent case is NOT a narrower bound, and an earlier revision of this
+   * sentence said it was.** The fallback is the manifest directory, which is
+   * ASSEMBLY-derived: a planted `file` of `../../../../x.assets.json` moves
+   * base and bound together, so the pair admits `etc/passwd`. A library host
+   * that wants the guard must supply this field. `assetPathDirs` in
+   * `src/local/lambda-resolver.ts` carries the full note; the two must not
+   * disagree again — this one is the one a host reads first.
    */
   assetOutdir?: string | undefined;
 

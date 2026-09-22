@@ -175,6 +175,15 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
       template: { Resources: {} },
       dependencies: [assetManifest],
       environment: {},
+      // **The property real cx-api always carries, and without it the case
+      // below fences nothing.** `collectStacks` maps `assembly.stacks`, which
+      // here is `[top]` alone, so root and artifact directory would be the
+      // same value; the mutation `stack.assembly.directory` then redded only
+      // by `TypeError` on a missing key, not by producing the wrong bound.
+      // Pointing it at the Stage's manifest directory is what makes the
+      // mutant return `cdk.out/assembly-MyStage` — the one value the bound
+      // must never be.
+      assembly: { directory: '/app/cdk.out/assembly-MyStage' },
     };
     const staged = {
       stackName: 'MyStage-Stk',
@@ -183,6 +192,7 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
       template: { Resources: {} },
       dependencies: [assetManifest],
       environment: {},
+      assembly: { directory: '/app/cdk.out/assembly-MyStage' },
     };
     return {
       cloudAssembly: {
@@ -212,16 +222,33 @@ describe('AssemblyReader — assetOutdir is the ROOT assembly directory', () => 
   });
 
   it('takes the ROOT directory, never the artifact\'s own assembly', async () => {
-    // Reds if `collectStacks` ever reads `stack.assembly.directory`: for a
-    // stack below a Stage that is `cdk.out/assembly-MyStage`, which is exactly
-    // the manifest directory the bound must not be.
+    // Reds if `collectStacks` ever reads `stack.assembly.directory`, which the
+    // fixture deliberately sets to `cdk.out/assembly-MyStage` — the manifest
+    // directory the bound must never be. Without that property the case was a
+    // duplicate of the one above: root and artifact directory coincided, and
+    // the mutation redded by `TypeError` rather than by the wrong bound.
     mockSynth.mockResolvedValueOnce(stageAssembly());
 
     const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
 
+    expect(stacks).not.toHaveLength(0);
     for (const s of stacks) {
       expect(s.assetOutdir).toBe('/app/cdk.out');
+      expect(s.assetOutdir).not.toContain('assembly-MyStage');
     }
+  });
+
+  it('bounds by the ROOT while the asset MANIFEST stays in the Stage directory', async () => {
+    // The seam the whole Stage bound rests on, asserted through the real
+    // reader: `assetManifestPath` is the Stage's, `assetOutdir` is the root,
+    // and they must DIFFER. The fixture built that manifest path and then
+    // never asserted it, so nothing made bound-vs-manifest-dir visible here.
+    mockSynth.mockResolvedValueOnce(stageAssembly());
+
+    const stacks = await new AssemblyReader().readFromDirectory('/app/cdk.out');
+
+    expect(stacks[0]?.assetManifestPath).toBe('/app/cdk.out/assembly-MyStage/Stk.assets.json');
+    expect(stacks[0]?.assetOutdir).toBe('/app/cdk.out');
   });
 
   it('does NOT enumerate a Stage (nested assembly) — see #746', async () => {

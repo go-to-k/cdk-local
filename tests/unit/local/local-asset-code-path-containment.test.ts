@@ -391,6 +391,15 @@ for (const site of SITES) {
       // Reds if the bound is widened past the app outdir — the failure mode a
       // refusal-only suite reads as success.
       expect(() => site.call(a)).toThrow(/outside '/);
+
+      // ...and it must name the OUTDIR, not the Stage's manifest directory.
+      // `renderAssemblyPathEscape(escape, dir, action)` takes `dir` as a plain
+      // `string`, so passing `manifestDir` there compiles and every refusal
+      // assertion in this file stayed green — the message would simply tell
+      // the user the wrong bound. This is the only shape where the two
+      // differ.
+      expect(() => site.call(a)).toThrow(new RegExp(`outside '${a.outdir}'`));
+      expect(() => site.call(a)).not.toThrow(/outside '[^']*assembly-/);
     });
 
     it('WIRING: an absolute path in the app outdir is SILENT below a Stage manifest', () => {

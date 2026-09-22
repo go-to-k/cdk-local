@@ -310,7 +310,8 @@ implied by the function's `Handler` property (`index.handler` →
 The bound is the APP's output directory, not the directory the stack's
 own asset manifest sits in, so a Lambda under a `cdk.Stage` — whose
 manifest lives in `cdk.out/assembly-<Stage>/` while its asset is staged
-into `cdk.out/` — resolves normally.
+into `cdk.out/` — is not refused by this rule. (Reaching one at all is a
+separate matter; see the note below.)
 
 That holds when `--app` names the app's own output directory. Pointing
 it at a Stage SUB-assembly (`--app cdk.out/assembly-MyStage`) makes that
