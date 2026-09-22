@@ -928,8 +928,20 @@ export function resolveAssetCodeDirectory(
  * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field,
  * where base and bound coincide again.
  *
- * A PRESENT `assetOutdir` is used AS GIVEN, and the base is never allowed to
- * replace it. The asymmetry is a trust boundary rather than a style choice:
+ * A PRESENT `assetOutdir` is never replaced BY THE BASE. It may be replaced by
+ * its own ANCESTOR, and only in one shape: {@link assemblyRootOf} climbs when
+ * `--app` names a `cdk.Stage` sub-assembly. That is a real widening, decided
+ * partly by a file inside the tree being examined, and every instance of it is
+ * warned — the reasoning is on `assemblyRootOf` and must be read with this
+ * paragraph, not instead of it. **Do not restate the stronger claim here.** An
+ * earlier revision of this block said the bound is used "AS GIVEN" after the
+ * climb had already made that false, which is the same failure this PR
+ * repaired in `StackInfo.assetOutdir`'s own doc one commit earlier.
+ *
+ * Note also that this helper is no longer pure: the climb reads the filesystem
+ * and can emit a log line.
+ *
+ * The base/bound asymmetry is a trust boundary rather than a style choice:
  * `assetOutdir` comes from the user's own `--app` / `--output`, while
  * `manifestDir` is derived from `AssetManifestArtifact.file`, which cx-api
  * resolves out of the assembly's OWN `manifest.json` — so the base is
@@ -946,8 +958,9 @@ export function resolveAssetCodeDirectory(
  * outside" — a candidate can climb back in (`app/cdk.out/asset.9f1` from a base
  * of `/Users/dev`). What holds is that THE BOUND IS ENFORCED INDEPENDENTLY OF
  * THE BASE, so a planted `file` can steer where a relative value resolves FROM
- * and can still only reach inside the user's own outdir — which the assembly
- * already owns. A later reader leaning on the stronger sentence would think a
+ * and can still only reach inside the BOUND — the user's own outdir, or the
+ * root `assemblyRootOf` derived from it, which is the one case where a planted
+ * tree can influence the bound and is warned for exactly that reason. A later reader leaning on the stronger sentence would think a
  * separate base check is redundant.
  *
  * An EMPTY string is treated as ABSENT rather than as a bound, because
@@ -1032,6 +1045,7 @@ function assemblyRootOf(outdir: string): string {
   return root;
 }
 
+/** The climb itself; {@link assemblyRootOf} holds the reasoning and memoizes. */
 function climbToAssemblyRoot(outdir: string): string {
   let dir = resolve(outdir);
   let climbed = false;
@@ -1086,23 +1100,38 @@ function parentDeclaresNestedAssembly(parent: string, child: string): boolean {
  * later — stays narrow, which is fail-closed. So the cache cannot introduce an
  * UNWARNED widening in either direction.
  *
- * Keyed by the raw outdir STRING and never evicted, which is sound because one
- * process serves one app: a long-lived library host reusing a process across
- * two assemblies whose outdir strings collide would get the first tree's root,
- * and must call {@link resetDerivedRootWarnings} between them.
+ * Keyed by the raw outdir STRING and never evicted. Sound because the same
+ * string names the same directory: a second assembly reusing an outdir is the
+ * same tree, and a changed tree under it is case A above. Growth is one entry
+ * per distinct `--app`, and a climb only happens under `readFromDirectory`
+ * where that argument is constant for the process.
  */
 const derivedRootCache = new Map<string, string>();
 /**
- * Derived root -> the directory the user actually named. LAST WRITER WINS,
- * which is cosmetic: two sibling Stages climbing to one root make the per-path
- * warning name the other sibling as "the directory --app named". The root and
- * the offending path are both still correct.
+ * Derived root -> the directory the user actually named. LAST WRITER WINS, and
+ * the consequence is always a WRONG NAME, never a missing warning: two sibling
+ * Stages climbing to one root make the per-path line name the other sibling,
+ * and a long-lived host that processes assembly A (climbed to `/x/cdk.out`)
+ * and then assembly B whose `--app` IS `/x/cdk.out` names A's Stage directory
+ * throughout run B. The root and the offending path stay correct in both.
+ * Both are a wrong NAME in a line that still fires with the right root and the
+ * right path, which is why neither buys an eviction policy.
  */
 const derivedRootOrigins = new Map<string, string>();
 const warnedDerivedRoots = new Set<string>();
 const warnedOutsideNamed = new Set<string>();
 
-/** Test seam; one process serves one app. */
+/**
+ * Clear the climb's per-process state.
+ *
+ * A TEST SEAM. It is deliberately not advertised as a host API and is not on
+ * the `cdk-local/internal` surface, because the cache does not need one: it is
+ * keyed by the outdir STRING, and the same string names the same directory, so
+ * a second assembly reusing it is the same tree. The only cross-assembly
+ * residual is cosmetic — `derivedRootOrigins` naming the earlier `--app`
+ * directory in the per-path warning — and inventing an exported reset for that
+ * would be surface nothing imports.
+ */
 export function resetDerivedRootWarnings(): void {
   derivedRootCache.clear();
   derivedRootOrigins.clear();

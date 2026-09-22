@@ -639,10 +639,12 @@ describe('aws:asset:path — the messages AFTER the containment verdict', () => 
     }
     expect(message).toMatch(/is not a directory/);
     expect(message).not.toMatch(/[\n\r\u001b]/);
-    // The CAP, with a bound that can actually fail: the message is 646 code
-    // points capped and grows past 1000 uncapped, so 700 sits between. A
-    // looser bound is decoration — measured by raising SERVICE_MESSAGE_MAX
-    // and watching this assertion stay green at 900.
+    // The CAP, with a bound that can actually fail: capped the message is ~646
+    // code points and uncapped it is several hundred longer, so 700 sits
+    // between. The exact uncapped length is host-specific (it carries a tmp
+    // prefix), which is why the bound is pinned just above the capped value
+    // rather than at a round number — a looser one is decoration, measured by
+    // raising SERVICE_MESSAGE_MAX and watching a 900 bound stay green.
     expect(message.length).toBeLessThan(700);
   });
 });
@@ -759,6 +761,33 @@ describe('assetPathDirs — the bound the two sites are given', () => {
     expect(
       assetPathDirs({ assetOutdir: shipped } as unknown as StackInfo).assetOutdir
     ).toBe(shipped);
+  });
+
+  it('does NOT climb when the artifact is not a cdk:cloud-assembly', () => {
+    // The `type` half of the declaration test, which nothing else exercises:
+    // "declares a DIFFERENT child" reds on `directoryName`, so deleting the
+    // type comparison left every case green. A stack artifact whose
+    // properties happen to carry a matching `directoryName` is the shape.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-wrongtype-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(
+      join(outdir, 'manifest.json'),
+      JSON.stringify({
+        version: '54.0.0',
+        artifacts: {
+          Stk: {
+            type: 'aws:cloudformation:stack',
+            properties: { directoryName: 'assembly-MyStage' },
+          },
+        },
+      })
+    );
+
+    expect(
+      assetPathDirs({ assetOutdir: stage } as unknown as StackInfo).assetOutdir
+    ).toBe(stage);
   });
 
   it('does NOT climb when the parent declares a DIFFERENT child', () => {
