@@ -326,7 +326,7 @@ describe('renderAssemblyPathEscape', () => {
     // `\x1b[2K\r` and `\n`, which erase the line and forge benign ones in its
     // place — and for the absolute arm the warning IS the whole mitigation.
     const dir = tmp();
-    const hostile = join(dir, '..', 'evil[2K\rINFO  all good\nINFO  done');
+    const hostile = join(dir, '..', 'evil\u001b[2K\rINFO  all good\nINFO  done');
 
     const said = renderAssemblyPathEscape(
       { contained: false, escape: 'lexical', path: hostile },
@@ -334,7 +334,7 @@ describe('renderAssemblyPathEscape', () => {
       'mount it'
     );
 
-    expect(said).not.toMatch(/[\n\r]/);
+    expect(said).not.toMatch(/[\n\r\u001b]/);
     expect(said).toContain('evil');
   });
 });
