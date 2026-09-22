@@ -21,6 +21,12 @@ import {
   tryResolveImageFnJoin,
 } from './intrinsic-image.js';
 import { stringifyValue } from '../utils/stringify.js';
+import {
+  absoluteAssemblyPathEscape,
+  renderAssemblyPathEscape,
+  resolveAssemblyPath,
+} from '../utils/assembly-path.js';
+import { getLogger } from '../utils/logger.js';
 import { getEmbedConfig } from './embed-config.js';
 
 /**
@@ -720,6 +726,170 @@ function extractImageLambdaProperties(args: {
 }
 
 /**
+ * Where a Lambda's `Metadata['aws:asset:path']` really lives on this host
+ * (go-to-k/cdkd#3534, applying the decision taken in go-to-k/cdkd#3494).
+ *
+ * THE one spelling shared by `cdkl invoke`'s resolver and `cdkl start-api`'s,
+ * which each carried their own copy of `isAbsolute(p) ? p : resolve(dir, p)`.
+ * A second hand-written copy is how a guard on one twin becomes a guard on
+ * neither. It throws through the CALLER's `wrapError` so each site keeps its
+ * own error class and names its own command.
+ *
+ * TWO VALUE SHAPES, ANSWERED DIFFERENTLY, and the asymmetry is the decision
+ * rather than an accident:
+ *
+ * - RELATIVE, escaping. REFUSED. `path.resolve` folds `..` exactly as
+ *   `path.join` does, so `../../../home/<user>/.aws` leaves the assembly, and
+ *   nothing a real `cdk synth` emits has that shape.
+ * - ABSOLUTE. ACCEPTED, with a WARNING naming the path when it leaves the
+ *   asset outdir, and SILENCE when it does not.
+ *
+ * **Why absolute is accepted, when the security axis argued for refusing it.**
+ * `cdk synth --no-staging` (context flag `aws:cdk:disable-asset-staging`) makes
+ * upstream `AssetStaging.relativeStagedPath` return the staged path verbatim
+ * instead of relativising it, so `aws:asset:path` is the asset's absolute
+ * SOURCE directory, normally outside the outdir. Refusing it therefore rejects
+ * the output of a documented CDK CLI flag, and the user's view is simply that
+ * cdk-local will not read what `cdk` just wrote. Record both halves of the
+ * trade, because a later reader must not "restore" the refusal as an
+ * oversight:
+ *
+ * - The security cost is genuine. This value is BIND-MOUNTED read-only at
+ *   `/var/task` (or `/opt` for a layer) into a container running handler code
+ *   the SAME assembly supplied, and the run may carry the caller's
+ *   credentials, so an absolute path a hostile assembly chose reaches the host
+ *   filesystem. Nothing here can distinguish a `--no-staging` value from a
+ *   planted one: both are an absolute directory the assembly named.
+ * - What bounds it: this is a LOCAL developer command run against an assembly
+ *   the user pointed at, the mount is read-only, and the warning names the
+ *   directory so an unexpected one is visible rather than silent.
+ *
+ * The `..` containment is NOT relaxed with it, but be precise about what it
+ * buys. Against an ADVERSARY it stops nothing: they write the ABSOLUTE
+ * spelling and reach the same place with a warning instead of a refusal. What
+ * it still catches is an ACCIDENTAL or legacy `..`, and it costs nothing,
+ * which is why the arm stays. There is no containment boundary here any more;
+ * the warning is the whole signal.
+ *
+ * CONTAIN WITHIN `assetOutdir`, NOT the manifest's directory. A Lambda inside
+ * a `cdk.Stage` legitimately carries `../asset.<hash>`, because `cdk synth`
+ * stages a Stage's assets into the APP's outdir while the Stage's manifest
+ * sits in `cdk.out/assembly-<Stage>/`. Binding to the manifest directory
+ * refuses every Stage asset as "hand-modified".
+ *
+ * Exported for unit testing and for `local-start-api.ts`'s copy of the caller.
+ */
+export function resolveAssetCodeDirectory(
+  manifestDir: string,
+  assetPath: string,
+  wrapError: (message: string) => Error,
+  /**
+   * The app's outdir, the CONTAINMENT bound; see the note above for why it is
+   * not the manifest's directory.
+   *
+   * **REQUIRED, and positioned here so OMITTING it is a type error.** The
+   * dangerous mistake is not a SWAP, it is a DROP: an optional bound
+   * defaulting to `manifestDir` silently refuses every legitimate Stage asset
+   * while every top-level test stays green, because there `manifestDir` and
+   * `assetOutdir` coincide. `logicalId` comes LAST because it is only ever
+   * interpolated into a message — the least dangerous parameter belongs in the
+   * position a mistake is least costly. A `logicalId` / `assetOutdir` swap is
+   * still expressible and is caught by the tests rather than the compiler: the
+   * bound becomes `resolve('<logicalId>')` under the cwd, disjoint from the
+   * base, so every path is refused and every Stage acceptance case reds.
+   */
+  assetOutdir: string,
+  logicalId: string
+): string {
+  if (isAbsolute(assetPath)) {
+    // ACCEPTED — see the header. `resolve` only normalises here, the value
+    // already being absolute; it is what makes the warning name the directory
+    // that is really mounted rather than an unfolded spelling of it.
+    const absolute = resolve(assetPath);
+    const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
+    if (escape !== undefined) {
+      // WARN, never throw: the one producer of this shape is a real
+      // `cdk synth --no-staging`, and refusing it rejects the output of a
+      // documented CDK CLI flag. The warning exists so an absolute path the
+      // user did NOT expect is visible rather than silent, so it names the
+      // directory and says what is done with it.
+      getLogger().warn(
+        `Lambda '${logicalId}' has an absolute Metadata['aws:asset:path'] pointing ` +
+          `outside the assembly: '${absolute}'` +
+          (escape.escape === 'symlink'
+            ? ` (through a symbolic link to '${escape.realPath}')`
+            : '') +
+          `. ${getEmbedConfig().productName} will bind-mount that directory into the ` +
+          `container read-only, where the code in this assembly can read it. This is what ` +
+          `cdk synth --no-staging emits, and is expected for it; if you did not synthesize ` +
+          `with that flag, treat this assembly as untrusted.`
+      );
+    }
+    return absolute;
+  }
+  // RESOLVE against the manifest's directory, CONTAIN within the app's outdir.
+  const resolved = resolveAssemblyPath(manifestDir, assetPath, {
+    containWithin: assetOutdir,
+  });
+  // NAMING THE BOUND ITSELF is not an escape here, and the two arms must agree
+  // about that. `resolveAssemblyPath`'s `isInside` is false for an empty
+  // `path.relative` — right for a caller that reads a FILE, wrong here, where
+  // the value is a DIRECTORY to bind-mount by design. Left alone it also
+  // contradicts the absolute arm, which accepts the same directory.
+  if (
+    !resolved.contained &&
+    resolved.escape === 'lexical' &&
+    resolved.path === resolve(assetOutdir)
+  ) {
+    return resolved.path;
+  }
+  if (!resolved.contained) {
+    throw wrapError(
+      `Lambda '${logicalId}' has Metadata['aws:asset:path']='${assetPath}' which ` +
+        `${renderAssemblyPathEscape(resolved, assetOutdir, 'mount it')}`
+    );
+  }
+  return resolved.path;
+}
+
+/**
+ * The two directories an asset path is judged against — THE one spelling both
+ * resolvers derive them with, for the same reason
+ * {@link resolveAssetCodeDirectory} is one function: two sites disagreeing
+ * about the BOUND is a defect no refusal test can see.
+ *
+ * Asset paths are relative to the manifest's own directory: the stack's
+ * `assetManifestPath` is `<cdk.out>/<stack>.assets.json`, so stripping the
+ * filename gives the base.
+ *
+ * `assetOutdir` is the app's outdir and is the CONTAINMENT bound. An ABSENT
+ * one falls back to the base, which is correct for a top-level stack and
+ * NARROWS for a Stage — it never opens past the base, so a hand-built
+ * `StackInfo` carrying neither field is refused rather than admitted.
+ * `AssemblyReader` always sets it.
+ *
+ * The two fallbacks are asymmetric, and the base's prefers `assetOutdir` over
+ * `process.cwd()` deliberately: `AssemblyReader` always sets `assetOutdir` but
+ * may leave `assetManifestPath` undefined, and taking `process.cwd()` there
+ * produces a base DISJOINT from the bound — nothing under the cwd is inside
+ * `cdk.out` — so every asset path is refused with a message blaming the
+ * assembly. Fail-closed, so never a hole, but a wrong diagnosis.
+ * `process.cwd()` survives only for a `StackInfo` carrying NEITHER field,
+ * where base and bound coincide again.
+ *
+ * Exported for `local-start-api.ts`'s copy of the caller, and for unit testing.
+ */
+export function assetPathDirs(stack: StackInfo): {
+  manifestDir: string;
+  assetOutdir: string;
+} {
+  const manifestDir = stack.assetManifestPath
+    ? dirname(stack.assetManifestPath)
+    : (stack.assetOutdir ?? process.cwd());
+  return { manifestDir, assetOutdir: stack.assetOutdir ?? manifestDir };
+}
+
+/**
  * Resolve the local directory that corresponds to a function's deployed
  * asset, using the CDK-blessed `Metadata['aws:asset:path']` hint (D2). The
  * value is a directory path relative to `cdk.out` (e.g. `asset.abc123def`)
@@ -729,7 +899,10 @@ function extractImageLambdaProperties(args: {
  * Falls back to a clear error when the metadata is missing OR the resolved
  * directory does not exist (CDK should always emit it for asset-backed
  * Lambdas; absence usually means the user pre-synthesized with a different
- * cdk.out and pointed `--output` at a stale one).
+ * cdk.out and pointed `--output` at a stale one). Through
+ * {@link resolveAssetCodeDirectory} it REFUSES an escaping RELATIVE value and
+ * WARNS on an ABSOLUTE one that leaves the asset outdir — see that function
+ * for why the two differ.
  */
 function resolveAssetCodePath(
   stack: StackInfo,
@@ -747,15 +920,14 @@ function resolveAssetCodePath(
     );
   }
 
-  // Asset paths are typically relative to cdk.out. The stack's
-  // `assetManifestPath` is `<cdk.out>/<stack>.assets.json`; we strip the
-  // filename to get the assembly directory. As a fallback (e.g. for
-  // stacks with no asset manifest), use the dirname of the template
-  // path implicit in the stack info — but in v1 every Lambda-bearing
-  // stack has an asset manifest, so the fallback is mostly defensive.
-  const cdkOutDir = stack.assetManifestPath ? dirname(stack.assetManifestPath) : process.cwd();
-
-  const abs = isAbsolute(assetPath) ? assetPath : resolve(cdkOutDir, assetPath);
+  const { manifestDir, assetOutdir } = assetPathDirs(stack);
+  const abs = resolveAssetCodeDirectory(
+    manifestDir,
+    assetPath,
+    (message) => new LocalInvokeResolutionError(message),
+    assetOutdir,
+    logicalId
+  );
   if (!existsSync(abs)) {
     throw new LocalInvokeResolutionError(
       `Lambda '${logicalId}' asset path '${abs}' does not exist. ` +

@@ -293,6 +293,25 @@ same source SAM uses) to find the local unzipped asset directory under
 implied by the function's `Handler` property (`index.handler` →
 `tmpdir/index.js`).
 
+**Where the hint may point.** The value comes from the assembly, so
+`cdkl invoke` and `cdkl start-api` judge it the same way:
+
+- A RELATIVE value that resolves outside the app's output directory
+  (`../../somewhere`) is REFUSED. No `cdk synth` emits that shape.
+- An ABSOLUTE value is ACCEPTED, and a WARNING names the directory when
+  it lies outside that output directory — including when it gets there
+  through a symbolic link. `cdk synth --no-staging` emits exactly this
+  (the asset's absolute source directory), so refusing it would reject
+  the output of a documented CDK flag. The warning exists because the
+  directory is bind-mounted into the container, where the assembly's
+  own code can read it: if you did not synthesize with `--no-staging`,
+  treat that assembly as untrusted.
+
+The bound is the APP's output directory, not the directory the stack's
+own asset manifest sits in, so a Lambda under a `cdk.Stage` — whose
+manifest lives in `cdk.out/assembly-<Stage>/` while its asset is staged
+into `cdk.out/` — resolves normally.
+
 ### Lambda Layers
 
 Same-stack `AWS::Lambda::LayerVersion` references in `Properties.Layers`

@@ -33,6 +33,23 @@ export interface StackInfo {
   /** Asset manifest file path (absolute). Populated when the stack ships assets. */
   assetManifestPath?: string | undefined;
 
+  /**
+   * The APP's output directory (absolute) — the root of the Cloud Assembly,
+   * not the directory this stack's own manifest sits in.
+   *
+   * It is the CONTAINMENT BOUND for every assembly-supplied path, and the two
+   * differ exactly where it matters: `cdk synth` stages a `cdk.Stage`'s assets
+   * into the APP's outdir while the Stage's manifest sits in
+   * `cdk.out/assembly-<Stage>/`, so a Stage Lambda legitimately carries
+   * `Metadata['aws:asset:path']` of `../asset.<hash>`. Binding to the manifest
+   * directory refuses every one of them.
+   *
+   * Always set by {@link AssemblyReader}; optional only for a hand-built
+   * `StackInfo` (a host embedding cdk-local as a library), where the bound
+   * falls back to the manifest directory — narrower, never wider.
+   */
+  assetOutdir?: string | undefined;
+
   /** Stack dependency names (other stack artifact IDs this stack depends on). */
   dependencyNames: string[];
 
@@ -157,7 +174,9 @@ export class AssemblyReader {
     });
     const cached = await toolkit.synth(source);
     try {
-      return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
+      return cached.cloudAssembly.stacks.map((stack) =>
+        mapStackArtifact(stack, cached.cloudAssembly.directory)
+      );
     } finally {
       await cached.dispose();
     }
@@ -190,20 +209,30 @@ export class AssemblyReader {
     });
     const cached = await toolkit.synth(source);
     try {
-      return cached.cloudAssembly.stacks.map((stack) => mapStackArtifact(stack));
+      return cached.cloudAssembly.stacks.map((stack) =>
+        mapStackArtifact(stack, cached.cloudAssembly.directory)
+      );
     } finally {
       await cached.dispose();
     }
   }
 }
 
-function mapStackArtifact(stack: CloudFormationStackArtifact): StackInfo {
+/**
+ * `assetOutdir` is threaded in from the ROOT assembly rather than read off the
+ * artifact's own `assembly.directory`: for a stack under a `cdk.Stage` the
+ * latter is `cdk.out/assembly-<Stage>/`, which is the manifest directory, not
+ * the directory the Stage's assets were staged into. See
+ * `StackInfo.assetOutdir`.
+ */
+function mapStackArtifact(stack: CloudFormationStackArtifact, assetOutdir: string): StackInfo {
   const info: StackInfo = {
     stackName: stack.stackName,
     displayName: stack.displayName ?? stack.id,
     artifactId: stack.id,
     template: stack.template as CloudFormationTemplate,
     dependencyNames: stack.dependencies.map((d) => d.id),
+    assetOutdir,
   };
   if (stack.environment.region) {
     info.region = stack.environment.region;
