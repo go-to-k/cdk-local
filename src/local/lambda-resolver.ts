@@ -869,11 +869,17 @@ export function resolveAssetCodeDirectory(
     // hint silently disappears from the message that needs it most.
     const climbsOut =
       assetPath === '..' || assetPath.startsWith(`..${sep}`) || assetPath.startsWith('../');
+    // Reaching this clause now means the climb in `assetPathDirs` DECLINED:
+    // the directory is named like a Stage sub-assembly but its parent carries
+    // no `manifest.json`, so it is not one. A real sub-assembly never gets
+    // here — the bound is its parent and `../asset.<hash>` resolves inside.
+    // So the sentence points at the layout rather than asserting it.
     const stageHint =
       basename(assetOutdir).startsWith('assembly-') && climbsOut
-        ? ` If --app names a cdk.Stage sub-assembly, that directory is the assembly ` +
-          `root and the Stage's assets are staged one level above it; this layout is ` +
-          `what CDK emits and is not a tamper.`
+        ? ` This directory is named like a cdk.Stage sub-assembly, but its parent ` +
+          `is not an assembly (no manifest.json), so it was treated as the assembly ` +
+          `root. If you meant to point --app at a Stage inside an app's output ` +
+          `directory, point it at that output directory.`
         : '';
     throw wrapError(
       `Lambda '${sanitizeServiceExceptionMessage(logicalId)}' has ` +
@@ -953,7 +959,53 @@ export function assetPathDirs(stack: StackInfo): {
   const manifestDir = stack.assetManifestPath
     ? dirname(stack.assetManifestPath)
     : (bound ?? process.cwd());
-  return { manifestDir, assetOutdir: bound ?? manifestDir };
+  return {
+    manifestDir,
+    assetOutdir: bound === undefined ? manifestDir : assemblyRootOf(bound),
+  };
+}
+
+/**
+ * The real assembly ROOT for a `--app` that names a `cdk.Stage`
+ * SUB-assembly.
+ *
+ * **This is not a widened bound; it is the bound computed correctly.** When a
+ * user points `--app` at `cdk.out/assembly-MyStage`, the assembly they are
+ * working with is rooted at `cdk.out` — `cdk synth` writes the Stage's
+ * manifest into the sub-directory and stages its ASSETS one level above, so
+ * CDK's own `../asset.<hash>` is a within-assembly reference. Treating the
+ * sub-directory as the root made every one of those look like an escape, and
+ * the refusal had to append a paragraph explaining that the layout "is not a
+ * tamper" — a guard that has to talk you out of its own verdict is computing
+ * the wrong thing.
+ *
+ * It climbs from a USER-supplied value (`--app` / `--output`), never from an
+ * assembly-supplied one, so no manifest can move its own bound by writing a
+ * path: `manifestDir` is unchanged and is still judged against this result.
+ *
+ * TWO conditions, both required, because the directory NAME alone is a
+ * heuristic a user could trip with an app outdir of their own called
+ * `assembly-*`: the basename must look like cx-api's `assembly-<Stage>`, AND
+ * the parent must itself be an assembly (carry a `manifest.json`). Nested
+ * Stages climb repeatedly; the loop is bounded by the path's own depth and
+ * stops at the first directory that fails either test.
+ */
+function assemblyRootOf(outdir: string): string {
+  // Returns the caller's own spelling UNCHANGED when no climb happens. The
+  // bound is used as given everywhere else, and normalising it here would
+  // make a relative `--output cdk.out` come back absolute for every ordinary
+  // app — a silent change to a value the rest of the module compares by
+  // string as well as by resolution.
+  let dir = resolve(outdir);
+  let climbed = false;
+  for (;;) {
+    if (!basename(dir).startsWith('assembly-')) break;
+    const parent = dirname(dir);
+    if (parent === dir || !existsSync(join(parent, 'manifest.json'))) break;
+    dir = parent;
+    climbed = true;
+  }
+  return climbed ? dir : outdir;
 }
 
 /**

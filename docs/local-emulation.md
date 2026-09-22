@@ -310,20 +310,18 @@ implied by the function's `Handler` property (`index.handler` →
 The bound is the APP's output directory, not the directory the stack's
 own asset manifest sits in, so a Lambda under a `cdk.Stage` — whose
 manifest lives in `cdk.out/assembly-<Stage>/` while its asset is staged
-into `cdk.out/` — is not refused by this rule. (Reaching one at all is a
-separate matter; see the note below.)
+into `cdk.out/` — resolves normally.
 
-That holds when `--app` names the app's own output directory. Pointing
-it at a Stage SUB-assembly (`--app cdk.out/assembly-MyStage`) makes that
-sub-directory the assembly root, so the Stage's own assets — staged into
-the app's outdir by `cdk synth` — sit outside it and are refused. The
-refusal says so, because the generic wording would otherwise blame a
-hand-modified assembly for a layout CDK produced.
+Pointing `--app` at a Stage SUB-assembly (`--app cdk.out/assembly-MyStage`)
+keeps working. cdk-local recognises that layout and bounds the assembly at the
+app's output directory — the real root — rather than at the directory you
+named, so the Stage's own assets, staged one level above by `cdk synth`,
+resolve. A directory merely *named* `assembly-*` is not treated that way: its
+parent has to be an assembly too.
 
-**That route resolved in earlier releases and now refuses**, and there is
-no replacement: cdk-local does not enumerate a Stage's stacks from the app
-outdir either ([#746](https://github.com/go-to-k/cdk-local/issues/746)), so
-a Stage Lambda has no working route today.
+That route is currently the only one to a Stage Lambda, because cdk-local does
+not yet enumerate a Stage's stacks from the app output directory
+([#746](https://github.com/go-to-k/cdk-local/issues/746)).
 
 ### Lambda Layers
 

@@ -82,6 +82,11 @@ function assembly(
   mkdirSync(join(outdir, 'asset.abc123'));
   mkdirSync(join(outdir, 'nested'), { recursive: true });
   writeFileSync(join(manifestDir, 'Stk.assets.json'), JSON.stringify({ version: '54.0.0' }));
+  // The app outdir carries a `manifest.json`, as every real assembly does.
+  // It is what lets `assetPathDirs` tell a genuine Stage sub-assembly from a
+  // user directory merely NAMED `assembly-*`; a fixture without it makes the
+  // sub-assembly cases exercise the look-alike branch instead.
+  writeFileSync(join(outdir, 'manifest.json'), JSON.stringify({ version: '54.0.0' }));
 
   const fn: TemplateResource = {
     Type: 'AWS::Lambda::Function',
@@ -494,19 +499,30 @@ for (const site of SITES) {
       expect(warn.said()).toMatch(/truncated/);
     });
 
-    it('names the Stage SUB-ASSEMBLY layout in the refusal instead of blaming the user', () => {
-      // `--app cdk.out/assembly-MyStage` makes that directory the assembly
-      // root, so the Stage's assets — staged into the APP's outdir by
-      // `cdk synth` — are one level above it and CDK's own `../asset.<hash>`
-      // escapes. The generic provenance sentence would accuse a hand-modified
-      // assembly of a layout CDK produced, and the user would hunt a tamper
-      // that did not happen (go-to-k/cdk-local#746).
+    it('ACCEPTS a Stage asset when --app names the sub-assembly, by climbing to the root', () => {
+      // `--app cdk.out/assembly-MyStage` was the ONLY route to a Lambda under
+      // a Stage, and it used to work. Bounding to the named directory turned
+      // CDK's own `../asset.<hash>` into an escape — the refusal even had to
+      // append a paragraph saying the layout "is not a tamper", which is a
+      // guard talking you out of its own verdict. `assetPathDirs` now derives
+      // the real root, so there is nothing to explain away.
       const a = assembly('../asset.abc123', { stage: true });
-      // Read AS a sub-assembly: the Stage directory is the root.
       (a.stack as { assetOutdir?: string }).assetOutdir = a.manifestDir;
 
-      expect(() => site.call(a)).toThrow(/cdk\.Stage sub-assembly/);
-      expect(() => site.call(a)).toThrow(/is not a tamper/);
+      expect(() => site.call(a)).not.toThrow();
+    });
+
+    it('still explains a LOOK-ALIKE outdir, whose parent is not an assembly', () => {
+      // The hint is now reachable only when the climb DECLINED: named like a
+      // sub-assembly, parent carries no `manifest.json`. The sentence points
+      // at the layout instead of asserting one, because a real sub-assembly
+      // never reaches here.
+      const a = assembly('../asset.abc123', { stage: true });
+      (a.stack as { assetOutdir?: string }).assetOutdir = a.manifestDir;
+      rmSync(join(a.outdir, 'manifest.json'), { force: true });
+
+      expect(() => site.call(a)).toThrow(/named like a cdk\.Stage sub-assembly/);
+      expect(() => site.call(a)).toThrow(/point it at that output directory/);
     });
 
     it('does NOT offer the Stage hint for a NON-climbing escape below a Stage bound', () => {
@@ -634,6 +650,54 @@ describe('assetPathDirs — the bound the two sites are given', () => {
   // which is the ordinary case (`cdkl` run from the project root with `cdk.out`
   // below it) and never the case for a /tmp fixture. Through a resolver the
   // mutant passes for the wrong reason.
+  it('climbs to the assembly ROOT when --app names a Stage SUB-assembly', () => {
+    // The route this PR would otherwise have broken. `--app
+    // cdk.out/assembly-MyStage` was the ONLY way to reach a Lambda under a
+    // Stage, and bounding to the named directory turned CDK's own
+    // `../asset.<hash>` into an escape — a refusal that had to append a
+    // paragraph saying the layout "is not a tamper". The bound is computed
+    // from a USER-supplied value, so no manifest can move it.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-root-')));
+    const outdir = join(root, 'cdk.out');
+    const stage = join(outdir, 'assembly-MyStage');
+    mkdirSync(stage, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), '{}');
+
+    expect(
+      assetPathDirs({
+        assetManifestPath: join(stage, 'Stk.assets.json'),
+        assetOutdir: stage,
+      } as unknown as StackInfo).assetOutdir
+    ).toBe(outdir);
+  });
+
+  it('climbs through NESTED Stage sub-assemblies', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-nested-')));
+    const outdir = join(root, 'cdk.out');
+    const inner = join(outdir, 'assembly-Outer', 'assembly-Inner');
+    mkdirSync(inner, { recursive: true });
+    writeFileSync(join(outdir, 'manifest.json'), '{}');
+    writeFileSync(join(outdir, 'assembly-Outer', 'manifest.json'), '{}');
+
+    expect(
+      assetPathDirs({ assetOutdir: inner } as unknown as StackInfo).assetOutdir
+    ).toBe(outdir);
+  });
+
+  it('does NOT climb out of a user outdir that merely LOOKS like a sub-assembly', () => {
+    // The name is a heuristic a user can trip with an outdir of their own
+    // called `assembly-*`, so the parent must itself be an assembly. Without
+    // the `manifest.json` test this widens a real bound by one level, on a
+    // directory the user named as their root.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cdkl-lookalike-')));
+    const outdir = join(root, 'assembly-mine');
+    mkdirSync(outdir);
+
+    expect(
+      assetPathDirs({ assetOutdir: outdir } as unknown as StackInfo).assetOutdir
+    ).toBe(outdir);
+  });
+
   it('treats an EMPTY assetOutdir as absent, whatever the cwd is', () => {
     const outer = tmp();
     const outdir = join(outer, 'cdk.out');
