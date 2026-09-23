@@ -1,5 +1,6 @@
 import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
+import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -67,6 +68,50 @@ export interface BuildDockerImageOptions {
 }
 
 /**
+ * Announce that a Docker asset's `source.executable` is about to run.
+ *
+ * The command line comes from the asset manifest, which is chosen by whoever
+ * wrote the assembly, and cdk-local SPAWNS it — so a `cdkl` command against a
+ * pre-synthesized assembly executes code the CloudFormation template does not
+ * show. It is RUN, never refused: CDK CLI's `buildExternalAsset` does the same,
+ * and an assembly is trusted input. What was missing is the line saying so.
+ *
+ * **It names `executable[0]` and an argument COUNT, deliberately, and the full
+ * argv must stay at `debug`.** Rendering every argument at warn level is a new
+ * leak introduced by a warning about leaks: a build script is not `docker
+ * build`, so its own `--token ghp_…` or `--password=…` matches no argv masker's
+ * flag shapes, and the warning would promote it from `--verbose`-only to a line
+ * in every CI log of every run. That was a live defect in the host's copy of
+ * this warning (go-to-k/cdkd#3497); do not "improve" this by expanding it.
+ *
+ * Placed in `buildDockerImage` rather than at a call site because this is the
+ * ONE spawn point: `docker-image-builder.ts` (`invoke` / `start-api` /
+ * `invoke-agentcore`) and `ecs-task-runner.ts` (`run-task` / `start-service` /
+ * `start-alb`) both reach it. The two ECS server commands were the gap
+ * (go-to-k/cdkd#3540) — the host cannot warn for them, since it re-exports
+ * `runEcsServiceEmulator` as a bare passthrough and the asset build happens
+ * several layers inside this engine.
+ *
+ * `sanitizeServiceExceptionMessage` for the same reason `assembly-path.ts`
+ * uses it: the value is manifest-chosen, it keeps control characters, and an
+ * unsanitized one lets the command forge its own log line.
+ */
+function warnManifestExecutable(executable: readonly string[]): void {
+  const [cmd, ...rest] = executable;
+  getLogger()
+    .child('docker-build')
+    .warn(
+      `Docker asset source.executable runs a command this asset manifest chose, on ` +
+        `this machine: '${sanitizeServiceExceptionMessage(cmd ?? '')}'` +
+        (rest.length > 0 ? ` (with ${rest.length} argument(s); --verbose shows them)` : '') +
+        `. cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
+        `trusted input. Note that this means running a local command against a ` +
+        `pre-synthesized assembly DOES execute code from it, which the ` +
+        `CloudFormation template does not show.`
+    );
+}
+
+/**
  * Build a Docker image from a CDK asset source. Returns the local image
  * tag the caller should use for `docker tag` / `docker push` (publisher)
  * or `docker run` (local-invoke).
@@ -111,6 +156,7 @@ export async function buildDockerImage(
     logger.debug(
       `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
     );
+    warnManifestExecutable(source.executable);
 
     let result;
     try {

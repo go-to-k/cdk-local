@@ -397,6 +397,33 @@ image's default entrypoint stays in charge — for AWS Lambda base
 images that's `/lambda-entrypoint.sh`, which routes to RIE on port
 8080.
 
+### Docker asset build scripts (`source.executable`)
+
+A Docker asset can name a build SCRIPT instead of a build context. The asset
+manifest carries it as `source.executable`, a command line, and cdk-local runs
+it on your machine and reads the image tag from its stdout. CDK CLI does the
+same, so the script runs rather than being refused — an assembly you
+synthesized is your own code.
+
+cdk-local prints a warning naming the command first. It applies to every
+command that builds a Docker asset: `invoke`, `start-api`, `run-task`,
+`start-service`, `start-alb` and `invoke-agentcore`.
+
+```text
+WARN Docker asset source.executable runs a command this asset manifest chose,
+     on this machine: './build-image.sh' (with 2 argument(s); --verbose shows them)
+```
+
+The warning names the command and how many arguments it received, not the
+arguments themselves — a build script's own flags are not `docker build` flags,
+so a `--password` or `--token` among them would otherwise be copied into every
+log the run produces. Pass `--verbose` to see the full command line.
+
+The line matters because running a local command against an assembly **does
+execute code from it**, and the CloudFormation template does not show that
+command. If you are pointing `--app` at a pre-synthesized assembly you did not
+produce, that warning is the only place the execution appears.
+
 ### Ephemeral storage (`/tmp` cap)
 
 When a Lambda's template declares `Properties.EphemeralStorage.Size`
