@@ -17,15 +17,25 @@ import { beforeEach, describe, expect, it, vi } from 'vite-plus/test';
 //      and it is the failure a future "make the warning more helpful" edit
 //      would reintroduce.
 
-const { mockSpawnStreaming } = vi.hoisted(() => ({
+const { mockSpawnStreaming, mockRunDockerStreaming } = vi.hoisted(() => ({
   mockSpawnStreaming: vi.fn(),
+  mockRunDockerStreaming: vi.fn(),
 }));
 
+// BOTH docker entry points are mocked, not just the executable one. With
+// `runDockerStreaming` left real, the directory-mode case below spawns an
+// actual `docker build` — it passed only because `/tmp/cdk.out` happens not to
+// exist, so a machine with that directory would run a stranger's build from a
+// unit test. `.claude/AGENTS.md` requires the docker CLI boundary be mocked.
 vi.mock('../../../src/utils/docker-cmd.js', async () => {
   const actual = await vi.importActual<typeof import('../../../src/utils/docker-cmd.js')>(
     '../../../src/utils/docker-cmd.js'
   );
-  return { ...actual, spawnStreaming: mockSpawnStreaming };
+  return {
+    ...actual,
+    spawnStreaming: mockSpawnStreaming,
+    runDockerStreaming: mockRunDockerStreaming,
+  };
 });
 
 // Capture rather than silence: the assertions below are ABOUT the lines, so a
@@ -47,12 +57,21 @@ vi.mock('../../../src/utils/logger.js', () => {
   return { getLogger: () => sink };
 });
 
-const { buildDockerImage } = await import('../../../src/assets/docker-build.js');
+const { buildDockerImage, resetManifestExecutableWarnings } = await import(
+  '../../../src/assets/docker-build.js'
+);
 
 const wrapError = (m: string) => new Error(m);
 
 beforeEach(() => {
   mockSpawnStreaming.mockReset();
+  mockRunDockerStreaming.mockReset();
+  mockRunDockerStreaming.mockResolvedValue({ stdout: '', stderr: '' });
+  // The dedupe set is MODULE state, so without this every case after the
+  // first would take the already-announced branch and assert against an empty
+  // `warnLines` — green for the wrong reason, in the direction that hides a
+  // missing warning.
+  resetManifestExecutableWarnings();
   warnLines.length = 0;
   debugLines.length = 0;
 });
@@ -134,19 +153,52 @@ describe('source.executable warning', () => {
   });
 
   it('does NOT warn in directory mode, which spawns no manifest-chosen command', async () => {
-    const { runDockerStreaming } = await import('../../../src/utils/docker-cmd.js');
-    vi.spyOn({ runDockerStreaming }, 'runDockerStreaming');
+    await buildDockerImage({ source: { directory: '.' } }, '/tmp/cdk.out', {
+      wrapError,
+      tag: 't',
+    });
 
-    // Directory mode goes through `runDockerStreaming`, not `spawnStreaming`,
-    // so reaching the real one would try to run docker. Assert on the arm
-    // selection instead: with `executable` absent, nothing was warned by the
-    // time the directory arm is entered.
-    await buildDockerImage(
-      { source: { directory: '.' } },
-      '/tmp/cdk.out',
-      { wrapError, tag: 't' }
-    ).catch(() => undefined);
-
+    // POSITIVE first: prove the directory arm was actually ENTERED. Without
+    // this the absence below is satisfied by the call throwing on its first
+    // line, which is how the earlier version of this case passed — it swallowed
+    // the error with `.catch(() => undefined)` and asserted only absence.
+    expect(mockRunDockerStreaming).toHaveBeenCalledTimes(1);
+    const argv = mockRunDockerStreaming.mock.calls[0]?.[0] as string[];
+    expect(argv).toContain('build');
+    expect(argv).toContain('.');
+    // And no manifest-chosen command was spawned on this path at all.
+    expect(mockSpawnStreaming).not.toHaveBeenCalled();
     expect(warnLines.join('\n')).not.toContain('source.executable');
+  });
+
+  it('announces once per distinct command line, dropping repeats to debug', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+    const source = { executable: ['./build.sh', '--target', 'prod'] };
+
+    // Three builds of the SAME asset — what a `DesiredCount: 3` ECS service
+    // does at boot, and what a crash-loop restart does again afterwards.
+    await buildDockerImage({ source }, '/tmp/cdk.out', { wrapError });
+    await buildDockerImage({ source }, '/tmp/cdk.out', { wrapError });
+    await buildDockerImage({ source }, '/tmp/cdk.out', { wrapError });
+
+    // Every spawn still happened: deduping the LINE must not dedupe the WORK.
+    expect(mockSpawnStreaming).toHaveBeenCalledTimes(3);
+    expect(warnLines.filter((l) => l.includes('source.executable runs a command'))).toHaveLength(1);
+    // The suppressed ones are still traceable at debug rather than vanishing.
+    expect(debugLines.filter((l) => l.includes('already announced'))).toHaveLength(2);
+  });
+
+  it('announces a DIFFERENT command line separately, so the key is not global', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+
+    await buildDockerImage({ source: { executable: ['./a.sh'] } }, '/tmp/cdk.out', { wrapError });
+    await buildDockerImage({ source: { executable: ['./b.sh'] } }, '/tmp/cdk.out', { wrapError });
+
+    const warned = warnLines.join('\n');
+    // A dedupe keyed on "have we ever warned" rather than on the command would
+    // silence the second asset entirely — the failure that turns this fix into
+    // a new instance of the bug it fixes.
+    expect(warned).toContain('./a.sh');
+    expect(warned).toContain('./b.sh');
   });
 });

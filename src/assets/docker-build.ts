@@ -86,29 +86,58 @@ export interface BuildDockerImageOptions {
  *
  * Placed in `buildDockerImage` rather than at a call site because this is the
  * ONE spawn point: `docker-image-builder.ts` (`invoke` / `start-api` /
- * `invoke-agentcore`) and `ecs-task-runner.ts` (`run-task` / `start-service` /
- * `start-alb`) both reach it. The two ECS server commands were the gap
+ * `invoke-agentcore` / `start-agentcore`, the last two through
+ * `resolveAgentCoreImage`) and `ecs-task-runner.ts` (`run-task` /
+ * `start-service` / `start-alb`) both reach it, and `studio` inherits it by
+ * spawning those as children. The two ECS server commands were the gap
  * (go-to-k/cdkd#3540) — the host cannot warn for them, since it re-exports
  * `runEcsServiceEmulator` as a bare passthrough and the asset build happens
  * several layers inside this engine.
  *
+ * **Announced ONCE per distinct command line per process, not once per
+ * spawn.** The spawn genuinely repeats — `ecs-service-runner.ts` boots every
+ * replica through `bootReplica` and restarts a crashed one the same way, and
+ * the agentcore commands re-resolve on reload — so a `DesiredCount: 3` service
+ * would print this ~450-character paragraph three times at boot and again per
+ * crash-loop restart. That is a storm, and a storm is not read. Repeats drop
+ * to `debug`, where the argv already is. Deduping the LINE must never dedupe
+ * the WORK: the spawn happens every time regardless.
+ *
  * `sanitizeServiceExceptionMessage` for the same reason `assembly-path.ts`
  * uses it: the value is manifest-chosen, it keeps control characters, and an
- * unsanitized one lets the command forge its own log line.
+ * unsanitized one lets the command forge its own log line. It is applied to
+ * the DISPLAYED command only — the dedupe key is built from the raw argv, so
+ * two commands differing only in control characters stay distinct keys.
  */
-function warnManifestExecutable(executable: readonly string[]): void {
-  const [cmd, ...rest] = executable;
-  getLogger()
-    .child('docker-build')
-    .warn(
-      `Docker asset source.executable runs a command this asset manifest chose, on ` +
-        `this machine: '${sanitizeServiceExceptionMessage(cmd ?? '')}'` +
-        (rest.length > 0 ? ` (with ${rest.length} argument(s); --verbose shows them)` : '') +
-        `. cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
-        `trusted input. Note that this means running a local command against a ` +
-        `pre-synthesized assembly DOES execute code from it, which the ` +
-        `CloudFormation template does not show.`
-    );
+const warnedExecutables = new Set<string>();
+
+/** Test seam; a process serves one assembly, so the set is per invocation. */
+export function resetManifestExecutableWarnings(): void {
+  warnedExecutables.clear();
+}
+
+function warnManifestExecutable(cmd: string, executable: readonly string[]): void {
+  const logger = getLogger().child('docker-build');
+  // `JSON.stringify`, not a NUL join: a NUL-joined composite is the record-key
+  // shape this repo fences, and it is not one — this key never leaves the
+  // process and is never persisted. The array form is also unambiguous about
+  // where one argument ends, which a joined string is not.
+  const key = JSON.stringify(executable);
+  if (warnedExecutables.has(key)) {
+    logger.debug(`source.executable already announced this process: ${cmd}`);
+    return;
+  }
+  warnedExecutables.add(key);
+  const argCount = executable.length - 1;
+  logger.warn(
+    `Docker asset source.executable runs a command this asset manifest chose, on ` +
+      `this machine: '${sanitizeServiceExceptionMessage(cmd)}'` +
+      (argCount > 0 ? ` (with ${argCount} argument(s); --verbose shows them)` : '') +
+      `. cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
+      `trusted input. Note that this means running a local command against a ` +
+      `pre-synthesized assembly DOES execute code from it, which the ` +
+      `CloudFormation template does not show.`
+  );
 }
 
 /**
@@ -156,7 +185,7 @@ export async function buildDockerImage(
     logger.debug(
       `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
     );
-    warnManifestExecutable(source.executable);
+    warnManifestExecutable(cmd, source.executable);
 
     let result;
     try {
