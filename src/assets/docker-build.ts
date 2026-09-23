@@ -1,5 +1,6 @@
 import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
+import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getLogger } from '../utils/logger.js';
 
 /**
@@ -67,6 +68,91 @@ export interface BuildDockerImageOptions {
 }
 
 /**
+ * Announce that a Docker asset's `source.executable` is about to run.
+ *
+ * The command line comes from the asset manifest, which is chosen by whoever
+ * wrote the assembly, and cdk-local SPAWNS it — so a `cdkl` command against a
+ * pre-synthesized assembly executes code the CloudFormation template does not
+ * show. It is RUN, never refused: CDK CLI's `buildExternalAsset` does the same,
+ * and an assembly is trusted input. What was missing is the line saying so.
+ *
+ * **It names `executable[0]` and an argument COUNT, deliberately, and the full
+ * argv must stay at `debug`.** Rendering every argument at warn level is a new
+ * leak introduced by a warning about leaks: a build script is not `docker
+ * build`, so its own `--token ghp_…` or `--password=…` matches no argv masker's
+ * flag shapes, and the warning would promote it from `--verbose`-only to a line
+ * in every CI log of every run. That was a live defect in the host's copy of
+ * this warning (go-to-k/cdkd#3497); do not "improve" this by expanding it.
+ *
+ * Placed in `buildDockerImage` rather than at a call site because this is the
+ * ONE spawn point: `docker-image-builder.ts` (`invoke` / `start-api` /
+ * `invoke-agentcore` / `start-agentcore`, the last two through
+ * `resolveAgentCoreImage`) and `ecs-task-runner.ts` (`run-task` /
+ * `start-service` / `start-alb`) both reach it, and `studio` inherits it by
+ * spawning those as children. The two ECS server commands were the gap
+ * (go-to-k/cdkd#3540) — the host cannot warn for them, since it re-exports
+ * `runEcsServiceEmulator` as a bare passthrough and the asset build happens
+ * several layers inside this engine.
+ *
+ * **Announced ONCE per distinct command line per process, not once per
+ * spawn.** The spawn genuinely repeats — `ecs-service-runner.ts` boots every
+ * replica through `bootReplica` and restarts a crashed one the same way, and
+ * the agentcore commands re-resolve on reload — so a `DesiredCount: 3` service
+ * would print this ~450-character paragraph three times at boot and again per
+ * crash-loop restart. That is a storm, and a storm is not read. Repeats drop
+ * to `debug`, where the argv already is. Deduping the LINE must never dedupe
+ * the WORK: the spawn happens every time regardless.
+ *
+ * `sanitizeServiceExceptionMessage` for the same reason `assembly-path.ts`
+ * uses it: the value is manifest-chosen, it keeps control characters, and an
+ * unsanitized one lets the command forge its own log line. It is applied to
+ * the DISPLAYED command only — the dedupe key is built from the raw argv and
+ * cwd, so two commands differing only in control characters stay distinct
+ * keys.
+ */
+const warnedExecutables = new Set<string>();
+
+/** Test seam; a process serves one assembly, so the set is per invocation. */
+export function resetManifestExecutableWarnings(): void {
+  warnedExecutables.clear();
+}
+
+function warnManifestExecutable(cmd: string, executable: readonly string[], cwd: string): void {
+  const logger = getLogger().child('docker-build');
+  // `JSON.stringify`, not a NUL join: a NUL-joined composite is the record-key
+  // shape this repo fences, and it is not one — this key never leaves the
+  // process and is never persisted. The array form is also unambiguous about
+  // where one argument ends, which a joined string is not.
+  //
+  // **`cwd` is part of the key, not decoration.** The command's meaning
+  // depends on where it runs — an asset's `source.directory` decides that, and
+  // `./build.sh` under two asset directories is two different scripts. Keying
+  // on the argv alone silently suppresses the second one, which is the very
+  // failure the per-command key exists to prevent, one level down. Two
+  // asset-backed containers in one `run-task` / `start-service` / `start-api`
+  // run reach it.
+  const key = JSON.stringify([cwd, executable]);
+  if (warnedExecutables.has(key)) {
+    logger.debug(
+      `source.executable already announced this process: ` +
+        `${sanitizeServiceExceptionMessage(cmd)} (cwd=${cwd})`
+    );
+    return;
+  }
+  warnedExecutables.add(key);
+  const argCount = executable.length - 1;
+  logger.warn(
+    `Docker asset source.executable runs a command this asset manifest chose, on ` +
+      `this machine: '${sanitizeServiceExceptionMessage(cmd)}'` +
+      (argCount > 0 ? ` (with ${argCount} argument(s); --verbose shows them)` : '') +
+      `. cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is ` +
+      `trusted input. Note that this means running a local command against a ` +
+      `pre-synthesized assembly DOES execute code from it, which the ` +
+      `CloudFormation template does not show.`
+  );
+}
+
+/**
  * Build a Docker image from a CDK asset source. Returns the local image
  * tag the caller should use for `docker tag` / `docker push` (publisher)
  * or `docker run` (local-invoke).
@@ -111,6 +197,7 @@ export async function buildDockerImage(
     logger.debug(
       `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
     );
+    warnManifestExecutable(cmd, source.executable, cwd);
 
     let result;
     try {

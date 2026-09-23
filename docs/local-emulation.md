@@ -397,6 +397,48 @@ image's default entrypoint stays in charge — for AWS Lambda base
 images that's `/lambda-entrypoint.sh`, which routes to RIE on port
 8080.
 
+### Docker asset build scripts (`source.executable`)
+
+A Docker asset can name a build SCRIPT instead of a build context. The asset
+manifest carries it as `source.executable`, a command line, and cdk-local runs
+it on your machine and reads the image tag from its stdout. CDK CLI does the
+same, so the script runs rather than being refused — an assembly you
+synthesized is your own code.
+
+cdk-local prints a warning naming the command first. It applies to every
+command that builds a Docker asset: `invoke`, `start-api`, `run-task`,
+`start-service`, `start-alb`, `invoke-agentcore` and `start-agentcore` — and to
+`studio`, which spawns several of these as children.
+
+The line is emitted on one line; wrapped here to fit the page:
+
+```text
+WARN: Docker asset source.executable runs a command this asset manifest chose,
+on this machine: './build-image.sh' (with 2 argument(s); --verbose shows them).
+cdk-local runs it, matching the CDK CLI — a pre-synthesized assembly is trusted
+input. Note that this means running a local command against a pre-synthesized
+assembly DOES execute code from it, which the CloudFormation template does not
+show.
+```
+
+The warning names the command and how many arguments it received, not the
+arguments themselves — a build script's own flags are not `docker build` flags,
+so a `--password` or `--token` among them would otherwise be copied into every
+log the run produces. Pass `--verbose` to see the full command line.
+
+Each distinct command is announced **once per run**, not once per build. Two
+assets whose scripts share a name are still announced separately — the asset
+directory the command runs in is part of what makes it distinct.
+`start-service` builds the image again for every replica and again after a
+crash-loop restart, and the agentcore commands rebuild on reload; those repeats
+go to `--verbose` rather than reprinting the paragraph. A second asset with a
+different command line gets its own warning.
+
+The line matters because running a local command against an assembly **does
+execute code from it**, and the CloudFormation template does not show that
+command. If you are pointing `--app` at a pre-synthesized assembly you did not
+produce, that warning is the only place the execution appears.
+
 ### Ephemeral storage (`/tmp` cap)
 
 When a Lambda's template declares `Properties.EphemeralStorage.Size`
