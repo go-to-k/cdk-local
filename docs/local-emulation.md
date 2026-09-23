@@ -426,7 +426,9 @@ arguments themselves — a build script's own flags are not `docker build` flags
 so a `--password` or `--token` among them would otherwise be copied into every
 log the run produces. Pass `--verbose` to see the full command line.
 
-Each distinct command line is announced **once per run**, not once per build.
+Each distinct command is announced **once per run**, not once per build. Two
+assets whose scripts share a name are still announced separately — the asset
+directory the command runs in is part of what makes it distinct.
 `start-service` builds the image again for every replica and again after a
 crash-loop restart, and the agentcore commands rebuild on reload; those repeats
 go to `--verbose` rather than reprinting the paragraph. A second asset with a

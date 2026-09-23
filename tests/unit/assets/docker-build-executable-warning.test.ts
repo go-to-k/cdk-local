@@ -201,4 +201,28 @@ describe('source.executable warning', () => {
     expect(warned).toContain('./a.sh');
     expect(warned).toContain('./b.sh');
   });
+
+  it('treats the SAME command under a different asset directory as a different script', async () => {
+    mockSpawnStreaming.mockResolvedValue({ stdout: 'img\n', stderr: '' });
+
+    // Identical argv, different `source.directory`. The executable runs from
+    // the asset directory (CDK CLI's `cwd: assetPath`), so these are two
+    // different scripts that happen to share a name — `./build.sh` is a
+    // plausible collision across two asset-backed containers in one app.
+    await buildDockerImage(
+      { source: { executable: ['./build.sh'], directory: 'asset.aaa' } },
+      '/tmp/cdk.out',
+      { wrapError }
+    );
+    await buildDockerImage(
+      { source: { executable: ['./build.sh'], directory: 'asset.bbb' } },
+      '/tmp/cdk.out',
+      { wrapError }
+    );
+
+    // Two spawns, two announcements. An argv-only key gives one announcement
+    // and silently suppresses a script the user never saw named.
+    expect(mockSpawnStreaming).toHaveBeenCalledTimes(2);
+    expect(warnLines.filter((l) => l.includes('source.executable runs a command'))).toHaveLength(2);
+  });
 });
