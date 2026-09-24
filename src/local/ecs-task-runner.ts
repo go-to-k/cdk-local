@@ -22,7 +22,6 @@ import {
 import { attachContainerLogStreamer } from './container-log-streamer.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { buildDockerImage } from '../assets/docker-build.js';
-import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { assetPathDirs } from './lambda-resolver.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { displayUntrustedValue } from '../utils/assembly-path.js';
@@ -969,7 +968,7 @@ async function prepareOneImage(
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
             `docker build failed for ECS container '${container.name}' ` +
-              `(${sanitizeServiceExceptionMessage(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
+              `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
           ),
         progressLabel: `Building container image for '${container.name}'`,
       });

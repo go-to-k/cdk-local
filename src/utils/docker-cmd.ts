@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { spinner as createSpinner } from '@clack/prompts';
+import { displayUntrustedValue } from './assembly-path.js';
 import { getLogger } from './logger.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 
@@ -286,17 +287,26 @@ export async function spawnStreaming(
       stopProgressSpinner(spin, options.progressLabel);
       if (err.code === 'ENOENT') {
         const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
+        const shownCmd = displayUntrustedValue(cmd);
         reject(
           new Error(
             usingOverride
-              ? `Failed to find and execute '${cmd}' (resolved via CDK_DOCKER). ` +
-                  `Install '${cmd}' or unset CDK_DOCKER to fall back to 'docker'.`
-              : `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
+              ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
+                  `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
+              : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
                   `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
           )
         );
       } else {
-        reject(err);
+        // Node's own message is `spawn <cmd> <CODE>` with the command RAW, and
+        // `cmd` is an asset's `source.executable[0]` when docker-build.ts runs
+        // one (go-to-k/cdk-local#764). No `cause`: the error handler prints a
+        // cause's message, which would carry the raw command back in.
+        const wrapped = new Error(
+          `Failed to execute ${displayUntrustedValue(cmd)} (${err.code ?? 'spawn error'})`
+        ) as NodeJS.ErrnoException;
+        if (err.code !== undefined) wrapped.code = err.code;
+        reject(wrapped);
       }
     });
 
@@ -308,8 +318,15 @@ export async function spawnStreaming(
         resolve({ stdout, stderr });
       } else {
         stopProgressSpinner(spin, options.progressLabel);
+        // `cmd` is an asset's `source.executable[0]` when docker-build.ts runs
+        // one, so it renders display-safe (go-to-k/cdk-local#764). Its
+        // ARGUMENTS stay out: a build script's own `--token=...` matches no
+        // argv masker, and the full argv is a `--verbose` detail (see
+        // `warnManifestExecutable`).
         const message =
-          stderr.trim() || stdout.trim() || `${cmd} ${args[0] ?? ''} exited with code ${code}`;
+          stderr.trim() ||
+          stdout.trim() ||
+          `${displayUntrustedValue(cmd)} exited with code ${code}`;
         const err = new Error(message) as SpawnError;
         err.stderr = stderr;
         err.stdout = stdout;
@@ -430,12 +447,13 @@ export async function spawnForeground(
     child.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT') {
         const usingOverride = process.env['CDK_DOCKER'] === cmd && cmd !== 'docker';
+        const shownCmd = displayUntrustedValue(cmd);
         reject(
           new Error(
             usingOverride
-              ? `Failed to find and execute '${cmd}' (resolved via CDK_DOCKER). ` +
-                  `Install '${cmd}' or unset CDK_DOCKER to fall back to 'docker'.`
-              : `Failed to find and execute '${cmd}'. Install Docker (or set the ` +
+              ? `Failed to find and execute ${shownCmd} (resolved via CDK_DOCKER). ` +
+                  `Install ${shownCmd} or unset CDK_DOCKER to fall back to 'docker'.`
+              : `Failed to find and execute ${shownCmd}. Install Docker (or set the ` +
                   `'CDK_DOCKER' environment variable to a compatible binary such as podman / finch).`
           )
         );

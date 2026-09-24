@@ -3,8 +3,8 @@ import { buildDockerImage } from '../assets/docker-build.js';
 import type { DockerImageAssetSource } from '../types/assets.js';
 import { runDockerStreaming } from '../utils/docker-cmd.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
+import { displayUntrustedValue } from '../utils/assembly-path.js';
 import { getLogger, type Logger } from '../utils/logger.js';
-import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { isImageInLocalCache } from './ecr-puller.js';
 import { getEmbedConfig } from './embed-config.js';
 
@@ -89,7 +89,7 @@ export async function buildContainerImage(
     wrapError: (stderr) =>
       new LocalInvokeBuildError(
         `docker build failed for container Lambda asset ` +
-          `(${sanitizeServiceExceptionMessage(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
+          `(${displayUntrustedValue(asset.source.directory ?? asset.source.executable?.[0] ?? '')}): ${stderr}`
       ),
     progressLabel: `Building container image (platform=${platform})`,
     ...(options.assetOutdir !== undefined && { assetOutdir: options.assetOutdir }),
