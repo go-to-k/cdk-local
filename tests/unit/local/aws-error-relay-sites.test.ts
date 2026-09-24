@@ -1734,17 +1734,21 @@ describe('#579 round 3 — the wire-derived values on lines this round touched',
     }
   });
 
-  it('state-resolver.ts renders a forged Region display-safe on the lookup-failed arm', async () => {
+  it('state-resolver.ts renders a forged output name and Region display-safe on the lookup-failed arm', async () => {
     const region = 'r\'". Region fine. "\'s\nWARN: signature verified';
+    const output = 'o\'". Output fine. "\'p';
     const r = await substituteAgainstStateAsync(
-      { 'Fn::GetStackOutput': { StackName: 'S', OutputName: 'Out', Region: region } },
+      { 'Fn::GetStackOutput': { StackName: 'S', OutputName: output, Region: region } },
       { resources: {}, crossStackResolver: importValueResolver(() => new Error('boom')) }
     );
     const reason = r.kind === 'unresolved' ? r.reason : '';
-    const shown = JSON.stringify(region.replace('\n', ' '));
-    expect(reason).toContain(`Fn::GetStackOutput S.Out (${shown}): lookup failed`);
+    const shownRegion = JSON.stringify(region.replace('\n', ' '));
+    const shownOutput = JSON.stringify(output);
+    expect(reason).toContain(`Fn::GetStackOutput S.${shownOutput} (${shownRegion}): lookup failed`);
     expect(reason).not.toContain('\n');
-    expect(reason.split(shown).join('<v>')).not.toContain('Region fine');
+    const outside = reason.split(shownRegion).join('<v>').split(shownOutput).join('<v>');
+    expect(outside).not.toContain('Region fine');
+    expect(outside).not.toContain('Output fine');
   });
 
   it('cfn-local-state-provider.ts renders the Fn::GetStackOutput producer display-safe', async () => {
