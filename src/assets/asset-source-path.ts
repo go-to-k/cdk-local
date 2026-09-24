@@ -62,7 +62,8 @@ export interface AssetSourcePathOptions {
    *   usable — the same decision as `Metadata['aws:asset:path']` (#744). Only
    *   when it is a PROJECT folder, though (see {@link originScopeRefusal}):
    *   its real path must lie inside a project root (the cwd, or the git work
-   *   tree holding the outdir) with no `.`-prefixed component in between, and
+   *   tree holding the outdir) with no credential / VCS directory
+   *   ({@link CREDENTIAL_DIR_NAMES}) in between, and
    *   it must not be `/`, the home directory or an ancestor of either the home
    *   directory or the outdir. Anything else is refused. The start-cloudfront
    *   S3 origin is this.
@@ -189,10 +190,14 @@ function broadRootReason(root: string, assetOutdir: string): string | undefined 
  * 1. {@link broadRootReason} — roots no `--no-staging` source can be.
  * 2. The root must lie STRICTLY inside a project root
  *    ({@link projectRoots}), and no path component between that project root
- *    and the origin may begin with `.` — so `.git`, `.aws`, `.ssh` inside the
- *    repo are refused. A monorepo sibling
+ *    and the origin may be a credential / VCS directory
+ *    ({@link CREDENTIAL_DIR_NAMES}, case-insensitive — APFS folds case). Other
+ *    hidden directories are fine: `docs/.vitepress/dist`, Nuxt's
+ *    `.output/public` and SvelteKit's `.svelte-kit/output` are real
+ *    `--no-staging` site folders. A monorepo sibling
  *    (`<repo>/packages/web/dist` beside `<repo>/packages/infra/cdk.out`) is
- *    inside the git work tree and accepted.
+ *    inside the git work tree and accepted. Hidden FILES under an accepted
+ *    root are kept out at serve time instead (`cloudfront-static-origin.ts`).
  */
 function originScopeRefusal(absolute: string, assetOutdir: string): string | undefined {
   const root = realPath(absolute);
@@ -205,7 +210,7 @@ function originScopeRefusal(absolute: string, assetOutdir: string): string | und
     const rel = relative(project, root);
     if (rel === '') isProjectRoot = true;
     if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
-    const dotted = rel.split(sep).find((c) => c.startsWith('.'));
+    const dotted = rel.split(sep).find((c) => CREDENTIAL_DIR_NAMES.has(c.toLowerCase()));
     if (dotted === undefined) return undefined;
     hidden = dotted;
   }
@@ -213,7 +218,7 @@ function originScopeRefusal(absolute: string, assetOutdir: string): string | und
     return 'is your project root itself; name a folder inside it';
   }
   if (hidden !== undefined) {
-    return `passes through the hidden directory '${sanitizeServiceExceptionMessage(hidden)}' inside your project`;
+    return `passes through the credential / version-control directory '${sanitizeServiceExceptionMessage(hidden)}' inside your project`;
   }
   const shown = projects.map((p) => `'${sanitizeServiceExceptionMessage(p)}'`).join(' or ');
   return projects.length === 0
@@ -222,20 +227,51 @@ function originScopeRefusal(absolute: string, assetOutdir: string): string | und
 }
 
 /**
- * The directories an accepted absolute origin may live in: the process cwd,
- * and the nearest ancestor of the outdir holding a `.git` entry (a directory,
- * or a FILE in a linked worktree / submodule). Both real paths; `git` is not
- * spawned. A candidate that is `/`, the home directory or an ancestor of it
- * is DROPPED rather than used — running from `~` must not widen the scope to
- * all of home.
+ * Directory names no `--no-staging` site folder sits under: credential stores
+ * and version-control / package-manager metadata. Compared lower-cased.
+ */
+const CREDENTIAL_DIR_NAMES: ReadonlySet<string> = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.ssh',
+  '.aws',
+  '.gnupg',
+  '.docker',
+  '.kube',
+  '.config',
+  '.azure',
+  '.gcloud',
+  '.terraform',
+  '.npm',
+  '.pnpm-store',
+  '.yarn',
+  '.cache',
+  '.local',
+]);
+
+/**
+ * The directories an accepted absolute origin may live in, both real paths:
+ *
+ * - the process cwd, ONLY when it contains the outdir or is itself a git work
+ *   tree root (holds a `.git` entry) — running from a folder of repos (`~/work`,
+ *   `/tmp`) must not make every project under it a scope;
+ * - the nearest ancestor of the outdir holding a `.git` entry (a directory, or
+ *   a FILE in a linked worktree / submodule). `git` is not spawned.
+ *
+ * A candidate that is `/`, the home directory or an ancestor of it is DROPPED
+ * rather than used — running from `~` must not widen the scope to all of home.
  */
 function projectRoots(assetOutdir: string): string[] {
   const roots: string[] = [];
   const usable = (p: string): boolean =>
     p !== resolve('/') && !containsOrIs(p, realPath(homedir()));
   const cwd = realPath(process.cwd());
-  if (usable(cwd)) roots.push(cwd);
-  let dir = realPath(assetOutdir);
+  const outdir = realPath(assetOutdir);
+  if (usable(cwd) && (containsOrIs(cwd, outdir) || existsSync(join(cwd, '.git')))) {
+    roots.push(cwd);
+  }
+  let dir = outdir;
   for (;;) {
     if (existsSync(join(dir, '.git'))) {
       if (usable(dir) && !roots.includes(dir)) roots.push(dir);

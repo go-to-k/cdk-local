@@ -420,10 +420,12 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     ).toThrow(/names your home directory or a directory containing it/);
     // A real --no-staging site folder lives under home; only the home ROOT is
     // refused. (The project root is a folder under home, as it would be.)
+    // The cwd contains the (would-be) outdir, so it is a project root.
     useCwd(join(homedir(), 'cdkl-745-not-created'));
     const site = join(homedir(), 'cdkl-745-not-created', 'site');
+    const homeOutdir = join(homedir(), 'cdkl-745-not-created', 'cdk.out');
     expect(
-      resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+      resolveIt({ manifestDir: homeOutdir, value: site, assetOutdir: homeOutdir, absolute: 'honour-warn' })
     ).toBe(site);
   });
 
@@ -458,7 +460,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
   it("'honour-warn' REFUSES an absolute folder outside both the cwd and the git work tree", () => {
     const { root, outdir } = layout();
     useCwd(join(root, 'project'));
-    mkdirSync(join(root, 'project'));
+    mkdirSync(join(root, 'project', '.git'), { recursive: true });
     const elsewhere = tmp();
     expect(() =>
       resolveIt({ manifestDir: outdir, value: elsewhere, assetOutdir: outdir, absolute: 'honour-warn' })
@@ -496,7 +498,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     // The outdir sits outside this project, so the outdir-ancestor refusal
     // cannot be what catches it.
     const { root, outdir } = layout();
-    mkdirSync(join(root, 'project'));
+    mkdirSync(join(root, 'project', '.git'), { recursive: true });
     useCwd(join(root, 'project'));
     expect(() =>
       resolveIt({
@@ -513,7 +515,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     // is missing, but if it appears later it would be served from outside the
     // project. Judged as the target, it is refused now.
     const { root, outdir } = layout();
-    mkdirSync(join(root, 'project'));
+    mkdirSync(join(root, 'project', '.git'), { recursive: true });
     useCwd(join(root, 'project'));
     const outside = tmp();
     symlinkSync(join(outside, 'missing'), join(root, 'project', 'site'));
@@ -527,18 +529,64 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     ).toThrow(/outside your project/);
   });
 
-  it("'honour-warn' REFUSES a hidden component between the project root and the origin", () => {
+  it("'honour-warn' REFUSES a credential / VCS directory between the project root and the origin (case-folded)", () => {
+    const repo = tmp();
+    mkdirSync(join(repo, '.git', 'objects'), { recursive: true });
+    const outdir = join(repo, 'infra', 'cdk.out');
+    mkdirSync(outdir, { recursive: true });
+    mkdirSync(join(repo, 'sub', '.AWS', 'creds'), { recursive: true });
+    useCwd(repo);
+    for (const [value, name] of [
+      [join(repo, '.git', 'objects'), '.git'],
+      [join(repo, 'sub', '.AWS', 'creds'), '.AWS'],
+    ] as const) {
+      expect(() =>
+        resolveIt({ manifestDir: outdir, value, assetOutdir: outdir, absolute: 'honour-warn' })
+      ).toThrow(
+        new RegExp(`passes through the credential / version-control directory '\\${name}' inside your project`)
+      );
+    }
+  });
+
+  it("'honour-warn' ACCEPTS a site generator's hidden build folder (VitePress / Nuxt / SvelteKit)", () => {
     const repo = tmp();
     mkdirSync(join(repo, '.git'));
     const outdir = join(repo, 'infra', 'cdk.out');
     mkdirSync(outdir, { recursive: true });
-    mkdirSync(join(repo, '.aws', 'creds'), { recursive: true });
     useCwd(repo);
-    for (const value of [join(repo, '.git'), join(repo, '.aws', 'creds')]) {
-      expect(() =>
-        resolveIt({ manifestDir: outdir, value, assetOutdir: outdir, absolute: 'honour-warn' })
-      ).toThrow(/passes through the hidden directory '\.(git|aws)' inside your project/);
+    for (const rel of ['docs/.vitepress/dist', '.output/public', '.svelte-kit/output']) {
+      const site = join(repo, rel);
+      mkdirSync(site, { recursive: true });
+      expect(
+        resolveIt({ manifestDir: outdir, value: site, assetOutdir: outdir, absolute: 'honour-warn' })
+      ).toBe(site);
     }
+  });
+
+  it("'honour-warn' strict cwd: a cwd that neither contains the outdir nor is a git root is ABSENT", () => {
+    // A folder of repos (`~/work`, `/tmp`) must not scope every project in it.
+    const { outdir } = layout();
+    const work = tmp();
+    const other = join(work, 'other-repo', 'dist');
+    mkdirSync(other, { recursive: true });
+    useCwd(work);
+    expect(() =>
+      resolveIt({ manifestDir: outdir, value: other, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toThrow(/outside any usable project root/);
+    // The same cwd DOES count once it is a git work-tree root.
+    mkdirSync(join(work, '.git'));
+    expect(
+      resolveIt({ manifestDir: outdir, value: other, assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(other);
+  });
+
+  it("'honour-warn' strict cwd: a cwd that contains the outdir counts (no git needed)", () => {
+    const { root, outdir } = layout();
+    mkdirSync(join(root, 'site'));
+    useCwd(root);
+    expect(
+      resolveIt({ manifestDir: outdir, value: join(root, 'site'), assetOutdir: outdir, absolute: 'honour-warn' })
+    ).toBe(join(root, 'site'));
   });
 
   it("'honour-warn' drops a degenerate project root (cwd = home) instead of widening to it", () => {
@@ -554,7 +602,7 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
 
   it("'honour-warn' REFUSES a symlink inside the project whose target leaves it (real paths)", () => {
     const { root, outdir } = layout();
-    mkdirSync(join(root, 'project'));
+    mkdirSync(join(root, 'project', '.git'), { recursive: true });
     useCwd(join(root, 'project'));
     const outside = tmp();
     symlinkSync(outside, join(root, 'project', 'site'));

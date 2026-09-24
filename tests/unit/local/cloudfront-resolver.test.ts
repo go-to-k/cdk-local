@@ -699,6 +699,8 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       );
       expect(origin?.kind === 's3' && origin.localDirs).toEqual([dir]);
       expect(origin?.kind === 's3' && origin.fromAssembly).toBe(true);
+      // Accepted as an absolute folder outside the outdir: hidden entries hidden.
+      expect(origin?.kind === 's3' && origin.hideDotfilesIn).toEqual([dir]);
       if (origin?.kind !== 's3') throw new Error('expected an s3 origin');
       const serve = (uri: string) =>
         serveFromStaticOrigin({ localDirs: origin.localDirs, uri, containLinks: true });
@@ -760,5 +762,7 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
       'origin1'
     );
     expect(origin?.kind === 's3' && origin.localDirs).toEqual([join(outDir, `asset.${HASH}`)]);
+    // A staged (relative) source is not an accepted absolute folder.
+    expect(origin?.kind === 's3' && origin.hideDotfilesIn).toBeUndefined();
   });
 });

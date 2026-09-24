@@ -680,3 +680,33 @@ describe('startCloudFrontServer — manifest-named origin symlinks (#745)', () =
     }
   });
 });
+
+describe('startCloudFrontServer — hidden entries under an accepted absolute origin (#757)', () => {
+  it('passes hideDotfilesIn through, so /.env is not served', async () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-srv-hidden-'));
+    writeFileSync(join(origin, '.env'), 'SECRET');
+    const srv = await startCloudFrontServer({
+      distribution: {
+        logicalId: 'Dist',
+        stackName: 'Stack',
+        behaviors: [{ targetOriginId: 'o1' }],
+        origins: new Map([
+          [
+            'o1',
+            { kind: 's3', originId: 'o1', localDirs: [origin], fromAssembly: true, hideDotfilesIn: [origin] },
+          ],
+        ]),
+        customErrorResponses: [],
+      },
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const res = await fetch(`${srv.url}/.env`);
+      expect(await res.text()).not.toContain('SECRET');
+    } finally {
+      await srv.close();
+      rmSync(origin, { recursive: true, force: true });
+    }
+  });
+});

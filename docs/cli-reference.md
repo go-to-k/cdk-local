@@ -441,9 +441,11 @@ working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
 output directory through `..` or a symbolic link is REFUSED when the value is
 RELATIVE. An ABSOLUTE value outside it is ACCEPTED with a warning at the
 `start-cloudfront` S3 origin only as a `cdk synth --no-staging` source folder —
-a non-hidden directory inside your project (the current directory, or the git
-work tree holding the output directory) — and refused otherwise; it is REFUSED
-at a container image's soft-reload source. BuildKit options
+a directory inside your project (the git work tree holding the output
+directory, or a current directory that contains it) not under a credential or
+version-control directory — and refused otherwise; hidden entries in such a
+folder are not served, except `/.well-known/`. It is REFUSED at a container
+image's soft-reload source. BuildKit options
 pointing outside the assembly are forwarded with a warning. Full rules:
 [local-emulation.md](local-emulation.md#asset-manifest-paths).
 

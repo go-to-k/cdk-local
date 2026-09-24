@@ -211,3 +211,52 @@ describe('serveFromStaticOrigin — link containment on the error-response path 
     }
   });
 });
+
+// go-to-k/cdk-local#745 (#757): under an ACCEPTED absolute `--no-staging`
+// folder — the user's own tree — hidden entries are not served; `.well-known`
+// is. A staged origin (not listed in `hideDotfilesIn`) serves them as a
+// deployed bucket would.
+describe('serveFromStaticOrigin — hidden entries under an accepted absolute origin (#757)', () => {
+  function site(): string {
+    const d = mkdtempSync(join(tmpdir(), 'cdkl-cf-hidden-'));
+    writeFileSync(join(d, '.env'), 'SECRET=1');
+    mkdirSync(join(d, '.git'));
+    writeFileSync(join(d, '.git', 'config'), 'url=https://token@example');
+    mkdirSync(join(d, '.well-known'));
+    writeFileSync(join(d, '.well-known', 'x'), 'WELLKNOWN');
+    writeFileSync(join(d, 'index.html'), '<h1>ok</h1>');
+    symlinkSync(join(d, '.env'), join(d, 'alias.txt'));
+    return d;
+  }
+
+  it('refuses /.env, /.git/config and a link to .env; serves /.well-known/x and normal files; warns once', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const d = site();
+    try {
+      const serve = (uri: string) =>
+        serveFromStaticOrigin({ localDirs: [d], uri, containLinks: true, hideDotfilesIn: [d] });
+      expect(serve('/.env').body.toString()).not.toContain('SECRET');
+      expect(serve('/.env').body.toString()).not.toContain('SECRET');
+      expect(serve('/.git/config').body.toString()).not.toContain('token');
+      expect(serve('/alias.txt').body.toString()).not.toContain('SECRET');
+      expect(serve('/.well-known/x').body.toString()).toBe('WELLKNOWN');
+      expect(serve('/index.html').body.toString()).toContain('ok');
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /hidden entry/.test(l));
+      expect(lines.filter((l) => l.includes("'.env'"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('a staged origin (not in hideDotfilesIn) still serves hidden files', () => {
+    const d = site();
+    try {
+      const r = serveFromStaticOrigin({ localDirs: [d], uri: '/.env', containLinks: true });
+      expect(r.body.toString()).toContain('SECRET');
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});

@@ -7,6 +7,7 @@ import { getLogger } from '../utils/logger.js';
 import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
 import { sanitizeServiceExceptionMessage } from './credential-error.js';
 import { assetPathDirs } from './lambda-resolver.js';
+import { absoluteAssemblyPathEscape } from '../utils/assembly-path.js';
 import {
   compileCloudFrontFunction,
   type CloudFrontKvsAssociation,
@@ -93,6 +94,14 @@ export type ResolvedOrigin =
       kind: 's3';
       originId: string;
       localDirs: string[];
+      /**
+       * Directories accepted as an ABSOLUTE path outside the app's outdir
+       * (a `cdk synth --no-staging` source folder). Under these, a request key
+       * with a `.`-prefixed component (other than `.well-known`) is not served
+       * — the folder is the user's own tree, where `.env` / `.git` live, not a
+       * staged asset (go-to-k/cdk-local#745).
+       */
+      hideDotfilesIn?: string[];
       /**
        * `true` when the directories came from the ASSET MANIFEST (a
        * BucketDeployment source), so each served file must also resolve
@@ -501,7 +510,17 @@ function resolveOrigins(
         ? resolveBucketDeploymentDirs(template, manifest, stack, bucketLogicalId)
         : [];
     if (localDirs.length > 0) {
-      out.set(originId, { kind: 's3', originId, localDirs, fromAssembly: true });
+      const { assetOutdir } = assetPathDirs(stack);
+      const hideDotfilesIn = localDirs.filter(
+        (d) => absoluteAssemblyPathEscape(assetOutdir, d) !== undefined
+      );
+      out.set(originId, {
+        kind: 's3',
+        originId,
+        localDirs,
+        fromAssembly: true,
+        ...(hideDotfilesIn.length > 0 && { hideDotfilesIn }),
+      });
     } else {
       // No local source -> command resolves the deployed bucket. Carry the
       // best resolution hint: a same-stack logical id (physical id from state),

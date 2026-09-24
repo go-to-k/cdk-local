@@ -523,19 +523,27 @@ The rules:
   asset's absolute source directory, so refusing every such value would reject
   the output of a documented CDK flag. It is ACCEPTED only when BOTH hold,
   judged on real paths (symbolic links followed):
-  - it lies inside your PROJECT — the current directory, or the git work tree
-    holding the output directory (the nearest ancestor with a `.git` directory
-    or file) — so a monorepo sibling such as `packages/web/dist` beside
-    `packages/infra/cdk.out` works; and
-  - no directory between that project root and the folder starts with `.`
-    (`.git`, `.aws`, ...).
+  - it lies inside your PROJECT — the git work tree holding the output
+    directory (the nearest ancestor with a `.git` directory or file), or the
+    current directory when that CONTAINS the output directory or is itself a
+    git work-tree root — so a monorepo sibling such as `packages/web/dist`
+    beside `packages/infra/cdk.out` works; and
+  - no directory between that project root and the folder is a credential or
+    version-control directory (`.git`, `.hg`, `.svn`, `.ssh`, `.aws`,
+    `.gnupg`, `.docker`, `.kube`, `.config`, `.azure`, `.gcloud`,
+    `.terraform`, `.npm`, `.pnpm-store`, `.yarn`, `.cache`, `.local`,
+    compared case-insensitively). Other hidden build folders — VitePress's
+    `docs/.vitepress/dist`, Nuxt's `.output/public`, SvelteKit's
+    `.svelte-kit/output` — are fine.
 
   Everything else is REFUSED, naming the rule — including `/`, your home
-  directory or any directory containing it, and any directory containing the
-  output directory. A current directory that is itself `/` or your home
-  directory (or contains it) does not count as a project root. An origin
-  accepted this way is served only from inside THAT directory — a symbolic
-  link in it pointing elsewhere is not served.
+  directory or any directory containing it, any directory containing the
+  output directory, and the project root itself. A current directory that is
+  `/` or your home directory (or contains it) never counts as a project root.
+  An origin accepted this way is served only from inside THAT directory — a
+  symbolic link in it pointing elsewhere is not served — and never serves a
+  hidden entry in it (`/.env`, `/.git/...`, or a link leading to one), except
+  under `/.well-known/`.
 - The `--watch` soft-reload source of a container image also uses an absolute
   value as written, but there one outside the output directory is REFUSED:
   the image's own build places an absolute value under the manifest's
