@@ -492,6 +492,22 @@ describe("resolveAssetSourcePath — an ABSOLUTE value, judged as the sink joins
     ).toBe(site);
   });
 
+  it("'honour-warn' REFUSES the project root itself (it must be a folder INSIDE the project)", () => {
+    // The outdir sits outside this project, so the outdir-ancestor refusal
+    // cannot be what catches it.
+    const { root, outdir } = layout();
+    mkdirSync(join(root, 'project'));
+    useCwd(join(root, 'project'));
+    expect(() =>
+      resolveIt({
+        manifestDir: outdir,
+        value: join(root, 'project'),
+        assetOutdir: outdir,
+        absolute: 'honour-warn',
+      })
+    ).toThrow(/outside your project/);
+  });
+
   it("'honour-warn' REFUSES a hidden component between the project root and the origin", () => {
     const repo = tmp();
     mkdirSync(join(repo, '.git'));
