@@ -434,6 +434,17 @@ That route is currently the only one to a Stage Lambda, because cdk-local does
 not yet enumerate a Stage's stacks from the app output directory
 ([#746](https://github.com/go-to-k/cdk-local/issues/746)).
 
+**Asset-manifest paths** (`<stack>.assets.json`) are held to the same bound
+wherever cdk-local reads one — a Docker build context, a `source.executable`
+working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
+`fromCodeAsset` bundle, a `--watch` soft-reload source. A value leaving the
+output directory through `..` or a symbolic link is REFUSED; an ABSOLUTE value
+is refused where the reader would use it as written (the `start-cloudfront` S3
+origin and a container image's soft-reload source — including what
+`cdk synth --no-staging` writes); BuildKit options pointing outside the assembly are forwarded with a
+warning. Full rules:
+[local-emulation.md](local-emulation.md#asset-manifest-paths).
+
 ### Lambda Layers
 
 Same-stack `AWS::Lambda::LayerVersion` references in

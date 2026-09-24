@@ -1,7 +1,12 @@
-import type { DockerCacheOption, DockerImageAssetSource } from '../types/assets.js';
+import type { DockerImageAssetSource } from '../types/assets.js';
 import { getDockerCmd, runDockerStreaming, spawnStreaming } from '../utils/docker-cmd.js';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
+import { getEmbedConfig } from '../local/embed-config.js';
+import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
+import { resolveAssetSourcePath } from './asset-source-path.js';
+import { warnEscapingBuildKitPaths } from './buildkit-passthrough-warnings.js';
+import { cacheOptionToFlag } from './docker-cache-option.js';
 
 /**
  * Shared `docker build` invocation used by both
@@ -65,6 +70,16 @@ export interface BuildDockerImageOptions {
    * when stdout is non-TTY.
    */
   progressLabel?: string;
+  /**
+   * The app's outdir — the CONTAINMENT bound for `source.directory`
+   * (go-to-k/cdk-local#745). Callers pass `assetPathDirs(stack).assetOutdir`.
+   *
+   * Absent NARROWS to `cdkOutDir` (the manifest's directory): correct for a
+   * top-level stack, and it refuses a `cdk.Stage` asset's `../asset.<hash>`
+   * rather than admitting anything wider. A caller that builds a Stage's
+   * images must pass it.
+   */
+  assetOutdir?: string;
 }
 
 /**
@@ -175,6 +190,31 @@ export async function buildDockerImage(
   const source = asset.source;
   const logger = getLogger().child('docker-build');
 
+  // `source.directory` is manifest-supplied and becomes BOTH arms' working
+  // directory, so an escaping value sent a host directory from outside the
+  // assembly to BuildKit (or handed it to a manifest-chosen argv as its cwd).
+  // It used to be `${cdkOutDir}/${source.directory}` with no check. It is
+  // judged exactly as that concatenation joins it — an ABSOLUTE value is
+  // folded under `cdkOutDir`, not honoured (`'fold'`) — and the RESOLVED path
+  // is what the spawn receives, so the path judged and the path opened are
+  // one string (go-to-k/cdk-local#745). Refused BEFORE anything is spawned,
+  // and before the executable is announced.
+  const assetOutdir = options.assetOutdir ?? cdkOutDir;
+  const contextDirectory = (directory: string, sink: string): string =>
+    resolveAssetSourcePath({
+      manifestDir: cdkOutDir,
+      value: directory,
+      assetOutdir,
+      absolute: 'fold',
+      field: 'source.directory',
+      subject: 'Docker image asset',
+      action: 'build it',
+      sink,
+      // Its own class, NOT `options.wrapError`: every caller's wrapper
+      // prefixes "docker build failed", and nothing was built.
+      wrapError: (message) => new LocalInvokeBuildError(message),
+    });
+
   // Executable source: run the script and read stdout for the tag.
   //
   // We do NOT inject `BUILDX_NO_DEFAULT_ATTESTATIONS=1` into the
@@ -192,10 +232,16 @@ export async function buildDockerImage(
     // The executable runs from the asset directory when one is provided
     // (mirrors CDK CLI's `cwd: assetPath` in `buildExternalAsset`). When
     // `directory` is unset, the executable runs from `cdkOutDir`.
-    const cwd = source.directory ? `${cdkOutDir}/${source.directory}` : cdkOutDir;
+    const cwd = source.directory
+      ? contextDirectory(
+          source.directory,
+          "run this asset's source.executable with that directory as its working directory"
+        )
+      : cdkOutDir;
 
     logger.debug(
-      `Building Docker image via executable: ${source.executable.join(' ')} (cwd=${cwd})`
+      `Building Docker image via executable: ${sanitizeServiceExceptionMessage(source.executable.join(' '))} ` +
+        `(cwd=${sanitizeServiceExceptionMessage(cwd)})`
     );
     warnManifestExecutable(cmd, source.executable, cwd);
 
@@ -232,8 +278,18 @@ export async function buildDockerImage(
   // `--build-context name=relative/path` resolve relative paths against
   // the build's cwd, NOT against the trailing context positional. Passing
   // an absolute context dir with no cwd silently breaks those flags.
-  const contextDir = `${cdkOutDir}/${source.directory}`;
+  const contextDir = contextDirectory(
+    source.directory,
+    `send that directory to docker build as the context of an image ` +
+      `${getEmbedConfig().productName} then runs locally`
+  );
   buildArgs.push('.');
+
+  // Judged against the SAME pair the context was: a relative `--secret src=`
+  // / `--build-context` resolves against the build's cwd, which is
+  // `contextDir` and is known only now. Above the spawn, so the line precedes
+  // the read or write it describes. Warn only — see the module.
+  warnEscapingBuildKitPaths(source, contextDir, assetOutdir);
 
   logger.debug(`${getDockerCmd()} ${buildArgs.join(' ')} (cwd=${contextDir})`);
 
@@ -339,14 +395,4 @@ export function buildDockerBuildCommand(
   }
 
   return args;
-}
-
-function cacheOptionToFlag(option: DockerCacheOption): string {
-  let flag = `type=${option.type}`;
-  if (option.params) {
-    for (const [k, v] of Object.entries(option.params)) {
-      flag += `,${k}=${v}`;
-    }
-  }
-  return flag;
 }

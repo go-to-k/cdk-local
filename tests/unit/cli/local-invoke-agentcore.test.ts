@@ -66,8 +66,8 @@ vi.mock('../../../src/assets/asset-manifest-loader.js', async (importActual) => 
       getFileAssets(manifest: unknown): unknown {
         return getFileAssetsMock(manifest);
       }
-      getAssetSourcePath(dir: string, asset: unknown): unknown {
-        return getAssetSourcePathMock(dir, asset);
+      getAssetSourcePath(dir: string, asset: unknown, opts: unknown): unknown {
+        return getAssetSourcePathMock(dir, asset, opts);
       }
     },
     getDockerImageBySourceHash: getDockerImageBySourceHashMock,
@@ -102,6 +102,7 @@ vi.mock('../../../src/local/docker-runner.js', async (importActual) => ({
 
 const {
   resolveAgentCoreImage,
+  loadAgentCoreAssetContext,
   emitResult,
   emitMcpResult,
   emitWsResult,
@@ -162,9 +163,36 @@ describe('resolveAgentCoreImage — acquisition fallback order', () => {
     expect(buildContainerImageMock).toHaveBeenCalledWith({ source: {} }, '/cdk.out', {
       architecture: 'arm64',
       noBuild: false,
+      assetOutdir: '/cdk.out',
     });
     expect(pullEcrImageMock).not.toHaveBeenCalled();
     expect(pullImageMock).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdk-local#745: the build's containment bound is the stack's
+  // `assetOutdir`, NOT the manifest directory it resolves from. A Stage's
+  // manifest sits in `assembly-<Stage>/` while its image context is staged one
+  // level up, so dropping the bound (narrowing it to the manifest directory)
+  // would refuse every Stage agent — which the top-level case above, where the
+  // two coincide, cannot see.
+  it('passes the stack assetOutdir, not the manifest directory, as the build bound', async () => {
+    const resolved = runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123', {
+      stack: {
+        stackName: 'App',
+        assetManifestPath: '/cdk.out/assembly-Stage/App.assets.json',
+        assetOutdir: '/cdk.out',
+      } as never,
+    });
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc123', asset: { source: {} } });
+    buildContainerImageMock.mockResolvedValue('cdkl-agent-build:abc123');
+
+    await resolveAgentCoreImage(resolved, imageOpts());
+    expect(buildContainerImageMock).toHaveBeenCalledWith(
+      { source: {} },
+      '/cdk.out/assembly-Stage',
+      expect.objectContaining({ assetOutdir: '/cdk.out' })
+    );
   });
 
   it('pulls from ECR when there is no asset match and the URI is an ECR URI', async () => {
@@ -253,6 +281,38 @@ describe('resolveAgentCoreImage — CodeConfiguration (from source)', () => {
     getFileAssetsMock.mockReturnValue(new Map()); // no asset by hash or objectKey
     await expect(resolveAgentCoreImage(codeRuntime(), imageOpts())).rejects.toThrow(/re-synthesize/);
     expect(buildAgentCoreCodeImageMock).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdk-local#745: the bundle's `source.path` is contained by the
+  // loader; the call site must hand it the APP outdir as the bound, not the
+  // manifest directory it resolves from (a Stage stages one level up).
+  it('passes the stack assetOutdir to the contained source-path lookup', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: '../asset.h123' } }]]));
+    buildAgentCoreCodeImageMock.mockResolvedValue('tag');
+    const stage = {
+      ...codeRuntime(),
+      stack: {
+        stackName: 'App',
+        assetManifestPath: '/cdk.out/assembly-S/App.assets.json',
+        assetOutdir: '/cdk.out',
+      } as never,
+    };
+    await resolveAgentCoreImage(stage, imageOpts());
+    const [dir, , opts] = getAssetSourcePathMock.mock.calls[0]!;
+    expect(dir).toBe('/cdk.out/assembly-S');
+    expect(opts).toMatchObject({ assetOutdir: '/cdk.out' });
+    const err = (opts as { wrapError: (m: string) => Error }).wrapError('escaped');
+    expect(err).toMatchObject({ code: 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY' });
+  });
+
+  it('flattens control characters in the missing-source error', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: 'asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue('/cdk.out/missing\x1b[2K\rFORGED');
+    const err = await resolveAgentCoreImage(codeRuntime(), imageOpts()).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/does not exist or is not a directory/);
+    expect((err as Error).message).not.toMatch(/[\x1b\r]/);
   });
 
   it('errors when the resolved source dir does not exist (stale cdk.out)', async () => {
@@ -1218,5 +1278,104 @@ describe('parseTimeoutMs', () => {
     expect(() => parseTimeoutMs('')).toThrowError(
       /--timeout must be a positive integer/
     );
+  });
+});
+
+// go-to-k/cdk-local#745: under `--watch` the container arm's
+// `newAssetSourceDir` is what a soft reload `docker cp`s into the running
+// agent. It was `path.resolve(cdkOutDir, source.directory)` — `..` and an
+// absolute value both honoured.
+describe('loadAgentCoreAssetContext — soft-reload source containment (#745)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function ctxFor(directory: string) {
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue({ hash: 'abc123', asset: { source: { directory } } });
+    const stack = { stackName: 'App', template: { Resources: {} } };
+    return loadAgentCoreAssetContext({
+      resolvedTarget: 'App:ChatAgent',
+      resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
+      stacks: [stack] as never,
+      cdkOutDir: '/tmp/cdk.out',
+      assetLoader: new (class {
+        loadManifest = loadManifestMock;
+      })() as never,
+      oldAssetHash: 'old',
+    });
+  }
+
+  it('REFUSES a relative source.directory that climbs out of the output directory', async () => {
+    await expect(ctxFor('../../etc')).rejects.toThrow(
+      /AgentCore Runtime 'ChatAgent' image asset has source\.directory='\.\.\/\.\.\/etc'.*outside.*Refusing to copy from it\./
+    );
+  });
+
+  it('REFUSES an ABSOLUTE source.directory outside the output directory', async () => {
+    await expect(ctxFor('/etc')).rejects.toThrow(/has an absolute source\.directory='\/etc'.*outside/);
+  });
+
+  it('returns the contained source directory for a staged asset', async () => {
+    const ctx = await ctxFor('asset.abc123');
+    expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.abc123');
+  });
+  it("resolves a Stage stack's `../asset.<hash>` from its manifest directory, bounded by its assetOutdir", async () => {
+    loadManifestMock.mockResolvedValue({ dockerImages: {} });
+    getDockerImageBySourceHashMock.mockReturnValue({
+      hash: 'abc123',
+      asset: { source: { directory: '../asset.abc123' } },
+    });
+    const stack = {
+      stackName: 'App',
+      template: { Resources: {} },
+      assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
+      assetOutdir: '/tmp/cdk.out',
+    };
+    // `--output` differs from BOTH the manifest directory and the stack's
+    // assetOutdir, so the case tells which one is the base and which the bound.
+    const ctx = await loadAgentCoreAssetContext({
+      resolvedTarget: 'App:ChatAgent',
+      resolved: runtime('123.dkr.ecr.us-east-1.amazonaws.com/assets:abc123'),
+      stacks: [stack] as never,
+      cdkOutDir: '/tmp/out',
+      assetLoader: new (class {
+        loadManifest = loadManifestMock;
+      })() as never,
+      oldAssetHash: 'old',
+    });
+    expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.abc123');
+  });
+
+  it('code bundle arm: hands the contained lookup the manifest directory and the stack assetOutdir', async () => {
+    loadManifestMock.mockResolvedValue({ files: {} });
+    getFileAssetsMock.mockReturnValue(new Map([['h123', { source: { path: '../asset.h123' } }]]));
+    getAssetSourcePathMock.mockReturnValue('/tmp/cdk.out/asset.h123');
+    const stack = {
+      stackName: 'App',
+      template: { Resources: {} },
+      assetManifestPath: '/tmp/cdk.out/assembly-S/App.assets.json',
+      assetOutdir: '/tmp/cdk.out',
+    };
+    const ctx = await loadAgentCoreAssetContext({
+      resolvedTarget: 'App:CodeAgent',
+      resolved: {
+        ...runtime('unused'),
+        containerUri: undefined,
+        codeArtifact: { runtime: 'PYTHON_3_13', entryPoint: ['app.py'], codeAssetHash: 'h123' },
+      } as never,
+      stacks: [stack] as never,
+      cdkOutDir: '/tmp/out',
+      assetLoader: new (class {
+        loadManifest = loadManifestMock;
+        getFileAssets = getFileAssetsMock;
+        getAssetSourcePath = getAssetSourcePathMock;
+      })() as never,
+      oldAssetHash: 'h123',
+    });
+    expect(ctx?.newAssetSourceDir).toBe('/tmp/cdk.out/asset.h123');
+    const [dir, , opts] = getAssetSourcePathMock.mock.calls.at(-1)!;
+    expect(dir).toBe('/tmp/cdk.out/assembly-S');
+    expect(opts).toMatchObject({ assetOutdir: '/tmp/cdk.out' });
   });
 });

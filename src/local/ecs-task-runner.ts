@@ -22,6 +22,8 @@ import {
 import { attachContainerLogStreamer } from './container-log-streamer.js';
 import { warnIfEmulatedPlatform } from './docker-image-builder.js';
 import { buildDockerImage } from '../assets/docker-build.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
+import { assetPathDirs } from './lambda-resolver.js';
 import { isImageInLocalCache, pullEcrImage } from './ecr-puller.js';
 import { LocalInvokeBuildError } from '../utils/error-handler.js';
 import { AssetManifestLoader } from '../assets/asset-manifest-loader.js';
@@ -959,10 +961,14 @@ async function prepareOneImage(
       }
       const actualTag = await buildDockerImage(asset, cdkOutDir, {
         tag,
+        // The containment bound for `source.directory`: the app's outdir,
+        // Stage-aware (go-to-k/cdk-local#745).
+        assetOutdir: assetPathDirs(task.stack).assetOutdir,
         ...(options.platformOverride !== undefined && { platform: options.platformOverride }),
         wrapError: (stderr: string) =>
           new LocalInvokeBuildError(
-            `docker build failed for ECS container '${container.name}' (${asset.source.directory ?? asset.source.executable?.join(' ')}): ${stderr}`
+            `docker build failed for ECS container '${container.name}' ` +
+              `(${sanitizeServiceExceptionMessage(asset.source.directory ?? asset.source.executable?.join(' ') ?? '')}): ${stderr}`
           ),
         progressLabel: `Building container image for '${container.name}'`,
       });

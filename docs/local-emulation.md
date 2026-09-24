@@ -490,6 +490,48 @@ execute code from it**, and the CloudFormation template does not show that
 command. If you are pointing `--app` at a pre-synthesized assembly you did not
 produce, that warning is the only place the execution appears.
 
+### Asset-manifest paths
+
+The asset manifest (`<stack>.assets.json`) is part of the assembly too, so the
+directories it names are held to the same bound as `Metadata['aws:asset:path']`
+— the app's output directory, Stage-aware — wherever cdk-local reads one:
+
+- a container image's Docker build context, on every command that builds one
+  (`invoke`, `start-api`, `run-task`, `start-service`, `start-alb`,
+  `invoke-agentcore`, `start-agentcore`, and a container Lambda behind
+  `start-cloudfront` or an ALB target), and the working directory of a
+  `source.executable` build script;
+- the directory `start-cloudfront` serves for a `BucketDeployment` source —
+  and each file served from it must also resolve inside it, so a symbolic link
+  in the directory pointing elsewhere is not served (with a warning). A
+  directory you name with `--origin` is your own and is served as-is;
+- the source tree of an AgentCore `fromCodeAsset` bundle;
+- the directory a `--watch` soft reload copies into a running container.
+
+The rules:
+
+- A value that leaves the output directory — through `..`, or through a
+  symbolic link — is REFUSED before anything reads it. So is a stack name that
+  would carry `<stack>.assets.json` out of it. No `cdk synth` writes either.
+- An ABSOLUTE value is judged the way each reader uses it. A Docker build
+  context and an AgentCore code bundle (at boot and on a soft reload) place it
+  UNDER the manifest's directory, as they always have. The `start-cloudfront`
+  S3 origin and the `--watch` soft-reload source of a container image use it
+  as written, so there an absolute value outside the output directory is
+  REFUSED — including the absolute paths `cdk synth --no-staging` writes.
+  Re-synthesize without that flag for those commands.
+- A value naming the output directory ITSELF is accepted with a warning, since
+  it hands the whole assembly — every template and every staged asset — to the
+  reader.
+
+The BuildKit options a Docker asset carries (`dockerFile`,
+`dockerBuildContexts`, `dockerBuildSecrets`, `dockerBuildSsh`, `cacheFrom`,
+`cacheTo`, `dockerOutputs`) are forwarded to `docker build` as written, matching
+the CDK CLI — a project legitimately points a `--secret` or a build context
+outside the assembly. A warning names each one that reads, or writes, a host
+path outside the assembly, because the CloudFormation template does not show
+them.
+
 ### Ephemeral storage (`/tmp` cap)
 
 When a Lambda's template declares `Properties.EphemeralStorage.Size`

@@ -2542,6 +2542,7 @@ export async function resolveContainerImageForStartApi(
   if (localBuild) {
     const imageRef = await buildContainerImage(localBuild.asset, localBuild.cdkOutDir, {
       architecture: lambda.architecture,
+      assetOutdir: localBuild.assetOutdir,
       ...(options?.noBuild !== undefined && { noBuild: options.noBuild }),
     });
     return { imageRef };
@@ -2571,9 +2572,15 @@ export async function resolveContainerImageForStartApi(
  * Mirrors `local-invoke.ts:resolveLocalBuildPlan`; kept separate so
  * the two commands evolve their asset-lookup heuristics independently.
  */
-async function resolveLocalBuildPlan(
-  lambda: ResolvedStartApiImageLambda
-): Promise<{ asset: { source: DockerImageAssetSource }; cdkOutDir: string } | undefined> {
+async function resolveLocalBuildPlan(lambda: ResolvedStartApiImageLambda): Promise<
+  | {
+      asset: { source: DockerImageAssetSource };
+      cdkOutDir: string;
+      /** The containment bound for `source.directory` (go-to-k/cdk-local#745). */
+      assetOutdir: string;
+    }
+  | undefined
+> {
   const manifestPath = lambda.stack.assetManifestPath;
   if (!manifestPath) return undefined;
   const cdkOutDir = path.dirname(manifestPath);
@@ -2582,7 +2589,7 @@ async function resolveLocalBuildPlan(
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;
-  return { asset: entry.asset, cdkOutDir };
+  return { asset: entry.asset, cdkOutDir, assetOutdir: assetPathDirs(lambda.stack).assetOutdir };
 }
 
 /**

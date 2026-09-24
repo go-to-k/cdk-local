@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
@@ -148,6 +148,8 @@ describe('resolveCloudFrontDistribution — unresolved + custom origins', () => 
       const origin = resolved.origins.get('origin1');
       expect(origin?.kind).toBe('s3');
       if (origin?.kind === 's3') expect(origin.localDirs[0]).toBe(overrideDir);
+      // The user's own directory: its links are served, not contained (#745).
+      expect(origin?.kind === 's3' && origin.fromAssembly).toBeUndefined();
     } finally {
       rmSync(overrideDir, { recursive: true, force: true });
     }
@@ -640,5 +642,96 @@ describe('resolveCloudFrontDistribution — external/imported S3 origin (issue #
     );
     const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get('ext');
     expect(origin).toEqual({ kind: 's3-unresolved', originId: 'ext', deployedConfigOnly: true });
+  });
+});
+
+// go-to-k/cdk-local#745: the BucketDeployment source directory is what
+// `start-cloudfront` SERVES, and it comes from the asset manifest's
+// `source.path`. It was `path.resolve(manifestDir, source.path)` — `..`
+// climbed out and an absolute value was honoured — so a hand-modified
+// manifest published any host directory over the local origin.
+describe('resolveCloudFrontDistribution — BucketDeployment source containment (#745)', () => {
+  function stackWithSourcePath(sourcePath: string, over: Partial<StackInfo> = {}): StackInfo {
+    const stack = buildStack(s3DistributionTemplate());
+    writeFileSync(
+      stack.assetManifestPath!,
+      JSON.stringify({
+        version: '1',
+        files: {
+          [HASH]: {
+            displayName: 'Site',
+            source: { path: sourcePath, packaging: 'zip' },
+            destinations: { current: { bucketName: 'b', objectKey: `${HASH}.zip` } },
+          },
+        },
+        dockerImages: {},
+      })
+    );
+    return { ...stack, ...over };
+  }
+  const victim = (): string => {
+    const dir = join(outDir, '..', `${outDir.split('/').pop()}-victim`);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  it('REFUSES a relative source.path that climbs out of the outdir', () => {
+    const stack = stackWithSourcePath('../../etc');
+    expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+      /BucketDeployment source asset for bucket 'SiteBucket' has source\.path='\.\.\/\.\.\/etc' which resolves to .*outside.*Refusing to serve it\./
+    );
+  });
+
+  it('REFUSES an ABSOLUTE source.path outside the outdir (path.resolve would honour it)', () => {
+    const dir = victim();
+    try {
+      const stack = stackWithSourcePath(dir);
+      expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+        /has an absolute source\.path=.*outside.*--no-staging/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('REFUSES a source.path that leaves through a symbolic link', () => {
+    const dir = victim();
+    try {
+      symlinkSync(dir, join(outDir, 'link'));
+      const stack = stackWithSourcePath('link');
+      expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+        /symbolic link/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('serves an absolute source.path INSIDE the outdir, as written', () => {
+    const inside = join(outDir, `asset.${HASH}`);
+    mkdirSync(inside, { recursive: true });
+    const stack = stackWithSourcePath(inside);
+    const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get(
+      'origin1'
+    );
+    expect(origin?.kind === 's3' && origin.localDirs).toEqual([inside]);
+    // Marks the directories as manifest-named, so the server contains links.
+    expect(origin?.kind === 's3' && origin.fromAssembly).toBe(true);
+  });
+
+  it("serves a cdk.Stage source `../asset.<hash>` bounded by the stack's assetOutdir", () => {
+    // The Stage manifest sits one level below the app outdir; bounding at the
+    // manifest directory would refuse CDK's own layout.
+    const stageDir = join(outDir, 'assembly-S');
+    mkdirSync(stageDir);
+    mkdirSync(join(outDir, `asset.${HASH}`));
+    const base = stackWithSourcePath(`../asset.${HASH}`);
+    const stageManifest = join(stageDir, 'Stack.assets.json');
+    writeFileSync(stageManifest, readFileSync(base.assetManifestPath!, 'utf-8'));
+    const stack = { ...base, assetManifestPath: stageManifest, assetOutdir: outDir };
+    const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get(
+      'origin1'
+    );
+    expect(origin?.kind === 's3' && origin.localDirs).toEqual([join(outDir, `asset.${HASH}`)]);
   });
 });

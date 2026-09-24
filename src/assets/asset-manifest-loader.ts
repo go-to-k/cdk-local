@@ -1,7 +1,10 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
+import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import type { AssetManifest, DockerImageAsset, FileAsset } from '../types/assets.js';
+import { renderAssemblyPathEscape, resolveAssemblyPath } from '../utils/assembly-path.js';
 import { getLogger } from '../utils/logger.js';
+import { resolveAssetSourcePath } from './asset-source-path.js';
 
 /**
  * Asset manifest loader
@@ -19,6 +22,20 @@ export class AssetManifestLoader {
    * @returns Asset manifest or null if not found
    */
   async loadManifest(cdkOutputDir: string, stackName: string): Promise<AssetManifest | null> {
+    // The stack name comes from the assembly's own `manifest.json`, so a
+    // hand-modified one can carry `../../x` and point this read outside the
+    // directory. CloudFormation stack names cannot contain `/`, so no real
+    // synth reaches the refusal (go-to-k/cdk-local#745).
+    const resolved = resolveAssemblyPath(cdkOutputDir, `${stackName}.assets.json`);
+    if (!resolved.contained) {
+      throw new Error(
+        `Refusing to read the asset manifest for stack ` +
+          `'${sanitizeServiceExceptionMessage(stackName)}': it ` +
+          renderAssemblyPathEscape(resolved, cdkOutputDir, 'read it')
+      );
+    }
+    // The caller's own spelling, as before: the verdict above is about the
+    // same file, and a relative `--output` keeps reading relative.
     const manifestPath = join(cdkOutputDir, `${stackName}.assets.json`);
 
     try {
@@ -68,14 +85,35 @@ export class AssetManifestLoader {
   }
 
   /**
-   * Get asset source path (absolute path)
+   * Get a file asset's source directory (absolute path), REFUSING a
+   * `source.path` that leaves `opts.assetOutdir` (go-to-k/cdk-local#745).
    *
-   * @param cdkOutputDir CDK output directory
-   * @param asset File asset
-   * @returns Absolute path to asset source
+   * The value resolves against `cdkOutputDir` with `path.join` semantics, as
+   * it always has, so an ABSOLUTE value is folded under it rather than
+   * honoured (`'fold'` in `resolveAssetSourcePath`). `assetOutdir` is the
+   * app's outdir — `assetPathDirs(stack).assetOutdir` — and is REQUIRED so a
+   * caller cannot silently bound a Stage's `../asset.<hash>` at the manifest
+   * directory.
+   *
+   * The one reader is the AgentCore CodeConfiguration bundle, which builds an
+   * image FROM this directory; `subject` names it in the refusal.
    */
-  getAssetSourcePath(cdkOutputDir: string, asset: FileAsset): string {
-    return join(cdkOutputDir, asset.source.path);
+  getAssetSourcePath(
+    cdkOutputDir: string,
+    asset: FileAsset,
+    opts: { assetOutdir: string; subject: string; wrapError: (message: string) => Error }
+  ): string {
+    return resolveAssetSourcePath({
+      manifestDir: cdkOutputDir,
+      value: asset.source.path,
+      assetOutdir: opts.assetOutdir,
+      absolute: 'fold',
+      field: 'source.path',
+      subject: opts.subject,
+      action: 'build an image from it',
+      sink: 'build an image from that directory and run it locally',
+      wrapError: opts.wrapError,
+    });
   }
 
   /**

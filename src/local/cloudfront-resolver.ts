@@ -1,9 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import type { StackInfo } from '../synthesis/assembly-reader.js';
 import type { AssetManifest, FileAsset } from '../types/assets.js';
 import type { CloudFormationTemplate, TemplateResource } from '../types/resource.js';
 import { getLogger } from '../utils/logger.js';
+import { resolveAssetSourcePath } from '../assets/asset-source-path.js';
+import { sanitizeServiceExceptionMessage } from './credential-error.js';
+import { assetPathDirs } from './lambda-resolver.js';
 import {
   compileCloudFrontFunction,
   type CloudFrontKvsAssociation,
@@ -86,7 +89,19 @@ export interface ResolvedBehavior {
 
 /** A resolved origin: an S3 origin, a Lambda Function URL origin, or a custom origin. */
 export type ResolvedOrigin =
-  | { kind: 's3'; originId: string; localDirs: string[] }
+  | {
+      kind: 's3';
+      originId: string;
+      localDirs: string[];
+      /**
+       * `true` when the directories came from the ASSET MANIFEST (a
+       * BucketDeployment source), so each served file must also resolve
+       * inside its directory through symlinks (go-to-k/cdk-local#745). Absent
+       * for an `--origin` override: that directory is the user's own, and a
+       * symlink in it pointing elsewhere is theirs to serve.
+       */
+      fromAssembly?: boolean;
+    }
   | {
       /**
        * An S3 origin with no local BucketDeployment source. The command
@@ -486,7 +501,7 @@ function resolveOrigins(
         ? resolveBucketDeploymentDirs(template, manifest, stack, bucketLogicalId)
         : [];
     if (localDirs.length > 0) {
-      out.set(originId, { kind: 's3', originId, localDirs });
+      out.set(originId, { kind: 's3', originId, localDirs, fromAssembly: true });
     } else {
       // No local source -> command resolves the deployed bucket. Carry the
       // best resolution hint: a same-stack logical id (physical id from state),
@@ -591,8 +606,10 @@ export function resolveBucketDeploymentDirs(
   stack: StackInfo,
   bucketLogicalId: string
 ): string[] {
-  const manifestDir = stack.assetManifestPath ? dirname(stack.assetManifestPath) : undefined;
-  if (!manifestDir) return [];
+  if (!stack.assetManifestPath) return [];
+  // Resolve against the manifest's directory, CONTAIN within the app's outdir
+  // (Stage-aware) — see `assetPathDirs`.
+  const { manifestDir, assetOutdir } = assetPathDirs(stack);
   const dirs: string[] = [];
   for (const resource of Object.values(template.Resources ?? {})) {
     if (!String(resource.Type).startsWith('Custom::CDKBucketDeployment')) continue;
@@ -603,7 +620,24 @@ export function resolveBucketDeploymentDirs(
       if (typeof key !== 'string') continue; // non-literal (intrinsic) -> unresolved
       const asset = findFileAssetByObjectKey(manifest, key);
       if (!asset) continue;
-      dirs.push(resolve(manifestDir, asset.source.path));
+      // The directory `start-cloudfront` SERVES as this origin's content, so an
+      // escaping `source.path` published host files over HTTP. The join is
+      // `path.resolve`, which honours an absolute value, so one is judged as
+      // the absolute path it is and refused outside the app's outdir — the
+      // same containment as a relative escape (go-to-k/cdk-local#745).
+      dirs.push(
+        resolveAssetSourcePath({
+          manifestDir,
+          value: asset.source.path,
+          assetOutdir,
+          absolute: 'honour',
+          field: 'source.path',
+          subject: `BucketDeployment source asset for bucket '${sanitizeServiceExceptionMessage(bucketLogicalId)}'`,
+          action: 'serve it',
+          sink: "serve every file under that directory as this bucket's local S3 origin",
+          wrapError: (message) => new Error(message),
+        })
+      );
     }
   }
   return dirs;

@@ -101,6 +101,8 @@ import {
   streamLogs,
 } from '../../local/docker-runner.js';
 import { buildContainerImage } from '../../local/docker-image-builder.js';
+import { assetPathDirs, outputAssetBound, watchManifestDir } from '../../local/lambda-resolver.js';
+import { resolveAssetSourcePath } from '../../assets/asset-source-path.js';
 import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';
 import {
   AssetManifestLoader,
@@ -992,6 +994,9 @@ export async function resolveAgentCoreImage(
         return buildContainerImage(entry.asset, cdkOutDir, {
           architecture,
           noBuild: options.build === false,
+          // The containment bound for `source.directory`: the app's outdir,
+          // Stage-aware (go-to-k/cdk-local#745).
+          assetOutdir: assetPathDirs(resolved.stack).assetOutdir,
         });
       }
     }
@@ -1069,10 +1074,16 @@ async function resolveAgentCoreCodeImage(
       'LOCAL_INVOKE_AGENTCORE_CODE_ASSET_NOT_FOUND'
     );
   }
-  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset);
+  const sourceDir = loader.getAssetSourcePath(cdkOutDir, asset, {
+    assetOutdir: assetPathDirs(resolved.stack).assetOutdir,
+    subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle`,
+    wrapError: (message) =>
+      new CdkLocalError(message, 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY'),
+  });
   if (!existsSync(sourceDir) || !statSync(sourceDir).isDirectory()) {
     throw new CdkLocalError(
-      `AgentCore Runtime '${resolved.logicalId}' code bundle source '${sourceDir}' does not exist or is not a ` +
+      `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle source ` +
+        `'${flattenToOneLine(sourceDir)}' does not exist or is not a ` +
         `directory. Re-synthesize the app and retry.`,
       'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_MISSING'
     );
@@ -2267,7 +2278,7 @@ export async function softReloadAgentContainer(
   }
   const workdirDest = workdir.endsWith('/') ? workdir : `${workdir}/`;
   logger.info(
-    `Soft-reload: docker cp ${newAssetSourceDir} -> ${containerId}:${workdirDest}; restart.`
+    `Soft-reload: docker cp ${flattenToOneLine(newAssetSourceDir)} -> ${containerId}:${workdirDest}; restart.`
   );
   try {
     await execFileAsync(
@@ -2341,7 +2352,18 @@ export async function loadAgentCoreAssetContext(args: {
     const fileAssets = assetLoader.getFileAssets(manifest);
     const asset = fileAssets.get(resolved.codeArtifact.codeAssetHash);
     if (!asset) return undefined;
-    const sourceDir = assetLoader.getAssetSourcePath(cdkOutDir, asset);
+    // Contained exactly as the boot-time build resolves it: this directory is
+    // what a soft reload `docker cp`s into the running container.
+    const sourceDir = assetLoader.getAssetSourcePath(
+      watchManifestDir(newCandidate, cdkOutDir),
+      asset,
+      {
+        assetOutdir: outputAssetBound(newCandidate, cdkOutDir),
+        subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' code bundle`,
+        wrapError: (message) =>
+          new CdkLocalError(message, 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY'),
+      }
+    );
     return {
       ...(oldAssetHash !== undefined && { oldAssetHash }),
       newAssetHash: resolved.codeArtifact.codeAssetHash,
@@ -2367,7 +2389,27 @@ export async function loadAgentCoreAssetContext(args: {
   const newAssetHash = dockerImageEntry.hash;
   const newDockerImage = dockerImageEntry.asset;
   if (!newDockerImage.source.directory) return undefined;
-  const newAssetSourceDir = path.resolve(cdkOutDir, newDockerImage.source.directory);
+  // The directory a soft reload `docker cp`s into the running container.
+  // `path.resolve` HONOURS an absolute value, so it is judged as the absolute
+  // path it is and refused outside the app's outdir, like a relative escape
+  // (go-to-k/cdk-local#745). A refusal is caught by the watch loop: under
+  // `invoke-agentcore --ws --watch` it falls back to a rebuild, whose
+  // `buildDockerImage` refuses a relative escape and FOLDS an absolute value
+  // under the manifest directory; `start-agentcore` skips the change. Either
+  // way nothing outside the outdir is read. Relative values resolve from the
+  // manifest's own directory, as the build does.
+  const newAssetSourceDir = resolveAssetSourcePath({
+    manifestDir: watchManifestDir(newCandidate, cdkOutDir),
+    value: newDockerImage.source.directory,
+    assetOutdir: outputAssetBound(newCandidate, cdkOutDir),
+    absolute: 'honour',
+    field: 'source.directory',
+    subject: `AgentCore Runtime '${flattenToOneLine(resolved.logicalId)}' image asset`,
+    action: 'copy from it',
+    sink: 'copy that directory into the running agent container on a soft reload',
+    wrapError: (message) =>
+      new CdkLocalError(message, 'LOCAL_INVOKE_AGENTCORE_CODE_SOURCE_ESCAPES_ASSEMBLY'),
+  });
   return {
     ...(oldAssetHash !== undefined && { oldAssetHash }),
     newAssetHash,

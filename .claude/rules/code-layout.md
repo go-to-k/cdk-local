@@ -83,6 +83,19 @@ CloudFront and Studio — are in
 
 Asset manifest loader + docker-build for container Lambdas.
 
+- **Every directory an asset manifest names goes through
+  `resolveAssetSourcePath` (`asset-source-path.ts`)**, bounded by the app
+  outdir (`assetPathDirs(stack).assetOutdir`; the `--watch` readers use
+  `outputAssetBound` / `watchManifestDir`), never the manifest directory.
+  Its `absolute` mode must match how the reader joins the value (`'fold'` for
+  concatenation / `path.join`, `'honour'` for `path.resolve`), and the reader
+  must open the RETURNED path, not re-join the raw value (#745).
+- `buildDockerImage` refuses an escaping context itself; every caller passes
+  `assetOutdir`, or a cdk.Stage image is refused. BuildKit passthroughs only
+  WARN (`buildkit-passthrough-warnings.ts`), judging the RENDERED argv
+  string — `cacheOptionToFlag` (`docker-cache-option.ts`) is shared with the
+  argv builder so the two cannot disagree.
+
 ## `src/utils/`
 
 Cross-cutting helpers. The logger prefixes warn / error lines with `WARN:` /

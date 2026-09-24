@@ -1644,7 +1644,7 @@ export async function softReloadReplica(args: {
   try {
     logger.info(
       `Soft-reloading replica r${instance.index} (gen ${instance.generation}): ` +
-        `docker cp ${sourceDirToCopy} -> ${targets.length} essential container(s); restart.`
+        `docker cp ${flattenToOneLine(sourceDirToCopy)} -> ${targets.length} essential container(s); restart.`
     );
     for (const target of targets) {
       // Resolve WORKDIR from the running container's image config.

@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vite-plus/test';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vite-plus/test';
 import {
   contentTypeForKey,
   resolveErrorResponseCandidates,
@@ -128,5 +128,86 @@ describe('resolveErrorResponseCandidates', () => {
   it('skips entries with no responsePagePath, and is empty when none given', () => {
     expect(resolveErrorResponseCandidates([{ errorCode: 403 }])).toEqual([]);
     expect(resolveErrorResponseCandidates()).toEqual([]);
+  });
+});
+
+// go-to-k/cdk-local#745: the origin DIRECTORY is contained, but `safeJoin`
+// judges only the key's text and the read follows links, so a symlinked FILE
+// inside the origin used to be served from anywhere on the host.
+describe('serveFromStaticOrigin — symbolic links leaving the origin (#745)', () => {
+  it('does not serve a file that is a symlink to a path outside the origin', () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-origin-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-victim-'));
+    try {
+      writeFileSync(join(outside, 'credentials'), 'SECRET');
+      symlinkSync(join(outside, 'credentials'), join(origin, 'index.html'));
+      mkdirSync(join(origin, 'ok'));
+      writeFileSync(join(outside, 'inner.txt'), 'SECRET2');
+      symlinkSync(outside, join(origin, 'escdir'));
+      const r = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html', containLinks: true });
+      expect(r.body.toString()).not.toContain('SECRET');
+      expect(r.statusCode).not.toBe(200);
+      const r2 = serveFromStaticOrigin({
+        localDirs: [origin],
+        uri: '/escdir/inner.txt',
+        containLinks: true,
+      });
+      // An `--origin` override (no `containLinks`) is the user's own tree and
+      // serves its links as before.
+      const r3 = serveFromStaticOrigin({ localDirs: [origin], uri: '/index.html' });
+      expect(r3.body.toString()).toBe('SECRET');
+      expect(r2.body.toString()).not.toContain('SECRET2');
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('still serves a symlink that stays inside the origin', () => {
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-link-inside-'));
+    try {
+      writeFileSync(join(origin, 'real.html'), '<h1>real</h1>');
+      symlinkSync(join(origin, 'real.html'), join(origin, 'alias.html'));
+      const r = serveFromStaticOrigin({
+        localDirs: [origin],
+        uri: '/alias.html',
+        containLinks: true,
+      });
+      expect(r.statusCode).toBe(200);
+      expect(r.body.toString()).toContain('real');
+    } finally {
+      rmSync(origin, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('serveFromStaticOrigin — link containment on the error-response path and the warning (#745)', () => {
+  it('does not serve an escaping error page, and warns once per file', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const warn = vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+    const origin = mkdtempSync(join(tmpdir(), 'cdkl-cf-err-origin-'));
+    const outside = mkdtempSync(join(tmpdir(), 'cdkl-cf-err-victim-'));
+    try {
+      writeFileSync(join(outside, 'credentials'), 'SECRET');
+      symlinkSync(join(outside, 'credentials'), join(origin, 'index.html'));
+      const request = () =>
+        serveFromStaticOrigin({
+          localDirs: [origin],
+          uri: '/missing-route',
+          containLinks: true,
+          customErrorResponses: [
+            { errorCode: 403, responseCode: 200, responsePagePath: '/index.html' },
+          ],
+        });
+      expect(request().body.toString()).not.toContain('SECRET');
+      expect(request().body.toString()).not.toContain('SECRET');
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => /Not serving/.test(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('credentials');
+    } finally {
+      warn.mockRestore();
+      rmSync(origin, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

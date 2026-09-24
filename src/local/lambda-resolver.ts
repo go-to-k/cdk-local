@@ -992,6 +992,34 @@ export function assetPathDirs(stack: StackInfo): {
 }
 
 /**
+ * The containment bound for the `--watch` reload readers, which re-read
+ * `<output>/<stack>.assets.json` after each synth (their BASE is
+ * {@link watchManifestDir}).
+ *
+ * A stack carrying `assetOutdir` (always, through `AssemblyReader`) gets the
+ * same Stage-aware bound as {@link assetPathDirs}. One without it gets
+ * `outputDir` itself, NOT `assetPathDirs`'s fallback, which can be the process
+ * cwd — a DISJOINT bound that refuses every value with a message blaming the
+ * assembly. `outputDir` is the user's own flag, never assembly-supplied, so it
+ * is a legitimate bound.
+ */
+export function outputAssetBound(stack: StackInfo, outputDir: string): string {
+  return stack.assetOutdir === undefined || stack.assetOutdir === ''
+    ? outputDir
+    : assetPathDirs(stack).assetOutdir;
+}
+
+/**
+ * Where a `--watch` reader resolves a RELATIVE manifest value from: the
+ * manifest's own directory, exactly as the build does — so a value resolves
+ * to the same directory the running image was built from. Falls back to the
+ * user's `--output` for a stack record without a manifest path.
+ */
+export function watchManifestDir(stack: StackInfo, outputDir: string): string {
+  return stack.assetManifestPath ? dirname(stack.assetManifestPath) : outputDir;
+}
+
+/**
  * The real assembly ROOT for a `--app` that names a `cdk.Stage`
  * SUB-assembly.
  *
