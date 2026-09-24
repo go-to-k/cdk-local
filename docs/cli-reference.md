@@ -438,11 +438,13 @@ not yet enumerate a Stage's stacks from the app output directory
 wherever cdk-local reads one — a Docker build context, a `source.executable`
 working directory, a `start-cloudfront` `BucketDeployment` source, an AgentCore
 `fromCodeAsset` bundle, a `--watch` soft-reload source. A value leaving the
-output directory through `..` or a symbolic link is REFUSED; an ABSOLUTE value
-is refused where the reader would use it as written (the `start-cloudfront` S3
-origin and a container image's soft-reload source — including what
-`cdk synth --no-staging` writes); BuildKit options pointing outside the assembly are forwarded with a
-warning. Full rules:
+output directory through `..` or a symbolic link is REFUSED when the value is
+RELATIVE. An ABSOLUTE value outside it is ACCEPTED with a warning at the
+`start-cloudfront` S3 origin (the shape `cdk synth --no-staging` writes) unless
+it is `/`, your home directory (or a directory containing it) or a directory
+containing the output directory,
+and REFUSED at a container image's soft-reload source. BuildKit options
+pointing outside the assembly are forwarded with a warning. Full rules:
 [local-emulation.md](local-emulation.md#asset-manifest-paths).
 
 ### Lambda Layers

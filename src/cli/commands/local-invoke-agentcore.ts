@@ -2391,12 +2391,13 @@ export async function loadAgentCoreAssetContext(args: {
   if (!newDockerImage.source.directory) return undefined;
   // The directory a soft reload `docker cp`s into the running container.
   // `path.resolve` HONOURS an absolute value, so it is judged as the absolute
-  // path it is and refused outside the app's outdir, like a relative escape
-  // (go-to-k/cdk-local#745). A refusal is caught by the watch loop: under
-  // `invoke-agentcore --ws --watch` it falls back to a rebuild, whose
-  // `buildDockerImage` refuses a relative escape and FOLDS an absolute value
-  // under the manifest directory; `start-agentcore` skips the change. Either
-  // way nothing outside the outdir is read. Relative values resolve from the
+  // path it is and REFUSED outside the app's outdir, like a relative escape
+  // (go-to-k/cdk-local#745). Not accepted-with-warning as at the CloudFront
+  // origin: the boot build FOLDS an absolute value, so a real `--no-staging`
+  // assembly never boots a container to reload. A refusal is caught by the
+  // watch loop: under `invoke-agentcore --ws --watch` it falls back to a
+  // rebuild (which refuses a relative escape and folds an absolute value);
+  // `start-agentcore` skips the change. Relative values resolve from the
   // manifest's own directory, as the build does.
   const newAssetSourceDir = resolveAssetSourcePath({
     manifestDir: watchManifestDir(newCandidate, cdkOutDir),

@@ -1,7 +1,10 @@
-import { isAbsolute, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { sanitizeServiceExceptionMessage } from '../local/credential-error.js';
 import { getEmbedConfig } from '../local/embed-config.js';
 import {
+  type AssemblyPathEscape,
   absoluteAssemblyPathEscape,
   namesTheSameDirectory,
   renderAssemblyPathEscape,
@@ -49,10 +52,19 @@ export interface AssetSourcePathOptions {
    *   bundle's `getAssetSourcePath` (`path.join`) are these.
    * - `'honour'` — the sink `path.resolve`s, so an absolute value is used as
    *   written. It is judged as the absolute path it is and REFUSED outside the
-   *   bound, not warned about: the start-cloudfront S3 origin and the `--watch`
-   *   soft-reload source are these.
+   *   bound. The `--watch` soft-reload source of a container image is this: its
+   *   boot build FOLDS an absolute value (`'fold'`), so a real
+   *   `cdk synth --no-staging` assembly never boots a container to reload,
+   *   and accepting the value would serve only a hostile layout.
+   * - `'honour-warn'` — as `'honour'`, but an absolute value outside the bound
+   *   (lexically or through a symlink) is ACCEPTED WITH A WARNING naming it:
+   *   `cdk synth --no-staging` writes exactly this shape, and here it is
+   *   usable — the same decision as `Metadata['aws:asset:path']` (#744). EXCEPT
+   *   a root no `--no-staging` source can be — `/`, the user's home directory,
+   *   or an ANCESTOR of the outdir (see {@link broadRootReason}) — which is
+   *   refused. The start-cloudfront S3 origin is this.
    */
-  absolute: 'fold' | 'honour';
+  absolute: 'fold' | 'honour' | 'honour-warn';
   /** The manifest field, for the message. */
   field: 'source.path' | 'source.directory';
   /** Subject clause, already safe to print (e.g. `Docker image asset`). */
@@ -67,7 +79,9 @@ export interface AssetSourcePathOptions {
 
 /**
  * Resolve a manifest-supplied asset path and REFUSE it when it leaves the
- * app's outdir — lexically, or through a symbolic link.
+ * app's outdir — lexically, or through a symbolic link. The one exception is
+ * an ABSOLUTE value under `'honour-warn'`, which is ACCEPTED with a warning
+ * unless it names a broad root (see {@link AssetSourcePathOptions.absolute}).
  *
  * Returns the RESOLVED, normalized absolute path, and callers must use THAT
  * rather than re-joining the raw value. It matters for the kernel: a raw
@@ -85,22 +99,31 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
   const { manifestDir, value, assetOutdir, field, subject, action, wrapError } = opts;
   const shownValue = sanitizeServiceExceptionMessage(value);
 
-  if (isAbsolute(value) && opts.absolute === 'honour') {
+  if (isAbsolute(value) && opts.absolute !== 'fold') {
     const absolute = resolve(value);
     const escape = absoluteAssemblyPathEscape(assetOutdir, absolute);
-    if (escape !== undefined) {
-      // The `--no-staging` hint only where that flag is a plausible cause: a
-      // lexical escape. A symlink escape is not what the flag writes.
-      const hint =
-        escape.escape === 'lexical'
-          ? ` An absolute ${field} outside the assembly is what cdk synth --no-staging ` +
-            `writes; ${getEmbedConfig().productName} uses only assets staged inside the ` +
-            `assembly here, so re-synthesize without it.`
-          : '';
+    if (escape !== undefined && opts.absolute === 'honour') {
       throw wrapError(
         `${subject} has an absolute ${field}='${shownValue}' which ` +
-          `${renderAssemblyPathEscape(escape, assetOutdir, action)}${hint}`
+          renderAssemblyPathEscape(escape, assetOutdir, action)
       );
+    }
+    if (escape !== undefined) {
+      // `'honour-warn'` (maintainer decision on #755's follow-up): ACCEPTED
+      // with a warning — the one legitimate producer is `cdk synth
+      // --no-staging`, whose source is a site folder. A root that folder can
+      // never be is refused: it hands a whole filesystem, a home directory or
+      // the assembly's own parent tree to the reader.
+      const broad = broadRootReason(absolute, assetOutdir);
+      if (broad !== undefined) {
+        throw wrapError(
+          `${subject} has an absolute ${field}='${shownValue}' which names ${broad}. ` +
+            `A cdk synth --no-staging source is a project directory, never that. ` +
+            `Refusing to ${action}.`
+        );
+      }
+      warnAbsoluteOutsideAssembly(opts, absolute, escape);
+      return absolute;
     }
     if (namesTheSameDirectory(assetOutdir, absolute)) {
       warnWholeAssemblyAsSource(opts, absolute);
@@ -130,6 +153,77 @@ export function resolveAssetSourcePath(opts: AssetSourcePathOptions): string {
 }
 
 /**
+ * Why an accepted-absolute root is too broad to be a `--no-staging` source, or
+ * `undefined`. Compared on REAL paths (a link to `/` or to `$HOME` is the
+ * same root), falling back to the lexical spelling when a side does not
+ * resolve:
+ *
+ * - `/` — the whole filesystem;
+ * - the user's home directory (`os.homedir()`) or any ANCESTOR of it
+ *   (`/Users`, `/home`) — each contains `~/.aws` / `~/.ssh`; a project folder
+ *   UNDER home is fine. The ancestor arm matters when the project is not under
+ *   home (`/tmp`, `/workspaces`), where the outdir arm does not cover it;
+ * - an ANCESTOR of the app's outdir, which contains the assembly and
+ *   everything beside it.
+ */
+function broadRootReason(absolute: string, assetOutdir: string): string | undefined {
+  const real = (p: string): string => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  const root = real(absolute);
+  // `root` is `dir` itself or an ancestor of it.
+  const containsOrIs = (dir: string): boolean => {
+    const rel = relative(root, dir);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  };
+  if (root === resolve('/')) return 'the filesystem root';
+  if (containsOrIs(real(homedir()))) return 'your home directory or a directory containing it';
+  if (containsOrIs(real(assetOutdir))) {
+    return "a directory containing the app's output directory";
+  }
+  return undefined;
+}
+
+/**
+ * Absolute-outside lines already printed this process (deduped for the same
+ * reason as {@link warnedWholeAssembly}).
+ */
+const warnedAbsoluteOutside = new Set<string>();
+
+function warnAbsoluteOutsideAssembly(
+  opts: AssetSourcePathOptions,
+  absolute: string,
+  escape: AssemblyPathEscape
+): void {
+  const logger = getLogger().child('assets');
+  const line =
+    `${opts.subject} has an absolute ${opts.field} pointing outside the assembly: ` +
+    `'${sanitizeServiceExceptionMessage(absolute)}'` +
+    (escape.escape === 'symlink'
+      ? ` (through a symbolic link to '${sanitizeServiceExceptionMessage(escape.realPath)}')`
+      : '') +
+    `. ${getEmbedConfig().productName} will ${opts.sink}. ` +
+    // The `--no-staging` sentence only where that flag is a plausible cause:
+    // no CDK synth writes an absolute path INSIDE the outdir that a link
+    // carries out.
+    (escape.escape === 'lexical'
+      ? `This is what cdk synth --no-staging emits, and is expected for it; if you ` +
+        `did not synthesize with that flag, treat this assembly as untrusted.`
+      : `No CDK synth writes this, so treat this assembly as untrusted unless you ` +
+        `made that link yourself.`);
+  if (warnedAbsoluteOutside.has(line)) {
+    logger.debug(line);
+    return;
+  }
+  warnedAbsoluteOutside.add(line);
+  logger.warn(line);
+}
+
+/**
  * Whole-assembly lines already printed this process. A `start-service` with
  * `DesiredCount: 3` builds per replica and again per crash-loop restart, so an
  * undeduped line is a storm, and a storm is not read. Repeats drop to debug;
@@ -140,6 +234,7 @@ const warnedWholeAssembly = new Set<string>();
 /** Test seam; a process serves one assembly, so the set is per invocation. */
 export function resetWholeAssemblyWarnings(): void {
   warnedWholeAssembly.clear();
+  warnedAbsoluteOutside.clear();
 }
 
 function warnWholeAssemblyAsSource(opts: AssetSourcePathOptions, outdir: string): void {

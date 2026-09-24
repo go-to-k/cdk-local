@@ -510,16 +510,30 @@ directories it names are held to the same bound as `Metadata['aws:asset:path']`
 
 The rules:
 
-- A value that leaves the output directory — through `..`, or through a
-  symbolic link — is REFUSED before anything reads it. So is a stack name that
-  would carry `<stack>.assets.json` out of it. No `cdk synth` writes either.
+- A RELATIVE value that leaves the output directory — through `..`, or
+  through a symbolic link — is REFUSED before anything reads it. So is a stack
+  name that would carry `<stack>.assets.json` out of it. No `cdk synth` writes
+  either.
 - An ABSOLUTE value is judged the way each reader uses it. A Docker build
   context and an AgentCore code bundle (at boot and on a soft reload) place it
-  UNDER the manifest's directory, as they always have. The `start-cloudfront`
-  S3 origin and the `--watch` soft-reload source of a container image use it
-  as written, so there an absolute value outside the output directory is
-  REFUSED — including the absolute paths `cdk synth --no-staging` writes.
-  Re-synthesize without that flag for those commands.
+  UNDER the manifest's directory, as they always have.
+- The `start-cloudfront` S3 origin uses an absolute value as written: one
+  outside the output directory is ACCEPTED, and a WARNING names it —
+  including when it gets there through a symbolic link. `cdk synth
+  --no-staging` writes exactly this shape (the asset's absolute source
+  directory), so refusing it would reject the output of a documented CDK flag;
+  if you did not synthesize with `--no-staging`, treat that assembly as
+  untrusted. Roots no `--no-staging` source can be are still REFUSED: `/`,
+  your home directory or any directory containing it, and any directory
+  CONTAINING the output directory (compared through symbolic links). A
+  directory INSIDE your home — including `~/.aws` or `~/.ssh` — is accepted
+  with the warning, so read it. An origin accepted this way is
+  served only from inside THAT directory — a symbolic link in it pointing
+  elsewhere is not served.
+- The `--watch` soft-reload source of a container image also uses an absolute
+  value as written, but there one outside the output directory is REFUSED:
+  the image's own build places an absolute value under the manifest's
+  directory, so a `--no-staging` assembly never reaches a soft reload.
 - A value naming the output directory ITSELF is accepted with a warning, since
   it hands the whole assembly — every template and every staged asset — to the
   reader.

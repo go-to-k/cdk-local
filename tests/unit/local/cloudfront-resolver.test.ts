@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import {
   describeS3OriginDomain,
@@ -13,6 +13,7 @@ import {
   pickTargetFunctionLogicalId,
   resolveCloudFrontDistribution,
 } from '../../../src/local/cloudfront-resolver.js';
+import { serveFromStaticOrigin } from '../../../src/local/cloudfront-static-origin.js';
 import type { StackInfo } from '../../../src/synthesis/assembly-reader.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 
@@ -682,15 +683,38 @@ describe('resolveCloudFrontDistribution — BucketDeployment source containment 
     );
   });
 
-  it('REFUSES an ABSOLUTE source.path outside the outdir (path.resolve would honour it)', () => {
+  it('SERVES an ABSOLUTE source.path outside the outdir (the --no-staging shape), still containing links to THAT directory', () => {
     const dir = victim();
+    const beyond = victim() + '-beyond';
+    mkdirSync(beyond, { recursive: true });
     try {
+      writeFileSync(join(dir, 'index.html'), '<h1>site</h1>');
+      writeFileSync(join(beyond, 'secret.txt'), 'SECRET');
+      symlinkSync(join(beyond, 'secret.txt'), join(dir, 'leak.txt'));
       const stack = stackWithSourcePath(dir);
-      expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
-        /has an absolute source\.path=.*outside.*--no-staging/
+      const origin = resolveCloudFrontDistribution({ stack, logicalId: 'Dist' }).origins.get(
+        'origin1'
       );
+      expect(origin?.kind === 's3' && origin.localDirs).toEqual([dir]);
+      expect(origin?.kind === 's3' && origin.fromAssembly).toBe(true);
+      if (origin?.kind !== 's3') throw new Error('expected an s3 origin');
+      const serve = (uri: string) =>
+        serveFromStaticOrigin({ localDirs: origin.localDirs, uri, containLinks: true });
+      expect(serve('/index.html').body.toString()).toContain('site');
+      // The served root is the accepted absolute directory itself.
+      expect(serve('/leak.txt').body.toString()).not.toContain('SECRET');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      rmSync(beyond, { recursive: true, force: true });
+    }
+  });
+
+  it('REFUSES an absolute source.path that is a broad root (/, or an ancestor of the outdir)', () => {
+    for (const root of ['/', dirname(outDir)]) {
+      const stack = stackWithSourcePath(root);
+      expect(() => resolveCloudFrontDistribution({ stack, logicalId: 'Dist' })).toThrow(
+        /names (the filesystem root|a directory containing the app's output directory)\..*Refusing to serve it/
+      );
     }
   });
 

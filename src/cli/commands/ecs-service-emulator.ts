@@ -1394,11 +1394,12 @@ export async function loadAssetContextForTarget(args: {
   }
   // The directory a SOFT reload `docker cp`s into the running replicas.
   // `path.resolve` HONOURS an absolute value, so it is judged as the absolute
-  // path it is and refused outside the app's outdir, exactly like a relative
-  // escape (go-to-k/cdk-local#745). The caller catches the refusal and falls
-  // back to a rebuild, whose `buildDockerImage` refuses a relative escape and
-  // FOLDS an absolute value under the manifest directory — so nothing outside
-  // the outdir reaches either sink. Relative values resolve from the
+  // path it is and REFUSED outside the app's outdir, like a relative escape
+  // (go-to-k/cdk-local#745). Not accepted-with-warning as at the CloudFront
+  // origin: the boot build FOLDS an absolute value, so a real `--no-staging`
+  // assembly never boots a container to reload. The caller catches a refusal
+  // and falls back to a rebuild, whose `buildDockerImage` refuses a relative
+  // escape and folds an absolute value. Relative values resolve from the
   // manifest's own directory, as the build does.
   const newAssetSourceDir = resolveAssetSourcePath({
     manifestDir: watchManifestDir(candidate, cdkOutDir),
